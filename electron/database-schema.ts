@@ -14,6 +14,10 @@ export const JTL_WARENLAGER_TABLE = 'jtl_warenlager';
 export const JTL_ZAHLUNGSARTEN_TABLE = 'jtl_zahlungsarten';
 export const JTL_VERSANDARTEN_TABLE = 'jtl_versandarten';
 
+export const EMAIL_ACCOUNTS_TABLE = 'email_accounts';
+export const EMAIL_FOLDERS_TABLE = 'email_folders';
+export const EMAIL_MESSAGES_TABLE = 'email_messages';
+
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,6 +201,62 @@ export const createCustomerCustomFieldValuesTable = `
   );
 `;
 
+export const createEmailAccountsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_ACCOUNTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL,
+    email_address TEXT NOT NULL,
+    imap_host TEXT NOT NULL,
+    imap_port INTEGER NOT NULL DEFAULT 993,
+    imap_tls INTEGER NOT NULL DEFAULT 1,
+    imap_username TEXT NOT NULL,
+    keytar_account_key TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailFoldersTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_FOLDERS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    delimiter TEXT DEFAULT '/',
+    uidvalidity INTEGER,
+    last_uid INTEGER NOT NULL DEFAULT 0,
+    last_synced_at TEXT,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, path)
+  );
+`;
+
+export const createEmailMessagesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    folder_id INTEGER NOT NULL,
+    uid INTEGER NOT NULL,
+    message_id TEXT,
+    in_reply_to TEXT,
+    references_header TEXT,
+    subject TEXT,
+    from_json TEXT,
+    to_json TEXT,
+    cc_json TEXT,
+    date_received TEXT,
+    snippet TEXT,
+    body_text TEXT,
+    body_html TEXT,
+    seen_local INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    soft_deleted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (folder_id) REFERENCES ${EMAIL_FOLDERS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, folder_id, uid)
+  );
+`;
+
 export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_customers_jtl_kKunde ON ${CUSTOMERS_TABLE}(jtl_kKunde);`,
     `CREATE INDEX IF NOT EXISTS idx_customers_name ON ${CUSTOMERS_TABLE}(name);`,
@@ -229,5 +289,10 @@ export const indexes = [
     // Composite index for optimized custom field queries
     `CREATE INDEX IF NOT EXISTS idx_cfv_customer_field_composite ON ${CUSTOMER_CUSTOM_FIELD_VALUES_TABLE}(customer_id, field_id);`,
     // Covering index for the batch query
-    `CREATE INDEX IF NOT EXISTS idx_cf_active_display ON ${CUSTOMER_CUSTOM_FIELDS_TABLE}(active, display_order, name) WHERE active = 1;`
+    `CREATE INDEX IF NOT EXISTS idx_cf_active_display ON ${CUSTOMER_CUSTOM_FIELDS_TABLE}(active, display_order, name) WHERE active = 1;`,
+    `CREATE INDEX IF NOT EXISTS idx_email_accounts_address ON ${EMAIL_ACCOUNTS_TABLE}(email_address);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_folders_account ON ${EMAIL_FOLDERS_TABLE}(account_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_account_folder ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON ${EMAIL_MESSAGES_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_date ON ${EMAIL_MESSAGES_TABLE}(date_received);`
 ];

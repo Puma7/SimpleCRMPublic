@@ -29,7 +29,13 @@ import {
     createJtlFirmenTable,
     createJtlWarenlagerTable,
     createJtlZahlungsartenTable,
-    createJtlVersandartenTable
+    createJtlVersandartenTable,
+    createEmailAccountsTable,
+    createEmailFoldersTable,
+    createEmailMessagesTable,
+    EMAIL_ACCOUNTS_TABLE,
+    EMAIL_FOLDERS_TABLE,
+    EMAIL_MESSAGES_TABLE,
 } from './database-schema';
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
@@ -70,6 +76,9 @@ export function initializeDatabase() {
             db.exec(createJtlWarenlagerTable);
             db.exec(createJtlZahlungsartenTable);
             db.exec(createJtlVersandartenTable);
+            db.exec(createEmailAccountsTable);
+            db.exec(createEmailFoldersTable);
+            db.exec(createEmailMessagesTable);
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
@@ -154,6 +163,18 @@ export function initializeDatabase() {
             `CREATE INDEX IF NOT EXISTS idx_customer_custom_field_values_field_id ON ${CUSTOMER_CUSTOM_FIELD_VALUES_TABLE}(field_id);`,
             // Composite index for optimized custom field queries
             `CREATE INDEX IF NOT EXISTS idx_cfv_customer_field_composite ON ${CUSTOMER_CUSTOM_FIELD_VALUES_TABLE}(customer_id, field_id);`
+        ]);
+
+        ensureTableExists(EMAIL_ACCOUNTS_TABLE, createEmailAccountsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_accounts_address ON ${EMAIL_ACCOUNTS_TABLE}(email_address);`,
+        ]);
+        ensureTableExists(EMAIL_FOLDERS_TABLE, createEmailFoldersTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_folders_account ON ${EMAIL_FOLDERS_TABLE}(account_id);`,
+        ]);
+        ensureTableExists(EMAIL_MESSAGES_TABLE, createEmailMessagesTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_messages_account_folder ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id);`,
+            `CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON ${EMAIL_MESSAGES_TABLE}(message_id);`,
+            `CREATE INDEX IF NOT EXISTS idx_email_messages_date ON ${EMAIL_MESSAGES_TABLE}(date_received);`,
         ]);
 
         // Run migrations for schema updates
@@ -1311,6 +1332,7 @@ interface CalendarEventData {
     color_code?: string;
     event_type?: string;
     recurrence_rule?: string; // Store as JSON string
+    task_id?: number | null;
 }
 
 export function getAllCalendarEvents(startDate?: string, endDate?: string): any[] { // Return type matches structure from DB

@@ -101,6 +101,17 @@ const CustomFieldChannels = literal({
   DeleteValue: 'custom-fields:delete-value',
 });
 
+const EmailChannels = literal({
+  ListAccounts: 'email:list-accounts',
+  CreateAccount: 'email:create-account',
+  UpdateAccount: 'email:update-account',
+  DeleteAccount: 'email:delete-account',
+  TestImap: 'email:test-imap',
+  SyncAccount: 'email:sync-account',
+  ListMessages: 'email:list-messages',
+  GetMessage: 'email:get-message',
+});
+
 export const IPCChannels = {
   Window: WindowChannels,
   Update: UpdateChannels,
@@ -114,6 +125,7 @@ export const IPCChannels = {
   Jtl: JtlChannels,
   Dashboard: DashboardChannels,
   CustomFields: CustomFieldChannels,
+  Email: EmailChannels,
 } as const;
 
 // Flattened invoke list for preload allow-listing
@@ -130,6 +142,7 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Jtl),
   ...Object.values(IPCChannels.Dashboard),
   ...Object.values(IPCChannels.CustomFields),
+  ...Object.values(IPCChannels.Email),
 );
 
 export type InvokeChannel = typeof AllowedInvokeChannels[number];

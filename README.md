@@ -10,6 +10,7 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 * **Task Management:** Create and manage tasks linked directly to customers.
 * **Calendar Integration:** Schedule appointments, meetings, and reminders within the app.
 * **JTL Synchronization (Optional):** Sync Customer and Product data from an external JTL MSSQL database into your local CRM (one-way sync).
+* **E-Mail (IMAP, Desktop):** Under **E-Mail** in the navigation you can add IMAP accounts (password stored in the OS keychain), sync the INBOX, and read messages. SMTP, workflows, and AI features are planned extensions.
 * **Local Database:** All your CRM data is stored securely and locally using SQLite (`better-sqlite3`).
 * **Secure Configuration:** MSSQL connection details are stored securely using your OS keychain via Keytar (`keytar`).
 
@@ -60,6 +61,7 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
 
 * **Development Mode:**
   Starts the Vite dev server for instant UI updates and the Electron app.
+  The `electron:dev` script compiles main-process TypeScript in watch mode so IPC handlers (including E-Mail) stay in sync with `dist-electron`.
   ```bash
   npm run electron:dev
   ```

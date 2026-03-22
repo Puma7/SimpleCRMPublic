@@ -19,6 +19,7 @@ import CustomFieldsPage from './app/settings/custom-fields/page'
 // Import Product page components
 import ProductsPage from './app/products/page';
 import ProductsLoading from './app/products/loading'; // Assuming loading component exists
+import EmailPage from './app/email/page'
 
 // Create a root route
 const rootRoute = new RootRoute({
@@ -154,6 +155,12 @@ const productsRoute = new Route({
     pendingComponent: ProductsLoading, // Optional: Show loading component during fetch
 });
 
+const emailRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/email',
+  component: EmailPage,
+})
+
 // Create a catch-all route to handle any undefined routes
 const catchAllRoute = new Route({
   getParentRoute: () => rootRoute,
@@ -182,6 +189,7 @@ const routeTree = rootRoute.addChildren([
     customFieldsRoute,
   ]),
   productsRoute, // Added products route to tree
+  emailRoute,
   catchAllRoute, // Add the catch-all route
 ])
 

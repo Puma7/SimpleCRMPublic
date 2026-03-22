@@ -32,7 +32,17 @@ export default defineConfig(async () => {
             build: {
               outDir: 'dist-electron',
               rollupOptions: {
-                external: ['electron', 'better-sqlite3', 'mssql', 'keytar', 'electron-window-state', 'electron-log', 'electron-rebuild'],
+                external: [
+                  'electron',
+                  'better-sqlite3',
+                  'mssql',
+                  'keytar',
+                  'electron-window-state',
+                  'electron-log',
+                  'electron-rebuild',
+                  'imapflow',
+                  'mailparser',
+                ],
               },
             },
           },

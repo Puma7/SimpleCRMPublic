@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router"
-import { Users, FileBox, CheckSquare, CheckCircle, Settings, CalendarDays, Package } from "lucide-react"
+import { Users, FileBox, CheckSquare, CheckCircle, Settings, CalendarDays, Package, Mail } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 
@@ -66,6 +66,17 @@ export function MainNav({ className, ...props }: React.HTMLAttributes<HTMLElemen
           >
             <CalendarDays className="h-4 w-4" />
             <span>Kalender</span>
+          </Link>
+          <Link
+            to="/email"
+            className={cn(
+              "flex items-center space-x-2 text-sm font-medium text-muted-foreground transition-colors hover:text-primary"
+            )}
+            activeProps={{ className: "text-primary" }}
+            inactiveProps={{ className: "text-muted-foreground" }}
+          >
+            <Mail className="h-4 w-4" />
+            <span>E-Mail</span>
           </Link>
           <Link
             to="/settings"
