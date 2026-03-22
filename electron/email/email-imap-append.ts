@@ -2,6 +2,35 @@ import { ImapFlow } from 'imapflow';
 import { resolveImapAuth } from './email-imap-auth';
 import { getEmailAccountById } from './email-store';
 
+function encodeRfc2047(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x20-\x7E]*$/.test(text)) return text;
+  // RFC 2047: each encoded-word must be ≤75 chars.
+  // `=?UTF-8?B?...?=` overhead is 12 chars, leaving 63 chars for Base64 payload.
+  // 63 Base64 chars encode 47 bytes (floor(63*3/4)=47), but we must split on
+  // valid UTF-8 boundaries, so use conservative 45-byte chunks.
+  const buf = Buffer.from(text, 'utf-8');
+  const CHUNK = 45;
+  if (buf.length <= CHUNK) {
+    return `=?UTF-8?B?${buf.toString('base64')}?=`;
+  }
+  const parts: string[] = [];
+  let offset = 0;
+  while (offset < buf.length) {
+    let end = Math.min(offset + CHUNK, buf.length);
+    // Avoid splitting in the middle of a multi-byte UTF-8 character.
+    // UTF-8 continuation bytes start with 0b10xxxxxx (0x80-0xBF).
+    while (end < buf.length && end > offset && (buf[end]! & 0xC0) === 0x80) {
+      end--;
+    }
+    if (end === offset) end = Math.min(offset + CHUNK, buf.length);
+    const chunk = buf.subarray(offset, end);
+    parts.push(`=?UTF-8?B?${chunk.toString('base64')}?=`);
+    offset = end;
+  }
+  return parts.join('\r\n ');
+}
+
 function buildRfc822(input: {
   from: string;
   to: string;
@@ -14,7 +43,7 @@ function buildRfc822(input: {
   lines.push(`From: ${input.from}`);
   lines.push(`To: ${input.to}`);
   if (input.cc?.trim()) lines.push(`Cc: ${input.cc.trim()}`);
-  lines.push(`Subject: ${input.subject}`);
+  lines.push(`Subject: ${encodeRfc2047(input.subject)}`);
   lines.push('MIME-Version: 1.0');
   if (input.html?.trim()) {
     const boundary = `b_${Math.random().toString(36).slice(2)}`;

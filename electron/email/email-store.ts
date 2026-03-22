@@ -185,53 +185,35 @@ export function updateEmailAccountRecord(
     throw new Error('Email account not found');
   }
   const now = new Date().toISOString();
-  const stmt = getDb().prepare(
-    `UPDATE ${EMAIL_ACCOUNTS_TABLE} SET
-      display_name = COALESCE(?, display_name),
-      email_address = COALESCE(?, email_address),
-      imap_host = COALESCE(?, imap_host),
-      imap_port = COALESCE(?, imap_port),
-      imap_tls = COALESCE(?, imap_tls),
-      imap_username = COALESCE(?, imap_username),
-      smtp_host = COALESCE(?, smtp_host),
-      smtp_port = COALESCE(?, smtp_port),
-      smtp_tls = COALESCE(?, smtp_tls),
-      smtp_username = COALESCE(?, smtp_username),
-      smtp_use_imap_auth = COALESCE(?, smtp_use_imap_auth),
-      smtp_keytar_account_key = COALESCE(?, smtp_keytar_account_key),
-      protocol = COALESCE(?, protocol),
-      pop3_host = COALESCE(?, pop3_host),
-      pop3_port = COALESCE(?, pop3_port),
-      pop3_tls = COALESCE(?, pop3_tls),
-      oauth_provider = COALESCE(?, oauth_provider),
-      oauth_refresh_keytar_key = COALESCE(?, oauth_refresh_keytar_key),
-      sent_folder_path = COALESCE(?, sent_folder_path),
-      updated_at = ?
-    WHERE id = ?`,
-  );
-  stmt.run(
-    input.displayName ?? null,
-    input.emailAddress?.trim() ?? null,
-    input.imapHost?.trim() ?? null,
-    input.imapPort ?? null,
-    input.imapTls === undefined ? null : input.imapTls ? 1 : 0,
-    input.imapUsername?.trim() ?? null,
-    input.smtpHost === undefined ? null : input.smtpHost,
-    input.smtpPort ?? null,
-    input.smtpTls === undefined ? null : input.smtpTls ? 1 : 0,
-    input.smtpUsername === undefined ? null : input.smtpUsername,
-    input.smtpUseImapAuth === undefined ? null : input.smtpUseImapAuth ? 1 : 0,
-    input.smtpKeytarAccountKey === undefined ? null : input.smtpKeytarAccountKey,
-    input.protocol ?? null,
-    input.pop3Host === undefined ? null : input.pop3Host,
-    input.pop3Port ?? null,
-    input.pop3Tls === undefined ? null : input.pop3Tls ? 1 : 0,
-    input.oauthProvider === undefined ? null : input.oauthProvider,
-    input.oauthRefreshKeytarKey === undefined ? null : input.oauthRefreshKeytarKey,
-    input.sentFolderPath === undefined ? null : input.sentFolderPath,
-    now,
-    id,
-  );
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+
+  if (input.displayName !== undefined) { sets.push('display_name = ?'); vals.push(input.displayName); }
+  if (input.emailAddress !== undefined) { sets.push('email_address = ?'); vals.push(input.emailAddress.trim()); }
+  if (input.imapHost !== undefined) { sets.push('imap_host = ?'); vals.push(input.imapHost.trim()); }
+  if (input.imapPort !== undefined) { sets.push('imap_port = ?'); vals.push(input.imapPort); }
+  if (input.imapTls !== undefined) { sets.push('imap_tls = ?'); vals.push(input.imapTls ? 1 : 0); }
+  if (input.imapUsername !== undefined) { sets.push('imap_username = ?'); vals.push(input.imapUsername.trim()); }
+  if (input.smtpHost !== undefined) { sets.push('smtp_host = ?'); vals.push(input.smtpHost); }
+  if (input.smtpPort !== undefined) { sets.push('smtp_port = ?'); vals.push(input.smtpPort); }
+  if (input.smtpTls !== undefined) { sets.push('smtp_tls = ?'); vals.push(input.smtpTls ? 1 : 0); }
+  if (input.smtpUsername !== undefined) { sets.push('smtp_username = ?'); vals.push(input.smtpUsername); }
+  if (input.smtpUseImapAuth !== undefined) { sets.push('smtp_use_imap_auth = ?'); vals.push(input.smtpUseImapAuth ? 1 : 0); }
+  if (input.smtpKeytarAccountKey !== undefined) { sets.push('smtp_keytar_account_key = ?'); vals.push(input.smtpKeytarAccountKey); }
+  if (input.protocol !== undefined) { sets.push('protocol = ?'); vals.push(input.protocol); }
+  if (input.pop3Host !== undefined) { sets.push('pop3_host = ?'); vals.push(input.pop3Host); }
+  if (input.pop3Port !== undefined) { sets.push('pop3_port = ?'); vals.push(input.pop3Port); }
+  if (input.pop3Tls !== undefined) { sets.push('pop3_tls = ?'); vals.push(input.pop3Tls ? 1 : 0); }
+  if (input.oauthProvider !== undefined) { sets.push('oauth_provider = ?'); vals.push(input.oauthProvider); }
+  if (input.oauthRefreshKeytarKey !== undefined) { sets.push('oauth_refresh_keytar_key = ?'); vals.push(input.oauthRefreshKeytarKey); }
+  if (input.sentFolderPath !== undefined) { sets.push('sent_folder_path = ?'); vals.push(input.sentFolderPath); }
+
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(now, id);
+  getDb()
+    .prepare(`UPDATE ${EMAIL_ACCOUNTS_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
 }
 
 export function setMessageAssignedTo(messageId: number, teamMemberId: string | null): void {
@@ -321,25 +303,18 @@ export function upsertEmailFolder(input: {
   const existing = getFolderByAccountAndPath(input.accountId, input.path);
   const now = new Date().toISOString();
   if (existing) {
-    const stmt = getDb().prepare(
-      `UPDATE ${EMAIL_FOLDERS_TABLE} SET
-        delimiter = COALESCE(?, delimiter),
-        uidvalidity = COALESCE(?, uidvalidity),
-        uidvalidity_str = COALESCE(?, uidvalidity_str),
-        last_uid = COALESCE(?, last_uid),
-        pop3_uidl_str = COALESCE(?, pop3_uidl_str),
-        last_synced_at = ?
-      WHERE id = ?`,
-    );
-    stmt.run(
-      input.delimiter ?? null,
-      input.uidvalidity === undefined ? null : input.uidvalidity,
-      input.uidvalidityStr === undefined ? null : input.uidvalidityStr,
-      input.lastUid === undefined ? null : input.lastUid,
-      input.pop3UidlStr === undefined ? null : input.pop3UidlStr,
-      now,
-      existing.id,
-    );
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (input.delimiter !== undefined) { sets.push('delimiter = ?'); vals.push(input.delimiter); }
+    if (input.uidvalidity !== undefined) { sets.push('uidvalidity = ?'); vals.push(input.uidvalidity); }
+    if (input.uidvalidityStr !== undefined) { sets.push('uidvalidity_str = ?'); vals.push(input.uidvalidityStr); }
+    if (input.lastUid !== undefined) { sets.push('last_uid = ?'); vals.push(input.lastUid); }
+    if (input.pop3UidlStr !== undefined) { sets.push('pop3_uidl_str = ?'); vals.push(input.pop3UidlStr); }
+    sets.push('last_synced_at = ?');
+    vals.push(now, existing.id);
+    getDb()
+      .prepare(`UPDATE ${EMAIL_FOLDERS_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+      .run(...vals);
     return getFolderByAccountAndPath(input.accountId, input.path)!;
   }
   const ins = getDb().prepare(
@@ -369,23 +344,17 @@ export function updateFolderSyncState(
   },
 ): void {
   const now = new Date().toISOString();
-  const stmt = getDb().prepare(
-    `UPDATE ${EMAIL_FOLDERS_TABLE} SET
-      last_uid = COALESCE(?, last_uid),
-      uidvalidity = COALESCE(?, uidvalidity),
-      uidvalidity_str = COALESCE(?, uidvalidity_str),
-      pop3_uidl_str = COALESCE(?, pop3_uidl_str),
-      last_synced_at = ?
-    WHERE id = ?`,
-  );
-  stmt.run(
-    input.lastUid === undefined ? null : input.lastUid,
-    input.uidvalidity === undefined ? null : input.uidvalidity,
-    input.uidvalidityStr === undefined ? null : input.uidvalidityStr,
-    input.pop3UidlStr === undefined ? null : input.pop3UidlStr,
-    now,
-    folderId,
-  );
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (input.lastUid !== undefined) { sets.push('last_uid = ?'); vals.push(input.lastUid); }
+  if (input.uidvalidity !== undefined) { sets.push('uidvalidity = ?'); vals.push(input.uidvalidity); }
+  if (input.uidvalidityStr !== undefined) { sets.push('uidvalidity_str = ?'); vals.push(input.uidvalidityStr); }
+  if (input.pop3UidlStr !== undefined) { sets.push('pop3_uidl_str = ?'); vals.push(input.pop3UidlStr); }
+  sets.push('last_synced_at = ?');
+  vals.push(now, folderId);
+  getDb()
+    .prepare(`UPDATE ${EMAIL_FOLDERS_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
 }
 
 export function listMessagesForFolder(
@@ -416,7 +385,7 @@ export function listMessagesForAccountView(
   const limit = opts.limit ?? 200;
   const offset = opts.offset ?? 0;
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
-  const params: (string | number)[] = [accountId];
+  const params: (string | number)[] = [];
 
   if (opts.categoryId != null && opts.categoryId > 0) {
     sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
@@ -424,6 +393,7 @@ export function listMessagesForAccountView(
   }
 
   sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+  params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   if (view === 'inbox') {
     sql += ` AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0`;
@@ -601,7 +571,7 @@ export function insertOrUpdateEmailMessage(input: {
   );
   const row = db
     .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
-    .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
+    .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
   const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
   return { id, isNew };
 }
@@ -716,16 +686,13 @@ export function updateComposeDraft(
   const html =
     input.bodyHtml !== undefined ? input.bodyHtml : row.body_html;
   const snippet = body.trim() ? (body.length > 220 ? `${body.slice(0, 217)}...` : body) : row.snippet;
+  const sets: string[] = ['subject = ?', 'body_text = ?', 'snippet = ?'];
+  const vals: unknown[] = [subj, body, snippet];
+  if (input.bodyHtml !== undefined) { sets.push('body_html = ?'); vals.push(html); }
+  if (input.toJson !== undefined) { sets.push('to_json = ?'); vals.push(input.toJson); }
+  if (input.ccJson !== undefined) { sets.push('cc_json = ?'); vals.push(input.ccJson); }
+  vals.push(messageId);
   getDb()
-    .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET
-        subject = ?,
-        body_text = ?,
-        body_html = COALESCE(?, body_html),
-        snippet = ?,
-        to_json = COALESCE(?, to_json),
-        cc_json = COALESCE(?, cc_json)
-      WHERE id = ?`,
-    )
-    .run(subj, body, html, snippet, input.toJson ?? null, input.ccJson ?? null, messageId);
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
 }

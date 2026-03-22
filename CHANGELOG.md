@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Anhänge: Bestätigung vor Öffnen riskanter Dateitypen; HTML im Composer nach Sanitization speichern.
 
+### Fixed (QA Review)
+- SQL-Parameterreihenfolge bei Kategorie-Filter korrigiert — Nachrichten wurden bei aktiver Kategorie falsch oder gar nicht gefiltert.
+- POP3: Rückgabe-ID nach Einfügen nutzt korrekte negative UID statt Fallback `0`.
+- Nullable Felder (SMTP-Host, OAuth-Provider, Sent-Ordner, Draft-HTML/CC, AI-Prompt) können nun per `NULL` geleert werden — COALESCE-Anti-Pattern an 5 Stellen durch dynamische SET-Klauseln ersetzt.
+- Compose: Komma-getrennte Empfänger (To/Cc) werden als separate Adressen geparst statt als ein Eintrag gespeichert.
+- IMAP Sent-Append: Non-ASCII-Subjects (ä, ö, ü, ß, …) per RFC 2047 Base64 kodiert; lange Subjects auf ≤75-Zeichen-Chunks aufgeteilt.
+- Reporting-Statistiken zählen soft-deleted Nachrichten nicht mehr mit.
+- IDLE-Reconnect: Backoff wird nach erfolgreicher Verbindung zurückgesetzt; pending Timer bei Shutdown aufgeräumt (verhindert Ghost-Clients).
+- Ticket-Code-Entropie von 3 auf 5 Bytes erhöht (~1.1 Billionen mögliche Codes).
+- Frontend-Suche mit 300 ms Debounce (statt IPC-Call pro Tastendruck).
+
 ---
 
 ## [0.1.5] - 2025-10-07

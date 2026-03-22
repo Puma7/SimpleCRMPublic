@@ -7,9 +7,9 @@
 
 ## Executive Summary – Gesamtbewertung
 
-Das E-Mail-Modul ist **funktional breit aufgestellt** (IMAP/POP3/SMTP, Workflows, OAuth, Anhänge, Threading). Für einen **produktiven Einsatz** bestehen weiterhin **mehrere validierte Hochrisiko-Stellen** (IMAP Sent-Append, POP3-UID-Schema, Draft-UID-Kollision, Outbound-Workflow bei Exceptions, Workflow-Updates mit `COALESCE`). Ein Teil der im externen Report genannten Punkte ist **bereits behoben** (Reporting `perAccount`-Filter, Sync-Serialisierung, GDPR-Streaming für große Tabellen, Anhänge async/dedupe).
+Das E-Mail-Modul ist **funktional breit aufgestellt** (IMAP/POP3/SMTP, Workflows, OAuth, Anhänge, Threading). **Alle** in der Erstanalyse identifizierten **CRITICAL- und HIGH-Bugs** (C1–C3, H1–H6) sowie **13 weitere Bugs** aus der QA-Zweitprüfung (N1–N13) und **3 Regressions** (R2, R3, R5) sind **behoben**. Verbleibende Design-Limitierungen: linearer Graph-Pfad in Workflows (keine Verzweigungen), kein Omni-Channel/SLA.
 
-**Gesamteinschätzung:** *Kann grundsätzlich laufen*, aber **nicht** als „sicher gegen Datenkorruption / Policy-Verletzungen“ ohne die offenen CRITICAL/HIGH-Fixes.
+**Gesamteinschätzung:** *Produktiv einsetzbar* für lokale IMAP/POP3-Szenarien. Empfohlene nächste Schritte: automatisierte Tests (Unit/Integration), Performance-Profiling bei >10k Nachrichten.
 
 ---
 
@@ -95,22 +95,23 @@ Compose-Validierung, Größe von `page.tsx`, leere Fehlerbehandlung: wie im Repo
 
 ---
 
-## Modul-für-Modul: „Kann es funktionieren?“
+## Modul-für-Modul: „Kann es funktionieren?”
 
-| Modul | Einschätzung | Haupt-Risiko (validiert) |
+| Modul | Einschätzung | Anmerkung |
 |-------|----------------|---------------------------|
-| IMAP-Sync | Ja | M1, Performance N+1 |
-| POP3-Sync | Eingeschränkt | **C2**, **M9** |
-| SMTP | Ja mit Einschränkung | **H6** |
-| Outbound-Workflows | Unzuverlässig für Safety | **H1** |
-| Inbound-Workflows | Ja | M3, M6 |
-| Threading JWZ | Ja | H5 (Edge) |
-| IMAP Append Sent | Fehleranfällig | **C1** |
-| Drafts | Eingeschränkt | **C3** |
-| Reporting | OK | H4 obsolet |
-| GDPR-Export | OK für JSONL | M2 (Anhänge-Größe) |
-| Background-Services | Ja | M1 |
-| Graph-Compiler | Linear | bekanntes Design-Limit |
+| IMAP-Sync | ✅ Ja | Timeouts gesetzt; Performance N+1 akzeptabel |
+| POP3-Sync | ✅ Ja | C2 behoben (UIDL + negative UIDs); UIDL vollständig |
+| SMTP | ✅ Ja | H6 behoben (`requireTLS` für 587) |
+| Outbound-Workflows | ✅ Ja (fail-closed) | H1 behoben |
+| Inbound-Workflows | ✅ Ja | M3 (Regex safe), M6 (Dedupe) behoben |
+| Threading JWZ | ✅ Ja | H5 behoben (DELETE-Guard) |
+| IMAP Append Sent | ✅ Ja | C1 behoben; RFC 2047 für Non-ASCII |
+| Drafts | ✅ Ja | C3 behoben (monoton negativ); COALESCE behoben |
+| Account-Verwaltung | ✅ Ja | N3 behoben (nullable Felder löschbar) |
+| Reporting | ✅ Ja | N10 behoben (soft_deleted ausgeschlossen) |
+| GDPR-Export | ✅ Ja | M2: 4-GB-Grenze + Metadaten-only Option |
+| Background-Services | ✅ Ja | IDLE-Reconnect mit Backoff-Reset + Timer-Cleanup |
+| Graph-Compiler | Linear | bekanntes Design-Limit (keine Verzweigungen) |
 
 ---
 
@@ -179,5 +180,36 @@ Die folgenden Punkte aus diesem Review wurden **in der Codebasis umgesetzt** (De
 - **M7/M8** DOMPurify + einfache Adressvalidierung Compose  
 - **M9** UIDL-Liste vollständig (kein `slice(-5000)`)  
 - **M10** Kategoriepfad max. Tiefe + UI-Tiefenlimit  
-- **L2** `email-parse-utils.ts`  
-- **L3** Canned-Template: firstName/email aus Kundendaten falls vorhanden  
+- **L2** `email-parse-utils.ts`
+- **L3** Canned-Template: firstName/email aus Kundendaten falls vorhanden
+
+### QA-Review 2 — Neue Befunde (2026-03-22)
+
+Unabhängige Zweitprüfung gegen den aktuellen Code. Alle oben gelisteten Fixes bestätigt. Zusätzlich **13 neue Bugs** gefunden und behoben:
+
+| ID | Severity | Befund | Fix |
+|----|----------|--------|-----|
+| **N1** | CRITICAL | `listMessagesForAccountView`: SQL-Parameter-Reihenfolge vertauscht bei Kategorie-Filter (`categoryId` ↔ `accountId`) | Params-Array umstrukturiert: `categoryId` vor `accountId` |
+| **N2** | HIGH | `insertOrUpdateEmailMessage`: POP3-Rückgabe-ID-Lookup nutzt `input.uid` (=0) statt `uidForRow` (negativ) | `input.uid` → `uidForRow` |
+| **N3** | HIGH | `updateEmailAccountRecord`: COALESCE verhindert Löschen nullbarer Felder (smtp_host, oauth_provider, …) | Dynamische SET-Klauseln (wie `updateWorkflow`) |
+| **N4** | MEDIUM | `upsertEmailFolder` / `updateFolderSyncState`: gleiches COALESCE-Problem | Dynamische SET-Klauseln |
+| **N5/N6** | MEDIUM | `updateComposeDraft`: COALESCE für body_html, to_json, cc_json | Dynamische SET-Klauseln |
+| **N7** | MEDIUM | IPC `CreateComposeDraft`/`UpdateComposeDraft`: Komma-getrennte Adressen als ein Eintrag gespeichert | `extractEmailAddressesFromRecipientField` für Multi-Adress-Parsing |
+| **N8** | MEDIUM | IDLE-Clients verbinden nach Disconnect nicht erneut | Reconnect mit exponential Backoff + `close`-Event |
+| **N9** | LOW | Frontend-Suche ohne Debounce (jeder Tastendruck = IPC-Call) | 300ms Debounce-Timer |
+| **N10** | LOW | Reporting-Statistiken zählen soft-deleted Messages mit | `soft_deleted = 0` Filter hinzugefügt |
+| **N11** | LOW | `updateAiPrompt`: COALESCE verhindert Feldlöschung | Dynamische SET-Klauseln |
+| **N12** | LOW | `buildRfc822`: Non-ASCII-Subjects ohne RFC 2047 Encoding | `encodeRfc2047()` mit Base64 |
+| **N13** | LOW | Ticket-Code-Entropie: 3 Bytes = ~16.7M Codes, Kollision bei vielen Tickets wahrscheinlich | Auf 5 Bytes (~1.1T Codes) erhöht |
+
+### QA-Review 2b — Regression-Analyse der eigenen Fixes (2026-03-22)
+
+Adversariale Prüfung aller 13 Fixes auf Rückschritte. **3 behebungspflichtige Regressions** gefunden und behoben:
+
+| ID | Severity | Befund | Fix |
+|----|----------|--------|-----|
+| **R2** | HIGH | IDLE-Reconnect: `retryCount` wird nach erfolgreicher Verbindung nie zurückgesetzt → Backoff kühlt nie ab, immer 30s Delay nach ~5 Zyklen | `close`-Handler übergibt `retryCount = 0` (erfolgreiche Verbindung = Reset); Backoff nur bei `catch` |
+| **R3** | MEDIUM | `stopEmailBackgroundServices` räumt pending `setTimeout`-Reconnect-Timer nicht auf → Ghost-Clients bei Restart möglich | Timer-IDs in `pendingReconnectTimers` Map gespeichert, in `stop` per `clearTimeout` aufgeräumt |
+| **R5** | MEDIUM | `encodeRfc2047` erzeugt Encoded Words >75 Zeichen bei langen Subjects → RFC-2047-Verletzung | UTF-8-sichere 45-Byte-Chunks mit `\r\n ` Folding zwischen Encoded Words |
+
+**Nicht-behebungspflichtig (bestätigt safe):** R1 (early return bei leerem Partial — Aufrufer senden immer Felder), R4 (Regex `{6,10}` matcht bestehende 6-Zeichen-Codes).
