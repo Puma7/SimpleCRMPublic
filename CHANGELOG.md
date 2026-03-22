@@ -5,6 +5,31 @@ All notable changes to SimpleCRM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-03-22
+
+### Added
+- **E-Mail (Desktop):** IMAP und POP3 (`imapflow`, `node-pop3`), SMTP (`nodemailer`), lokale SQLite-Ablage, Keytar für Passwörter; optional Google/Microsoft OAuth (Refresh im Keytar); IMAP-Append in den Sent-Ordner; Hintergrund-Sync (Cron + optional IDLE); Anhänge auf Disk mit Open/Save-IPC.
+- **CRM-Mail:** JWZ-Threading, Ticket-Codes `[SCR-…]`, Kundenverknüpfung, Kategorien, interne Notizen, Team-Zuweisung, Soft-Delete/Archiv, Ansichten Inbox/Sent/Drafts/Archiv, FTS5-Suche (mit LIKE-Fallback).
+- **Workflows:** JSON-Regelengine plus React-Flow-Editor (`@xyflow/react`); Trigger inbound, outbound, draft_created, schedule (Cron + optional Konto-Sync); Aktionen inkl. forward_copy (Dedupe nach erfolgreichem SMTP), tag_attachment_meta, Kategorie, Hold outbound.
+- **Composer & KI:** React Quill, DOMPurify-Sanitization, OpenAI-kompatible API für Texttransformation; Canned Responses.
+- **Reporting & Export:** Seite `/email/reporting`; DSGVO-Hilfe als ZIP (Metadaten JSONL, optional kompletter Anhängeordner oder „nur Metadaten“).
+- **Dokumentation:** `docs/DEVELOPER_EMAIL.md`, `docs/USER_GUIDE_EMAIL.md`, `docs/LEARNINGS_EMAIL.md`, `docs/email-system-deep-review.md` (ergänzend zu `docs/EMAIL_PHASES.md`).
+
+### Changed
+- **Build:** Getrennte Web- und Electron-Main-Builds; Vite externalisiert E-Mail-/Sync-Natives für den Main-Bundle.
+- **E-Mail-Sync:** Mutex pro Konto; Debounce/Überlappungsschutz für Cron/IDLE; Timeouts für IMAP/POP3/SMTP.
+
+### Fixed
+- POP3: stabile Zuordnung über **UIDL** und negative UIDs statt volatiler Message-Nummern; Reporting/Suche/Listen inkl. POP3-Zeilen.
+- IMAP Sent-Append nutzt den **tatsächlich geöffneten** Ordner nach Fallback.
+- Outbound-Workflows: **fail-closed** bei Fehlern; Ausführung aller konfigurierten Workflows vor finalem Block.
+- Workflow-Updates: nullable Felder (z. B. Cron, Graph) per explizitem SQL-Update leerbar.
+
+### Security
+- Anhänge: Bestätigung vor Öffnen riskanter Dateitypen; HTML im Composer nach Sanitization speichern.
+
+---
+
 ## [0.1.5] - 2025-10-07
 
 ### Added

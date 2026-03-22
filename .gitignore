@@ -44,3 +44,6 @@ src/.DS_Store
 !LICENSE.md
 !docs/EMAIL_PHASES.md
 !docs/email-system-deep-review.md
+!docs/DEVELOPER_EMAIL.md
+!docs/USER_GUIDE_EMAIL.md
+!docs/LEARNINGS_EMAIL.md

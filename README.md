@@ -16,6 +16,7 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 * **Templates & KI:** Canned responses and custom AI prompts under **SMTP & KI**; **HTML composer** (React Quill) with plain-text fallback for SMTP.
 * **Reporting & DSGVO:** **Mail-Report** (`/email/reporting`) with volume/unread/archived/workflow-run stats; **ZIP data export** (metadata + attachment files, no passwords) under **SMTP & KI**.
 * **Plan vs. Stand:** siehe [`docs/EMAIL_PHASES.md`](docs/EMAIL_PHASES.md).
+* **Dokumentation E-Mail:** [Entwickler/LLM](docs/DEVELOPER_EMAIL.md) · [Anwender](docs/USER_GUIDE_EMAIL.md) · [Learnings](docs/LEARNINGS_EMAIL.md) · [Deep Review](docs/email-system-deep-review.md) · [Changelog](CHANGELOG.md)
 * **Not implemented (optional / later):** Omni-channel, SLA automation/escalation, full React Flow branching per edge, raw-mail full archive in export.
 * **Local Database:** All your CRM data is stored securely and locally using SQLite (`better-sqlite3`).
 * **Secure Configuration:** MSSQL connection details are stored securely using your OS keychain via Keytar (`keytar`).
