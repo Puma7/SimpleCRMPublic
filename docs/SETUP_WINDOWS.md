@@ -250,7 +250,9 @@ Or use a different port by editing the `electron:dev` script in `package.json` (
 
 **Symptom:** Electron crashes at startup with `Cannot find module '../dist-electron/electron/ipc/router'`.
 
-**Fix:** The TypeScript main-process code hasn't been compiled yet. Run:
+**Cause:** The `electron/main.js` entry point requires compiled TypeScript from `dist-electron/` at the top level. On a fresh clone, this directory doesn't exist yet.
+
+**Fix:** The `electron:dev` script now runs `npm run electron:compile` automatically before starting the concurrent processes, so this should not happen anymore. If it still does, compile manually:
 
 ```powershell
 npm run build:electron:main
