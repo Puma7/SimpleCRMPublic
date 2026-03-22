@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import { AllowedInvokeChannels } from '@shared/ipc/channels';
+import { AllowedInvokeChannels } from '../shared/ipc/channels';
 
 type WindowState = {
   isMaximized: boolean;

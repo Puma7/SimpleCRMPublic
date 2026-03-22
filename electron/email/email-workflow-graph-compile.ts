@@ -4,7 +4,7 @@ import type {
   WorkflowGraphDocument,
   WorkflowGraphEdge,
   WorkflowGraphNode,
-} from '@shared/email-workflow-graph';
+} from '../../shared/email-workflow-graph';
 import type { WorkflowCondition, WorkflowDefinitionV1, WorkflowRule, WorkflowThenStep } from './email-workflow-types';
 
 function isTriggerData(d: unknown): d is { kind: string } {
