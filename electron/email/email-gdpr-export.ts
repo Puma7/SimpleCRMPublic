@@ -16,6 +16,27 @@ import { getAttachmentsRootForExport } from './email-message-attachments-store';
 const MESSAGE_BATCH = 2000;
 const NOTES_BATCH = 5000;
 const RUNS_LIMIT = 5000;
+const MAX_EXPORT_ATTACH_BYTES = 4 * 1024 * 1024 * 1024;
+
+function dirSizeBytes(dir: string): number {
+  if (!fs.existsSync(dir)) return 0;
+  let total = 0;
+  const walk = (d: string) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = `${d}/${ent.name}`;
+      if (ent.isDirectory()) walk(p);
+      else {
+        try {
+          total += fs.statSync(p).size;
+        } catch {
+          /* skip */
+        }
+      }
+    }
+  };
+  walk(dir);
+  return total;
+}
 
 export async function exportEmailGdprPackage(): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
   const dlg = (await dialog.showSaveDialog({
@@ -119,7 +140,19 @@ export async function exportEmailGdprPackage(): Promise<{ ok: true; path: string
 
       const attRoot = getAttachmentsRootForExport();
       fs.mkdirSync(attRoot, { recursive: true });
-      archive.directory(attRoot, 'attachments');
+      const attBytes = dirSizeBytes(attRoot);
+      if (attBytes > MAX_EXPORT_ATTACH_BYTES) {
+        fail(
+          `Anhänge zu groß für einen Export (${Math.round(attBytes / (1024 * 1024))} MB). Bitte zuerst alte Anhänge archivieren oder den Ordner verkleinern.`,
+        );
+        return;
+      }
+      try {
+        archive.directory(attRoot, 'attachments');
+      } catch (e) {
+        fail(e instanceof Error ? e : String(e));
+        return;
+      }
 
       archive.append(
         JSON.stringify(

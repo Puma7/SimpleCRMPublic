@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import ReactQuill from "react-quill"
 import "react-quill/dist/quill.snow.css"
+import DOMPurify from "dompurify"
 import {
   Select,
   SelectContent,
@@ -71,7 +72,7 @@ type MailView = "inbox" | "sent" | "archived" | "drafts"
 
 type CategoryRow = { id: number; parent_id: number | null; name: string; sort_order: number }
 type CatCount = { categoryId: number; count: number }
-type CustomerOpt = { id: number; name: string; customerNumber?: string | null }
+type CustomerOpt = { id: number; name: string; firstName?: string | null; email?: string | null; customerNumber?: string | null }
 type Canned = { id: number; title: string; body: string }
 type AiPrompt = { id: number; label: string; user_template: string }
 
@@ -112,8 +113,30 @@ function applyCannedTemplate(body: string, customerId: number | null, customers:
   if (customerId) c = customers.find((x) => x.id === customerId)
   return body
     .replace(/\{\{customer\.name\}\}/g, c?.name ?? "")
-    .replace(/\{\{customer\.firstName\}\}/g, "")
-    .replace(/\{\{customer\.email\}\}/g, "")
+    .replace(/\{\{customer\.firstName\}\}/g, (c?.firstName ?? "").trim() || (c?.name ?? "").split(/\s+/)[0] || "")
+    .replace(/\{\{customer\.email\}\}/g, c?.email ?? "")
+}
+
+const MAX_CATEGORY_TREE_DEPTH = 32
+
+function sanitizeComposeHtml(html: string): string {
+  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
+}
+
+const SIMPLE_EMAIL_RE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/
+
+function validateRecipientList(raw: string): { ok: true } | { ok: false; error: string } {
+  const parts = raw
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (parts.length === 0) return { ok: false, error: "Mindestens eine E-Mail-Adresse (An) ist erforderlich." }
+  for (const p of parts) {
+    if (!SIMPLE_EMAIL_RE.test(p)) {
+      return { ok: false, error: `Ungültige Adresse: ${p}` }
+    }
+  }
+  return { ok: true }
 }
 
 export default function EmailPage() {
@@ -443,7 +466,7 @@ export default function EmailPage() {
         setComposeSubject(subj)
         const plain = quoted || ""
         setComposeBody(plain)
-        setComposeBodyHtml(plain ? `<p>${plain.replace(/\n/g, "<br/>")}</p>` : "")
+        setComposeBodyHtml(plain ? sanitizeComposeHtml(`<p>${plain.replace(/\n/g, "<br/>")}</p>`) : "")
         setComposeOpen(true)
       }
     } catch (e) {
@@ -454,12 +477,14 @@ export default function EmailPage() {
   const saveComposeDraft = async () => {
     if (!hasElectron || composeDraftId == null) return
     try {
-      const plain = stripHtmlToText(composeBodyHtml) || composeBody
+      const safeHtml = sanitizeComposeHtml(composeBodyHtml)
+      if (safeHtml !== composeBodyHtml) setComposeBodyHtml(safeHtml)
+      const plain = stripHtmlToText(safeHtml) || composeBody
       await invoke(IPCChannels.Email.UpdateComposeDraft, {
         messageId: composeDraftId,
         subject: composeSubject,
         bodyText: plain,
-        bodyHtml: composeBodyHtml || undefined,
+        bodyHtml: safeHtml || undefined,
         to: composeTo,
         cc: composeCc || undefined,
       })
@@ -470,16 +495,30 @@ export default function EmailPage() {
 
   const handleSendCompose = async () => {
     if (!hasElectron || composeDraftId == null || selectedAccountId == null) return
+    const toCheck = validateRecipientList(composeTo)
+    if (!toCheck.ok) {
+      toast.error(toCheck.error)
+      return
+    }
+    if (composeCc.trim()) {
+      const ccCheck = validateRecipientList(composeCc)
+      if (!ccCheck.ok) {
+        toast.error(ccCheck.error)
+        return
+      }
+    }
     setComposeSending(true)
     try {
       await saveComposeDraft()
-      const plain = stripHtmlToText(composeBodyHtml) || composeBody
+      const safeHtml = sanitizeComposeHtml(composeBodyHtml)
+      if (safeHtml !== composeBodyHtml) setComposeBodyHtml(safeHtml)
+      const plain = stripHtmlToText(safeHtml) || composeBody
       const r = await invoke<{ success: boolean; error?: string }>(IPCChannels.Email.SendCompose, {
         accountId: selectedAccountId,
         draftMessageId: composeDraftId,
         subject: composeSubject,
         bodyText: plain,
-        bodyHtml: composeBodyHtml || null,
+        bodyHtml: safeHtml || null,
         to: composeTo,
         cc: composeCc || undefined,
         inReplyToMessageId: composeReplyToId,
@@ -509,26 +548,28 @@ export default function EmailPage() {
     const children = (pid: number) =>
       categories.filter((c) => c.parent_id === pid).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
     const render = (nodes: CategoryRow[], depth: number): ReactNode[] =>
-      nodes.flatMap((n) => [
-        <button
-          key={n.id}
-          type="button"
-          className={cn(
-            "flex w-full items-center justify-between rounded px-2 py-1 text-left text-sm hover:bg-muted/80",
-            categoryFilterId === n.id && "bg-muted font-medium",
-          )}
-          style={{ paddingLeft: 8 + depth * 12 }}
-          onClick={() => {
-            setCategoryFilterId(n.id)
-            setMailView("inbox")
-            setSearchQ("")
-          }}
-        >
-          <span>{n.name}</span>
-          <span className="text-xs text-muted-foreground">{countForCategory(n.id)}</span>
-        </button>,
-        ...render(children(n.id), depth + 1),
-      ])
+      depth > MAX_CATEGORY_TREE_DEPTH
+        ? []
+        : nodes.flatMap((n) => [
+            <button
+              key={n.id}
+              type="button"
+              className={cn(
+                "flex w-full items-center justify-between rounded px-2 py-1 text-left text-sm hover:bg-muted/80",
+                categoryFilterId === n.id && "bg-muted font-medium",
+              )}
+              style={{ paddingLeft: 8 + depth * 12 }}
+              onClick={() => {
+                setCategoryFilterId(n.id)
+                setMailView("inbox")
+                setSearchQ("")
+              }}
+            >
+              <span>{n.name}</span>
+              <span className="text-xs text-muted-foreground">{countForCategory(n.id)}</span>
+            </button>,
+            ...render(children(n.id), depth + 1),
+          ])
     return render(roots, 0)
   })()
 
@@ -1069,7 +1110,8 @@ export default function EmailPage() {
                     const c = cannedList.find((x) => x.id === parseInt(id, 10))
                     if (c) {
                       const block = applyCannedTemplate(c.body, selectedMessage?.customer_id ?? null, customers)
-                      setComposeBodyHtml((prev) => `${prev}<p>${block.replace(/\n/g, "<br/>")}</p>`)
+                      const frag = sanitizeComposeHtml(`<p>${block.replace(/\n/g, "<br/>")}</p>`)
+                      setComposeBodyHtml((prev) => `${prev}${frag}`)
                       setComposeBody((prev) => `${prev}\n${block}`)
                     }
                   }}
@@ -1097,7 +1139,7 @@ export default function EmailPage() {
                       })
                       if (r.success && r.text) {
                         setComposeBody(r.text)
-                        setComposeBodyHtml(`<p>${r.text.replace(/\n/g, "<br/>")}</p>`)
+                        setComposeBodyHtml(sanitizeComposeHtml(`<p>${r.text.replace(/\n/g, "<br/>")}</p>`))
                       }
                       else toast.error(r.error ?? "KI-Fehler")
                     } catch (e) {

@@ -158,3 +158,26 @@ Compose-Validierung, Größe von `page.tsx`, leere Fehlerbehandlung: wie im Repo
 ## Änderungshistorie dieses Dokuments
 
 - Erstellt als Antwort auf externen Quality-Report; Befunde gegen Repository geprüft; **H4** und Teile von Sync/GDPR/Attachments als **bereits adressiert** markiert.
+
+### Nachfolgende Code-Fixes (Überblick)
+
+Die folgenden Punkte aus diesem Review wurden **in der Codebasis umgesetzt** (Details im Git-Log):
+
+- **C1** Append-Ziel = tatsächlich geöffneter Sent-Ordner  
+- **C2/C3** POP3: `pop3_uidl` + synthetische stabile `uid`, Draft-UIDs monoton negativ  
+- **H1** Outbound-Workflow: bei Fehler **fail-closed** + Hold  
+- **H2** `updateWorkflow`: explizite Spalten-Updates (inkl. `NULL` für Cron/Graph)  
+- **H3** `domain_ends_with` pro Adresse  
+- **H5** Thread-DELETE nur ohne verbleibende Referenzen  
+- **H6** SMTP `requireTLS` bei TLS + Nicht-465  
+- **M1** IMAP/POP3/SMTP Timeouts  
+- **M2** GDPR: Anhänge-Größen-Check (4 GB-Grenze)  
+- **M3** Regex: Längenlimit + `safe-regex`  
+- **M4** FTS5 + Trigger + Suche  
+- **M5** Backfill paginiert (500er-Seiten)  
+- **M6** `forward_copy`-Dedupe-Tabelle  
+- **M7/M8** DOMPurify + einfache Adressvalidierung Compose  
+- **M9** UIDL-Liste vollständig (kein `slice(-5000)`)  
+- **M10** Kategoriepfad max. Tiefe + UI-Tiefenlimit  
+- **L2** `email-parse-utils.ts`  
+- **L3** Canned-Template: firstName/email aus Kundendaten falls vorhanden  
