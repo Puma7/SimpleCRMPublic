@@ -303,14 +303,40 @@ export function evaluateOutboundWorkflows(payload: OutboundDraftPayload): {
   return { allowed: true, reason: null };
 }
 
-export function runScheduledWorkflowFire(workflowId: number): void {
+export async function runScheduledWorkflowFire(workflowId: number): Promise<void> {
+  const { getWorkflowById } = await import('./email-workflow-store');
+  const wf = getWorkflowById(workflowId);
   const accounts = listEmailAccounts();
-  const log = [`scheduled_fire`, `accounts:${accounts.length}`];
+  const log: string[] = [`scheduled_fire`, `accounts:${accounts.length}`];
+  let status: 'ok' | 'error' = 'ok';
+  if (wf?.schedule_account_id != null) {
+    const accId = wf.schedule_account_id;
+    try {
+      const { getEmailAccountById } = await import('./email-store');
+      const acc = getEmailAccountById(accId);
+      if (!acc) {
+        log.push(`sync_skip:no_account:${accId}`);
+      } else if ((acc.protocol || 'imap') === 'pop3') {
+        const { syncInboxPop3 } = await import('./email-pop3-sync');
+        const r = await syncInboxPop3(accId);
+        log.push(`pop3_fetched:${r.fetched}`);
+      } else {
+        const { syncInboxImap } = await import('./email-imap-sync');
+        const r = await syncInboxImap(accId);
+        log.push(`imap_fetched:${r.fetched}`);
+      }
+    } catch (e) {
+      status = 'error';
+      log.push(`sync_error:${e instanceof Error ? e.message : String(e)}`);
+    }
+  } else {
+    log.push('sync_skip:no_schedule_account');
+  }
   insertWorkflowRun({
     workflowId,
     messageId: null,
     direction: 'schedule',
-    status: 'ok',
+    status,
     logJson: JSON.stringify(log),
   });
 }

@@ -154,6 +154,15 @@ const EmailChannels = literal({
   FinishGoogleOAuth: 'email:finish-google-oauth',
   TestPop3: 'email:test-pop3',
   CompileWorkflowGraph: 'email:compile-workflow-graph',
+  ListMessageAttachments: 'email:list-message-attachments',
+  SaveAttachmentToDisk: 'email:save-attachment-to-disk',
+  OpenAttachmentPath: 'email:open-attachment-path',
+  EmailReporting: 'email:reporting',
+  EmailGdprExport: 'email:gdpr-export',
+  GetMicrosoftOAuthApp: 'email:get-microsoft-oauth-app',
+  SetMicrosoftOAuthApp: 'email:set-microsoft-oauth-app',
+  BuildMicrosoftOAuthUrl: 'email:build-microsoft-oauth-url',
+  FinishMicrosoftOAuth: 'email:finish-microsoft-oauth',
 });
 
 export const IPCChannels = {

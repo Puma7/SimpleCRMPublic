@@ -44,7 +44,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
       expr,
       () => {
         try {
-          runScheduledWorkflowFire(wf.id);
+          void runScheduledWorkflowFire(wf.id).catch((e) => logger.warn(`[email] workflow cron ${wf.id}`, e));
         } catch (e) {
           logger.warn(`[email] workflow cron ${wf.id}`, e);
         }
@@ -56,7 +56,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
 
   const accounts = listEmailAccounts();
   for (const acc of accounts) {
-    if ((acc.protocol || 'imap') !== 'imap' || acc.oauth_provider === 'google') {
+    if ((acc.protocol || 'imap') !== 'imap' || acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft') {
       continue;
     }
     void (async () => {
@@ -97,4 +97,28 @@ export function stopEmailBackgroundServices(): void {
     stopIdleForAccount(id);
   }
   idleClients = new Map();
+}
+
+/** Reload only per-workflow cron jobs (e.g. after saving workflows in UI). */
+export function restartEmailWorkflowCrons(logger: Pick<typeof console, 'warn' | 'debug'>): void {
+  for (const t of workflowCrons.values()) {
+    t.stop();
+  }
+  workflowCrons.clear();
+  for (const wf of listWorkflowsWithCron()) {
+    const expr = (wf.cron_expr ?? '').trim();
+    if (!expr || !cron.validate(expr)) continue;
+    const task = cron.schedule(
+      expr,
+      () => {
+        try {
+          void runScheduledWorkflowFire(wf.id).catch((e) => logger.warn(`[email] workflow cron ${wf.id}`, e));
+        } catch (e) {
+          logger.warn(`[email] workflow cron ${wf.id}`, e);
+        }
+      },
+      { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
+    );
+    workflowCrons.set(wf.id, task);
+  }
 }

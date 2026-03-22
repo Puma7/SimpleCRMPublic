@@ -157,6 +157,9 @@ export default function EmailPage() {
   const [composeSending, setComposeSending] = useState(false)
   const [messageTags, setMessageTags] = useState<string[]>([])
   const [internalNotes, setInternalNotes] = useState<{ id: number; body: string; created_at: string }[]>([])
+  const [messageAttachments, setMessageAttachments] = useState<
+    { id: number; filename_display: string; size_bytes: number; content_type: string | null }[]
+  >([])
   const [newNote, setNewNote] = useState("")
   const [customers, setCustomers] = useState<CustomerOpt[]>([])
   const [cannedList, setCannedList] = useState<Canned[]>([])
@@ -379,15 +382,22 @@ export default function EmailPage() {
     if (!hasElectron || !selectedMessage) {
       setMessageTags([])
       setInternalNotes([])
+      setMessageAttachments([])
       return
     }
     void (async () => {
       try {
         setMessageTags(await invoke<string[]>(IPCChannels.Email.ListMessageTags, selectedMessage.id))
         setInternalNotes(await invoke<{ id: number; body: string; created_at: string }[]>(IPCChannels.Email.ListInternalNotes, selectedMessage.id))
+        setMessageAttachments(
+          await invoke<
+            { id: number; filename_display: string; size_bytes: number; content_type: string | null }[]
+          >(IPCChannels.Email.ListMessageAttachments, selectedMessage.id),
+        )
       } catch {
         setMessageTags([])
         setInternalNotes([])
+        setMessageAttachments([])
       }
     })()
   }, [hasElectron, selectedMessage?.id])
@@ -558,6 +568,9 @@ export default function EmailPage() {
                 <Settings className="mr-2 h-4 w-4" />
                 SMTP &amp; KI
               </Link>
+            </Button>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/email/reporting">Mail-Report</Link>
             </Button>
           </div>
         </div>
@@ -877,6 +890,48 @@ export default function EmailPage() {
                       <pre className="max-h-24 overflow-auto rounded bg-muted/50 p-2 text-[10px]">
                         {selectedMessage.attachments_json}
                       </pre>
+                    ) : null}
+                    {messageAttachments.length > 0 ? (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">Anhänge (lokal)</p>
+                        <ul className="space-y-1 text-xs">
+                          {messageAttachments.map((att) => (
+                            <li key={att.id} className="flex flex-wrap items-center gap-2 rounded border px-2 py-1">
+                              <span className="min-w-0 flex-1 truncate">{att.filename_display}</span>
+                              <span className="text-muted-foreground">{(att.size_bytes / 1024).toFixed(1)} KB</span>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                className="h-7 text-xs"
+                                onClick={async () => {
+                                  const r = await invoke<{ success: boolean; error?: string }>(IPCChannels.Email.OpenAttachmentPath, {
+                                    attachmentId: att.id,
+                                  })
+                                  if (!r.success) toast.error(r.error ?? "Öffnen fehlgeschlagen")
+                                }}
+                              >
+                                Öffnen
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs"
+                                onClick={async () => {
+                                  const r = await invoke<{ success: boolean; error?: string }>(IPCChannels.Email.SaveAttachmentToDisk, {
+                                    attachmentId: att.id,
+                                  })
+                                  if (r.success) toast.success("Gespeichert")
+                                  else toast.error(r.error ?? "Speichern fehlgeschlagen")
+                                }}
+                              >
+                                Speichern unter…
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     ) : null}
                     {messageTags.length > 0 ? <p className="text-xs text-muted-foreground">Tags: {messageTags.join(", ")}</p> : null}
                     <div className="flex flex-wrap items-end gap-2">

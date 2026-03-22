@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
-import { IpcMainInvokeEvent } from 'electron';
+import { IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
+import fs from 'fs';
 import { IPCChannels } from '@shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById } from '../sqlite-service';
@@ -58,8 +59,16 @@ import {
   getGoogleOAuthAppSettings,
   setGoogleOAuthAppSettings,
   buildGoogleOAuthAuthorizeUrl,
+  getMicrosoftOAuthAppSettings,
+  setMicrosoftOAuthAppSettings,
+  buildMicrosoftOAuthAuthorizeUrl,
 } from '../email/email-imap-auth';
 import { exchangeGoogleAuthCode } from '../email/email-oauth-google';
+import { exchangeMicrosoftAuthCode } from '../email/email-oauth-microsoft';
+import { restartEmailWorkflowCrons } from '../email/email-imap-services';
+import { listAttachmentsForMessage, getAttachmentById } from '../email/email-message-attachments-store';
+import { getEmailReportingSnapshot } from '../email/email-reported-stats';
+import { exportEmailGdprPackage } from '../email/email-gdpr-export';
 import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
 import type { WorkflowGraphDocument } from '@shared/email-workflow-graph';
 import {
@@ -316,10 +325,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           definitionJson: string;
           graphJson?: string | null;
           cronExpr?: string | null;
+          scheduleAccountId?: number | null;
           enabled?: boolean;
         },
       ) => {
         const id = createWorkflow(payload);
+        restartEmailWorkflowCrons(logger);
         return { success: true as const, id };
       },
       { logger },
@@ -339,6 +350,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           definitionJson?: string;
           graphJson?: string | null;
           cronExpr?: string | null;
+          scheduleAccountId?: number | null;
           enabled?: boolean;
         },
       ) => {
@@ -349,8 +361,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           definitionJson: payload.definitionJson,
           graphJson: payload.graphJson,
           cronExpr: payload.cronExpr,
+          scheduleAccountId: payload.scheduleAccountId,
           enabled: payload.enabled,
         });
+        restartEmailWorkflowCrons(logger);
         return { success: true as const };
       },
       { logger },
@@ -360,6 +374,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.DeleteWorkflow, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteWorkflow(id);
+      restartEmailWorkflowCrons(logger);
       return { success: true as const };
     }, { logger }),
   );
@@ -894,6 +909,129 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, graph: WorkflowGraphDocument) => {
         const def = compileGraphToDefinition(graph);
         return { success: true as const, definitionJson: definitionToJson(def) };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListMessageAttachments, async (_event: IpcMainInvokeEvent, messageId: number) => {
+      return listAttachmentsForMessage(messageId);
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveAttachmentToDisk,
+      async (_event: IpcMainInvokeEvent, payload: { attachmentId: number }) => {
+        const row = getAttachmentById(payload.attachmentId);
+        if (!row || !fs.existsSync(row.storage_path)) {
+          return { success: false as const, error: 'Anhang nicht gefunden' };
+        }
+        const dlg = (await dialog.showSaveDialog({
+          title: 'Anhang speichern',
+          defaultPath: row.filename_display,
+        })) as unknown as SaveDialogReturnValue;
+        const canceled = dlg.canceled;
+        const filePath = dlg.filePath;
+        if (canceled || !filePath) return { success: false as const, error: 'Abgebrochen' };
+        await fs.promises.copyFile(row.storage_path, filePath);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.OpenAttachmentPath,
+      async (_event: IpcMainInvokeEvent, payload: { attachmentId: number }) => {
+        const row = getAttachmentById(payload.attachmentId);
+        if (!row || !fs.existsSync(row.storage_path)) {
+          return { success: false as const, error: 'Anhang nicht gefunden' };
+        }
+        const err = await shell.openPath(row.storage_path);
+        if (err) return { success: false as const, error: err };
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.EmailReporting,
+      async (_event: IpcMainInvokeEvent, accountId: number | null) => {
+        return { success: true as const, data: getEmailReportingSnapshot(accountId) };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.EmailGdprExport, async () => {
+      const r = await exportEmailGdprPackage();
+      return r;
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetMicrosoftOAuthApp, async () => {
+      return { success: true as const, ...getMicrosoftOAuthAppSettings() };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMicrosoftOAuthApp,
+      async (_event: IpcMainInvokeEvent, payload: { clientId: string; clientSecret: string }) => {
+        setMicrosoftOAuthAppSettings(payload);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.BuildMicrosoftOAuthUrl, async (_event: IpcMainInvokeEvent, redirectUri: string) => {
+      const { clientId } = getMicrosoftOAuthAppSettings();
+      if (!clientId) return { success: false as const, error: 'Microsoft Client-ID fehlt' };
+      const url = buildMicrosoftOAuthAuthorizeUrl({ clientId, redirectUri: redirectUri.trim() });
+      return { success: true as const, url };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.FinishMicrosoftOAuth,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { accountId: number; redirectUri: string; code: string },
+      ) => {
+        const acc = getEmailAccountById(payload.accountId);
+        if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+        const { clientId, clientSecret } = getMicrosoftOAuthAppSettings();
+        if (!clientId || !clientSecret) {
+          return { success: false as const, error: 'Microsoft App-Daten fehlen' };
+        }
+        let refreshKey = acc.oauth_refresh_keytar_key;
+        if (!refreshKey) refreshKey = `email-ms-oauth-${randomUUID()}`;
+        try {
+          await exchangeMicrosoftAuthCode({
+            clientId,
+            clientSecret,
+            redirectUri: payload.redirectUri,
+            code: payload.code,
+            keytarRefreshKey: refreshKey,
+          });
+          updateEmailAccountRecord(payload.accountId, {
+            oauthProvider: 'microsoft',
+            oauthRefreshKeytarKey: refreshKey,
+          });
+          return { success: true as const };
+        } catch (e) {
+          return { success: false as const, error: e instanceof Error ? e.message : String(e) };
+        }
       },
       { logger },
     ),

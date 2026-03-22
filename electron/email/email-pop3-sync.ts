@@ -149,6 +149,8 @@ export async function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> 
     });
 
     if (isNew && localMsgId > 0) {
+      const { persistParsedAttachments } = await import('./email-message-attachments-store');
+      persistParsedAttachments(localMsgId, parsed.attachments);
       const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
       assignJwzThreadAndTicket(localMsgId, accountId, {
         messageIdHeader: messageId,
@@ -159,7 +161,7 @@ export async function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> 
       const { tryLinkMessageToCustomer } = await import('./email-crm-store');
       tryLinkMessageToCustomer(localMsgId);
       const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
-      runInboundWorkflowsForMessage(localMsgId);
+      await runInboundWorkflowsForMessage(localMsgId);
     }
 
     known.add(uidl);

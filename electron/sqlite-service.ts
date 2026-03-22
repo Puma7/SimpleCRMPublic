@@ -44,6 +44,7 @@ import {
     createEmailCannedResponsesTable,
     createEmailAiPromptsTable,
     createEmailTeamMembersTable,
+    createEmailMessageAttachmentsTable,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -58,6 +59,7 @@ import {
     EMAIL_CANNED_RESPONSES_TABLE,
     EMAIL_AI_PROMPTS_TABLE,
     EMAIL_TEAM_MEMBERS_TABLE,
+    EMAIL_MESSAGE_ATTACHMENTS_TABLE,
 } from './database-schema';
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
@@ -112,6 +114,7 @@ export function initializeDatabase() {
             db.exec(createEmailCannedResponsesTable);
             db.exec(createEmailAiPromptsTable);
             db.exec(createEmailTeamMembersTable);
+            db.exec(createEmailMessageAttachmentsTable);
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
@@ -237,6 +240,9 @@ export function initializeDatabase() {
         ensureTableExists(EMAIL_CANNED_RESPONSES_TABLE, createEmailCannedResponsesTable, []);
         ensureTableExists(EMAIL_AI_PROMPTS_TABLE, createEmailAiPromptsTable, []);
         ensureTableExists(EMAIL_TEAM_MEMBERS_TABLE, createEmailTeamMembersTable, []);
+        ensureTableExists(EMAIL_MESSAGE_ATTACHMENTS_TABLE, createEmailMessageAttachmentsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
+        ]);
 
         // Run migrations for schema updates
         runMigrations();
@@ -433,6 +439,17 @@ function runMigrations() {
                 console.log('Adding cron_expr to email_workflows...');
                 db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN cron_expr TEXT`);
             }
+            if (!wn.has('schedule_account_id')) {
+                console.log('Adding schedule_account_id to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN schedule_account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL`);
+            }
+        }
+
+        const attTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGE_ATTACHMENTS_TABLE);
+        if (!attTable) {
+            console.log('Creating email_message_attachments table...');
+            db.exec(createEmailMessageAttachmentsTable);
+            db.exec(`CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`);
         }
 
         // Add more migrations here as needed

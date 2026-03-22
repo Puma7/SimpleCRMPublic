@@ -27,9 +27,12 @@ type WorkflowRow = {
   definition_json: string
   graph_json: string | null
   cron_expr: string | null
+  schedule_account_id: number | null
   created_at: string
   updated_at: string
 }
+
+type AccountOpt = { id: number; display_name: string }
 
 const EMPTY_DEF = `{
   "version": 1,
@@ -54,6 +57,8 @@ export default function EmailWorkflowsPage() {
   const [editPriority, setEditPriority] = useState("100")
   const [editJson, setEditJson] = useState("")
   const [editCron, setEditCron] = useState("")
+  const [editScheduleAccountId, setEditScheduleAccountId] = useState<number | "">("")
+  const [accounts, setAccounts] = useState<AccountOpt[]>([])
   const [editEnabled, setEditEnabled] = useState(true)
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
@@ -71,6 +76,10 @@ export default function EmailWorkflowsPage() {
         IPCChannels.Email.ListWorkflows,
       )) as WorkflowRow[]
       setRows(list)
+      const acc = (await (window.electronAPI as { invoke: (c: string) => Promise<AccountOpt[]> }).invoke(
+        IPCChannels.Email.ListAccounts,
+      )) as AccountOpt[]
+      setAccounts(acc.map((a) => ({ id: a.id, display_name: a.display_name })))
     } catch (e) {
       console.error(e)
       toast.error("Workflows konnten nicht geladen werden.")
@@ -89,6 +98,7 @@ export default function EmailWorkflowsPage() {
     setEditPriority(String(w.priority))
     setEditJson(w.definition_json)
     setEditCron(w.cron_expr ?? "")
+    setEditScheduleAccountId(w.schedule_account_id ?? "")
     setEditEnabled(w.enabled === 1)
     let doc: WorkflowGraphDocument | null = null
     if (w.graph_json) {
@@ -133,6 +143,7 @@ export default function EmailWorkflowsPage() {
           definitionJson: compiled.definitionJson,
           graphJson: JSON.stringify(graphDoc),
           cronExpr: editCron.trim() || null,
+          scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
           enabled: editEnabled,
         },
       )
@@ -317,6 +328,26 @@ export default function EmailWorkflowsPage() {
                     placeholder="z. B. */15 * * * * (alle 15 Min)"
                     className="font-mono text-xs"
                   />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Konto für geplanten Sync (IMAP/POP3)</Label>
+                  <select
+                    className="flex h-10 w-full max-w-md rounded-md border border-input bg-background px-3 text-sm"
+                    value={editScheduleAccountId === "" ? "" : String(editScheduleAccountId)}
+                    onChange={(e) =>
+                      setEditScheduleAccountId(e.target.value ? parseInt(e.target.value, 10) : "")
+                    }
+                  >
+                    <option value="">— keins (nur Log) —</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.display_name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Wenn gesetzt, führt der Cron-Job einen Postfach-Sync für dieses Konto aus und wendet danach eingehende Workflows auf neue Mails an.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Visueller Workflow</Label>

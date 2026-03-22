@@ -187,6 +187,8 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
           attachmentsJson,
         });
         if (isNew && localMsgId > 0) {
+          const { persistParsedAttachments } = await import('./email-message-attachments-store');
+          persistParsedAttachments(localMsgId, parsed.attachments);
           const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
           assignJwzThreadAndTicket(localMsgId, accountId, {
             messageIdHeader: messageId,

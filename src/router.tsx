@@ -22,6 +22,7 @@ import ProductsLoading from './app/products/loading'; // Assuming loading compon
 import EmailPage from './app/email/page'
 import EmailWorkflowsPage from './app/email/workflows/page'
 import EmailSettingsPage from './app/email/settings/page'
+import EmailReportingPage from './app/email/reporting/page'
 
 // Create a root route
 const rootRoute = new RootRoute({
@@ -175,6 +176,12 @@ const emailSettingsRoute = new Route({
   component: EmailSettingsPage,
 })
 
+const emailReportingRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/email/reporting',
+  component: EmailReportingPage,
+})
+
 // Create a catch-all route to handle any undefined routes
 const catchAllRoute = new Route({
   getParentRoute: () => rootRoute,
@@ -206,6 +213,7 @@ const routeTree = rootRoute.addChildren([
   emailRoute,
   emailWorkflowsRoute,
   emailSettingsRoute,
+  emailReportingRoute,
   catchAllRoute, // Add the catch-all route
 ])
 

@@ -28,6 +28,7 @@ export const EMAIL_INTERNAL_NOTES_TABLE = 'email_internal_notes';
 export const EMAIL_CANNED_RESPONSES_TABLE = 'email_canned_responses';
 export const EMAIL_AI_PROMPTS_TABLE = 'email_ai_prompts';
 export const EMAIL_TEAM_MEMBERS_TABLE = 'email_team_members';
+export const EMAIL_MESSAGE_ATTACHMENTS_TABLE = 'email_message_attachments';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -374,8 +375,23 @@ export const createEmailWorkflowsTable = `
     definition_json TEXT NOT NULL,
     graph_json TEXT,
     cron_expr TEXT,
+    schedule_account_id INTEGER,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (schedule_account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const createEmailMessageAttachmentsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    filename_display TEXT NOT NULL,
+    content_type TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    storage_path TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
   );
 `;
 
@@ -461,6 +477,7 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_message_tags_message ON ${EMAIL_MESSAGE_TAGS_TABLE}(message_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_message_tags_tag ON ${EMAIL_MESSAGE_TAGS_TABLE}(tag);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON ${EMAIL_MESSAGES_TABLE}(thread_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_ticket ON ${EMAIL_MESSAGES_TABLE}(ticket_code);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_customer ON ${EMAIL_MESSAGES_TABLE}(customer_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_folder_kind ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_kind);`,

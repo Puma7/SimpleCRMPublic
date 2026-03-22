@@ -15,6 +15,7 @@ export type EmailWorkflowRow = {
   definition_json: string;
   graph_json: string | null;
   cron_expr: string | null;
+  schedule_account_id: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -30,8 +31,8 @@ export function ensureDefaultWorkflowsSeeded(): void {
   if (count.c > 0) return;
 
   const ins = getDb().prepare(
-    `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, created_at, updated_at)
-     VALUES (?, ?, 1, ?, ?, NULL, NULL, ?, ?)`,
+    `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, created_at, updated_at)
+     VALUES (?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?)`,
   );
   const t = nowIso();
   ins.run(
@@ -89,13 +90,14 @@ export function createWorkflow(input: {
   definitionJson: string;
   graphJson?: string | null;
   cronExpr?: string | null;
+  scheduleAccountId?: number | null;
   enabled?: boolean;
 }): number {
   const t = nowIso();
   const result = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.name,
@@ -105,6 +107,7 @@ export function createWorkflow(input: {
       input.definitionJson,
       input.graphJson ?? null,
       input.cronExpr ?? null,
+      input.scheduleAccountId ?? null,
       t,
       t,
     );
@@ -120,6 +123,7 @@ export function updateWorkflow(
     definitionJson: string;
     graphJson: string | null;
     cronExpr: string | null;
+    scheduleAccountId: number | null;
     enabled: boolean;
   }>,
 ): void {
@@ -150,6 +154,11 @@ export function updateWorkflow(
       t,
       id,
     );
+  if (input.scheduleAccountId !== undefined) {
+    getDb()
+      .prepare(`UPDATE ${EMAIL_WORKFLOWS_TABLE} SET schedule_account_id = ?, updated_at = ? WHERE id = ?`)
+      .run(input.scheduleAccountId, t, id);
+  }
 }
 
 export function deleteWorkflow(id: number): void {

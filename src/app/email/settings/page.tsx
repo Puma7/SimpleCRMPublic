@@ -55,7 +55,12 @@ export default function EmailSettingsPage() {
   const [googleClientSecret, setGoogleClientSecret] = useState("")
   const [googleRedirect, setGoogleRedirect] = useState("http://127.0.0.1:1")
   const [googleCode, setGoogleCode] = useState("")
+  const [msClientId, setMsClientId] = useState("")
+  const [msClientSecret, setMsClientSecret] = useState("")
+  const [msRedirect, setMsRedirect] = useState("http://127.0.0.1:1")
+  const [msCode, setMsCode] = useState("")
   const [sentFolder, setSentFolder] = useState("Sent")
+  const [exportingGdpr, setExportingGdpr] = useState(false)
 
   const hasElectron =
     typeof window !== "undefined" &&
@@ -84,6 +89,11 @@ export default function EmailSettingsPage() {
     )) as { clientId?: string; clientSecret?: string }
     setGoogleClientId(g.clientId ?? "")
     setGoogleClientSecret(g.clientSecret ?? "")
+    const m = (await (window.electronAPI as { invoke: (c: string) => Promise<{ clientId: string; clientSecret: string }> }).invoke(
+      IPCChannels.Email.GetMicrosoftOAuthApp,
+    )) as { clientId?: string; clientSecret?: string }
+    setMsClientId(m.clientId ?? "")
+    setMsClientSecret(m.clientSecret ?? "")
     setTeam((await (window.electronAPI as { invoke: (c: string) => Promise<TeamMember[]> }).invoke(IPCChannels.Email.ListTeamMembers)) as TeamMember[])
   }, [hasElectron])
 
@@ -307,6 +317,113 @@ export default function EmailSettingsPage() {
             }}
           >
             OAuth für gewähltes Konto abschließen
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Microsoft OAuth (Outlook / Microsoft 365)</CardTitle>
+          <CardDescription>
+            App-Registrierung in Azure AD; Redirect-URI wie bei Google. Scopes: IMAP + SMTP für Benutzer. Tenant „common“ im Token-Endpunkt.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>Application (Client) ID</Label>
+            <Input value={msClientId} onChange={(e) => setMsClientId(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Client Secret</Label>
+            <Input type="password" value={msClientSecret} onChange={(e) => setMsClientSecret(e.target.value)} />
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={async () => {
+              await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<unknown> }).invoke(IPCChannels.Email.SetMicrosoftOAuthApp, {
+                clientId: msClientId,
+                clientSecret: msClientSecret,
+              })
+              toast.success("Microsoft-App-Daten gespeichert")
+            }}
+          >
+            App-Daten speichern
+          </Button>
+          <div className="space-y-1.5">
+            <Label>Redirect-URI</Label>
+            <Input value={msRedirect} onChange={(e) => setMsRedirect(e.target.value)} />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={async () => {
+              const r = (await (window.electronAPI as { invoke: (c: string, u: string) => Promise<{ success: boolean; url?: string; error?: string }> }).invoke(
+                IPCChannels.Email.BuildMicrosoftOAuthUrl,
+                msRedirect.trim(),
+              )) as { success: boolean; url?: string; error?: string }
+              if (r.success && r.url) {
+                await navigator.clipboard.writeText(r.url)
+                toast.success("Microsoft-Auth-URL kopiert")
+              } else toast.error(r.error ?? "URL fehlgeschlagen")
+            }}
+          >
+            Auth-URL kopieren
+          </Button>
+          <div className="space-y-1.5">
+            <Label>Autorisierungscode</Label>
+            <Input value={msCode} onChange={(e) => setMsCode(e.target.value)} />
+          </div>
+          <Button
+            type="button"
+            onClick={async () => {
+              if (accId == null) {
+                toast.error("Zuerst ein Konto wählen (SMTP-Karte)")
+                return
+              }
+              const r = (await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<{ success: boolean; error?: string }> }).invoke(
+                IPCChannels.Email.FinishMicrosoftOAuth,
+                { accountId: accId, redirectUri: msRedirect.trim(), code: msCode.trim() },
+              )) as { success: boolean; error?: string }
+              if (r.success) {
+                toast.success("Microsoft-Token gespeichert")
+                setMsCode("")
+                await load()
+              } else toast.error(r.error ?? "Fehler")
+            }}
+          >
+            OAuth für gewähltes Konto abschließen
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Datenexport (DSGVO-Hilfe)</CardTitle>
+          <CardDescription>
+            ZIP mit Metadaten (ohne Passwörter/Keytar). Ordner „attachments“ enthält gespeicherte Anhänge. Kein vollständiges Rohmail-Archiv.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={exportingGdpr}
+            onClick={async () => {
+              setExportingGdpr(true)
+              try {
+                const r = (await (window.electronAPI as { invoke: (c: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }> }).invoke(
+                  IPCChannels.Email.EmailGdprExport,
+                )) as { ok: boolean; path?: string; error?: string }
+                if (r.ok && r.path) toast.success(`Export: ${r.path}`)
+                else if (!r.ok && r.error !== "Abgebrochen") toast.error(r.error ?? "Export fehlgeschlagen")
+              } finally {
+                setExportingGdpr(false)
+              }
+            }}
+          >
+            {exportingGdpr ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            ZIP erstellen…
           </Button>
         </CardContent>
       </Card>

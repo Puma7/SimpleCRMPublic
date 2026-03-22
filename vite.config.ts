@@ -46,6 +46,7 @@ export default defineConfig(async () => {
                   'node-pop3',
                   'google-auth-library',
                   'node-cron',
+                  'archiver',
                 ],
               },
             },
