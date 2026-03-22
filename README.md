@@ -10,6 +10,13 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 * **Task Management:** Create and manage tasks linked directly to customers.
 * **Calendar Integration:** Schedule appointments, meetings, and reminders within the app.
 * **JTL Synchronization (Optional):** Sync Customer and Product data from an external JTL MSSQL database into your local CRM (one-way sync).
+* **E-Mail (IMAP + POP3 + SMTP, Desktop):** Accounts support **IMAP** or **POP3** (`node-pop3`); passwords in keychain. **E-Mail → SMTP & KI** configures outgoing mail (`nodemailer`), optional separate SMTP password, **Sent-Ordner** for IMAP-Append, **Google** and **Microsoft OAuth** (refresh tokens in keychain; IMAP XOAUTH2), and an **OpenAI-compatible** API for composer transforms. IMAP: first sync loads the newest messages only (capped); incremental UID search; optional server **thread id** when supported; background **IDLE** + periodic sync. POP3: UIDL-based incremental fetch.
+* **CRM-style mail:** **JWZ-style threading** from Message-ID / References, **ticket codes** `[SCR-…]`, **customer** link, **internal notes**, **categories**, **assignment** to team members, **attachments** stored under userData (≤25 MB/file) with **open / save as**, **soft delete** / restore, **archive**, views **Inbox / Sent / Drafts / Archive**, **search**.
+* **Workflows:** **E-Mail → Workflows** — **React Flow** visual editor (compiles to JSON), triggers **inbound**, **outbound**, **draft_created**, **schedule** (cron + optional **account sync** per workflow); actions include **forward_copy**, **tag_attachment_meta**, category, tags, etc. Cron jobs reload when workflows are saved.
+* **Templates & KI:** Canned responses and custom AI prompts under **SMTP & KI**; **HTML composer** (React Quill) with plain-text fallback for SMTP.
+* **Reporting & DSGVO:** **Mail-Report** (`/email/reporting`) with volume/unread/archived/workflow-run stats; **ZIP data export** (metadata + attachment files, no passwords) under **SMTP & KI**.
+* **Plan vs. Stand:** siehe [`docs/EMAIL_PHASES.md`](docs/EMAIL_PHASES.md).
+* **Not implemented (optional / later):** Omni-channel, SLA automation/escalation, full React Flow branching per edge, raw-mail full archive in export.
 * **Local Database:** All your CRM data is stored securely and locally using SQLite (`better-sqlite3`).
 * **Secure Configuration:** MSSQL connection details are stored securely using your OS keychain via Keytar (`keytar`).
 
@@ -44,10 +51,9 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
    ```
 2. **Install Dependencies:**
    ```bash
-   npm install
-   # or
-   yarn install
+   npm install --legacy-peer-deps
    ```
+   (`--legacy-peer-deps` avoids peer-resolution conflicts in the current dependency tree.)
 3. **Rebuild Native Modules:**
    Electron apps sometimes need native modules rebuilt for your specific setup. The `postinstall` script should handle this, but if you encounter issues, run:
    ```bash
@@ -60,11 +66,12 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
 
 * **Development Mode:**
   Starts the Vite dev server for instant UI updates and the Electron app.
+  The `electron:dev` script compiles main-process TypeScript in watch mode so IPC handlers (including E-Mail) stay in sync with `dist-electron`.
   ```bash
   npm run electron:dev
   ```
 * **Production Mode:**
-  Runs the app as it would be packaged. Build it first with `npm run build` and `npm run build:electron`.
+  Runs the app as it would be packaged. Build the renderer with `npm run build:web`, compile the Electron main-process TypeScript with `npm run build:electron:main`, or run `npm run build` to do both.
   ```bash
   npm run electron:start
   ```
@@ -76,8 +83,8 @@ To create an installer (`.exe`, `.dmg`, etc.):
 1. **Build the Frontend & Electron Code:**
    ```bash
    npm run build
-   npm run build:electron
    ```
+   This runs `build:web` (renderer) and `build:electron:main` (compiled IPC/services under `dist-electron/electron/`). The Vite Electron bundle step is included in `npm run build` via `vite build`.
 2. **Package with Electron Builder:**
    ```bash
    npm run electron:build

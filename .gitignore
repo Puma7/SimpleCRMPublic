@@ -42,3 +42,5 @@ src/.DS_Store
 !README.md
 !CHANGELOG.md
 !LICENSE.md
+!docs/EMAIL_PHASES.md
+!docs/email-system-deep-review.md

@@ -14,6 +14,24 @@ export const JTL_WARENLAGER_TABLE = 'jtl_warenlager';
 export const JTL_ZAHLUNGSARTEN_TABLE = 'jtl_zahlungsarten';
 export const JTL_VERSANDARTEN_TABLE = 'jtl_versandarten';
 
+export const EMAIL_ACCOUNTS_TABLE = 'email_accounts';
+export const EMAIL_FOLDERS_TABLE = 'email_folders';
+export const EMAIL_MESSAGES_TABLE = 'email_messages';
+export const EMAIL_WORKFLOWS_TABLE = 'email_workflows';
+export const EMAIL_WORKFLOW_RUNS_TABLE = 'email_workflow_runs';
+export const EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE = 'email_message_workflow_applied';
+export const EMAIL_MESSAGE_TAGS_TABLE = 'email_message_tags';
+export const EMAIL_THREADS_TABLE = 'email_threads';
+export const EMAIL_CATEGORIES_TABLE = 'email_categories';
+export const EMAIL_MESSAGE_CATEGORIES_TABLE = 'email_message_categories';
+export const EMAIL_INTERNAL_NOTES_TABLE = 'email_internal_notes';
+export const EMAIL_CANNED_RESPONSES_TABLE = 'email_canned_responses';
+export const EMAIL_AI_PROMPTS_TABLE = 'email_ai_prompts';
+export const EMAIL_TEAM_MEMBERS_TABLE = 'email_team_members';
+export const EMAIL_MESSAGE_ATTACHMENTS_TABLE = 'email_message_attachments';
+export const EMAIL_MESSAGES_FTS_TABLE = 'email_messages_fts';
+export const EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE = 'email_workflow_forward_dedup';
+
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,6 +215,251 @@ export const createCustomerCustomFieldValuesTable = `
   );
 `;
 
+export const createEmailAccountsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_ACCOUNTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL,
+    email_address TEXT NOT NULL,
+    imap_host TEXT NOT NULL,
+    imap_port INTEGER NOT NULL DEFAULT 993,
+    imap_tls INTEGER NOT NULL DEFAULT 1,
+    imap_username TEXT NOT NULL,
+    keytar_account_key TEXT NOT NULL UNIQUE,
+    smtp_host TEXT,
+    smtp_port INTEGER DEFAULT 587,
+    smtp_tls INTEGER NOT NULL DEFAULT 1,
+    smtp_username TEXT,
+    smtp_use_imap_auth INTEGER NOT NULL DEFAULT 1,
+    smtp_keytar_account_key TEXT UNIQUE,
+    protocol TEXT NOT NULL DEFAULT 'imap',
+    pop3_host TEXT,
+    pop3_port INTEGER DEFAULT 995,
+    pop3_tls INTEGER NOT NULL DEFAULT 1,
+    oauth_provider TEXT,
+    oauth_refresh_keytar_key TEXT UNIQUE,
+    sent_folder_path TEXT DEFAULT 'Sent',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailFoldersTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_FOLDERS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    delimiter TEXT DEFAULT '/',
+    uidvalidity INTEGER,
+    uidvalidity_str TEXT,
+    last_uid INTEGER NOT NULL DEFAULT 0,
+    last_synced_at TEXT,
+    pop3_uidl_str TEXT,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, path)
+  );
+`;
+
+export const createEmailMessagesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    folder_id INTEGER NOT NULL,
+    uid INTEGER NOT NULL,
+    message_id TEXT,
+    in_reply_to TEXT,
+    references_header TEXT,
+    subject TEXT,
+    from_json TEXT,
+    to_json TEXT,
+    cc_json TEXT,
+    date_received TEXT,
+    snippet TEXT,
+    body_text TEXT,
+    body_html TEXT,
+    seen_local INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    soft_deleted INTEGER NOT NULL DEFAULT 0,
+    outbound_hold INTEGER NOT NULL DEFAULT 0,
+    outbound_block_reason TEXT,
+    thread_id TEXT,
+    ticket_code TEXT,
+    customer_id INTEGER,
+    folder_kind TEXT NOT NULL DEFAULT 'inbox',
+    imap_thread_id TEXT,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
+    attachments_json TEXT,
+    assigned_to TEXT,
+    pop3_uidl TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (folder_id) REFERENCES ${EMAIL_FOLDERS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (customer_id) REFERENCES ${CUSTOMERS_TABLE}(id) ON DELETE SET NULL,
+    UNIQUE(account_id, folder_id, uid)
+  );
+`;
+
+/** FTS5 external-content index on email_messages (rowid = message id). */
+export const createEmailMessagesFtsTable = `
+  CREATE VIRTUAL TABLE IF NOT EXISTS ${EMAIL_MESSAGES_FTS_TABLE} USING fts5(
+    subject,
+    snippet,
+    body_text,
+    content='${EMAIL_MESSAGES_TABLE}',
+    content_rowid='id',
+    tokenize = 'unicode61'
+  );
+`;
+
+export const createEmailWorkflowForwardDedupTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (
+    message_id INTEGER NOT NULL,
+    workflow_id INTEGER NOT NULL,
+    dest TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (message_id, workflow_id, dest),
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailThreadsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_THREADS_TABLE} (
+    id TEXT PRIMARY KEY,
+    ticket_code TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailCategoriesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_CATEGORIES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id INTEGER,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_id) REFERENCES ${EMAIL_CATEGORIES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailMessageCategoriesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGE_CATEGORIES_TABLE} (
+    message_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    PRIMARY KEY (message_id, category_id),
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES ${EMAIL_CATEGORIES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailInternalNotesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_INTERNAL_NOTES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailCannedResponsesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_CANNED_RESPONSES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailTeamMembersTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_TEAM_MEMBERS_TABLE} (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'agent',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailAiPromptsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_AI_PROMPTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    user_template TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT 'full_body',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailWorkflowsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_WORKFLOWS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 100,
+    definition_json TEXT NOT NULL,
+    graph_json TEXT,
+    cron_expr TEXT,
+    schedule_account_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (schedule_account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const createEmailMessageAttachmentsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    filename_display TEXT NOT NULL,
+    content_type TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    storage_path TEXT NOT NULL,
+    content_sha256 TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailWorkflowRunsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_WORKFLOW_RUNS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id INTEGER NOT NULL,
+    message_id INTEGER,
+    direction TEXT NOT NULL,
+    status TEXT NOT NULL,
+    log_json TEXT,
+    started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const createEmailMessageWorkflowAppliedTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE} (
+    message_id INTEGER NOT NULL,
+    workflow_id INTEGER NOT NULL,
+    applied_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (message_id, workflow_id),
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailMessageTagsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGE_TAGS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(message_id, tag)
+  );
+`;
+
 export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_customers_jtl_kKunde ON ${CUSTOMERS_TABLE}(jtl_kKunde);`,
     `CREATE INDEX IF NOT EXISTS idx_customers_name ON ${CUSTOMERS_TABLE}(name);`,
@@ -229,5 +492,24 @@ export const indexes = [
     // Composite index for optimized custom field queries
     `CREATE INDEX IF NOT EXISTS idx_cfv_customer_field_composite ON ${CUSTOMER_CUSTOM_FIELD_VALUES_TABLE}(customer_id, field_id);`,
     // Covering index for the batch query
-    `CREATE INDEX IF NOT EXISTS idx_cf_active_display ON ${CUSTOMER_CUSTOM_FIELDS_TABLE}(active, display_order, name) WHERE active = 1;`
+    `CREATE INDEX IF NOT EXISTS idx_cf_active_display ON ${CUSTOMER_CUSTOM_FIELDS_TABLE}(active, display_order, name) WHERE active = 1;`,
+    `CREATE INDEX IF NOT EXISTS idx_email_accounts_address ON ${EMAIL_ACCOUNTS_TABLE}(email_address);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_folders_account ON ${EMAIL_FOLDERS_TABLE}(account_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_account_folder ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_assigned ON ${EMAIL_MESSAGES_TABLE}(assigned_to);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_imap_thread ON ${EMAIL_MESSAGES_TABLE}(imap_thread_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON ${EMAIL_MESSAGES_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_date ON ${EMAIL_MESSAGES_TABLE}(date_received);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_workflows_trigger ON ${EMAIL_WORKFLOWS_TABLE}(trigger, enabled, priority);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_workflow_runs_message ON ${EMAIL_WORKFLOW_RUNS_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_message_tags_message ON ${EMAIL_MESSAGE_TAGS_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_message_tags_tag ON ${EMAIL_MESSAGE_TAGS_TABLE}(tag);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON ${EMAIL_MESSAGES_TABLE}(thread_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_ticket ON ${EMAIL_MESSAGES_TABLE}(ticket_code);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_customer ON ${EMAIL_MESSAGES_TABLE}(customer_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_folder_kind ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_kind);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_categories_parent ON ${EMAIL_CATEGORIES_TABLE}(parent_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_msg_cat_category ON ${EMAIL_MESSAGE_CATEGORIES_TABLE}(category_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_notes_message ON ${EMAIL_INTERNAL_NOTES_TABLE}(message_id);`
 ];

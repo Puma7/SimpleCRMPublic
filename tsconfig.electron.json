@@ -17,6 +17,7 @@
   },
   "include": [
     "electron/**/*.ts",
+    "electron/**/*.d.ts",
     "shared/**/*.ts"
   ],
   "exclude": [

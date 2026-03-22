@@ -10,6 +10,7 @@ import { registerDashboardHandlers } from './dashboard';
 import { registerMssqlHandlers } from './mssql';
 import { registerJtlHandlers } from './jtl';
 import { registerUpdateHandlers } from './update';
+import { registerEmailHandlers } from './email';
 
 interface IpcRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -34,6 +35,7 @@ export function registerAllIpcHandlers(options: IpcRouterOptions) {
   disposers.push(registerMssqlHandlers({ logger, isDevelopment }));
   disposers.push(registerJtlHandlers({ logger }));
   disposers.push(registerUpdateHandlers({ logger }));
+  disposers.push(registerEmailHandlers({ logger, isDevelopment }));
 
   return () => {
     disposers.forEach((dispose) => dispose());

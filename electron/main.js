@@ -23,6 +23,10 @@ log.transports.file.maxLogFiles = 3;
 // Secret masking and port parsing moved into dedicated IPC modules.
 
 const { initializeDatabase, closeDatabase } = require('../dist-electron/electron/sqlite-service');
+const {
+  startEmailBackgroundServices,
+  stopEmailBackgroundServices,
+} = require('../dist-electron/electron/email/email-imap-services');
 const { initializeSyncService } = require('../dist-electron/electron/sync-service');
 const {
   initializeMssqlService,
@@ -273,6 +277,8 @@ initializeApp()
 
       await createMainWindow(); // Create the main window
 
+      startEmailBackgroundServices(log).catch((err) => log.warn('[email] background services', err));
+
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
           createMainWindow();
@@ -319,6 +325,11 @@ app.on('will-quit', () => {
   // This is a good place for final cleanup if needed,
   // though window-all-closed might cover most cases for non-macOS.
   log.info('[Electron Main] Application will quit.');
+  try {
+    stopEmailBackgroundServices();
+  } catch (e) {
+    log.warn('[email] stop background', e);
+  }
   if (typeof cleanupIpcHandlers === 'function') {
     try {
       cleanupIpcHandlers();
