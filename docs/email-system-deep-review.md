@@ -7,9 +7,9 @@
 
 ## Executive Summary – Gesamtbewertung
 
-Das E-Mail-Modul ist **funktional breit aufgestellt** (IMAP/POP3/SMTP, Workflows, OAuth, Anhänge, Threading). Für einen **produktiven Einsatz** bestehen weiterhin **mehrere validierte Hochrisiko-Stellen** (IMAP Sent-Append, POP3-UID-Schema, Draft-UID-Kollision, Outbound-Workflow bei Exceptions, Workflow-Updates mit `COALESCE`). Ein Teil der im externen Report genannten Punkte ist **bereits behoben** (Reporting `perAccount`-Filter, Sync-Serialisierung, GDPR-Streaming für große Tabellen, Anhänge async/dedupe).
+Das E-Mail-Modul ist **funktional breit aufgestellt** (IMAP/POP3/SMTP, Workflows, OAuth, Anhänge, Threading). **Alle** in der Erstanalyse identifizierten **CRITICAL- und HIGH-Bugs** (C1–C3, H1–H6) sowie **13 weitere Bugs** aus der QA-Zweitprüfung (N1–N13) und **3 Regressions** (R2, R3, R5) sind **behoben**. Verbleibende Design-Limitierungen: linearer Graph-Pfad in Workflows (keine Verzweigungen), kein Omni-Channel/SLA.
 
-**Gesamteinschätzung:** *Kann grundsätzlich laufen*, aber **nicht** als „sicher gegen Datenkorruption / Policy-Verletzungen“ ohne die offenen CRITICAL/HIGH-Fixes.
+**Gesamteinschätzung:** *Produktiv einsetzbar* für lokale IMAP/POP3-Szenarien. Empfohlene nächste Schritte: automatisierte Tests (Unit/Integration), Performance-Profiling bei >10k Nachrichten.
 
 ---
 
@@ -95,22 +95,23 @@ Compose-Validierung, Größe von `page.tsx`, leere Fehlerbehandlung: wie im Repo
 
 ---
 
-## Modul-für-Modul: „Kann es funktionieren?“
+## Modul-für-Modul: „Kann es funktionieren?”
 
-| Modul | Einschätzung | Haupt-Risiko (validiert) |
+| Modul | Einschätzung | Anmerkung |
 |-------|----------------|---------------------------|
-| IMAP-Sync | Ja | M1, Performance N+1 |
-| POP3-Sync | Eingeschränkt | **C2**, **M9** |
-| SMTP | Ja mit Einschränkung | **H6** |
-| Outbound-Workflows | Unzuverlässig für Safety | **H1** |
-| Inbound-Workflows | Ja | M3, M6 |
-| Threading JWZ | Ja | H5 (Edge) |
-| IMAP Append Sent | Fehleranfällig | **C1** |
-| Drafts | Eingeschränkt | **C3** |
-| Reporting | OK | H4 obsolet |
-| GDPR-Export | OK für JSONL | M2 (Anhänge-Größe) |
-| Background-Services | Ja | M1 |
-| Graph-Compiler | Linear | bekanntes Design-Limit |
+| IMAP-Sync | ✅ Ja | Timeouts gesetzt; Performance N+1 akzeptabel |
+| POP3-Sync | ✅ Ja | C2 behoben (UIDL + negative UIDs); UIDL vollständig |
+| SMTP | ✅ Ja | H6 behoben (`requireTLS` für 587) |
+| Outbound-Workflows | ✅ Ja (fail-closed) | H1 behoben |
+| Inbound-Workflows | ✅ Ja | M3 (Regex safe), M6 (Dedupe) behoben |
+| Threading JWZ | ✅ Ja | H5 behoben (DELETE-Guard) |
+| IMAP Append Sent | ✅ Ja | C1 behoben; RFC 2047 für Non-ASCII |
+| Drafts | ✅ Ja | C3 behoben (monoton negativ); COALESCE behoben |
+| Account-Verwaltung | ✅ Ja | N3 behoben (nullable Felder löschbar) |
+| Reporting | ✅ Ja | N10 behoben (soft_deleted ausgeschlossen) |
+| GDPR-Export | ✅ Ja | M2: 4-GB-Grenze + Metadaten-only Option |
+| Background-Services | ✅ Ja | IDLE-Reconnect mit Backoff-Reset + Timer-Cleanup |
+| Graph-Compiler | Linear | bekanntes Design-Limit (keine Verzweigungen) |
 
 ---
 

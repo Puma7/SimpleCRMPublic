@@ -35,3 +35,13 @@ Konkrete Erkenntnisse aus Design, Implementierung und QA — **kurz**, damit sie
 ## Threading
 
 - **`email_threads` löschen** nur, wenn **keine** Message mehr die `thread_id` referenziert — vermeidet Waisen bei seltenen ID-Kollisionen über Konten hinweg.
+
+## SQL & Datenbank-Pattern
+
+- **COALESCE-Falle:** `COALESCE(?, spalte)` im UPDATE verhindert das Löschen eines Feldes auf `NULL` — stattdessen **dynamische SET-Klauseln** (nur gesetzte Felder in den SQL-String aufnehmen). Fünfmal derselbe Fehler (Account-Update, Folder-Upsert, Draft-Update, AI-Prompt-Update).
+- **Parameter-Reihenfolge bei dynamischem SQL:** Wenn JOIN- und WHERE-Klauseln bedingt zusammengebaut werden, muss die Reihenfolge im `params`-Array **exakt** der Platzhalter-Reihenfolge im SQL entsprechen. Nicht `[accountId, categoryId]` wenn SQL `JOIN … category_id = ? WHERE account_id = ?` ist.
+
+## Netzwerk-Reconnect
+
+- **Backoff nach Erfolg zurücksetzen:** IDLE-Reconnect muss `retryCount = 0` übergeben, wenn die vorherige Verbindung **erfolgreich** war (`close`-Event ≠ Verbindungsfehler). Sonst wächst der Delay monoton und kühlt nie ab.
+- **Timer-IDs speichern:** Pending `setTimeout`-Reconnects in einer Map speichern und bei `stop` per `clearTimeout` aufräumen — sonst können nach Restart „Ghost-Clients" aus alten Timern entstehen.
