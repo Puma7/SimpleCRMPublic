@@ -63,6 +63,8 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
    npx electron-rebuild -f -w better-sqlite3,keytar
    ```
 
+> **Windows users:** For a detailed step-by-step guide using PowerShell (including prerequisites like Visual Studio Build Tools, troubleshooting native module errors, and more), see **[docs/SETUP_WINDOWS.md](docs/SETUP_WINDOWS.md)**.
+
 ## Running the Application
 
 * **Development Mode:**
