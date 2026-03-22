@@ -21,6 +21,12 @@ export const EMAIL_WORKFLOWS_TABLE = 'email_workflows';
 export const EMAIL_WORKFLOW_RUNS_TABLE = 'email_workflow_runs';
 export const EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE = 'email_message_workflow_applied';
 export const EMAIL_MESSAGE_TAGS_TABLE = 'email_message_tags';
+export const EMAIL_THREADS_TABLE = 'email_threads';
+export const EMAIL_CATEGORIES_TABLE = 'email_categories';
+export const EMAIL_MESSAGE_CATEGORIES_TABLE = 'email_message_categories';
+export const EMAIL_INTERNAL_NOTES_TABLE = 'email_internal_notes';
+export const EMAIL_CANNED_RESPONSES_TABLE = 'email_canned_responses';
+export const EMAIL_AI_PROMPTS_TABLE = 'email_ai_prompts';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -215,6 +221,12 @@ export const createEmailAccountsTable = `
     imap_tls INTEGER NOT NULL DEFAULT 1,
     imap_username TEXT NOT NULL,
     keytar_account_key TEXT NOT NULL UNIQUE,
+    smtp_host TEXT,
+    smtp_port INTEGER DEFAULT 587,
+    smtp_tls INTEGER NOT NULL DEFAULT 1,
+    smtp_username TEXT,
+    smtp_use_imap_auth INTEGER NOT NULL DEFAULT 1,
+    smtp_keytar_account_key TEXT UNIQUE,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
@@ -257,10 +269,75 @@ export const createEmailMessagesTable = `
     soft_deleted INTEGER NOT NULL DEFAULT 0,
     outbound_hold INTEGER NOT NULL DEFAULT 0,
     outbound_block_reason TEXT,
+    thread_id TEXT,
+    ticket_code TEXT,
+    customer_id INTEGER,
+    folder_kind TEXT NOT NULL DEFAULT 'inbox',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (folder_id) REFERENCES ${EMAIL_FOLDERS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (customer_id) REFERENCES ${CUSTOMERS_TABLE}(id) ON DELETE SET NULL,
     UNIQUE(account_id, folder_id, uid)
+  );
+`;
+
+export const createEmailThreadsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_THREADS_TABLE} (
+    id TEXT PRIMARY KEY,
+    ticket_code TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailCategoriesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_CATEGORIES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id INTEGER,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_id) REFERENCES ${EMAIL_CATEGORIES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailMessageCategoriesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_MESSAGE_CATEGORIES_TABLE} (
+    message_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    PRIMARY KEY (message_id, category_id),
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES ${EMAIL_CATEGORIES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailInternalNotesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_INTERNAL_NOTES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailCannedResponsesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_CANNED_RESPONSES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailAiPromptsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_AI_PROMPTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    user_template TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT 'full_body',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `;
 
@@ -355,5 +432,12 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_workflows_trigger ON ${EMAIL_WORKFLOWS_TABLE}(trigger, enabled, priority);`,
     `CREATE INDEX IF NOT EXISTS idx_email_workflow_runs_message ON ${EMAIL_WORKFLOW_RUNS_TABLE}(message_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_message_tags_message ON ${EMAIL_MESSAGE_TAGS_TABLE}(message_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_email_message_tags_tag ON ${EMAIL_MESSAGE_TAGS_TABLE}(tag);`
+    `CREATE INDEX IF NOT EXISTS idx_email_message_tags_tag ON ${EMAIL_MESSAGE_TAGS_TABLE}(tag);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON ${EMAIL_MESSAGES_TABLE}(thread_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_ticket ON ${EMAIL_MESSAGES_TABLE}(ticket_code);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_customer ON ${EMAIL_MESSAGES_TABLE}(customer_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_folder_kind ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_kind);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_categories_parent ON ${EMAIL_CATEGORIES_TABLE}(parent_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_msg_cat_category ON ${EMAIL_MESSAGE_CATEGORIES_TABLE}(category_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_notes_message ON ${EMAIL_INTERNAL_NOTES_TABLE}(message_id);`
 ];

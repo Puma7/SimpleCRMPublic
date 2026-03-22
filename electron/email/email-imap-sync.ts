@@ -159,6 +159,14 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
           seenLocal: Boolean(msg.flags?.has('\\Seen')),
         });
         if (isNew && localMsgId > 0) {
+          const { assignThreadAndTicketToMessage } = await import('./email-ticket');
+          assignThreadAndTicketToMessage(localMsgId, {
+            subject: parsed.subject ?? null,
+            inReplyTo: inReplyTo,
+            referencesHeader: refs,
+          });
+          const { tryLinkMessageToCustomer } = await import('./email-crm-store');
+          tryLinkMessageToCustomer(localMsgId);
           const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
           runInboundWorkflowsForMessage(localMsgId);
         }

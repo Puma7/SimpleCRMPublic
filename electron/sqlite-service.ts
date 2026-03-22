@@ -37,6 +37,12 @@ import {
     createEmailWorkflowRunsTable,
     createEmailMessageWorkflowAppliedTable,
     createEmailMessageTagsTable,
+    createEmailThreadsTable,
+    createEmailCategoriesTable,
+    createEmailMessageCategoriesTable,
+    createEmailInternalNotesTable,
+    createEmailCannedResponsesTable,
+    createEmailAiPromptsTable,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -44,6 +50,12 @@ import {
     EMAIL_WORKFLOW_RUNS_TABLE,
     EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE,
     EMAIL_MESSAGE_TAGS_TABLE,
+    EMAIL_THREADS_TABLE,
+    EMAIL_CATEGORIES_TABLE,
+    EMAIL_MESSAGE_CATEGORIES_TABLE,
+    EMAIL_INTERNAL_NOTES_TABLE,
+    EMAIL_CANNED_RESPONSES_TABLE,
+    EMAIL_AI_PROMPTS_TABLE,
 } from './database-schema';
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
@@ -91,6 +103,12 @@ export function initializeDatabase() {
             db.exec(createEmailWorkflowRunsTable);
             db.exec(createEmailMessageWorkflowAppliedTable);
             db.exec(createEmailMessageTagsTable);
+            db.exec(createEmailThreadsTable);
+            db.exec(createEmailCategoriesTable);
+            db.exec(createEmailMessageCategoriesTable);
+            db.exec(createEmailInternalNotesTable);
+            db.exec(createEmailCannedResponsesTable);
+            db.exec(createEmailAiPromptsTable);
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
@@ -201,6 +219,19 @@ export function initializeDatabase() {
             `CREATE INDEX IF NOT EXISTS idx_email_message_tags_tag ON ${EMAIL_MESSAGE_TAGS_TABLE}(tag);`,
         ]);
 
+        ensureTableExists(EMAIL_THREADS_TABLE, createEmailThreadsTable, []);
+        ensureTableExists(EMAIL_CATEGORIES_TABLE, createEmailCategoriesTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_categories_parent ON ${EMAIL_CATEGORIES_TABLE}(parent_id);`,
+        ]);
+        ensureTableExists(EMAIL_MESSAGE_CATEGORIES_TABLE, createEmailMessageCategoriesTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_msg_cat_category ON ${EMAIL_MESSAGE_CATEGORIES_TABLE}(category_id);`,
+        ]);
+        ensureTableExists(EMAIL_INTERNAL_NOTES_TABLE, createEmailInternalNotesTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_notes_message ON ${EMAIL_INTERNAL_NOTES_TABLE}(message_id);`,
+        ]);
+        ensureTableExists(EMAIL_CANNED_RESPONSES_TABLE, createEmailCannedResponsesTable, []);
+        ensureTableExists(EMAIL_AI_PROMPTS_TABLE, createEmailAiPromptsTable, []);
+
         // Run migrations for schema updates
         runMigrations();
     }
@@ -306,7 +337,43 @@ function runMigrations() {
             if (!msgColNames.has('outbound_block_reason')) {
                 console.log('Adding outbound_block_reason to email_messages...');
                 db.exec(`ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN outbound_block_reason TEXT`);
+                msgColNames = readMsgCols();
             }
+            const emailMsgCols = [
+                { name: 'thread_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN thread_id TEXT` },
+                { name: 'ticket_code', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN ticket_code TEXT` },
+                { name: 'customer_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN customer_id INTEGER` },
+                { name: 'folder_kind', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN folder_kind TEXT NOT NULL DEFAULT 'inbox'` },
+            ];
+            for (const col of emailMsgCols) {
+                if (!msgColNames.has(col.name)) {
+                    console.log(`Adding ${col.name} to email_messages...`);
+                    db.exec(col.sql);
+                    msgColNames = readMsgCols();
+                }
+            }
+            if (msgColNames.has('folder_kind')) {
+                db.exec(`UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'inbox' WHERE folder_kind IS NULL OR folder_kind = ''`);
+            }
+        }
+
+        const accTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_ACCOUNTS_TABLE);
+        if (accTable) {
+            const ac = db.prepare(`PRAGMA table_info(${EMAIL_ACCOUNTS_TABLE})`).all() as { name: string }[];
+            const an = new Set(ac.map((c) => c.name));
+            const addAcc = (name: string, sql: string) => {
+                if (!an.has(name)) {
+                    console.log(`Adding ${name} to email_accounts...`);
+                    db.exec(sql);
+                    an.add(name);
+                }
+            };
+            addAcc('smtp_host', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_host TEXT`);
+            addAcc('smtp_port', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_port INTEGER DEFAULT 587`);
+            addAcc('smtp_tls', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_tls INTEGER NOT NULL DEFAULT 1`);
+            addAcc('smtp_username', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_username TEXT`);
+            addAcc('smtp_use_imap_auth', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_use_imap_auth INTEGER NOT NULL DEFAULT 1`);
+            addAcc('smtp_keytar_account_key', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_keytar_account_key TEXT UNIQUE`);
         }
 
         // Add more migrations here as needed

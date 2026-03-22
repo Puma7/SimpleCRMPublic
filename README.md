@@ -10,9 +10,11 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 * **Task Management:** Create and manage tasks linked directly to customers.
 * **Calendar Integration:** Schedule appointments, meetings, and reminders within the app.
 * **JTL Synchronization (Optional):** Sync Customer and Product data from an external JTL MSSQL database into your local CRM (one-way sync).
-* **E-Mail (IMAP, Desktop):** Under **E-Mail** you can add IMAP accounts (password in the OS keychain), sync the INBOX, and read messages. The first sync loads the **newest messages only** (capped), not full history; further syncs use UID ranges.
-* **E-Mail workflows (Desktop):** **Inbound** rules run once per message after IMAP sync (tag, mark read, archive). **Outbound** rules run when you use **Antworten (Test)** and **Prüfen (Outbound-Workflow)** before send; they can block on sensitive patterns (SMTP sending is still to come). Edit definitions under **E-Mail → Workflows** (JSON `version: 1`, `rules[]`). Two default workflows are seeded on first open. Use **Inbound auf bestehende Mails** to apply inbound rules to messages synced before workflows existed.
-* **Planned:** SMTP send, OAuth, KI nodes, visual workflow editor, CRM threading/ticket codes.
+* **E-Mail (IMAP + SMTP, Desktop):** Add accounts (IMAP password in keychain). **E-Mail → SMTP & KI** configures outgoing mail (`nodemailer`), optional separate SMTP password, and an **OpenAI-compatible** API (base URL + model + API key in keychain) for composer transforms. First IMAP sync loads the newest messages only (capped); further syncs use UID ranges.
+* **CRM-style mail:** **Ticket codes** `[SCR-…]` in subjects, **thread** rows, **customer** link (match on sender email or manual), **internal notes**, **categories** with tree and counts (workflow action `set_category` with path `A/B`), **soft delete** / restore, **archive** toggle, views **Inbox / Sent / Drafts / Archive**, **search** on subject/body/snippet.
+* **Workflows:** **E-Mail → Workflows** — inbound (after sync) and outbound (before send); JSON definitions; defaults seeded; backfill for old mail. Steps include `set_category`, `link_customer`, tags, archive, etc.
+* **Templates & KI:** Canned responses and custom AI prompts (placeholders `{{text}}`, `{{customer.name}}`, …) under **SMTP & KI**; used from the compose dialog.
+* **Not implemented (optional / later):** OAuth (Google/Microsoft), POP3, visual drag-and-drop workflow editor, IMAP append to server Sent folder, multi-user permissions, SLA/reporting, full HTML composer.
 * **Local Database:** All your CRM data is stored securely and locally using SQLite (`better-sqlite3`).
 * **Secure Configuration:** MSSQL connection details are stored securely using your OS keychain via Keytar (`keytar`).
 

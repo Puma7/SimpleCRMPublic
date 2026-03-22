@@ -6,6 +6,7 @@ import {
   setMessageSeenLocal,
   setOutboundHold,
 } from './email-store';
+import { assignCategoryPathToMessage, tryLinkMessageToCustomer } from './email-crm-store';
 import {
   listWorkflowsByTrigger,
   wasWorkflowAppliedToMessage,
@@ -126,6 +127,14 @@ function executeInboundStep(step: WorkflowThenStep, messageId: number, log: stri
     case 'hold_outbound':
       setOutboundHold(messageId, true, step.reason);
       log.push(`hold_outbound:${step.reason}`);
+      return true;
+    case 'set_category':
+      assignCategoryPathToMessage(messageId, step.path);
+      log.push(`category:${step.path}`);
+      return true;
+    case 'link_customer':
+      tryLinkMessageToCustomer(messageId);
+      log.push('link_customer');
       return true;
     case 'stop':
       log.push('stop');

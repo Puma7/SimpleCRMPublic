@@ -21,6 +21,8 @@ export type WorkflowThenStep =
   | { type: 'mark_seen' }
   | { type: 'archive' }
   | { type: 'hold_outbound'; reason: string }
+  | { type: 'set_category'; path: string }
+  | { type: 'link_customer' }
   | { type: 'stop' };
 
 export type WorkflowRule = {

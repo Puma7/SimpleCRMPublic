@@ -42,6 +42,7 @@ export default defineConfig(async () => {
                   'electron-rebuild',
                   'imapflow',
                   'mailparser',
+                  'nodemailer',
                 ],
               },
             },

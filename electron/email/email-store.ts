@@ -5,6 +5,7 @@ import {
   EMAIL_FOLDERS_TABLE,
   EMAIL_MESSAGES_TABLE,
   EMAIL_MESSAGE_TAGS_TABLE,
+  EMAIL_MESSAGE_CATEGORIES_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
 
@@ -17,6 +18,12 @@ export type EmailAccountRow = {
   imap_tls: number;
   imap_username: string;
   keytar_account_key: string;
+  smtp_host: string | null;
+  smtp_port: number | null;
+  smtp_tls: number | null;
+  smtp_username: string | null;
+  smtp_use_imap_auth: number | null;
+  smtp_keytar_account_key: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -53,12 +60,18 @@ export type EmailMessageRow = {
   soft_deleted: number;
   outbound_hold: number;
   outbound_block_reason: string | null;
+  thread_id: string | null;
+  ticket_code: string | null;
+  customer_id: number | null;
+  folder_kind: string;
   created_at: string;
 };
 
 export function listEmailAccounts(): EmailAccountRow[] {
   const stmt = getDb().prepare(
-    `SELECT id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key, created_at, updated_at
+    `SELECT id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
+            smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
+            created_at, updated_at
      FROM ${EMAIL_ACCOUNTS_TABLE} ORDER BY id ASC`,
   );
   return stmt.all() as EmailAccountRow[];
@@ -66,7 +79,9 @@ export function listEmailAccounts(): EmailAccountRow[] {
 
 export function getEmailAccountById(id: number): EmailAccountRow | undefined {
   const stmt = getDb().prepare(
-    `SELECT id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key, created_at, updated_at
+    `SELECT id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
+            smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
+            created_at, updated_at
      FROM ${EMAIL_ACCOUNTS_TABLE} WHERE id = ?`,
   );
   return stmt.get(id) as EmailAccountRow | undefined;
@@ -86,8 +101,10 @@ export function createEmailAccountRecord(input: {
   const now = new Date().toISOString();
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNTS_TABLE} (
-      display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
+      smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const result = stmt.run(
     input.displayName,
@@ -97,6 +114,12 @@ export function createEmailAccountRecord(input: {
     input.imapTls ? 1 : 0,
     input.imapUsername.trim(),
     keytarAccountKey,
+    null,
+    587,
+    1,
+    null,
+    1,
+    null,
     now,
     now,
   );
@@ -112,6 +135,12 @@ export function updateEmailAccountRecord(
     imapPort: number;
     imapTls: boolean;
     imapUsername: string;
+    smtpHost: string | null;
+    smtpPort: number | null;
+    smtpTls: boolean | null;
+    smtpUsername: string | null;
+    smtpUseImapAuth: boolean | null;
+    smtpKeytarAccountKey: string | null;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -127,6 +156,12 @@ export function updateEmailAccountRecord(
       imap_port = COALESCE(?, imap_port),
       imap_tls = COALESCE(?, imap_tls),
       imap_username = COALESCE(?, imap_username),
+      smtp_host = COALESCE(?, smtp_host),
+      smtp_port = COALESCE(?, smtp_port),
+      smtp_tls = COALESCE(?, smtp_tls),
+      smtp_username = COALESCE(?, smtp_username),
+      smtp_use_imap_auth = COALESCE(?, smtp_use_imap_auth),
+      smtp_keytar_account_key = COALESCE(?, smtp_keytar_account_key),
       updated_at = ?
     WHERE id = ?`,
   );
@@ -137,6 +172,12 @@ export function updateEmailAccountRecord(
     input.imapPort ?? null,
     input.imapTls === undefined ? null : input.imapTls ? 1 : 0,
     input.imapUsername?.trim() ?? null,
+    input.smtpHost === undefined ? null : input.smtpHost,
+    input.smtpPort ?? null,
+    input.smtpTls === undefined ? null : input.smtpTls ? 1 : 0,
+    input.smtpUsername === undefined ? null : input.smtpUsername,
+    input.smtpUseImapAuth === undefined ? null : input.smtpUseImapAuth ? 1 : 0,
+    input.smtpKeytarAccountKey === undefined ? null : input.smtpKeytarAccountKey,
     now,
     id,
   );
@@ -146,6 +187,9 @@ export async function deleteEmailAccountRecord(id: number): Promise<void> {
   const row = getEmailAccountById(id);
   if (row) {
     await deleteEmailPassword(row.keytar_account_key);
+    if (row.smtp_keytar_account_key) {
+      await deleteEmailPassword(row.smtp_keytar_account_key).catch(() => undefined);
+    }
   }
   const stmt = getDb().prepare(`DELETE FROM ${EMAIL_ACCOUNTS_TABLE} WHERE id = ?`);
   stmt.run(id);
@@ -235,10 +279,48 @@ export function listMessagesForFolder(
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_MESSAGES_TABLE}
      WHERE folder_id = ? AND soft_deleted = 0 AND uid >= 0
+       AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
+       AND archived = 0
      ORDER BY datetime(COALESCE(date_received, created_at)) DESC
      LIMIT ? OFFSET ?`,
   );
   return stmt.all(folderId, limit, offset) as EmailMessageRow[];
+}
+
+export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'all';
+
+export function listMessagesForAccountView(
+  accountId: number,
+  view: AccountMailView,
+  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+): EmailMessageRow[] {
+  const limit = opts.limit ?? 200;
+  const offset = opts.offset ?? 0;
+  let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
+  const params: (string | number)[] = [accountId];
+
+  if (opts.categoryId != null && opts.categoryId > 0) {
+    sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
+    params.push(opts.categoryId);
+  }
+
+  sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+  if (view === 'inbox') {
+    sql += ` AND m.uid >= 0 AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0`;
+  } else if (view === 'sent') {
+    sql += ` AND m.folder_kind = 'sent'`;
+  } else if (view === 'archived') {
+    sql += ` AND m.archived = 1 AND m.uid >= 0`;
+  } else if (view === 'drafts') {
+    sql += ` AND m.folder_kind = 'draft'`;
+  } else {
+    sql += ` AND m.uid >= 0`;
+  }
+
+  sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+
+  return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
 
 export function getEmailMessageById(id: number): EmailMessageRow | undefined {
@@ -282,8 +364,9 @@ export function insertOrUpdateEmailMessage(input: {
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
-      subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
+      thread_id, ticket_code, customer_id, folder_kind
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -394,7 +477,24 @@ export function createComposeDraft(input: {
     bodyHtml: null,
     seenLocal: true,
   });
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'draft' WHERE id = ?`)
+    .run(id);
   return id;
+}
+
+export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = ? WHERE id = ?`)
+    .run(deleted ? 1 : 0, messageId);
+}
+
+export function markDraftAsSent(draftMessageId: number): void {
+  getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0 WHERE id = ?`,
+    )
+    .run(draftMessageId);
 }
 
 export function updateComposeDraft(
