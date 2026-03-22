@@ -223,6 +223,7 @@ export const createEmailFoldersTable = `
     path TEXT NOT NULL,
     delimiter TEXT DEFAULT '/',
     uidvalidity INTEGER,
+    uidvalidity_str TEXT,
     last_uid INTEGER NOT NULL DEFAULT 0,
     last_synced_at TEXT,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,

@@ -251,6 +251,20 @@ function runMigrations() {
             console.log('Migration completed: Added customerNumber column to customers table');
         }
 
+        const emailFolderExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_FOLDERS_TABLE);
+        const emailFolderColumns = emailFolderExists
+            ? db.prepare(`PRAGMA table_info(${EMAIL_FOLDERS_TABLE})`).all()
+            : [];
+        const hasEmailFolderUidValidityStr = emailFolderColumns.some((col: any) => col.name === 'uidvalidity_str');
+        if (!hasEmailFolderUidValidityStr && emailFolderExists) {
+            console.log('Adding uidvalidity_str column to email_folders table...');
+            db.exec(`ALTER TABLE ${EMAIL_FOLDERS_TABLE} ADD COLUMN uidvalidity_str TEXT`);
+            db.exec(
+                `UPDATE ${EMAIL_FOLDERS_TABLE} SET uidvalidity_str = CAST(uidvalidity AS TEXT) WHERE uidvalidity IS NOT NULL AND (uidvalidity_str IS NULL OR uidvalidity_str = '')`,
+            );
+            console.log('Migration completed: Added uidvalidity_str to email_folders');
+        }
+
         // Add more migrations here as needed
 
     } catch (error) {

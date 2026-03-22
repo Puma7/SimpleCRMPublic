@@ -26,6 +26,7 @@ export type EmailFolderRow = {
   path: string;
   delimiter: string | null;
   uidvalidity: number | null;
+  uidvalidity_str: string | null;
   last_uid: number;
   last_synced_at: string | null;
 };
@@ -75,8 +76,10 @@ export function createEmailAccountRecord(input: {
   imapPort: number;
   imapTls: boolean;
   imapUsername: string;
+  /** If omitted, a new key is generated. Prefer passing a key only after the password was stored in Keytar. */
+  keytarAccountKey?: string;
 }): { id: number; keytarAccountKey: string } {
-  const keytarAccountKey = `email-${randomUUID()}`;
+  const keytarAccountKey = input.keytarAccountKey ?? `email-${randomUUID()}`;
   const now = new Date().toISOString();
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNTS_TABLE} (
@@ -147,7 +150,7 @@ export async function deleteEmailAccountRecord(id: number): Promise<void> {
 
 export function getFolderByAccountAndPath(accountId: number, path: string): EmailFolderRow | undefined {
   const stmt = getDb().prepare(
-    `SELECT id, account_id, path, delimiter, uidvalidity, last_uid, last_synced_at FROM ${EMAIL_FOLDERS_TABLE} WHERE account_id = ? AND path = ?`,
+    `SELECT id, account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, last_synced_at FROM ${EMAIL_FOLDERS_TABLE} WHERE account_id = ? AND path = ?`,
   );
   return stmt.get(accountId, path) as EmailFolderRow | undefined;
 }
@@ -157,6 +160,7 @@ export function upsertEmailFolder(input: {
   path: string;
   delimiter?: string;
   uidvalidity?: number | null;
+  uidvalidityStr?: string | null;
   lastUid?: number;
 }): EmailFolderRow {
   const existing = getFolderByAccountAndPath(input.accountId, input.path);
@@ -166,6 +170,7 @@ export function upsertEmailFolder(input: {
       `UPDATE ${EMAIL_FOLDERS_TABLE} SET
         delimiter = COALESCE(?, delimiter),
         uidvalidity = COALESCE(?, uidvalidity),
+        uidvalidity_str = COALESCE(?, uidvalidity_str),
         last_uid = COALESCE(?, last_uid),
         last_synced_at = ?
       WHERE id = ?`,
@@ -173,6 +178,7 @@ export function upsertEmailFolder(input: {
     stmt.run(
       input.delimiter ?? null,
       input.uidvalidity === undefined ? null : input.uidvalidity,
+      input.uidvalidityStr === undefined ? null : input.uidvalidityStr,
       input.lastUid === undefined ? null : input.lastUid,
       now,
       existing.id,
@@ -180,14 +186,15 @@ export function upsertEmailFolder(input: {
     return getFolderByAccountAndPath(input.accountId, input.path)!;
   }
   const ins = getDb().prepare(
-    `INSERT INTO ${EMAIL_FOLDERS_TABLE} (account_id, path, delimiter, uidvalidity, last_uid, last_synced_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${EMAIL_FOLDERS_TABLE} (account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   ins.run(
     input.accountId,
     input.path,
     input.delimiter ?? '/',
     input.uidvalidity ?? null,
+    input.uidvalidityStr ?? null,
     input.lastUid ?? 0,
     now,
   );
@@ -196,19 +203,21 @@ export function upsertEmailFolder(input: {
 
 export function updateFolderSyncState(
   folderId: number,
-  input: { lastUid?: number; uidvalidity?: number | null },
+  input: { lastUid?: number; uidvalidity?: number | null; uidvalidityStr?: string | null },
 ): void {
   const now = new Date().toISOString();
   const stmt = getDb().prepare(
     `UPDATE ${EMAIL_FOLDERS_TABLE} SET
       last_uid = COALESCE(?, last_uid),
       uidvalidity = COALESCE(?, uidvalidity),
+      uidvalidity_str = COALESCE(?, uidvalidity_str),
       last_synced_at = ?
     WHERE id = ?`,
   );
   stmt.run(
     input.lastUid === undefined ? null : input.lastUid,
     input.uidvalidity === undefined ? null : input.uidvalidity,
+    input.uidvalidityStr === undefined ? null : input.uidvalidityStr,
     now,
     folderId,
   );
@@ -268,7 +277,7 @@ export function insertOrUpdateEmailMessage(input: {
       snippet = excluded.snippet,
       body_text = excluded.body_text,
       body_html = excluded.body_html,
-      seen_local = excluded.seen_local`,
+      seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
   );
   const result = stmt.run(
     input.accountId,

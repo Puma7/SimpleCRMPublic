@@ -10,7 +10,7 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 * **Task Management:** Create and manage tasks linked directly to customers.
 * **Calendar Integration:** Schedule appointments, meetings, and reminders within the app.
 * **JTL Synchronization (Optional):** Sync Customer and Product data from an external JTL MSSQL database into your local CRM (one-way sync).
-* **E-Mail (IMAP, Desktop):** Under **E-Mail** in the navigation you can add IMAP accounts (password stored in the OS keychain), sync the INBOX, and read messages. SMTP, workflows, and AI features are planned extensions.
+* **E-Mail (IMAP, Desktop):** Under **E-Mail** in the navigation you can add IMAP accounts (password stored in the OS keychain), sync the INBOX, and read messages. The first sync loads the **newest messages only** (up to a capped count), not the entire mailbox history; further syncs fetch by UID range. SMTP, workflows, and AI features are planned extensions.
 * **Local Database:** All your CRM data is stored securely and locally using SQLite (`better-sqlite3`).
 * **Secure Configuration:** MSSQL connection details are stored securely using your OS keychain via Keytar (`keytar`).
 
@@ -45,10 +45,9 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
    ```
 2. **Install Dependencies:**
    ```bash
-   npm install
-   # or
-   yarn install
+   npm install --legacy-peer-deps
    ```
+   (`--legacy-peer-deps` avoids peer-resolution conflicts in the current dependency tree.)
 3. **Rebuild Native Modules:**
    Electron apps sometimes need native modules rebuilt for your specific setup. The `postinstall` script should handle this, but if you encounter issues, run:
    ```bash
@@ -66,7 +65,7 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
   npm run electron:dev
   ```
 * **Production Mode:**
-  Runs the app as it would be packaged. Build it first with `npm run build` and `npm run build:electron`.
+  Runs the app as it would be packaged. Build the renderer with `npm run build:web`, compile the Electron main-process TypeScript with `npm run build:electron:main`, or run `npm run build` to do both.
   ```bash
   npm run electron:start
   ```
@@ -78,8 +77,8 @@ To create an installer (`.exe`, `.dmg`, etc.):
 1. **Build the Frontend & Electron Code:**
    ```bash
    npm run build
-   npm run build:electron
    ```
+   This runs `build:web` (renderer) and `build:electron:main` (compiled IPC/services under `dist-electron/electron/`). The Vite Electron bundle step is included in `npm run build` via `vite build`.
 2. **Package with Electron Builder:**
    ```bash
    npm run electron:build

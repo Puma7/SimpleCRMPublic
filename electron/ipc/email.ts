@@ -1,7 +1,8 @@
+import { randomUUID } from 'crypto';
 import { IpcMainInvokeEvent } from 'electron';
 import { IPCChannels } from '@shared/ipc/channels';
 import { registerIpcHandler } from './register';
-import { saveEmailPassword } from '../email/email-keytar';
+import { deleteEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
   createEmailAccountRecord,
@@ -46,16 +47,23 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapPassword: string;
         },
       ) => {
-        const { id, keytarAccountKey } = createEmailAccountRecord({
-          displayName: payload.displayName,
-          emailAddress: payload.emailAddress,
-          imapHost: payload.imapHost,
-          imapPort: payload.imapPort,
-          imapTls: payload.imapTls,
-          imapUsername: payload.imapUsername,
-        });
+        const keytarAccountKey = `email-${randomUUID()}`;
         await saveEmailPassword(keytarAccountKey, payload.imapPassword);
-        return { success: true as const, id };
+        try {
+          const { id } = createEmailAccountRecord({
+            displayName: payload.displayName,
+            emailAddress: payload.emailAddress,
+            imapHost: payload.imapHost,
+            imapPort: payload.imapPort,
+            imapTls: payload.imapTls,
+            imapUsername: payload.imapUsername,
+            keytarAccountKey,
+          });
+          return { success: true as const, id };
+        } catch (err) {
+          await deleteEmailPassword(keytarAccountKey).catch(() => undefined);
+          throw err;
+        }
       },
       { logger },
     ),
@@ -77,6 +85,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapPassword?: string;
         },
       ) => {
+        if (payload.imapPassword && payload.imapPassword.length > 0) {
+          const acc = getEmailAccountById(payload.id);
+          if (acc) {
+            await saveEmailPassword(acc.keytar_account_key, payload.imapPassword);
+          }
+        }
         updateEmailAccountRecord(payload.id, {
           displayName: payload.displayName,
           emailAddress: payload.emailAddress,
@@ -85,12 +99,6 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapTls: payload.imapTls,
           imapUsername: payload.imapUsername,
         });
-        if (payload.imapPassword && payload.imapPassword.length > 0) {
-          const acc = getEmailAccountById(payload.id);
-          if (acc) {
-            await saveEmailPassword(acc.keytar_account_key, payload.imapPassword);
-          }
-        }
         return { success: true as const };
       },
       { logger },
