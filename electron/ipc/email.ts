@@ -1015,10 +1015,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.EmailGdprExport, async () => {
-      const r = await exportEmailGdprPackage();
-      return r;
-    }, { logger }),
+    registerIpcHandler(
+      IPCChannels.Email.EmailGdprExport,
+      async (_event: IpcMainInvokeEvent, payload?: { skipAttachments?: boolean }) => {
+        const r = await exportEmailGdprPackage({ skipAttachments: Boolean(payload?.skipAttachments) });
+        return r;
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

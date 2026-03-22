@@ -77,6 +77,7 @@ export type EmailMessageRow = {
   has_attachments: number;
   attachments_json: string | null;
   assigned_to: string | null;
+  /** POP3 server UIDL when message came from POP3 (stable key). */
   pop3_uidl: string | null;
   created_at: string;
 };
@@ -395,7 +396,8 @@ export function listMessagesForFolder(
   const offset = opts.offset ?? 0;
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_MESSAGES_TABLE}
-     WHERE folder_id = ? AND soft_deleted = 0 AND uid >= 0
+     WHERE folder_id = ? AND soft_deleted = 0
+       AND (uid >= 0 OR pop3_uidl IS NOT NULL)
        AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
        AND archived = 0
      ORDER BY datetime(COALESCE(date_received, created_at)) DESC
@@ -422,16 +424,17 @@ export function listMessagesForAccountView(
   }
 
   sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+  const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   if (view === 'inbox') {
-    sql += ` AND m.uid >= 0 AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0`;
+    sql += ` AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent'`;
   } else if (view === 'archived') {
-    sql += ` AND m.archived = 1 AND m.uid >= 0`;
+    sql += ` AND m.archived = 1 AND ${nonDraftMail}`;
   } else if (view === 'drafts') {
     sql += ` AND m.folder_kind = 'draft'`;
   } else {
-    sql += ` AND m.uid >= 0`;
+    sql += ` AND ${nonDraftMail}`;
   }
 
   sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
@@ -445,10 +448,20 @@ export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   return stmt.get(id) as EmailMessageRow | undefined;
 }
 
+/** Negative UID for POP3 rows only — never collides with IMAP uid >= 0 or draft negatives in same folder. */
+export function allocatePop3NegativeUid(accountId: number, folderId: number): number {
+  const row = getDb()
+    .prepare(
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+    )
+    .get(accountId, folderId) as { m: number | null };
+  return row.m != null ? row.m - 1 : -1;
+}
+
 export function listMessageIdsForWorkflowBackfill(offset: number, limit: number): number[] {
   const rows = getDb()
     .prepare(
-      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid >= 0 AND soft_deleted = 0 ORDER BY id ASC LIMIT ? OFFSET ?`,
+      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE (uid >= 0 OR pop3_uidl IS NOT NULL) AND soft_deleted = 0 ORDER BY id ASC LIMIT ? OFFSET ?`,
     )
     .all(limit, offset) as { id: number }[];
   return rows.map((r) => r.id);
@@ -483,16 +496,17 @@ export function insertOrUpdateEmailMessage(input: {
 
   const db = getDb();
 
+  let existingByUidl: { id: number } | undefined;
   if (pop3Uidl) {
-    const byUidl = db
+    existingByUidl = db
       .prepare(
         `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND pop3_uidl = ?`,
       )
       .get(input.accountId, input.folderId, pop3Uidl) as { id: number } | undefined;
-    if (byUidl) {
+    if (existingByUidl) {
+      const byUidl = existingByUidl;
       db.prepare(
         `UPDATE ${EMAIL_MESSAGES_TABLE} SET
-          uid = ?,
           message_id = ?,
           in_reply_to = ?,
           references_header = ?,
@@ -510,7 +524,6 @@ export function insertOrUpdateEmailMessage(input: {
           seen_local = MAX(seen_local, ?)
         WHERE id = ?`,
       ).run(
-        input.uid,
         input.messageId,
         input.inReplyTo,
         input.referencesHeader,
@@ -532,9 +545,12 @@ export function insertOrUpdateEmailMessage(input: {
     }
   }
 
+  const uidForRow =
+    pop3Uidl && !existingByUidl ? allocatePop3NegativeUid(input.accountId, input.folderId) : input.uid;
+
   const existing = db
     .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
-    .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
+    .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
   const isNew = !existing;
 
   const stmt = db.prepare(
@@ -565,7 +581,7 @@ export function insertOrUpdateEmailMessage(input: {
   const result = stmt.run(
     input.accountId,
     input.folderId,
-    input.uid,
+    uidForRow,
     input.messageId,
     input.inReplyTo,
     input.referencesHeader,

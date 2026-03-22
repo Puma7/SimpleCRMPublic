@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react"
 import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
+import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
+import { validateRecipientField } from "@shared/email-recipient-parse"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -117,26 +119,8 @@ function applyCannedTemplate(body: string, customerId: number | null, customers:
     .replace(/\{\{customer\.email\}\}/g, c?.email ?? "")
 }
 
-const MAX_CATEGORY_TREE_DEPTH = 32
-
 function sanitizeComposeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
-}
-
-const SIMPLE_EMAIL_RE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/
-
-function validateRecipientList(raw: string): { ok: true } | { ok: false; error: string } {
-  const parts = raw
-    .split(/[,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-  if (parts.length === 0) return { ok: false, error: "Mindestens eine E-Mail-Adresse (An) ist erforderlich." }
-  for (const p of parts) {
-    if (!SIMPLE_EMAIL_RE.test(p)) {
-      return { ok: false, error: `Ungültige Adresse: ${p}` }
-    }
-  }
-  return { ok: true }
 }
 
 export default function EmailPage() {
@@ -495,13 +479,13 @@ export default function EmailPage() {
 
   const handleSendCompose = async () => {
     if (!hasElectron || composeDraftId == null || selectedAccountId == null) return
-    const toCheck = validateRecipientList(composeTo)
+    const toCheck = validateRecipientField(composeTo, "An")
     if (!toCheck.ok) {
       toast.error(toCheck.error)
       return
     }
     if (composeCc.trim()) {
-      const ccCheck = validateRecipientList(composeCc)
+      const ccCheck = validateRecipientField(composeCc, "Cc")
       if (!ccCheck.ok) {
         toast.error(ccCheck.error)
         return
@@ -548,7 +532,7 @@ export default function EmailPage() {
     const children = (pid: number) =>
       categories.filter((c) => c.parent_id === pid).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
     const render = (nodes: CategoryRow[], depth: number): ReactNode[] =>
-      depth > MAX_CATEGORY_TREE_DEPTH
+      depth > MAX_EMAIL_CATEGORY_DEPTH
         ? []
         : nodes.flatMap((n) => [
             <button

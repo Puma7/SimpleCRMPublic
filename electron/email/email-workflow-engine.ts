@@ -112,11 +112,12 @@ async function executeInboundStep(
         return true;
       }
       const dest = step.to.trim().toLowerCase();
-      const ins = getDb().prepare(
-        `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
-      );
-      const r = ins.run(messageId, workflowId, dest);
-      if (r.changes === 0) {
+      const dup = getDb()
+        .prepare(
+          `SELECT 1 FROM ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} WHERE message_id = ? AND workflow_id = ? AND dest = ?`,
+        )
+        .get(messageId, workflowId, dest) as { 1: number } | undefined;
+      if (dup) {
         log.push('forward_copy:skip_duplicate');
         return true;
       }
@@ -134,6 +135,11 @@ async function executeInboundStep(
           subject: subj,
           text: body.slice(0, 500_000),
         });
+        getDb()
+          .prepare(
+            `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
+          )
+          .run(messageId, workflowId, dest);
         log.push(`forward_copy:${step.to}`);
       } catch (e) {
         log.push(`forward_copy_error:${e instanceof Error ? e.message : String(e)}`);
@@ -215,7 +221,7 @@ async function runRulesOutbound(
 export async function runInboundWorkflowsForMessage(messageId: number): Promise<void> {
   const row = getEmailMessageById(messageId);
   if (!row) return;
-  if (row.uid < 0) return;
+  if (row.uid < 0 && !row.pop3_uidl) return;
 
   const workflows = listWorkflowsByTrigger('inbound');
   for (const wf of workflows) {
@@ -282,6 +288,7 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
   setOutboundHold(payload.messageId, false, null);
 
   const workflows = listWorkflowsByTrigger('outbound');
+  let parseOrEngineError: string | null = null;
   for (const wf of workflows) {
     try {
       const def = parseWorkflowDefinition(wf.definition_json);
@@ -309,6 +316,7 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      parseOrEngineError = msg;
       insertWorkflowRun({
         workflowId: wf.id,
         messageId: payload.messageId,
@@ -316,12 +324,15 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
         status: 'error',
         logJson: JSON.stringify([`error:${msg}`]),
       });
-      setOutboundHold(payload.messageId, true, `Workflow-Fehler: ${msg}`);
-      return {
-        allowed: false,
-        reason: 'Ausgehender Workflow fehlgeschlagen; Versand aus Sicherheitsgründen blockiert.',
-      };
     }
+  }
+
+  if (parseOrEngineError) {
+    setOutboundHold(payload.messageId, true, `Workflow-Fehler: ${parseOrEngineError}`);
+    return {
+      allowed: false,
+      reason: 'Ausgehender Workflow fehlgeschlagen; Versand aus Sicherheitsgründen blockiert.',
+    };
   }
 
   const after = getEmailMessageById(payload.messageId);

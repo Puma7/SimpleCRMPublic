@@ -404,7 +404,7 @@ export default function EmailSettingsPage() {
             ZIP mit Metadaten (ohne Passwörter/Keytar). Ordner „attachments“ enthält gespeicherte Anhänge. Kein vollständiges Rohmail-Archiv.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-wrap gap-2">
           <Button
             type="button"
             variant="secondary"
@@ -412,9 +412,9 @@ export default function EmailSettingsPage() {
             onClick={async () => {
               setExportingGdpr(true)
               try {
-                const r = (await (window.electronAPI as { invoke: (c: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }> }).invoke(
-                  IPCChannels.Email.EmailGdprExport,
-                )) as { ok: boolean; path?: string; error?: string }
+                const r = (await (window.electronAPI as {
+                  invoke: (c: string, p?: unknown) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+                }).invoke(IPCChannels.Email.EmailGdprExport)) as { ok: boolean; path?: string; error?: string }
                 if (r.ok && r.path) toast.success(`Export: ${r.path}`)
                 else if (!r.ok && r.error !== "Abgebrochen") toast.error(r.error ?? "Export fehlgeschlagen")
               } finally {
@@ -423,7 +423,26 @@ export default function EmailSettingsPage() {
             }}
           >
             {exportingGdpr ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            ZIP erstellen…
+            ZIP mit Anhängen…
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={exportingGdpr}
+            onClick={async () => {
+              setExportingGdpr(true)
+              try {
+                const r = (await (window.electronAPI as {
+                  invoke: (c: string, p?: unknown) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+                }).invoke(IPCChannels.Email.EmailGdprExport, { skipAttachments: true })) as { ok: boolean; path?: string; error?: string }
+                if (r.ok && r.path) toast.success(`Export (ohne Anhänge): ${r.path}`)
+                else if (!r.ok && r.error !== "Abgebrochen") toast.error(r.error ?? "Export fehlgeschlagen")
+              } finally {
+                setExportingGdpr(false)
+              }
+            }}
+          >
+            ZIP nur Metadaten…
           </Button>
         </CardContent>
       </Card>

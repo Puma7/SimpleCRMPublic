@@ -1,3 +1,4 @@
+import { MAX_EMAIL_CATEGORY_DEPTH } from '@shared/email-constants';
 import { getDb } from '../sqlite-service';
 import {
   CUSTOMERS_TABLE,
@@ -10,8 +11,6 @@ import {
   EMAIL_FOLDERS_TABLE,
   EMAIL_MESSAGES_FTS_TABLE,
 } from '../database-schema';
-
-const MAX_CATEGORY_DEPTH = 40;
 
 export type EmailCategoryRow = {
   id: number;
@@ -67,8 +66,8 @@ function findCategoryByNameUnderParent(name: string, parentId: number | null): n
 export function ensureCategoryPath(path: string): number {
   const parts = path.split('/').map((p) => p.trim()).filter(Boolean);
   if (parts.length === 0) throw new Error('Leerer Kategoriepfad');
-  if (parts.length > MAX_CATEGORY_DEPTH) {
-    throw new Error(`Kategoriepfad zu tief (max. ${MAX_CATEGORY_DEPTH} Ebenen)`);
+  if (parts.length > MAX_EMAIL_CATEGORY_DEPTH) {
+    throw new Error(`Kategoriepfad zu tief (max. ${MAX_EMAIL_CATEGORY_DEPTH} Ebenen)`);
   }
   let parentId: number | null = null;
   for (const part of parts) {
@@ -107,7 +106,7 @@ export function listCategoryCountsForAccount(accountId: number): { categoryId: n
       `SELECT mc.category_id as categoryId, COUNT(DISTINCT mc.message_id) as count
        FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc
        INNER JOIN ${EMAIL_MESSAGES_TABLE} m ON m.id = mc.message_id
-       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.archived = 0 AND m.uid >= 0 AND m.folder_kind = 'inbox'
+       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.archived = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL) AND m.folder_kind = 'inbox'
        GROUP BY mc.category_id`,
     )
     .all(accountId) as { categoryId: number; count: number }[];
@@ -249,7 +248,7 @@ export function searchMessagesForAccount(
           .prepare(
             `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-             WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.uid >= 0
+             WHERE m.account_id = ? AND m.soft_deleted = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
              AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ?`,
@@ -265,7 +264,7 @@ export function searchMessagesForAccount(
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        INNER JOIN ${EMAIL_FOLDERS_TABLE} f ON f.id = m.folder_id
-       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.uid >= 0
+       WHERE m.account_id = ? AND m.soft_deleted = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
        AND (
          m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
        )

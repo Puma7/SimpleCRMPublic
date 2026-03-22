@@ -16,7 +16,6 @@ import {
   type EmailAccountRow,
 } from './email-store';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
-import { pop3SyntheticUid } from './email-pop3-uid';
 import { addressJson, formatDate, parseAttachmentsMeta, snippetFromParsed } from './email-parse-utils';
 
 const POP_FOLDER = 'INBOX';
@@ -91,11 +90,10 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     const snippet = snippetFromParsed(textBody, htmlBody);
     const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
 
-    const stableUid = pop3SyntheticUid(uidl);
     const { id: localMsgId, isNew } = insertOrUpdateEmailMessage({
       accountId,
       folderId: folderRow.id,
-      uid: stableUid,
+      uid: 0,
       pop3Uidl: uidl,
       messageId,
       inReplyTo,

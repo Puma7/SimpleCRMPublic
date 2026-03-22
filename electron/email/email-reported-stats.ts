@@ -38,7 +38,7 @@ export function getEmailReportingSnapshot(accountIdFilter: number | null): Email
     .prepare(
       `SELECT
         COUNT(*) as messages,
-        SUM(CASE WHEN seen_local = 0 AND uid >= 0 THEN 1 ELSE 0 END) as unread,
+        SUM(CASE WHEN seen_local = 0 AND (uid >= 0 OR pop3_uidl IS NOT NULL) THEN 1 ELSE 0 END) as unread,
         SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) as archived,
         SUM(CASE WHEN customer_id IS NOT NULL THEN 1 ELSE 0 END) as withCustomer,
         SUM(CASE WHEN assigned_to IS NOT NULL AND assigned_to != '' THEN 1 ELSE 0 END) as withAssignment,
@@ -60,7 +60,7 @@ export function getEmailReportingSnapshot(accountIdFilter: number | null): Email
     .prepare(
       `SELECT account_id as accountId,
         COUNT(*) as messages,
-        SUM(CASE WHEN seen_local = 0 AND uid >= 0 THEN 1 ELSE 0 END) as unread,
+        SUM(CASE WHEN seen_local = 0 AND (uid >= 0 OR pop3_uidl IS NOT NULL) THEN 1 ELSE 0 END) as unread,
         SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) as archived
        FROM ${EMAIL_MESSAGES_TABLE}
        ${perAccClause}

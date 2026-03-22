@@ -38,7 +38,9 @@ function dirSizeBytes(dir: string): number {
   return total;
 }
 
-export async function exportEmailGdprPackage(): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+export async function exportEmailGdprPackage(
+  options: { skipAttachments?: boolean } = {},
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
   const dlg = (await dialog.showSaveDialog({
     title: 'E-Mail-Datenexport (DSGVO)',
     defaultPath: `simplecrm-email-export-${new Date().toISOString().slice(0, 10)}.zip`,
@@ -138,27 +140,31 @@ export async function exportEmailGdprPackage(): Promise<{ ok: true; path: string
         .all(RUNS_LIMIT);
       archive.append(JSON.stringify(runs, null, 2), { name: 'workflow_runs_sample.json' });
 
-      const attRoot = getAttachmentsRootForExport();
-      fs.mkdirSync(attRoot, { recursive: true });
-      const attBytes = dirSizeBytes(attRoot);
-      if (attBytes > MAX_EXPORT_ATTACH_BYTES) {
-        fail(
-          `Anhänge zu groß für einen Export (${Math.round(attBytes / (1024 * 1024))} MB). Bitte zuerst alte Anhänge archivieren oder den Ordner verkleinern.`,
-        );
-        return;
-      }
-      try {
-        archive.directory(attRoot, 'attachments');
-      } catch (e) {
-        fail(e instanceof Error ? e : String(e));
-        return;
+      if (!options.skipAttachments) {
+        const attRoot = getAttachmentsRootForExport();
+        fs.mkdirSync(attRoot, { recursive: true });
+        const attBytes = dirSizeBytes(attRoot);
+        if (attBytes > MAX_EXPORT_ATTACH_BYTES) {
+          fail(
+            `Anhänge zu groß für einen Export (${Math.round(attBytes / (1024 * 1024))} MB). Nutzen Sie „Export ohne Anhänge“ oder verkleinern Sie den Ordner userData/email-attachments.`,
+          );
+          return;
+        }
+        try {
+          archive.directory(attRoot, 'attachments');
+        } catch (e) {
+          fail(e instanceof Error ? e : String(e));
+          return;
+        }
       }
 
       archive.append(
         JSON.stringify(
           {
             exportedAt: new Date().toISOString(),
-            note: 'Keine Passwörter/Keytar-Inhalte. Nachrichten als JSONL (messages_index.jsonl). Rohmail nicht enthalten.',
+            note: options.skipAttachments
+              ? 'Keine Passwörter/Keytar. Anhänge-Ordner in diesem Export ausgelassen (skipAttachments).'
+              : 'Keine Passwörter/Keytar-Inhalte. Nachrichten als JSONL (messages_index.jsonl). Rohmail nicht enthalten.',
           },
           null,
           2,
