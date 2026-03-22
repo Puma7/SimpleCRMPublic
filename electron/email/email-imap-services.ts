@@ -11,6 +11,11 @@ let idleClients: Map<number, ImapFlow> = new Map();
 let globalCron: ScheduledTask | null = null;
 const workflowCrons: Map<number, ScheduledTask> = new Map();
 
+/** Avoid stacking global cron ticks when sync is still running. */
+const syncInFlight = new Set<number>();
+const lastScheduledSyncAt = new Map<number, number>();
+const MIN_SYNC_GAP_MS = 45_000;
+
 function stopIdleForAccount(accountId: number): void {
   const c = idleClients.get(accountId);
   if (c) {
@@ -25,13 +30,23 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   globalCron = cron.schedule(
     '*/2 * * * *',
     () => {
+      const now = Date.now();
       const accounts = listEmailAccounts();
       for (const acc of accounts) {
-        if ((acc.protocol || 'imap') === 'pop3') {
-          void syncInboxPop3(acc.id).catch((e) => logger.debug(`[email] pop3 sync ${acc.id}`, e));
-        } else {
-          void syncInboxImap(acc.id).catch((e) => logger.debug(`[email] imap sync ${acc.id}`, e));
-        }
+        if (syncInFlight.has(acc.id)) continue;
+        const last = lastScheduledSyncAt.get(acc.id) ?? 0;
+        if (now - last < MIN_SYNC_GAP_MS) continue;
+        syncInFlight.add(acc.id);
+        lastScheduledSyncAt.set(acc.id, now);
+        const run =
+          (acc.protocol || 'imap') === 'pop3'
+            ? syncInboxPop3(acc.id)
+            : syncInboxImap(acc.id);
+        void run
+          .catch((e) => logger.debug(`[email] sync ${acc.id}`, e))
+          .finally(() => {
+            syncInFlight.delete(acc.id);
+          });
       }
     },
     { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
@@ -73,7 +88,17 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
         await client.connect();
         await client.mailboxOpen('INBOX');
         client.on('exists', () => {
-          void syncInboxImap(acc.id).catch((e) => logger.debug(`[email] idle sync ${acc.id}`, e));
+          if (syncInFlight.has(acc.id)) return;
+          const now = Date.now();
+          const last = lastScheduledSyncAt.get(acc.id) ?? 0;
+          if (now - last < MIN_SYNC_GAP_MS) return;
+          syncInFlight.add(acc.id);
+          lastScheduledSyncAt.set(acc.id, now);
+          void syncInboxImap(acc.id)
+            .catch((e) => logger.debug(`[email] idle sync ${acc.id}`, e))
+            .finally(() => {
+              syncInFlight.delete(acc.id);
+            });
         });
         void client.idle().catch(() => undefined);
         idleClients.set(acc.id, client);

@@ -44,7 +44,7 @@ Diese Datei fasst die ursprünglichen Plan-Phasen mit dem **aktuellen Implementi
 | Google OAuth (Gmail) | ✅ |
 | Microsoft OAuth (Outlook IMAP/SMTP Scopes) | ✅ (Refresh-Flow; Tenant ggf. `common` anpassen) |
 | Reporting / Kennzahlen | ✅ Seite `/email/reporting` (Basis-Metriken) |
-| DSGVO: Datenexport-Paket (ZIP, ohne Keytar-Secrets) | ✅ |
+| DSGVO: Datenexport-Paket (ZIP, ohne Keytar-Secrets) | ✅ (große Tabellen als **JSONL**-Streams: `messages_index.jsonl`, `internal_notes.jsonl`) |
 | Omni-Channel | ❌ bewusst out of scope |
 | SLA-Eskalationen, Ticketsystem-Tiefe | ❌ nicht umgesetzt |
 

@@ -54,6 +54,8 @@ export function getEmailReportingSnapshot(accountIdFilter: number | null): Email
     withAttachments: number;
   };
 
+  const perAccClause = accountIdFilter != null ? 'WHERE account_id = ?' : '';
+  const perAccParams = accountIdFilter != null ? [accountIdFilter] : [];
   const perAccount = getDb()
     .prepare(
       `SELECT account_id as accountId,
@@ -61,10 +63,11 @@ export function getEmailReportingSnapshot(accountIdFilter: number | null): Email
         SUM(CASE WHEN seen_local = 0 AND uid >= 0 THEN 1 ELSE 0 END) as unread,
         SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) as archived
        FROM ${EMAIL_MESSAGES_TABLE}
+       ${perAccClause}
        GROUP BY account_id
        ORDER BY account_id`,
     )
-    .all() as EmailReportingSnapshot['perAccount'];
+    .all(...perAccParams) as EmailReportingSnapshot['perAccount'];
 
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const workflowRuns24h = getDb()

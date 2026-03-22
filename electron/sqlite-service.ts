@@ -450,6 +450,16 @@ function runMigrations() {
             console.log('Creating email_message_attachments table...');
             db.exec(createEmailMessageAttachmentsTable);
             db.exec(`CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`);
+        } else {
+            const attCols = db.prepare(`PRAGMA table_info(${EMAIL_MESSAGE_ATTACHMENTS_TABLE})`).all() as { name: string }[];
+            const acn = new Set(attCols.map((c) => c.name));
+            if (!acn.has('content_sha256')) {
+                console.log('Adding content_sha256 to email_message_attachments...');
+                db.exec(`ALTER TABLE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} ADD COLUMN content_sha256 TEXT`);
+            }
+            db.exec(
+                `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_att_msg_sha ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id, content_sha256) WHERE content_sha256 IS NOT NULL AND content_sha256 != ''`,
+            );
         }
 
         // Add more migrations here as needed

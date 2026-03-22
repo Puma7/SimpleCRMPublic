@@ -905,10 +905,27 @@ export default function EmailPage() {
                                 variant="secondary"
                                 className="h-7 text-xs"
                                 onClick={async () => {
-                                  const r = await invoke<{ success: boolean; error?: string }>(IPCChannels.Email.OpenAttachmentPath, {
+                                  type OpenAtt =
+                                    | { success: true }
+                                    | { success: false; error?: string; needsConfirmation?: boolean; reason?: string }
+                                  let r = await invoke<OpenAtt>(IPCChannels.Email.OpenAttachmentPath, {
                                     attachmentId: att.id,
                                   })
-                                  if (!r.success) toast.error(r.error ?? "Öffnen fehlgeschlagen")
+                                  if (!r.success && "needsConfirmation" in r && r.needsConfirmation && r.reason === "risky_file_type") {
+                                    const ok = window.confirm(
+                                      "Dieser Dateityp kann beim Öffnen Schadcode ausführen. Trotzdem mit der Standard-App öffnen?",
+                                    )
+                                    if (!ok) return
+                                    r = await invoke<OpenAtt>(IPCChannels.Email.OpenAttachmentPath, {
+                                      attachmentId: att.id,
+                                      confirmOpenRisky: true,
+                                    })
+                                  }
+                                  if (!r.success) {
+                                    const msg =
+                                      "error" in r && typeof r.error === "string" ? r.error : "Öffnen fehlgeschlagen"
+                                    toast.error(msg)
+                                  }
                                 }}
                               >
                                 Öffnen

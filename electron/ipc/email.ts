@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
 import fs from 'fs';
+import path from 'path';
 import { IPCChannels } from '@shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById } from '../sqlite-service';
@@ -67,6 +68,35 @@ import { exchangeGoogleAuthCode } from '../email/email-oauth-google';
 import { exchangeMicrosoftAuthCode } from '../email/email-oauth-microsoft';
 import { restartEmailWorkflowCrons } from '../email/email-imap-services';
 import { listAttachmentsForMessage, getAttachmentById } from '../email/email-message-attachments-store';
+
+const DANGEROUS_ATTACHMENT_EXT = new Set([
+  '.exe',
+  '.bat',
+  '.cmd',
+  '.com',
+  '.scr',
+  '.pif',
+  '.msi',
+  '.dll',
+  '.js',
+  '.jse',
+  '.vbs',
+  '.vbe',
+  '.wsf',
+  '.wsh',
+  '.ps1',
+  '.msc',
+  '.hta',
+  '.sh',
+  '.app',
+  '.deb',
+  '.rpm',
+]);
+
+function isPotentiallyDangerousAttachment(filename: string): boolean {
+  const ext = path.extname(filename).toLowerCase();
+  return ext !== '' && DANGEROUS_ATTACHMENT_EXT.has(ext);
+}
 import { getEmailReportingSnapshot } from '../email/email-reported-stats';
 import { exportEmailGdprPackage } from '../email/email-gdpr-export';
 import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
@@ -945,10 +975,20 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.OpenAttachmentPath,
-      async (_event: IpcMainInvokeEvent, payload: { attachmentId: number }) => {
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { attachmentId: number; confirmOpenRisky?: boolean },
+      ): Promise<
+        | { success: true }
+        | { success: false; error: string }
+        | { success: false; needsConfirmation: true; reason: 'risky_file_type' }
+      > => {
         const row = getAttachmentById(payload.attachmentId);
         if (!row || !fs.existsSync(row.storage_path)) {
           return { success: false as const, error: 'Anhang nicht gefunden' };
+        }
+        if (isPotentiallyDangerousAttachment(row.filename_display) && !payload.confirmOpenRisky) {
+          return { success: false as const, needsConfirmation: true, reason: 'risky_file_type' };
         }
         const err = await shell.openPath(row.storage_path);
         if (err) return { success: false as const, error: err };

@@ -15,6 +15,7 @@ import {
   insertOrUpdateEmailMessage,
   type EmailAccountRow,
 } from './email-store';
+import { withEmailAccountSyncLock } from './email-sync-mutex';
 
 const POP_FOLDER = 'INBOX';
 
@@ -63,7 +64,7 @@ function parseAttachmentsMeta(parsed: {
 
 export type Pop3SyncResult = { fetched: number; folderId: number };
 
-export async function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> {
+async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult> {
   const account = getEmailAccountById(accountId);
   if (!account) throw new Error('Unbekanntes E-Mail-Konto');
   if ((account.protocol || 'imap') !== 'pop3') {
@@ -150,7 +151,7 @@ export async function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> 
 
     if (isNew && localMsgId > 0) {
       const { persistParsedAttachments } = await import('./email-message-attachments-store');
-      persistParsedAttachments(localMsgId, parsed.attachments);
+      await persistParsedAttachments(localMsgId, parsed.attachments);
       const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
       assignJwzThreadAndTicket(localMsgId, accountId, {
         messageIdHeader: messageId,
@@ -180,6 +181,10 @@ export async function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> 
   });
 
   return { fetched, folderId: folderRow.id };
+}
+
+export function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> {
+  return withEmailAccountSyncLock(accountId, () => syncInboxPop3Internal(accountId));
 }
 
 export async function testPop3Connection(account: EmailAccountRow, password: string): Promise<{ ok: true } | { ok: false; error: string }> {

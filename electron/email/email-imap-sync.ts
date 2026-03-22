@@ -17,6 +17,7 @@ import {
   uidValidityAsOptionalNumber,
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
+import { withEmailAccountSyncLock } from './email-sync-mutex';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -72,7 +73,7 @@ export type ImapSyncResult = {
   lastUid: number;
 };
 
-export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> {
+async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult> {
   const account = getEmailAccountById(accountId);
   if (!account) {
     throw new Error('Unbekanntes E-Mail-Konto');
@@ -188,7 +189,7 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
         });
         if (isNew && localMsgId > 0) {
           const { persistParsedAttachments } = await import('./email-message-attachments-store');
-          persistParsedAttachments(localMsgId, parsed.attachments);
+          await persistParsedAttachments(localMsgId, parsed.attachments);
           const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
           assignJwzThreadAndTicket(localMsgId, accountId, {
             messageIdHeader: messageId,
@@ -230,6 +231,11 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
   } finally {
     await client.logout().catch(() => undefined);
   }
+}
+
+/** Serialized per account with POP3/cron/IDLE to avoid overlapping IMAP sessions. */
+export function syncInboxImap(accountId: number): Promise<ImapSyncResult> {
+  return withEmailAccountSyncLock(accountId, () => syncInboxImapInternal(accountId));
 }
 
 export async function testImapConnection(account: EmailAccountRow, password: string): Promise<{ ok: true } | { ok: false; error: string }> {
