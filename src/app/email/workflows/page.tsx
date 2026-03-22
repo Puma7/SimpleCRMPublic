@@ -1,8 +1,14 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
+import type { WorkflowGraphDocument } from "@shared/email-workflow-graph"
+import { useWorkflowEditorStore } from "../stores/workflow-editor-store"
+const WorkflowFlowEditor = lazy(async () => {
+  const m = await import("../workflow-flow-editor")
+  return { default: m.WorkflowFlowEditor }
+})
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -19,6 +25,8 @@ type WorkflowRow = {
   enabled: number
   priority: number
   definition_json: string
+  graph_json: string | null
+  cron_expr: string | null
   created_at: string
   updated_at: string
 }
@@ -44,8 +52,8 @@ export default function EmailWorkflowsPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editName, setEditName] = useState("")
   const [editPriority, setEditPriority] = useState("100")
-  const [editTrigger, setEditTrigger] = useState<"inbound" | "outbound">("inbound")
   const [editJson, setEditJson] = useState("")
+  const [editCron, setEditCron] = useState("")
   const [editEnabled, setEditEnabled] = useState(true)
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
@@ -79,9 +87,26 @@ export default function EmailWorkflowsPage() {
     setSelectedId(w.id)
     setEditName(w.name)
     setEditPriority(String(w.priority))
-    setEditTrigger(w.trigger === "outbound" ? "outbound" : "inbound")
     setEditJson(w.definition_json)
+    setEditCron(w.cron_expr ?? "")
     setEditEnabled(w.enabled === 1)
+    let doc: WorkflowGraphDocument | null = null
+    if (w.graph_json) {
+      try {
+        doc = JSON.parse(w.graph_json) as WorkflowGraphDocument
+      } catch {
+        doc = null
+      }
+    }
+    useWorkflowEditorStore.getState().resetFromGraph(doc)
+  }
+
+  const triggerFromGraph = (doc: WorkflowGraphDocument): string => {
+    const t = doc.nodes.find((n) => n.type === "trigger")
+    if (t && t.data && typeof t.data === "object" && "kind" in t.data) {
+      return String((t.data as { kind: string }).kind)
+    }
+    return "inbound"
   }
 
   const handleSave = async () => {
@@ -89,17 +114,29 @@ export default function EmailWorkflowsPage() {
     setSaving(true)
     try {
       JSON.parse(editJson)
+      const graphDoc = useWorkflowEditorStore.getState().toGraphDocument()
+      const compiled = (await (window.electronAPI as { invoke: (c: string, g: unknown) => Promise<{ success: boolean; definitionJson?: string; error?: string }> }).invoke(
+        IPCChannels.Email.CompileWorkflowGraph,
+        graphDoc,
+      )) as { success: boolean; definitionJson?: string; error?: string }
+      if (!compiled.success || !compiled.definitionJson) {
+        throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
+      }
+      const trig = triggerFromGraph(graphDoc)
       await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<{ success: boolean }> }).invoke(
         IPCChannels.Email.UpdateWorkflow,
         {
           id: selectedId,
           name: editName.trim(),
-          trigger: editTrigger,
+          trigger: trig,
           priority: parseInt(editPriority, 10) || 100,
-          definitionJson: editJson,
+          definitionJson: compiled.definitionJson,
+          graphJson: JSON.stringify(graphDoc),
+          cronExpr: editCron.trim() || null,
           enabled: editEnabled,
         },
       )
+      setEditJson(compiled.definitionJson)
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
@@ -197,9 +234,8 @@ export default function EmailWorkflowsPage() {
               E-Mail-Workflows
             </h1>
             <p className="text-sm text-muted-foreground">
-              Regeln wie bei Helpdesk-Systemen: eingehend nach Sync, ausgehend vor dem Versand (Prüfung). JSON-Definition{" "}
-              <code className="rounded bg-muted px-1">version: 1</code>, <code className="rounded bg-muted px-1">rules[]</code> mit{" "}
-              <code className="rounded bg-muted px-1">when</code> / <code className="rounded bg-muted px-1">then</code>.
+              Visueller Editor (React Flow) kompiliert zu JSON <code className="rounded bg-muted px-1">version: 1</code>. Trigger im obersten
+              Knoten; Zeitplan-Trigger nutzt Cron-Ausdruck unten. Entwurf-Trigger für neue Composer-Entwürfe.
             </p>
           </div>
         </div>
@@ -247,8 +283,7 @@ export default function EmailWorkflowsPage() {
           <CardHeader>
             <CardTitle className="text-base">Bearbeiten</CardTitle>
             <CardDescription>
-              Felder: subject, body_text, snippet, from_address, combined_text. Ops: contains, equals, regex, domain_ends_with. Then: tag,
-              mark_seen, archive, hold_outbound+reason, stop.
+              Graph: Trigger → Bedingungen → Aktionen verbinden. JSON unten ist die kompilierte Engine-Definition (nach Speichern aktualisiert).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -273,28 +308,25 @@ export default function EmailWorkflowsPage() {
                       Aktiv
                     </Label>
                   </div>
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={editTrigger === "inbound" ? "default" : "outline"}
-                      onClick={() => setEditTrigger("inbound")}
-                    >
-                      Inbound
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={editTrigger === "outbound" ? "default" : "outline"}
-                      onClick={() => setEditTrigger("outbound")}
-                    >
-                      Outbound
-                    </Button>
-                  </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Definition (JSON)</Label>
-                  <Textarea value={editJson} onChange={(e) => setEditJson(e.target.value)} className="min-h-[280px] font-mono text-xs" />
+                  <Label>Cron (nur bei Trigger „Zeitplan“)</Label>
+                  <Input
+                    value={editCron}
+                    onChange={(e) => setEditCron(e.target.value)}
+                    placeholder="z. B. */15 * * * * (alle 15 Min)"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Visueller Workflow</Label>
+                  <Suspense fallback={<p className="text-sm text-muted-foreground">Editor lädt…</p>}>
+                    <WorkflowFlowEditor />
+                  </Suspense>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Definition (JSON, kompiliert)</Label>
+                  <Textarea value={editJson} onChange={(e) => setEditJson(e.target.value)} className="min-h-[200px] font-mono text-xs" />
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" onClick={() => void handleSave()} disabled={saving}>

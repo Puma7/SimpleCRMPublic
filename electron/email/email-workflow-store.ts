@@ -13,6 +13,8 @@ export type EmailWorkflowRow = {
   enabled: number;
   priority: number;
   definition_json: string;
+  graph_json: string | null;
+  cron_expr: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -28,8 +30,8 @@ export function ensureDefaultWorkflowsSeeded(): void {
   if (count.c > 0) return;
 
   const ins = getDb().prepare(
-    `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, created_at, updated_at)
-     VALUES (?, ?, 1, ?, ?, ?, ?)`,
+    `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, created_at, updated_at)
+     VALUES (?, ?, 1, ?, ?, NULL, NULL, ?, ?)`,
   );
   const t = nowIso();
   ins.run(
@@ -50,12 +52,21 @@ export function ensureDefaultWorkflowsSeeded(): void {
   );
 }
 
-export function listWorkflowsByTrigger(trigger: 'inbound' | 'outbound'): EmailWorkflowRow[] {
+export function listWorkflowsByTrigger(trigger: string): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE trigger = ? AND enabled = 1 ORDER BY priority ASC, id ASC`,
   );
   return stmt.all(trigger) as EmailWorkflowRow[];
+}
+
+export function listWorkflowsWithCron(): EmailWorkflowRow[] {
+  ensureDefaultWorkflowsSeeded();
+  return getDb()
+    .prepare(
+      `SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE cron_expr IS NOT NULL AND TRIM(cron_expr) != '' AND enabled = 1 ORDER BY priority ASC, id ASC`,
+    )
+    .all() as EmailWorkflowRow[];
 }
 
 export function listAllWorkflows(): EmailWorkflowRow[] {
@@ -73,16 +84,18 @@ export function getWorkflowById(id: number): EmailWorkflowRow | undefined {
 
 export function createWorkflow(input: {
   name: string;
-  trigger: 'inbound' | 'outbound';
+  trigger: string;
   priority?: number;
   definitionJson: string;
+  graphJson?: string | null;
+  cronExpr?: string | null;
   enabled?: boolean;
 }): number {
   const t = nowIso();
   const result = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.name,
@@ -90,6 +103,8 @@ export function createWorkflow(input: {
       input.enabled === false ? 0 : 1,
       input.priority ?? 100,
       input.definitionJson,
+      input.graphJson ?? null,
+      input.cronExpr ?? null,
       t,
       t,
     );
@@ -98,7 +113,15 @@ export function createWorkflow(input: {
 
 export function updateWorkflow(
   id: number,
-  input: Partial<{ name: string; trigger: 'inbound' | 'outbound'; priority: number; definitionJson: string; enabled: boolean }>,
+  input: Partial<{
+    name: string;
+    trigger: string;
+    priority: number;
+    definitionJson: string;
+    graphJson: string | null;
+    cronExpr: string | null;
+    enabled: boolean;
+  }>,
 ): void {
   const existing = getWorkflowById(id);
   if (!existing) throw new Error('Workflow nicht gefunden');
@@ -110,6 +133,8 @@ export function updateWorkflow(
         trigger = COALESCE(?, trigger),
         priority = COALESCE(?, priority),
         definition_json = COALESCE(?, definition_json),
+        graph_json = COALESCE(?, graph_json),
+        cron_expr = COALESCE(?, cron_expr),
         enabled = COALESCE(?, enabled),
         updated_at = ?
       WHERE id = ?`,
@@ -119,6 +144,8 @@ export function updateWorkflow(
       input.trigger ?? null,
       input.priority ?? null,
       input.definitionJson ?? null,
+      input.graphJson === undefined ? null : input.graphJson,
+      input.cronExpr === undefined ? null : input.cronExpr,
       input.enabled === undefined ? null : input.enabled ? 1 : 0,
       t,
       id,
@@ -149,7 +176,7 @@ export function markWorkflowAppliedToMessage(messageId: number, workflowId: numb
 export function insertWorkflowRun(input: {
   workflowId: number;
   messageId: number | null;
-  direction: 'inbound' | 'outbound';
+  direction: 'inbound' | 'outbound' | 'schedule' | 'draft_created';
   status: 'ok' | 'error' | 'blocked';
   logJson: string;
 }): void {

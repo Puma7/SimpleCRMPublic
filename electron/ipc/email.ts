@@ -3,7 +3,7 @@ import { IpcMainInvokeEvent } from 'electron';
 import { IPCChannels } from '@shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById } from '../sqlite-service';
-import { deleteEmailPassword, saveEmailPassword } from '../email/email-keytar';
+import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
   createEmailAccountRecord,
@@ -20,6 +20,11 @@ import {
   listTagsForMessage,
   setMessageSoftDeleted,
   setMessageArchived,
+  setMessageAssignedTo,
+  listEmailTeamMembers,
+  upsertEmailTeamMember,
+  deleteEmailTeamMember,
+  type EmailAccountRow,
 } from '../email/email-store';
 import { sendComposeDraft } from '../email/email-compose-send';
 import { testSmtpConnection } from '../email/email-smtp';
@@ -43,7 +48,20 @@ import {
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
 import { syncInboxImap, testImapConnection } from '../email/email-imap-sync';
-import { evaluateOutboundWorkflows, runInboundWorkflowsForMessage } from '../email/email-workflow-engine';
+import { syncInboxPop3, testPop3Connection } from '../email/email-pop3-sync';
+import {
+  evaluateOutboundWorkflows,
+  runInboundWorkflowsForMessage,
+  runDraftCreatedWorkflowsForMessage,
+} from '../email/email-workflow-engine';
+import {
+  getGoogleOAuthAppSettings,
+  setGoogleOAuthAppSettings,
+  buildGoogleOAuthAuthorizeUrl,
+} from '../email/email-imap-auth';
+import { exchangeGoogleAuthCode } from '../email/email-oauth-google';
+import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
+import type { WorkflowGraphDocument } from '@shared/email-workflow-graph';
 import {
   listAllWorkflows,
   getWorkflowById,
@@ -82,6 +100,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapTls: boolean;
           imapUsername: string;
           imapPassword: string;
+          protocol?: 'imap' | 'pop3';
+          pop3Host?: string | null;
+          pop3Port?: number;
+          pop3Tls?: boolean;
         },
       ) => {
         const keytarAccountKey = `email-${randomUUID()}`;
@@ -95,6 +117,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             imapTls: payload.imapTls,
             imapUsername: payload.imapUsername,
             keytarAccountKey,
+            protocol: payload.protocol,
+            pop3Host: payload.pop3Host,
+            pop3Port: payload.pop3Port,
+            pop3Tls: payload.pop3Tls,
           });
           return { success: true as const, id };
         } catch (err) {
@@ -126,6 +152,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           smtpUsername?: string | null;
           smtpUseImapAuth?: boolean;
           smtpPassword?: string;
+          protocol?: 'imap' | 'pop3';
+          pop3Host?: string | null;
+          pop3Port?: number | null;
+          pop3Tls?: boolean | null;
+          sentFolderPath?: string | null;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -146,6 +177,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapPort: payload.imapPort,
           imapTls: payload.imapTls,
           imapUsername: payload.imapUsername,
+          protocol: payload.protocol,
+          pop3Host: payload.pop3Host,
+          pop3Port: payload.pop3Port ?? undefined,
+          pop3Tls: payload.pop3Tls === undefined ? undefined : Boolean(payload.pop3Tls),
+          sentFolderPath: payload.sentFolderPath,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -195,6 +231,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           smtp_username: null,
           smtp_use_imap_auth: 1,
           smtp_keytar_account_key: null,
+          protocol: 'imap' as const,
+          pop3_host: null,
+          pop3_port: 995,
+          pop3_tls: 1,
+          oauth_provider: null,
+          oauth_refresh_keytar_key: null,
+          sent_folder_path: 'Sent',
           created_at: '',
           updated_at: '',
         };
@@ -211,6 +254,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.SyncAccount, async (_event: IpcMainInvokeEvent, accountId: number) => {
       try {
+        const acc = getEmailAccountById(accountId);
+        if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+        if ((acc.protocol || 'imap') === 'pop3') {
+          const result = await syncInboxPop3(accountId);
+          return { success: true as const, fetched: result.fetched, folderId: result.folderId, lastUid: 0 };
+        }
         const result = await syncInboxImap(accountId);
         return { success: true as const, ...result };
       } catch (e) {
@@ -260,7 +309,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.CreateWorkflow,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { name: string; trigger: 'inbound' | 'outbound'; priority?: number; definitionJson: string; enabled?: boolean },
+        payload: {
+          name: string;
+          trigger: string;
+          priority?: number;
+          definitionJson: string;
+          graphJson?: string | null;
+          cronExpr?: string | null;
+          enabled?: boolean;
+        },
       ) => {
         const id = createWorkflow(payload);
         return { success: true as const, id };
@@ -277,9 +334,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         payload: {
           id: number;
           name?: string;
-          trigger?: 'inbound' | 'outbound';
+          trigger?: string;
           priority?: number;
           definitionJson?: string;
+          graphJson?: string | null;
+          cronExpr?: string | null;
           enabled?: boolean;
         },
       ) => {
@@ -288,6 +347,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           trigger: payload.trigger,
           priority: payload.priority,
           definitionJson: payload.definitionJson,
+          graphJson: payload.graphJson,
+          cronExpr: payload.cronExpr,
           enabled: payload.enabled,
         });
         return { success: true as const };
@@ -308,12 +369,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ValidateOutbound,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; subject: string; bodyText: string; to: string; cc?: string },
+        payload: { messageId: number; subject: string; bodyText: string; bodyHtml?: string; to: string; cc?: string },
       ) => {
         const result = evaluateOutboundWorkflows({
           messageId: payload.messageId,
           subject: payload.subject,
           bodyText: payload.bodyText,
+          bodyHtml: payload.bodyHtml,
           to: payload.to,
           cc: payload.cc,
         });
@@ -340,6 +402,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bodyText: payload.bodyText,
           toJson,
         });
+        await runDraftCreatedWorkflowsForMessage(id);
         return { success: true as const, id };
       },
       { logger },
@@ -351,7 +414,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.UpdateComposeDraft,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; subject?: string; bodyText?: string; to?: string; cc?: string },
+        payload: { messageId: number; subject?: string; bodyText?: string; bodyHtml?: string; to?: string; cc?: string },
       ) => {
         const toJson =
           payload.to !== undefined
@@ -368,6 +431,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         updateComposeDraft(payload.messageId, {
           subject: payload.subject,
           bodyText: payload.bodyText,
+          bodyHtml: payload.bodyHtml,
           toJson,
           ccJson,
         });
@@ -426,6 +490,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           draftMessageId: number;
           subject: string;
           bodyText: string;
+          bodyHtml?: string | null;
           to: string;
           cc?: string;
           inReplyToMessageId?: number | null;
@@ -666,11 +731,172 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       const ids = listMessageIdsForWorkflowBackfill();
       let processed = 0;
       for (const id of ids) {
-        runInboundWorkflowsForMessage(id);
+        await runInboundWorkflowsForMessage(id);
         processed += 1;
       }
       return { success: true as const, processed };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListTeamMembers, async () => listEmailTeamMembers(), { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveTeamMember,
+      async (_event: IpcMainInvokeEvent, payload: { id: string; displayName: string; role?: string }) => {
+        upsertEmailTeamMember(payload);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteTeamMember, async (_event: IpcMainInvokeEvent, id: string) => {
+      deleteEmailTeamMember(id);
+      return { success: true as const };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.AssignMessage,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; teamMemberId: string | null }) => {
+        setMessageAssignedTo(payload.messageId, payload.teamMemberId);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetGoogleOAuthApp, async () => {
+      return { success: true as const, ...getGoogleOAuthAppSettings() };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetGoogleOAuthApp,
+      async (_event: IpcMainInvokeEvent, payload: { clientId: string; clientSecret: string }) => {
+        setGoogleOAuthAppSettings(payload);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BuildGoogleOAuthUrl,
+      async (_event: IpcMainInvokeEvent, redirectUri: string) => {
+        const { clientId, clientSecret } = getGoogleOAuthAppSettings();
+        if (!clientId || !clientSecret) {
+          return { success: false as const, error: 'Google OAuth App-Daten fehlen' };
+        }
+        const url = buildGoogleOAuthAuthorizeUrl({ clientId, clientSecret, redirectUri });
+        return { success: true as const, url };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.FinishGoogleOAuth,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { accountId: number; redirectUri: string; code: string },
+      ) => {
+        const acc = getEmailAccountById(payload.accountId);
+        if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+        const { clientId, clientSecret } = getGoogleOAuthAppSettings();
+        if (!clientId || !clientSecret) {
+          return { success: false as const, error: 'Google OAuth App-Daten fehlen' };
+        }
+        let refreshKey = acc.oauth_refresh_keytar_key;
+        if (!refreshKey) {
+          refreshKey = `email-oauth-${randomUUID()}`;
+        }
+        try {
+          await exchangeGoogleAuthCode({
+            clientId,
+            clientSecret,
+            redirectUri: payload.redirectUri,
+            code: payload.code,
+            keytarRefreshKey: refreshKey,
+          });
+          updateEmailAccountRecord(payload.accountId, {
+            oauthProvider: 'google',
+            oauthRefreshKeytarKey: refreshKey,
+          });
+          return { success: true as const };
+        } catch (e) {
+          return { success: false as const, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.TestPop3,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { accountId?: number; host: string; port: number; tls: boolean; user: string; password: string },
+      ) => {
+        if (payload.accountId != null) {
+          const acc = getEmailAccountById(payload.accountId);
+          if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+          const pw = await getEmailPassword(acc.keytar_account_key);
+          if (!pw) return { success: false as const, error: 'Kein Passwort' };
+          const r = await testPop3Connection(acc, pw);
+          return r.ok ? { success: true as const } : { success: false as const, error: r.error };
+        }
+        const fakeAcc = {
+          id: 0,
+          display_name: '',
+          email_address: '',
+          imap_host: payload.host.trim(),
+          imap_port: payload.port,
+          imap_tls: payload.tls ? 1 : 0,
+          imap_username: payload.user.trim(),
+          keytar_account_key: '',
+          smtp_host: null,
+          smtp_port: null,
+          smtp_tls: null,
+          smtp_username: null,
+          smtp_use_imap_auth: 1,
+          smtp_keytar_account_key: null,
+          protocol: 'pop3',
+          pop3_host: payload.host.trim(),
+          pop3_port: payload.port,
+          pop3_tls: payload.tls ? 1 : 0,
+          oauth_provider: null,
+          oauth_refresh_keytar_key: null,
+          sent_folder_path: 'Sent',
+          created_at: '',
+          updated_at: '',
+        };
+        const r = await testPop3Connection(fakeAcc as EmailAccountRow, payload.password);
+        return r.ok ? { success: true as const } : { success: false as const, error: r.error };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.CompileWorkflowGraph,
+      async (_event: IpcMainInvokeEvent, graph: WorkflowGraphDocument) => {
+        const def = compileGraphToDefinition(graph);
+        return { success: true as const, definitionJson: definitionToJson(def) };
+      },
+      { logger },
+    ),
   );
 
   if (isDevelopment) {

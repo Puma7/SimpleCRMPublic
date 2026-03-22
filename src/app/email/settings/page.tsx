@@ -24,10 +24,12 @@ type Account = {
   smtp_tls?: number | null
   smtp_username?: string | null
   smtp_use_imap_auth?: number | null
+  sent_folder_path?: string | null
 }
 
 type Canned = { id: number; title: string; body: string }
 type Prompt = { id: number; label: string; user_template: string; target: string }
+type TeamMember = { id: string; display_name: string; role: string }
 
 export default function EmailSettingsPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -46,6 +48,14 @@ export default function EmailSettingsPage() {
   const [aiKey, setAiKey] = useState("")
   const [canned, setCanned] = useState<Canned[]>([])
   const [prompts, setPrompts] = useState<Prompt[]>([])
+  const [team, setTeam] = useState<TeamMember[]>([])
+  const [newMemberId, setNewMemberId] = useState("")
+  const [newMemberName, setNewMemberName] = useState("")
+  const [googleClientId, setGoogleClientId] = useState("")
+  const [googleClientSecret, setGoogleClientSecret] = useState("")
+  const [googleRedirect, setGoogleRedirect] = useState("http://127.0.0.1:1")
+  const [googleCode, setGoogleCode] = useState("")
+  const [sentFolder, setSentFolder] = useState("Sent")
 
   const hasElectron =
     typeof window !== "undefined" &&
@@ -69,6 +79,12 @@ export default function EmailSettingsPage() {
     setPrompts(
       (await (window.electronAPI as { invoke: (c: string) => Promise<Prompt[]> }).invoke(IPCChannels.Email.ListAiPrompts)) as Prompt[],
     )
+    const g = (await (window.electronAPI as { invoke: (c: string) => Promise<{ clientId: string; clientSecret: string }> }).invoke(
+      IPCChannels.Email.GetGoogleOAuthApp,
+    )) as { clientId?: string; clientSecret?: string }
+    setGoogleClientId(g.clientId ?? "")
+    setGoogleClientSecret(g.clientSecret ?? "")
+    setTeam((await (window.electronAPI as { invoke: (c: string) => Promise<TeamMember[]> }).invoke(IPCChannels.Email.ListTeamMembers)) as TeamMember[])
   }, [hasElectron])
 
   useEffect(() => {
@@ -83,6 +99,7 @@ export default function EmailSettingsPage() {
       setSmtpTls((a.smtp_tls ?? 1) === 1)
       setSmtpUser(a.smtp_username || "")
       setSmtpImapAuth((a.smtp_use_imap_auth ?? 1) === 1)
+      setSentFolder(a.sent_folder_path || "Sent")
     }
   }, [accId, accounts])
 
@@ -98,6 +115,7 @@ export default function EmailSettingsPage() {
         smtpUsername: smtpUser.trim() || null,
         smtpUseImapAuth: smtpImapAuth,
         smtpPassword: smtpPass || undefined,
+        sentFolderPath: sentFolder.trim() || null,
       })
       toast.success("SMTP gespeichert.")
       setSmtpPass("")
@@ -167,6 +185,134 @@ export default function EmailSettingsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Team &amp; Zuweisung</CardTitle>
+          <CardDescription>Mitglieder für die Nachrichten-Zuweisung in der E-Mail-Ansicht.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {team.map((t) => (
+            <div key={t.id} className="flex items-center justify-between gap-2 rounded border px-3 py-2 text-sm">
+              <span>
+                <span className="font-mono text-xs text-muted-foreground">{t.id}</span> · {t.display_name}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  await (window.electronAPI as { invoke: (c: string, id: string) => Promise<unknown> }).invoke(
+                    IPCChannels.Email.DeleteTeamMember,
+                    t.id,
+                  )
+                  await load()
+                }}
+              >
+                Entfernen
+              </Button>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            <Input className="max-w-[140px] font-mono text-xs" placeholder="ID" value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} />
+            <Input className="min-w-[160px] flex-1" placeholder="Anzeigename" value={newMemberName} onChange={(e) => setNewMemberName(e.target.value)} />
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={async () => {
+                if (!newMemberId.trim() || !newMemberName.trim()) return
+                await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<unknown> }).invoke(IPCChannels.Email.SaveTeamMember, {
+                  id: newMemberId.trim(),
+                  displayName: newMemberName.trim(),
+                })
+                setNewMemberId("")
+                setNewMemberName("")
+                await load()
+                toast.success("Mitglied gespeichert")
+              }}
+            >
+              Hinzufügen
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Google OAuth (Gmail IMAP)</CardTitle>
+          <CardDescription>
+            Desktop-App: OAuth-Redirect in der Google Cloud Console als Web-Client eintragen (z. B. http://127.0.0.1:1). Code aus dem Browser hier
+            einfügen.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>Client-ID</Label>
+            <Input value={googleClientId} onChange={(e) => setGoogleClientId(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Client-Secret</Label>
+            <Input type="password" value={googleClientSecret} onChange={(e) => setGoogleClientSecret(e.target.value)} />
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={async () => {
+              await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<unknown> }).invoke(IPCChannels.Email.SetGoogleOAuthApp, {
+                clientId: googleClientId,
+                clientSecret: googleClientSecret,
+              })
+              toast.success("Google-App-Daten gespeichert")
+            }}
+          >
+            App-Daten speichern
+          </Button>
+          <div className="space-y-1.5">
+            <Label>Redirect-URI (wie in Google Console)</Label>
+            <Input value={googleRedirect} onChange={(e) => setGoogleRedirect(e.target.value)} />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={async () => {
+              const r = (await (window.electronAPI as { invoke: (c: string, u: string) => Promise<{ success: boolean; url?: string; error?: string }> }).invoke(
+                IPCChannels.Email.BuildGoogleOAuthUrl,
+                googleRedirect.trim(),
+              )) as { success: boolean; url?: string; error?: string }
+              if (r.success && r.url) {
+                await navigator.clipboard.writeText(r.url)
+                toast.success("Autorisierungs-URL in Zwischenablage")
+              } else toast.error(r.error ?? "URL fehlgeschlagen")
+            }}
+          >
+            Auth-URL kopieren
+          </Button>
+          <div className="space-y-1.5">
+            <Label>Autorisierungscode (nach Browser)</Label>
+            <Input value={googleCode} onChange={(e) => setGoogleCode(e.target.value)} placeholder="4/…" />
+          </div>
+          <Button
+            type="button"
+            onClick={async () => {
+              if (accId == null) {
+                toast.error("Zuerst ein Konto wählen (SMTP-Karte)")
+                return
+              }
+              const r = (await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<{ success: boolean; error?: string }> }).invoke(
+                IPCChannels.Email.FinishGoogleOAuth,
+                { accountId: accId, redirectUri: googleRedirect.trim(), code: googleCode.trim() },
+              )) as { success: boolean; error?: string }
+              if (r.success) {
+                toast.success("Google-Token gespeichert")
+                setGoogleCode("")
+                await load()
+              } else toast.error(r.error ?? "Fehler")
+            }}
+          >
+            OAuth für gewähltes Konto abschließen
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>SMTP (Versand)</CardTitle>
           <CardDescription>Pro Konto. Ohne separates Passwort wird das IMAP-Passwort genutzt, wenn „Wie IMAP“ aktiv ist.</CardDescription>
         </CardHeader>
@@ -213,6 +359,10 @@ export default function EmailSettingsPage() {
           <div className="space-y-1.5">
             <Label>SMTP-Passwort (nur zum Speichern/Test, leer = unverändert)</Label>
             <Input type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} autoComplete="new-password" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>IMAP Sent-Ordner (nur IMAP, für Kopie nach Versand)</Label>
+            <Input value={sentFolder} onChange={(e) => setSentFolder(e.target.value)} placeholder="Sent" />
           </div>
           <div className="flex gap-2">
             <Button type="button" variant="secondary" onClick={() => void testSmtp()} disabled={testingSmtp || accId == null}>

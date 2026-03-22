@@ -5,6 +5,8 @@ import {
   setMessageArchived,
   setMessageSeenLocal,
   setOutboundHold,
+  getEmailAccountById,
+  listEmailAccounts,
 } from './email-store';
 import { assignCategoryPathToMessage, tryLinkMessageToCustomer } from './email-crm-store';
 import {
@@ -13,26 +15,23 @@ import {
   markWorkflowAppliedToMessage,
   insertWorkflowRun,
 } from './email-workflow-store';
-import type {
-  WorkflowCondition,
-  WorkflowDefinitionV1,
-  WorkflowRule,
-  WorkflowThenStep,
-} from './email-workflow-types';
-import { parseWorkflowDefinition } from './email-workflow-types';
+import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
+import { evaluateWorkflowWhen, parseWorkflowDefinition } from './email-workflow-types';
+import { sendSmtpForAccount } from './email-smtp';
 
 export type OutboundDraftPayload = {
   messageId: number;
   subject: string;
   bodyText: string;
+  bodyHtml?: string;
   to: string;
   cc?: string;
 };
 
-function extractFromAddress(fromJson: string | null): string {
-  if (!fromJson) return '';
+function extractAddressList(json: string | null): string {
+  if (!json) return '';
   try {
-    const parsed = JSON.parse(fromJson) as { value?: { address?: string }[] };
+    const parsed = JSON.parse(json) as { value?: { address?: string }[] };
     return parsed?.value?.map((v) => v.address ?? '').filter(Boolean).join(', ') ?? '';
   } catch {
     return '';
@@ -40,77 +39,39 @@ function extractFromAddress(fromJson: string | null): string {
 }
 
 function buildInboundContext(row: EmailMessageRow) {
-  const fromAddr = extractFromAddress(row.from_json);
+  const fromAddr = extractAddressList(row.from_json);
+  const toAddr = extractAddressList(row.to_json);
+  const ccAddr = extractAddressList(row.cc_json);
   const sub = row.subject ?? '';
   const body = row.body_text ?? '';
   const snip = row.snippet ?? '';
-  const combined = [sub, body, snip, fromAddr].join('\n');
-  return { subject: sub, body_text: body, snippet: snip, from_address: fromAddr, combined_text: combined };
+  const combined = [sub, body, snip, fromAddr, toAddr, ccAddr].join('\n');
+  return {
+    subject: sub,
+    body_text: body,
+    snippet: snip,
+    from_address: fromAddr,
+    to_address: toAddr,
+    cc_address: ccAddr,
+    combined_text: combined,
+  };
 }
 
 function buildOutboundContext(payload: OutboundDraftPayload) {
-  const combined = [payload.subject, payload.bodyText, payload.to, payload.cc ?? ''].join('\n');
+  const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const combined = [payload.subject, payload.bodyText, htmlPlain, payload.to, payload.cc ?? ''].join('\n');
   return {
     subject: payload.subject,
     body_text: payload.bodyText,
     snippet: payload.bodyText.slice(0, 500),
     from_address: '',
+    to_address: payload.to,
+    cc_address: payload.cc ?? '',
     combined_text: combined,
   };
 }
 
-function matchCondition(cond: WorkflowCondition | null, ctx: ReturnType<typeof buildInboundContext>): boolean {
-  if (!cond) return true;
-  let haystack = '';
-  switch (cond.field) {
-    case 'subject':
-      haystack = ctx.subject;
-      break;
-    case 'body_text':
-      haystack = ctx.body_text;
-      break;
-    case 'snippet':
-      haystack = ctx.snippet;
-      break;
-    case 'from_address':
-      haystack = ctx.from_address;
-      break;
-    case 'combined_text':
-      haystack = ctx.combined_text;
-      break;
-    default:
-      haystack = ctx.combined_text;
-  }
-  const needle = cond.value ?? '';
-  const ci = cond.caseInsensitive !== false;
-
-  if (cond.op === 'equals') {
-    return ci ? haystack.toLowerCase() === needle.toLowerCase() : haystack === needle;
-  }
-  if (cond.op === 'contains') {
-    const h = ci ? haystack.toLowerCase() : haystack;
-    const n = ci ? needle.toLowerCase() : needle;
-    return h.includes(n);
-  }
-  if (cond.op === 'domain_ends_with') {
-    const at = ctx.from_address.lastIndexOf('@');
-    const domain = at >= 0 ? ctx.from_address.slice(at + 1) : ctx.from_address;
-    const d = ci ? domain.toLowerCase() : domain;
-    const suf = ci ? needle.toLowerCase() : needle;
-    return d.endsWith(suf);
-  }
-  if (cond.op === 'regex') {
-    try {
-      const flags = ci ? 'i' : '';
-      return new RegExp(needle, flags).test(haystack);
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-function executeInboundStep(step: WorkflowThenStep, messageId: number, log: string[]): boolean {
+async function executeInboundStep(step: WorkflowThenStep, messageId: number, row: EmailMessageRow, log: string[]): Promise<boolean> {
   switch (step.type) {
     case 'tag':
       addMessageTag(messageId, step.tag);
@@ -136,6 +97,41 @@ function executeInboundStep(step: WorkflowThenStep, messageId: number, log: stri
       tryLinkMessageToCustomer(messageId);
       log.push('link_customer');
       return true;
+    case 'forward_copy': {
+      const acc = getEmailAccountById(row.account_id);
+      if (!acc) {
+        log.push('forward_copy:skip_no_account');
+        return true;
+      }
+      const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
+      const body = [
+        row.body_text ?? row.snippet ?? '',
+        '',
+        '---',
+        `Original von: ${buildInboundContext(row).from_address}`,
+      ].join('\n');
+      try {
+        await sendSmtpForAccount(row.account_id, {
+          from: acc.email_address,
+          to: step.to,
+          subject: subj,
+          text: body.slice(0, 500_000),
+        });
+        log.push(`forward_copy:${step.to}`);
+      } catch (e) {
+        log.push(`forward_copy_error:${e instanceof Error ? e.message : String(e)}`);
+      }
+      return true;
+    }
+    case 'tag_attachment_meta': {
+      if (row.has_attachments) {
+        addMessageTag(messageId, step.tag);
+        log.push(`tag_attachment_meta:${step.tag}`);
+      } else {
+        log.push('tag_attachment_meta:skip');
+      }
+      return true;
+    }
     case 'stop':
       log.push('stop');
       return false;
@@ -162,14 +158,14 @@ function executeOutboundStep(
   return 'continue';
 }
 
-function runRulesInbound(def: WorkflowDefinitionV1, messageId: number, row: EmailMessageRow): string[] {
+async function runRulesInbound(def: WorkflowDefinitionV1, messageId: number, row: EmailMessageRow): Promise<string[]> {
   const ctx = buildInboundContext(row);
   const log: string[] = [];
   for (const rule of def.rules) {
-    if (!matchCondition(rule.when, ctx)) continue;
+    if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {
-      const cont = executeInboundStep(step, messageId, log);
+      const cont = await executeInboundStep(step, messageId, row, log);
       if (!cont) return log;
     }
   }
@@ -180,7 +176,7 @@ function runRulesOutbound(def: WorkflowDefinitionV1, payload: OutboundDraftPaylo
   const ctx = buildOutboundContext(payload);
   const log: string[] = [];
   for (const rule of def.rules) {
-    if (!matchCondition(rule.when, ctx)) continue;
+    if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {
       const r = executeOutboundStep(step, payload.messageId, log);
@@ -191,7 +187,7 @@ function runRulesOutbound(def: WorkflowDefinitionV1, payload: OutboundDraftPaylo
   return { blocked: false, log };
 }
 
-export function runInboundWorkflowsForMessage(messageId: number): void {
+export async function runInboundWorkflowsForMessage(messageId: number): Promise<void> {
   const row = getEmailMessageById(messageId);
   if (!row) return;
   if (row.uid < 0) return;
@@ -203,7 +199,7 @@ export function runInboundWorkflowsForMessage(messageId: number): void {
     let status: 'ok' | 'error' = 'ok';
     try {
       const def = parseWorkflowDefinition(wf.definition_json);
-      log = runRulesInbound(def, messageId, row);
+      log = await runRulesInbound(def, messageId, row);
     } catch (e) {
       status = 'error';
       log = [`error:${e instanceof Error ? e.message : String(e)}`];
@@ -213,6 +209,33 @@ export function runInboundWorkflowsForMessage(messageId: number): void {
       workflowId: wf.id,
       messageId,
       direction: 'inbound',
+      status,
+      logJson: JSON.stringify(log),
+    });
+  }
+}
+
+export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {
+  const row = getEmailMessageById(messageId);
+  if (!row || row.uid >= 0) return;
+
+  const workflows = listWorkflowsByTrigger('draft_created');
+  for (const wf of workflows) {
+    if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    let log: string[] = [];
+    let status: 'ok' | 'error' = 'ok';
+    try {
+      const def = parseWorkflowDefinition(wf.definition_json);
+      log = await runRulesInbound(def, messageId, row);
+    } catch (e) {
+      status = 'error';
+      log = [`error:${e instanceof Error ? e.message : String(e)}`];
+    }
+    markWorkflowAppliedToMessage(messageId, wf.id);
+    insertWorkflowRun({
+      workflowId: wf.id,
+      messageId,
+      direction: 'draft_created',
       status,
       logJson: JSON.stringify(log),
     });
@@ -278,4 +301,16 @@ export function evaluateOutboundWorkflows(payload: OutboundDraftPayload): {
     };
   }
   return { allowed: true, reason: null };
+}
+
+export function runScheduledWorkflowFire(workflowId: number): void {
+  const accounts = listEmailAccounts();
+  const log = [`scheduled_fire`, `accounts:${accounts.length}`];
+  insertWorkflowRun({
+    workflowId,
+    messageId: null,
+    direction: 'schedule',
+    status: 'ok',
+    logJson: JSON.stringify(log),
+  });
 }

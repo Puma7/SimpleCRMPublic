@@ -14,6 +14,8 @@ import { toast } from "sonner"
 import { Loader2, Mail, RefreshCw, Send, Workflow, Settings, Search, Trash2, Archive, RotateCcw } from "lucide-react"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import ReactQuill from "react-quill"
+import "react-quill/dist/quill.snow.css"
 import {
   Select,
   SelectContent,
@@ -31,9 +33,15 @@ type EmailAccount = {
   imap_tls: number
   imap_username: string
   keytar_account_key: string
+  protocol?: string
+  pop3_host?: string | null
+  pop3_port?: number | null
+  pop3_tls?: number | null
   created_at: string
   updated_at: string
 }
+
+type TeamMember = { id: string; display_name: string; role: string }
 
 type EmailMessage = {
   id: number
@@ -53,6 +61,10 @@ type EmailMessage = {
   ticket_code?: string | null
   customer_id?: number | null
   folder_kind?: string
+  assigned_to?: string | null
+  has_attachments?: number
+  imap_thread_id?: string | null
+  attachments_json?: string | null
 }
 
 type MailView = "inbox" | "sent" | "archived" | "drafts"
@@ -125,8 +137,14 @@ export default function EmailPage() {
   const [imapTls, setImapTls] = useState(true)
   const [imapUsername, setImapUsername] = useState("")
   const [imapPassword, setImapPassword] = useState("")
+  const [accountProtocol, setAccountProtocol] = useState<"imap" | "pop3">("imap")
+  const [pop3Host, setPop3Host] = useState("")
+  const [pop3Port, setPop3Port] = useState("995")
+  const [pop3Tls, setPop3Tls] = useState(true)
   const [testing, setTesting] = useState(false)
+  const [testingPop3, setTestingPop3] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
 
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeDraftId, setComposeDraftId] = useState<number | null>(null)
@@ -135,6 +153,7 @@ export default function EmailPage() {
   const [composeCc, setComposeCc] = useState("")
   const [composeSubject, setComposeSubject] = useState("")
   const [composeBody, setComposeBody] = useState("")
+  const [composeBodyHtml, setComposeBodyHtml] = useState("")
   const [composeSending, setComposeSending] = useState(false)
   const [messageTags, setMessageTags] = useState<string[]>([])
   const [internalNotes, setInternalNotes] = useState<{ id: number; body: string; created_at: string }[]>([])
@@ -158,6 +177,11 @@ export default function EmailPage() {
       const list = await invoke<EmailAccount[]>(IPCChannels.Email.ListAccounts)
       setAccounts(list)
       setSelectedAccountId((prev) => (prev === null && list.length > 0 ? list[0]!.id : prev))
+      try {
+        setTeamMembers(await invoke<TeamMember[]>(IPCChannels.Email.ListTeamMembers))
+      } catch {
+        setTeamMembers([])
+      }
     } catch (e) {
       console.error(e)
       toast.error("Konten konnten nicht geladen werden.")
@@ -272,6 +296,31 @@ export default function EmailPage() {
     }
   }
 
+  const handleTestPop3 = async () => {
+    if (!hasElectron) return
+    const host = (pop3Host.trim() || imapHost.trim())
+    if (!host || !imapUsername.trim() || !imapPassword) {
+      toast.error("POP3-Host, Benutzer und Passwort ausfüllen.")
+      return
+    }
+    setTestingPop3(true)
+    try {
+      const result = (await invoke<{ success: boolean; error?: string }>(IPCChannels.Email.TestPop3, {
+        host,
+        port: parseInt(pop3Port, 10) || 995,
+        tls: pop3Tls,
+        user: imapUsername.trim(),
+        password: imapPassword,
+      })) as { success: boolean; error?: string }
+      if (result.success) toast.success("POP3-Verbindung erfolgreich.")
+      else toast.error(result.error ?? "POP3 fehlgeschlagen.")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "POP3 fehlgeschlagen.")
+    } finally {
+      setTestingPop3(false)
+    }
+  }
+
   const handleSaveAccount = async () => {
     if (!hasElectron) return
     if (!displayName.trim() || !emailAddress.trim() || !imapHost.trim() || !imapUsername.trim() || !imapPassword) {
@@ -288,6 +337,10 @@ export default function EmailPage() {
         imapTls,
         imapUsername: imapUsername.trim(),
         imapPassword,
+        protocol: accountProtocol,
+        pop3Host: pop3Host.trim() || null,
+        pop3Port: parseInt(pop3Port, 10) || 995,
+        pop3Tls,
       })) as { id?: number }
       if (res.id != null) {
         toast.success("Konto gespeichert.")
@@ -378,7 +431,9 @@ export default function EmailPage() {
         setComposeTo(toAddr)
         setComposeCc("")
         setComposeSubject(subj)
-        setComposeBody(quoted || "")
+        const plain = quoted || ""
+        setComposeBody(plain)
+        setComposeBodyHtml(plain ? `<p>${plain.replace(/\n/g, "<br/>")}</p>` : "")
         setComposeOpen(true)
       }
     } catch (e) {
@@ -389,10 +444,12 @@ export default function EmailPage() {
   const saveComposeDraft = async () => {
     if (!hasElectron || composeDraftId == null) return
     try {
+      const plain = stripHtmlToText(composeBodyHtml) || composeBody
       await invoke(IPCChannels.Email.UpdateComposeDraft, {
         messageId: composeDraftId,
         subject: composeSubject,
-        bodyText: composeBody,
+        bodyText: plain,
+        bodyHtml: composeBodyHtml || undefined,
         to: composeTo,
         cc: composeCc || undefined,
       })
@@ -406,11 +463,13 @@ export default function EmailPage() {
     setComposeSending(true)
     try {
       await saveComposeDraft()
+      const plain = stripHtmlToText(composeBodyHtml) || composeBody
       const r = await invoke<{ success: boolean; error?: string }>(IPCChannels.Email.SendCompose, {
         accountId: selectedAccountId,
         draftMessageId: composeDraftId,
         subject: composeSubject,
-        bodyText: composeBody,
+        bodyText: plain,
+        bodyHtml: composeBodyHtml || null,
         to: composeTo,
         cc: composeCc || undefined,
         inReplyToMessageId: composeReplyToId,
@@ -556,10 +615,31 @@ export default function EmailPage() {
         <div className="flex flex-col gap-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Neues IMAP-Konto</CardTitle>
-              <CardDescription>Zugangsdaten im Schlüsselbund.</CardDescription>
+              <CardTitle className="text-base">Neues E-Mail-Konto</CardTitle>
+              <CardDescription>IMAP oder POP3. Zugangsdaten im Schlüsselbund.</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <div className="space-y-1.5">
+                <Label>Protokoll</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={accountProtocol === "imap" ? "default" : "outline"}
+                    onClick={() => setAccountProtocol("imap")}
+                  >
+                    IMAP
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={accountProtocol === "pop3" ? "default" : "outline"}
+                    onClick={() => setAccountProtocol("pop3")}
+                  >
+                    POP3
+                  </Button>
+                </div>
+              </div>
               <div className="space-y-1.5">
                 <Label htmlFor="em-display">Anzeigename</Label>
                 <Input id="em-display" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
@@ -569,9 +649,29 @@ export default function EmailPage() {
                 <Input id="em-addr" type="email" value={emailAddress} onChange={(e) => setEmailAddress(e.target.value)} />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="em-host">IMAP-Server</Label>
+                <Label htmlFor="em-host">{accountProtocol === "pop3" ? "Server (IMAP-Portion / Fallback)" : "IMAP-Server"}</Label>
                 <Input id="em-host" value={imapHost} onChange={(e) => setImapHost(e.target.value)} />
               </div>
+              {accountProtocol === "pop3" ? (
+                <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="pop-host">POP3-Server</Label>
+                    <Input id="pop-host" value={pop3Host} onChange={(e) => setPop3Host(e.target.value)} placeholder="Leer = wie oben" />
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="flex-1 space-y-1.5">
+                      <Label htmlFor="pop-port">POP3-Port</Label>
+                      <Input id="pop-port" value={pop3Port} onChange={(e) => setPop3Port(e.target.value)} />
+                    </div>
+                    <div className="flex items-end gap-2 pb-2">
+                      <Switch id="pop-tls" checked={pop3Tls} onCheckedChange={setPop3Tls} />
+                      <Label htmlFor="pop-tls" className="cursor-pointer text-sm font-normal">
+                        TLS
+                      </Label>
+                    </div>
+                  </div>
+                </>
+              ) : null}
               <div className="flex gap-2">
                 <div className="flex-1 space-y-1.5">
                   <Label htmlFor="em-port">Port</Label>
@@ -593,10 +693,17 @@ export default function EmailPage() {
                 <Input id="em-pass" type="password" value={imapPassword} onChange={(e) => setImapPassword(e.target.value)} />
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
-                <Button type="button" variant="secondary" size="sm" onClick={() => void handleTestImap()} disabled={testing}>
-                  {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  IMAP testen
-                </Button>
+                {accountProtocol === "imap" ? (
+                  <Button type="button" variant="secondary" size="sm" onClick={() => void handleTestImap()} disabled={testing}>
+                    {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    IMAP testen
+                  </Button>
+                ) : (
+                  <Button type="button" variant="secondary" size="sm" onClick={() => void handleTestPop3()} disabled={testingPop3}>
+                    {testingPop3 ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    POP3 testen
+                  </Button>
+                )}
                 <Button type="button" size="sm" onClick={() => void handleSaveAccount()} disabled={saving}>
                   {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   Speichern
@@ -628,7 +735,9 @@ export default function EmailPage() {
                           )}
                         >
                           <div className="font-medium">{a.display_name}</div>
-                          <div className="text-xs text-muted-foreground">{a.email_address}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {a.email_address} · {(a.protocol || "imap").toUpperCase()}
+                          </div>
                         </button>
                       </li>
                     ))}
@@ -758,8 +867,47 @@ export default function EmailPage() {
                     {selectedMessage.ticket_code ? (
                       <p className="text-xs text-muted-foreground">Ticket: {selectedMessage.ticket_code}</p>
                     ) : null}
+                    {selectedMessage.imap_thread_id ? (
+                      <p className="text-xs text-muted-foreground">IMAP-Thread-ID: {selectedMessage.imap_thread_id}</p>
+                    ) : null}
+                    {selectedMessage.has_attachments ? (
+                      <p className="text-xs text-amber-700 dark:text-amber-400">Hat Anhänge (Metadaten in DB)</p>
+                    ) : null}
+                    {selectedMessage.attachments_json ? (
+                      <pre className="max-h-24 overflow-auto rounded bg-muted/50 p-2 text-[10px]">
+                        {selectedMessage.attachments_json}
+                      </pre>
+                    ) : null}
                     {messageTags.length > 0 ? <p className="text-xs text-muted-foreground">Tags: {messageTags.join(", ")}</p> : null}
                     <div className="flex flex-wrap items-end gap-2">
+                      <div className="min-w-[200px] flex-1 space-y-1">
+                        <Label className="text-xs">Zuweisung (Team)</Label>
+                        <Select
+                          value={selectedMessage.assigned_to ?? "none"}
+                          onValueChange={async (v) => {
+                            const tid = v === "none" ? null : v
+                            await invoke(IPCChannels.Email.AssignMessage, {
+                              messageId: selectedMessage.id,
+                              teamMemberId: tid,
+                            })
+                            const full = await invoke<EmailMessage | null>(IPCChannels.Email.GetMessage, selectedMessage.id)
+                            setSelectedMessage(full ?? selectedMessage)
+                            toast.success("Zuweisung gespeichert")
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Agent" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">— niemand —</SelectItem>
+                            {teamMembers.map((t) => (
+                              <SelectItem key={t.id} value={t.id}>
+                                {t.display_name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <div className="min-w-[200px] flex-1 space-y-1">
                         <Label className="text-xs">Kunde verknüpfen</Label>
                         <Select
@@ -847,7 +995,11 @@ export default function EmailPage() {
                 <Select
                   onValueChange={(id) => {
                     const c = cannedList.find((x) => x.id === parseInt(id, 10))
-                    if (c) setComposeBody((prev) => prev + applyCannedTemplate(c.body, selectedMessage?.customer_id ?? null, customers))
+                    if (c) {
+                      const block = applyCannedTemplate(c.body, selectedMessage?.customer_id ?? null, customers)
+                      setComposeBodyHtml((prev) => `${prev}<p>${block.replace(/\n/g, "<br/>")}</p>`)
+                      setComposeBody((prev) => `${prev}\n${block}`)
+                    }
                   }}
                 >
                   <SelectTrigger className="w-[180px]">
@@ -865,12 +1017,16 @@ export default function EmailPage() {
                   onValueChange={async (id) => {
                     const pid = parseInt(id, 10)
                     try {
+                      const src = stripHtmlToText(composeBodyHtml) || composeBody
                       const r = await invoke<{ success: boolean; text?: string; error?: string }>(IPCChannels.Email.AiTransformText, {
                         promptId: pid,
-                        text: composeBody,
+                        text: src,
                         customerId: selectedMessage?.customer_id ?? null,
                       })
-                      if (r.success && r.text) setComposeBody(r.text)
+                      if (r.success && r.text) {
+                        setComposeBody(r.text)
+                        setComposeBodyHtml(`<p>${r.text.replace(/\n/g, "<br/>")}</p>`)
+                      }
                       else toast.error(r.error ?? "KI-Fehler")
                     } catch (e) {
                       toast.error(e instanceof Error ? e.message : "KI-Fehler")
@@ -902,8 +1058,10 @@ export default function EmailPage() {
                 <Input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} />
               </div>
               <div className="space-y-1.5">
-                <Label>Text</Label>
-                <Textarea className="min-h-[160px]" value={composeBody} onChange={(e) => setComposeBody(e.target.value)} />
+                <Label>Text (HTML)</Label>
+                <div className="[&_.ql-container]:min-h-[180px] rounded-md border bg-background">
+                  <ReactQuill theme="snow" value={composeBodyHtml} onChange={setComposeBodyHtml} />
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="secondary" onClick={() => void saveComposeDraft().then(() => toast.success("Gespeichert"))}>

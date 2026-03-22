@@ -144,6 +144,16 @@ const EmailChannels = literal({
   SoftDeleteMessage: 'email:soft-delete-message',
   RestoreMessage: 'email:restore-message',
   SetMessageArchived: 'email:set-message-archived',
+  ListTeamMembers: 'email:list-team-members',
+  SaveTeamMember: 'email:save-team-member',
+  DeleteTeamMember: 'email:delete-team-member',
+  AssignMessage: 'email:assign-message',
+  GetGoogleOAuthApp: 'email:get-google-oauth-app',
+  SetGoogleOAuthApp: 'email:set-google-oauth-app',
+  BuildGoogleOAuthUrl: 'email:build-google-oauth-url',
+  FinishGoogleOAuth: 'email:finish-google-oauth',
+  TestPop3: 'email:test-pop3',
+  CompileWorkflowGraph: 'email:compile-workflow-graph',
 });
 
 export const IPCChannels = {

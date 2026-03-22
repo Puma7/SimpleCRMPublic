@@ -27,6 +27,7 @@ export const EMAIL_MESSAGE_CATEGORIES_TABLE = 'email_message_categories';
 export const EMAIL_INTERNAL_NOTES_TABLE = 'email_internal_notes';
 export const EMAIL_CANNED_RESPONSES_TABLE = 'email_canned_responses';
 export const EMAIL_AI_PROMPTS_TABLE = 'email_ai_prompts';
+export const EMAIL_TEAM_MEMBERS_TABLE = 'email_team_members';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -227,6 +228,13 @@ export const createEmailAccountsTable = `
     smtp_username TEXT,
     smtp_use_imap_auth INTEGER NOT NULL DEFAULT 1,
     smtp_keytar_account_key TEXT UNIQUE,
+    protocol TEXT NOT NULL DEFAULT 'imap',
+    pop3_host TEXT,
+    pop3_port INTEGER DEFAULT 995,
+    pop3_tls INTEGER NOT NULL DEFAULT 1,
+    oauth_provider TEXT,
+    oauth_refresh_keytar_key TEXT UNIQUE,
+    sent_folder_path TEXT DEFAULT 'Sent',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
@@ -242,6 +250,7 @@ export const createEmailFoldersTable = `
     uidvalidity_str TEXT,
     last_uid INTEGER NOT NULL DEFAULT 0,
     last_synced_at TEXT,
+    pop3_uidl_str TEXT,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     UNIQUE(account_id, path)
   );
@@ -273,6 +282,10 @@ export const createEmailMessagesTable = `
     ticket_code TEXT,
     customer_id INTEGER,
     folder_kind TEXT NOT NULL DEFAULT 'inbox',
+    imap_thread_id TEXT,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
+    attachments_json TEXT,
+    assigned_to TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (folder_id) REFERENCES ${EMAIL_FOLDERS_TABLE}(id) ON DELETE CASCADE,
@@ -330,6 +343,16 @@ export const createEmailCannedResponsesTable = `
   );
 `;
 
+export const createEmailTeamMembersTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_TEAM_MEMBERS_TABLE} (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'agent',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
 export const createEmailAiPromptsTable = `
   CREATE TABLE IF NOT EXISTS ${EMAIL_AI_PROMPTS_TABLE} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -349,6 +372,8 @@ export const createEmailWorkflowsTable = `
     enabled INTEGER NOT NULL DEFAULT 1,
     priority INTEGER NOT NULL DEFAULT 100,
     definition_json TEXT NOT NULL,
+    graph_json TEXT,
+    cron_expr TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
@@ -427,6 +452,8 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_accounts_address ON ${EMAIL_ACCOUNTS_TABLE}(email_address);`,
     `CREATE INDEX IF NOT EXISTS idx_email_folders_account ON ${EMAIL_FOLDERS_TABLE}(account_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_account_folder ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_assigned ON ${EMAIL_MESSAGES_TABLE}(assigned_to);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_imap_thread ON ${EMAIL_MESSAGES_TABLE}(imap_thread_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON ${EMAIL_MESSAGES_TABLE}(message_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_date ON ${EMAIL_MESSAGES_TABLE}(date_received);`,
     `CREATE INDEX IF NOT EXISTS idx_email_workflows_trigger ON ${EMAIL_WORKFLOWS_TABLE}(trigger, enabled, priority);`,

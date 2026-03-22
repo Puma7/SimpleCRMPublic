@@ -2,7 +2,6 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
-import { getEmailPassword } from './email-keytar';
 import {
   getEmailAccountById,
   getFolderByAccountAndPath,
@@ -17,6 +16,7 @@ import {
   uidValidityMismatch,
   uidValidityAsOptionalNumber,
 } from './email-uidvalidity';
+import { resolveImapAuth } from './email-imap-auth';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -53,6 +53,19 @@ function snippetFromParsed(textBody: string | null, htmlBody: string | null): st
   return null;
 }
 
+function parseAttachmentsMeta(parsed: {
+  attachments?: { filename?: string; contentType?: string; size?: number }[];
+}): { hasAttachments: boolean; json: string | null } {
+  const att = parsed.attachments;
+  if (!att || att.length === 0) return { hasAttachments: false, json: null };
+  const meta = att.map((a) => ({
+    filename: a.filename ?? null,
+    contentType: a.contentType ?? null,
+    size: a.size ?? null,
+  }));
+  return { hasAttachments: true, json: JSON.stringify(meta) };
+}
+
 export type ImapSyncResult = {
   fetched: number;
   folderId: number;
@@ -64,19 +77,25 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
   if (!account) {
     throw new Error('Unbekanntes E-Mail-Konto');
   }
-  const password = await getEmailPassword(account.keytar_account_key);
-  if (!password) {
-    throw new Error('Kein gespeichertes IMAP-Passwort für dieses Konto');
+  if ((account.protocol || 'imap') !== 'imap') {
+    throw new Error('Konto ist kein IMAP-Konto (POP3 separat synchronisieren)');
   }
 
+  const auth = await resolveImapAuth(account);
   const client = new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
     secure: Boolean(account.imap_tls),
-    auth: {
-      user: account.imap_username,
-      pass: password,
-    },
+    auth:
+      'accessToken' in auth
+        ? {
+            user: auth.user,
+            accessToken: auth.accessToken,
+          }
+        : {
+            user: auth.user,
+            pass: auth.pass,
+          },
     logger: false,
   });
 
@@ -125,7 +144,11 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
 
       let maxProcessed = lastUid;
       for (const uid of toFetch) {
-        const msg = await client.fetchOne(String(uid), { source: true, uid: true, flags: true }, { uid: true });
+        const msg = await client.fetchOne(
+          String(uid),
+          { source: true, uid: true, flags: true, threadId: true },
+          { uid: true },
+        );
         if (!msg || !msg.source) {
           continue;
         }
@@ -140,6 +163,8 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
         const textBody = parsed.text?.trim() || null;
         const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
         const snippet = snippetFromParsed(textBody, htmlBody);
+        const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
+        const imapThreadId = msg.threadId != null ? String(msg.threadId) : null;
 
         const { id: localMsgId, isNew } = insertOrUpdateEmailMessage({
           accountId,
@@ -157,18 +182,22 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
           bodyText: textBody,
           bodyHtml: htmlBody,
           seenLocal: Boolean(msg.flags?.has('\\Seen')),
+          imapThreadId,
+          hasAttachments,
+          attachmentsJson,
         });
         if (isNew && localMsgId > 0) {
-          const { assignThreadAndTicketToMessage } = await import('./email-ticket');
-          assignThreadAndTicketToMessage(localMsgId, {
-            subject: parsed.subject ?? null,
-            inReplyTo: inReplyTo,
+          const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
+          assignJwzThreadAndTicket(localMsgId, accountId, {
+            messageIdHeader: messageId,
+            inReplyTo,
             referencesHeader: refs,
+            subject: parsed.subject ?? null,
           });
           const { tryLinkMessageToCustomer } = await import('./email-crm-store');
           tryLinkMessageToCustomer(localMsgId);
           const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
-          runInboundWorkflowsForMessage(localMsgId);
+          await runInboundWorkflowsForMessage(localMsgId);
         }
         fetched += 1;
         maxProcessed = Math.max(maxProcessed, uid);

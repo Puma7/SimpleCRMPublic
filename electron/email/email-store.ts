@@ -6,6 +6,7 @@ import {
   EMAIL_MESSAGES_TABLE,
   EMAIL_MESSAGE_TAGS_TABLE,
   EMAIL_MESSAGE_CATEGORIES_TABLE,
+  EMAIL_TEAM_MEMBERS_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
 
@@ -24,6 +25,13 @@ export type EmailAccountRow = {
   smtp_username: string | null;
   smtp_use_imap_auth: number | null;
   smtp_keytar_account_key: string | null;
+  protocol: string;
+  pop3_host: string | null;
+  pop3_port: number | null;
+  pop3_tls: number | null;
+  oauth_provider: string | null;
+  oauth_refresh_keytar_key: string | null;
+  sent_folder_path: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -37,6 +45,7 @@ export type EmailFolderRow = {
   uidvalidity_str: string | null;
   last_uid: number;
   last_synced_at: string | null;
+  pop3_uidl_str: string | null;
 };
 
 export type EmailMessageRow = {
@@ -64,14 +73,22 @@ export type EmailMessageRow = {
   ticket_code: string | null;
   customer_id: number | null;
   folder_kind: string;
+  imap_thread_id: string | null;
+  has_attachments: number;
+  attachments_json: string | null;
+  assigned_to: string | null;
   created_at: string;
 };
 
+const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
+            smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
+            COALESCE(protocol, 'imap') AS protocol, pop3_host, pop3_port, pop3_tls, oauth_provider, oauth_refresh_keytar_key,
+            COALESCE(sent_folder_path, 'Sent') AS sent_folder_path,
+            created_at, updated_at`;
+
 export function listEmailAccounts(): EmailAccountRow[] {
   const stmt = getDb().prepare(
-    `SELECT id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
-            smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
-            created_at, updated_at
+    `SELECT ${ACCOUNT_SELECT}
      FROM ${EMAIL_ACCOUNTS_TABLE} ORDER BY id ASC`,
   );
   return stmt.all() as EmailAccountRow[];
@@ -79,9 +96,7 @@ export function listEmailAccounts(): EmailAccountRow[] {
 
 export function getEmailAccountById(id: number): EmailAccountRow | undefined {
   const stmt = getDb().prepare(
-    `SELECT id, display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
-            smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
-            created_at, updated_at
+    `SELECT ${ACCOUNT_SELECT}
      FROM ${EMAIL_ACCOUNTS_TABLE} WHERE id = ?`,
   );
   return stmt.get(id) as EmailAccountRow | undefined;
@@ -96,15 +111,24 @@ export function createEmailAccountRecord(input: {
   imapUsername: string;
   /** If omitted, a new key is generated. Prefer passing a key only after the password was stored in Keytar. */
   keytarAccountKey?: string;
+  protocol?: 'imap' | 'pop3';
+  pop3Host?: string | null;
+  pop3Port?: number;
+  pop3Tls?: boolean;
 }): { id: number; keytarAccountKey: string } {
   const keytarAccountKey = input.keytarAccountKey ?? `email-${randomUUID()}`;
   const now = new Date().toISOString();
+  const proto = input.protocol ?? 'imap';
+  const p3h = input.pop3Host?.trim() || null;
+  const p3p = input.pop3Port ?? 995;
+  const p3t = input.pop3Tls !== false ? 1 : 0;
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNTS_TABLE} (
       display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
       smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
+      protocol, pop3_host, pop3_port, pop3_tls,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const result = stmt.run(
     input.displayName,
@@ -120,6 +144,10 @@ export function createEmailAccountRecord(input: {
     null,
     1,
     null,
+    proto,
+    p3h,
+    p3p,
+    p3t,
     now,
     now,
   );
@@ -141,6 +169,13 @@ export function updateEmailAccountRecord(
     smtpUsername: string | null;
     smtpUseImapAuth: boolean | null;
     smtpKeytarAccountKey: string | null;
+    protocol: 'imap' | 'pop3';
+    pop3Host: string | null;
+    pop3Port: number | null;
+    pop3Tls: boolean | null;
+    oauthProvider: string | null;
+    oauthRefreshKeytarKey: string | null;
+    sentFolderPath: string | null;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -162,6 +197,13 @@ export function updateEmailAccountRecord(
       smtp_username = COALESCE(?, smtp_username),
       smtp_use_imap_auth = COALESCE(?, smtp_use_imap_auth),
       smtp_keytar_account_key = COALESCE(?, smtp_keytar_account_key),
+      protocol = COALESCE(?, protocol),
+      pop3_host = COALESCE(?, pop3_host),
+      pop3_port = COALESCE(?, pop3_port),
+      pop3_tls = COALESCE(?, pop3_tls),
+      oauth_provider = COALESCE(?, oauth_provider),
+      oauth_refresh_keytar_key = COALESCE(?, oauth_refresh_keytar_key),
+      sent_folder_path = COALESCE(?, sent_folder_path),
       updated_at = ?
     WHERE id = ?`,
   );
@@ -178,9 +220,69 @@ export function updateEmailAccountRecord(
     input.smtpUsername === undefined ? null : input.smtpUsername,
     input.smtpUseImapAuth === undefined ? null : input.smtpUseImapAuth ? 1 : 0,
     input.smtpKeytarAccountKey === undefined ? null : input.smtpKeytarAccountKey,
+    input.protocol ?? null,
+    input.pop3Host === undefined ? null : input.pop3Host,
+    input.pop3Port ?? null,
+    input.pop3Tls === undefined ? null : input.pop3Tls ? 1 : 0,
+    input.oauthProvider === undefined ? null : input.oauthProvider,
+    input.oauthRefreshKeytarKey === undefined ? null : input.oauthRefreshKeytarKey,
+    input.sentFolderPath === undefined ? null : input.sentFolderPath,
     now,
     id,
   );
+}
+
+export function setMessageAssignedTo(messageId: number, teamMemberId: string | null): void {
+  getDb().prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET assigned_to = ? WHERE id = ?`).run(teamMemberId, messageId);
+}
+
+export type EmailTeamMemberRow = {
+  id: string;
+  display_name: string;
+  role: string;
+  sort_order: number;
+  created_at: string;
+};
+
+export function listEmailTeamMembers(): EmailTeamMemberRow[] {
+  const stmt = getDb().prepare(
+    `SELECT id, display_name, role, sort_order, created_at FROM ${EMAIL_TEAM_MEMBERS_TABLE} ORDER BY sort_order ASC, display_name ASC`,
+  );
+  let rows = stmt.all() as EmailTeamMemberRow[];
+  if (rows.length === 0) {
+    upsertEmailTeamMember({ id: 'agent-1', displayName: 'Agent 1', role: 'agent', sortOrder: 0 });
+    rows = stmt.all() as EmailTeamMemberRow[];
+  }
+  return rows;
+}
+
+export function upsertEmailTeamMember(input: {
+  id: string;
+  displayName: string;
+  role?: string;
+  sortOrder?: number;
+}): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO ${EMAIL_TEAM_MEMBERS_TABLE} (id, display_name, role, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         display_name = excluded.display_name,
+         role = excluded.role,
+         sort_order = excluded.sort_order`,
+    )
+    .run(
+      input.id.trim(),
+      input.displayName.trim(),
+      input.role?.trim() || 'agent',
+      input.sortOrder ?? 0,
+      now,
+    );
+}
+
+export function deleteEmailTeamMember(id: string): void {
+  getDb().prepare(`DELETE FROM ${EMAIL_TEAM_MEMBERS_TABLE} WHERE id = ?`).run(id);
 }
 
 export async function deleteEmailAccountRecord(id: number): Promise<void> {
@@ -190,6 +292,9 @@ export async function deleteEmailAccountRecord(id: number): Promise<void> {
     if (row.smtp_keytar_account_key) {
       await deleteEmailPassword(row.smtp_keytar_account_key).catch(() => undefined);
     }
+    if (row.oauth_refresh_keytar_key) {
+      await deleteEmailPassword(row.oauth_refresh_keytar_key).catch(() => undefined);
+    }
   }
   const stmt = getDb().prepare(`DELETE FROM ${EMAIL_ACCOUNTS_TABLE} WHERE id = ?`);
   stmt.run(id);
@@ -197,7 +302,7 @@ export async function deleteEmailAccountRecord(id: number): Promise<void> {
 
 export function getFolderByAccountAndPath(accountId: number, path: string): EmailFolderRow | undefined {
   const stmt = getDb().prepare(
-    `SELECT id, account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, last_synced_at FROM ${EMAIL_FOLDERS_TABLE} WHERE account_id = ? AND path = ?`,
+    `SELECT id, account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, last_synced_at, pop3_uidl_str FROM ${EMAIL_FOLDERS_TABLE} WHERE account_id = ? AND path = ?`,
   );
   return stmt.get(accountId, path) as EmailFolderRow | undefined;
 }
@@ -209,6 +314,7 @@ export function upsertEmailFolder(input: {
   uidvalidity?: number | null;
   uidvalidityStr?: string | null;
   lastUid?: number;
+  pop3UidlStr?: string | null;
 }): EmailFolderRow {
   const existing = getFolderByAccountAndPath(input.accountId, input.path);
   const now = new Date().toISOString();
@@ -219,6 +325,7 @@ export function upsertEmailFolder(input: {
         uidvalidity = COALESCE(?, uidvalidity),
         uidvalidity_str = COALESCE(?, uidvalidity_str),
         last_uid = COALESCE(?, last_uid),
+        pop3_uidl_str = COALESCE(?, pop3_uidl_str),
         last_synced_at = ?
       WHERE id = ?`,
     );
@@ -227,14 +334,15 @@ export function upsertEmailFolder(input: {
       input.uidvalidity === undefined ? null : input.uidvalidity,
       input.uidvalidityStr === undefined ? null : input.uidvalidityStr,
       input.lastUid === undefined ? null : input.lastUid,
+      input.pop3UidlStr === undefined ? null : input.pop3UidlStr,
       now,
       existing.id,
     );
     return getFolderByAccountAndPath(input.accountId, input.path)!;
   }
   const ins = getDb().prepare(
-    `INSERT INTO ${EMAIL_FOLDERS_TABLE} (account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, last_synced_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${EMAIL_FOLDERS_TABLE} (account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, pop3_uidl_str, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   ins.run(
     input.accountId,
@@ -243,6 +351,7 @@ export function upsertEmailFolder(input: {
     input.uidvalidity ?? null,
     input.uidvalidityStr ?? null,
     input.lastUid ?? 0,
+    input.pop3UidlStr ?? null,
     now,
   );
   return getFolderByAccountAndPath(input.accountId, input.path)!;
@@ -250,7 +359,12 @@ export function upsertEmailFolder(input: {
 
 export function updateFolderSyncState(
   folderId: number,
-  input: { lastUid?: number; uidvalidity?: number | null; uidvalidityStr?: string | null },
+  input: {
+    lastUid?: number;
+    uidvalidity?: number | null;
+    uidvalidityStr?: string | null;
+    pop3UidlStr?: string | null;
+  },
 ): void {
   const now = new Date().toISOString();
   const stmt = getDb().prepare(
@@ -258,6 +372,7 @@ export function updateFolderSyncState(
       last_uid = COALESCE(?, last_uid),
       uidvalidity = COALESCE(?, uidvalidity),
       uidvalidity_str = COALESCE(?, uidvalidity_str),
+      pop3_uidl_str = COALESCE(?, pop3_uidl_str),
       last_synced_at = ?
     WHERE id = ?`,
   );
@@ -265,6 +380,7 @@ export function updateFolderSyncState(
     input.lastUid === undefined ? null : input.lastUid,
     input.uidvalidity === undefined ? null : input.uidvalidity,
     input.uidvalidityStr === undefined ? null : input.uidvalidityStr,
+    input.pop3UidlStr === undefined ? null : input.pop3UidlStr,
     now,
     folderId,
   );
@@ -353,6 +469,9 @@ export function insertOrUpdateEmailMessage(input: {
   bodyText: string | null;
   bodyHtml: string | null;
   seenLocal: boolean;
+  imapThreadId?: string | null;
+  hasAttachments?: boolean;
+  attachmentsJson?: string | null;
 }): { id: number; isNew: boolean } {
   const existing = getDb()
     .prepare(
@@ -361,12 +480,17 @@ export function insertOrUpdateEmailMessage(input: {
     .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
   const isNew = !existing;
 
+  const hasAtt = input.hasAttachments ? 1 : 0;
+  const attJson = input.attachmentsJson ?? null;
+  const imapTid = input.imapThreadId ?? null;
+
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
       subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
+      imap_thread_id, has_attachments, attachments_json,
       thread_id, ticket_code, customer_id, folder_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -379,6 +503,9 @@ export function insertOrUpdateEmailMessage(input: {
       snippet = excluded.snippet,
       body_text = excluded.body_text,
       body_html = excluded.body_html,
+      imap_thread_id = COALESCE(excluded.imap_thread_id, ${EMAIL_MESSAGES_TABLE}.imap_thread_id),
+      has_attachments = excluded.has_attachments,
+      attachments_json = COALESCE(excluded.attachments_json, ${EMAIL_MESSAGES_TABLE}.attachments_json),
       seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
   );
   const result = stmt.run(
@@ -397,6 +524,9 @@ export function insertOrUpdateEmailMessage(input: {
     input.bodyText,
     input.bodyHtml,
     input.seenLocal ? 1 : 0,
+    imapTid,
+    hasAtt,
+    attJson,
   );
   const row = getDb().prepare(
     `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
@@ -499,7 +629,13 @@ export function markDraftAsSent(draftMessageId: number): void {
 
 export function updateComposeDraft(
   messageId: number,
-  input: { subject?: string; bodyText?: string; toJson?: string | null; ccJson?: string | null },
+  input: {
+    subject?: string;
+    bodyText?: string;
+    bodyHtml?: string | null;
+    toJson?: string | null;
+    ccJson?: string | null;
+  },
 ): void {
   const row = getEmailMessageById(messageId);
   if (!row || row.uid >= 0) {
@@ -507,16 +643,19 @@ export function updateComposeDraft(
   }
   const subj = input.subject !== undefined ? input.subject : row.subject;
   const body = input.bodyText !== undefined ? input.bodyText : row.body_text ?? '';
+  const html =
+    input.bodyHtml !== undefined ? input.bodyHtml : row.body_html;
   const snippet = body.trim() ? (body.length > 220 ? `${body.slice(0, 217)}...` : body) : row.snippet;
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE} SET
         subject = ?,
         body_text = ?,
+        body_html = COALESCE(?, body_html),
         snippet = ?,
         to_json = COALESCE(?, to_json),
         cc_json = COALESCE(?, cc_json)
       WHERE id = ?`,
     )
-    .run(subj, body, snippet, input.toJson ?? null, input.ccJson ?? null, messageId);
+    .run(subj, body, html, snippet, input.toJson ?? null, input.ccJson ?? null, messageId);
 }

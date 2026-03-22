@@ -43,6 +43,7 @@ import {
     createEmailInternalNotesTable,
     createEmailCannedResponsesTable,
     createEmailAiPromptsTable,
+    createEmailTeamMembersTable,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -56,6 +57,7 @@ import {
     EMAIL_INTERNAL_NOTES_TABLE,
     EMAIL_CANNED_RESPONSES_TABLE,
     EMAIL_AI_PROMPTS_TABLE,
+    EMAIL_TEAM_MEMBERS_TABLE,
 } from './database-schema';
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
@@ -109,6 +111,7 @@ export function initializeDatabase() {
             db.exec(createEmailInternalNotesTable);
             db.exec(createEmailCannedResponsesTable);
             db.exec(createEmailAiPromptsTable);
+            db.exec(createEmailTeamMembersTable);
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
@@ -205,6 +208,8 @@ export function initializeDatabase() {
             `CREATE INDEX IF NOT EXISTS idx_email_messages_account_folder ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id);`,
             `CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON ${EMAIL_MESSAGES_TABLE}(message_id);`,
             `CREATE INDEX IF NOT EXISTS idx_email_messages_date ON ${EMAIL_MESSAGES_TABLE}(date_received);`,
+            `CREATE INDEX IF NOT EXISTS idx_email_messages_assigned ON ${EMAIL_MESSAGES_TABLE}(assigned_to);`,
+            `CREATE INDEX IF NOT EXISTS idx_email_messages_imap_thread ON ${EMAIL_MESSAGES_TABLE}(imap_thread_id);`,
         ]);
 
         ensureTableExists(EMAIL_WORKFLOWS_TABLE, createEmailWorkflowsTable, [
@@ -231,6 +236,7 @@ export function initializeDatabase() {
         ]);
         ensureTableExists(EMAIL_CANNED_RESPONSES_TABLE, createEmailCannedResponsesTable, []);
         ensureTableExists(EMAIL_AI_PROMPTS_TABLE, createEmailAiPromptsTable, []);
+        ensureTableExists(EMAIL_TEAM_MEMBERS_TABLE, createEmailTeamMembersTable, []);
 
         // Run migrations for schema updates
         runMigrations();
@@ -374,6 +380,59 @@ function runMigrations() {
             addAcc('smtp_username', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_username TEXT`);
             addAcc('smtp_use_imap_auth', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_use_imap_auth INTEGER NOT NULL DEFAULT 1`);
             addAcc('smtp_keytar_account_key', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN smtp_keytar_account_key TEXT UNIQUE`);
+            addAcc('protocol', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN protocol TEXT NOT NULL DEFAULT 'imap'`);
+            addAcc('pop3_host', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN pop3_host TEXT`);
+            addAcc('pop3_port', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN pop3_port INTEGER DEFAULT 995`);
+            addAcc('pop3_tls', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN pop3_tls INTEGER NOT NULL DEFAULT 1`);
+            addAcc('oauth_provider', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN oauth_provider TEXT`);
+            addAcc('oauth_refresh_keytar_key', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN oauth_refresh_keytar_key TEXT UNIQUE`);
+            addAcc('sent_folder_path', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN sent_folder_path TEXT DEFAULT 'Sent'`);
+        }
+
+        if (emailFolderExists) {
+            const fc = db.prepare(`PRAGMA table_info(${EMAIL_FOLDERS_TABLE})`).all() as { name: string }[];
+            const fn = new Set(fc.map((c) => c.name));
+            if (!fn.has('pop3_uidl_str')) {
+                console.log('Adding pop3_uidl_str to email_folders...');
+                db.exec(`ALTER TABLE ${EMAIL_FOLDERS_TABLE} ADD COLUMN pop3_uidl_str TEXT`);
+            }
+        }
+
+        if (msgTableExists) {
+            const readMsgCols2 = () =>
+                new Set(
+                    (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).map(
+                        (c) => c.name,
+                    ),
+                );
+            let mcn = readMsgCols2();
+            const extraMsg = [
+                { name: 'imap_thread_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN imap_thread_id TEXT` },
+                { name: 'has_attachments', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0` },
+                { name: 'attachments_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN attachments_json TEXT` },
+                { name: 'assigned_to', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN assigned_to TEXT` },
+            ];
+            for (const col of extraMsg) {
+                if (!mcn.has(col.name)) {
+                    console.log(`Adding ${col.name} to email_messages...`);
+                    db.exec(col.sql);
+                    mcn = readMsgCols2();
+                }
+            }
+        }
+
+        const wfTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_WORKFLOWS_TABLE);
+        if (wfTable) {
+            const wc = db.prepare(`PRAGMA table_info(${EMAIL_WORKFLOWS_TABLE})`).all() as { name: string }[];
+            const wn = new Set(wc.map((c) => c.name));
+            if (!wn.has('graph_json')) {
+                console.log('Adding graph_json to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN graph_json TEXT`);
+            }
+            if (!wn.has('cron_expr')) {
+                console.log('Adding cron_expr to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN cron_expr TEXT`);
+            }
         }
 
         // Add more migrations here as needed
