@@ -1,4 +1,4 @@
-import { MAX_EMAIL_CATEGORY_DEPTH } from '@shared/email-constants';
+import { MAX_EMAIL_CATEGORY_DEPTH } from '../../shared/email-constants';
 import { getDb } from '../sqlite-service';
 import {
   CUSTOMERS_TABLE,

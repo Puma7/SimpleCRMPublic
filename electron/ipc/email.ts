@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { IPCChannels } from '@shared/ipc/channels';
+import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById } from '../sqlite-service';
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
@@ -97,11 +97,11 @@ function isPotentiallyDangerousAttachment(filename: string): boolean {
   const ext = path.extname(filename).toLowerCase();
   return ext !== '' && DANGEROUS_ATTACHMENT_EXT.has(ext);
 }
-import { extractEmailAddressesFromRecipientField } from '@shared/email-recipient-parse';
+import { extractEmailAddressesFromRecipientField } from '../../shared/email-recipient-parse';
 import { getEmailReportingSnapshot } from '../email/email-reported-stats';
 import { exportEmailGdprPackage } from '../email/email-gdpr-export';
 import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
-import type { WorkflowGraphDocument } from '@shared/email-workflow-graph';
+import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
 import {
   listAllWorkflows,
   getWorkflowById,
