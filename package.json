@@ -16,7 +16,7 @@
     "electron:dev:main": "nodemon --watch dist-electron --delay 500ms --exec \"cross-env NODE_ENV=development electron dist-electron/main.js\" --ext js",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "electron:dev": "concurrently \"cross-env NODE_ENV=development vite build --watch\" \"npm run electron:compile:watch\" \"npm run electron:dev:main\" \"cross-env NODE_ENV=development vite --port 5173 --host --clearScreen false\" --names \"ElectronBundle,ElectronTS,ElectronMain,Vite\" --kill-others-on-exit",
+    "electron:dev": "npm run electron:compile && concurrently \"cross-env NODE_ENV=development vite build --watch\" \"npm run electron:compile:watch\" \"npm run electron:dev:main\" \"cross-env NODE_ENV=development vite --port 5173 --host --clearScreen false\" --names \"ElectronBundle,ElectronTS,ElectronMain,Vite\" --kill-others-on-exit",
     "electron:build": "npm run build && cross-env DEBUG=electron-builder* NODE_ENV=production electron-builder",
     "electron:start": "cross-env NODE_ENV=production electron dist-electron/main.js",
     "postinstall": "electron-rebuild",
