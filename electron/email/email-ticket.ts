@@ -5,13 +5,13 @@ import { EMAIL_THREADS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 const TICKET_PREFIX = 'SCR';
 
 export function generateTicketCode(): string {
-  const part = randomBytes(3).toString('hex').toUpperCase();
+  const part = randomBytes(5).toString('hex').toUpperCase();
   return `${TICKET_PREFIX}-${part}`;
 }
 
 export function extractTicketFromSubject(subject: string | null): string | null {
   if (!subject) return null;
-  const m = subject.match(/\[SCR-([A-F0-9]+)\]/i);
+  const m = subject.match(/\[SCR-([A-F0-9]{6,10})\]/i);
   return m ? `${TICKET_PREFIX}-${m[1]!.toUpperCase()}` : null;
 }
 

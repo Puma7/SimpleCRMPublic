@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
@@ -131,6 +131,8 @@ export default function EmailPage() {
   const [categories, setCategories] = useState<CategoryRow[]>([])
   const [catCounts, setCatCounts] = useState<CatCount[]>([])
   const [searchQ, setSearchQ] = useState("")
+  const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [messages, setMessages] = useState<EmailMessage[]>([])
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [loadingAccounts, setLoadingAccounts] = useState(true)
@@ -253,13 +255,21 @@ export default function EmailPage() {
   }, [loadAccounts])
 
   useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(() => {
+      setDebouncedSearchQ(searchQ)
+    }, 300)
+    return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current) }
+  }, [searchQ])
+
+  useEffect(() => {
     if (selectedAccountId != null) {
       void loadCategories(selectedAccountId)
-      void loadMessages(selectedAccountId, mailView, categoryFilterId, searchQ)
+      void loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
     } else {
       setMessages([])
     }
-  }, [selectedAccountId, mailView, categoryFilterId, searchQ, loadMessages, loadCategories])
+  }, [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages, loadCategories])
 
   useEffect(() => {
     if (!hasElectron) return
@@ -375,7 +385,7 @@ export default function EmailPage() {
       )
       if (result.success) {
         toast.success(`Synchronisation abgeschlossen (${result.fetched ?? 0} neue/aktualisierte Nachrichten).`)
-        await loadMessages(selectedAccountId, mailView, categoryFilterId, searchQ)
+        await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
         await loadCategories(selectedAccountId)
       } else toast.error(result.error ?? "Sync fehlgeschlagen.")
     } catch (e) {
@@ -516,7 +526,7 @@ export default function EmailPage() {
       setComposeDraftId(null)
       setComposeReplyToId(null)
       if (selectedAccountId != null) {
-        await loadMessages(selectedAccountId, mailView, categoryFilterId, searchQ)
+        await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Versand fehlgeschlagen.")
@@ -858,7 +868,7 @@ export default function EmailPage() {
                             onClick={async () => {
                               await invoke(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
                               toast.success("Ausgeblendet (soft)")
-                              if (selectedAccountId) await loadMessages(selectedAccountId, mailView, categoryFilterId, searchQ)
+                              if (selectedAccountId) await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
                               setSelectedMessage(null)
                             }}
                           >
@@ -872,7 +882,7 @@ export default function EmailPage() {
                             onClick={async () => {
                               await invoke(IPCChannels.Email.RestoreMessage, selectedMessage.id)
                               toast.success("Wiederhergestellt")
-                              if (selectedAccountId) await loadMessages(selectedAccountId, mailView, categoryFilterId, searchQ)
+                              if (selectedAccountId) await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
                             }}
                           >
                             <RotateCcw className="mr-1 h-4 w-4" />
@@ -890,7 +900,7 @@ export default function EmailPage() {
                               toast.success(selectedMessage.archived ? "Wieder im Posteingang sichtbar" : "Archiviert")
                               const full = await invoke<EmailMessage | null>(IPCChannels.Email.GetMessage, selectedMessage.id)
                               setSelectedMessage(full ?? selectedMessage)
-                              if (selectedAccountId) await loadMessages(selectedAccountId, mailView, categoryFilterId, searchQ)
+                              if (selectedAccountId) await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
                             }}
                           >
                             <Archive className="mr-1 h-4 w-4" />

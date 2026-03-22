@@ -31,7 +31,7 @@ export function getEmailReportingSnapshot(accountIdFilter: number | null): Email
     )
     .all() as EmailReportingSnapshot['accounts'];
 
-  const accClause = accountIdFilter != null ? 'WHERE account_id = ?' : '';
+  const accClause = accountIdFilter != null ? 'WHERE soft_deleted = 0 AND account_id = ?' : 'WHERE soft_deleted = 0';
   const params = accountIdFilter != null ? [accountIdFilter] : [];
 
   const totalsRow = getDb()
@@ -54,7 +54,7 @@ export function getEmailReportingSnapshot(accountIdFilter: number | null): Email
     withAttachments: number;
   };
 
-  const perAccClause = accountIdFilter != null ? 'WHERE account_id = ?' : '';
+  const perAccClause = accountIdFilter != null ? 'WHERE soft_deleted = 0 AND account_id = ?' : 'WHERE soft_deleted = 0';
   const perAccParams = accountIdFilter != null ? [accountIdFilter] : [];
   const perAccount = getDb()
     .prepare(

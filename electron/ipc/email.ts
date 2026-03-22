@@ -97,6 +97,7 @@ function isPotentiallyDangerousAttachment(filename: string): boolean {
   const ext = path.extname(filename).toLowerCase();
   return ext !== '' && DANGEROUS_ATTACHMENT_EXT.has(ext);
 }
+import { extractEmailAddressesFromRecipientField } from '@shared/email-recipient-parse';
 import { getEmailReportingSnapshot } from '../email/email-reported-stats';
 import { exportEmailGdprPackage } from '../email/email-gdpr-export';
 import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
@@ -439,7 +440,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       ) => {
         const toJson =
           payload.to && payload.to.trim()
-            ? JSON.stringify({ value: [{ address: payload.to.trim() }] })
+            ? JSON.stringify({ value: extractEmailAddressesFromRecipientField(payload.to).map((a) => ({ address: a })) })
             : null;
         const id = createComposeDraft({
           accountId: payload.accountId,
@@ -464,13 +465,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const toJson =
           payload.to !== undefined
             ? payload.to.trim()
-              ? JSON.stringify({ value: [{ address: payload.to.trim() }] })
+              ? JSON.stringify({ value: extractEmailAddressesFromRecipientField(payload.to).map((a) => ({ address: a })) })
               : null
             : undefined;
         const ccJson =
           payload.cc !== undefined
             ? payload.cc.trim()
-              ? JSON.stringify({ value: [{ address: payload.cc.trim() }] })
+              ? JSON.stringify({ value: extractEmailAddressesFromRecipientField(payload.cc).map((a) => ({ address: a })) })
               : null
             : undefined;
         updateComposeDraft(payload.messageId, {

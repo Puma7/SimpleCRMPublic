@@ -16,6 +16,59 @@ const syncInFlight = new Set<number>();
 const lastScheduledSyncAt = new Map<number, number>();
 const MIN_SYNC_GAP_MS = 45_000;
 
+async function startIdleForAccount(
+  acc: ReturnType<typeof listEmailAccounts>[number],
+  logger: Pick<typeof console, 'warn' | 'error' | 'debug'>,
+  retryCount = 0,
+): Promise<void> {
+  try {
+    const auth = await resolveImapAuth(acc);
+    if ('accessToken' in auth) return;
+    const client = new ImapFlow({
+      host: acc.imap_host,
+      port: acc.imap_port,
+      secure: Boolean(acc.imap_tls),
+      auth: { user: auth.user, pass: auth.pass },
+      logger: false,
+      connectionTimeout: 90_000,
+      socketTimeout: 120_000,
+    });
+    await client.connect();
+    await client.mailboxOpen('INBOX');
+    client.on('exists', () => {
+      if (syncInFlight.has(acc.id)) return;
+      const now = Date.now();
+      const last = lastScheduledSyncAt.get(acc.id) ?? 0;
+      if (now - last < MIN_SYNC_GAP_MS) return;
+      syncInFlight.add(acc.id);
+      lastScheduledSyncAt.set(acc.id, now);
+      void syncInboxImap(acc.id)
+        .catch((e) => logger.debug(`[email] idle sync ${acc.id}`, e))
+        .finally(() => {
+          syncInFlight.delete(acc.id);
+        });
+    });
+    client.on('close', () => {
+      idleClients.delete(acc.id);
+      const delay = Math.min(30_000, 5_000 * Math.pow(2, Math.min(retryCount, 4)));
+      logger.debug(`[email] idle closed for account ${acc.id}, reconnecting in ${delay}ms`);
+      setTimeout(() => {
+        if (!globalCron) return;
+        void startIdleForAccount(acc, logger, retryCount + 1);
+      }, delay);
+    });
+    void client.idle().catch(() => undefined);
+    idleClients.set(acc.id, client);
+  } catch (e) {
+    logger.debug(`[email] idle start skip account ${acc.id}`, e);
+    const delay = Math.min(60_000, 10_000 * Math.pow(2, Math.min(retryCount, 4)));
+    setTimeout(() => {
+      if (!globalCron) return;
+      void startIdleForAccount(acc, logger, retryCount + 1);
+    }, delay);
+  }
+}
+
 function stopIdleForAccount(accountId: number): void {
   const c = idleClients.get(accountId);
   if (c) {
@@ -74,40 +127,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     if ((acc.protocol || 'imap') !== 'imap' || acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft') {
       continue;
     }
-    void (async () => {
-      try {
-        const auth = await resolveImapAuth(acc);
-        if ('accessToken' in auth) return;
-        const client = new ImapFlow({
-          host: acc.imap_host,
-          port: acc.imap_port,
-          secure: Boolean(acc.imap_tls),
-          auth: { user: auth.user, pass: auth.pass },
-          logger: false,
-          connectionTimeout: 90_000,
-          socketTimeout: 120_000,
-        });
-        await client.connect();
-        await client.mailboxOpen('INBOX');
-        client.on('exists', () => {
-          if (syncInFlight.has(acc.id)) return;
-          const now = Date.now();
-          const last = lastScheduledSyncAt.get(acc.id) ?? 0;
-          if (now - last < MIN_SYNC_GAP_MS) return;
-          syncInFlight.add(acc.id);
-          lastScheduledSyncAt.set(acc.id, now);
-          void syncInboxImap(acc.id)
-            .catch((e) => logger.debug(`[email] idle sync ${acc.id}`, e))
-            .finally(() => {
-              syncInFlight.delete(acc.id);
-            });
-        });
-        void client.idle().catch(() => undefined);
-        idleClients.set(acc.id, client);
-      } catch (e) {
-        logger.debug(`[email] idle start skip account ${acc.id}`, e);
-      }
-    })();
+    void startIdleForAccount(acc, logger);
   }
 }
 

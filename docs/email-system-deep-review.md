@@ -179,5 +179,24 @@ Die folgenden Punkte aus diesem Review wurden **in der Codebasis umgesetzt** (De
 - **M7/M8** DOMPurify + einfache Adressvalidierung Compose  
 - **M9** UIDL-Liste vollständig (kein `slice(-5000)`)  
 - **M10** Kategoriepfad max. Tiefe + UI-Tiefenlimit  
-- **L2** `email-parse-utils.ts`  
-- **L3** Canned-Template: firstName/email aus Kundendaten falls vorhanden  
+- **L2** `email-parse-utils.ts`
+- **L3** Canned-Template: firstName/email aus Kundendaten falls vorhanden
+
+### QA-Review 2 — Neue Befunde (2026-03-22)
+
+Unabhängige Zweitprüfung gegen den aktuellen Code. Alle oben gelisteten Fixes bestätigt. Zusätzlich **13 neue Bugs** gefunden und behoben:
+
+| ID | Severity | Befund | Fix |
+|----|----------|--------|-----|
+| **N1** | CRITICAL | `listMessagesForAccountView`: SQL-Parameter-Reihenfolge vertauscht bei Kategorie-Filter (`categoryId` ↔ `accountId`) | Params-Array umstrukturiert: `categoryId` vor `accountId` |
+| **N2** | HIGH | `insertOrUpdateEmailMessage`: POP3-Rückgabe-ID-Lookup nutzt `input.uid` (=0) statt `uidForRow` (negativ) | `input.uid` → `uidForRow` |
+| **N3** | HIGH | `updateEmailAccountRecord`: COALESCE verhindert Löschen nullbarer Felder (smtp_host, oauth_provider, …) | Dynamische SET-Klauseln (wie `updateWorkflow`) |
+| **N4** | MEDIUM | `upsertEmailFolder` / `updateFolderSyncState`: gleiches COALESCE-Problem | Dynamische SET-Klauseln |
+| **N5/N6** | MEDIUM | `updateComposeDraft`: COALESCE für body_html, to_json, cc_json | Dynamische SET-Klauseln |
+| **N7** | MEDIUM | IPC `CreateComposeDraft`/`UpdateComposeDraft`: Komma-getrennte Adressen als ein Eintrag gespeichert | `extractEmailAddressesFromRecipientField` für Multi-Adress-Parsing |
+| **N8** | MEDIUM | IDLE-Clients verbinden nach Disconnect nicht erneut | Reconnect mit exponential Backoff + `close`-Event |
+| **N9** | LOW | Frontend-Suche ohne Debounce (jeder Tastendruck = IPC-Call) | 300ms Debounce-Timer |
+| **N10** | LOW | Reporting-Statistiken zählen soft-deleted Messages mit | `soft_deleted = 0` Filter hinzugefügt |
+| **N11** | LOW | `updateAiPrompt`: COALESCE verhindert Feldlöschung | Dynamische SET-Klauseln |
+| **N12** | LOW | `buildRfc822`: Non-ASCII-Subjects ohne RFC 2047 Encoding | `encodeRfc2047()` mit Base64 |
+| **N13** | LOW | Ticket-Code-Entropie: 3 Bytes = ~16.7M Codes, Kollision bei vielen Tickets wahrscheinlich | Auf 5 Bytes (~1.1T Codes) erhöht |

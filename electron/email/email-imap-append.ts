@@ -2,6 +2,13 @@ import { ImapFlow } from 'imapflow';
 import { resolveImapAuth } from './email-imap-auth';
 import { getEmailAccountById } from './email-store';
 
+function encodeRfc2047(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x20-\x7E]*$/.test(text)) return text;
+  const encoded = Buffer.from(text, 'utf-8').toString('base64');
+  return `=?UTF-8?B?${encoded}?=`;
+}
+
 function buildRfc822(input: {
   from: string;
   to: string;
@@ -14,7 +21,7 @@ function buildRfc822(input: {
   lines.push(`From: ${input.from}`);
   lines.push(`To: ${input.to}`);
   if (input.cc?.trim()) lines.push(`Cc: ${input.cc.trim()}`);
-  lines.push(`Subject: ${input.subject}`);
+  lines.push(`Subject: ${encodeRfc2047(input.subject)}`);
   lines.push('MIME-Version: 1.0');
   if (input.html?.trim()) {
     const boundary = `b_${Math.random().toString(36).slice(2)}`;

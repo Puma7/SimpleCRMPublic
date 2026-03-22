@@ -175,15 +175,16 @@ export function updateAiPrompt(
   id: number,
   input: Partial<{ label: string; userTemplate: string; target: string }>,
 ): void {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (input.label !== undefined) { sets.push('label = ?'); vals.push(input.label); }
+  if (input.userTemplate !== undefined) { sets.push('user_template = ?'); vals.push(input.userTemplate); }
+  if (input.target !== undefined) { sets.push('target = ?'); vals.push(input.target); }
+  if (sets.length === 0) return;
+  vals.push(id);
   getDb()
-    .prepare(
-      `UPDATE ${EMAIL_AI_PROMPTS_TABLE} SET
-        label = COALESCE(?, label),
-        user_template = COALESCE(?, user_template),
-        target = COALESCE(?, target)
-      WHERE id = ?`,
-    )
-    .run(input.label ?? null, input.userTemplate ?? null, input.target ?? null, id);
+    .prepare(`UPDATE ${EMAIL_AI_PROMPTS_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
 }
 
 export function deleteAiPrompt(id: number): void {
