@@ -47,6 +47,7 @@ export default defineConfig(async () => {
                   'google-auth-library',
                   'node-cron',
                   'archiver',
+                  'safe-regex',
                 ],
               },
             },

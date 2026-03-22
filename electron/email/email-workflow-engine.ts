@@ -15,6 +15,8 @@ import {
   markWorkflowAppliedToMessage,
   insertWorkflowRun,
 } from './email-workflow-store';
+import { getDb } from '../sqlite-service';
+import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../database-schema';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
 import { evaluateWorkflowWhen, parseWorkflowDefinition } from './email-workflow-types';
 import { sendSmtpForAccount } from './email-smtp';
@@ -71,7 +73,13 @@ function buildOutboundContext(payload: OutboundDraftPayload) {
   };
 }
 
-async function executeInboundStep(step: WorkflowThenStep, messageId: number, row: EmailMessageRow, log: string[]): Promise<boolean> {
+async function executeInboundStep(
+  step: WorkflowThenStep,
+  messageId: number,
+  row: EmailMessageRow,
+  log: string[],
+  workflowId: number,
+): Promise<boolean> {
   switch (step.type) {
     case 'tag':
       addMessageTag(messageId, step.tag);
@@ -101,6 +109,15 @@ async function executeInboundStep(step: WorkflowThenStep, messageId: number, row
       const acc = getEmailAccountById(row.account_id);
       if (!acc) {
         log.push('forward_copy:skip_no_account');
+        return true;
+      }
+      const dest = step.to.trim().toLowerCase();
+      const ins = getDb().prepare(
+        `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
+      );
+      const r = ins.run(messageId, workflowId, dest);
+      if (r.changes === 0) {
+        log.push('forward_copy:skip_duplicate');
         return true;
       }
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
@@ -158,21 +175,29 @@ function executeOutboundStep(
   return 'continue';
 }
 
-async function runRulesInbound(def: WorkflowDefinitionV1, messageId: number, row: EmailMessageRow): Promise<string[]> {
+async function runRulesInbound(
+  def: WorkflowDefinitionV1,
+  messageId: number,
+  row: EmailMessageRow,
+  workflowId: number,
+): Promise<string[]> {
   const ctx = buildInboundContext(row);
   const log: string[] = [];
   for (const rule of def.rules) {
     if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {
-      const cont = await executeInboundStep(step, messageId, row, log);
+      const cont = await executeInboundStep(step, messageId, row, log, workflowId);
       if (!cont) return log;
     }
   }
   return log;
 }
 
-function runRulesOutbound(def: WorkflowDefinitionV1, payload: OutboundDraftPayload): { blocked: boolean; log: string[] } {
+async function runRulesOutbound(
+  def: WorkflowDefinitionV1,
+  payload: OutboundDraftPayload,
+): Promise<{ blocked: boolean; log: string[] }> {
   const ctx = buildOutboundContext(payload);
   const log: string[] = [];
   for (const rule of def.rules) {
@@ -199,7 +224,7 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
     let status: 'ok' | 'error' = 'ok';
     try {
       const def = parseWorkflowDefinition(wf.definition_json);
-      log = await runRulesInbound(def, messageId, row);
+      log = await runRulesInbound(def, messageId, row, wf.id);
     } catch (e) {
       status = 'error';
       log = [`error:${e instanceof Error ? e.message : String(e)}`];
@@ -226,7 +251,7 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
     let status: 'ok' | 'error' = 'ok';
     try {
       const def = parseWorkflowDefinition(wf.definition_json);
-      log = await runRulesInbound(def, messageId, row);
+      log = await runRulesInbound(def, messageId, row, wf.id);
     } catch (e) {
       status = 'error';
       log = [`error:${e instanceof Error ? e.message : String(e)}`];
@@ -242,10 +267,10 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   }
 }
 
-export function evaluateOutboundWorkflows(payload: OutboundDraftPayload): {
+export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): Promise<{
   allowed: boolean;
   reason: string | null;
-} {
+}> {
   if (!payload.messageId || payload.messageId <= 0) {
     return { allowed: true, reason: null };
   }
@@ -260,7 +285,7 @@ export function evaluateOutboundWorkflows(payload: OutboundDraftPayload): {
   for (const wf of workflows) {
     try {
       const def = parseWorkflowDefinition(wf.definition_json);
-      const { blocked, log } = runRulesOutbound(def, payload);
+      const { blocked, log } = await runRulesOutbound(def, payload);
       insertWorkflowRun({
         workflowId: wf.id,
         messageId: payload.messageId,
@@ -283,13 +308,19 @@ export function evaluateOutboundWorkflows(payload: OutboundDraftPayload): {
         };
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       insertWorkflowRun({
         workflowId: wf.id,
         messageId: payload.messageId,
         direction: 'outbound',
         status: 'error',
-        logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
+        logJson: JSON.stringify([`error:${msg}`]),
       });
+      setOutboundHold(payload.messageId, true, `Workflow-Fehler: ${msg}`);
+      return {
+        allowed: false,
+        reason: 'Ausgehender Workflow fehlgeschlagen; Versand aus Sicherheitsgründen blockiert.',
+      };
     }
   }
 

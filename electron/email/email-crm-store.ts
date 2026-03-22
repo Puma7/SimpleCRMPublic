@@ -8,7 +8,10 @@ import {
   EMAIL_AI_PROMPTS_TABLE,
   EMAIL_MESSAGES_TABLE,
   EMAIL_FOLDERS_TABLE,
+  EMAIL_MESSAGES_FTS_TABLE,
 } from '../database-schema';
+
+const MAX_CATEGORY_DEPTH = 40;
 
 export type EmailCategoryRow = {
   id: number;
@@ -64,6 +67,9 @@ function findCategoryByNameUnderParent(name: string, parentId: number | null): n
 export function ensureCategoryPath(path: string): number {
   const parts = path.split('/').map((p) => p.trim()).filter(Boolean);
   if (parts.length === 0) throw new Error('Leerer Kategoriepfad');
+  if (parts.length > MAX_CATEGORY_DEPTH) {
+    throw new Error(`Kategoriepfad zu tief (max. ${MAX_CATEGORY_DEPTH} Ebenen)`);
+  }
   let parentId: number | null = null;
   for (const part of parts) {
     let id = findCategoryByNameUnderParent(part, parentId);
@@ -216,11 +222,44 @@ export function setMessageCustomerId(messageId: number, customerId: number | nul
     .run(customerId, messageId);
 }
 
+function ftsMatchExpression(raw: string): string | null {
+  const tokens = raw
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 12)
+    .map((t) => `"${t.replace(/"/g, '""')}"`);
+  if (tokens.length === 0) return null;
+  return tokens.join(' AND ');
+}
+
 export function searchMessagesForAccount(
   accountId: number,
   q: string,
   limit = 100,
 ): import('./email-store').EmailMessageRow[] {
+  const fts = ftsMatchExpression(q);
+  if (fts) {
+    const ftsTable = getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
+    if (ftsTable) {
+      try {
+        return getDb()
+          .prepare(
+            `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+             INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
+             WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.uid >= 0
+             AND fts MATCH ?
+             ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+             LIMIT ?`,
+          )
+          .all(accountId, fts, limit) as import('./email-store').EmailMessageRow[];
+      } catch {
+        /* FTS nicht verfügbar oder ungültige Syntax — LIKE-Fallback */
+      }
+    }
+  }
   const term = `%${q.trim().replace(/%/g, '\\%')}%`;
   return getDb()
     .prepare(

@@ -416,7 +416,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { messageId: number; subject: string; bodyText: string; bodyHtml?: string; to: string; cc?: string },
       ) => {
-        const result = evaluateOutboundWorkflows({
+        const result = await evaluateOutboundWorkflows({
           messageId: payload.messageId,
           subject: payload.subject,
           bodyText: payload.bodyText,
@@ -773,11 +773,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.BackfillInboundWorkflows, async () => {
-      const ids = listMessageIdsForWorkflowBackfill();
+      const pageSize = 500;
+      let offset = 0;
       let processed = 0;
-      for (const id of ids) {
-        await runInboundWorkflowsForMessage(id);
-        processed += 1;
+      for (;;) {
+        const ids = listMessageIdsForWorkflowBackfill(offset, pageSize);
+        if (ids.length === 0) break;
+        for (const id of ids) {
+          await runInboundWorkflowsForMessage(id);
+          processed += 1;
+        }
+        offset += pageSize;
       }
       return { success: true as const, processed };
     }, { logger }),

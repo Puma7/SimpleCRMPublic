@@ -40,7 +40,9 @@ export async function sendSmtpForAccount(
 
   const host = acc.smtp_host?.trim() || acc.imap_host;
   const port = acc.smtp_port ?? 587;
-  const secure = Boolean(acc.smtp_tls) && port === 465;
+  const useTls = Boolean(acc.smtp_tls);
+  const secure = useTls && port === 465;
+  const requireTLS = useTls && port !== 465;
   const user =
     acc.smtp_use_imap_auth
       ? acc.imap_username
@@ -50,6 +52,9 @@ export async function sendSmtpForAccount(
     host,
     port,
     secure,
+    requireTLS,
+    connectionTimeout: 90_000,
+    socketTimeout: 120_000,
     auth: { user, pass },
   });
 

@@ -126,7 +126,12 @@ export function assignJwzThreadAndTicket(
           `UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ?, ticket_code = ? WHERE account_id = ? AND thread_id = ?`,
         )
         .run(canonicalThread, ticketCode, accountId, tid);
-      getDb().prepare(`DELETE FROM ${EMAIL_THREADS_TABLE} WHERE id = ?`).run(tid);
+      const stillRef = getDb()
+        .prepare(`SELECT 1 FROM ${EMAIL_MESSAGES_TABLE} WHERE thread_id = ? LIMIT 1`)
+        .get(tid) as { 1: number } | undefined;
+      if (!stillRef) {
+        getDb().prepare(`DELETE FROM ${EMAIL_THREADS_TABLE} WHERE id = ?`).run(tid);
+      }
     }
     threadId = canonicalThread;
   }

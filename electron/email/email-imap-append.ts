@@ -60,17 +60,21 @@ export async function appendSentToImap(input: {
         ? { user: auth.user, accessToken: auth.accessToken }
         : { user: auth.user, pass: auth.pass },
     logger: false,
+    connectionTimeout: 90_000,
+    socketTimeout: 120_000,
   });
 
   const source = buildRfc822(input);
   try {
     await client.connect();
+    let appendMailbox = folder;
     try {
       await client.mailboxOpen(folder);
     } catch {
-      await client.mailboxOpen('INBOX.Sent');
+      appendMailbox = 'INBOX.Sent';
+      await client.mailboxOpen(appendMailbox);
     }
-    await client.append(folder, source, ['\\Seen']);
+    await client.append(appendMailbox, source, ['\\Seen']);
   } finally {
     await client.logout().catch(() => undefined);
   }

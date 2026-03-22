@@ -84,6 +84,8 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
           secure: Boolean(acc.imap_tls),
           auth: { user: auth.user, pass: auth.pass },
           logger: false,
+          connectionTimeout: 90_000,
+          socketTimeout: 120_000,
         });
         await client.connect();
         await client.mailboxOpen('INBOX');

@@ -40,10 +40,46 @@ export type WorkflowRule = {
   then: WorkflowThenStep[];
 };
 
+import safeRegex from 'safe-regex';
+
 export type WorkflowDefinitionV1 = {
   version: 1;
   rules: WorkflowRule[];
 };
+
+const MAX_REGEX_PATTERN_LEN = 240;
+
+function splitAddressList(raw: string): string[] {
+  return raw
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function domainFromAddress(addr: string): string {
+  const at = addr.lastIndexOf('@');
+  return at >= 0 ? addr.slice(at + 1).trim() : addr.trim();
+}
+
+function domainEndsWithForField(
+  field: ConditionField,
+  ctx: Record<string, string>,
+  suffix: string,
+  ci: boolean,
+): boolean {
+  const src =
+    field === 'to_address'
+      ? ctx.to_address
+      : field === 'cc_address'
+        ? ctx.cc_address
+        : ctx.from_address;
+  const suf = ci ? suffix.toLowerCase() : suffix;
+  for (const part of splitAddressList(src)) {
+    const d = ci ? domainFromAddress(part).toLowerCase() : domainFromAddress(part);
+    if (d.endsWith(suf)) return true;
+  }
+  return false;
+}
 
 function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, string>): boolean {
   let haystack = '';
@@ -84,20 +120,17 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
     return h.includes(n);
   }
   if (cond.op === 'domain_ends_with') {
-    const src =
-      cond.field === 'to_address'
-        ? ctx.to_address
-        : cond.field === 'cc_address'
-          ? ctx.cc_address
-          : ctx.from_address;
-    const at = src.lastIndexOf('@');
-    const domain = at >= 0 ? src.slice(at + 1) : src;
-    const d = ci ? domain.toLowerCase() : domain;
     const suf = ci ? needle.toLowerCase() : needle;
-    return d.endsWith(suf);
+    return domainEndsWithForField(cond.field, ctx, suf, ci);
   }
   if (cond.op === 'regex') {
+    if (needle.length > MAX_REGEX_PATTERN_LEN) {
+      return false;
+    }
     try {
+      if (!safeRegex(needle)) {
+        return false;
+      }
       const flags = ci ? 'i' : '';
       return new RegExp(needle, flags).test(haystack);
     } catch {

@@ -18,54 +18,10 @@ import {
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
+import { addressJson, formatDate, parseAttachmentsMeta, snippetFromParsed } from './email-parse-utils';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
-
-function addressJson(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return null;
-  }
-}
-
-function formatDate(d: Date | undefined): string | null {
-  if (!d || Number.isNaN(d.getTime())) {
-    return null;
-  }
-  return d.toISOString();
-}
-
-function snippetFromParsed(textBody: string | null, htmlBody: string | null): string | null {
-  if (textBody?.trim()) {
-    const t = textBody.trim();
-    return t.length > 220 ? `${t.slice(0, 217)}...` : t;
-  }
-  if (htmlBody) {
-    const capped = htmlBody.length > 8000 ? htmlBody.slice(0, 8000) : htmlBody;
-    const plain = capped.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!plain) return null;
-    return plain.length > 220 ? `${plain.slice(0, 217)}...` : plain;
-  }
-  return null;
-}
-
-function parseAttachmentsMeta(parsed: {
-  attachments?: { filename?: string; contentType?: string; size?: number }[];
-}): { hasAttachments: boolean; json: string | null } {
-  const att = parsed.attachments;
-  if (!att || att.length === 0) return { hasAttachments: false, json: null };
-  const meta = att.map((a) => ({
-    filename: a.filename ?? null,
-    contentType: a.contentType ?? null,
-    size: a.size ?? null,
-  }));
-  return { hasAttachments: true, json: JSON.stringify(meta) };
-}
 
 export type ImapSyncResult = {
   fetched: number;
@@ -98,6 +54,8 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
             pass: auth.pass,
           },
     logger: false,
+    connectionTimeout: 90_000,
+    socketTimeout: 120_000,
   });
 
   const folderPath = 'INBOX';
@@ -248,6 +206,8 @@ export async function testImapConnection(account: EmailAccountRow, password: str
       pass: password,
     },
     logger: false,
+    connectionTimeout: 90_000,
+    socketTimeout: 120_000,
   });
   try {
     await client.connect();

@@ -21,7 +21,7 @@ export async function sendComposeDraft(input: {
     return { ok: false, error: 'Ungültiger Entwurf' };
   }
 
-  const outbound = evaluateOutboundWorkflows({
+  const outbound = await evaluateOutboundWorkflows({
     messageId: input.draftMessageId,
     subject: input.subject,
     bodyText: input.bodyText,

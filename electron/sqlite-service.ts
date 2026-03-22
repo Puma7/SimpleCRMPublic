@@ -45,6 +45,8 @@ import {
     createEmailAiPromptsTable,
     createEmailTeamMembersTable,
     createEmailMessageAttachmentsTable,
+    createEmailMessagesFtsTable,
+    createEmailWorkflowForwardDedupTable,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -60,6 +62,8 @@ import {
     EMAIL_AI_PROMPTS_TABLE,
     EMAIL_TEAM_MEMBERS_TABLE,
     EMAIL_MESSAGE_ATTACHMENTS_TABLE,
+    EMAIL_MESSAGES_FTS_TABLE,
+    EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE,
 } from './database-schema';
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
@@ -417,6 +421,7 @@ function runMigrations() {
                 { name: 'has_attachments', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0` },
                 { name: 'attachments_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN attachments_json TEXT` },
                 { name: 'assigned_to', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN assigned_to TEXT` },
+                { name: 'pop3_uidl', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pop3_uidl TEXT` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {
@@ -460,6 +465,56 @@ function runMigrations() {
             db.exec(
                 `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_att_msg_sha ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id, content_sha256) WHERE content_sha256 IS NOT NULL AND content_sha256 != ''`,
             );
+        }
+
+        db.exec(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_msg_pop3_uidl ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id, pop3_uidl) WHERE pop3_uidl IS NOT NULL AND pop3_uidl != ''`,
+        );
+
+        const pop3UidlCol = (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).some(
+            (c) => c.name === 'pop3_uidl',
+        );
+        if (pop3UidlCol) {
+            db.exec(`
+              UPDATE ${EMAIL_MESSAGES_TABLE} SET pop3_uidl = 'legacy-pop3-' || id
+              WHERE pop3_uidl IS NULL AND uid >= 0
+                AND folder_id IN (SELECT id FROM ${EMAIL_FOLDERS_TABLE} WHERE path = 'INBOX')
+                AND account_id IN (SELECT id FROM ${EMAIL_ACCOUNTS_TABLE} WHERE COALESCE(protocol,'imap') = 'pop3')
+            `);
+        }
+
+        const fwdDedup = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE);
+        if (!fwdDedup) {
+            console.log('Creating email_workflow_forward_dedup table...');
+            db.exec(createEmailWorkflowForwardDedupTable);
+        }
+
+        const ftsMaster = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
+        if (!ftsMaster) {
+            console.log('Creating email_messages FTS5 index...');
+            db.exec(createEmailMessagesFtsTable);
+            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
+            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
+            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
+            db.exec(`
+              CREATE TRIGGER email_messages_fts_ai AFTER INSERT ON ${EMAIL_MESSAGES_TABLE} BEGIN
+                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
+                VALUES (new.id, new.subject, new.snippet, new.body_text);
+              END;
+            `);
+            db.exec(`
+              CREATE TRIGGER email_messages_fts_ad AFTER DELETE ON ${EMAIL_MESSAGES_TABLE} BEGIN
+                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
+              END;
+            `);
+            db.exec(`
+              CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
+                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
+                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
+                VALUES (new.id, new.subject, new.snippet, new.body_text);
+              END;
+            `);
+            db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
         }
 
         // Add more migrations here as needed

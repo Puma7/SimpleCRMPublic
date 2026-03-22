@@ -16,51 +16,12 @@ import {
   type EmailAccountRow,
 } from './email-store';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
+import { pop3SyntheticUid } from './email-pop3-uid';
+import { addressJson, formatDate, parseAttachmentsMeta, snippetFromParsed } from './email-parse-utils';
 
 const POP_FOLDER = 'INBOX';
 
-function addressJson(value: unknown): string | null {
-  if (value === undefined || value === null) return null;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return null;
-  }
-}
-
-function formatDate(d: Date | undefined): string | null {
-  if (!d || Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-function snippetFromParsed(textBody: string | null, htmlBody: string | null): string | null {
-  if (textBody?.trim()) {
-    const t = textBody.trim();
-    return t.length > 220 ? `${t.slice(0, 217)}...` : t;
-  }
-  if (htmlBody) {
-    const capped = htmlBody.length > 8000 ? htmlBody.slice(0, 8000) : htmlBody;
-    const plain = capped.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!plain) return null;
-    return plain.length > 220 ? `${plain.slice(0, 217)}...` : plain;
-  }
-  return null;
-}
-
 type UidlEntry = [string, string];
-
-function parseAttachmentsMeta(parsed: {
-  attachments?: { filename?: string; contentType?: string; size?: number }[];
-}): { hasAttachments: boolean; json: string | null } {
-  const att = parsed.attachments;
-  if (!att || att.length === 0) return { hasAttachments: false, json: null };
-  const meta = att.map((a) => ({
-    filename: a.filename ?? null,
-    contentType: a.contentType ?? null,
-    size: a.size ?? null,
-  }));
-  return { hasAttachments: true, json: JSON.stringify(meta) };
-}
 
 export type Pop3SyncResult = { fetched: number; folderId: number };
 
@@ -84,6 +45,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     host,
     port,
     tls,
+    timeout: 90_000,
   });
 
   let folderRow = getFolderByAccountAndPath(accountId, POP_FOLDER);
@@ -129,10 +91,12 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     const snippet = snippetFromParsed(textBody, htmlBody);
     const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
 
+    const stableUid = pop3SyntheticUid(uidl);
     const { id: localMsgId, isNew } = insertOrUpdateEmailMessage({
       accountId,
       folderId: folderRow.id,
-      uid: num,
+      uid: stableUid,
+      pop3Uidl: uidl,
       messageId,
       inReplyTo,
       referencesHeader: refs,
@@ -172,8 +136,8 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
 
   await pop3.QUIT().catch(() => undefined);
 
-  const uidlArr = [...known];
-  const uidlStr = JSON.stringify(uidlArr.slice(-5000));
+  const uidlArr = [...known].sort();
+  const uidlStr = JSON.stringify(uidlArr);
 
   updateFolderSyncState(folderRow.id, {
     lastUid: maxNum,
@@ -197,6 +161,7 @@ export async function testPop3Connection(account: EmailAccountRow, password: str
     host,
     port,
     tls,
+    timeout: 90_000,
   });
   try {
     await pop3.UIDL();

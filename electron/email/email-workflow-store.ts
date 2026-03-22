@@ -114,51 +114,62 @@ export function createWorkflow(input: {
   return Number(result.lastInsertRowid);
 }
 
-export function updateWorkflow(
-  id: number,
-  input: Partial<{
-    name: string;
-    trigger: string;
-    priority: number;
-    definitionJson: string;
-    graphJson: string | null;
-    cronExpr: string | null;
-    scheduleAccountId: number | null;
-    enabled: boolean;
-  }>,
-): void {
+export type WorkflowUpdateInput = Partial<{
+  name: string;
+  trigger: string;
+  priority: number;
+  definitionJson: string;
+  /** `undefined` = leave unchanged, `null` = clear column */
+  graphJson: string | null;
+  cronExpr: string | null;
+  scheduleAccountId: number | null;
+  enabled: boolean;
+}>;
+
+export function updateWorkflow(id: number, input: WorkflowUpdateInput): void {
   const existing = getWorkflowById(id);
   if (!existing) throw new Error('Workflow nicht gefunden');
   const t = nowIso();
-  getDb()
-    .prepare(
-      `UPDATE ${EMAIL_WORKFLOWS_TABLE} SET
-        name = COALESCE(?, name),
-        trigger = COALESCE(?, trigger),
-        priority = COALESCE(?, priority),
-        definition_json = COALESCE(?, definition_json),
-        graph_json = COALESCE(?, graph_json),
-        cron_expr = COALESCE(?, cron_expr),
-        enabled = COALESCE(?, enabled),
-        updated_at = ?
-      WHERE id = ?`,
-    )
-    .run(
-      input.name ?? null,
-      input.trigger ?? null,
-      input.priority ?? null,
-      input.definitionJson ?? null,
-      input.graphJson === undefined ? null : input.graphJson,
-      input.cronExpr === undefined ? null : input.cronExpr,
-      input.enabled === undefined ? null : input.enabled ? 1 : 0,
-      t,
-      id,
-    );
-  if (input.scheduleAccountId !== undefined) {
-    getDb()
-      .prepare(`UPDATE ${EMAIL_WORKFLOWS_TABLE} SET schedule_account_id = ?, updated_at = ? WHERE id = ?`)
-      .run(input.scheduleAccountId, t, id);
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (input.name !== undefined) {
+    sets.push('name = ?');
+    vals.push(input.name);
   }
+  if (input.trigger !== undefined) {
+    sets.push('trigger = ?');
+    vals.push(input.trigger);
+  }
+  if (input.priority !== undefined) {
+    sets.push('priority = ?');
+    vals.push(input.priority);
+  }
+  if (input.definitionJson !== undefined) {
+    sets.push('definition_json = ?');
+    vals.push(input.definitionJson);
+  }
+  if (input.graphJson !== undefined) {
+    sets.push('graph_json = ?');
+    vals.push(input.graphJson);
+  }
+  if (input.cronExpr !== undefined) {
+    sets.push('cron_expr = ?');
+    vals.push(input.cronExpr);
+  }
+  if (input.enabled !== undefined) {
+    sets.push('enabled = ?');
+    vals.push(input.enabled ? 1 : 0);
+  }
+  if (input.scheduleAccountId !== undefined) {
+    sets.push('schedule_account_id = ?');
+    vals.push(input.scheduleAccountId);
+  }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(t, id);
+  getDb()
+    .prepare(`UPDATE ${EMAIL_WORKFLOWS_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
 }
 
 export function deleteWorkflow(id: number): void {

@@ -77,6 +77,7 @@ export type EmailMessageRow = {
   has_attachments: number;
   attachments_json: string | null;
   assigned_to: string | null;
+  pop3_uidl: string | null;
   created_at: string;
 };
 
@@ -444,12 +445,12 @@ export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   return stmt.get(id) as EmailMessageRow | undefined;
 }
 
-export function listMessageIdsForWorkflowBackfill(): number[] {
+export function listMessageIdsForWorkflowBackfill(offset: number, limit: number): number[] {
   const rows = getDb()
     .prepare(
-      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid >= 0 AND soft_deleted = 0 ORDER BY id ASC`,
+      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid >= 0 AND soft_deleted = 0 ORDER BY id ASC LIMIT ? OFFSET ?`,
     )
-    .all() as { id: number }[];
+    .all(limit, offset) as { id: number }[];
   return rows.map((r) => r.id);
 }
 
@@ -472,25 +473,77 @@ export function insertOrUpdateEmailMessage(input: {
   imapThreadId?: string | null;
   hasAttachments?: boolean;
   attachmentsJson?: string | null;
+  /** POP3: stable server UIDL — row is keyed by this, not by volatile message number. */
+  pop3Uidl?: string | null;
 }): { id: number; isNew: boolean } {
-  const existing = getDb()
-    .prepare(
-      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
-    )
-    .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
-  const isNew = !existing;
-
   const hasAtt = input.hasAttachments ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
   const imapTid = input.imapThreadId ?? null;
+  const pop3Uidl = input.pop3Uidl?.trim() || null;
 
-  const stmt = getDb().prepare(
+  const db = getDb();
+
+  if (pop3Uidl) {
+    const byUidl = db
+      .prepare(
+        `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND pop3_uidl = ?`,
+      )
+      .get(input.accountId, input.folderId, pop3Uidl) as { id: number } | undefined;
+    if (byUidl) {
+      db.prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE} SET
+          uid = ?,
+          message_id = ?,
+          in_reply_to = ?,
+          references_header = ?,
+          subject = ?,
+          from_json = ?,
+          to_json = ?,
+          cc_json = ?,
+          date_received = ?,
+          snippet = ?,
+          body_text = ?,
+          body_html = ?,
+          imap_thread_id = COALESCE(?, imap_thread_id),
+          has_attachments = ?,
+          attachments_json = COALESCE(?, attachments_json),
+          seen_local = MAX(seen_local, ?)
+        WHERE id = ?`,
+      ).run(
+        input.uid,
+        input.messageId,
+        input.inReplyTo,
+        input.referencesHeader,
+        input.subject,
+        input.fromJson,
+        input.toJson,
+        input.ccJson,
+        input.dateReceived,
+        input.snippet,
+        input.bodyText,
+        input.bodyHtml,
+        imapTid,
+        hasAtt,
+        attJson,
+        input.seenLocal ? 1 : 0,
+        byUidl.id,
+      );
+      return { id: byUidl.id, isNew: false };
+    }
+  }
+
+  const existing = db
+    .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
+    .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
+  const isNew = !existing;
+
+  const stmt = db.prepare(
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
       subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
-      imap_thread_id, has_attachments, attachments_json,
+      imap_thread_id, has_attachments, attachments_json, pop3_uidl,
       thread_id, ticket_code, customer_id, folder_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -506,6 +559,7 @@ export function insertOrUpdateEmailMessage(input: {
       imap_thread_id = COALESCE(excluded.imap_thread_id, ${EMAIL_MESSAGES_TABLE}.imap_thread_id),
       has_attachments = excluded.has_attachments,
       attachments_json = COALESCE(excluded.attachments_json, ${EMAIL_MESSAGES_TABLE}.attachments_json),
+      pop3_uidl = COALESCE(excluded.pop3_uidl, ${EMAIL_MESSAGES_TABLE}.pop3_uidl),
       seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
   );
   const result = stmt.run(
@@ -527,10 +581,11 @@ export function insertOrUpdateEmailMessage(input: {
     imapTid,
     hasAtt,
     attJson,
+    pop3Uidl,
   );
-  const row = getDb().prepare(
-    `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
-  ).get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
+  const row = db
+    .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
+    .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
   const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
   return { id, isNew };
 }
@@ -583,13 +638,12 @@ export function createComposeDraft(input: {
   if (!folder) {
     throw new Error('INBOX für dieses Konto nicht gefunden. Bitte zuerst synchronisieren.');
   }
-  let uid = -Math.floor(Date.now() / 1000);
-  const exists = getDb().prepare(
-    `SELECT 1 FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
-  ).get(input.accountId, folder.id, uid);
-  if (exists) {
-    uid -= 1;
-  }
+  const minRow = getDb()
+    .prepare(
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+    )
+    .get(input.accountId, folder.id) as { m: number | null };
+  const uid = minRow.m != null ? minRow.m - 1 : -1;
   const { id } = insertOrUpdateEmailMessage({
     accountId: input.accountId,
     folderId: folder.id,
