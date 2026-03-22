@@ -200,3 +200,15 @@ Unabhängige Zweitprüfung gegen den aktuellen Code. Alle oben gelisteten Fixes 
 | **N11** | LOW | `updateAiPrompt`: COALESCE verhindert Feldlöschung | Dynamische SET-Klauseln |
 | **N12** | LOW | `buildRfc822`: Non-ASCII-Subjects ohne RFC 2047 Encoding | `encodeRfc2047()` mit Base64 |
 | **N13** | LOW | Ticket-Code-Entropie: 3 Bytes = ~16.7M Codes, Kollision bei vielen Tickets wahrscheinlich | Auf 5 Bytes (~1.1T Codes) erhöht |
+
+### QA-Review 2b — Regression-Analyse der eigenen Fixes (2026-03-22)
+
+Adversariale Prüfung aller 13 Fixes auf Rückschritte. **3 behebungspflichtige Regressions** gefunden und behoben:
+
+| ID | Severity | Befund | Fix |
+|----|----------|--------|-----|
+| **R2** | HIGH | IDLE-Reconnect: `retryCount` wird nach erfolgreicher Verbindung nie zurückgesetzt → Backoff kühlt nie ab, immer 30s Delay nach ~5 Zyklen | `close`-Handler übergibt `retryCount = 0` (erfolgreiche Verbindung = Reset); Backoff nur bei `catch` |
+| **R3** | MEDIUM | `stopEmailBackgroundServices` räumt pending `setTimeout`-Reconnect-Timer nicht auf → Ghost-Clients bei Restart möglich | Timer-IDs in `pendingReconnectTimers` Map gespeichert, in `stop` per `clearTimeout` aufgeräumt |
+| **R5** | MEDIUM | `encodeRfc2047` erzeugt Encoded Words >75 Zeichen bei langen Subjects → RFC-2047-Verletzung | UTF-8-sichere 45-Byte-Chunks mit `\r\n ` Folding zwischen Encoded Words |
+
+**Nicht-behebungspflichtig (bestätigt safe):** R1 (early return bei leerem Partial — Aufrufer senden immer Felder), R4 (Regex `{6,10}` matcht bestehende 6-Zeichen-Codes).

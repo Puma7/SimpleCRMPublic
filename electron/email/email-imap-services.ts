@@ -15,12 +15,15 @@ const workflowCrons: Map<number, ScheduledTask> = new Map();
 const syncInFlight = new Set<number>();
 const lastScheduledSyncAt = new Map<number, number>();
 const MIN_SYNC_GAP_MS = 45_000;
+/** Pending reconnect timers per account — cleared on stop to prevent ghost clients. */
+const pendingReconnectTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
 async function startIdleForAccount(
   acc: ReturnType<typeof listEmailAccounts>[number],
   logger: Pick<typeof console, 'warn' | 'error' | 'debug'>,
   retryCount = 0,
 ): Promise<void> {
+  pendingReconnectTimers.delete(acc.id);
   try {
     const auth = await resolveImapAuth(acc);
     if ('accessToken' in auth) return;
@@ -50,22 +53,27 @@ async function startIdleForAccount(
     });
     client.on('close', () => {
       idleClients.delete(acc.id);
-      const delay = Math.min(30_000, 5_000 * Math.pow(2, Math.min(retryCount, 4)));
+      // Connection was successful, so reset backoff to 0 for next reconnect attempt.
+      const delay = 5_000;
       logger.debug(`[email] idle closed for account ${acc.id}, reconnecting in ${delay}ms`);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        pendingReconnectTimers.delete(acc.id);
         if (!globalCron) return;
-        void startIdleForAccount(acc, logger, retryCount + 1);
+        void startIdleForAccount(acc, logger, 0);
       }, delay);
+      pendingReconnectTimers.set(acc.id, timer);
     });
     void client.idle().catch(() => undefined);
     idleClients.set(acc.id, client);
   } catch (e) {
     logger.debug(`[email] idle start skip account ${acc.id}`, e);
     const delay = Math.min(60_000, 10_000 * Math.pow(2, Math.min(retryCount, 4)));
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      pendingReconnectTimers.delete(acc.id);
       if (!globalCron) return;
       void startIdleForAccount(acc, logger, retryCount + 1);
     }, delay);
+    pendingReconnectTimers.set(acc.id, timer);
   }
 }
 
@@ -144,6 +152,10 @@ export function stopEmailBackgroundServices(): void {
     stopIdleForAccount(id);
   }
   idleClients = new Map();
+  for (const timer of pendingReconnectTimers.values()) {
+    clearTimeout(timer);
+  }
+  pendingReconnectTimers.clear();
 }
 
 /** Reload only per-workflow cron jobs (e.g. after saving workflows in UI). */
