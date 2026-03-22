@@ -12,8 +12,20 @@ import {
   getFolderByAccountAndPath,
   listMessagesForFolder,
   getEmailMessageById,
+  createComposeDraft,
+  updateComposeDraft,
+  listMessageIdsForWorkflowBackfill,
+  listTagsForMessage,
 } from '../email/email-store';
 import { syncInboxImap, testImapConnection } from '../email/email-imap-sync';
+import { evaluateOutboundWorkflows, runInboundWorkflowsForMessage } from '../email/email-workflow-engine';
+import {
+  listAllWorkflows,
+  getWorkflowById,
+  createWorkflow,
+  updateWorkflow,
+  deleteWorkflow,
+} from '../email/email-workflow-store';
 
 interface EmailHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -182,6 +194,156 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return getEmailMessageById(messageId) ?? null;
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListWorkflows, async () => listAllWorkflows(), { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetWorkflow, async (_event: IpcMainInvokeEvent, id: number) => {
+      return getWorkflowById(id) ?? null;
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.CreateWorkflow,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { name: string; trigger: 'inbound' | 'outbound'; priority?: number; definitionJson: string; enabled?: boolean },
+      ) => {
+        const id = createWorkflow(payload);
+        return { success: true as const, id };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.UpdateWorkflow,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id: number;
+          name?: string;
+          trigger?: 'inbound' | 'outbound';
+          priority?: number;
+          definitionJson?: string;
+          enabled?: boolean;
+        },
+      ) => {
+        updateWorkflow(payload.id, {
+          name: payload.name,
+          trigger: payload.trigger,
+          priority: payload.priority,
+          definitionJson: payload.definitionJson,
+          enabled: payload.enabled,
+        });
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteWorkflow, async (_event: IpcMainInvokeEvent, id: number) => {
+      deleteWorkflow(id);
+      return { success: true as const };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ValidateOutbound,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; subject: string; bodyText: string; to: string; cc?: string },
+      ) => {
+        const result = evaluateOutboundWorkflows({
+          messageId: payload.messageId,
+          subject: payload.subject,
+          bodyText: payload.bodyText,
+          to: payload.to,
+          cc: payload.cc,
+        });
+        return { success: true as const, allowed: result.allowed, reason: result.reason };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.CreateComposeDraft,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { accountId: number; subject?: string; bodyText?: string; to?: string },
+      ) => {
+        const toJson =
+          payload.to && payload.to.trim()
+            ? JSON.stringify({ value: [{ address: payload.to.trim() }] })
+            : null;
+        const id = createComposeDraft({
+          accountId: payload.accountId,
+          subject: payload.subject,
+          bodyText: payload.bodyText,
+          toJson,
+        });
+        return { success: true as const, id };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.UpdateComposeDraft,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; subject?: string; bodyText?: string; to?: string; cc?: string },
+      ) => {
+        const toJson =
+          payload.to !== undefined
+            ? payload.to.trim()
+              ? JSON.stringify({ value: [{ address: payload.to.trim() }] })
+              : null
+            : undefined;
+        const ccJson =
+          payload.cc !== undefined
+            ? payload.cc.trim()
+              ? JSON.stringify({ value: [{ address: payload.cc.trim() }] })
+              : null
+            : undefined;
+        updateComposeDraft(payload.messageId, {
+          subject: payload.subject,
+          bodyText: payload.bodyText,
+          toJson,
+          ccJson,
+        });
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListMessageTags, async (_event: IpcMainInvokeEvent, messageId: number) => {
+      return listTagsForMessage(messageId);
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.BackfillInboundWorkflows, async () => {
+      const ids = listMessageIdsForWorkflowBackfill();
+      let processed = 0;
+      for (const id of ids) {
+        runInboundWorkflowsForMessage(id);
+        processed += 1;
+      }
+      return { success: true as const, processed };
     }, { logger }),
   );
 

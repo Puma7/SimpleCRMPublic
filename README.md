@@ -10,7 +10,9 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 * **Task Management:** Create and manage tasks linked directly to customers.
 * **Calendar Integration:** Schedule appointments, meetings, and reminders within the app.
 * **JTL Synchronization (Optional):** Sync Customer and Product data from an external JTL MSSQL database into your local CRM (one-way sync).
-* **E-Mail (IMAP, Desktop):** Under **E-Mail** in the navigation you can add IMAP accounts (password stored in the OS keychain), sync the INBOX, and read messages. The first sync loads the **newest messages only** (up to a capped count), not the entire mailbox history; further syncs fetch by UID range. SMTP, workflows, and AI features are planned extensions.
+* **E-Mail (IMAP, Desktop):** Under **E-Mail** you can add IMAP accounts (password in the OS keychain), sync the INBOX, and read messages. The first sync loads the **newest messages only** (capped), not full history; further syncs use UID ranges.
+* **E-Mail workflows (Desktop):** **Inbound** rules run once per message after IMAP sync (tag, mark read, archive). **Outbound** rules run when you use **Antworten (Test)** and **Prüfen (Outbound-Workflow)** before send; they can block on sensitive patterns (SMTP sending is still to come). Edit definitions under **E-Mail → Workflows** (JSON `version: 1`, `rules[]`). Two default workflows are seeded on first open. Use **Inbound auf bestehende Mails** to apply inbound rules to messages synced before workflows existed.
+* **Planned:** SMTP send, OAuth, KI nodes, visual workflow editor, CRM threading/ticket codes.
 * **Local Database:** All your CRM data is stored securely and locally using SQLite (`better-sqlite3`).
 * **Secure Configuration:** MSSQL connection details are stored securely using your OS keychain via Keytar (`keytar`).
 

@@ -110,6 +110,16 @@ const EmailChannels = literal({
   SyncAccount: 'email:sync-account',
   ListMessages: 'email:list-messages',
   GetMessage: 'email:get-message',
+  ListWorkflows: 'email:list-workflows',
+  GetWorkflow: 'email:get-workflow',
+  CreateWorkflow: 'email:create-workflow',
+  UpdateWorkflow: 'email:update-workflow',
+  DeleteWorkflow: 'email:delete-workflow',
+  ValidateOutbound: 'email:validate-outbound',
+  CreateComposeDraft: 'email:create-compose-draft',
+  UpdateComposeDraft: 'email:update-compose-draft',
+  BackfillInboundWorkflows: 'email:backfill-inbound-workflows',
+  ListMessageTags: 'email:list-message-tags',
 });
 
 export const IPCChannels = {

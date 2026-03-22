@@ -20,6 +20,7 @@ import CustomFieldsPage from './app/settings/custom-fields/page'
 import ProductsPage from './app/products/page';
 import ProductsLoading from './app/products/loading'; // Assuming loading component exists
 import EmailPage from './app/email/page'
+import EmailWorkflowsPage from './app/email/workflows/page'
 
 // Create a root route
 const rootRoute = new RootRoute({
@@ -161,6 +162,12 @@ const emailRoute = new Route({
   component: EmailPage,
 })
 
+const emailWorkflowsRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/email/workflows',
+  component: EmailWorkflowsPage,
+})
+
 // Create a catch-all route to handle any undefined routes
 const catchAllRoute = new Route({
   getParentRoute: () => rootRoute,
@@ -190,6 +197,7 @@ const routeTree = rootRoute.addChildren([
   ]),
   productsRoute, // Added products route to tree
   emailRoute,
+  emailWorkflowsRoute,
   catchAllRoute, // Add the catch-all route
 ])
 

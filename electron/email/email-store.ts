@@ -4,6 +4,7 @@ import {
   EMAIL_ACCOUNTS_TABLE,
   EMAIL_FOLDERS_TABLE,
   EMAIL_MESSAGES_TABLE,
+  EMAIL_MESSAGE_TAGS_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
 
@@ -50,6 +51,8 @@ export type EmailMessageRow = {
   seen_local: number;
   archived: number;
   soft_deleted: number;
+  outbound_hold: number;
+  outbound_block_reason: string | null;
   created_at: string;
 };
 
@@ -231,7 +234,7 @@ export function listMessagesForFolder(
   const offset = opts.offset ?? 0;
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_MESSAGES_TABLE}
-     WHERE folder_id = ? AND soft_deleted = 0
+     WHERE folder_id = ? AND soft_deleted = 0 AND uid >= 0
      ORDER BY datetime(COALESCE(date_received, created_at)) DESC
      LIMIT ? OFFSET ?`,
   );
@@ -241,6 +244,15 @@ export function listMessagesForFolder(
 export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   const stmt = getDb().prepare(`SELECT * FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`);
   return stmt.get(id) as EmailMessageRow | undefined;
+}
+
+export function listMessageIdsForWorkflowBackfill(): number[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid >= 0 AND soft_deleted = 0 ORDER BY id ASC`,
+    )
+    .all() as { id: number }[];
+  return rows.map((r) => r.id);
 }
 
 export function insertOrUpdateEmailMessage(input: {
@@ -259,7 +271,14 @@ export function insertOrUpdateEmailMessage(input: {
   bodyText: string | null;
   bodyHtml: string | null;
   seenLocal: boolean;
-}): number {
+}): { id: number; isNew: boolean } {
+  const existing = getDb()
+    .prepare(
+      `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
+    )
+    .get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
+  const isNew = !existing;
+
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
@@ -296,11 +315,108 @@ export function insertOrUpdateEmailMessage(input: {
     input.bodyHtml,
     input.seenLocal ? 1 : 0,
   );
-  if (result.changes > 0 && result.lastInsertRowid) {
-    return Number(result.lastInsertRowid);
-  }
   const row = getDb().prepare(
     `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
   ).get(input.accountId, input.folderId, input.uid) as { id: number } | undefined;
-  return row?.id ?? 0;
+  const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
+  return { id, isNew };
+}
+
+export function setMessageArchived(messageId: number, archived: boolean): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id = ?`)
+    .run(archived ? 1 : 0, messageId);
+}
+
+export function setMessageSeenLocal(messageId: number, seen: boolean): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ? WHERE id = ?`)
+    .run(seen ? 1 : 0, messageId);
+}
+
+export function listTagsForMessage(messageId: number): string[] {
+  const rows = getDb()
+    .prepare(`SELECT tag FROM ${EMAIL_MESSAGE_TAGS_TABLE} WHERE message_id = ? ORDER BY tag ASC`)
+    .all(messageId) as { tag: string }[];
+  return rows.map((r) => r.tag);
+}
+
+export function addMessageTag(messageId: number, tag: string): void {
+  const t = tag.trim();
+  if (!t) return;
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO ${EMAIL_MESSAGE_TAGS_TABLE} (message_id, tag) VALUES (?, ?)`,
+    )
+    .run(messageId, t);
+}
+
+export function setOutboundHold(messageId: number, hold: boolean, reason: string | null): void {
+  getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET outbound_hold = ?, outbound_block_reason = ? WHERE id = ?`,
+    )
+    .run(hold ? 1 : 0, reason, messageId);
+}
+
+/** Negative IMAP UID: local compose draft only, never from server sync. */
+export function createComposeDraft(input: {
+  accountId: number;
+  subject?: string;
+  bodyText?: string;
+  toJson?: string | null;
+}): number {
+  const folder = getFolderByAccountAndPath(input.accountId, 'INBOX');
+  if (!folder) {
+    throw new Error('INBOX für dieses Konto nicht gefunden. Bitte zuerst synchronisieren.');
+  }
+  let uid = -Math.floor(Date.now() / 1000);
+  const exists = getDb().prepare(
+    `SELECT 1 FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`,
+  ).get(input.accountId, folder.id, uid);
+  if (exists) {
+    uid -= 1;
+  }
+  const { id } = insertOrUpdateEmailMessage({
+    accountId: input.accountId,
+    folderId: folder.id,
+    uid,
+    messageId: null,
+    inReplyTo: null,
+    referencesHeader: null,
+    subject: input.subject ?? '(Entwurf)',
+    fromJson: null,
+    toJson: input.toJson ?? null,
+    ccJson: null,
+    dateReceived: new Date().toISOString(),
+    snippet: (input.bodyText ?? '').slice(0, 220) || null,
+    bodyText: input.bodyText ?? '',
+    bodyHtml: null,
+    seenLocal: true,
+  });
+  return id;
+}
+
+export function updateComposeDraft(
+  messageId: number,
+  input: { subject?: string; bodyText?: string; toJson?: string | null; ccJson?: string | null },
+): void {
+  const row = getEmailMessageById(messageId);
+  if (!row || row.uid >= 0) {
+    throw new Error('Nur lokale Entwürfe (negative UID) können hier bearbeitet werden');
+  }
+  const subj = input.subject !== undefined ? input.subject : row.subject;
+  const body = input.bodyText !== undefined ? input.bodyText : row.body_text ?? '';
+  const snippet = body.trim() ? (body.length > 220 ? `${body.slice(0, 217)}...` : body) : row.snippet;
+  getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET
+        subject = ?,
+        body_text = ?,
+        snippet = ?,
+        to_json = COALESCE(?, to_json),
+        cc_json = COALESCE(?, cc_json)
+      WHERE id = ?`,
+    )
+    .run(subj, body, snippet, input.toJson ?? null, input.ccJson ?? null, messageId);
 }

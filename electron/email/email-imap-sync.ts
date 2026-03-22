@@ -141,7 +141,7 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
         const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
         const snippet = snippetFromParsed(textBody, htmlBody);
 
-        insertOrUpdateEmailMessage({
+        const { id: localMsgId, isNew } = insertOrUpdateEmailMessage({
           accountId,
           folderId: folderRow.id,
           uid,
@@ -158,6 +158,10 @@ export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> 
           bodyHtml: htmlBody,
           seenLocal: Boolean(msg.flags?.has('\\Seen')),
         });
+        if (isNew && localMsgId > 0) {
+          const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
+          runInboundWorkflowsForMessage(localMsgId);
+        }
         fetched += 1;
         maxProcessed = Math.max(maxProcessed, uid);
       }

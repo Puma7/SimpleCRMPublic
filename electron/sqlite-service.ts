@@ -33,9 +33,17 @@ import {
     createEmailAccountsTable,
     createEmailFoldersTable,
     createEmailMessagesTable,
+    createEmailWorkflowsTable,
+    createEmailWorkflowRunsTable,
+    createEmailMessageWorkflowAppliedTable,
+    createEmailMessageTagsTable,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
+    EMAIL_WORKFLOWS_TABLE,
+    EMAIL_WORKFLOW_RUNS_TABLE,
+    EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE,
+    EMAIL_MESSAGE_TAGS_TABLE,
 } from './database-schema';
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
@@ -79,6 +87,10 @@ export function initializeDatabase() {
             db.exec(createEmailAccountsTable);
             db.exec(createEmailFoldersTable);
             db.exec(createEmailMessagesTable);
+            db.exec(createEmailWorkflowsTable);
+            db.exec(createEmailWorkflowRunsTable);
+            db.exec(createEmailMessageWorkflowAppliedTable);
+            db.exec(createEmailMessageTagsTable);
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
@@ -177,6 +189,18 @@ export function initializeDatabase() {
             `CREATE INDEX IF NOT EXISTS idx_email_messages_date ON ${EMAIL_MESSAGES_TABLE}(date_received);`,
         ]);
 
+        ensureTableExists(EMAIL_WORKFLOWS_TABLE, createEmailWorkflowsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_workflows_trigger ON ${EMAIL_WORKFLOWS_TABLE}(trigger, enabled, priority);`,
+        ]);
+        ensureTableExists(EMAIL_WORKFLOW_RUNS_TABLE, createEmailWorkflowRunsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_workflow_runs_message ON ${EMAIL_WORKFLOW_RUNS_TABLE}(message_id);`,
+        ]);
+        ensureTableExists(EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE, createEmailMessageWorkflowAppliedTable, []);
+        ensureTableExists(EMAIL_MESSAGE_TAGS_TABLE, createEmailMessageTagsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_message_tags_message ON ${EMAIL_MESSAGE_TAGS_TABLE}(message_id);`,
+            `CREATE INDEX IF NOT EXISTS idx_email_message_tags_tag ON ${EMAIL_MESSAGE_TAGS_TABLE}(tag);`,
+        ]);
+
         // Run migrations for schema updates
         runMigrations();
     }
@@ -263,6 +287,26 @@ function runMigrations() {
                 `UPDATE ${EMAIL_FOLDERS_TABLE} SET uidvalidity_str = CAST(uidvalidity AS TEXT) WHERE uidvalidity IS NOT NULL AND (uidvalidity_str IS NULL OR uidvalidity_str = '')`,
             );
             console.log('Migration completed: Added uidvalidity_str to email_folders');
+        }
+
+        const msgTableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_TABLE);
+        if (msgTableExists) {
+            const readMsgCols = () =>
+                new Set(
+                    (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).map(
+                        (c) => c.name,
+                    ),
+                );
+            let msgColNames = readMsgCols();
+            if (!msgColNames.has('outbound_hold')) {
+                console.log('Adding outbound_hold to email_messages...');
+                db.exec(`ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN outbound_hold INTEGER NOT NULL DEFAULT 0`);
+                msgColNames = readMsgCols();
+            }
+            if (!msgColNames.has('outbound_block_reason')) {
+                console.log('Adding outbound_block_reason to email_messages...');
+                db.exec(`ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN outbound_block_reason TEXT`);
+            }
         }
 
         // Add more migrations here as needed

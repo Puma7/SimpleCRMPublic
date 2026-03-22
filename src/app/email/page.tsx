@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,7 +11,8 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { toast } from "sonner"
-import { Loader2, Mail, RefreshCw } from "lucide-react"
+import { Loader2, Mail, RefreshCw, Send, Workflow } from "lucide-react"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 
 type EmailAccount = {
@@ -38,6 +40,9 @@ type EmailMessage = {
   body_text: string | null
   body_html: string | null
   seen_local: number
+  archived?: number
+  outbound_hold?: number
+  outbound_block_reason?: string | null
 }
 
 function stripHtmlToText(html: string): string {
@@ -47,6 +52,16 @@ function stripHtmlToText(html: string): string {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+}
+
+function firstAddress(fromJson: string | null): string {
+  if (!fromJson) return ""
+  try {
+    const parsed = JSON.parse(fromJson) as { value?: { address?: string }[] }
+    return parsed?.value?.[0]?.address ?? ""
+  } catch {
+    return ""
+  }
 }
 
 function formatFrom(fromJson: string | null): string {
@@ -80,6 +95,15 @@ export default function EmailPage() {
   const [imapPassword, setImapPassword] = useState("")
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  const [composeOpen, setComposeOpen] = useState(false)
+  const [composeDraftId, setComposeDraftId] = useState<number | null>(null)
+  const [composeTo, setComposeTo] = useState("")
+  const [composeCc, setComposeCc] = useState("")
+  const [composeSubject, setComposeSubject] = useState("")
+  const [composeBody, setComposeBody] = useState("")
+  const [composeSending, setComposeSending] = useState(false)
+  const [messageTags, setMessageTags] = useState<string[]>([])
 
   const hasElectron =
     typeof window !== "undefined" &&
@@ -216,6 +240,24 @@ export default function EmailPage() {
     }
   }
 
+  useEffect(() => {
+    if (!hasElectron || !selectedMessage) {
+      setMessageTags([])
+      return
+    }
+    void (async () => {
+      try {
+        const tags = (await (window.electronAPI as { invoke: (c: string, id: number) => Promise<string[]> }).invoke(
+          IPCChannels.Email.ListMessageTags,
+          selectedMessage.id,
+        )) as string[]
+        setMessageTags(tags)
+      } catch {
+        setMessageTags([])
+      }
+    })()
+  }, [hasElectron, selectedMessage?.id])
+
   const openMessage = async (m: EmailMessage) => {
     if (!hasElectron) {
       setSelectedMessage(m)
@@ -229,6 +271,89 @@ export default function EmailPage() {
       setSelectedMessage(full ?? m)
     } catch {
       setSelectedMessage(m)
+    }
+  }
+
+  const openCompose = async () => {
+    if (!hasElectron || selectedAccountId == null) return
+    const m = selectedMessage
+    const toAddr = m ? firstAddress(m.from_json) : ""
+    const subj =
+      m && m.subject
+        ? m.subject.toLowerCase().startsWith("re:")
+          ? m.subject
+          : `Re: ${m.subject}`
+        : ""
+    const quoted =
+      m &&
+      `\n\n---\nAm ${m.date_received ? new Date(m.date_received).toLocaleString("de-DE") : "?"} schrieb ${formatFrom(m.from_json)}:\n${(m.body_text || m.snippet || "").trim()}`
+    try {
+      const res = (await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<{ success: boolean; id?: number }> }).invoke(
+        IPCChannels.Email.CreateComposeDraft,
+        {
+          accountId: selectedAccountId,
+          subject: subj,
+          bodyText: quoted || "",
+          to: toAddr,
+        },
+      )) as { id?: number }
+      if (res.id != null) {
+        setComposeDraftId(res.id)
+        setComposeTo(toAddr)
+        setComposeCc("")
+        setComposeSubject(subj)
+        setComposeBody(quoted || "")
+        setComposeOpen(true)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Entwurf konnte nicht angelegt werden.")
+    }
+  }
+
+  const saveComposeDraft = async () => {
+    if (!hasElectron || composeDraftId == null) return
+    try {
+      await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<unknown> }).invoke(
+        IPCChannels.Email.UpdateComposeDraft,
+        {
+          messageId: composeDraftId,
+          subject: composeSubject,
+          bodyText: composeBody,
+          to: composeTo,
+          cc: composeCc || undefined,
+        },
+      )
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const handleSendCompose = async () => {
+    if (!hasElectron || composeDraftId == null) return
+    setComposeSending(true)
+    try {
+      await saveComposeDraft()
+      const val = (await (window.electronAPI as { invoke: (c: string, p: unknown) => Promise<{ allowed: boolean; reason?: string | null }> }).invoke(
+        IPCChannels.Email.ValidateOutbound,
+        {
+          messageId: composeDraftId,
+          subject: composeSubject,
+          bodyText: composeBody,
+          to: composeTo,
+          cc: composeCc || undefined,
+        },
+      )) as { allowed: boolean; reason?: string | null }
+      if (!val.allowed) {
+        toast.error(val.reason ?? "Versand blockiert durch Workflow.")
+        return
+      }
+      toast.success("Outbound-Workflows: OK (SMTP-Versand folgt in einer späteren Version).")
+      setComposeOpen(false)
+      setComposeDraftId(null)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")
+    } finally {
+      setComposeSending(false)
     }
   }
 
@@ -254,9 +379,17 @@ export default function EmailPage() {
   return (
     <div className="container flex min-h-[calc(100vh-8rem)] flex-col gap-4 py-6">
       <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">E-Mail</h1>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-2xl font-semibold tracking-tight">E-Mail</h1>
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/email/workflows">
+              <Workflow className="mr-2 h-4 w-4" />
+              Workflows
+            </Link>
+          </Button>
+        </div>
         <p className="text-sm text-muted-foreground">
-          IMAP-Postfächer anbinden, INBOX synchronisieren und Nachrichten lesen. SMTP, Workflows und KI folgen in weiteren Versionen.
+          IMAP-Postfächer, INBOX-Sync, eingehende Workflows nach Sync, ausgehende Prüfung vor Versand (SMTP folgt). KI später.
         </p>
       </div>
 
@@ -366,10 +499,16 @@ export default function EmailPage() {
                   : "Konto auswählen"}
               </CardDescription>
             </div>
-            <Button type="button" size="sm" variant="outline" onClick={() => void handleSync()} disabled={selectedAccountId == null || syncing}>
-              {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              <span className="ml-2">Synchronisieren</span>
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="secondary" onClick={() => void openCompose()} disabled={selectedAccountId == null}>
+                <Send className="mr-2 h-4 w-4" />
+                Antworten (Test)
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => void handleSync()} disabled={selectedAccountId == null || syncing}>
+                {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                <span className="ml-2">Synchronisieren</span>
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="flex flex-1 flex-col gap-0 overflow-hidden p-0">
             <div className="grid flex-1 grid-cols-1 gap-0 md:grid-cols-[minmax(200px,280px)_1fr] md:divide-x">
@@ -410,6 +549,12 @@ export default function EmailPage() {
                 {selectedMessage ? (
                   <div className="space-y-3">
                     <div>
+                      {selectedMessage.archived ? (
+                        <p className="mb-1 text-xs font-medium text-amber-700 dark:text-amber-400">Archiviert (Workflow)</p>
+                      ) : null}
+                      {messageTags.length > 0 ? (
+                        <p className="mb-1 text-xs text-muted-foreground">Tags: {messageTags.join(", ")}</p>
+                      ) : null}
                       <h2 className="text-lg font-semibold leading-tight">{selectedMessage.subject || "(Ohne Betreff)"}</h2>
                       <p className="text-sm text-muted-foreground">{formatFrom(selectedMessage.from_json)}</p>
                       {selectedMessage.date_received ? (
@@ -436,6 +581,62 @@ export default function EmailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {composeOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <Card className="max-h-[90vh] w-full max-w-lg overflow-y-auto">
+            <CardHeader>
+              <CardTitle>Nachricht (Entwurf)</CardTitle>
+              <CardDescription>
+                Text speichern und „Prüfen &amp; senden“: ausgehende Workflows laufen (z. B. sensible Daten). Echter SMTP-Versand kommt später.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>An</Label>
+                <Input value={composeTo} onChange={(e) => setComposeTo(e.target.value)} placeholder="empfaenger@example.com" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Cc (optional)</Label>
+                <Input value={composeCc} onChange={(e) => setComposeCc(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Betreff</Label>
+                <Input
+                  value={composeSubject}
+                  onChange={(e) => setComposeSubject(e.target.value)}
+                  placeholder={
+                    selectedMessage
+                      ? `Re: ${selectedMessage.subject ?? ""}`
+                      : ""
+                  }
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Text</Label>
+                <Textarea
+                  className="min-h-[160px]"
+                  value={composeBody}
+                  onChange={(e) => setComposeBody(e.target.value)}
+                  placeholder="Ihre Nachricht…"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" onClick={() => void saveComposeDraft().then(() => toast.success("Entwurf gespeichert."))}>
+                  Speichern
+                </Button>
+                <Button type="button" onClick={() => void handleSendCompose()} disabled={composeSending}>
+                  {composeSending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Prüfen (Outbound-Workflow)
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setComposeOpen(false)}>
+                  Schließen
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
     </div>
   )
 }
