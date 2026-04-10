@@ -4,9 +4,20 @@ import { Filter, GitBranch, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 
+// `crypto.randomUUID()` is available in modern Electron renderer processes
+// (Chromium) and all recent browsers. Falls back to a timestamp+random suffix
+// for the unlikely case it's missing.
+function makeNodeId(prefix: string): string {
+  const uuid =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return `${prefix}-${uuid}`
+}
+
 export function NodePalette() {
   const addNode = (type: "condition" | "action") => {
-    const id = `${type}-${Date.now()}`
+    const id = makeNodeId(type)
     const cur = useWorkflowEditorStore.getState().nodes
     const last = cur[cur.length - 1]
     const y = last ? last.position.y + 120 : 120

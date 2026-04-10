@@ -11,7 +11,11 @@ import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
 export function OAuthPanel() {
-  const { settingsAccountId: accId, setSettingsAccountId: setAccId } = useMailWorkspace()
+  const {
+    settingsAccountId: accId,
+    setSettingsAccountId: setAccId,
+    accountsRevision,
+  } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [googleClientId, setGoogleClientId] = useState("")
   const [googleClientSecret, setGoogleClientSecret] = useState("")
@@ -37,9 +41,10 @@ export function OAuthPanel() {
     setMsClientSecret(m.clientSecret ?? "")
   }, [])
 
+  // Re-run on mount AND whenever the account list is mutated elsewhere.
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, accountsRevision])
 
   return (
     <div className="space-y-6">

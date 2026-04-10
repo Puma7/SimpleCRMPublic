@@ -8,7 +8,7 @@ import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 
 export function useEmailAccounts() {
-  const { setSelectedAccountId } = useMailWorkspace()
+  const { setSelectedAccountId, accountsRevision } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [loadingAccounts, setLoadingAccounts] = useState(true)
@@ -42,9 +42,11 @@ export function useEmailAccounts() {
     }
   }, [setSelectedAccountId])
 
+  // Re-run on mount AND whenever bumpAccountsRevision() is called from a
+  // settings panel that mutated the account list.
   useEffect(() => {
     void loadAccounts()
-  }, [loadAccounts])
+  }, [loadAccounts, accountsRevision])
 
   return {
     accounts,

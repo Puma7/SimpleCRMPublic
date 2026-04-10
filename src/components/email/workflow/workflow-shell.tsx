@@ -25,13 +25,6 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -354,24 +347,28 @@ export function WorkflowShell() {
               <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 Geplantes Konto
               </Label>
-              <Select
+              {/*
+                Native <select> on purpose — shadcn/Radix Select forbids
+                SelectItem with an empty-string value, but we need a
+                "— keins —" entry that maps to null. Reverting to the same
+                element the old workflows/page.tsx used.
+              */}
+              <select
+                className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
                 value={editScheduleAccountId === "" ? "" : String(editScheduleAccountId)}
-                onValueChange={(v) =>
-                  setEditScheduleAccountId(v ? parseInt(v, 10) : "")
+                onChange={(e) =>
+                  setEditScheduleAccountId(
+                    e.target.value ? parseInt(e.target.value, 10) : "",
+                  )
                 }
               >
-                <SelectTrigger className="h-8">
-                  <SelectValue placeholder="— keins —" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">— keins (nur Log) —</SelectItem>
-                  {accounts.map((a) => (
-                    <SelectItem key={a.id} value={String(a.id)}>
-                      {a.display_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <option value="">— keins (nur Log) —</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.display_name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="flex items-center gap-2 self-center pb-1">
               <Switch id="wf-en" checked={editEnabled} onCheckedChange={setEditEnabled} />

@@ -41,6 +41,14 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
     )
   }
 
+  // Replaces the node's entire `data` object. Used when switching action
+  // types so that stale fields (e.g. `tag` left over after switching from
+  // "tag setzen" to "archivieren") don't end up in the compiled workflow.
+  const replaceData = (next: Record<string, unknown>) => {
+    if (!node) return
+    setNodes(nodes.map((n) => (n.id === node.id ? { ...n, data: next } : n)))
+  }
+
   const deleteNode = () => {
     if (!node) return
     // Protect trigger nodes from deletion.
@@ -90,7 +98,9 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
           {node.type === "condition" ? (
             <ConditionFields node={node} patch={patch} />
           ) : null}
-          {node.type === "action" ? <ActionFields node={node} patch={patch} /> : null}
+          {node.type === "action" ? (
+            <ActionFields node={node} patch={patch} replaceData={replaceData} />
+          ) : null}
 
           {node.type !== "trigger" ? (
             <>
@@ -116,6 +126,10 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
 type FieldProps = {
   node: Node
   patch: (partial: Record<string, unknown>) => void
+}
+
+type ActionFieldProps = FieldProps & {
+  replaceData: (next: Record<string, unknown>) => void
 }
 
 function TriggerFields({ node, patch }: FieldProps) {
@@ -203,7 +217,7 @@ function ConditionFields({ node, patch }: FieldProps) {
   )
 }
 
-function ActionFields({ node, patch }: FieldProps) {
+function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
   const d = node.data as {
     actionType?: string
     tag?: string
@@ -212,14 +226,29 @@ function ActionFields({ node, patch }: FieldProps) {
     to?: string
   }
   const t = d.actionType ?? "tag"
+
+  // Switching action types must wipe the type-specific fields of the old
+  // action, otherwise stale data (e.g. a `tag` value left over after
+  // switching to "archive") ends up in the compiled workflow graph.
+  const changeActionType = (actionType: string) => {
+    const next: Record<string, unknown> = { actionType }
+    if (actionType === "tag" || actionType === "tag_attachment_meta") {
+      next.tag = ""
+    } else if (actionType === "set_category") {
+      next.path = ""
+    } else if (actionType === "hold_outbound") {
+      next.reason = ""
+    } else if (actionType === "forward_copy") {
+      next.to = ""
+    }
+    replaceData(next)
+  }
+
   return (
     <>
       <div className="space-y-1.5">
         <Label className="text-xs">Aktion</Label>
-        <Select
-          value={t}
-          onValueChange={(actionType) => patch({ actionType })}
-        >
+        <Select value={t} onValueChange={changeActionType}>
           <SelectTrigger className="h-9">
             <SelectValue />
           </SelectTrigger>

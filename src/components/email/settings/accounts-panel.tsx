@@ -8,9 +8,11 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { logError } from "../log"
+import { useMailWorkspace } from "../workspace-context"
 import { AccountForm } from "./account-form"
 
 export function AccountsPanel() {
+  const { accountsRevision, bumpAccountsRevision } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -32,9 +34,11 @@ export function AccountsPanel() {
     }
   }, [])
 
+  // Re-run on mount AND whenever accountsRevision is bumped from anywhere
+  // (e.g. AccountForm after saving a new account).
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, accountsRevision])
 
   return (
     <div className="space-y-4">
@@ -80,7 +84,7 @@ export function AccountsPanel() {
         </ScrollArea>
       </div>
 
-      <AccountForm onCreated={load} />
+      <AccountForm onCreated={bumpAccountsRevision} />
     </div>
   )
 }

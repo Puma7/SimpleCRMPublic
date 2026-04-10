@@ -12,7 +12,12 @@ import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
 export function SmtpPanel() {
-  const { settingsAccountId: accId, setSettingsAccountId: setAccId } = useMailWorkspace()
+  const {
+    settingsAccountId: accId,
+    setSettingsAccountId: setAccId,
+    accountsRevision,
+    bumpAccountsRevision,
+  } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [smtpHost, setSmtpHost] = useState("")
   const [smtpPort, setSmtpPort] = useState("587")
@@ -26,13 +31,19 @@ export function SmtpPanel() {
 
   const load = useCallback(async () => {
     if (!hasElectron()) return
-    const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
-    setAccounts(list)
+    try {
+      const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
+      setAccounts(list)
+    } catch (e) {
+      // silent — handled centrally via AccountsPanel's toast on list failure
+      console.error("[email] smtp-panel: load accounts", e)
+    }
   }, [])
 
+  // Re-run on mount AND whenever the account list is mutated elsewhere.
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, accountsRevision])
 
   useEffect(() => {
     const a = accounts.find((x) => x.id === accId)
@@ -62,7 +73,9 @@ export function SmtpPanel() {
       })
       toast.success("SMTP gespeichert.")
       setSmtpPass("")
-      await load()
+      // Bump the shared revision so every consumer (inbox sidebar, OAuth
+      // panel, accounts panel) sees the updated smtp_* columns.
+      bumpAccountsRevision()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Fehler")
     } finally {
