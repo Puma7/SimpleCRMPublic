@@ -7,6 +7,7 @@ import { Mail } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { logError } from "../log"
 import { AccountForm } from "./account-form"
 
 export function AccountsPanel() {
@@ -23,7 +24,8 @@ export function AccountsPanel() {
     try {
       const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
       setAccounts(list)
-    } catch {
+    } catch (e) {
+      logError("accounts-panel: load", e)
       toast.error("Konten konnten nicht geladen werden.")
     } finally {
       setLoading(false)

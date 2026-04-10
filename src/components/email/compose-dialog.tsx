@@ -37,6 +37,7 @@ import {
   type CustomerOpt,
   type EmailMessage,
 } from "./types"
+import { logError } from "./log"
 import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 
 type Props = {
@@ -69,6 +70,10 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
   // but NOT when unrelated context values (e.g. selectedAccountId) change while
   // the dialog is open — that would clobber typed content.
   const initialisedForIntentRef = useRef<ComposeIntent | null>(null)
+  // Guards against Radix firing onOpenChange(false) multiple times (e.g. rapid
+  // ESC, or close-button double-click) which could otherwise kick off two
+  // parallel saveDraft → closeDialog chains with stale closures.
+  const closingRef = useRef(false)
 
   useEffect(() => {
     if (!isOpen) {
@@ -160,6 +165,16 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
     setCc("")
     setSubject("")
     setBodyHtml("")
+    closingRef.current = false
+  }
+
+  const requestClose = () => {
+    if (closingRef.current) return
+    // Don't interfere with an in-flight send — the send chain will
+    // close the dialog on completion.
+    if (sending) return
+    closingRef.current = true
+    void saveDraft().then(closeDialog)
   }
 
   const saveDraft = async () => {
@@ -175,8 +190,8 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
         to,
         cc: cc || undefined,
       })
-    } catch {
-      /* ignore */
+    } catch (e) {
+      logError("compose-dialog: save draft", e)
     }
   }
 
@@ -230,9 +245,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
-        if (!open) {
-          void saveDraft().then(closeDialog)
-        }
+        if (!open) requestClose()
       }}
     >
       <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col gap-3 p-0">
@@ -341,13 +354,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
         </div>
 
         <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t bg-muted/30 px-6 py-3">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              void saveDraft().then(closeDialog)
-            }}
-          >
+          <Button type="button" variant="ghost" onClick={requestClose}>
             Schließen
           </Button>
           <Button

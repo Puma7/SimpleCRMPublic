@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { hasElectron, invokeIpc, type EmailAccount, type TeamMember } from "../types"
+import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 
 export function useEmailAccounts() {
@@ -29,11 +30,12 @@ export function useEmailAccounts() {
       )
       try {
         setTeamMembers(await invokeIpc<TeamMember[]>(IPCChannels.Email.ListTeamMembers))
-      } catch {
+      } catch (e) {
+        logError("use-email-accounts: list team members", e)
         setTeamMembers([])
       }
     } catch (e) {
-      console.error(e)
+      logError("use-email-accounts: list accounts", e)
       toast.error("Konten konnten nicht geladen werden.")
     } finally {
       setLoadingAccounts(false)

@@ -9,10 +9,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { useMailWorkspace } from "../workspace-context"
 
 export function SmtpPanel() {
+  const { settingsAccountId: accId, setSettingsAccountId: setAccId } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
-  const [accId, setAccId] = useState<number | null>(null)
   const [smtpHost, setSmtpHost] = useState("")
   const [smtpPort, setSmtpPort] = useState("587")
   const [smtpTls, setSmtpTls] = useState(true)

@@ -8,10 +8,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { useMailWorkspace } from "../workspace-context"
 
 export function OAuthPanel() {
+  const { settingsAccountId: accId, setSettingsAccountId: setAccId } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
-  const [accId, setAccId] = useState<number | null>(null)
   const [googleClientId, setGoogleClientId] = useState("")
   const [googleClientSecret, setGoogleClientSecret] = useState("")
   const [googleRedirect, setGoogleRedirect] = useState("http://127.0.0.1:1")

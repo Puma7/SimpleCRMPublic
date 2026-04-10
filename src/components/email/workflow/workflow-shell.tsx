@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/tooltip"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { hasElectron, invokeIpc } from "../types"
+import { logError } from "../log"
 import { WorkflowList, type WorkflowRow } from "./workflow-list"
 import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
@@ -111,7 +112,7 @@ export function WorkflowShell() {
       const acc = await invokeIpc<AccountOpt[]>(IPCChannels.Email.ListAccounts)
       setAccounts(acc.map((a) => ({ id: a.id, display_name: a.display_name })))
     } catch (e) {
-      console.error(e)
+      logError("workflow-shell: load", e)
       toast.error("Workflows konnten nicht geladen werden.")
     } finally {
       setLoading(false)
@@ -136,7 +137,8 @@ export function WorkflowShell() {
     if (w.graph_json) {
       try {
         doc = JSON.parse(w.graph_json) as WorkflowGraphDocument
-      } catch {
+      } catch (e) {
+        logError(`workflow-shell: parse graph_json for workflow ${w.id}`, e)
         doc = null
       }
     }
@@ -174,7 +176,8 @@ export function WorkflowShell() {
           applyRow(created)
         }
       }
-    } catch {
+    } catch (e) {
+      logError("workflow-shell: create", e)
       toast.error("Anlegen fehlgeschlagen.")
     }
   }
@@ -224,7 +227,8 @@ export function WorkflowShell() {
       toast.success("Gelöscht.")
       setSelectedId(null)
       await load()
-    } catch {
+    } catch (e) {
+      logError("workflow-shell: delete", e)
       toast.error("Löschen fehlgeschlagen.")
     }
   }
@@ -240,7 +244,8 @@ export function WorkflowShell() {
         `Inbound-Workflows auf ${res.processed ?? 0} Nachrichten angewendet (idempotent pro Workflow).`,
       )
       await load()
-    } catch {
+    } catch (e) {
+      logError("workflow-shell: backfill", e)
       toast.error("Backfill fehlgeschlagen.")
     } finally {
       setBackfilling(false)

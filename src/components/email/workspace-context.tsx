@@ -34,6 +34,13 @@ type MailWorkspaceState = {
   setSettingsOpen: Dispatch<SetStateAction<boolean>>
   settingsTab: SettingsTab
   setSettingsTab: Dispatch<SetStateAction<SettingsTab>>
+  /**
+   * Shared account selection for the Settings panels (SMTP, OAuth, …).
+   * Matches the single `accId` state the old settings/page.tsx used across
+   * multiple cards so users don't have to pick the account twice.
+   */
+  settingsAccountId: number | null
+  setSettingsAccountId: Dispatch<SetStateAction<number | null>>
   metadataPanelOpen: boolean
   setMetadataPanelOpen: Dispatch<SetStateAction<boolean>>
 }
@@ -59,6 +66,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("accounts")
+  const [settingsAccountId, setSettingsAccountId] = useState<number | null>(null)
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
 
   const value = useMemo<MailWorkspaceState>(
@@ -79,6 +87,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSettingsOpen,
       settingsTab,
       setSettingsTab,
+      settingsAccountId,
+      setSettingsAccountId,
       metadataPanelOpen,
       setMetadataPanelOpen,
     }),
@@ -91,6 +101,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       composeIntent,
       settingsOpen,
       settingsTab,
+      settingsAccountId,
       metadataPanelOpen,
     ],
   )

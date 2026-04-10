@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
+import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 
 type HandleSyncOptions = {
@@ -58,7 +59,7 @@ export function useEmailMessages() {
         setMessages(list)
         setSelectedMessage(null)
       } catch (e) {
-        console.error(e)
+        logError("use-email-messages: load", e)
         toast.error("Nachrichten konnten nicht geladen werden.")
       } finally {
         setLoadingMessages(false)
@@ -84,7 +85,8 @@ export function useEmailMessages() {
       try {
         const full = await invokeIpc<EmailMessage | null>(IPCChannels.Email.GetMessage, m.id)
         setSelectedMessage(full ?? m)
-      } catch {
+      } catch (e) {
+        logError("use-email-messages: open message", e)
         setSelectedMessage(m)
       }
     },
@@ -99,8 +101,8 @@ export function useEmailMessages() {
         selectedMessage.id,
       )
       setSelectedMessage(full ?? selectedMessage)
-    } catch {
-      /* ignore */
+    } catch (e) {
+      logError("use-email-messages: refresh current", e)
     }
   }, [selectedMessage, setSelectedMessage])
 

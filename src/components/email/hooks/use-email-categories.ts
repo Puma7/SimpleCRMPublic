@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc, type CategoryRow, type CatCount } from "../types"
+import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 
 export function useEmailCategories() {
@@ -17,7 +18,8 @@ export function useEmailCategories() {
       setCategories(cats)
       const counts = await invokeIpc<CatCount[]>(IPCChannels.Email.CategoryCounts, accountId)
       setCatCounts(counts)
-    } catch {
+    } catch (e) {
+      logError("use-email-categories: load", e)
       setCategories([])
       setCatCounts([])
     }

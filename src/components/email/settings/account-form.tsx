@@ -110,12 +110,10 @@ export function AccountForm({ onCreated }: Props) {
       })
       if (res.id != null) {
         toast.success("Konto gespeichert.")
+        // Match old page.tsx:367 behaviour — only clear the password so
+        // power users can quickly add another account on the same server
+        // without re-typing host/username/port/TLS.
         setImapPassword("")
-        setDisplayName("")
-        setEmailAddress("")
-        setImapHost("")
-        setImapUsername("")
-        setPop3Host("")
         onCreated()
       }
     } catch (e) {

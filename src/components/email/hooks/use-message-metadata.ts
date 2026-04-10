@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc, type InternalNote, type MessageAttachment } from "../types"
+import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 
 export function useMessageMetadata() {
@@ -35,7 +36,8 @@ export function useMessageMetadata() {
             selectedMessage.id,
           ),
         )
-      } catch {
+      } catch (e) {
+        logError("use-message-metadata: load", e)
         setMessageTags([])
         setInternalNotes([])
         setMessageAttachments([])
