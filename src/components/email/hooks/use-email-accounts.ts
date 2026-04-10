@@ -7,7 +7,7 @@ import { hasElectron, invokeIpc, type EmailAccount, type TeamMember } from "../t
 import { useMailWorkspace } from "../workspace-context"
 
 export function useEmailAccounts() {
-  const { selectedAccountId, setSelectedAccountId } = useMailWorkspace()
+  const { setSelectedAccountId } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [loadingAccounts, setLoadingAccounts] = useState(true)
@@ -21,8 +21,11 @@ export function useEmailAccounts() {
     try {
       const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
       setAccounts(list)
-      setSelectedAccountId(
-        selectedAccountId === null && list.length > 0 ? list[0]!.id : selectedAccountId,
+      // Functional update avoids stale-closure: only initialise to list[0] when
+      // the user has not picked an account yet. Preserves existing selection
+      // on every subsequent reload (e.g. after adding an account in Settings).
+      setSelectedAccountId((prev) =>
+        prev === null && list.length > 0 ? list[0]!.id : prev,
       )
       try {
         setTeamMembers(await invokeIpc<TeamMember[]>(IPCChannels.Email.ListTeamMembers))
@@ -35,8 +38,7 @@ export function useEmailAccounts() {
     } finally {
       setLoadingAccounts(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [setSelectedAccountId])
 
   useEffect(() => {
     void loadAccounts()

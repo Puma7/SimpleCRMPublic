@@ -6,6 +6,10 @@ import { toast } from "sonner"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
+type HandleSyncOptions = {
+  onAfterSync?: (accountId: number) => void | Promise<void>
+}
+
 export function useEmailMessages() {
   const {
     selectedAccountId,
@@ -106,26 +110,34 @@ export function useEmailMessages() {
     }
   }, [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages])
 
-  const handleSync = useCallback(async () => {
-    if (!hasElectron() || selectedAccountId == null) return
-    setSyncing(true)
-    try {
-      const result = await invokeIpc<{ success: boolean; fetched?: number; error?: string }>(
-        IPCChannels.Email.SyncAccount,
-        selectedAccountId,
-      )
-      if (result.success) {
-        toast.success(
-          `Synchronisation abgeschlossen (${result.fetched ?? 0} neue/aktualisierte Nachrichten).`,
-        )
-        await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
-      } else toast.error(result.error ?? "Sync fehlgeschlagen.")
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Sync fehlgeschlagen.")
-    } finally {
-      setSyncing(false)
-    }
-  }, [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages])
+  const handleSync = useCallback(
+    async (opts?: HandleSyncOptions) => {
+      if (!hasElectron() || selectedAccountId == null) return
+      setSyncing(true)
+      try {
+        const result = await invokeIpc<{
+          success: boolean
+          fetched?: number
+          error?: string
+        }>(IPCChannels.Email.SyncAccount, selectedAccountId)
+        if (result.success) {
+          toast.success(
+            `Synchronisation abgeschlossen (${result.fetched ?? 0} neue/aktualisierte Nachrichten).`,
+          )
+          await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
+          // Preserve parity with old page.tsx:388-389 — also refresh category counts.
+          if (opts?.onAfterSync) {
+            await opts.onAfterSync(selectedAccountId)
+          }
+        } else toast.error(result.error ?? "Sync fehlgeschlagen.")
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Sync fehlgeschlagen.")
+      } finally {
+        setSyncing(false)
+      }
+    },
+    [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages],
+  )
 
   return {
     messages,

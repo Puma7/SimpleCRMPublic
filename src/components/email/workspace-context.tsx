@@ -1,9 +1,17 @@
 "use client"
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react"
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react"
 import type { EmailMessage, MailView } from "./types"
 
-type ComposeIntent =
+export type ComposeIntent =
   | { mode: "closed" }
   | { mode: "new" }
   | { mode: "reply"; message: EmailMessage }
@@ -11,23 +19,23 @@ type ComposeIntent =
 
 type MailWorkspaceState = {
   selectedAccountId: number | null
-  setSelectedAccountId: (id: number | null) => void
+  setSelectedAccountId: Dispatch<SetStateAction<number | null>>
   mailView: MailView
-  setMailView: (v: MailView) => void
+  setMailView: Dispatch<SetStateAction<MailView>>
   categoryFilterId: number | null
-  setCategoryFilterId: (id: number | null) => void
+  setCategoryFilterId: Dispatch<SetStateAction<number | null>>
   selectedMessage: EmailMessage | null
-  setSelectedMessage: (m: EmailMessage | null) => void
+  setSelectedMessage: Dispatch<SetStateAction<EmailMessage | null>>
   searchQuery: string
-  setSearchQuery: (q: string) => void
+  setSearchQuery: Dispatch<SetStateAction<string>>
   composeIntent: ComposeIntent
-  setComposeIntent: (c: ComposeIntent) => void
+  setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
   settingsOpen: boolean
-  setSettingsOpen: (o: boolean) => void
+  setSettingsOpen: Dispatch<SetStateAction<boolean>>
   settingsTab: SettingsTab
-  setSettingsTab: (t: SettingsTab) => void
+  setSettingsTab: Dispatch<SetStateAction<SettingsTab>>
   metadataPanelOpen: boolean
-  setMetadataPanelOpen: (o: boolean) => void
+  setMetadataPanelOpen: Dispatch<SetStateAction<boolean>>
 }
 
 export type SettingsTab =

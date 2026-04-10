@@ -24,7 +24,9 @@ type Props = {
 
 export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props) {
   const nodes = useWorkflowEditorStore((s) => s.nodes)
+  const edges = useWorkflowEditorStore((s) => s.edges)
   const setNodes = useWorkflowEditorStore((s) => s.setNodes)
+  const setEdges = useWorkflowEditorStore((s) => s.setEdges)
 
   const node: Node | undefined = selectedNodeId
     ? nodes.find((n) => n.id === selectedNodeId)
@@ -43,6 +45,9 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
     if (!node) return
     // Protect trigger nodes from deletion.
     if (node.type === "trigger") return
+    // Also strip any edges pointing to or from this node, otherwise the
+    // workflow graph compiler will choke on dangling references at save time.
+    setEdges(edges.filter((e) => e.source !== node.id && e.target !== node.id))
     setNodes(nodes.filter((n) => n.id !== node.id))
     onClearSelection()
   }

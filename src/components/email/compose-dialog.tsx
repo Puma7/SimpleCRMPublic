@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import DOMPurify from "dompurify"
@@ -37,7 +37,7 @@ import {
   type CustomerOpt,
   type EmailMessage,
 } from "./types"
-import { useMailWorkspace } from "./workspace-context"
+import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 
 type Props = {
   cannedList: CannedResponse[]
@@ -64,8 +64,21 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
   const [bodyHtml, setBodyHtml] = useState("")
   const [sending, setSending] = useState(false)
 
+  // Track which composeIntent the dialog has initialised for.
+  // Re-init when the intent actually changes (user clicks Reply on another mail),
+  // but NOT when unrelated context values (e.g. selectedAccountId) change while
+  // the dialog is open — that would clobber typed content.
+  const initialisedForIntentRef = useRef<ComposeIntent | null>(null)
+
   useEffect(() => {
-    if (!isOpen || !hasElectron() || selectedAccountId == null) return
+    if (!isOpen) {
+      initialisedForIntentRef.current = null
+      return
+    }
+    if (initialisedForIntentRef.current === composeIntent) return
+    if (!hasElectron() || selectedAccountId == null) return
+    initialisedForIntentRef.current = composeIntent
+    const accountIdAtOpen = selectedAccountId
     let cancelled = false
     void (async () => {
       try {
@@ -112,7 +125,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
           : ""
 
         const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateComposeDraft, {
-          accountId: selectedAccountId,
+          accountId: accountIdAtOpen,
           subject: subj,
           bodyText: quoted,
           to: toAddr,

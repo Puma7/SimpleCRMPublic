@@ -1,12 +1,9 @@
 "use client"
 
-import { useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import DOMPurify from "dompurify"
 import {
   Archive,
-  FileText,
   Mail,
   PanelRightClose,
   PanelRightOpen,
@@ -23,7 +20,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { cn } from "@/lib/utils"
 import {
   formatFrom,
   hasElectron,
@@ -50,10 +46,6 @@ type Props = {
   onReply: (m: EmailMessage) => void
 }
 
-function sanitizeHtml(html: string): string {
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
-}
-
 export function MessageViewer(props: Props) {
   const {
     teamMembers,
@@ -73,8 +65,6 @@ export function MessageViewer(props: Props) {
     setMetadataPanelOpen,
   } = useMailWorkspace()
 
-  const [htmlView, setHtmlView] = useState(true)
-
   if (!selectedMessage) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-muted/10 text-center">
@@ -86,7 +76,7 @@ export function MessageViewer(props: Props) {
 
   const handleSoftDelete = async () => {
     await invokeIpc(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
-    toast.success("Ausgeblendet")
+    toast.success("Ausgeblendet (soft)")
     await refreshList()
     setSelectedMessage(null)
   }
@@ -98,16 +88,18 @@ export function MessageViewer(props: Props) {
   }
 
   const handleArchive = async () => {
+    const wasArchived = !!selectedMessage.archived
     await invokeIpc(IPCChannels.Email.SetMessageArchived, {
       messageId: selectedMessage.id,
-      archived: !selectedMessage.archived,
+      archived: !wasArchived,
     })
-    toast.success(selectedMessage.archived ? "Aus Archiv geholt" : "Archiviert")
+    toast.success(wasArchived ? "Wieder im Posteingang sichtbar" : "Archiviert")
     await refreshCurrentMessage()
     await refreshList()
   }
 
-  const bodyHtml = selectedMessage.body_html ? sanitizeHtml(selectedMessage.body_html) : ""
+  // Text-only rendering — the original UI never rendered raw HTML from emails,
+  // to avoid tracking pixels, external CSS and other exfiltration vectors.
   const bodyText =
     selectedMessage.body_text?.trim() ||
     (selectedMessage.body_html ? stripHtmlToText(selectedMessage.body_html) : "") ||
@@ -179,23 +171,6 @@ export function MessageViewer(props: Props) {
           </div>
 
           <div className="flex items-center gap-1">
-            {bodyHtml ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => setHtmlView((v) => !v)}
-                  >
-                    <FileText className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {htmlView ? "Nur Text anzeigen" : "HTML anzeigen"}
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -339,20 +314,9 @@ export function MessageViewer(props: Props) {
 
                 <Separator />
 
-                {htmlView && bodyHtml ? (
-                  <div
-                    className={cn(
-                      "prose prose-sm max-w-none",
-                      "prose-headings:font-semibold",
-                      "dark:prose-invert",
-                    )}
-                    dangerouslySetInnerHTML={{ __html: bodyHtml }}
-                  />
-                ) : (
-                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                    {bodyText}
-                  </pre>
-                )}
+                <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                  {bodyText}
+                </pre>
               </div>
             </ScrollArea>
           </div>

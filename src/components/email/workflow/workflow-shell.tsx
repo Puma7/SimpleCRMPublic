@@ -122,9 +122,7 @@ export function WorkflowShell() {
     void load()
   }, [load])
 
-  const selectRow = (id: number) => {
-    const w = rows.find((r) => r.id === id)
-    if (!w) return
+  const applyRow = (w: FullWorkflowRow) => {
     setSelectedId(w.id)
     setEditName(w.name)
     setEditPriority(String(w.priority))
@@ -143,6 +141,11 @@ export function WorkflowShell() {
       }
     }
     useWorkflowEditorStore.getState().resetFromGraph(doc)
+  }
+
+  const selectRowById = (id: number) => {
+    const w = rows.find((r) => r.id === id)
+    if (w) applyRow(w)
   }
 
   const handleCreate = async () => {
@@ -166,13 +169,9 @@ export function WorkflowShell() {
           res.id,
         )
         if (created) {
-          setRows((prev) => {
-            const exists = prev.some((r) => r.id === created.id)
-            return exists
-              ? prev.map((r) => (r.id === created.id ? created : r))
-              : [...prev, created]
-          })
-          selectRow(created.id)
+          // Apply the freshly fetched row directly instead of looking it up in
+          // the `rows` state — that closure is still the pre-load snapshot.
+          applyRow(created)
         }
       }
     } catch {
@@ -264,7 +263,7 @@ export function WorkflowShell() {
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="flex h-[calc(100vh-4rem)] min-h-0 flex-col overflow-hidden bg-background">
+      <div className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden bg-background">
         {/* Topbar */}
         <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4">
           <div className="flex items-center gap-2">
@@ -405,7 +404,7 @@ export function WorkflowShell() {
                 rows={rows}
                 selectedId={selectedId}
                 loading={loading}
-                onSelect={selectRow}
+                onSelect={selectRowById}
                 onCreate={() => void handleCreate()}
               />
             </ResizablePanel>

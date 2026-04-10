@@ -3,6 +3,7 @@
 import type { ReactElement } from "react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   AtSign,
@@ -42,50 +43,79 @@ export const SETTINGS_TABS: TabDef[] = [
   { id: "export", label: "Export", icon: Download, render: () => <ExportPanel /> },
 ]
 
+type NavProps = {
+  current: SettingsTab
+  onSelect: (t: SettingsTab) => void
+}
+
+function SettingsNav({ current, onSelect }: NavProps) {
+  return (
+    <aside className="flex w-56 shrink-0 flex-col border-r bg-muted/40">
+      <div className="border-b px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          E-Mail-Einstellungen
+        </p>
+      </div>
+      <nav className="flex-1 space-y-0.5 p-2">
+        {SETTINGS_TABS.map((t) => {
+          const Icon = t.icon
+          const active = t.id === current
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onSelect(t.id)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
+                active
+                  ? "bg-background font-medium shadow-sm"
+                  : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+              )}
+            >
+              <Icon className="h-4 w-4" />
+              {t.label}
+            </button>
+          )
+        })}
+      </nav>
+    </aside>
+  )
+}
+
+/**
+ * Panels are rendered inside shadcn `Tabs` / `TabsContent` so that
+ * switching tabs does NOT unmount the hidden panels. Without this,
+ * every tab switch would re-fire IPC calls to load accounts, SMTP,
+ * canned responses etc. — painfully slow and needlessly noisy.
+ */
+function SettingsPanels({ current }: { current: SettingsTab }) {
+  return (
+    <Tabs value={current} className="w-full">
+      {SETTINGS_TABS.map((t) => (
+        <TabsContent
+          key={t.id}
+          value={t.id}
+          className="mt-0 data-[state=inactive]:hidden"
+          forceMount
+        >
+          <div className="mx-auto max-w-2xl p-6">{t.render()}</div>
+        </TabsContent>
+      ))}
+    </Tabs>
+  )
+}
+
 export function SettingsDialog() {
   const { settingsOpen, setSettingsOpen, settingsTab, setSettingsTab } = useMailWorkspace()
-
-  const activeTab = SETTINGS_TABS.find((t) => t.id === settingsTab) ?? SETTINGS_TABS[0]!
 
   return (
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
       <DialogContent className="max-w-5xl gap-0 overflow-hidden p-0 sm:h-[min(85vh,720px)]">
         <DialogTitle className="sr-only">E-Mail-Einstellungen</DialogTitle>
         <div className="flex h-full min-h-0">
-          {/* Left rail */}
-          <aside className="flex w-56 shrink-0 flex-col border-r bg-muted/40">
-            <div className="border-b px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                E-Mail-Einstellungen
-              </p>
-            </div>
-            <nav className="flex-1 space-y-0.5 p-2">
-              {SETTINGS_TABS.map((t) => {
-                const Icon = t.icon
-                const active = t.id === settingsTab
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => setSettingsTab(t.id)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
-                      active
-                        ? "bg-background font-medium shadow-sm"
-                        : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
-                    )}
-                  >
-                    <Icon className="h-4 w-4" />
-                    {t.label}
-                  </button>
-                )
-              })}
-            </nav>
-          </aside>
-
-          {/* Right content */}
+          <SettingsNav current={settingsTab} onSelect={setSettingsTab} />
           <ScrollArea className="flex-1">
-            <div className="mx-auto max-w-2xl p-6">{activeTab.render()}</div>
+            <SettingsPanels current={settingsTab} />
           </ScrollArea>
         </div>
       </DialogContent>
@@ -96,41 +126,12 @@ export function SettingsDialog() {
 /** Render-only variant used by the /email/settings route (no dialog chrome). */
 export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
-  const activeTab = SETTINGS_TABS.find((t) => t.id === settingsTab) ?? SETTINGS_TABS[0]!
 
   return (
     <div className="flex h-[calc(100vh-8rem)] overflow-hidden rounded-lg border bg-background">
-      <aside className="flex w-56 shrink-0 flex-col border-r bg-muted/40">
-        <div className="border-b px-4 py-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            E-Mail-Einstellungen
-          </p>
-        </div>
-        <nav className="flex-1 space-y-0.5 p-2">
-          {SETTINGS_TABS.map((t) => {
-            const Icon = t.icon
-            const active = t.id === settingsTab
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setSettingsTab(t.id)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
-                  active
-                    ? "bg-background font-medium shadow-sm"
-                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                {t.label}
-              </button>
-            )
-          })}
-        </nav>
-      </aside>
+      <SettingsNav current={settingsTab} onSelect={setSettingsTab} />
       <ScrollArea className="flex-1">
-        <div className="mx-auto max-w-2xl p-6">{activeTab.render()}</div>
+        <SettingsPanels current={settingsTab} />
       </ScrollArea>
     </div>
   )

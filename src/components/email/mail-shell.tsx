@@ -24,7 +24,7 @@ import { hasElectron } from "./types"
 function MailShellInner() {
   const { setComposeIntent, selectedAccountId } = useMailWorkspace()
   const { accounts, teamMembers, loadingAccounts } = useEmailAccounts()
-  const { categories, countForCategory } = useEmailCategories()
+  const { categories, countForCategory, loadCategories } = useEmailCategories()
   const {
     messages,
     loadingMessages,
@@ -34,15 +34,19 @@ function MailShellInner() {
     refreshCurrentMessage,
     handleSync,
   } = useEmailMessages()
+
+  // Preserve old behaviour: after a sync the category counts must refresh as well.
+  const handleSyncWithCategories = () =>
+    void handleSync({ onAfterSync: (accountId) => loadCategories(accountId) })
   const { messageTags, internalNotes, messageAttachments, reloadNotes } =
     useMessageMetadata()
   const { customers, cannedList, aiPrompts } = useMailAuxData()
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] min-h-0 flex-col overflow-hidden bg-background">
+    <div className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden bg-background">
       <MailTopbar
         onCompose={() => setComposeIntent({ mode: "new" })}
-        onSync={() => void handleSync()}
+        onSync={handleSyncWithCategories}
         syncing={syncing}
         canSync={selectedAccountId != null}
         canCompose={selectedAccountId != null}
