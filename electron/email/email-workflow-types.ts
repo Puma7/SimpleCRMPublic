@@ -61,22 +61,57 @@ function domainFromAddress(addr: string): string {
   return at >= 0 ? addr.slice(at + 1).trim() : addr.trim();
 }
 
+function isAddressField(field: ConditionField): boolean {
+  return field === 'from_address' || field === 'to_address' || field === 'cc_address';
+}
+
+function addressFieldValue(field: ConditionField, ctx: Record<string, string>): string {
+  if (field === 'to_address') return ctx.to_address;
+  if (field === 'cc_address') return ctx.cc_address;
+  return ctx.from_address;
+}
+
 function domainEndsWithForField(
   field: ConditionField,
   ctx: Record<string, string>,
   suffix: string,
   ci: boolean,
 ): boolean {
-  const src =
-    field === 'to_address'
-      ? ctx.to_address
-      : field === 'cc_address'
-        ? ctx.cc_address
-        : ctx.from_address;
+  const src = addressFieldValue(field, ctx);
   const suf = ci ? suffix.toLowerCase() : suffix;
   for (const part of splitAddressList(src)) {
     const d = ci ? domainFromAddress(part).toLowerCase() : domainFromAddress(part);
     if (d.endsWith(suf)) return true;
+  }
+  return false;
+}
+
+function matchAddressListOp(
+  field: ConditionField,
+  ctx: Record<string, string>,
+  op: 'contains' | 'equals' | 'regex',
+  needle: string,
+  ci: boolean,
+): boolean {
+  const parts = splitAddressList(addressFieldValue(field, ctx));
+  if (parts.length === 0) {
+    return op === 'equals' ? needle === '' : false;
+  }
+  for (const part of parts) {
+    const haystack = ci ? part.toLowerCase() : part;
+    const n = ci ? needle.toLowerCase() : needle;
+    if (op === 'equals' && haystack === n) return true;
+    if (op === 'contains' && haystack.includes(n)) return true;
+    if (op === 'regex') {
+      if (needle.length > MAX_REGEX_PATTERN_LEN) continue;
+      try {
+        if (!safeRegex(needle)) continue;
+        const flags = ci ? 'i' : '';
+        if (new RegExp(needle, flags).test(part)) return true;
+      } catch {
+        /* invalid pattern */
+      }
+    }
   }
   return false;
 }
@@ -112,9 +147,15 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
   const ci = cond.caseInsensitive !== false;
 
   if (cond.op === 'equals') {
+    if (isAddressField(cond.field)) {
+      return matchAddressListOp(cond.field, ctx, 'equals', needle, ci);
+    }
     return ci ? haystack.toLowerCase() === needle.toLowerCase() : haystack === needle;
   }
   if (cond.op === 'contains') {
+    if (isAddressField(cond.field)) {
+      return matchAddressListOp(cond.field, ctx, 'contains', needle, ci);
+    }
     const h = ci ? haystack.toLowerCase() : haystack;
     const n = ci ? needle.toLowerCase() : needle;
     return h.includes(n);
@@ -124,6 +165,9 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
     return domainEndsWithForField(cond.field, ctx, suf, ci);
   }
   if (cond.op === 'regex') {
+    if (isAddressField(cond.field)) {
+      return matchAddressListOp(cond.field, ctx, 'regex', needle, ci);
+    }
     if (needle.length > MAX_REGEX_PATTERN_LEN) {
       return false;
     }

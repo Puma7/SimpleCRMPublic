@@ -234,7 +234,7 @@ export function WorkflowShell() {
         IPCChannels.Email.BackfillInboundWorkflows,
       )
       toast.success(
-        `Inbound-Workflows auf ${res.processed ?? 0} Nachrichten angewendet (idempotent pro Workflow).`,
+        `Inbound-Workflows auf ${res.processed ?? 0} Nachrichten erneut ausgewertet (Weiterleitungen werden nicht doppelt gesendet).`,
       )
       await load()
     } catch (e) {

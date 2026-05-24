@@ -108,6 +108,7 @@ import {
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
+  clearInboundWorkflowAppliedForMessage,
 } from '../email/email-workflow-store';
 
 interface EmailHandlersOptions {
