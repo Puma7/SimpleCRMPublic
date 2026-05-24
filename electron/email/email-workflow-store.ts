@@ -193,6 +193,18 @@ export function markWorkflowAppliedToMessage(messageId: number, workflowId: numb
     .run(messageId, workflowId);
 }
 
+/** Clears inbound applied flags so backfill can re-run rules after workflow edits. */
+export function clearInboundWorkflowAppliedForMessage(messageId: number): void {
+  getDb()
+    .prepare(
+      `DELETE FROM ${EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE}
+       WHERE message_id = ? AND workflow_id IN (
+         SELECT id FROM ${EMAIL_WORKFLOWS_TABLE} WHERE trigger = 'inbound'
+       )`,
+    )
+    .run(messageId);
+}
+
 export function insertWorkflowRun(input: {
   workflowId: number;
   messageId: number | null;
