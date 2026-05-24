@@ -18,23 +18,23 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 - **Knoten:** `electron/workflow/nodes/*` registriert in `register-builtin-nodes.ts`.
 - **IPC:** `workflow:*` Kanäle in `shared/ipc/channels.ts`, Handler `electron/ipc/workflow.ts`.
 
-## Bekannte Grenzen (nach W6)
+## Backlog P1–P7 (✅ umgesetzt)
 
-- Keine echten Embedding-Vektoren (RAG = Stichwort-Score).
-- `logic.delay` legt Jobs an; separater Cron-Worker für Resume noch minimal.
-- Subflows / Versionierung nur über Export-JSON, kein Git-UI.
+| Prio | Thema | Lieferung |
+|------|--------|-----------|
+| **P1** | Delay-Job-Processor | `processDueDelayedJobs` im E-Mail-Cron; Resume via `executeWorkflowForTrigger` + `startNodeId`; `resolveResumeNodeAfter` |
+| **P2** | CRM-/Kalender-Trigger | `workflow-trigger-dispatch.ts`; `crm.deal_stage_changed` bei `updateDealStage`; Cron-Scan für `task.due` / `calendar.event_start` (15-Min-Fenster, Dedup 60s) |
+| **P3** | Embeddings-RAG | `embedding_json` an Chunks; `runEmbedding` in OpenAI-Layer; Cosine + Keyword-Fallback in `knowledge-base.ts` |
+| **P4** | `logic.switch` / `merge` / `loop` | Registry-Knoten + Loop-Walker in `runtime.ts` (Ports `each`/`done`, dynamische Switch-Labels) |
+| **P5** | IMAP-Aktionen | `email.move_imap`, `email.delete_server` (Opt-in `workflow_imap_delete_opt_in` in `sync_info`) |
+| **P6** | Subflows, Versionierung, Monaco | `workflow.subflow`; Tabelle `email_workflow_versions` + Dialog; `@monaco-editor/react` Experten-JSON |
+| **P7** | JTL / MSSQL, Agent-Tools | `mssql.query`, `jtl.lookup` (read-only); `ai.agent_tool`; `crm.update_deal` |
+
+## Bekannte Grenzen (nach P7)
+
+- Embeddings nur wenn OpenAI-Key konfiguriert; sonst Keyword-RAG.
+- Subflow: Aufruf per Workflow-ID, kein eingebetteter Nested-Graph-Editor.
+- JTL: Lookup/Masterdata, keine vollständige Auftragserstellung.
 - HTTP-Allowlist: `sync_info` Key `workflow_http_allowlist` (kommaseparierte Hosts).
-
-## Nächste sinnvolle Schritte (priorisiert)
-
-| Prio | Thema | Begründung |
-|------|--------|------------|
-| **P1** | **Delay-Job-Processor** — fällige `workflow_delayed_jobs` beim Start/Cron ausführen und Graph an `resume_node_id` fortsetzen | `logic.delay` ist nur halb produktiv ohne Resume |
-| **P2** | **CRM-/Kalender-Trigger** (`crm.deal_stage_changed`, `task.due`, `calendar.event_start`) | In Vision als 🔲, für echte Querschnitts-Automation |
-| **P3** | **Embeddings-RAG** (optional API/lokal) statt nur Keyword-Score | Bessere KI-Agent-Antworten |
-| **P4** | **`logic.switch` / `merge` / `loop`** | Komplexere Verzweigungen ohne Code-Knoten |
-| **P5** | **IMAP-Aktionen** (`email.move_imap`, ggf. `delete_server` mit Opt-in) | Postfach-Automation auf Server-Ebene |
-| **P6** | **Subflows + Versionierung** (UI), **Monaco** für Experten-Modus | W6-Lücken aus Vision |
-| **P7** | **JTL / MSSQL**-Knoten, `ai.agent_tool` | Integrationen für Power-User |
 
 *Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle, Auto-Send ohne Freigabe.

@@ -7,7 +7,10 @@ export type WorkflowTriggerKind =
   | 'outbound'
   | 'draft_created'
   | 'schedule'
-  | 'manual';
+  | 'manual'
+  | 'crm.deal_stage_changed'
+  | 'task.due'
+  | 'calendar.event_start';
 
 export type WorkflowNodeCategory =
   | 'trigger'

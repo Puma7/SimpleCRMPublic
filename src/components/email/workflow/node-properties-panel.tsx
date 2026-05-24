@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { ExpertJsonEditor } from "./expert-json-editor"
 import {
   Select,
   SelectContent,
@@ -185,6 +186,10 @@ function TriggerFields({ node, patch }: FieldProps) {
           <SelectItem value="outbound">E-Mail ausgehend</SelectItem>
           <SelectItem value="draft_created">Entwurf erstellt</SelectItem>
           <SelectItem value="schedule">Zeitplan (Cron)</SelectItem>
+          <SelectItem value="manual">Manuell</SelectItem>
+          <SelectItem value="crm.deal_stage_changed">Deal-Phase geändert</SelectItem>
+          <SelectItem value="task.due">Aufgabe fällig</SelectItem>
+          <SelectItem value="calendar.event_start">Termin beginnt</SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -308,17 +313,17 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
       </div>
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>
-        <textarea
-          className="min-h-[120px] w-full rounded-md border bg-background p-2 font-mono text-xs"
+        <ExpertJsonEditor
           value={d.expertJson ?? JSON.stringify(d.config ?? {}, null, 2)}
-          onChange={(e) => {
+          onChange={(text) => {
             try {
-              const parsed = JSON.parse(e.target.value) as Record<string, unknown>
-              patch({ config: parsed, expertJson: e.target.value })
+              const parsed = JSON.parse(text) as Record<string, unknown>
+              patch({ config: parsed, expertJson: text })
             } catch {
-              patch({ expertJson: e.target.value })
+              patch({ expertJson: text })
             }
           }}
+          height="220px"
         />
       </div>
     </>

@@ -102,7 +102,9 @@ export function registerAiNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const system = String(config.systemPrompt ?? '');
       const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
-      const chunks = kbId ? searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5) : [];
+      const chunks = kbId
+        ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
+        : [];
       const kbText = chunks.map((c) => c.content).join('\n---\n');
       const user = [
         'Nachricht:',
@@ -124,6 +126,36 @@ export function registerAiNodes(register: Reg): void {
         variables['draft.id'] = id;
       }
       return { status: 'ok', variables };
+    },
+  });
+
+  register({
+    type: 'ai.agent_tool',
+    label: 'KI-Agent-Tool',
+    category: 'ai',
+    canvasType: 'registry',
+    defaultConfig: { tool: 'search_knowledge', knowledgeBaseId: null },
+    execute: async (ctx, config) => {
+      const tool = String(config.tool ?? 'echo');
+      if (tool === 'search_knowledge') {
+        const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
+        if (!kbId) return { status: 'skipped', message: 'Keine Wissensbasis' };
+        const chunks = await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 3);
+        const text = chunks.map((c) => c.content).join('\n---\n');
+        return { status: 'ok', variables: { 'tool.result': text.slice(0, 4000) } };
+      }
+      if (tool === 'get_canned') {
+        const { listCannedResponses } = await import('../../email/email-crm-store');
+        const list = listCannedResponses().slice(0, 5);
+        return {
+          status: 'ok',
+          variables: { 'tool.result': list.map((c) => c.title).join(', ') },
+        };
+      }
+      return {
+        status: 'ok',
+        variables: { 'tool.result': ctx.strings.combined_text.slice(0, 500) },
+      };
     },
   });
 }

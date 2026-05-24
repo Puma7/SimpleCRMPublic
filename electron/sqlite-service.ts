@@ -51,6 +51,8 @@ import {
     createWorkflowKnowledgeBasesTable,
     createWorkflowKnowledgeChunksTable,
     createWorkflowDelayedJobsTable,
+    createEmailWorkflowVersionsTable,
+    EMAIL_WORKFLOW_VERSIONS_TABLE,
     EMAIL_WORKFLOW_RUN_STEPS_TABLE,
     WORKFLOW_KNOWLEDGE_BASES_TABLE,
     WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
@@ -138,6 +140,7 @@ export function initializeDatabase() {
             db.exec(createWorkflowKnowledgeBasesTable);
             db.exec(createWorkflowKnowledgeChunksTable);
             db.exec(createWorkflowDelayedJobsTable);
+            db.exec(createEmailWorkflowVersionsTable);
             setupEmailFtsIndex();
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
@@ -546,6 +549,19 @@ function runMigrations() {
         ensureMigrationTable(WORKFLOW_DELAYED_JOBS_TABLE, createWorkflowDelayedJobsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_delayed_execute ON ${WORKFLOW_DELAYED_JOBS_TABLE}(status, execute_at);`,
         ]);
+        ensureMigrationTable(EMAIL_WORKFLOW_VERSIONS_TABLE, createEmailWorkflowVersionsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_versions_wf ON ${EMAIL_WORKFLOW_VERSIONS_TABLE}(workflow_id);`,
+        ]);
+
+        const kbChunkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE);
+        if (kbChunkTable) {
+            const kc = db.prepare(`PRAGMA table_info(${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE})`).all() as { name: string }[];
+            const kn = new Set(kc.map((c) => c.name));
+            if (!kn.has('embedding_json')) {
+                console.log('Adding embedding_json to workflow_knowledge_chunks...');
+                db.exec(`ALTER TABLE ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} ADD COLUMN embedding_json TEXT`);
+            }
+        }
 
         const attTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGE_ATTACHMENTS_TABLE);
         if (!attTable) {
@@ -1982,6 +1998,16 @@ export function updateDealStage(dealId: number, newStage: string): { success: bo
       } catch (e) {
         console.error('Failed to log stage change activity:', e);
       }
+      void import('./workflow/workflow-trigger-dispatch')
+        .then((m) =>
+          m.fireDealStageChangedWorkflows(
+            dealId,
+            Number(deal.customer_id),
+            String(oldStage ?? ''),
+            newStage,
+          ),
+        )
+        .catch((e) => console.warn('[workflow] deal stage trigger', e));
     }
 
     return { success: result.changes > 0, error: result.changes === 0 ? 'Deal not found' : undefined };

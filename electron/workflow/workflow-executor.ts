@@ -7,7 +7,7 @@ import {
 import { parseWorkflowDefinition } from '../email/email-workflow-types';
 import { compileGraphToDefinition } from '../email/email-workflow-graph-compile';
 import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
-import { runWorkflowGraph, parseGraphDocument } from './runtime';
+import { runWorkflowGraph, runWorkflowGraphFromNode, parseGraphDocument } from './runtime';
 // parseGraphDocument used for graph presence check
 import { startWorkflowRun, finishWorkflowRun } from './run-steps';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
@@ -16,10 +16,14 @@ import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 export async function executeWorkflowForTrigger(input: {
   workflow: EmailWorkflowRow;
   trigger: WorkflowTriggerKind;
-  direction: 'inbound' | 'outbound' | 'draft_created' | 'schedule' | 'manual';
+  direction: 'inbound' | 'outbound' | 'draft_created' | 'schedule' | 'manual' | 'crm_event';
   message?: EmailMessageRow | null;
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
+  eventStrings?: Record<string, string>;
+  eventVariables?: Record<string, string | number | boolean | null>;
+  initialVariables?: Record<string, string | number | boolean | null>;
+  startNodeId?: string;
 }): Promise<{
   runId: number;
   status: 'ok' | 'error' | 'blocked';
@@ -40,7 +44,7 @@ export async function executeWorkflowForTrigger(input: {
   if (useGraph) {
     const doc = parseGraphDocument(input.workflow.graph_json);
     if (doc) {
-      const result = await runWorkflowGraph({
+      const graphInput = {
         workflow: input.workflow,
         trigger: input.trigger,
         direction: input.direction,
@@ -48,7 +52,13 @@ export async function executeWorkflowForTrigger(input: {
         message: input.message,
         outbound: input.outbound,
         dryRun: input.dryRun,
-      });
+        eventStrings: input.eventStrings,
+        eventVariables: input.eventVariables,
+        initialVariables: input.initialVariables,
+      };
+      const result = input.startNodeId
+        ? await runWorkflowGraphFromNode({ ...graphInput, startNodeId: input.startNodeId })
+        : await runWorkflowGraph(graphInput);
       finishWorkflowRun(runId, {
         status: result.status,
         logJson: JSON.stringify(result.log),

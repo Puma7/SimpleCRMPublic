@@ -18,6 +18,11 @@ import { listPluginManifests, loadWorkflowPlugins } from '../workflow/plugins';
 import { compileGraphToDefinition } from '../email/email-workflow-graph-compile';
 import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
 import { restartEmailWorkflowCrons } from '../email/email-imap-services';
+import {
+  listWorkflowVersions,
+  saveWorkflowVersion,
+  getWorkflowVersion,
+} from '../workflow/workflow-versions';
 
 type Disposer = () => void;
 
@@ -168,6 +173,44 @@ export function registerWorkflowHandlers(options: {
       loadWorkflowPlugins();
       return listPluginManifests();
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListWorkflowVersions,
+      async (_event: IpcMainInvokeEvent, workflowId: number) => listWorkflowVersions(workflowId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveWorkflowVersion,
+      async (_event: IpcMainInvokeEvent, payload: { workflowId: number; label?: string }) => {
+        const id = saveWorkflowVersion(payload.workflowId, payload.label);
+        return { success: true as const, id };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RestoreWorkflowVersion,
+      async (_event: IpcMainInvokeEvent, payload: { versionId: number }) => {
+        const v = getWorkflowVersion(payload.versionId);
+        if (!v) return { success: false as const, error: 'Version nicht gefunden' };
+        const wf = getWorkflowById(v.workflow_id);
+        if (!wf) return { success: false as const, error: 'Workflow nicht gefunden' };
+        updateWorkflow(v.workflow_id, {
+          graphJson: v.graph_json,
+          definitionJson: v.definition_json,
+        });
+        restartEmailWorkflowCrons(logger);
+        return { success: true as const, workflowId: v.workflow_id };
+      },
+      { logger },
+    ),
   );
 
   return () => disposers.forEach((d) => d());

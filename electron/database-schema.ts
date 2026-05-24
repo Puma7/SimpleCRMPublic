@@ -38,6 +38,7 @@ export const EMAIL_WORKFLOW_RUN_STEPS_TABLE = 'email_workflow_run_steps';
 export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
 export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
 export const WORKFLOW_DELAYED_JOBS_TABLE = 'workflow_delayed_jobs';
+export const EMAIL_WORKFLOW_VERSIONS_TABLE = 'email_workflow_versions';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -479,8 +480,21 @@ export const createWorkflowKnowledgeChunksTable = `
     title TEXT,
     content TEXT NOT NULL,
     source_path TEXT,
+    embedding_json TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailWorkflowVersionsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_WORKFLOW_VERSIONS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    graph_json TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE
   );
 `;
 

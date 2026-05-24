@@ -168,4 +168,44 @@ export function registerEmailNodes(register: Reg): void {
       return { status: 'ok', variables: { 'draft.id': id } };
     },
   });
+
+  register({
+    type: 'email.move_imap',
+    label: 'IMAP verschieben',
+    category: 'email',
+    canvasType: 'registry',
+    defaultConfig: { folderPath: 'Spam' },
+    execute: async (ctx, config) => {
+      const { row, messageId } = requireMessage(ctx);
+      const folderPath = String(config.folderPath ?? 'Spam').trim();
+      if (!folderPath) return { status: 'skipped', message: 'Zielordner leer' };
+      if (ctx.dryRun) return { status: 'ok', message: `dry-run move ${folderPath}` };
+      const { moveImapMessage } = await import('../../email/email-imap-move');
+      await moveImapMessage(row, folderPath);
+      return { status: 'ok', variables: { 'imap.moved_to': folderPath, messageId } };
+    },
+  });
+
+  register({
+    type: 'email.delete_server',
+    label: 'Auf Server löschen',
+    category: 'email',
+    canvasType: 'registry',
+    defaultConfig: {},
+    execute: async (ctx, config) => {
+      const { row } = requireMessage(ctx);
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run delete' };
+      const { deleteImapMessageOnServer, isImapDeleteOptInEnabled } = await import(
+        '../../email/email-imap-move'
+      );
+      if (!isImapDeleteOptInEnabled()) {
+        return {
+          status: 'error',
+          message: 'Opt-in workflow_imap_delete_opt_in in sync_info erforderlich',
+        };
+      }
+      await deleteImapMessageOnServer(row);
+      return { status: 'ok' };
+    },
+  });
 }

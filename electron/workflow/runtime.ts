@@ -1,4 +1,6 @@
-import type { WorkflowGraphDocument, WorkflowGraphEdge, WorkflowGraphNode } from '../../shared/email-workflow-graph';
+import type { WorkflowGraphDocument, WorkflowGraphNode } from '../../shared/email-workflow-graph';
+import { outgoing, pickEdge, parseGraphDocument } from './graph-walk-utils';
+export { parseGraphDocument, resolveResumeNodeAfter } from './graph-walk-utils';
 import {
   evaluateWorkflowWhen,
   type WorkflowCondition,
@@ -10,27 +12,6 @@ import { ensureBuiltinWorkflowNodes, getWorkflowNode, LEGACY_ACTION_MAP } from '
 import { insertWorkflowRunStep } from './run-steps';
 import type { GraphRunResult, NodeExecuteResult, WorkflowContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
-
-function outgoing(edges: WorkflowGraphEdge[], sourceId: string): WorkflowGraphEdge[] {
-  return edges.filter((e) => e.source === sourceId).sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function edgeIsYes(e: WorkflowGraphEdge): boolean {
-  const l = (e.label ?? '').toLowerCase();
-  return !l || l === 'yes' || l === 'ja' || l === 'true' || l === 'success';
-}
-
-function edgeIsNo(e: WorkflowGraphEdge): boolean {
-  const l = (e.label ?? '').toLowerCase();
-  return l === 'no' || l === 'nein' || l === 'false' || l === 'error';
-}
-
-function pickEdge(edges: WorkflowGraphEdge[], port: 'yes' | 'no' | 'default'): WorkflowGraphEdge | undefined {
-  if (edges.length === 0) return undefined;
-  if (port === 'yes') return edges.find((e) => edgeIsYes(e)) ?? edges[0];
-  if (port === 'no') return edges.find((e) => edgeIsNo(e)) ?? edges[1] ?? edges[0];
-  return edges[0];
-}
 
 function conditionFromNodeData(data: Record<string, unknown>): WorkflowCondition {
   return {
@@ -55,6 +36,14 @@ function configFromActionData(data: Record<string, unknown>): { type: string; co
   const config: Record<string, unknown> = { ...data };
   delete config.actionType;
   return { type: registryType, config };
+}
+
+function registryTypeOf(node: WorkflowGraphNode): string | undefined {
+  if (node.type !== 'registry' && node.type !== 'action') return undefined;
+  const data = node.data as Record<string, unknown>;
+  if (data.nodeType) return String(data.nodeType);
+  const actionType = String(data.actionType ?? '');
+  return LEGACY_ACTION_MAP[actionType];
 }
 
 async function executeNode(
@@ -92,22 +81,79 @@ async function executeNode(
   return { status: 'skipped', message: `Unbekannter Knotentyp ${node.type}` };
 }
 
+type WalkOptions = {
+  allowRevisit?: boolean;
+};
+
 async function walkGraph(
   ctx: WorkflowContext,
   doc: WorkflowGraphDocument,
   startNodeId: string,
   log: string[],
+  visited?: Set<string>,
+  options?: WalkOptions,
 ): Promise<GraphRunResult> {
   const nodesById = new Map(doc.nodes.map((n) => [n.id, n]));
   let currentId: string | undefined = startNodeId;
-  const visited = new Set<string>();
+  const seen = visited ?? new Set<string>();
   let blocked = false;
   let blockReason: string | null = null;
 
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
+  while (currentId) {
+    if (!options?.allowRevisit && seen.has(currentId)) {
+      log.push(`cycle:${currentId}`);
+      break;
+    }
+    seen.add(currentId);
+
     const node = nodesById.get(currentId);
     if (!node) break;
+
+    const regType = registryTypeOf(node);
+
+    if (regType === 'logic.loop') {
+      const data = node.data as Record<string, unknown>;
+      const config =
+        data.config && typeof data.config === 'object'
+          ? (data.config as Record<string, unknown>)
+          : data;
+      const sourceKey = String(config.sourceVariable ?? 'attachment_names');
+      const raw =
+        String(ctx.strings[sourceKey] ?? '') ||
+        String(ctx.variables[sourceKey] ?? '') ||
+        String(config.items ?? '');
+      const items = raw
+        .split(/[,;\n]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 50);
+      const outs = outgoing(doc.edges, currentId);
+      const eachEdge = pickEdge(outs, 'each');
+      const doneEdge = pickEdge(outs, 'done');
+      if (items.length === 0 || !eachEdge) {
+        log.push('loop:empty');
+        currentId = doneEdge?.target;
+        continue;
+      }
+      for (let i = 0; i < items.length; i++) {
+        ctx.variables['loop.item'] = items[i]!;
+        ctx.variables['loop.index'] = i;
+        log.push(`loop:${i}:${items[i]}`);
+        const branchLog = [...log];
+        const r = await walkGraph(ctx, doc, eachEdge.target, branchLog, new Set<string>(), {
+          allowRevisit: true,
+        });
+        log.push(...r.log);
+        if (r.blocked) return r;
+        if (r.status === 'error') {
+          blocked = false;
+          blockReason = null;
+          return { log, status: 'error', blocked: false, blockReason: null };
+        }
+      }
+      currentId = doneEdge?.target;
+      continue;
+    }
 
     const t0 = Date.now();
     let result: NodeExecuteResult;
@@ -125,7 +171,10 @@ async function walkGraph(
     insertWorkflowRunStep({
       runId: ctx.runId,
       nodeId: node.id,
-      nodeType: node.type === 'action' ? String((node.data as { actionType?: string }).actionType ?? 'action') : node.type,
+      nodeType:
+        node.type === 'action'
+          ? String((node.data as { actionType?: string }).actionType ?? 'action')
+          : regType ?? node.type,
       status: result.status,
       port: result.port ?? null,
       durationMs,
@@ -138,10 +187,12 @@ async function walkGraph(
     if (result.ai?.lastResponse) ctx.ai.lastResponse = result.ai.lastResponse;
 
     if (result.blocked) {
-      blocked = true;
-      blockReason = result.blockReason ?? 'Workflow blockiert';
-      log.push(`blocked:${blockReason}`);
-      return { log, status: 'blocked', blocked: true, blockReason };
+      return {
+        log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: result.blockReason ?? 'Workflow blockiert',
+      };
     }
     if (result.stop) {
       log.push('stop');
@@ -151,11 +202,15 @@ async function walkGraph(
     const outs = outgoing(doc.edges, currentId);
     if (outs.length === 0) break;
 
-    let port: 'yes' | 'no' | 'default' = 'default';
+    let port: string = 'default';
     if (node.type === 'condition') {
       port = result.port === 'no' ? 'no' : 'yes';
+    } else if (regType === 'logic.switch') {
+      port = String(result.port ?? 'default');
     } else if (result.port === 'error') {
       port = 'no';
+    } else if (result.port) {
+      port = result.port;
     }
 
     const nextEdge = pickEdge(outs, port);
@@ -165,18 +220,7 @@ async function walkGraph(
   return { log, status: 'ok', blocked: false, blockReason: null };
 }
 
-export function parseGraphDocument(json: string | null): WorkflowGraphDocument | null {
-  if (!json?.trim()) return null;
-  try {
-    const doc = JSON.parse(json) as WorkflowGraphDocument;
-    if (doc.version !== 1 || !Array.isArray(doc.nodes)) return null;
-    return doc;
-  } catch {
-    return null;
-  }
-}
-
-export async function runWorkflowGraph(input: {
+type GraphRunInput = {
   workflow: EmailWorkflowRow;
   trigger: WorkflowTriggerKind;
   direction: WorkflowContext['direction'];
@@ -184,24 +228,13 @@ export async function runWorkflowGraph(input: {
   message?: import('../email/email-store').EmailMessageRow | null;
   outbound?: import('../email/email-workflow-engine').OutboundDraftPayload | null;
   dryRun?: boolean;
-}): Promise<GraphRunResult> {
-  ensureBuiltinWorkflowNodes();
-  const doc = parseGraphDocument(input.workflow.graph_json);
-  if (!doc) {
-    return {
-      log: ['graph_missing'],
-      status: 'error',
-      blocked: false,
-      blockReason: null,
-    };
-  }
+  eventStrings?: Record<string, string>;
+  eventVariables?: Record<string, string | number | boolean | null>;
+  initialVariables?: Record<string, string | number | boolean | null>;
+};
 
-  const triggerNode = doc.nodes.find((n) => n.type === 'trigger');
-  if (!triggerNode) {
-    return { log: ['no_trigger'], status: 'error', blocked: false, blockReason: null };
-  }
-
-  const ctx = createWorkflowContext({
+function buildCtx(input: GraphRunInput): WorkflowContext {
+  return createWorkflowContext({
     trigger: input.trigger,
     direction: input.direction,
     workflowId: input.workflow.id,
@@ -209,8 +242,25 @@ export async function runWorkflowGraph(input: {
     message: input.message ?? null,
     outbound: input.outbound ?? null,
     dryRun: input.dryRun,
+    eventStrings: input.eventStrings,
+    eventVariables: input.eventVariables,
+    initialVariables: input.initialVariables,
   });
+}
 
+export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunResult> {
+  ensureBuiltinWorkflowNodes();
+  const doc = parseGraphDocument(input.workflow.graph_json);
+  if (!doc) {
+    return { log: ['graph_missing'], status: 'error', blocked: false, blockReason: null };
+  }
+
+  const triggerNode = doc.nodes.find((n) => n.type === 'trigger');
+  if (!triggerNode) {
+    return { log: ['no_trigger'], status: 'error', blocked: false, blockReason: null };
+  }
+
+  const ctx = buildCtx(input);
   const log: string[] = ['graph_run_start'];
   const outs = outgoing(doc.edges, triggerNode.id);
   if (outs.length === 0) {
@@ -227,3 +277,17 @@ export async function runWorkflowGraph(input: {
   }
   return merged;
 }
+
+export async function runWorkflowGraphFromNode(
+  input: GraphRunInput & { startNodeId: string },
+): Promise<GraphRunResult> {
+  ensureBuiltinWorkflowNodes();
+  const doc = parseGraphDocument(input.workflow.graph_json);
+  if (!doc) {
+    return { log: ['graph_missing'], status: 'error', blocked: false, blockReason: null };
+  }
+  const ctx = buildCtx(input);
+  const log: string[] = [`graph_resume:${input.startNodeId}`];
+  return walkGraph(ctx, doc, input.startNodeId, log);
+}
+

@@ -75,4 +75,63 @@ export function registerIntegrationNodes(register: Reg): void {
       };
     },
   });
+
+  register({
+    type: 'mssql.query',
+    label: 'MSSQL (Read-only)',
+    category: 'integration',
+    canvasType: 'registry',
+    defaultConfig: { sql: 'SELECT TOP 10 1 AS ok' },
+    execute: async (ctx, config) => {
+      const sqlText = String(config.sql ?? '').trim();
+      if (!sqlText) return { status: 'skipped' };
+      const upper = sqlText.toUpperCase();
+      if (
+        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE)\b/.test(upper)
+      ) {
+        return { status: 'error', message: 'Nur SELECT erlaubt' };
+      }
+      if (!upper.startsWith('SELECT')) {
+        return { status: 'error', message: 'Query muss mit SELECT beginnen' };
+      }
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run mssql' };
+      const { executeReadOnlyMssqlQuery } = await import('../../mssql-keytar-service');
+      const r = await executeReadOnlyMssqlQuery(sqlText);
+      if (!r.success) return { status: 'error', message: r.error ?? 'MSSQL-Fehler' };
+      return {
+        status: 'ok',
+        variables: {
+          'mssql.rows': JSON.stringify(r.rows ?? []).slice(0, 8000),
+          'mssql.row_count': r.rowCount ?? 0,
+        },
+      };
+    },
+  });
+
+  register({
+    type: 'jtl.lookup',
+    label: 'JTL Stammdaten',
+    category: 'integration',
+    canvasType: 'registry',
+    defaultConfig: { entity: 'firmen' },
+    execute: async (ctx, config) => {
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run jtl' };
+      const entity = String(config.entity ?? 'firmen');
+      const {
+        fetchJtlFirmen,
+        fetchJtlWarenlager,
+        fetchJtlZahlungsarten,
+        fetchJtlVersandarten,
+      } = await import('../../mssql-keytar-service');
+      let rows: unknown[] = [];
+      if (entity === 'warenlager') rows = await fetchJtlWarenlager();
+      else if (entity === 'zahlungsarten') rows = await fetchJtlZahlungsarten();
+      else if (entity === 'versandarten') rows = await fetchJtlVersandarten();
+      else rows = await fetchJtlFirmen();
+      return {
+        status: 'ok',
+        variables: { 'jtl.data': JSON.stringify(rows).slice(0, 8000) },
+      };
+    },
+  });
 }

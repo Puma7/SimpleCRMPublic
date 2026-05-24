@@ -59,27 +59,35 @@ export function createWorkflowContext(input: {
   message?: EmailMessageRow | null;
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
+  eventStrings?: WorkflowStringContext;
+  eventVariables?: Record<string, string | number | boolean | null>;
+  initialVariables?: Record<string, string | number | boolean | null>;
 }): WorkflowContext {
   const message = input.message ?? null;
   const outbound = input.outbound ?? null;
-  const strings = message
-    ? buildStringContextFromMessage(message)
-    : outbound
-      ? buildStringContextFromOutbound(outbound)
-      : {
-          subject: '',
-          body_text: '',
-          snippet: '',
-          from_address: '',
-          to_address: '',
-          cc_address: '',
-          combined_text: '',
-          has_attachments: 'false',
-          attachment_names: '',
-          attachment_types: '',
-        };
+  const strings =
+    input.eventStrings ??
+    (message
+      ? buildStringContextFromMessage(message)
+      : outbound
+        ? buildStringContextFromOutbound(outbound)
+        : {
+            subject: '',
+            body_text: '',
+            snippet: '',
+            from_address: '',
+            to_address: '',
+            cc_address: '',
+            combined_text: '',
+            has_attachments: 'false',
+            attachment_names: '',
+            attachment_types: '',
+          });
 
-  const vars: Record<string, string | number | boolean | null> = {};
+  const vars: Record<string, string | number | boolean | null> = {
+    ...(input.initialVariables ?? {}),
+    ...(input.eventVariables ?? {}),
+  };
   if (message?.customer_id) {
     const c = getCustomerById(message.customer_id);
     if (c) {

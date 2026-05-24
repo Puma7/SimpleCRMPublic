@@ -6,6 +6,11 @@ import { syncInboxImap } from './email-imap-sync';
 import { syncInboxPop3 } from './email-pop3-sync';
 import { runScheduledWorkflowFire } from './email-workflow-engine';
 import { listWorkflowsWithCron } from './email-workflow-store';
+import { processDueDelayedJobs } from '../workflow/delayed-jobs';
+import {
+  scanDueTasksAndFireWorkflows,
+  scanUpcomingCalendarEventsAndFireWorkflows,
+} from '../workflow/workflow-trigger-dispatch';
 
 let idleClients: Map<number, ImapFlow> = new Map();
 let globalCron: ScheduledTask | null = null;
@@ -91,6 +96,15 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   globalCron = cron.schedule(
     '*/2 * * * *',
     () => {
+      void processDueDelayedJobs(logger).catch((e) =>
+        logger.debug('[workflow] delayed jobs', e),
+      );
+      void scanDueTasksAndFireWorkflows().catch((e) =>
+        logger.debug('[workflow] task due scan', e),
+      );
+      void scanUpcomingCalendarEventsAndFireWorkflows().catch((e) =>
+        logger.debug('[workflow] calendar scan', e),
+      );
       const now = Date.now();
       const accounts = listEmailAccounts();
       for (const acc of accounts) {

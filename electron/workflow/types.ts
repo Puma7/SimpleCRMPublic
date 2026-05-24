@@ -6,7 +6,7 @@ export type WorkflowStringContext = Record<string, string>;
 
 export type WorkflowContext = {
   trigger: WorkflowTriggerKind;
-  direction: 'inbound' | 'outbound' | 'draft_created' | 'schedule' | 'manual';
+  direction: 'inbound' | 'outbound' | 'draft_created' | 'schedule' | 'manual' | 'crm_event';
   messageId: number | null;
   message: EmailMessageRow | null;
   outbound: OutboundDraftPayload | null;
@@ -21,7 +21,8 @@ export type WorkflowContext = {
 export type NodeExecuteResult = {
   status: 'ok' | 'error' | 'skipped';
   /** Next port for branching nodes */
-  port?: 'default' | 'yes' | 'no' | 'error' | 'success';
+  /** Branch port; built-in names plus dynamic labels (e.g. logic.switch cases). */
+  port?: string;
   stop?: boolean;
   blocked?: boolean;
   blockReason?: string;

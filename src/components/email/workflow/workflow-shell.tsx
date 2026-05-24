@@ -38,6 +38,7 @@ import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
 import { JsonDevDrawer } from "./json-dev-drawer"
 import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
+import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
@@ -90,6 +91,7 @@ export function WorkflowShell() {
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editName, setEditName] = useState("")
+  const [editTrigger, setEditTrigger] = useState("inbound")
   const [editPriority, setEditPriority] = useState("100")
   const [editEnabled, setEditEnabled] = useState(true)
   const [editCron, setEditCron] = useState("")
@@ -100,6 +102,7 @@ export function WorkflowShell() {
   const [backfilling, setBackfilling] = useState(false)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
@@ -132,6 +135,7 @@ export function WorkflowShell() {
   const applyRow = (w: FullWorkflowRow) => {
     setSelectedId(w.id)
     setEditName(w.name)
+    setEditTrigger(w.trigger || "inbound")
     setEditPriority(String(w.priority))
     setEditJson(w.definition_json)
     setEditCron(w.cron_expr ?? "")
@@ -213,7 +217,13 @@ export function WorkflowShell() {
       if (!compiled.success || !compiled.definitionJson) {
         throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
       }
-      const trig = triggerFromGraph(graphDoc)
+      const trig = editTrigger.trim() || triggerFromGraph(graphDoc)
+      if (selectedId != null) {
+        await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, {
+          workflowId: selectedId,
+          label: "Vor Speichern",
+        })
+      }
       await invokeIpc(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
@@ -327,6 +337,15 @@ export function WorkflowShell() {
             >
               Vorlagen
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={selectedId == null}
+              onClick={() => setVersionsOpen(true)}
+            >
+              Versionen
+            </Button>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -355,6 +374,25 @@ export function WorkflowShell() {
                 onChange={(e) => setEditName(e.target.value)}
                 className="h-8"
               />
+            </div>
+            <div className="min-w-[160px] space-y-1">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Auslöser (DB)
+              </Label>
+              <select
+                className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                value={editTrigger}
+                onChange={(e) => setEditTrigger(e.target.value)}
+              >
+                <option value="inbound">E-Mail eingehend</option>
+                <option value="outbound">E-Mail ausgehend</option>
+                <option value="draft_created">Entwurf erstellt</option>
+                <option value="schedule">Zeitplan</option>
+                <option value="manual">Manuell</option>
+                <option value="crm.deal_stage_changed">Deal-Phase</option>
+                <option value="task.due">Aufgabe fällig</option>
+                <option value="calendar.event_start">Termin</option>
+              </select>
             </div>
             <div className="w-[90px] space-y-1">
               <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -568,6 +606,14 @@ export function WorkflowShell() {
           onPick={(t: WorkflowTemplateDto) => {
             useWorkflowEditorStore.getState().resetFromGraph(t.graph)
             toast.success(`Vorlage „${t.name}" geladen — bitte speichern.`)
+          }}
+        />
+        <WorkflowVersionsDialog
+          workflowId={selectedId}
+          open={versionsOpen}
+          onOpenChange={setVersionsOpen}
+          onRestored={() => {
+            if (selectedId != null) selectRowById(selectedId)
           }}
         />
       </div>

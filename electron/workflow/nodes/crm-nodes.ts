@@ -1,6 +1,6 @@
 import { tryLinkMessageToCustomer } from '../../email/email-crm-store';
 import { getDb } from '../../sqlite-service';
-import { TASKS_TABLE, ACTIVITY_LOG_TABLE } from '../../database-schema';
+import { TASKS_TABLE, ACTIVITY_LOG_TABLE, DEALS_TABLE } from '../../database-schema';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
@@ -66,6 +66,38 @@ export function registerCrmNodes(register: Reg): void {
           JSON.stringify({ messageId: ctx.messageId, workflowId: ctx.workflowId }),
         );
       return { status: 'ok' };
+    },
+  });
+
+  register({
+    type: 'crm.update_deal',
+    label: 'Deal aktualisieren',
+    category: 'crm',
+    canvasType: 'registry',
+    defaultConfig: { dealId: 0, stage: '' },
+    execute: async (ctx, config) => {
+      const dealId = Number(config.dealId ?? ctx.variables['deal.id'] ?? 0);
+      const stage = String(config.stage ?? '').trim();
+      if (!dealId) return { status: 'skipped', message: 'Keine Deal-ID' };
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run deal update' };
+      if (stage) {
+        const { updateDealStage } = await import('../../sqlite-service');
+        const r = updateDealStage(dealId, stage);
+        if (!r.success) return { status: 'error', message: r.error ?? 'Deal-Update fehlgeschlagen' };
+        const vars: Record<string, string | number | boolean | null> = {
+          'deal.id': dealId,
+          'deal.stage': stage,
+        };
+        return { status: 'ok', variables: vars };
+      }
+      const title = config.title != null ? String(config.title) : null;
+      if (title) {
+        getDb()
+          .prepare(`UPDATE ${DEALS_TABLE} SET title = ?, last_modified = ? WHERE id = ?`)
+          .run(title, new Date().toISOString(), dealId);
+      }
+      const vars: Record<string, string | number | boolean | null> = { 'deal.id': dealId };
+      return { status: 'ok', variables: vars };
     },
   });
 }
