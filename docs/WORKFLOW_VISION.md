@@ -10,6 +10,9 @@ Dieses Dokument beschreibt **Zielbild, geplanten Umfang und Roadmap** für das W
 
 **Leserschaft:** Produkt, Entwicklung, LLM-Assistenten bei größeren Refactors.
 
+> **Umsetzungsstand (W0–W6):** Die Phasen W0–W6 sind in der Codebasis umgesetzt. Verbindlicher **Ist-Stand** und bekannte Grenzen: [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).  
+> Dieses Dokument bleibt das **Langfrist-Zielbild**; Tabellen mit 🔲 sind nicht automatisch „noch zu tun“, wenn sie in W7+ oder „Nächste Schritte“ stehen.
+
 ---
 
 ## 1. Leitidee
@@ -30,21 +33,21 @@ SimpleCRM ist **kein Cloud-n8n**: Daten liegen lokal (SQLite), Secrets im OS-Key
 
 ---
 
-## 2. Ist-Zustand (Kurz)
+## 2. Ist-Zustand (Kurz, nach W0–W6)
 
 ### 2.1 UI: React Flow als Editor
 
-- Pfad: `src/app/email/workflows/`, Canvas: `@xyflow/react`
-- Knotentypen im Canvas: **Trigger**, **Bedingung**, **Aktion** (fest verdrahtet)
-- Speicherung: `email_workflows.graph_json` (Graph) + `definition_json` (kompilierte Regeln)
-- JSON-Drawer: Entwickler-Ansicht des **Kompilats** (wird beim Speichern aus dem Graph neu erzeugt)
+- UI: `src/components/email/workflow/` (Shell, Canvas, Palette, Eigenschaften, Vorlagen, Lauf-Historie)
+- Canvas-Knoten: **Trigger**, **Bedingung**, **Aktion** (Legacy) + **Registry** (erweiterte Knoten aus Katalog)
+- Speicherung: `graph_json` + `definition_json` (Kompilat, optional Fallback)
+- JSON-Drawer: Kompilierte Regeln; Registry-Knoten zusätzlich **Experten-JSON** pro Knoten
 
-### 2.2 Laufzeit: Regel-Engine (nicht Graph-Interpreter)
+### 2.2 Laufzeit: Graph-Interpreter + Compiled-Fallback
 
 ```
-React Flow Graph  →  compileGraphToDefinition()  →  WorkflowDefinitionV1 { rules[] }
-                                                          ↓
-                                              email-workflow-engine.ts
+graph_json  →  execution_mode = graph  →  electron/workflow/runtime.ts (Interpreter)
+              ↓ (Fallback / Legacy)
+         compileGraphToDefinition()  →  email-workflow-engine.ts (Regeln)
 ```
 
 | Trigger | Beschreibung |
@@ -54,28 +57,16 @@ React Flow Graph  →  compileGraphToDefinition()  →  WorkflowDefinitionV1 { r
 | `draft_created` | Lokaler Entwurf angelegt |
 | `schedule` | Cron; optional Sync eines Kontos |
 
-| Bedingungen (Auszug) | Operatoren |
-|----------------------|------------|
-| Betreff, Text, Von/An/CC, kombiniert | `contains`, `equals`, `regex`, `domain_ends_with` |
-| Anhänge (`has_attachments`, Dateiname, MIME) | `is_true` / `is_false`, `contains`, … |
-| Gruppen | `all`, `any`, `not` (Verzweigung im Graph) |
+**Registry-Knoten (Auszug, siehe Palette):** `ai.agent`, `ai.classify`, `code.javascript`, `crm.create_task`, `http.request`, `logic.delay`, … — vollständige Liste per IPC `ListWorkflowNodeCatalog`.
 
-| Aktionen (Auszug) | |
-|-------------------|--|
-| Tag, gelesen, archivieren, Kategorie, Kunde verknüpfen | |
-| `forward_copy`, `hold_outbound`, `tag_attachment_meta` | |
-| `ai_review` (Prompt → OK/BLOCK) | |
-| `stop` | |
+**Bereits umgesetzt:** If/Else, Postfach-Lücken, Graph-Runtime, Run-Steps, Wissensbasis (Keyword-RAG), Code/Plugins, Import/Export, Dry-Run-Test.
 
-**Bereits umgesetzt (jenseits reiner Regeln):** If/Else im Graph-Compiler (`ja`/`nein`-Kanten), Postfach-UI (gelesen, weiterleiten, Spam), Konto bearbeiten/löschen, Composer-Anhänge, IMAP `\Seen`-Sync (best-effort).
+**Noch nicht vollständig n8n-like (Priorität siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md)):**
 
-**Noch nicht n8n-like:**
-
-- Keine beliebigen Knotentypen zur Laufzeit
-- Kein Code-Knoten (JavaScript/Python)
-- Kein KI-Agent mit Wissensbasis/Tools
-- Kein echter Profi-Modus (editierbares Knoten-JSON, das die Engine direkt ausführt)
-- Keine Integrationen außerhalb E-Mail/CRM (JTL, Kalender, …) als Workflow-Knoten
+- Delay-Resume nach `logic.delay` (Jobs in DB, Worker minimal)
+- Embeddings-RAG, CRM-/Kalender-Trigger, `logic.switch`/`merge`/`loop`
+- Subflows, Monaco-Profi-Editor, JTL/MSSQL-Knoten
+- IMAP verschieben / Server-Löschung als Knoten
 
 ---
 
@@ -149,7 +140,9 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 
 ---
 
-## 4. Knoten-Taxonomie (geplanter Gesamtumfang)
+## 4. Knoten-Taxonomie (Gesamtumfang & Status)
+
+*Legende: ✅ umgesetzt (W0–W6) · 🔲 Langfrist / noch offen · ❌ bewusst out of scope (Kap. 9)*
 
 ### 4.1 Trigger-Knoten
 
@@ -174,8 +167,8 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | `logic.switch` | Mehrfach-Verzweigung nach Wert | 🔲 |
 | `logic.merge` | Pfade zusammenführen | 🔲 |
 | `logic.loop` | Über Liste (Tags, Anhänge, Zeilen) | 🔲 |
-| `logic.delay` | Warten (Minuten/Stunden, nur Desktop-tauglich) | 🔲 |
-| `logic.set_variable` | Variable setzen | 🔲 |
+| `logic.delay` | Warten (Minuten/Stunden; Job in DB, Resume-Worker 🔲) | ✅ (teilweise) |
+| `logic.set_variable` | Variable setzen | ✅ |
 | `logic.filter` | CRM-/Mail-Filter ohne Code | 🔲 |
 
 ### 4.3 E-Mail-Aktionen
@@ -189,7 +182,7 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | `email.link_customer` | Kunde verknüpfen | ✅ |
 | `email.forward_copy` | Kopie per SMTP | ✅ |
 | `email.hold_outbound` | Versand sperren | ✅ |
-| `email.create_draft` | Antwort-/Fwd-Entwurf erzeugen | 🔲 |
+| `email.create_draft` | Antwort-/Fwd-Entwurf erzeugen | ✅ |
 | `email.move_imap` | IMAP-Ordner (Spam, Trash, …) | 🔲 |
 | `email.delete_server` | Server-Löschung (opt-in, konfigurierbar) | 🔲 |
 
@@ -198,9 +191,9 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | ID | Beschreibung | Status |
 |----|--------------|--------|
 | `crm.link_customer` | Wie heute | ✅ (als `link_customer`) |
-| `crm.create_task` | Aufgabe aus Mail | 🔲 |
+| `crm.create_task` | Aufgabe aus Mail | ✅ |
 | `crm.update_deal` | Deal-Feld / Stage | 🔲 |
-| `crm.log_activity` | Follow-up-Timeline | 🔲 |
+| `crm.log_activity` | Follow-up-Timeline | ✅ |
 | `crm.set_custom_field` | Benutzerdefiniertes Feld | 🔲 |
 
 ### 4.5 KI-Knoten
@@ -208,9 +201,9 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | ID | Beschreibung | Status |
 |----|--------------|--------|
 | `ai.review` | Prompt + BLOCK/OK (Outbound/Inbound) | ✅ (`ai_review`) |
-| `ai.transform_text` | Text umschreiben (wie Composer) | 🔲 (nur manuell im Composer) |
-| `ai.classify` | Kategorie/Tag aus Inhalt | 🔲 |
-| `ai.agent` | Agent mit System-Prompt + optional RAG | 🔲 |
+| `ai.transform_text` | Text umschreiben (wie Composer) | ✅ |
+| `ai.classify` | Kategorie/Tag aus Inhalt | ✅ |
+| `ai.agent` | Agent mit System-Prompt + optional RAG | ✅ (Keyword-RAG) |
 | `ai.agent_tool` | Sub-Tool-Aufruf (intern) | 🔲 |
 
 **KI-Agent-Knoten (Ziel-Detail):**
@@ -236,16 +229,16 @@ flowchart LR
 |----|--------------|--------|
 | `jtl.create_order` | JTL-Auftrag (bestehendes IPC) | 🔲 |
 | `mssql.query` | Read-only Abfrage (gespeicherte Verbindung) | 🔲 |
-| `http.request` | HTTP GET/POST mit Allowlist | 🔲 |
-| `sync.run` | Daten-Sync auslösen | 🔲 |
+| `http.request` | HTTP GET/POST mit Allowlist | ✅ |
+| `sync.run` | Daten-Sync auslösen | ✅ |
 
 ### 4.7 Code- & Erweiterungs-Knoten
 
 | ID | Beschreibung | Status |
 |----|--------------|--------|
-| `code.javascript` | JS-Snippet in Sandbox | 🔲 |
-| `code.python` | Python-Subprozess (optional) | 🔲 |
-| `plugin.custom` | Registriertes npm-Plugin | 🔲 |
+| `code.javascript` | JS-Snippet in Sandbox | ✅ |
+| `code.python` | Python-Subprozess (optional) | ✅ |
+| `plugin.custom` | Registriertes Plugin-Manifest | ✅ |
 
 **API-Vertrag für Code-Knoten (Ziel):**
 
@@ -445,31 +438,19 @@ gantt
 
 ---
 
-## 11. Referenz-Implementierung (Dateien heute)
+## 11. Referenz-Implementierung (Dateien)
 
 | Bereich | Pfad |
 |---------|------|
 | Typen & Bedingungen | `electron/email/email-workflow-types.ts` |
-| Engine | `electron/email/email-workflow-engine.ts` |
-| Graph → Regeln | `electron/email/email-workflow-graph-compile.ts` |
-| Graph-Typen Shared | `shared/email-workflow-graph.ts` |
-| UI Canvas | `src/components/email/workflow/workflow-canvas.tsx` |
-| UI Shell / Speichern | `src/components/email/workflow/workflow-shell.tsx` |
-| Store | `electron/email/email-workflow-store.ts` |
-
-Bei Umsetzung von **W1+** neue Pakete vorgesehen:
-
-```
-electron/workflow/
-  runtime.ts
-  registry.ts
-  context.ts
-  nodes/
-    email/
-    crm/
-    ai/
-    code/
-```
+| Regel-Engine | `electron/email/email-workflow-engine.ts` |
+| Graph → Regeln (Compiler) | `electron/email/email-workflow-graph-compile.ts` |
+| Graph-Runtime | `electron/workflow/runtime.ts`, `workflow-executor.ts` |
+| Node-Registry | `electron/workflow/registry.ts`, `nodes/*.ts` |
+| Graph-Typen Shared | `shared/email-workflow-graph.ts`, `shared/workflow-types.ts` |
+| UI | `src/components/email/workflow/*` |
+| IPC | `electron/ipc/workflow.ts`, `shared/ipc/channels.ts` |
+| Umsetzungsstand | [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) |
 
 ---
 
@@ -477,12 +458,12 @@ electron/workflow/
 
 | Frage | Antwort |
 |-------|---------|
-| React Flow für „alles über den Flow“? | **Ja, das ist das Zielbild.** Heute: Canvas + Compiler + feste Knoten. |
-| JS/Python-Custom-Knoten? | **Geplant** (W4), nicht produktiv. |
-| GUI + Code für Profis? | **GUI ja**; echter Code-/JSON-Modus **geplant** (W2). |
-| KI-Agent im Flow? | **Geplant** (W3); heute nur `ai_review`. |
+| React Flow für „alles über den Flow“? | **Ja** — Canvas + Registry-Knoten + Graph-Runtime (W1+). |
+| JS/Python-Custom-Knoten? | **Ja** (W4), Sandbox/Subprozess. |
+| GUI + Code für Profis? | **Experten-JSON** pro Registry-Knoten; Monaco **noch offen**. |
+| KI-Agent im Flow? | **Ja** (`ai.agent` + Keyword-Wissensbasis); Embeddings **offen**. |
 | n8n-Parität? | **Subset** mit CRM-/Mail-Fokus und Desktop-Sicherheit — kein 1:1-Klon. |
 
-Dieses Dokument ist die **verbindliche Planungsreferenz** für Workflow-Erweiterungen, bis einzelne Phasen in [`EMAIL_PHASES.md`](EMAIL_PHASES.md) oder ein eigenes `WORKFLOW_PHASES.md` ausdetailliert werden.
+**Ist-Stand detailliert:** [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) · **E-Mail-Phasen:** [`EMAIL_PHASES.md`](EMAIL_PHASES.md)
 
-*Letzte Aktualisierung: Entwurf nach Produkt-Feedback (Flow-first, n8n-ähnlich, KI-Agent, Code-Option).*
+*Letzte Aktualisierung: nach Umsetzung W0–W6; Vision-Tabellen für Langfrist ergänzt.*

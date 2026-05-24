@@ -30,12 +30,24 @@ Diese Datei fasst die ursprünglichen Plan-Phasen mit dem **aktuellen Implementi
 | Thema | Status |
 |--------|--------|
 | Regel-Engine (JSON) inbound/outbound/draft | ✅ |
-| Visueller Editor (React Flow) → Kompilat | ✅ (linearer Graph-Pfad) |
+| Visueller Editor (React Flow) → Kompilat | ✅ |
+| **Graph-Runtime** (`execution_mode = graph`) + Compiled-Fallback | ✅ siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) |
+| If/Else im Graph (ja/nein-Kanten) | ✅ |
+| Node-Registry (E-Mail, CRM, KI, Code, Integration, Logik) | ✅ W2–W5 |
+| KI-Agent, Klassifizierung, Wissensbasis (Keyword-RAG) | ✅ W3 (keine Embeddings) |
+| Code-Knoten JS/Python, Plugin-Loader | ✅ W4 |
 | Zeit-Trigger: Cron + **Sync für gewähltes Konto** | ✅ `schedule_account_id` |
 | Aktionen: Weiterleiten-Kopie, Anhang-Tag, Kategorie, … | ✅ |
 | Cron-Jobs nach Speichern neu laden | ✅ `restartEmailWorkflowCrons` |
+| Vorlagen, Dry-Run-Test, Lauf-Historie, Import/Export | ✅ W6 |
 
-**Offen / vereinfacht:** Graph-Interpreter, Custom-Code-Knoten und KI-Agent mit RAG — siehe [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md). If/Else im Compiler ist umgesetzt (PR #12+).
+**Noch offen / vereinfacht (siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) → „Nächste Schritte“):**
+
+- Delay-Job-**Resume**-Worker (`logic.delay` legt Jobs an, Ausführung nach Wartezeit noch minimal)
+- Embedding-RAG (heute Stichwort-Score)
+- CRM-/Kalender-**Trigger** (Deal, Task fällig, Termin)
+- Erweiterte Logik (`logic.switch`, `merge`, `loop`)
+- IMAP-Ordner verschieben / Server-Löschung als Knoten
 
 ## Phase 4 – Integration, Reporting, Compliance
 
@@ -50,4 +62,4 @@ Diese Datei fasst die ursprünglichen Plan-Phasen mit dem **aktuellen Implementi
 
 ---
 
-**Fazit:** Phasen 1–3 sind für ein **lokales Team-CRM** fachlich weitgehend abgedeckt; Phase 4 ist für **OAuth, Reporting-Übersicht und Export** ergänzt, nicht aber für Omni-Channel oder SLA-Workflows.
+**Fazit:** Phasen 1–3 sind für ein **lokales Team-CRM** fachlich weitgehend abgedeckt (Workflow-Plattform W0–W6 in [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md)). Phase 4 ist für **OAuth, Reporting-Übersicht und Export** ergänzt, nicht aber für Omni-Channel oder SLA-Workflows.

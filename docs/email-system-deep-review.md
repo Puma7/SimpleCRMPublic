@@ -117,7 +117,9 @@ Compose-Validierung, Größe von `page.tsx`, leere Fehlerbehandlung: wie im Repo
 
 ## Priorisierter Behebungsplan (nur valide / offene Punkte)
 
-### Sofort (vor produktivem Einsatz)
+> **Hinweis:** Die Punkte C1–C3, H1–H6 und die meisten M/N-Einträge unten wurden **bereits umgesetzt** (siehe Abschnitt „Nachfolgende Code-Fixes“). Dieser Plan bleibt als **historische Checkliste** der Erstanalyse; für aktuelle Workflow-Lücken siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
+
+### Sofort (vor produktivem Einsatz) — *historisch, erledigt*
 
 1. **C1 – `email-imap-append.ts`:** Variable `appendMailbox` setzen: erfolgreich geöffneter Pfad (primär oder Fallback), `append(appendMailbox, …)`.
 2. **C2 – `email-pop3-sync.ts`:** Stabile lokale UID ableiten, z. B. **Hash/positiver Integer aus UIDL** + ggf. eigene Spalte `pop3_uidl` mit UNIQUE `(account_id, folder_id, pop3_uidl)` oder Migration des Unique-Keys – Ziel: kein UPSERT über volatile POP3-Nummer.

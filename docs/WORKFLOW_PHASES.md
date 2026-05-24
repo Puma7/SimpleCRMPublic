@@ -25,8 +25,16 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 - Subflows / Versionierung nur über Export-JSON, kein Git-UI.
 - HTTP-Allowlist: `sync_info` Key `workflow_http_allowlist` (kommaseparierte Hosts).
 
-## Nächste sinnvolle Schritte
+## Nächste sinnvolle Schritte (priorisiert)
 
-1. Delay-Job-Processor beim App-Start / Cron.
-2. Embeddings optional (OpenAI / lokales Modell).
-3. Deal/Calendar-Trigger an CRM-Events koppeln.
+| Prio | Thema | Begründung |
+|------|--------|------------|
+| **P1** | **Delay-Job-Processor** — fällige `workflow_delayed_jobs` beim Start/Cron ausführen und Graph an `resume_node_id` fortsetzen | `logic.delay` ist nur halb produktiv ohne Resume |
+| **P2** | **CRM-/Kalender-Trigger** (`crm.deal_stage_changed`, `task.due`, `calendar.event_start`) | In Vision als 🔲, für echte Querschnitts-Automation |
+| **P3** | **Embeddings-RAG** (optional API/lokal) statt nur Keyword-Score | Bessere KI-Agent-Antworten |
+| **P4** | **`logic.switch` / `merge` / `loop`** | Komplexere Verzweigungen ohne Code-Knoten |
+| **P5** | **IMAP-Aktionen** (`email.move_imap`, ggf. `delete_server` mit Opt-in) | Postfach-Automation auf Server-Ebene |
+| **P6** | **Subflows + Versionierung** (UI), **Monaco** für Experten-Modus | W6-Lücken aus Vision |
+| **P7** | **JTL / MSSQL**-Knoten, `ai.agent_tool` | Integrationen für Power-User |
+
+*Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle, Auto-Send ohne Freigabe.
