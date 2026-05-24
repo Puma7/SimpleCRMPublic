@@ -178,9 +178,11 @@ export async function scanUpcomingCalendarEventsAndFireWorkflows(): Promise<numb
   const nowIso = now.toISOString();
   const rows = getDb()
     .prepare(
-      `SELECT id, customer_id, title, start_date FROM ${CALENDAR_EVENTS_TABLE}
-       WHERE start_date >= ? AND start_date <= ?
-       ORDER BY start_date ASC LIMIT 50`,
+      `SELECT ce.id, ce.title, ce.start_date, t.customer_id
+       FROM ${CALENDAR_EVENTS_TABLE} ce
+       LEFT JOIN ${TASKS_TABLE} t ON ce.task_id = t.id
+       WHERE ce.start_date >= ? AND ce.start_date <= ?
+       ORDER BY ce.start_date ASC LIMIT 50`,
     )
     .all(nowIso, windowEnd) as {
     id: number;

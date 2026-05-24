@@ -61,12 +61,10 @@ graph_json  →  execution_mode = graph  →  electron/workflow/runtime.ts (Inte
 
 **Bereits umgesetzt:** If/Else, Postfach-Lücken, Graph-Runtime, Run-Steps, Wissensbasis (Keyword-RAG), Code/Plugins, Import/Export, Dry-Run-Test.
 
-**Noch nicht vollständig n8n-like (Priorität siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md)):**
+**Weitere Ausbaustufen (nach P1–P7, siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) „Bekannte Grenzen“):**
 
-- Delay-Resume nach `logic.delay` (Jobs in DB, Worker minimal)
-- Embeddings-RAG, CRM-/Kalender-Trigger, `logic.switch`/`merge`/`loop`
-- Subflows, Monaco-Profi-Editor, JTL/MSSQL-Knoten
-- IMAP verschieben / Server-Löschung als Knoten
+- Nested-Graph-Editor für Subflows, vollständige JTL-Auftragserstellung
+- Edge-Label-Editor für alle Knotentypen (Basis: Ja/Nein/Schalter-Ports im Canvas)
 
 ---
 

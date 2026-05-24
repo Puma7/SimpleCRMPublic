@@ -109,6 +109,15 @@ export function WorkflowShell() {
   const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
 
+  useEffect(() => {
+    const triggerNode = graphNodes.find((n) => n.type === "trigger")
+    if (!triggerNode) return
+    const kind = (triggerNode.data as { kind?: string }).kind
+    if (kind && kind !== editTrigger) {
+      setEditTrigger(kind)
+    }
+  }, [graphNodes, editTrigger])
+
   const load = useCallback(async () => {
     if (!hasElectron()) {
       setLoading(false)
@@ -217,7 +226,7 @@ export function WorkflowShell() {
       if (!compiled.success || !compiled.definitionJson) {
         throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
       }
-      const trig = editTrigger.trim() || triggerFromGraph(graphDoc)
+      const trig = triggerFromGraph(graphDoc) || editTrigger.trim() || "inbound"
       if (selectedId != null) {
         await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, {
           workflowId: selectedId,
@@ -382,7 +391,18 @@ export function WorkflowShell() {
               <select
                 className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
                 value={editTrigger}
-                onChange={(e) => setEditTrigger(e.target.value)}
+                onChange={(e) => {
+                  const kind = e.target.value
+                  setEditTrigger(kind)
+                  const cur = useWorkflowEditorStore.getState().nodes
+                  useWorkflowEditorStore.getState().setNodes(
+                    cur.map((n) =>
+                      n.type === "trigger"
+                        ? { ...n, data: { ...(n.data as object), kind } }
+                        : n,
+                    ),
+                  )
+                }}
               >
                 <option value="inbound">E-Mail eingehend</option>
                 <option value="outbound">E-Mail ausgehend</option>
