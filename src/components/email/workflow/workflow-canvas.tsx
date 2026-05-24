@@ -28,6 +28,10 @@ const TRIGGER_LABELS: Record<string, string> = {
   outbound: "E-Mail ausgehend",
   draft_created: "Entwurf erstellt",
   schedule: "Zeitplan (Cron)",
+  manual: "Manuell",
+  "crm.deal_stage_changed": "Deal-Phase",
+  "task.due": "Aufgabe fällig",
+  "calendar.event_start": "Termin",
 }
 
 const CONDITION_FIELD_LABELS: Record<string, string> = {
@@ -45,6 +49,8 @@ const CONDITION_OP_LABELS: Record<string, string> = {
   equals: "gleich",
   regex: "Regex",
   domain_ends_with: "Domain endet mit",
+  is_true: "ist wahr",
+  is_false: "ist falsch",
 }
 
 function TriggerNodeCard({ data, selected }: NodeProps) {
@@ -98,7 +104,24 @@ function ConditionNodeCard({ data, selected }: NodeProps) {
       ) : (
         <div className="truncate text-sm font-medium">{d.value}</div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-amber-500" />
+      <div className="relative mt-2 flex justify-between px-1 text-[9px] font-medium text-amber-800 dark:text-amber-300">
+        <span>Ja</span>
+        <span>Nein</span>
+      </div>
+      <Handle
+        id="yes"
+        type="source"
+        position={Position.Bottom}
+        style={{ left: "28%" }}
+        className="!bg-emerald-600"
+      />
+      <Handle
+        id="no"
+        type="source"
+        position={Position.Bottom}
+        style={{ left: "72%" }}
+        className="!bg-rose-600"
+      />
     </div>
   )
 }
@@ -131,14 +154,32 @@ function ActionNodeCard({ data, selected }: NodeProps) {
   )
 }
 
+function switchCaseHandles(config: Record<string, unknown> | undefined): string[] {
+  const raw = config?.cases ?? (config as { cases?: string } | undefined)?.cases
+  const cases = String(raw ?? "A,B,C")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+  return [...cases, "default"]
+}
+
 function RegistryNodeCard({ data, selected }: NodeProps) {
-  const d = data as { nodeType?: string; label?: string }
+  const d = data as {
+    nodeType?: string
+    label?: string
+    config?: Record<string, unknown>
+  }
   const title = d.label?.trim() || d.nodeType || "Erweiterter Knoten"
+  const isLoop = d.nodeType === "logic.loop"
+  const isSwitch = d.nodeType === "logic.switch"
+  const switchPorts = isSwitch ? switchCaseHandles(d.config) : []
+
   return (
     <div
       className={cn(
         "min-w-[200px] rounded-lg border-2 bg-violet-50 p-3 shadow-sm transition-all dark:bg-violet-950/40",
         selected ? "border-violet-500" : "border-violet-300 dark:border-violet-800",
+        isSwitch && "min-w-[240px]",
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-violet-500" />
@@ -146,7 +187,52 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
         Erweitert
       </div>
       <div className="text-sm font-medium">{title}</div>
-      <Handle type="source" position={Position.Bottom} className="!bg-violet-500" />
+      {isLoop ? (
+        <>
+          <div className="relative mt-2 flex justify-between px-1 text-[9px] font-medium text-violet-800 dark:text-violet-300">
+            <span>Je Element</span>
+            <span>Fertig</span>
+          </div>
+          <Handle
+            id="each"
+            type="source"
+            position={Position.Bottom}
+            style={{ left: "28%" }}
+            className="!bg-violet-500"
+          />
+          <Handle
+            id="done"
+            type="source"
+            position={Position.Bottom}
+            style={{ left: "72%" }}
+            className="!bg-violet-500"
+          />
+        </>
+      ) : isSwitch ? (
+        <>
+          <div className="mt-2 flex flex-wrap justify-center gap-1 text-[9px] font-medium text-violet-800 dark:text-violet-300">
+            {switchPorts.map((p) => (
+              <span key={p}>{p}</span>
+            ))}
+          </div>
+          {switchPorts.map((port, i) => {
+            const n = switchPorts.length
+            const left = n === 1 ? 50 : 12 + (i / Math.max(1, n - 1)) * 76
+            return (
+              <Handle
+                key={port}
+                id={port}
+                type="source"
+                position={Position.Bottom}
+                style={{ left: `${left}%` }}
+                className="!bg-violet-500"
+              />
+            )
+          })}
+        </>
+      ) : (
+        <Handle type="source" position={Position.Bottom} className="!bg-violet-500" />
+      )}
     </div>
   )
 }
@@ -184,7 +270,34 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
 
   const onConnect = useCallback(
     (params: Connection) => {
-      setEdges(addEdge(params, useWorkflowEditorStore.getState().edges))
+      const state = useWorkflowEditorStore.getState()
+      const sourceNode = state.nodes.find((n) => n.id === params.source)
+      let label: string | undefined
+      if (sourceNode?.type === "condition") {
+        if (params.sourceHandle === "no") label = "nein"
+        else if (params.sourceHandle === "yes") label = "ja"
+        else {
+          const existing = state.edges.filter((e) => e.source === params.source)
+          label = existing.length === 0 ? "ja" : "nein"
+        }
+      } else if (sourceNode?.type === "registry") {
+        const nt = (sourceNode.data as { nodeType?: string }).nodeType
+        if (nt === "logic.loop") {
+          if (params.sourceHandle === "done") label = "done"
+          else if (params.sourceHandle === "each") label = "each"
+        } else if (nt === "logic.switch" && params.sourceHandle) {
+          label = params.sourceHandle
+        }
+      }
+      setEdges(
+        addEdge(
+          {
+            ...params,
+            ...(label ? { label } : {}),
+          },
+          state.edges,
+        ),
+      )
     },
     [setEdges],
   )
@@ -208,6 +321,10 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
       nodeTypes={nodeTypes}
       fitView
       className="bg-muted/20"
+      defaultEdgeOptions={{
+        labelStyle: { fontSize: 10, fill: "var(--foreground)" },
+        labelBgStyle: { fill: "var(--background)", fillOpacity: 0.85 },
+      }}
     >
       <Background gap={16} size={1} />
       <MiniMap pannable zoomable className="!bg-background" />

@@ -177,7 +177,10 @@ function TriggerFields({ node, patch }: FieldProps) {
   return (
     <div className="space-y-1.5">
       <Label className="text-xs">Typ</Label>
-      <Select value={d.kind ?? "inbound"} onValueChange={(kind) => patch({ kind })}>
+      <Select
+        value={d.kind ?? "inbound"}
+        onValueChange={(kind) => patch({ kind })}
+      >
         <SelectTrigger className="h-9">
           <SelectValue />
         </SelectTrigger>
@@ -311,6 +314,20 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
           <p className="font-mono text-[10px] text-muted-foreground">{d.nodeType}</p>
         ) : null}
       </div>
+      {d.nodeType === "logic.switch" ? (
+        <p className="text-[11px] text-muted-foreground">
+          Kanten vom Schalter-Knoten müssen dieselben Labels tragen wie die Fälle in{" "}
+          <code className="text-[10px]">cases</code> (kommagetrennt) plus{" "}
+          <code className="text-[10px]">default</code>. Beim Verbinden werden Labels automatisch
+          gesetzt.
+        </p>
+      ) : null}
+      {d.nodeType === "logic.loop" ? (
+        <p className="text-[11px] text-muted-foreground">
+          Verwenden Sie die Ausgänge <strong>Je Element</strong> (Schleifenkörper) und{" "}
+          <strong>Fertig</strong> (nach der Schleife).
+        </p>
+      ) : null}
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>
         <ExpertJsonEditor
