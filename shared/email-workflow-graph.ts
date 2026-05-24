@@ -52,6 +52,8 @@ export type GraphRegistryNodeData = {
   nodeType: string;
   config: Record<string, unknown>;
   expertJson?: string;
+  /** Human-readable label from the node catalog (UI only, optional in stored JSON). */
+  label?: string;
 };
 
 export type WorkflowGraphNode = {

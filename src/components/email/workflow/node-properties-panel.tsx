@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react"
 import type { Node } from "@xyflow/react"
 import { IPCChannels } from "@shared/ipc/channels"
-import { Filter, GitBranch, Play, Trash2 } from "lucide-react"
+import {
+  WORKFLOW_ACTION_LABELS,
+  resolveRegistryNodeLabel,
+} from "@shared/workflow-ui-labels"
+import { Filter, GitBranch, Play, Sparkles, Trash2 } from "lucide-react"
+import { cn } from "@/lib/utils"
+import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -26,6 +32,7 @@ type Props = {
 }
 
 export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props) {
+  const { labelByType } = useWorkflowNodeCatalog()
   const nodes = useWorkflowEditorStore((s) => s.nodes)
   const edges = useWorkflowEditorStore((s) => s.edges)
   const setNodes = useWorkflowEditorStore((s) => s.setNodes)
@@ -65,7 +72,7 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
 
   if (!node) {
     return (
-      <aside className="flex h-full flex-col border-l bg-muted/10">
+      <aside className="flex min-h-0 flex-1 flex-col border-l bg-muted/10">
         <div className="shrink-0 border-b px-4 py-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Eigenschaften
@@ -80,18 +87,44 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
     )
   }
 
+  const registryData =
+    node.type === "registry"
+      ? (node.data as { nodeType?: string; label?: string })
+      : null
+  const panelTitle =
+    node.type === "trigger"
+      ? "Trigger"
+      : node.type === "condition"
+        ? "Bedingung"
+        : node.type === "action"
+          ? WORKFLOW_ACTION_LABELS[
+              (node.data as { actionType?: string }).actionType ?? "tag"
+            ] ?? "Aktion"
+          : resolveRegistryNodeLabel(
+              registryData?.nodeType,
+              labelByType,
+              registryData?.label,
+            )
+
   return (
-    <aside className="flex h-full min-h-0 flex-col border-l bg-muted/10">
+    <aside className="flex min-h-0 flex-1 flex-col border-l bg-muted/10">
       <div className="shrink-0 border-b px-4 py-3">
         <div className="flex items-center gap-2">
           {node.type === "trigger" ? (
             <Play className="h-4 w-4 text-emerald-500" />
           ) : node.type === "condition" ? (
             <Filter className="h-4 w-4 text-amber-500" />
+          ) : node.type === "registry" ? (
+            <Sparkles className="h-4 w-4 text-violet-500" />
           ) : (
             <GitBranch className="h-4 w-4 text-sky-500" />
           )}
-          <h3 className="text-sm font-semibold capitalize">{node.type}</h3>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold">{panelTitle}</h3>
+            {node.type === "registry" ? (
+              <p className="truncate text-[10px] text-muted-foreground">Erweiterter Knoten</p>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -105,7 +138,7 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
             <ActionFields node={node} patch={patch} replaceData={replaceData} />
           ) : null}
           {node.type === "registry" ? (
-            <RegistryFields node={node} patch={patch} />
+            <RegistryFields node={node} patch={patch} labelByType={labelByType} />
           ) : null}
 
           {node.type !== "trigger" ? (
@@ -228,7 +261,14 @@ function ConditionFields({ node, patch }: FieldProps) {
           value={d.value ?? ""}
           onChange={(e) => patch({ value: e.target.value })}
           placeholder="Suchtext…"
+          className={cn(!d.value?.trim() && "border-amber-500/60 focus-visible:ring-amber-500/30")}
+          aria-invalid={!d.value?.trim()}
         />
+        {!d.value?.trim() ? (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400">
+            Ohne Wert trifft diese Bedingung keine Nachrichten.
+          </p>
+        ) : null}
       </div>
       ) : null}
       <div className="flex items-center gap-2">
@@ -245,17 +285,26 @@ function ConditionFields({ node, patch }: FieldProps) {
   )
 }
 
-function RegistryFields({ node, patch }: FieldProps) {
+type RegistryFieldProps = FieldProps & {
+  labelByType: Map<string, string>
+}
+
+function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
   const d = node.data as {
     nodeType?: string
+    label?: string
     config?: Record<string, unknown>
     expertJson?: string
   }
+  const displayLabel = resolveRegistryNodeLabel(d.nodeType, labelByType, d.label)
   return (
     <>
       <div className="space-y-1.5">
-        <Label className="text-xs">Knotentyp</Label>
-        <Input value={d.nodeType ?? ""} disabled className="h-9 font-mono text-xs" />
+        <Label className="text-xs">Knoten</Label>
+        <Input value={displayLabel} disabled className="h-9 text-sm" />
+        {d.nodeType ? (
+          <p className="font-mono text-[10px] text-muted-foreground">{d.nodeType}</p>
+        ) : null}
       </div>
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>

@@ -1,10 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import type { Node } from "@xyflow/react"
 import { IPCChannels } from "@shared/ipc/channels"
+import { resolveRunStepNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { invokeIpc } from "../types"
+import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 
 type RunRow = {
   id: number
@@ -26,9 +29,11 @@ type StepRow = {
 
 type Props = {
   workflowId: number | null
+  graphNodes: Node[]
 }
 
-export function WorkflowRunHistory({ workflowId }: Props) {
+export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
+  const { labelByType } = useWorkflowNodeCatalog()
   const [runs, setRuns] = useState<RunRow[]>([])
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
   const [steps, setSteps] = useState<StepRow[]>([])
@@ -67,7 +72,7 @@ export function WorkflowRunHistory({ workflowId }: Props) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col border-t">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         Lauf-Historie
       </div>
@@ -88,7 +93,8 @@ export function WorkflowRunHistory({ workflowId }: Props) {
                   >
                     <div className="font-medium">Lauf #{r.id}</div>
                     <div className="text-muted-foreground">
-                      {r.status} · {r.finished_at ? new Date(r.finished_at).toLocaleString("de-DE") : "—"}
+                      {r.status} ·{" "}
+                      {r.finished_at ? new Date(r.finished_at).toLocaleString("de-DE") : "—"}
                     </div>
                   </button>
                 </li>
@@ -100,16 +106,31 @@ export function WorkflowRunHistory({ workflowId }: Props) {
           </ScrollArea>
           <ScrollArea>
             <ul className="space-y-1 p-2 text-xs">
-              {steps.map((s) => (
-                <li key={s.id} className="rounded border bg-background px-2 py-1.5">
-                  <div className="font-mono text-[10px] text-muted-foreground">{s.node_id}</div>
-                  <div>
-                    {s.node_type} → {s.status}
-                    {s.port ? ` (${s.port})` : ""} · {s.duration_ms} ms
-                  </div>
-                  {s.message ? <div className="text-muted-foreground">{s.message}</div> : null}
-                </li>
-              ))}
+              {steps.map((s) => {
+                const { title, subtitle } = resolveRunStepNodeLabel({
+                  nodeId: s.node_id,
+                  nodeType: s.node_type,
+                  labelByType,
+                  graphNodes: graphNodes.map((n) => ({
+                    id: n.id,
+                    type: n.type,
+                    data: n.data as Record<string, unknown>,
+                  })),
+                })
+                return (
+                  <li key={s.id} className="rounded border bg-background px-2 py-1.5">
+                    <div className="font-medium">{title}</div>
+                    {subtitle ? (
+                      <div className="font-mono text-[10px] text-muted-foreground">{subtitle}</div>
+                    ) : null}
+                    <div className="text-muted-foreground">
+                      {s.status}
+                      {s.port ? ` · ${s.port}` : ""} · {s.duration_ms} ms
+                    </div>
+                    {s.message ? <div className="text-muted-foreground">{s.message}</div> : null}
+                  </li>
+                )
+              })}
               {selectedRunId != null && steps.length === 0 ? (
                 <li className="text-muted-foreground">Keine Schritte protokolliert.</li>
               ) : null}

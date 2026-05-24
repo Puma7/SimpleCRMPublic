@@ -19,6 +19,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { cn } from "@/lib/utils"
+import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 
@@ -27,18 +28,6 @@ const TRIGGER_LABELS: Record<string, string> = {
   outbound: "E-Mail ausgehend",
   draft_created: "Entwurf erstellt",
   schedule: "Zeitplan (Cron)",
-}
-
-const ACTION_LABELS: Record<string, string> = {
-  tag: "Tag setzen",
-  mark_seen: "Als gelesen markieren",
-  archive: "Archivieren",
-  hold_outbound: "Versand sperren",
-  set_category: "Kategorie setzen",
-  link_customer: "Kunde verknüpfen",
-  forward_copy: "Kopie weiterleiten",
-  tag_attachment_meta: "Tag bei Anhang",
-  stop: "Stopp",
 }
 
 const CONDITION_FIELD_LABELS: Record<string, string> = {
@@ -82,11 +71,13 @@ function TriggerNodeCard({ data, selected }: NodeProps) {
 
 function ConditionNodeCard({ data, selected }: NodeProps) {
   const d = data as { field?: string; op?: string; value?: string }
+  const valueMissing = !d.value?.trim()
   return (
     <div
       className={cn(
         "min-w-[220px] rounded-lg border-2 bg-amber-50 p-3 shadow-sm transition-all dark:bg-amber-950/40",
         selected ? "border-amber-500" : "border-amber-300 dark:border-amber-800",
+        valueMissing && !selected && "border-dashed border-amber-400/80 dark:border-amber-600/80",
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-amber-500" />
@@ -100,7 +91,13 @@ function ConditionNodeCard({ data, selected }: NodeProps) {
           {CONDITION_OP_LABELS[d.op ?? "contains"]}
         </span>
       </div>
-      <div className="truncate text-sm font-medium">{d.value || "(leer)"}</div>
+      {valueMissing ? (
+        <p className="mt-0.5 text-sm italic text-amber-700/90 dark:text-amber-300/90">
+          Wert fehlt
+        </p>
+      ) : (
+        <div className="truncate text-sm font-medium">{d.value}</div>
+      )}
       <Handle type="source" position={Position.Bottom} className="!bg-amber-500" />
     </div>
   )
@@ -125,7 +122,7 @@ function ActionNodeCard({ data, selected }: NodeProps) {
         <GitBranch className="h-3 w-3" />
         Aktion
       </div>
-      <div className="text-sm font-medium">{ACTION_LABELS[t] ?? t}</div>
+      <div className="text-sm font-medium">{WORKFLOW_ACTION_LABELS[t] ?? t}</div>
       {detail ? (
         <div className="mt-0.5 truncate text-xs text-muted-foreground">{detail}</div>
       ) : null}
@@ -135,7 +132,8 @@ function ActionNodeCard({ data, selected }: NodeProps) {
 }
 
 function RegistryNodeCard({ data, selected }: NodeProps) {
-  const d = data as { nodeType?: string }
+  const d = data as { nodeType?: string; label?: string }
+  const title = d.label?.trim() || d.nodeType || "Erweiterter Knoten"
   return (
     <div
       className={cn(
@@ -147,7 +145,7 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-400">
         Erweitert
       </div>
-      <div className="text-sm font-medium">{d.nodeType ?? "registry"}</div>
+      <div className="text-sm font-medium">{title}</div>
       <Handle type="source" position={Position.Bottom} className="!bg-violet-500" />
     </div>
   )

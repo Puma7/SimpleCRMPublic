@@ -40,6 +40,11 @@ import { JsonDevDrawer } from "./json-dev-drawer"
 import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
+import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import {
+  enrichRegistryFlowNodes,
+  enrichRegistryGraphDocument,
+} from "./enrich-registry-labels"
 
 const WorkflowCanvas = lazy(async () => {
   const m = await import("./workflow-canvas")
@@ -98,6 +103,9 @@ export function WorkflowShell() {
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
+  const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
+  const graphNodes = useWorkflowEditorStore((s) => s.nodes)
+
   const load = useCallback(async () => {
     if (!hasElectron()) {
       setLoading(false)
@@ -140,8 +148,20 @@ export function WorkflowShell() {
         doc = null
       }
     }
-    useWorkflowEditorStore.getState().resetFromGraph(doc)
+    const enriched = catalogLoaded
+      ? enrichRegistryGraphDocument(doc, labelByType)
+      : doc
+    useWorkflowEditorStore.getState().resetFromGraph(enriched)
   }
+
+  useEffect(() => {
+    if (!catalogLoaded || labelByType.size === 0) return
+    const nodes = useWorkflowEditorStore.getState().nodes
+    const next = enrichRegistryFlowNodes(nodes, labelByType)
+    if (next !== nodes) {
+      useWorkflowEditorStore.getState().setNodes(next)
+    }
+  }, [catalogLoaded, labelByType])
 
   const selectRowById = (id: number) => {
     const w = rows.find((r) => r.id === id)
@@ -401,29 +421,55 @@ export function WorkflowShell() {
                 placeholder="123"
               />
             </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={selectedId == null || !testMessageId.trim()}
-              onClick={async () => {
-                const mid = parseInt(testMessageId, 10)
-                if (!Number.isFinite(mid) || selectedId == null) return
-                const r = await invokeIpc<{
-                  success: boolean
-                  log?: string[]
-                  error?: string
-                }>(IPCChannels.Email.TestWorkflowOnMessage, {
-                  workflowId: selectedId,
-                  messageId: mid,
-                  dryRun: true,
-                })
-                if (r.success) toast.success(`Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`)
-                else toast.error(r.error ?? "Test fehlgeschlagen")
-              }}
-            >
-              Test (Dry-Run)
-            </Button>
+            {(() => {
+              const trimmed = testMessageId.trim()
+              const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
+              const idValid = trimmed.length > 0 && Number.isFinite(parsedId) && parsedId > 0
+              const testDisabled = selectedId == null || !idValid
+              let testTooltip = "Workflow ohne Schreibzugriff an der gewählten Nachricht testen."
+              if (!trimmed) {
+                testTooltip =
+                  "Bitte eine Nachrichten-ID eingeben (Zahl aus dem Postfach, Spalte in der Nachrichtenliste)."
+              } else if (!idValid) {
+                testTooltip = "Die Nachrichten-ID muss eine positive ganze Zahl sein."
+              }
+              return (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={testDisabled}
+                        onClick={async () => {
+                          if (!Number.isFinite(parsedId) || selectedId == null) return
+                          const r = await invokeIpc<{
+                            success: boolean
+                            log?: string[]
+                            error?: string
+                          }>(IPCChannels.Email.TestWorkflowOnMessage, {
+                            workflowId: selectedId,
+                            messageId: parsedId,
+                            dryRun: true,
+                          })
+                          if (r.success) {
+                            toast.success(
+                              `Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`,
+                            )
+                          } else {
+                            toast.error(r.error ?? "Test fehlgeschlagen")
+                          }
+                        }}
+                      >
+                        Test (Dry-Run)
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">{testTooltip}</TooltipContent>
+                </Tooltip>
+              )
+            })()}
             <div className="flex items-center gap-2 self-end pb-0.5">
               <Button
                 type="button"
@@ -489,11 +535,15 @@ export function WorkflowShell() {
             <ResizablePanel defaultSize={24} minSize={18}>
               {selectedId != null ? (
                 <div className="flex h-full min-h-0 flex-col">
-                  <NodePropertiesPanel
-                    selectedNodeId={selectedNodeId}
-                    onClearSelection={() => setSelectedNodeId(null)}
-                  />
-                  <WorkflowRunHistory workflowId={selectedId} />
+                  <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">
+                    <NodePropertiesPanel
+                      selectedNodeId={selectedNodeId}
+                      onClearSelection={() => setSelectedNodeId(null)}
+                    />
+                  </div>
+                  <div className="flex min-h-[200px] flex-[2] flex-col overflow-hidden border-t">
+                    <WorkflowRunHistory workflowId={selectedId} graphNodes={graphNodes} />
+                  </div>
                 </div>
               ) : (
                 <aside className="flex h-full items-center justify-center border-l bg-muted/10 p-6 text-center">
