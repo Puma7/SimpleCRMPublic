@@ -1,0 +1,78 @@
+import { getSyncInfo } from '../../sqlite-service';
+import type { RegisteredWorkflowNode } from '../types';
+
+type Reg = (def: RegisteredWorkflowNode) => void;
+
+const HTTP_ALLOWLIST_KEY = 'workflow_http_allowlist';
+
+function hostAllowed(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const raw = getSyncInfo(HTTP_ALLOWLIST_KEY) || '';
+  const allowed = raw
+    .split(/[,;\s]+/)
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (allowed.length === 0) return false;
+  return allowed.some((a) => host === a || host.endsWith(`.${a}`));
+}
+
+export function registerIntegrationNodes(register: Reg): void {
+  register({
+    type: 'sync.run',
+    label: 'E-Mail-Konto syncen',
+    category: 'integration',
+    canvasType: 'registry',
+    defaultConfig: {},
+    execute: async (ctx) => {
+      const accountId = Number(ctx.message?.account_id ?? 0);
+      if (!accountId) return { status: 'skipped', message: 'Kein Konto' };
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run sync' };
+      const { getEmailAccountById } = await import('../../email/email-store');
+      const acc = getEmailAccountById(accountId);
+      if (!acc) return { status: 'error', message: 'Konto nicht gefunden' };
+      if ((acc.protocol || 'imap') === 'pop3') {
+        const { syncInboxPop3 } = await import('../../email/email-pop3-sync');
+        const r = await syncInboxPop3(accountId);
+        return { status: 'ok', variables: { 'sync.fetched': r.fetched } };
+      }
+      const { syncInboxImap } = await import('../../email/email-imap-sync');
+      const r = await syncInboxImap(accountId);
+      return { status: 'ok', variables: { 'sync.fetched': r.fetched } };
+    },
+  });
+
+  register({
+    type: 'http.request',
+    label: 'HTTP-Anfrage',
+    category: 'integration',
+    canvasType: 'registry',
+    defaultConfig: { method: 'GET', url: '', body: '' },
+    execute: async (ctx, config) => {
+      const url = String(config.url ?? '');
+      if (!url) return { status: 'skipped' };
+      if (!hostAllowed(url)) {
+        return {
+          status: 'error',
+          message: 'Host nicht in Allowlist (Einstellungen workflow_http_allowlist)',
+        };
+      }
+      if (ctx.dryRun) return { status: 'ok', message: `dry-run ${url}` };
+      const method = String(config.method ?? 'GET').toUpperCase();
+      const res = await fetch(url, {
+        method,
+        body: method === 'GET' ? undefined : String(config.body ?? ''),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const text = await res.text();
+      return {
+        status: res.ok ? 'ok' : 'error',
+        variables: { 'http.status': res.status, 'http.body': text.slice(0, 8000) },
+      };
+    },
+  });
+}

@@ -134,10 +134,30 @@ function ActionNodeCard({ data, selected }: NodeProps) {
   )
 }
 
+function RegistryNodeCard({ data, selected }: NodeProps) {
+  const d = data as { nodeType?: string }
+  return (
+    <div
+      className={cn(
+        "min-w-[200px] rounded-lg border-2 bg-violet-50 p-3 shadow-sm transition-all dark:bg-violet-950/40",
+        selected ? "border-violet-500" : "border-violet-300 dark:border-violet-800",
+      )}
+    >
+      <Handle type="target" position={Position.Top} className="!bg-violet-500" />
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-400">
+        Erweitert
+      </div>
+      <div className="text-sm font-medium">{d.nodeType ?? "registry"}</div>
+      <Handle type="source" position={Position.Bottom} className="!bg-violet-500" />
+    </div>
+  )
+}
+
 const nodeTypes = {
   trigger: TriggerNodeCard,
   condition: ConditionNodeCard,
   action: ActionNodeCard,
+  registry: RegistryNodeCard,
 }
 
 type Props = {

@@ -815,8 +815,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.PickComposeAttachments,
       async (event: IpcMainInvokeEvent) => {
-        const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-        const result = await dialog.showOpenDialog(parent, {
+        void BrowserWindow.fromWebContents(event.sender);
+        const result = await dialog.showOpenDialog({
           properties: ['openFile', 'multiSelections'],
         });
         if (result.canceled || result.filePaths.length === 0) {

@@ -34,6 +34,10 @@ export const EMAIL_TEAM_MEMBERS_TABLE = 'email_team_members';
 export const EMAIL_MESSAGE_ATTACHMENTS_TABLE = 'email_message_attachments';
 export const EMAIL_MESSAGES_FTS_TABLE = 'email_messages_fts';
 export const EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE = 'email_workflow_forward_dedup';
+export const EMAIL_WORKFLOW_RUN_STEPS_TABLE = 'email_workflow_run_steps';
+export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
+export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
+export const WORKFLOW_DELAYED_JOBS_TABLE = 'workflow_delayed_jobs';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -435,9 +439,63 @@ export const createEmailWorkflowsTable = `
     graph_json TEXT,
     cron_expr TEXT,
     schedule_account_id INTEGER,
+    execution_mode TEXT NOT NULL DEFAULT 'graph',
+    engine_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (schedule_account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const createEmailWorkflowRunStepsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_WORKFLOW_RUN_STEPS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    node_id TEXT NOT NULL,
+    node_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    port TEXT,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    message TEXT,
+    detail_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES ${EMAIL_WORKFLOW_RUNS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createWorkflowKnowledgeBasesTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createWorkflowKnowledgeChunksTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    knowledge_base_id INTEGER NOT NULL,
+    title TEXT,
+    content TEXT NOT NULL,
+    source_path TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createWorkflowDelayedJobsTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKFLOW_DELAYED_JOBS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id INTEGER NOT NULL,
+    message_id INTEGER,
+    resume_node_id TEXT,
+    execute_at TEXT NOT NULL,
+    context_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL
   );
 `;
 

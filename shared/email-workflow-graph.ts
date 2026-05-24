@@ -47,10 +47,17 @@ export type GraphActionNodeData =
   | { actionType: 'ai_review'; promptId: number; blockKeyword?: string }
   | { actionType: 'stop' };
 
+/** Registry-backed node (W2+) — executed via electron/workflow registry */
+export type GraphRegistryNodeData = {
+  nodeType: string;
+  config: Record<string, unknown>;
+  expertJson?: string;
+};
+
 export type WorkflowGraphNode = {
   id: string;
-  type: 'trigger' | 'condition' | 'action';
-  data: GraphTriggerNodeData | GraphConditionNodeData | GraphActionNodeData;
+  type: 'trigger' | 'condition' | 'action' | 'registry';
+  data: GraphTriggerNodeData | GraphConditionNodeData | GraphActionNodeData | GraphRegistryNodeData;
 };
 
 export type WorkflowGraphEdge = {

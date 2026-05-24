@@ -104,6 +104,9 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
           {node.type === "action" ? (
             <ActionFields node={node} patch={patch} replaceData={replaceData} />
           ) : null}
+          {node.type === "registry" ? (
+            <RegistryFields node={node} patch={patch} />
+          ) : null}
 
           {node.type !== "trigger" ? (
             <>
@@ -237,6 +240,37 @@ function ConditionFields({ node, patch }: FieldProps) {
         <Label htmlFor="cond-ci" className="cursor-pointer text-xs font-normal">
           Groß-/Kleinschreibung ignorieren
         </Label>
+      </div>
+    </>
+  )
+}
+
+function RegistryFields({ node, patch }: FieldProps) {
+  const d = node.data as {
+    nodeType?: string
+    config?: Record<string, unknown>
+    expertJson?: string
+  }
+  return (
+    <>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Knotentyp</Label>
+        <Input value={d.nodeType ?? ""} disabled className="h-9 font-mono text-xs" />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Experten-JSON (config)</Label>
+        <textarea
+          className="min-h-[120px] w-full rounded-md border bg-background p-2 font-mono text-xs"
+          value={d.expertJson ?? JSON.stringify(d.config ?? {}, null, 2)}
+          onChange={(e) => {
+            try {
+              const parsed = JSON.parse(e.target.value) as Record<string, unknown>
+              patch({ config: parsed, expertJson: e.target.value })
+            } catch {
+              patch({ expertJson: e.target.value })
+            }
+          }}
+        />
       </div>
     </>
   )

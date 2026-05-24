@@ -37,6 +37,9 @@ import { WorkflowList, type WorkflowRow } from "./workflow-list"
 import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
 import { JsonDevDrawer } from "./json-dev-drawer"
+import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
+import { WorkflowRunHistory } from "./workflow-run-history"
+import type { WorkflowTemplateDto } from "@shared/workflow-types"
 
 const WorkflowCanvas = lazy(async () => {
   const m = await import("./workflow-canvas")
@@ -91,6 +94,8 @@ export function WorkflowShell() {
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -293,6 +298,15 @@ export function WorkflowShell() {
               Inbound auf bestehende Mails
             </Button>
 
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={selectedId == null}
+              onClick={() => setTemplatesOpen(true)}
+            >
+              Vorlagen
+            </Button>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -376,6 +390,40 @@ export function WorkflowShell() {
                 Aktiv
               </Label>
             </div>
+            <div className="w-[100px] space-y-1">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Test-Nachricht-ID
+              </Label>
+              <Input
+                value={testMessageId}
+                onChange={(e) => setTestMessageId(e.target.value)}
+                className="h-8 font-mono text-xs"
+                placeholder="123"
+              />
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={selectedId == null || !testMessageId.trim()}
+              onClick={async () => {
+                const mid = parseInt(testMessageId, 10)
+                if (!Number.isFinite(mid) || selectedId == null) return
+                const r = await invokeIpc<{
+                  success: boolean
+                  log?: string[]
+                  error?: string
+                }>(IPCChannels.Email.TestWorkflowOnMessage, {
+                  workflowId: selectedId,
+                  messageId: mid,
+                  dryRun: true,
+                })
+                if (r.success) toast.success(`Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`)
+                else toast.error(r.error ?? "Test fehlgeschlagen")
+              }}
+            >
+              Test (Dry-Run)
+            </Button>
             <div className="flex items-center gap-2 self-end pb-0.5">
               <Button
                 type="button"
@@ -440,10 +488,13 @@ export function WorkflowShell() {
             <ResizableHandle />
             <ResizablePanel defaultSize={24} minSize={18}>
               {selectedId != null ? (
-                <NodePropertiesPanel
-                  selectedNodeId={selectedNodeId}
-                  onClearSelection={() => setSelectedNodeId(null)}
-                />
+                <div className="flex h-full min-h-0 flex-col">
+                  <NodePropertiesPanel
+                    selectedNodeId={selectedNodeId}
+                    onClearSelection={() => setSelectedNodeId(null)}
+                  />
+                  <WorkflowRunHistory workflowId={selectedId} />
+                </div>
               ) : (
                 <aside className="flex h-full items-center justify-center border-l bg-muted/10 p-6 text-center">
                   <p className="text-sm text-muted-foreground">
@@ -460,6 +511,14 @@ export function WorkflowShell() {
           onOpenChange={setJsonDrawerOpen}
           jsonValue={editJson}
           onJsonChange={setEditJson}
+        />
+        <WorkflowTemplatesDialog
+          open={templatesOpen}
+          onOpenChange={setTemplatesOpen}
+          onPick={(t: WorkflowTemplateDto) => {
+            useWorkflowEditorStore.getState().resetFromGraph(t.graph)
+            toast.success(`Vorlage „${t.name}" geladen — bitte speichern.`)
+          }}
         />
       </div>
     </TooltipProvider>

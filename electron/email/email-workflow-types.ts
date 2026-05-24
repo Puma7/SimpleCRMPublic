@@ -222,7 +222,7 @@ function matchConditionItem(item: WorkflowConditionItem, ctx: Record<string, str
   if ('not' in item && item.not) {
     return !matchSingleCondition(item.not, ctx);
   }
-  return matchSingleCondition(item, ctx);
+  return matchSingleCondition(item as WorkflowCondition, ctx);
 }
 
 export function evaluateWorkflowWhen(when: WorkflowRuleWhen, ctx: Record<string, string>): boolean {

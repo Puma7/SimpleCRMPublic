@@ -235,6 +235,22 @@ async function executeOutboundStep(
   return 'continue';
 }
 
+export async function runCompiledInboundRules(
+  def: WorkflowDefinitionV1,
+  messageId: number,
+  row: EmailMessageRow,
+  workflowId: number,
+): Promise<string[]> {
+  return runRulesInbound(def, messageId, row, workflowId);
+}
+
+export async function runCompiledOutboundRules(
+  def: WorkflowDefinitionV1,
+  payload: OutboundDraftPayload,
+): Promise<{ blocked: boolean; log: string[] }> {
+  return runRulesOutbound(def, payload);
+}
+
 async function runRulesInbound(
   def: WorkflowDefinitionV1,
   messageId: number,
@@ -277,26 +293,27 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
   if (!row) return;
   if (row.uid < 0 && !row.pop3_uidl) return;
 
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = listWorkflowsByTrigger('inbound');
   for (const wf of workflows) {
     if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
-    let log: string[] = [];
-    let status: 'ok' | 'error' = 'ok';
     try {
-      const def = parseWorkflowDefinition(wf.definition_json);
-      log = await runRulesInbound(def, messageId, row, wf.id);
+      await executeWorkflowForTrigger({
+        workflow: wf,
+        trigger: 'inbound',
+        direction: 'inbound',
+        message: row,
+      });
     } catch (e) {
-      status = 'error';
-      log = [`error:${e instanceof Error ? e.message : String(e)}`];
+      insertWorkflowRun({
+        workflowId: wf.id,
+        messageId,
+        direction: 'inbound',
+        status: 'error',
+        logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
+      });
     }
     markWorkflowAppliedToMessage(messageId, wf.id);
-    insertWorkflowRun({
-      workflowId: wf.id,
-      messageId,
-      direction: 'inbound',
-      status,
-      logJson: JSON.stringify(log),
-    });
   }
 }
 
@@ -304,26 +321,27 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   const row = getEmailMessageById(messageId);
   if (!row || row.uid >= 0) return;
 
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = listWorkflowsByTrigger('draft_created');
   for (const wf of workflows) {
     if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
-    let log: string[] = [];
-    let status: 'ok' | 'error' = 'ok';
     try {
-      const def = parseWorkflowDefinition(wf.definition_json);
-      log = await runRulesInbound(def, messageId, row, wf.id);
+      await executeWorkflowForTrigger({
+        workflow: wf,
+        trigger: 'draft_created',
+        direction: 'draft_created',
+        message: row,
+      });
     } catch (e) {
-      status = 'error';
-      log = [`error:${e instanceof Error ? e.message : String(e)}`];
+      insertWorkflowRun({
+        workflowId: wf.id,
+        messageId,
+        direction: 'draft_created',
+        status: 'error',
+        logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
+      });
     }
     markWorkflowAppliedToMessage(messageId, wf.id);
-    insertWorkflowRun({
-      workflowId: wf.id,
-      messageId,
-      direction: 'draft_created',
-      status,
-      logJson: JSON.stringify(log),
-    });
   }
 }
 
@@ -341,23 +359,23 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
 
   setOutboundHold(payload.messageId, false, null);
 
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = listWorkflowsByTrigger('outbound');
   let parseOrEngineError: string | null = null;
   for (const wf of workflows) {
     try {
-      const def = parseWorkflowDefinition(wf.definition_json);
-      const { blocked, log } = await runRulesOutbound(def, payload);
-      insertWorkflowRun({
-        workflowId: wf.id,
-        messageId: payload.messageId,
+      const r = await executeWorkflowForTrigger({
+        workflow: wf,
+        trigger: 'outbound',
         direction: 'outbound',
-        status: blocked ? 'blocked' : 'ok',
-        logJson: JSON.stringify(log),
+        message: row,
+        outbound: payload,
       });
-      if (blocked) {
+      if (r.blocked) {
         const fresh = getEmailMessageById(payload.messageId);
         const reason =
           fresh?.outbound_block_reason ||
+          r.blockReason ||
           'Ausgehende Nachricht durch Workflow zurückgestellt. Bitte Text prüfen.';
         return { allowed: false, reason };
       }
@@ -367,6 +385,9 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
           allowed: false,
           reason: checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.',
         };
+      }
+      if (r.status === 'error') {
+        parseOrEngineError = r.log.join('; ');
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

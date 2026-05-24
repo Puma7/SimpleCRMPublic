@@ -16,12 +16,22 @@ export type EmailWorkflowRow = {
   graph_json: string | null;
   cron_expr: string | null;
   schedule_account_id: number | null;
+  execution_mode: string;
+  engine_version: number;
   created_at: string;
   updated_at: string;
 };
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function mapWorkflowRow(row: Record<string, unknown>): EmailWorkflowRow {
+  return {
+    ...(row as EmailWorkflowRow),
+    execution_mode: String(row.execution_mode ?? 'graph'),
+    engine_version: Number(row.engine_version ?? 1),
+  };
 }
 
 export function ensureDefaultWorkflowsSeeded(): void {
@@ -31,8 +41,8 @@ export function ensureDefaultWorkflowsSeeded(): void {
   if (count.c > 0) return;
 
   const ins = getDb().prepare(
-    `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, created_at, updated_at)
-     VALUES (?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, execution_mode, engine_version, created_at, updated_at)
+     VALUES (?, ?, 1, ?, ?, NULL, NULL, NULL, 'graph', 1, ?, ?)`,
   );
   const t = nowIso();
   ins.run(
@@ -58,29 +68,32 @@ export function listWorkflowsByTrigger(trigger: string): EmailWorkflowRow[] {
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE trigger = ? AND enabled = 1 ORDER BY priority ASC, id ASC`,
   );
-  return stmt.all(trigger) as EmailWorkflowRow[];
+  return (stmt.all(trigger) as Record<string, unknown>[]).map(mapWorkflowRow);
 }
 
 export function listWorkflowsWithCron(): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
-  return getDb()
+  const rows = getDb()
     .prepare(
       `SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE cron_expr IS NOT NULL AND TRIM(cron_expr) != '' AND enabled = 1 ORDER BY priority ASC, id ASC`,
     )
-    .all() as EmailWorkflowRow[];
+    .all() as Record<string, unknown>[];
+  return rows.map(mapWorkflowRow);
 }
 
 export function listAllWorkflows(): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
-  return getDb()
+  const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} ORDER BY trigger ASC, priority ASC, id ASC`)
-    .all() as EmailWorkflowRow[];
+    .all() as Record<string, unknown>[];
+  return rows.map(mapWorkflowRow);
 }
 
 export function getWorkflowById(id: number): EmailWorkflowRow | undefined {
-  return getDb().prepare(`SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE id = ?`).get(id) as
-    | EmailWorkflowRow
+  const row = getDb().prepare(`SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE id = ?`).get(id) as
+    | Record<string, unknown>
     | undefined;
+  return row ? mapWorkflowRow(row) : undefined;
 }
 
 export function createWorkflow(input: {
@@ -91,13 +104,15 @@ export function createWorkflow(input: {
   graphJson?: string | null;
   cronExpr?: string | null;
   scheduleAccountId?: number | null;
+  executionMode?: string;
+  engineVersion?: number;
   enabled?: boolean;
 }): number {
   const t = nowIso();
   const result = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, execution_mode, engine_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.name,
@@ -108,6 +123,8 @@ export function createWorkflow(input: {
       input.graphJson ?? null,
       input.cronExpr ?? null,
       input.scheduleAccountId ?? null,
+      input.executionMode ?? 'graph',
+      input.engineVersion ?? 1,
       t,
       t,
     );
@@ -123,6 +140,8 @@ export type WorkflowUpdateInput = Partial<{
   graphJson: string | null;
   cronExpr: string | null;
   scheduleAccountId: number | null;
+  executionMode: string;
+  engineVersion: number;
   enabled: boolean;
 }>;
 
@@ -163,6 +182,14 @@ export function updateWorkflow(id: number, input: WorkflowUpdateInput): void {
   if (input.scheduleAccountId !== undefined) {
     sets.push('schedule_account_id = ?');
     vals.push(input.scheduleAccountId);
+  }
+  if (input.executionMode !== undefined) {
+    sets.push('execution_mode = ?');
+    vals.push(input.executionMode);
+  }
+  if (input.engineVersion !== undefined) {
+    sets.push('engine_version = ?');
+    vals.push(input.engineVersion);
   }
   if (sets.length === 0) return;
   sets.push('updated_at = ?');

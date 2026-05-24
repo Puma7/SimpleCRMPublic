@@ -47,6 +47,14 @@ import {
     createEmailMessageAttachmentsTable,
     createEmailMessagesFtsTable,
     createEmailWorkflowForwardDedupTable,
+    createEmailWorkflowRunStepsTable,
+    createWorkflowKnowledgeBasesTable,
+    createWorkflowKnowledgeChunksTable,
+    createWorkflowDelayedJobsTable,
+    EMAIL_WORKFLOW_RUN_STEPS_TABLE,
+    WORKFLOW_KNOWLEDGE_BASES_TABLE,
+    WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
+    WORKFLOW_DELAYED_JOBS_TABLE,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -126,6 +134,10 @@ export function initializeDatabase() {
             db.exec(createEmailTeamMembersTable);
             db.exec(createEmailMessageAttachmentsTable);
             db.exec(createEmailWorkflowForwardDedupTable);
+            db.exec(createEmailWorkflowRunStepsTable);
+            db.exec(createWorkflowKnowledgeBasesTable);
+            db.exec(createWorkflowKnowledgeChunksTable);
+            db.exec(createWorkflowDelayedJobsTable);
             setupEmailFtsIndex();
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
@@ -502,7 +514,38 @@ function runMigrations() {
                 console.log('Adding schedule_account_id to email_workflows...');
                 db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN schedule_account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL`);
             }
+            if (!wn.has('execution_mode')) {
+                console.log('Adding execution_mode to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'graph'`);
+            }
+            if (!wn.has('engine_version')) {
+                console.log('Adding engine_version to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN engine_version INTEGER NOT NULL DEFAULT 1`);
+            }
         }
+
+        const ensureMigrationTable = (tableName: string, createTableSql: string, tableIndexes: string[]) => {
+            const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+            if (!exists) {
+                console.log(`Table ${tableName} not found, creating...`);
+                db.exec(createTableSql);
+                for (const indexSql of tableIndexes) {
+                    if (indexSql.includes(tableName)) {
+                        db.exec(indexSql);
+                    }
+                }
+            }
+        };
+        ensureMigrationTable(EMAIL_WORKFLOW_RUN_STEPS_TABLE, createEmailWorkflowRunStepsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_run_steps_run ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(run_id);`,
+        ]);
+        ensureMigrationTable(WORKFLOW_KNOWLEDGE_BASES_TABLE, createWorkflowKnowledgeBasesTable, []);
+        ensureMigrationTable(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE, createWorkflowKnowledgeChunksTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_kb_chunks_kb ON ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}(knowledge_base_id);`,
+        ]);
+        ensureMigrationTable(WORKFLOW_DELAYED_JOBS_TABLE, createWorkflowDelayedJobsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_delayed_execute ON ${WORKFLOW_DELAYED_JOBS_TABLE}(status, execute_at);`,
+        ]);
 
         const attTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGE_ATTACHMENTS_TABLE);
         if (!attTable) {
