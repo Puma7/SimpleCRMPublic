@@ -1,4 +1,4 @@
-export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam"
+export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam" | "trash"
 
 export type EmailAccount = {
   id: number

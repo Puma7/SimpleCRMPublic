@@ -504,7 +504,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: {
           accountId: number;
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;

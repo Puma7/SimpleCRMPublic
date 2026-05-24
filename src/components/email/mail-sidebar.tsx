@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode } from "react"
-import { Archive, FileEdit, Inbox, Send, ShieldAlert, Tag } from "lucide-react"
+import { Archive, FileEdit, Inbox, Send, ShieldAlert, Tag, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -29,6 +29,7 @@ const FOLDERS: { id: MailView; label: string; icon: typeof Inbox }[] = [
   { id: "drafts", label: "Entwürfe", icon: FileEdit },
   { id: "archived", label: "Archiv", icon: Archive },
   { id: "spam", label: "Spam", icon: ShieldAlert },
+  { id: "trash", label: "Papierkorb", icon: Trash2 },
 ]
 
 export function MailSidebar({

@@ -2,7 +2,15 @@
  * React Flow (xyflow) graph shape for email workflows — stored in `email_workflows.graph_json`.
  */
 
-export type WorkflowGraphTriggerKind = 'inbound' | 'outbound' | 'draft_created' | 'schedule';
+export type WorkflowGraphTriggerKind =
+  | 'inbound'
+  | 'outbound'
+  | 'draft_created'
+  | 'schedule'
+  | 'manual'
+  | 'crm.deal_stage_changed'
+  | 'task.due'
+  | 'calendar.event_start';
 
 export type GraphTriggerNodeData = {
   kind: WorkflowGraphTriggerKind;

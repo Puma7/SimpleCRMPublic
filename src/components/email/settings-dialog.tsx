@@ -15,6 +15,7 @@ import {
   Sparkles,
   Type,
   Users,
+  Workflow,
 } from "lucide-react"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
 import { AccountsPanel } from "./settings/accounts-panel"
@@ -26,6 +27,7 @@ import { CannedPanel } from "./settings/canned-panel"
 import { PromptsPanel } from "./settings/prompts-panel"
 import { ExportPanel } from "./settings/export-panel"
 import { KnowledgePanel } from "./settings/knowledge-panel"
+import { AutomationPanel } from "./settings/automation-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -40,6 +42,12 @@ export const SETTINGS_TABS: TabDef[] = [
   { id: "oauth", label: "OAuth", icon: KeyRound, render: () => <OAuthPanel /> },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
   { id: "knowledge", label: "Wissensbasis", icon: BookOpen, render: () => <KnowledgePanel /> },
+  {
+    id: "automation",
+    label: "Automatisierung",
+    icon: Workflow,
+    render: () => <AutomationPanel />,
+  },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "prompts", label: "KI-Prompts", icon: Sparkles, render: () => <PromptsPanel /> },

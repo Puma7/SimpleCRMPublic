@@ -42,7 +42,7 @@ export function useEmailMessages() {
       setLoadingMessages(true)
       try {
         let list: EmailMessage[]
-        if (query.trim()) {
+        if (query.trim() && view !== "trash") {
           list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.SearchMessages, {
             accountId,
             query: query.trim(),
