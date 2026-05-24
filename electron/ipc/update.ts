@@ -71,4 +71,3 @@ export function registerUpdateHandlers(options: UpdateHandlersOptions) {
     disposers.forEach((dispose) => dispose());
   };
 }
-

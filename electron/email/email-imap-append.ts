@@ -3,7 +3,6 @@ import { resolveImapAuth } from './email-imap-auth';
 import { getEmailAccountById } from './email-store';
 
 function encodeRfc2047(text: string): string {
-  // eslint-disable-next-line no-control-regex
   if (/^[\x20-\x7E]*$/.test(text)) return text;
   // RFC 2047: each encoded-word must be ≤75 chars.
   // `=?UTF-8?B?...?=` overhead is 12 chars, leaving 63 chars for Base64 payload.

@@ -44,8 +44,10 @@ const DealChannels = literal({
   GetById: 'deals:get-by-id',
   Create: 'deals:create',
   Update: 'deals:update',
+  Delete: 'deals:delete',
   UpdateStage: 'deals:update-stage',
   GetProducts: 'deals:get-products',
+  GetTasks: 'deals:get-tasks',
   AddProduct: 'deals:add-product',
   RemoveProduct: 'deals:remove-product',
   UpdateProduct: 'deals:update-product',
@@ -81,6 +83,17 @@ const JtlChannels = literal({
   GetZahlungsarten: 'jtl:get-zahlungsarten',
   GetVersandarten: 'jtl:get-versandarten',
   CreateOrder: 'jtl:create-order',
+});
+
+const FollowUpChannels = literal({
+  GetItems: 'followup:get-items',
+  GetQueueCounts: 'followup:get-queue-counts',
+  SnoozeTask: 'followup:snooze-task',
+  LogActivity: 'followup:log-activity',
+  GetTimeline: 'followup:get-timeline',
+  GetSavedViews: 'followup:get-saved-views',
+  CreateSavedView: 'followup:create-saved-view',
+  DeleteSavedView: 'followup:delete-saved-view',
 });
 
 const DashboardChannels = literal({
@@ -179,6 +192,7 @@ export const IPCChannels = {
   Dashboard: DashboardChannels,
   CustomFields: CustomFieldChannels,
   Email: EmailChannels,
+  FollowUp: FollowUpChannels,
 } as const;
 
 // Flattened invoke list for preload allow-listing
@@ -196,6 +210,7 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Dashboard),
   ...Object.values(IPCChannels.CustomFields),
   ...Object.values(IPCChannels.Email),
+  ...Object.values(IPCChannels.FollowUp),
 );
 
 export type InvokeChannel = typeof AllowedInvokeChannels[number];

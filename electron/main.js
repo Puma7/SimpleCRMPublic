@@ -1,5 +1,5 @@
 // Main Electron process
-const { app, BrowserWindow, dialog, protocol } = require('electron'); // Added 'protocol'
+const { app, BrowserWindow, dialog, protocol, globalShortcut, screen } = require('electron'); // Added 'protocol'
 const path = require('path');
 const windowStateKeeper = require('electron-window-state');
 const log = require('electron-log');
@@ -35,11 +35,44 @@ const {
 
 // Keep a global reference of the mainWindow object
 let mainWindow;
+let devToolsWindow = null;
 
 // This will hold the function to load the content into the BrowserWindow
 let loadURLFunction;
 
 let cleanupIpcHandlers = () => {};
+
+const ensureDevToolsWindow = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return null;
+  }
+  if (devToolsWindow && !devToolsWindow.isDestroyed()) {
+    return devToolsWindow;
+  }
+
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = Math.min(1200, Math.max(900, Math.floor(workArea.width * 0.6)));
+  const height = Math.min(900, Math.max(650, Math.floor(workArea.height * 0.75)));
+  const x = workArea.x + Math.max(0, Math.floor((workArea.width - width) / 2));
+  const y = workArea.y + Math.max(0, Math.floor((workArea.height - height) / 2));
+
+  devToolsWindow = new BrowserWindow({
+    x,
+    y,
+    width,
+    height,
+    title: 'SimpleCRM DevTools',
+    autoHideMenuBar: false,
+    show: false,
+  });
+
+  devToolsWindow.on('closed', () => {
+    devToolsWindow = null;
+  });
+
+  mainWindow.webContents.setDevToolsWebContents(devToolsWindow.webContents);
+  return devToolsWindow;
+};
 
 // Determine mode AT THE TOP
 log.info(`\[Electron Main\] Initial check: process.env.NODE_ENV = ${process.env.NODE_ENV}, isDevelopment = ${isDevelopment}`);
@@ -50,16 +83,55 @@ if (isDevelopment) {
   log.info('[Electron Main] Development mode: Setting up Vite dev server loader.');
   loadURLFunction = async (windowInstance) => {
     const viteDevServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-    log.info(`\[Electron Main\] Development mode: Attempting to load URL: ${viteDevServerUrl}`);
+    let targetUrl = viteDevServerUrl;
     try {
-      await windowInstance.loadURL(viteDevServerUrl);
+      const parsedUrl = new URL(viteDevServerUrl);
+      // Router uses createHashHistory, so ensure we land on "#/" in dev too.
+      if (!parsedUrl.hash) {
+        parsedUrl.hash = '/';
+      }
+      targetUrl = parsedUrl.toString();
+    } catch (error) {
+      log.warn(`[Electron Main] Could not normalize Vite dev URL "${viteDevServerUrl}":`, error);
+    }
+    log.info(`\[Electron Main\] Development mode: Attempting to load URL: ${targetUrl}`);
+    try {
+      await windowInstance.loadURL(targetUrl);
       log.info('[Electron Main] Development URL loaded successfully.');
     } catch (error) {
-      log.error(`\[Electron Main\] Failed to load Vite dev server URL ${viteDevServerUrl}:`, error);
-      dialog.showErrorBox("Dev Server Load Error", `Could not connect to Vite dev server at ${viteDevServerUrl}. Please ensure it's running. Error: ${error.message}`);
+      log.error(`\[Electron Main\] Failed to load Vite dev server URL ${targetUrl}:`, error);
+      dialog.showErrorBox("Dev Server Load Error", `Could not connect to Vite dev server at ${targetUrl}. Please ensure it's running. Error: ${error.message}`);
     }
   };
-} // Production mode setup for loadURLFunction will be done inside app.whenReady()
+} else {
+  log.info('[Electron Main] Production mode: Setting up electron-serve loader before app ready.');
+  try {
+    const electronServeModule = require('electron-serve');
+    const electronServeFunc = typeof electronServeModule === 'function'
+      ? electronServeModule
+      : (electronServeModule.default || null);
+
+    if (typeof electronServeFunc === 'function') {
+      const loadURL = electronServeFunc({ directory: path.join(__dirname, '../dist') });
+      loadURLFunction = async (windowInstance) => {
+        log.info('[Electron Main] Production mode: Loading with electron-serve');
+        await loadURL(windowInstance);
+        log.info('[Electron Main] Content loaded successfully with electron-serve');
+      };
+    } else {
+      throw new Error('electron-serve did not provide a usable function');
+    }
+  } catch (error) {
+    // Fallback to direct file loading if electron-serve setup fails.
+    log.error('[Electron Main] electron-serve setup failed, falling back to loadFile:', error);
+    loadURLFunction = async (windowInstance) => {
+      const indexPath = path.join(__dirname, '../dist/index.html');
+      log.info(`[Electron Main] Production mode: Loading file directly: ${indexPath}`);
+      await windowInstance.loadFile(indexPath, { hash: '/' });
+      log.info('[Electron Main] Content loaded successfully with loadFile');
+    };
+  }
+}
 
 // IPC handlers are registered via electron/ipc/router.ts once the app is ready.
 
@@ -123,6 +195,32 @@ async function createMainWindow() {
 
   windowState.manage(mainWindow);
 
+  const openDevToolsBar = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      const toolsWindow = ensureDevToolsWindow();
+      if (!mainWindow.webContents.isDevToolsOpened()) {
+        // Use a dedicated window to avoid DevTools restoring off-screen.
+        mainWindow.webContents.openDevTools({ mode: 'detach', activate: true });
+        log.info('[Electron Main] DevTools opened (detach mode).');
+      } else {
+        mainWindow.webContents.focusDevTools();
+        log.info('[Electron Main] DevTools focused.');
+      }
+      if (toolsWindow && !toolsWindow.isDestroyed()) {
+        if (toolsWindow.isMinimized()) {
+          toolsWindow.restore();
+        }
+        toolsWindow.show();
+        toolsWindow.focus();
+      }
+    } catch (error) {
+      log.error('[Electron Main] Failed to open DevTools bar:', error);
+    }
+  };
+
   // Add preload error logging to diagnose preload script issues
   mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
     log.info(`[Preload/Console] Level ${level}: ${message} (${sourceId}:${line})`);
@@ -135,6 +233,19 @@ async function createMainWindow() {
 
   mainWindow.webContents.on('unresponsive', () => {
     log.warn('[Preload/Renderer] Renderer process is unresponsive');
+  });
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    log.error(`[Electron Main] did-fail-load: code=${errorCode} description=${errorDescription} url=${validatedURL}`);
+    openDevToolsBar();
+  });
+
+  mainWindow.webContents.on('devtools-opened', () => {
+    log.info('[Electron Main] DevTools opened event.');
+  });
+
+  mainWindow.webContents.on('devtools-closed', () => {
+    log.info('[Electron Main] DevTools closed event.');
   });
 
   const emitWindowState = () => {
@@ -170,6 +281,8 @@ async function createMainWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     log.debug('[Electron Main] Renderer finished loading, sending initial window state.');
     emitWindowState();
+    openDevToolsBar();
+    setTimeout(openDevToolsBar, 1000);
   });
 
   if (!loadURLFunction) {
@@ -190,6 +303,10 @@ async function createMainWindow() {
   }
 
   mainWindow.on('closed', () => {
+    if (devToolsWindow && !devToolsWindow.isDestroyed()) {
+      devToolsWindow.close();
+    }
+    devToolsWindow = null;
     mainWindow = null;
   });
 }
@@ -199,59 +316,6 @@ initializeApp()
   .then(() => {
     app.whenReady().then(async () => { // Added async here
       log.info('[Electron Main] App is ready (after initializeApp).');
-
-      if (!isDevelopment) {
-        log.info('[Electron Main] Production mode: Setting up file loading.');
-        try {
-          // Try to import electron-serve and handle different export patterns
-          const electronServeModule = require('electron-serve');
-
-          // Check if it's a function (direct export) or has a default export
-          const electronServeFunc = typeof electronServeModule === 'function'
-            ? electronServeModule
-            : (electronServeModule.default || null);
-
-          if (typeof electronServeFunc === 'function') {
-            // Use electron-serve if available
-            const loadURL = electronServeFunc({ directory: path.join(__dirname, '../dist') });
-
-            // Register protocol for file serving
-            protocol.registerFileProtocol('app', (request, callback) => {
-              const filePath = path.normalize(`${__dirname}/../dist/${request.url.substr('app://-'.length)}`);
-              callback(filePath);
-            });
-
-            loadURLFunction = async (windowInstance) => {
-              log.info('[Electron Main] Production mode: Loading with electron-serve');
-              try {
-                await loadURL(windowInstance);
-                log.info('[Electron Main] Content loaded successfully with electron-serve');
-              } catch (error) {
-                log.error('[Electron Main] Failed to load with electron-serve:', error);
-                throw error; // Let the outer catch handle it
-              }
-            };
-          } else {
-            throw new Error('electron-serve did not provide a usable function');
-          }
-        } catch (error) {
-          // Fallback to basic file loading if electron-serve fails
-          log.error('[Electron Main] electron-serve failed, falling back to loadFile:', error);
-
-          loadURLFunction = async (windowInstance) => {
-            const indexPath = path.join(__dirname, '../dist/index.html');
-            log.info(`[Electron Main] Production mode: Loading file directly: ${indexPath}`);
-
-            try {
-              await windowInstance.loadFile(indexPath);
-              log.info('[Electron Main] Content loaded successfully with loadFile');
-            } catch (prodError) {
-              log.error('[Electron Main] Failed to load file directly:', prodError);
-              dialog.showErrorBox("Load Error", `Could not load application files. Error: ${prodError.message}`);
-            }
-          };
-        }
-      } // End of !isDevelopment block for loadURLFunction setup
 
       cleanupIpcHandlers = registerAllIpcHandlers({
         logger: log,
@@ -278,6 +342,23 @@ initializeApp()
       await createMainWindow(); // Create the main window
 
       startEmailBackgroundServices(log).catch((err) => log.warn('[email] background services', err));
+
+      const toggleDevTools = () => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          return;
+        }
+        if (mainWindow.webContents.isDevToolsOpened()) {
+          mainWindow.webContents.closeDevTools();
+        } else {
+          ensureDevToolsWindow();
+          mainWindow.webContents.openDevTools({ mode: 'detach', activate: true });
+        }
+      };
+
+      const f12Registered = globalShortcut.register('F12', toggleDevTools);
+      const chordRegistered = globalShortcut.register('CommandOrControl+Shift+I', toggleDevTools);
+      log.info(`[Electron Main] Registered F12 DevTools shortcut: ${f12Registered}`);
+      log.info(`[Electron Main] Registered Cmd/Ctrl+Shift+I DevTools shortcut: ${chordRegistered}`);
 
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
@@ -330,6 +411,7 @@ app.on('will-quit', () => {
   } catch (e) {
     log.warn('[email] stop background', e);
   }
+  globalShortcut.unregisterAll();
   if (typeof cleanupIpcHandlers === 'function') {
     try {
       cleanupIpcHandlers();

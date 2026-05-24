@@ -1,6 +1,6 @@
 "use client";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, BarChart3, Clock, Users, Loader2 } from "lucide-react";
+import { ArrowRight, BarChart3, TrendingUp, Clock, Users, Loader2, Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,12 @@ export default function Home() {
     fetchData();
   }, []);
 
+  const isOnboarding =
+    !loadingStats && !loadingCustomers && !loadingTasks &&
+    (stats?.totalCustomers ?? 0) === 0 &&
+    (stats?.activeDealsCount ?? 0) === 0 &&
+    (stats?.pendingTasksCount ?? 0) === 0
+
   const getInitials = (name?: string) => {
     if (!name) return "";
     return name
@@ -58,10 +64,16 @@ export default function Home() {
 
   if (error) {
     return (
-      <main className="flex-1 mt-0">
-        <div className="container mx-auto max-w-7xl py-6">
-          <div className="flex items-center justify-center h-64">
-            <p className="text-red-500">{error}</p>
+      <main className="flex-1">
+        <div className="px-6 py-4">
+          <div className="flex flex-col items-center justify-center h-64 gap-4 text-center">
+            <p className="text-muted-foreground">{error}</p>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => window.location.reload()}>Erneut versuchen</Button>
+              <Button variant="ghost" asChild>
+                <Link to="/settings">Einstellungen öffnen</Link>
+              </Button>
+            </div>
           </div>
         </div>
       </main>
@@ -69,17 +81,8 @@ export default function Home() {
   }
 
   return (
-    <main className="flex-1 mt-0">
-      <div className="container mx-auto max-w-7xl py-6">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <Button size="sm" asChild>
-            <Link to="/customers/new">
-              <span>Neuer Kunde</span>
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Link>
-          </Button>
-        </div>
+    <main className="flex-1">
+      <div className="px-6 py-4">
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -114,14 +117,45 @@ export default function Home() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Konversionsrate</CardTitle>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               {loadingStats ? <Skeleton className="h-8 w-1/2" /> : <div className="text-2xl font-bold">{stats?.conversionRate ?? 0}%</div>}
-              {loadingStats ? <Skeleton className="h-4 w-3/4 mt-1" /> : <p className="text-xs text-muted-foreground"> {/* Placeholder for change, as this is hard to get from current data */}</p>}
+              {loadingStats ? <Skeleton className="h-4 w-3/4 mt-1" /> : <p className="text-xs text-muted-foreground">Anteil gewonnener Deals</p>}
             </CardContent>
           </Card>
         </div>
+
+        {isOnboarding && (
+          <Card className="mt-6 border-primary/20 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Rocket className="h-5 w-5 text-primary" />
+                Willkommen bei SimpleCRM
+              </CardTitle>
+              <CardDescription>Folgen Sie diesen Schritten, um loszulegen.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ol className="space-y-3">
+                {([
+                  { label: "Datenbankverbindung einrichten", href: "/settings" as const, description: "Verbinden Sie SimpleCRM mit Ihrer MSSQL-Datenbank." },
+                  { label: "JTL-Daten synchronisieren", href: "/settings" as const, description: "Importieren Sie Kunden aus Ihrem JTL-System." },
+                  { label: "Kunden anlegen", href: "/customers" as const, description: "Verwalten Sie Ihren Kundenstamm." },
+                  { label: "Ersten Deal erstellen", href: "/deals" as const, description: "Starten Sie Ihre Verkaufspipeline." },
+                ] as const).map((step, i) => (
+                  <li key={i} className="flex items-center gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <Link to={step.href} className="text-sm font-medium hover:underline">{step.label}</Link>
+                      <p className="text-xs text-muted-foreground">{step.description}</p>
+                    </div>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </li>
+                ))}
+              </ol>
+            </CardContent>
+          </Card>
+        )}
 
         <div className="mt-6 grid gap-6 md:grid-cols-2">
           <Card>
@@ -153,10 +187,14 @@ export default function Home() {
                         </span>
                       </div>
                       <div className="flex-1">
-                        <p className="text-sm font-medium leading-none">{customer.name}</p>
+                        <Link to="/customers/$customerId" params={{ customerId: customer.id }} className="text-sm font-medium leading-none hover:underline">{customer.name}</Link>
                         <p className="text-sm text-muted-foreground">{customer.email}</p>
                       </div>
-                      <div className="text-sm text-muted-foreground">{customer.dateAdded}</div>
+                      <div className="text-sm text-muted-foreground">
+                        {customer.dateAdded
+                          ? new Date(customer.dateAdded).toLocaleDateString("de-DE")
+                          : "–"}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -194,26 +232,32 @@ export default function Home() {
                 </div>
               ) : upcomingTasks.length > 0 ? (
                 <div className="space-y-4">
-                  {upcomingTasks.map((task) => (
-                    <div key={task.id} className="flex items-center gap-4">
-                      <div
-                        className={`flex h-10 w-10 items-center justify-center rounded-full ${
-                          task.priority === "High" || task.priority === "Hoch"
-                            ? "bg-red-100 text-red-600"
-                            : task.priority === "Medium" || task.priority === "Mittel"
-                              ? "bg-amber-100 text-amber-600"
-                              : "bg-green-100 text-green-600"
-                        }`}
-                      >
-                        <Clock className="h-5 w-5" />
+                  {upcomingTasks.map((task) => {
+                    const isHigh = task.priority === "High" || task.priority === "Hoch";
+                    const isMedium = task.priority === "Medium" || task.priority === "Mittel";
+                    const priorityLabel = isHigh ? "Hoch" : isMedium ? "Mittel" : "Niedrig";
+                    return (
+                      <div key={task.id} className="flex items-center gap-4">
+                        <div
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+                            isHigh
+                              ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                              : isMedium
+                              ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400"
+                              : "bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400"
+                          }`}
+                          aria-label={`Priorität: ${priorityLabel}`}
+                        >
+                          <Clock className="h-5 w-5" />
+                        </div>
+                        <div className="flex-1">
+                          <Link to="/tasks" className="text-sm font-medium leading-none hover:underline">{task.title}</Link>
+                          <p className="text-sm text-muted-foreground">{task.customerName ?? "Kein Kunde zugewiesen"} · {priorityLabel}</p>
+                        </div>
+                        <div className="text-sm text-muted-foreground">{task.dueDate}</div>
                       </div>
-                      <div className="flex-1">
-                        <p className="text-sm font-medium leading-none">{task.title}</p>
-                        <p className="text-sm text-muted-foreground">{task.customerName ?? `Kunde ID: ${task.customer_id}`}</p>
-                      </div>
-                      <div className="text-sm text-muted-foreground">{task.dueDate}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <p>Keine bevorstehenden Aufgaben.</p>

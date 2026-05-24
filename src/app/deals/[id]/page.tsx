@@ -9,7 +9,8 @@ import { EditDealDialog } from "@/components/deal/edit-deal-dialog";
 import { Deal } from "@/types/deal";
 import { Customer, Product } from "@/types"; // Correctly import Customer and Product
 import { Separator } from "@/components/ui/separator";
-import { ArrowLeft, Edit, Trash2, Package, ListChecks, Info, Loader2, FilePlus2 } from "lucide-react";
+import { ArrowLeft, Edit, Trash2, Package, Info, Loader2, FilePlus2, ListChecks, CheckCircle2, Circle, ChevronRight } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -45,6 +46,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { IPCChannels } from '@shared/ipc/channels';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"; // Added for CustomerDetails
+import { Badge } from "@/components/ui/badge";
 import { ProductCombobox } from "@/components/product-combobox";
 
 interface PageParams {
@@ -86,6 +88,8 @@ export default function DealDetailPage() {
   const [selectedZahlungsart, setSelectedZahlungsart] = useState<string>("");
   const [selectedVersandart, setSelectedVersandart] = useState<string>("");
   const [isSubmittingJtlOrder, setIsSubmittingJtlOrder] = useState(false);
+  const [dealTasks, setDealTasks] = useState<any[]>([]);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false);
 
   useEffect(() => {
     const fetchDealAndCustomer = async () => {
@@ -94,13 +98,13 @@ export default function DealDetailPage() {
       setCustomerForOrder(null);
       try {
         if (window.electronAPI?.invoke) {
-          const dealData = await window.electronAPI.invoke<typeof IPCChannels.Deals.GetById>(
+          const dealData = await window.electronAPI.invoke(
             IPCChannels.Deals.GetById,
             dealId
           ) as Deal | null;
           setDeal(dealData);
           if (dealData?.customer_id) {
-            const customerData = await window.electronAPI.invoke<typeof IPCChannels.Db.GetCustomer>(
+            const customerData = await window.electronAPI.invoke(
               IPCChannels.Db.GetCustomer,
               dealData.customer_id
             ) as Customer | null;
@@ -154,15 +158,31 @@ export default function DealDetailPage() {
   } = useDealProducts(deal?.id, handleProductsChange);
 
   useEffect(() => {
+    const fetchDealTasks = async () => {
+      if (!dealId || !window.electronAPI?.invoke) return;
+      setIsLoadingTasks(true);
+      try {
+        const tasks = await window.electronAPI.invoke(IPCChannels.Deals.GetTasks, dealId) as any[];
+        setDealTasks(tasks || []);
+      } catch (error) {
+        console.error('Error fetching deal tasks:', error);
+      } finally {
+        setIsLoadingTasks(false);
+      }
+    };
+    fetchDealTasks();
+  }, [dealId]);
+
+  useEffect(() => {
     const fetchJtlEntities = async () => {
       if (!window.electronAPI?.invoke) return;
       setIsLoadingJtlData(true);
       try {
         const [firmen, warenlager, zahlungsarten, versandarten] = await Promise.all([
-          window.electronAPI.invoke<typeof IPCChannels.Jtl.GetFirmen>(IPCChannels.Jtl.GetFirmen) as Promise<JtlFirma[]>,
-          window.electronAPI.invoke<typeof IPCChannels.Jtl.GetWarenlager>(IPCChannels.Jtl.GetWarenlager) as Promise<JtlWarenlager[]>,
-          window.electronAPI.invoke<typeof IPCChannels.Jtl.GetZahlungsarten>(IPCChannels.Jtl.GetZahlungsarten) as Promise<JtlZahlungsart[]>,
-          window.electronAPI.invoke<typeof IPCChannels.Jtl.GetVersandarten>(IPCChannels.Jtl.GetVersandarten) as Promise<JtlVersandart[]>,
+          window.electronAPI.invoke(IPCChannels.Jtl.GetFirmen) as Promise<JtlFirma[]>,
+          window.electronAPI.invoke(IPCChannels.Jtl.GetWarenlager) as Promise<JtlWarenlager[]>,
+          window.electronAPI.invoke(IPCChannels.Jtl.GetZahlungsarten) as Promise<JtlZahlungsart[]>,
+          window.electronAPI.invoke(IPCChannels.Jtl.GetVersandarten) as Promise<JtlVersandart[]>,
         ]);
         setJtlFirmen(firmen || []);
         setJtlWarenlager(warenlager || []);
@@ -186,7 +206,7 @@ export default function DealDetailPage() {
       if (!window.electronAPI?.invoke) {
         throw new Error("API not available for saving.");
       }
-      const result = await window.electronAPI.invoke<typeof IPCChannels.Deals.Update>(
+      const result = await window.electronAPI.invoke(
         IPCChannels.Deals.Update,
         { id: dealId, dealData: updatedDealData }
       ) as { success: boolean; error?: string };
@@ -195,7 +215,7 @@ export default function DealDetailPage() {
         // This type represents the object structure returned by 'deals:get-by-id'
         type DealResponseFromService = Omit<Deal, 'customer'> & { customer_name: string };
 
-        const response = await window.electronAPI.invoke<typeof IPCChannels.Deals.GetById>(
+        const response = await window.electronAPI.invoke(
           IPCChannels.Deals.GetById,
           dealId
         ) as DealResponseFromService | null;
@@ -230,11 +250,20 @@ export default function DealDetailPage() {
     if (!deal) return;
     setIsLoading(true);
     try {
-      // For now, we'll just navigate away as before, assuming deletion happens elsewhere or is not yet implemented
-      console.warn("Deal deletion IPC handler not implemented. Navigating away.");
-      navigate({ to: '/deals' });
+      if (!window.electronAPI?.invoke) throw new Error("API not available.");
+      const result = await window.electronAPI.invoke(
+        IPCChannels.Deals.Delete,
+        dealId
+      ) as { success: boolean; error?: string };
+      if (result.success) {
+        toast({ title: "Deal gelöscht", description: `"${deal.name}" wurde erfolgreich gelöscht.` });
+        navigate({ to: '/deals' });
+      } else {
+        throw new Error(result.error || "Unbekannter Fehler beim Löschen.");
+      }
     } catch (error: any) {
       console.error("Error deleting deal:", error);
+      toast({ variant: "destructive", title: "Fehler", description: error.message });
     } finally {
       setIsLoading(false);
     }
@@ -331,7 +360,7 @@ export default function DealDetailPage() {
     try {
       if (!window.electronAPI?.invoke) throw new Error("Electron API not available");
       // Explicitly type the result of the invoke call
-      const result = await window.electronAPI.invoke<typeof IPCChannels.Jtl.CreateOrder>(
+      const result = await window.electronAPI.invoke(
         IPCChannels.Jtl.CreateOrder,
         orderInput
       ) as JtlOrderCreationResponse;
@@ -354,16 +383,14 @@ export default function DealDetailPage() {
     // are now part of the useDealProducts hook and are destructured above.
 
     return (
-      <div className="flex min-h-screen flex-col">
         <main className="flex-1">
-        <div className="container mx-auto max-w-7xl py-6">
+        <div className="px-6 py-4">
           <div className="mb-6">
-            <Button variant="ghost" asChild className="mb-6 gap-1">
-              <Link to="/deals">
-                <ArrowLeft className="h-4 w-4" />
-                Zurück zu Deals
-              </Link>
-            </Button>
+            <nav className="flex items-center gap-1 text-sm text-muted-foreground mb-4">
+              <Link to="/deals" className="hover:text-foreground transition-colors">Deals</Link>
+              <ChevronRight className="h-4 w-4" />
+              <span className="text-foreground font-medium truncate max-w-[300px]">{deal?.name ?? '...'}</span>
+            </nav>
 
             {isLoading ? (
               <DealDetailSkeleton />
@@ -394,12 +421,27 @@ export default function DealDetailPage() {
                       Bearbeiten
                     </Button>
                     <Dialog open={isCreateJtlOrderDialogOpen} onOpenChange={setIsCreateJtlOrderDialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button variant="outline" size="sm" className="gap-1" onClick={handleOpenCreateJtlOrderDialog} disabled={isLoadingJtlData || !dealProducts || dealProducts.length === 0 || !customerForOrder || !customerForOrder.jtl_kKunde}>
-                          <FilePlus2 className="h-4 w-4" />
-                          JTL Auftrag erstellen
-                        </Button>
-                      </DialogTrigger>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span>
+                              <DialogTrigger asChild>
+                                <Button variant="outline" size="sm" className="gap-1" onClick={handleOpenCreateJtlOrderDialog} disabled={isLoadingJtlData || !dealProducts || dealProducts.length === 0 || !customerForOrder || !customerForOrder.jtl_kKunde}>
+                                  <FilePlus2 className="h-4 w-4" />
+                                  JTL Auftrag erstellen
+                                </Button>
+                              </DialogTrigger>
+                            </span>
+                          </TooltipTrigger>
+                          {(dealProducts.length === 0 || !customerForOrder?.jtl_kKunde) && (
+                            <TooltipContent>
+                              {!customerForOrder?.jtl_kKunde
+                                ? "Dem Kunden fehlt eine JTL-Kundennummer"
+                                : "Fügen Sie mindestens ein Produkt zum Deal hinzu"}
+                            </TooltipContent>
+                          )}
+                        </Tooltip>
+                      </TooltipProvider>
                       <DialogContent className="sm:max-w-[425px]">
                         <DialogHeader>
                           <DialogTitle>JTL Auftrag erstellen</DialogTitle>
@@ -481,15 +523,12 @@ export default function DealDetailPage() {
                 <Separator />
 
                 <Tabs defaultValue="overview" className="w-full">
-                  <TabsList className="grid w-full grid-cols-3 md:w-[400px]">
+                  <TabsList className="grid w-full grid-cols-2 md:w-[320px]">
                     <TabsTrigger value="overview">
                       <Info className="mr-1 h-4 w-4" /> Übersicht
                     </TabsTrigger>
-                    <TabsTrigger value="products">
-                      <Package className="mr-1 h-4 w-4" /> Produkte
-                    </TabsTrigger>
                     <TabsTrigger value="tasks">
-                       <ListChecks className="mr-1 h-4 w-4" /> Aufgaben
+                      <ListChecks className="mr-1 h-4 w-4" /> Aufgaben {dealTasks.length > 0 && `(${dealTasks.length})`}
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="overview" className="mt-4 space-y-6">
@@ -568,62 +607,65 @@ export default function DealDetailPage() {
                     <DealMetadata deal={deal} />
                     <DealNotes deal={deal} />
                   </TabsContent>
-                  <TabsContent value="products" className="mt-4">
-                     {/* This tab's content can be removed if products are fully integrated into "Übersicht" */}
-                     {/* For now, keeping it as a separate view as well, but it's redundant if above is complete */}
-                    <div className="flex justify-between items-center mb-4">
-                      <h3 className="text-lg font-semibold">Alle Produkte im Deal (Detailansicht)</h3>
-                       {/* Button to add product might be redundant if also in Übersicht */}
-                       <Button onClick={() => setIsAddProductDialogOpen(true)} size="sm" className="gap-1">
-                        <Package className="h-4 w-4" /> Produkt hinzufügen
-                      </Button>
-                    </div>
-                    <div className="rounded-lg border">
-                      {isProductsLoading ? (
-                        <div className="flex items-center justify-center p-8">
-                          <Loader2 className="mr-2 h-6 w-6 animate-spin" />
-                          <span>Produkte werden geladen...</span>
-                        </div>
-                      ) : productsError ? (
-                        <p className="p-4 text-center text-destructive">{productsError}</p>
-                      ) : dealProducts.length > 0 ? (
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Produkt</TableHead>
-                              <TableHead>SKU</TableHead>
-                              <TableHead className="text-right">Menge</TableHead>
-                              <TableHead className="text-right">Preis</TableHead>
-                              <TableHead className="text-right">Gesamt</TableHead>
-                              <TableHead className="text-right">Aktion</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {dealProducts.map((p) => (
-                              <DealProductRow
-                                key={p.deal_product_id}
-                                product={p}
-                                onUpdateProduct={handleUpdateDealProduct}
-                                onRemoveProduct={handleRemoveDealProduct}
-                                formatCurrency={formatCurrency}
-                              />
-                            ))}
-                          </TableBody>
-                        </Table>
-                      ) : (
-                        <p className="p-4 text-center text-sm text-muted-foreground">
-                          Keine Produkte zu diesem Deal hinzugefügt.
-                        </p>
-                      )}
-                    </div>
-                  </TabsContent>
+
                   <TabsContent value="tasks" className="mt-4">
-                     <div className="rounded-lg border p-4">
-                      <h4 className="mb-2 text-lg font-semibold">Aufgaben</h4>
-                      <p className="text-sm text-muted-foreground">
-                        Aufgaben im Zusammenhang mit diesem Deal werden hier angezeigt. (Funktionalität kommt bald)
-                      </p>
-                     </div>
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Aufgaben</CardTitle>
+                        <CardDescription>
+                          Aufgaben des zugehörigen Kunden
+                          {customerForOrder && ` (${customerForOrder.name})`}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {isLoadingTasks ? (
+                          <div className="flex items-center justify-center p-8">
+                            <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+                            <span>Aufgaben werden geladen...</span>
+                          </div>
+                        ) : dealTasks.length > 0 ? (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="w-8"></TableHead>
+                                <TableHead>Titel</TableHead>
+                                <TableHead>Priorität</TableHead>
+                                <TableHead>Fällig am</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {dealTasks.map((task) => {
+                                const priorityLabels: Record<string, string> = { High: 'Hoch', Medium: 'Mittel', Low: 'Niedrig' };
+                                return (
+                                  <TableRow key={task.id} className={task.completed ? 'opacity-50' : ''}>
+                                    <TableCell>
+                                      {task.completed
+                                        ? <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                        : <Circle className="h-4 w-4 text-muted-foreground" />}
+                                    </TableCell>
+                                    <TableCell className={task.completed ? 'line-through text-muted-foreground' : 'font-medium'}>
+                                      {task.title}
+                                    </TableCell>
+                                    <TableCell>
+                                      <Badge variant={task.priority === 'High' ? 'destructive' : task.priority === 'Medium' ? 'secondary' : 'outline'}>
+                                        {priorityLabels[task.priority] ?? task.priority}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell className="text-sm text-muted-foreground">
+                                      {task.due_date ? new Date(task.due_date).toLocaleDateString('de-DE') : '-'}
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <p className="p-4 text-center text-sm text-muted-foreground">
+                            Keine Aufgaben für diesen Kunden vorhanden.
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
                   </TabsContent>
                 </Tabs>
 
@@ -670,7 +712,6 @@ export default function DealDetailPage() {
           </div>
         </div>
       </main>
-    </div>
   )
   }
 
@@ -738,6 +779,7 @@ export default function DealDetailPage() {
             size="sm"
             onClick={() => onRemoveProduct(product.deal_product_id)}
             title="Produkt entfernen"
+            aria-label="Produkt entfernen"
           >
             <Trash2 className="h-4 w-4 text-destructive" />
           </Button>
