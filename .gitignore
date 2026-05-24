@@ -48,6 +48,7 @@ src/.DS_Store
 !docs/USER_GUIDE_EMAIL.md
 !docs/LEARNINGS_EMAIL.md
 !docs/SETUP_WINDOWS.md
+!AGENTS.md
 
 coverage/
 .playwright-cli/
