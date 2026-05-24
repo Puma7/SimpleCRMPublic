@@ -1,5 +1,5 @@
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
-import { ZodTypeAny, ZodFirstPartyTypeKind } from 'zod';
+import { z, ZodTypeAny } from 'zod';
 import { InvokeChannel } from '../../shared/ipc/channels';
 import { getPayloadSchema, getResultSchema, isDeprecatedChannel } from '../../shared/ipc/schemas';
 
@@ -14,11 +14,9 @@ export type IpcHandler<C extends InvokeChannel> = (
 ) => Promise<unknown> | unknown;
 
 function parseWithSchema(schema: ZodTypeAny, value: unknown) {
-  if (
-    !schema ||
-    schema._def?.typeName === ZodFirstPartyTypeKind.ZodAny ||
-    schema._def?.typeName === ZodFirstPartyTypeKind.ZodUnknown
-  ) {
+  // Skip parsing for permissive schemas. instanceof works in both zod v3 and v4
+  // (v4 removed the ZodFirstPartyTypeKind enum that the previous check used).
+  if (!schema || schema instanceof z.ZodAny || schema instanceof z.ZodUnknown) {
     return value;
   }
 

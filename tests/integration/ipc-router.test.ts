@@ -11,6 +11,7 @@ const registerDashboardHandlers = makeRegisterMock();
 const registerMssqlHandlers = makeRegisterMock();
 const registerJtlHandlers = makeRegisterMock();
 const registerUpdateHandlers = makeRegisterMock();
+const registerEmailHandlers = makeRegisterMock();
 const registerFollowUpHandlers = makeRegisterMock();
 
 jest.mock('../../electron/ipc/window', () => ({ registerWindowHandlers }));
@@ -24,6 +25,7 @@ jest.mock('../../electron/ipc/dashboard', () => ({ registerDashboardHandlers }))
 jest.mock('../../electron/ipc/mssql', () => ({ registerMssqlHandlers }));
 jest.mock('../../electron/ipc/jtl', () => ({ registerJtlHandlers }));
 jest.mock('../../electron/ipc/update', () => ({ registerUpdateHandlers }));
+jest.mock('../../electron/ipc/email', () => ({ registerEmailHandlers }));
 jest.mock('../../electron/ipc/followup', () => ({ registerFollowUpHandlers }));
 
 import { registerAllIpcHandlers } from '../../electron/ipc/router';
@@ -47,6 +49,7 @@ describe('registerAllIpcHandlers', () => {
     expect(registerMssqlHandlers).toHaveBeenCalled();
     expect(registerJtlHandlers).toHaveBeenCalled();
     expect(registerUpdateHandlers).toHaveBeenCalled();
+    expect(registerEmailHandlers).toHaveBeenCalled();
     expect(registerFollowUpHandlers).toHaveBeenCalled();
 
     expect(typeof dispose).toBe('function');

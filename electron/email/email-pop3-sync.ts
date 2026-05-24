@@ -2,7 +2,6 @@ import { createRequire } from 'module';
 import { simpleParser } from 'mailparser';
 
 const requireCjs = createRequire(__filename);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const Pop3Command = requireCjs('node-pop3') as typeof import('node-pop3').default;
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
