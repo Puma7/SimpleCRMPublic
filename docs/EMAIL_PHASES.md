@@ -41,13 +41,7 @@ Diese Datei fasst die ursprünglichen Plan-Phasen mit dem **aktuellen Implementi
 | Cron-Jobs nach Speichern neu laden | ✅ `restartEmailWorkflowCrons` |
 | Vorlagen, Dry-Run-Test, Lauf-Historie, Import/Export | ✅ W6 |
 
-**Noch offen / vereinfacht (siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) → „Nächste Schritte“):**
-
-- Delay-Job-**Resume**-Worker (`logic.delay` legt Jobs an, Ausführung nach Wartezeit noch minimal)
-- Embedding-RAG (heute Stichwort-Score)
-- CRM-/Kalender-**Trigger** (Deal, Task fällig, Termin)
-- Erweiterte Logik (`logic.switch`, `merge`, `loop`)
-- IMAP-Ordner verschieben / Server-Löschung als Knoten
+**Erweiterungen P1–P7:** siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) (Delay-Resume, CRM-Trigger, Embeddings, Switch/Loop, IMAP-Knoten, Versionen, …). Bekannte Grenzen dort dokumentiert.
 
 ## Phase 4 – Integration, Reporting, Compliance
 
