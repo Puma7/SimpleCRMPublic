@@ -9,6 +9,9 @@ export const TASKS_TABLE = 'tasks'; // Added tasks table constant
 export const CUSTOMER_CUSTOM_FIELDS_TABLE = 'customer_custom_fields'; // Custom fields definitions
 export const CUSTOMER_CUSTOM_FIELD_VALUES_TABLE = 'customer_custom_field_values'; // Custom field values
 
+export const ACTIVITY_LOG_TABLE = 'activity_log';
+export const SAVED_VIEWS_TABLE = 'saved_views';
+
 export const JTL_FIRMEN_TABLE = 'jtl_firmen';
 export const JTL_WARENLAGER_TABLE = 'jtl_warenlager';
 export const JTL_ZAHLUNGSARTEN_TABLE = 'jtl_zahlungsarten';
@@ -150,6 +153,33 @@ export const createTasksTable = `
     last_modified TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (customer_id) REFERENCES ${CUSTOMERS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (calendar_event_id) REFERENCES ${CALENDAR_EVENTS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const createActivityLogTable = `
+  CREATE TABLE IF NOT EXISTS ${ACTIVITY_LOG_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER,
+    deal_id INTEGER,
+    task_id INTEGER,
+    activity_type TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    metadata TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES ${CUSTOMERS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (deal_id) REFERENCES ${DEALS_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (task_id) REFERENCES ${TASKS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const createSavedViewsTable = `
+  CREATE TABLE IF NOT EXISTS ${SAVED_VIEWS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    filters TEXT NOT NULL,
+    display_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `;
 
@@ -493,6 +523,7 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_cfv_customer_field_composite ON ${CUSTOMER_CUSTOM_FIELD_VALUES_TABLE}(customer_id, field_id);`,
     // Covering index for the batch query
     `CREATE INDEX IF NOT EXISTS idx_cf_active_display ON ${CUSTOMER_CUSTOM_FIELDS_TABLE}(active, display_order, name) WHERE active = 1;`,
+    // Email indexes
     `CREATE INDEX IF NOT EXISTS idx_email_accounts_address ON ${EMAIL_ACCOUNTS_TABLE}(email_address);`,
     `CREATE INDEX IF NOT EXISTS idx_email_folders_account ON ${EMAIL_FOLDERS_TABLE}(account_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_account_folder ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id);`,
@@ -511,5 +542,12 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_messages_folder_kind ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_kind);`,
     `CREATE INDEX IF NOT EXISTS idx_email_categories_parent ON ${EMAIL_CATEGORIES_TABLE}(parent_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_msg_cat_category ON ${EMAIL_MESSAGE_CATEGORIES_TABLE}(category_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_email_notes_message ON ${EMAIL_INTERNAL_NOTES_TABLE}(message_id);`
+    `CREATE INDEX IF NOT EXISTS idx_email_notes_message ON ${EMAIL_INTERNAL_NOTES_TABLE}(message_id);`,
+    // Indexes for activity_log
+    `CREATE INDEX IF NOT EXISTS idx_activity_log_customer_id ON ${ACTIVITY_LOG_TABLE}(customer_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_log_deal_id ON ${ACTIVITY_LOG_TABLE}(deal_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON ${ACTIVITY_LOG_TABLE}(created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_log_customer_created ON ${ACTIVITY_LOG_TABLE}(customer_id, created_at);`,
+    // Indexes for tasks snoozed_until
+    `CREATE INDEX IF NOT EXISTS idx_tasks_snoozed_until ON ${TASKS_TABLE}(snoozed_until);`,
 ];

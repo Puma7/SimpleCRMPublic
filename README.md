@@ -2,6 +2,10 @@
 
 SimpleCRM is a desktop-based Customer Relationship Management (CRM) application built with Electron, React, and TypeScript. It bundles essential CRM features on your local machine, helping you manage customers, products, deals, tasks, and your schedule. It also offers optional one-way data synchronization from your JTL MSSQL database.
 
+<p align="center">
+  <img src="assets/simplecrm.png" alt="SimpleCRM Dashboard" width="800">
+</p>
+
 ## Features
 
 * **Customer Management:** Create, Read, Update, and Delete customer records.
@@ -25,7 +29,7 @@ SimpleCRM is a desktop-based Customer Relationship Management (CRM) application 
 
 SimpleCRM leverages the Electron framework to deliver a web-powered experience on your desktop:
 
-1. **Main Process (`electron/main.js`):** Handles window management, background logic, database interactions (SQLite & MSSQL), and inter-process communication (IPC). Manages essential services including `sqlite-service`, `mssql-keytar-service`, and `sync-service`.
+1. **Main Process (`electron/main.ts`):** Handles window management, background logic, database interactions (SQLite & MSSQL), and inter-process communication (IPC). Manages essential services including `sqlite-service`, `mssql-keytar-service`, and `sync-service`.
 2. **Renderer Process (`src/`):** The user interface built with React and Vite. Communicates with the Main process using secure IPC calls (defined in `electron/preload.ts`) to fetch and update data.
 3. **Database (`electron/sqlite-service.ts`, `electron/database-schema.ts`):** Manages the SQLite database (`database.sqlite` in your app data folder), defining the schema and handling all data operations (Create, Read, Update, Delete).
 4. **MSSQL & Sync (`electron/mssql-keytar-service.ts`, `electron/sync-service.ts`):** Connects securely to your JTL MSSQL database, fetches customer and product data, and updates your local SQLite database.
@@ -73,6 +77,7 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
   ```bash
   npm run electron:dev
   ```
+  While this command is running, you should not need to manually rebuild after code changes.
 * **Production Mode:**
   Runs the app as it would be packaged. Build the renderer with `npm run build:web`, compile the Electron main-process TypeScript with `npm run build:electron:main`, or run `npm run build` to do both.
   ```bash

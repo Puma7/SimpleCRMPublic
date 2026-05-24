@@ -6,7 +6,8 @@ type WindowState = {
   isFullScreen: boolean;
 };
 
-const allowedInvokeChannels = new Set(AllowedInvokeChannels);
+const allowedInvokeChannels = new Set<string>(AllowedInvokeChannels);
+const canInvokeChannel = (channel: string): boolean => allowedInvokeChannels.has(channel);
 
 contextBridge.exposeInMainWorld('electron', {
   minimize: () => ipcRenderer.send('window-control', 'minimize'),
@@ -22,7 +23,7 @@ contextBridge.exposeInMainWorld('electron', {
   },
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => {
-      if (allowedInvokeChannels.has(channel)) {
+      if (canInvokeChannel(channel)) {
         return ipcRenderer.invoke(channel, ...args);
       }
       console.error(`IPC invoke blocked for channel: ${channel}`);
@@ -59,7 +60,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // --- Generic Invoke Handler ---
   invoke: (channel: string, ...args: any[]) => {
-      if (allowedInvokeChannels.has(channel)) {
+      if (canInvokeChannel(channel)) {
           return ipcRenderer.invoke(channel, ...args);
       }
       console.error(`IPC invoke blocked for channel: ${channel}`);

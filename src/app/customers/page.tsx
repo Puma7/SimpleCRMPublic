@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -95,7 +96,7 @@ const columns: ColumnDef<Customer>[] = [
       </Button>
     ),
     cell: ({ row }) => (
-      <Link to="/customers/$id" params={{ id: row.original.id.toString() }} className="hover:underline font-medium">
+      <Link to="/customers/$customerId" params={{ customerId: row.original.id.toString() }} className="hover:underline font-medium">
         {`${row.original.firstName || ''} ${row.original.name}`}
       </Link>
     ),
@@ -145,43 +146,46 @@ const columns: ColumnDef<Customer>[] = [
         <ArrowUpDown className="ml-2 h-4 w-4" />
       </Button>
     ),
-    cell: ({ row }) => (
-      <Badge variant={row.original.status === "Active" ? "default" : row.original.status === "Lead" ? "secondary" : "outline"}>
-        {row.original.status}
-      </Badge>
-    ),
+    cell: ({ row }) => {
+      const statusLabels: Record<string, string> = { Active: "Aktiv", Lead: "Lead", Inactive: "Inaktiv" };
+      return (
+        <Badge variant={row.original.status === "Active" ? "default" : row.original.status === "Lead" ? "secondary" : "outline"}>
+          {statusLabels[row.original.status] ?? row.original.status}
+        </Badge>
+      );
+    },
     // Enable filtering on this column
     filterFn: 'equals', // Use built-in 'equals' or a custom function if needed
   },
   {
-    accessorKey: "customerNumber",
+    accessorKey: "jtl_kKunde",
     id: "jtlCustomerNumber",
     header: "JTL Kundennr.",
-    cell: ({ row }) => row.original.customerNumber || '-',
+    cell: ({ row }) => row.original.jtl_kKunde?.toString() || '-',
   },
-  {
-    id: "actions",
-    cell: ({ row }) => {
-      const customer = row.original;
-      const copyAffiliateLink = (link?: string) => {
-        if (link) {
-          navigator.clipboard.writeText(link);
-          toast.success("Affiliate-Link kopiert");
-        } else {
-          toast.info("Kein Affiliate-Link vorhanden.");
-        }
-      };
-      return customer.affiliateLink ? (
-        <Button variant="ghost" size="icon" onClick={() => copyAffiliateLink(customer.affiliateLink)} title={customer.affiliateLink}>
-          <Copy className="h-4 w-4" />
-        </Button>
-      ) : (
-        <span className="text-muted-foreground">-</span>
-      );
-    },
-    enableSorting: false,
-    enableHiding: false,
-  }
+  // {
+  //   id: "actions",
+  //   cell: ({ row }) => {
+  //     const customer = row.original;
+  //     const copyAffiliateLink = (link?: string) => {
+  //       if (link) {
+  //         navigator.clipboard.writeText(link);
+  //         toast.success("Affiliate-Link kopiert");
+  //       } else {
+  //         toast.info("Kein Affiliate-Link vorhanden.");
+  //       }
+  //     };
+  //     return customer.affiliateLink ? (
+  //       <Button variant="ghost" size="icon" onClick={() => copyAffiliateLink(customer.affiliateLink)} title="Affiliate-Link kopieren" aria-label="Affiliate-Link kopieren">
+  //         <Copy className="h-4 w-4" />
+  //       </Button>
+  //     ) : (
+  //       <span className="text-muted-foreground">-</span>
+  //     );
+  //   },
+  //   enableSorting: false,
+  //   enableHiding: false,
+  // }
 ];
 
 // German column name mapping for visibility dropdown
@@ -216,6 +220,7 @@ const globalFilterFn: FilterFn<Customer> = (row, columnId, filterValue) => {
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const navigate = useNavigate()
 
   // Grouping state
@@ -270,28 +275,13 @@ export default function CustomersPage() {
 
   useEffect(() => {
     const fetchCustomersWithCustomFields = async () => {
-      console.log(`🔍 [CustomersPage] Starting to fetch customers with custom fields`);
-      const startTime = Date.now();
-      
       setIsLoading(true)
       try {
-        // Fetch customers
-        console.log(`🔍 [CustomersPage] Fetching customers list...`);
-        const fetchStartTime = Date.now();
         const fetchedCustomers = await localDataService.getCustomers()
-        console.log(`🔍 [CustomersPage] Fetched ${fetchedCustomers.length} customers in ${Date.now() - fetchStartTime}ms`);
-
-        // PERFORMANCE CRITICAL: For each customer, fetch their custom field values
-        // This creates N+1 queries (1 for customers + N for each customer's custom fields)
-        console.log(`🔍 [CustomersPage] PERFORMANCE WARNING: About to fetch custom fields for ${fetchedCustomers.length} customers individually (N+1 query pattern)`);
-        const customFieldsStartTime = Date.now();
-        
         const customersWithFields = await Promise.all(
-          fetchedCustomers.map(async (customer, index) => {
+          fetchedCustomers.map(async (customer) => {
             try {
-              const customerStartTime = Date.now();
               const customFieldValues = await customFieldService.getCustomFieldValuesForCustomer(Number(customer.id));
-              console.log(`🔍 [CustomersPage] Customer ${index + 1}/${fetchedCustomers.length} (ID: ${customer.id}) custom fields fetched in ${Date.now() - customerStartTime}ms`);
 
               // Convert array of values to a key-value object
               const customFields = customFieldValues.reduce((acc, field) => {
@@ -315,13 +305,10 @@ export default function CustomersPage() {
           })
         );
 
-        console.log(`🔍 [CustomersPage] All custom fields fetched in ${Date.now() - customFieldsStartTime}ms`);
-        console.log(`🔍 [CustomersPage] Total time to load customers with custom fields: ${Date.now() - startTime}ms`);
-        
         setCustomers(customersWithFields);
       } catch (error) {
         console.error("Failed to fetch customers:", error)
-        toast.error("Could not load customers from local database.")
+        toast.error("Kunden konnten nicht aus der lokalen Datenbank geladen werden.")
         setCustomers([])
       } finally {
         setIsLoading(false)
@@ -398,20 +385,11 @@ export default function CustomersPage() {
   };
   return (
     <main className="flex-1">
-      <div className="container mx-auto max-w-7xl py-6">
-        <div className="mb-8">
-          <div className="flex justify-between items-center mb-6">
-            <div>
-              <h1 className="text-3xl font-bold">Kunden</h1>
-              <p className="text-muted-foreground">Anzeige lokaler Kunden (synchronisiert mit JTL)</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <SyncStatusDisplay />
-            </div>
-          </div>
-
+      <div className="px-6 py-4">
+        <h1 className="text-2xl font-bold mb-4">Kunden</h1>
           {/* Toolbar: Search, Filters, Actions */}
           <div className="flex flex-wrap gap-2 items-center mb-4">
+            <SyncStatusDisplay />
             {/* Global Search */}
             <div className="relative flex-1 min-w-[250px]">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -434,20 +412,26 @@ export default function CustomersPage() {
             />
 
             {/* Status Filter */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline">
-                  <SlidersHorizontal className="mr-2 h-4 w-4" />
-                  Statusfilter {table.getColumn('status')?.getFilterValue() ? `(${table.getColumn('status')?.getFilterValue()})` : '(Alle)'}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue(undefined)}>Alle</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Active')}>Active</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Lead')}>Lead</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Inactive')}>Inactive</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {(() => {
+              const statusLabels: Record<string, string> = { Active: 'Aktiv', Lead: 'Lead', Inactive: 'Inaktiv' }
+              const currentFilter = table.getColumn('status')?.getFilterValue() as string | undefined
+              return (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline">
+                      <SlidersHorizontal className="mr-2 h-4 w-4" />
+                      Statusfilter ({currentFilter ? (statusLabels[currentFilter] ?? currentFilter) : 'Alle'})
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue(undefined)}>Alle</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Active')}>Aktiv</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Lead')}>Lead</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Inactive')}>Inaktiv</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )
+            })()}
 
              {/* Column Visibility Toggle */}
              <DropdownMenu>
@@ -491,16 +475,33 @@ export default function CustomersPage() {
                 <Button
                     variant="destructive"
                     size="sm"
-                    onClick={handleDeleteSelected}
-                    disabled={isLoading} // Disable while loading/deleting
+                    onClick={() => setIsDeleteConfirmOpen(true)}
+                    disabled={isLoading}
                 >
                     <Trash2 className="mr-2 h-4 w-4" />
                     Ausgewählte löschen
                 </Button>
              </div>
            )}
-
-        </div>
+           <AlertDialog open={isDeleteConfirmOpen} onOpenChange={setIsDeleteConfirmOpen}>
+             <AlertDialogContent>
+               <AlertDialogHeader>
+                 <AlertDialogTitle>Kunden löschen?</AlertDialogTitle>
+                 <AlertDialogDescription>
+                   Sie sind dabei, {table.getFilteredSelectedRowModel().rows.length} Kunden zu löschen. Diese Aktion kann nicht rückgängig gemacht werden.
+                 </AlertDialogDescription>
+               </AlertDialogHeader>
+               <AlertDialogFooter>
+                 <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+                 <AlertDialogAction
+                   onClick={handleDeleteSelected}
+                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                 >
+                   Löschen
+                 </AlertDialogAction>
+               </AlertDialogFooter>
+             </AlertDialogContent>
+           </AlertDialog>
 
         <Card>
           <CardHeader className="pb-2">
@@ -526,7 +527,7 @@ export default function CustomersPage() {
                     <div className="border-b py-2 px-4 hover:bg-muted/50">
                       <div className="flex items-center justify-between">
                         <div>
-                          <Link to="/customers/$id" params={{ id: customer.id.toString() }} className="font-medium hover:underline">
+                          <Link to="/customers/$customerId" params={{ customerId: customer.id.toString() }} className="font-medium hover:underline">
                             {`${customer.firstName || ''} ${customer.name}`}
                           </Link>
                           <div className="text-sm text-muted-foreground">
@@ -572,9 +573,14 @@ export default function CustomersPage() {
                           <TableRow
                             key={row.id}
                             data-state={row.getIsSelected() && "selected"}
+                            className="cursor-pointer"
+                            onClick={() => navigate({ to: '/customers/$customerId', params: { customerId: row.original.id.toString() } })}
                           >
                             {row.getVisibleCells().map((cell) => (
-                              <TableCell key={cell.id}>
+                              <TableCell
+                                key={cell.id}
+                                onClick={cell.column.id === 'select' || cell.column.id === 'actions' ? (e) => e.stopPropagation() : undefined}
+                              >
                                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
                               </TableCell>
                             ))}
