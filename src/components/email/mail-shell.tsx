@@ -82,6 +82,7 @@ function MailShellInner() {
               refreshCurrentMessage={refreshCurrentMessage}
               refreshList={refreshList}
               onReply={(m) => setComposeIntent({ mode: "reply", message: m })}
+              onForward={(m) => setComposeIntent({ mode: "forward", message: m })}
             />
           </ResizablePanel>
         </ResizablePanelGroup>

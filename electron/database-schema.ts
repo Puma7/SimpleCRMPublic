@@ -320,6 +320,7 @@ export const createEmailMessagesTable = `
     has_attachments INTEGER NOT NULL DEFAULT 0,
     attachments_json TEXT,
     assigned_to TEXT,
+    is_spam INTEGER NOT NULL DEFAULT 0,
     pop3_uidl TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,

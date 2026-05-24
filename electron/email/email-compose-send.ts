@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { getEmailAccountById, getEmailMessageById, markDraftAsSent } from './email-store';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { sendSmtpForAccount } from './email-smtp';
@@ -5,6 +7,8 @@ import { appendSentToImap } from './email-imap-append';
 import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
+
+const MAX_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 export async function sendComposeDraft(input: {
   accountId: number;
@@ -15,6 +19,7 @@ export async function sendComposeDraft(input: {
   to: string;
   cc?: string;
   inReplyToMessageId?: number | null;
+  attachmentPaths?: string[];
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
@@ -60,6 +65,21 @@ export async function sendComposeDraft(input: {
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
   const html = input.bodyHtml ?? draft.body_html ?? undefined;
+
+  const smtpAttachments: { filename: string; path: string }[] = [];
+  for (const p of input.attachmentPaths ?? []) {
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) continue;
+      if (st.size > MAX_COMPOSE_ATTACHMENT_BYTES) {
+        return { ok: false, error: `Anhang zu groß (max. 25 MB): ${path.basename(p)}` };
+      }
+      smtpAttachments.push({ filename: path.basename(p), path: p });
+    } catch {
+      return { ok: false, error: `Anhang nicht lesbar: ${path.basename(p)}` };
+    }
+  }
+
   try {
     await sendSmtpForAccount(input.accountId, {
       from: acc.email_address,
@@ -68,6 +88,7 @@ export async function sendComposeDraft(input: {
       subject: finalSubject,
       text: input.bodyText,
       html: html || undefined,
+      attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
     });
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

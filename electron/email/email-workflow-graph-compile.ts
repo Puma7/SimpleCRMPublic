@@ -5,7 +5,13 @@ import type {
   WorkflowGraphEdge,
   WorkflowGraphNode,
 } from '../../shared/email-workflow-graph';
-import type { WorkflowCondition, WorkflowDefinitionV1, WorkflowRule, WorkflowThenStep } from './email-workflow-types';
+import type {
+  WorkflowCondition,
+  WorkflowConditionItem,
+  WorkflowDefinitionV1,
+  WorkflowRule,
+  WorkflowThenStep,
+} from './email-workflow-types';
 
 function isTriggerData(d: unknown): d is { kind: string } {
   return Boolean(d && typeof d === 'object' && 'kind' in d);
@@ -37,6 +43,12 @@ function mapAction(data: GraphActionNodeData): WorkflowThenStep | null {
       return { type: 'forward_copy', to: data.to };
     case 'tag_attachment_meta':
       return { type: 'tag_attachment_meta', tag: data.tag };
+    case 'ai_review':
+      return {
+        type: 'ai_review',
+        promptId: data.promptId,
+        blockKeyword: data.blockKeyword,
+      };
     case 'stop':
       return { type: 'stop' };
     default:
@@ -48,8 +60,120 @@ function outgoingEdges(edges: WorkflowGraphEdge[], sourceId: string): WorkflowGr
   return edges.filter((e) => e.source === sourceId).sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function edgeIsYes(e: WorkflowGraphEdge): boolean {
+  const l = (e.label ?? '').toLowerCase();
+  return !l || l === 'yes' || l === 'ja' || l === 'true';
+}
+
+function edgeIsNo(e: WorkflowGraphEdge): boolean {
+  const l = (e.label ?? '').toLowerCase();
+  return l === 'no' || l === 'nein' || l === 'false';
+}
+
+function conditionFromNode(data: GraphConditionNodeData): WorkflowCondition {
+  return {
+    field: data.field,
+    op: data.op,
+    value: data.value,
+    caseInsensitive: data.caseInsensitive,
+  };
+}
+
+type CompileState = {
+  conditions: WorkflowConditionItem[];
+  then: WorkflowThenStep[];
+};
+
 /**
- * Linear compile: follow first outgoing edge from trigger; collect conditions then actions until no next node.
+ * Walk the graph from `nodeId`, collecting conditions and actions.
+ * At condition nodes with yes/no branches, emits separate rule paths.
+ */
+function walkFrom(
+  nodeId: string,
+  nodesById: Map<string, WorkflowGraphNode>,
+  edges: WorkflowGraphEdge[],
+  state: CompileState,
+  visited: Set<string>,
+  rules: WorkflowRule[],
+): void {
+  let currentId: string | undefined = nodeId;
+  const localVisited = new Set(visited);
+
+  while (currentId && !localVisited.has(currentId)) {
+    localVisited.add(currentId);
+    const node = nodesById.get(currentId);
+    if (!node) break;
+
+    if (node.type === 'condition' && isConditionData(node.data)) {
+      const cond = conditionFromNode(node.data);
+      const outs = outgoingEdges(edges, currentId);
+      let yesEdge = outs.find((e) => edgeIsYes(e));
+      let noEdge = outs.find((e) => edgeIsNo(e));
+      if (outs.length >= 2 && !noEdge) {
+        yesEdge = yesEdge ?? outs[0];
+        noEdge = outs.find((e) => e.id !== yesEdge?.id) ?? outs[1];
+      }
+
+      if (yesEdge && noEdge && yesEdge.target !== noEdge.target) {
+        walkFrom(
+          yesEdge.target,
+          nodesById,
+          edges,
+          { conditions: [...state.conditions, cond], then: [] },
+          new Set(localVisited),
+          rules,
+        );
+        walkFrom(
+          noEdge.target,
+          nodesById,
+          edges,
+          { conditions: [...state.conditions, { not: cond }], then: [] },
+          new Set(localVisited),
+          rules,
+        );
+        return;
+      }
+
+      state.conditions.push(cond);
+      const next = yesEdge ?? outs[0];
+      currentId = next?.target;
+      continue;
+    }
+
+    if (node.type === 'action' && isActionData(node.data)) {
+      const step = mapAction(node.data);
+      if (step) {
+        state.then.push(step);
+        if (step.type === 'stop') {
+          flushRule(state, rules);
+          return;
+        }
+      }
+    }
+
+    const outs = outgoingEdges(edges, currentId);
+    if (outs.length === 0) break;
+    const preferred =
+      outs.find((e) => edgeIsYes(e)) ?? outs[0];
+    currentId = preferred.target;
+  }
+
+  flushRule(state, rules);
+}
+
+function flushRule(state: CompileState, rules: WorkflowRule[]): void {
+  if (state.then.length === 0 && state.conditions.length === 0) return;
+  const when =
+    state.conditions.length === 0
+      ? null
+      : state.conditions.length === 1
+        ? state.conditions[0]!
+        : { all: state.conditions };
+  rules.push({ when: when as WorkflowRule['when'], then: [...state.then] });
+}
+
+/**
+ * Compile React Flow graph to workflow rules with if/else branching support.
  */
 export function compileGraphToDefinition(doc: WorkflowGraphDocument): WorkflowDefinitionV1 {
   const nodesById = new Map(doc.nodes.map((n) => [n.id, n]));
@@ -58,44 +182,17 @@ export function compileGraphToDefinition(doc: WorkflowGraphDocument): WorkflowDe
     return { version: 1, rules: [] };
   }
 
-  const conditions: WorkflowCondition[] = [];
-  const then: WorkflowThenStep[] = [];
-
-  let currentId: string | undefined = trigger.id;
-  const visited = new Set<string>();
-
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
-    const node = nodesById.get(currentId);
-    if (!node) break;
-
-    if (node.type === 'condition' && isConditionData(node.data)) {
-      conditions.push({
-        field: node.data.field,
-        op: node.data.op,
-        value: node.data.value,
-        caseInsensitive: node.data.caseInsensitive,
-      });
-    } else if (node.type === 'action' && isActionData(node.data)) {
-      const step = mapAction(node.data);
-      if (step) {
-        then.push(step);
-        if (step.type === 'stop') break;
-      }
-    }
-
-    const outs = outgoingEdges(doc.edges, currentId);
-    if (outs.length === 0) break;
-    const preferred =
-      outs.find((e) => !e.label || e.label.toLowerCase() === 'yes' || e.label.toLowerCase() === 'ja') ?? outs[0];
-    currentId = preferred.target;
+  const outs = outgoingEdges(doc.edges, trigger.id);
+  if (outs.length === 0) {
+    return { version: 1, rules: [] };
   }
 
-  const when: WorkflowCondition | { all: WorkflowCondition[] } | null =
-    conditions.length === 0 ? null : conditions.length === 1 ? conditions[0]! : { all: conditions };
+  const rules: WorkflowRule[] = [];
+  for (const edge of outs) {
+    walkFrom(edge.target, nodesById, doc.edges, { conditions: [], then: [] }, new Set(), rules);
+  }
 
-  const rule: WorkflowRule = { when: when as WorkflowRule['when'], then };
-  return { version: 1, rules: then.length > 0 || when != null ? [rule] : [] };
+  return { version: 1, rules };
 }
 
 export function definitionToJson(def: WorkflowDefinitionV1): string {

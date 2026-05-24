@@ -17,6 +17,7 @@ export type ComposeIntent =
   | { mode: "closed" }
   | { mode: "new" }
   | { mode: "reply"; message: EmailMessage }
+  | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 
 export type SettingsTab =
@@ -104,7 +105,7 @@ function writeLS(key: string, value: unknown): void {
   }
 }
 
-const VALID_MAIL_VIEWS: MailView[] = ["inbox", "sent", "archived", "drafts"]
+const VALID_MAIL_VIEWS: MailView[] = ["inbox", "sent", "archived", "drafts", "spam"]
 const VALID_SETTINGS_TABS: SettingsTab[] = [
   "accounts",
   "smtp",

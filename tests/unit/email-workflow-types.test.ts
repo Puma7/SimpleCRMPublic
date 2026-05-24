@@ -1,4 +1,5 @@
 import {
+  attachmentContextFromJson,
   evaluateWorkflowWhen,
   parseWorkflowDefinition,
 } from '../../electron/email/email-workflow-types';
@@ -62,6 +63,45 @@ describe('email-workflow-types', () => {
     expect(
       evaluateWorkflowWhen(
         { field: 'to_address', op: 'domain_ends_with', value: 'firma.de', caseInsensitive: true },
+        ctx,
+      ),
+    ).toBe(true);
+  });
+
+  it('matches has_attachments is_true', () => {
+    const attCtx = attachmentContextFromJson(
+      JSON.stringify([{ filename: 'a.pdf', contentType: 'application/pdf' }]),
+      1,
+    );
+    expect(
+      evaluateWorkflowWhen(
+        { field: 'has_attachments', op: 'is_true', value: '' },
+        { ...ctx, ...attCtx },
+      ),
+    ).toBe(true);
+    expect(
+      evaluateWorkflowWhen(
+        { field: 'attachment_names', op: 'contains', value: '.pdf' },
+        { ...ctx, ...attCtx },
+      ),
+    ).toBe(true);
+  });
+
+  it('supports condition groups with not and any', () => {
+    expect(
+      evaluateWorkflowWhen(
+        { all: [{ not: { field: 'subject', op: 'contains', value: 'Spam' } }] },
+        ctx,
+      ),
+    ).toBe(true);
+    expect(
+      evaluateWorkflowWhen(
+        {
+          any: [
+            { field: 'subject', op: 'contains', value: 'Rechnung' },
+            { field: 'subject', op: 'contains', value: 'Spam' },
+          ],
+        },
         ctx,
       ),
     ).toBe(true);

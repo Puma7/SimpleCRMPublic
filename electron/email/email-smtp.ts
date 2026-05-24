@@ -23,9 +23,22 @@ export async function testSmtpConnection(input: {
   }
 }
 
+export type SmtpAttachment = {
+  filename: string;
+  path: string;
+};
+
 export async function sendSmtpForAccount(
   accountId: number,
-  mail: { from: string; to: string; cc?: string; subject: string; text?: string; html?: string },
+  mail: {
+    from: string;
+    to: string;
+    cc?: string;
+    subject: string;
+    text?: string;
+    html?: string;
+    attachments?: SmtpAttachment[];
+  },
 ): Promise<void> {
   const acc = getEmailAccountById(accountId);
   if (!acc) throw new Error('Konto nicht gefunden');
@@ -65,5 +78,9 @@ export async function sendSmtpForAccount(
     subject: mail.subject,
     text: mail.text,
     html: mail.html,
+    attachments: mail.attachments?.map((a) => ({
+      filename: a.filename,
+      path: a.path,
+    })),
   });
 }

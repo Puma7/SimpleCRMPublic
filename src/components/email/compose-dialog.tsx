@@ -7,7 +7,7 @@ import DOMPurify from "dompurify"
 import ReactQuill from "react-quill"
 import "react-quill/dist/quill.snow.css"
 import { validateRecipientField } from "@shared/email-recipient-parse"
-import { Loader2 } from "lucide-react"
+import { Loader2, Paperclip, X } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -64,6 +64,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
   const [subject, setSubject] = useState("")
   const [bodyHtml, setBodyHtml] = useState("")
   const [sending, setSending] = useState(false)
+  const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
 
   // Track which composeIntent the dialog has initialised for.
   // Re-init when the intent actually changes (user clicks Reply on another mail),
@@ -109,22 +110,30 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
           return
         }
 
-        const replyTo: EmailMessage | null =
-          composeIntent.mode === "reply" ? composeIntent.message : null
-        const toAddr = replyTo ? firstAddress(replyTo.from_json) : ""
-        const subj = replyTo?.subject
-          ? replyTo.subject.toLowerCase().startsWith("re:")
-            ? replyTo.subject
-            : `Re: ${replyTo.subject}`
+        const sourceMsg: EmailMessage | null =
+          composeIntent.mode === "reply" || composeIntent.mode === "forward"
+            ? composeIntent.message
+            : null
+        const isForward = composeIntent.mode === "forward"
+        const toAddr =
+          composeIntent.mode === "reply" ? firstAddress(sourceMsg?.from_json ?? null) : ""
+        const subj = sourceMsg?.subject
+          ? isForward
+            ? sourceMsg.subject.toLowerCase().startsWith("fwd:")
+              ? sourceMsg.subject
+              : `Fwd: ${sourceMsg.subject}`
+            : sourceMsg.subject.toLowerCase().startsWith("re:")
+              ? sourceMsg.subject
+              : `Re: ${sourceMsg.subject}`
           : ""
-        const quoted = replyTo
-          ? `\n\n---\nAm ${
-              replyTo.date_received
-                ? new Date(replyTo.date_received).toLocaleString("de-DE")
+        const quoted = sourceMsg
+          ? `\n\n---\n${isForward ? "Weitergeleitete Nachricht" : "Am"} ${
+              sourceMsg.date_received
+                ? new Date(sourceMsg.date_received).toLocaleString("de-DE")
                 : "?"
-            } schrieb ${formatFrom(replyTo.from_json)}:\n${(
-              replyTo.body_text ||
-              replyTo.snippet ||
+            }${isForward ? "" : " schrieb"} ${formatFrom(sourceMsg.from_json)}:\n${(
+              sourceMsg.body_text ||
+              sourceMsg.snippet ||
               ""
             ).trim()}`
           : ""
@@ -138,7 +147,8 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
         if (cancelled) return
         if (res.id != null) {
           setDraftId(res.id)
-          setReplyToId(replyTo?.id ?? null)
+          setReplyToId(composeIntent.mode === "reply" ? sourceMsg?.id ?? null : null)
+          setAttachmentPaths([])
           setTo(toAddr)
           setCc("")
           setSubject(subj)
@@ -165,6 +175,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
     setCc("")
     setSubject("")
     setBodyHtml("")
+    setAttachmentPaths([])
     closingRef.current = false
   }
 
@@ -225,6 +236,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
           to,
           cc: cc || undefined,
           inReplyToMessageId: replyToId,
+          attachmentPaths: attachmentPaths.length > 0 ? attachmentPaths : undefined,
         },
       )
       if (!r.success) {
@@ -251,7 +263,11 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
       <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col gap-3 p-0">
         <DialogHeader className="border-b px-6 pt-6 pb-3">
           <DialogTitle>
-            {composeIntent.mode === "reply" ? "Antwort verfassen" : "Neue Nachricht"}
+            {composeIntent.mode === "reply"
+              ? "Antwort verfassen"
+              : composeIntent.mode === "forward"
+                ? "Weiterleiten"
+                : "Neue Nachricht"}
           </DialogTitle>
           <DialogDescription>
             Textbausteine und KI-Prompts pflegen Sie in den Einstellungen.
@@ -350,6 +366,52 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
 
           <div className="[&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-toolbar]:rounded-t-md rounded-md border bg-background">
             <ReactQuill theme="snow" value={bodyHtml} onChange={setBodyHtml} />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={async () => {
+                  if (!hasElectron()) return
+                  const r = await invokeIpc<{ success: boolean; paths: string[] }>(
+                    IPCChannels.Email.PickComposeAttachments,
+                  )
+                  if (r.paths?.length) {
+                    setAttachmentPaths((prev) => [...prev, ...r.paths])
+                  }
+                }}
+              >
+                <Paperclip className="h-4 w-4" />
+                Anhang hinzufügen
+              </Button>
+            </div>
+            {attachmentPaths.length > 0 ? (
+              <ul className="space-y-1">
+                {attachmentPaths.map((p) => (
+                  <li
+                    key={p}
+                    className="flex items-center justify-between gap-2 rounded border bg-muted/40 px-2 py-1 text-xs"
+                  >
+                    <span className="truncate">{p.split(/[/\\]/).pop()}</span>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 shrink-0"
+                      onClick={() =>
+                        setAttachmentPaths((prev) => prev.filter((x) => x !== p))
+                      }
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         </div>
 

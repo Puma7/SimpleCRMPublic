@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
+import { BrowserWindow, IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
@@ -22,6 +22,8 @@ import {
   listTagsForMessage,
   setMessageSoftDeleted,
   setMessageArchived,
+  setMessageSeenLocal,
+  setMessageSpam,
   setMessageAssignedTo,
   listEmailTeamMembers,
   upsertEmailTeamMember,
@@ -68,6 +70,7 @@ import { exchangeGoogleAuthCode } from '../email/email-oauth-google';
 import { exchangeMicrosoftAuthCode } from '../email/email-oauth-microsoft';
 import { restartEmailWorkflowCrons } from '../email/email-imap-services';
 import { listAttachmentsForMessage, getAttachmentById } from '../email/email-message-attachments-store';
+import { syncSeenFlagToServer } from '../email/email-imap-flags';
 
 const DANGEROUS_ATTACHMENT_EXT = new Set([
   '.exe',
@@ -501,7 +504,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: {
           accountId: number;
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -541,6 +544,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           to: string;
           cc?: string;
           inReplyToMessageId?: number | null;
+          attachmentPaths?: string[];
         },
       ) => {
         const r = await sendComposeDraft(payload);
@@ -768,6 +772,57 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; archived: boolean }) => {
         setMessageArchived(payload.messageId, payload.archived);
         return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageSeen,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; seen: boolean; syncToServer?: boolean },
+      ) => {
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        setMessageSeenLocal(payload.messageId, payload.seen);
+        if (payload.syncToServer !== false) {
+          try {
+            await syncSeenFlagToServer(row, payload.seen);
+          } catch (e) {
+            logger.warn('IMAP seen sync failed', e);
+          }
+        }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageSpam,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; spam: boolean }) => {
+        setMessageSpam(payload.messageId, payload.spam);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.PickComposeAttachments,
+      async (event: IpcMainInvokeEvent) => {
+        const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+        const result = await dialog.showOpenDialog(parent, {
+          properties: ['openFile', 'multiSelections'],
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+          return { success: true as const, paths: [] as string[] };
+        }
+        return { success: true as const, paths: result.filePaths };
       },
       { logger },
     ),

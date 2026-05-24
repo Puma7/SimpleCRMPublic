@@ -4,11 +4,14 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import {
   Archive,
+  Forward,
   Mail,
+  MailOpen,
   PanelRightClose,
   PanelRightOpen,
   Reply,
   RotateCcw,
+  ShieldAlert,
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -44,6 +47,7 @@ type Props = {
   refreshCurrentMessage: () => void | Promise<void>
   refreshList: () => void | Promise<void>
   onReply: (m: EmailMessage) => void
+  onForward: (m: EmailMessage) => void
 }
 
 export function MessageViewer(props: Props) {
@@ -57,6 +61,7 @@ export function MessageViewer(props: Props) {
     refreshCurrentMessage,
     refreshList,
     onReply,
+    onForward,
   } = props
   const {
     selectedMessage,
@@ -98,6 +103,29 @@ export function MessageViewer(props: Props) {
     await refreshList()
   }
 
+  const handleToggleSeen = async () => {
+    const seen = !!selectedMessage.seen_local
+    await invokeIpc(IPCChannels.Email.SetMessageSeen, {
+      messageId: selectedMessage.id,
+      seen: !seen,
+    })
+    toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
+    await refreshCurrentMessage()
+    await refreshList()
+  }
+
+  const handleToggleSpam = async () => {
+    const spam = !!selectedMessage.is_spam
+    await invokeIpc(IPCChannels.Email.SetMessageSpam, {
+      messageId: selectedMessage.id,
+      spam: !spam,
+    })
+    toast.success(spam ? "Kein Spam mehr" : "Als Spam markiert")
+    await refreshList()
+    if (!spam) setSelectedMessage(null)
+    else await refreshCurrentMessage()
+  }
+
   // Text-only rendering — the original UI never rendered raw HTML from emails,
   // to avoid tracking pixels, external CSS and other exfiltration vectors.
   const bodyText =
@@ -124,7 +152,53 @@ export function MessageViewer(props: Props) {
                   <Reply className="h-4 w-4" />
                   Antworten
                 </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onForward(selectedMessage)}
+                  className="gap-2"
+                >
+                  <Forward className="h-4 w-4" />
+                  Weiterleiten
+                </Button>
                 <div className="mx-1 h-6 w-px bg-border" />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => void handleToggleSeen()}
+                    >
+                      {selectedMessage.seen_local ? (
+                        <Mail className="h-4 w-4" />
+                      ) : (
+                        <MailOpen className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {selectedMessage.seen_local
+                      ? "Als ungelesen markieren"
+                      : "Als gelesen markieren"}
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => void handleToggleSpam()}
+                    >
+                      <ShieldAlert className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {selectedMessage.is_spam ? "Kein Spam" : "Als Spam markieren"}
+                  </TooltipContent>
+                </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -205,6 +279,11 @@ export function MessageViewer(props: Props) {
                   {selectedMessage.archived ? (
                     <span className="inline-block rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-700 dark:text-amber-400">
                       Archiviert
+                    </span>
+                  ) : null}
+                  {selectedMessage.is_spam ? (
+                    <span className="ml-1 inline-block rounded bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-red-700 dark:text-red-400">
+                      Spam
                     </span>
                   ) : null}
                 </div>

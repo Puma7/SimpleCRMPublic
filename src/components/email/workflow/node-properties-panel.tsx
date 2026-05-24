@@ -1,6 +1,8 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import type { Node } from "@xyflow/react"
+import { IPCChannels } from "@shared/ipc/channels"
 import { Filter, GitBranch, Play, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -16,6 +18,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
+import { hasElectron, invokeIpc, type AiPrompt } from "../types"
 
 type Props = {
   selectedNodeId: string | null
@@ -159,13 +162,21 @@ function ConditionFields({ node, patch }: FieldProps) {
     value?: string
     caseInsensitive?: boolean
   }
+  const field = d.field ?? "subject"
+  const isAttachmentBool = field === "has_attachments"
   return (
     <>
       <div className="space-y-1.5">
         <Label className="text-xs">Feld</Label>
         <Select
-          value={d.field ?? "subject"}
-          onValueChange={(field) => patch({ field })}
+          value={field}
+          onValueChange={(f) => {
+            if (f === "has_attachments") {
+              patch({ field: f, op: "is_true", value: "" })
+            } else {
+              patch({ field: f, op: d.op === "is_true" || d.op === "is_false" ? "contains" : d.op })
+            }
+          }}
         >
           <SelectTrigger className="h-9">
             <SelectValue />
@@ -178,6 +189,9 @@ function ConditionFields({ node, patch }: FieldProps) {
             <SelectItem value="to_address">An</SelectItem>
             <SelectItem value="cc_address">CC</SelectItem>
             <SelectItem value="combined_text">Kombiniert</SelectItem>
+            <SelectItem value="has_attachments">Hat Anhang</SelectItem>
+            <SelectItem value="attachment_names">Anhang-Dateinamen</SelectItem>
+            <SelectItem value="attachment_types">Anhang-MIME-Typ</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -188,13 +202,23 @@ function ConditionFields({ node, patch }: FieldProps) {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="contains">enthält</SelectItem>
-            <SelectItem value="equals">gleich</SelectItem>
-            <SelectItem value="regex">Regex</SelectItem>
-            <SelectItem value="domain_ends_with">Domain endet mit</SelectItem>
+            {isAttachmentBool ? (
+              <>
+                <SelectItem value="is_true">ja</SelectItem>
+                <SelectItem value="is_false">nein</SelectItem>
+              </>
+            ) : (
+              <>
+                <SelectItem value="contains">enthält</SelectItem>
+                <SelectItem value="equals">gleich</SelectItem>
+                <SelectItem value="regex">Regex</SelectItem>
+                <SelectItem value="domain_ends_with">Domain endet mit</SelectItem>
+              </>
+            )}
           </SelectContent>
         </Select>
       </div>
+      {!isAttachmentBool ? (
       <div className="space-y-1.5">
         <Label className="text-xs">Wert</Label>
         <Input
@@ -203,6 +227,7 @@ function ConditionFields({ node, patch }: FieldProps) {
           placeholder="Suchtext…"
         />
       </div>
+      ) : null}
       <div className="flex items-center gap-2">
         <Switch
           id="cond-ci"
@@ -218,12 +243,20 @@ function ConditionFields({ node, patch }: FieldProps) {
 }
 
 function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
+  const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
+  useEffect(() => {
+    if (!hasElectron()) return
+    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+  }, [])
+
   const d = node.data as {
     actionType?: string
     tag?: string
     path?: string
     reason?: string
     to?: string
+    promptId?: number
+    blockKeyword?: string
   }
   const t = d.actionType ?? "tag"
 
@@ -240,6 +273,9 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
       next.reason = ""
     } else if (actionType === "forward_copy") {
       next.to = ""
+    } else if (actionType === "ai_review") {
+      next.promptId = aiPrompts[0]?.id ?? 0
+      next.blockKeyword = "BLOCK"
     }
     replaceData(next)
   }
@@ -261,6 +297,7 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
             <SelectItem value="link_customer">Kunde verknüpfen</SelectItem>
             <SelectItem value="forward_copy">Kopie weiterleiten</SelectItem>
             <SelectItem value="tag_attachment_meta">Tag bei Anhang</SelectItem>
+            <SelectItem value="ai_review">KI-Prüfung</SelectItem>
             <SelectItem value="stop">Stopp</SelectItem>
           </SelectContent>
         </Select>
@@ -303,6 +340,39 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
             type="email"
           />
         </div>
+      ) : null}
+      {t === "ai_review" ? (
+        <>
+          <div className="space-y-1.5">
+            <Label className="text-xs">KI-Prompt</Label>
+            <Select
+              value={String(d.promptId ?? aiPrompts[0]?.id ?? "")}
+              onValueChange={(v) => patch({ promptId: parseInt(v, 10) })}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Prompt wählen" />
+              </SelectTrigger>
+              <SelectContent>
+                {aiPrompts.map((p) => (
+                  <SelectItem key={p.id} value={String(p.id)}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Block-Schlüsselwort in Antwort</Label>
+            <Input
+              value={d.blockKeyword ?? "BLOCK"}
+              onChange={(e) => patch({ blockKeyword: e.target.value })}
+              placeholder="BLOCK"
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Ausgehend: blockiert Versand bei Treffer. Eingehend: setzt Tag „ki-review-block“.
+          </p>
+        </>
       ) : null}
     </>
   )

@@ -18,7 +18,13 @@ import {
 import { getDb } from '../sqlite-service';
 import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../database-schema';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
-import { evaluateWorkflowWhen, parseWorkflowDefinition } from './email-workflow-types';
+import {
+  attachmentContextFromJson,
+  evaluateWorkflowWhen,
+  parseWorkflowDefinition,
+} from './email-workflow-types';
+import { listAiPrompts } from './email-crm-store';
+import { runChatCompletion } from './email-openai';
 import { sendSmtpForAccount } from './email-smtp';
 
 export type OutboundDraftPayload = {
@@ -48,6 +54,7 @@ function buildInboundContext(row: EmailMessageRow) {
   const body = row.body_text ?? '';
   const snip = row.snippet ?? '';
   const combined = [sub, body, snip, fromAddr, toAddr, ccAddr].join('\n');
+  const att = attachmentContextFromJson(row.attachments_json, row.has_attachments);
   return {
     subject: sub,
     body_text: body,
@@ -56,6 +63,7 @@ function buildInboundContext(row: EmailMessageRow) {
     to_address: toAddr,
     cc_address: ccAddr,
     combined_text: combined,
+    ...att,
   };
 }
 
@@ -155,6 +163,15 @@ async function executeInboundStep(
       }
       return true;
     }
+    case 'ai_review': {
+      const ctx = buildInboundContext(row);
+      const blocked = await runAiReviewStep(step, ctx.combined_text, log);
+      if (blocked) {
+        addMessageTag(messageId, 'ki-review-block');
+        log.push('ai_review:inbound_tag');
+      }
+      return true;
+    }
     case 'stop':
       log.push('stop');
       return false;
@@ -163,15 +180,52 @@ async function executeInboundStep(
   }
 }
 
-function executeOutboundStep(
+async function runAiReviewStep(
+  step: Extract<WorkflowThenStep, { type: 'ai_review' }>,
+  text: string,
+  log: string[],
+): Promise<boolean> {
+  const prompts = listAiPrompts();
+  const p = prompts.find((x) => x.id === step.promptId);
+  if (!p) {
+    log.push('ai_review:prompt_not_found');
+    return false;
+  }
+  const user = p.user_template.replace(/\{\{text\}\}/g, text);
+  const blockKw = (step.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
+  try {
+    const out = await runChatCompletion(
+      'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Prüfauftrag problematisch ist.',
+      user,
+    );
+    const blocked = out.toUpperCase().includes(blockKw.toUpperCase());
+    log.push(blocked ? `ai_review:block:${blockKw}` : 'ai_review:ok');
+    return blocked;
+  } catch (e) {
+    log.push(`ai_review_error:${e instanceof Error ? e.message : String(e)}`);
+    return true;
+  }
+}
+
+async function executeOutboundStep(
   step: WorkflowThenStep,
   messageId: number,
+  payload: OutboundDraftPayload,
   log: string[],
-): 'continue' | 'stop' | 'blocked' {
+): Promise<'continue' | 'stop' | 'blocked'> {
   if (step.type === 'hold_outbound') {
     setOutboundHold(messageId, true, step.reason);
     log.push(`hold_outbound:${step.reason}`);
     return 'blocked';
+  }
+  if (step.type === 'ai_review') {
+    const ctx = buildOutboundContext(payload);
+    const blocked = await runAiReviewStep(step, ctx.combined_text, log);
+    if (blocked) {
+      setOutboundHold(messageId, true, 'KI-Prüfung: Versand blockiert');
+      return 'blocked';
+    }
+    return 'continue';
   }
   if (step.type === 'stop') {
     log.push('stop');
@@ -210,7 +264,7 @@ async function runRulesOutbound(
     if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {
-      const r = executeOutboundStep(step, payload.messageId, log);
+      const r = await executeOutboundStep(step, payload.messageId, payload, log);
       if (r === 'blocked') return { blocked: true, log };
       if (r === 'stop') return { blocked: false, log };
     }
