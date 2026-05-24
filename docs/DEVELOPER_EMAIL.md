@@ -1,6 +1,6 @@
 # E-Mail-Modul — Entwickler- & LLM-Referenz
 
-Kurze technische Landkarte für Menschen und Assistenzsysteme, die am **Desktop-E-Mail-Feature** arbeiten. Detaillierte Plan-Phasen: [`EMAIL_PHASES.md`](EMAIL_PHASES.md). Tiefen-Review (Risiken/Fixes): [`email-system-deep-review.md`](email-system-deep-review.md).
+Kurze technische Landkarte für Menschen und Assistenzsysteme, die am **Desktop-E-Mail-Feature** arbeiten. Detaillierte Plan-Phasen: [`EMAIL_PHASES.md`](EMAIL_PHASES.md). **Workflow-Zielbild (n8n-ähnlich, KI-Agent, Code-Knoten):** [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md). Tiefen-Review (Risiken/Fixes): [`email-system-deep-review.md`](email-system-deep-review.md).
 
 ## Architektur
 

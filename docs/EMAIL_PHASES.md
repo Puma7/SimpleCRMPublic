@@ -35,7 +35,7 @@ Diese Datei fasst die ursprünglichen Plan-Phasen mit dem **aktuellen Implementi
 | Aktionen: Weiterleiten-Kopie, Anhang-Tag, Kategorie, … | ✅ |
 | Cron-Jobs nach Speichern neu laden | ✅ `restartEmailWorkflowCrons` |
 
-**Offen / vereinfacht:** Verzweigungen im Graph pro Kante (mehrere parallele Regelpfade) sind nicht voll modelliert.
+**Offen / vereinfacht:** Graph-Interpreter, Custom-Code-Knoten und KI-Agent mit RAG — siehe [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md). If/Else im Compiler ist umgesetzt (PR #12+).
 
 ## Phase 4 – Integration, Reporting, Compliance
 
