@@ -149,6 +149,7 @@ export const createTasksTable = `
     priority TEXT NOT NULL,
     completed INTEGER NOT NULL DEFAULT 0,
     calendar_event_id INTEGER,
+    snoozed_until TEXT,
     created_date TEXT DEFAULT CURRENT_TIMESTAMP,
     last_modified TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (customer_id) REFERENCES ${CUSTOMERS_TABLE}(id) ON DELETE CASCADE,

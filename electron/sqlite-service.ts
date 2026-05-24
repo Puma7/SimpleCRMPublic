@@ -125,6 +125,8 @@ export function initializeDatabase() {
             db.exec(createEmailAiPromptsTable);
             db.exec(createEmailTeamMembersTable);
             db.exec(createEmailMessageAttachmentsTable);
+            db.exec(createEmailWorkflowForwardDedupTable);
+            setupEmailFtsIndex();
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
@@ -283,6 +285,42 @@ function setupPragmas() {
     db.pragma('journal_mode = WAL'); // Write-Ahead Logging for better concurrency
     db.pragma('synchronous = NORMAL'); // Good balance of safety and speed
     // Foreign keys are enabled in initializeDatabase now
+}
+
+/**
+ * Idempotently create the email_messages FTS5 virtual table and its
+ * insert/delete/update triggers. Called from both new-database init and
+ * runMigrations() so a fresh install ends up with a working full-text
+ * search index, not just upgraded databases.
+ */
+function setupEmailFtsIndex() {
+    if (!db) return;
+    const ftsMaster = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
+    if (ftsMaster) return;
+    console.log('Creating email_messages FTS5 index...');
+    db.exec(createEmailMessagesFtsTable);
+    db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
+    db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
+    db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
+    db.exec(`
+      CREATE TRIGGER email_messages_fts_ai AFTER INSERT ON ${EMAIL_MESSAGES_TABLE} BEGIN
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
+        VALUES (new.id, new.subject, new.snippet, new.body_text);
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER email_messages_fts_ad AFTER DELETE ON ${EMAIL_MESSAGES_TABLE} BEGIN
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
+        VALUES (new.id, new.subject, new.snippet, new.body_text);
+      END;
+    `);
+    db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
 }
 
 /**
@@ -504,33 +542,7 @@ function runMigrations() {
             db.exec(createEmailWorkflowForwardDedupTable);
         }
 
-        const ftsMaster = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
-        if (!ftsMaster) {
-            console.log('Creating email_messages FTS5 index...');
-            db.exec(createEmailMessagesFtsTable);
-            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
-            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
-            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
-            db.exec(`
-              CREATE TRIGGER email_messages_fts_ai AFTER INSERT ON ${EMAIL_MESSAGES_TABLE} BEGIN
-                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
-                VALUES (new.id, new.subject, new.snippet, new.body_text);
-              END;
-            `);
-            db.exec(`
-              CREATE TRIGGER email_messages_fts_ad AFTER DELETE ON ${EMAIL_MESSAGES_TABLE} BEGIN
-                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
-              END;
-            `);
-            db.exec(`
-              CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
-                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
-                INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
-                VALUES (new.id, new.subject, new.snippet, new.body_text);
-              END;
-            `);
-            db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
-        }
+        setupEmailFtsIndex();
 
         // Migration: Add snoozed_until column to tasks table if it doesn't exist
         const taskColsForSnooze = db.prepare(`PRAGMA table_info(${TASKS_TABLE})`).all();
