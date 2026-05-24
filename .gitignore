@@ -48,6 +48,8 @@ src/.DS_Store
 !docs/USER_GUIDE_EMAIL.md
 !docs/LEARNINGS_EMAIL.md
 !docs/SETUP_WINDOWS.md
+!docs/WORKFLOW_VISION.md
+!docs/WORKFLOW_PHASES.md
 !AGENTS.md
 
 coverage/

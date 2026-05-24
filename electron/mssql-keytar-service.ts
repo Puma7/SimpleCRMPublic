@@ -536,6 +536,20 @@ export async function fetchJtlVersandarten() {
     }
 }
 
+export async function executeReadOnlyMssqlQuery(
+  sqlQuery: string,
+): Promise<{ success: boolean; rows?: unknown[]; rowCount?: number; error?: string }> {
+  try {
+    const pool = await getConnectionPool();
+    const result = await pool.request().query(sqlQuery);
+    const rows = (result.recordset ?? []) as unknown[];
+    return { success: true, rows, rowCount: rows.length };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { success: false, error: msg };
+  }
+}
+
 export async function closeMssqlPool(): Promise<void> {
     if (pool) {
         try {

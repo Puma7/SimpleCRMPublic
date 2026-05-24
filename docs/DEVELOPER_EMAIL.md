@@ -1,12 +1,12 @@
 # E-Mail-Modul — Entwickler- & LLM-Referenz
 
-Kurze technische Landkarte für Menschen und Assistenzsysteme, die am **Desktop-E-Mail-Feature** arbeiten. Detaillierte Plan-Phasen: [`EMAIL_PHASES.md`](EMAIL_PHASES.md). Tiefen-Review (Risiken/Fixes): [`email-system-deep-review.md`](email-system-deep-review.md).
+Kurze technische Landkarte für Menschen und Assistenzsysteme, die am **Desktop-E-Mail-Feature** arbeiten. Detaillierte Plan-Phasen: [`EMAIL_PHASES.md`](EMAIL_PHASES.md). **Workflow-Umsetzungsstand W0–W6:** [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md). **Workflow-Zielbild (Langfrist):** [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md). Tiefen-Review (Risiken/Fixes): [`email-system-deep-review.md`](email-system-deep-review.md).
 
 ## Architektur
 
 | Schicht | Pfade | Rolle |
 |--------|--------|--------|
-| **Main** | `electron/email/*.ts` | Sync (IMAP/POP3), SMTP, Workflows, CRM-Helfer, OAuth, Anhänge, FTS, Export |
+| **Main** | `electron/email/*.ts`, `electron/workflow/*.ts` | Sync (IMAP/POP3), SMTP, Workflows (Regeln + Graph-Runtime), CRM-Helfer, OAuth, Anhänge, FTS, Export |
 | **IPC** | `electron/ipc/email.ts`, `shared/ipc/channels.ts` (`email:*`) | Renderer ↔ Main |
 | **Renderer** | `src/app/email/**` | Inbox, Workflows (React Flow), Einstellungen, Reporting |
 | **Shared** | `shared/email-workflow-graph.ts`, `shared/email-constants.ts`, `shared/email-recipient-parse.ts` | Typen, Konstanten, Parsing |
@@ -35,7 +35,8 @@ Hintergrund: `electron/email/email-imap-services.ts` (Cron, IDLE), `email-sync-m
 
 - Schema/Migrationen: `electron/database-schema.ts`, `electron/sqlite-service.ts` (`runMigrations`)
 - Nachricht speichern: `electron/email/email-store.ts` (`insertOrUpdateEmailMessage`, `allocatePop3NegativeUid`)
-- Workflows: `email-workflow-engine.ts`, `email-workflow-store.ts`, `email-workflow-types.ts`, `email-workflow-graph-compile.ts`
+- Workflows (Regeln): `email-workflow-engine.ts`, `email-workflow-store.ts`, `email-workflow-types.ts`, `email-workflow-graph-compile.ts`
+- Workflows (Graph W1+): `electron/workflow/runtime.ts`, `workflow-executor.ts`, `registry.ts`, `nodes/*.ts`, IPC `electron/ipc/workflow.ts`
 
 ## LLM-Hinweise
 

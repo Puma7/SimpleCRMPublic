@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -8,13 +8,15 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { hasElectron, invokeIpc } from "../types"
+import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 
 type Props = {
   onCreated: () => void
+  editAccount?: EmailAccount | null
+  onCancelEdit?: () => void
 }
 
-export function AccountForm({ onCreated }: Props) {
+export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [protocol, setProtocol] = useState<"imap" | "pop3">("imap")
   const [displayName, setDisplayName] = useState("")
   const [emailAddress, setEmailAddress] = useState("")
@@ -29,6 +31,22 @@ export function AccountForm({ onCreated }: Props) {
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [saving, setSaving] = useState(false)
+  const isEdit = editAccount != null
+
+  useEffect(() => {
+    if (!editAccount) return
+    setProtocol((editAccount.protocol as "imap" | "pop3") || "imap")
+    setDisplayName(editAccount.display_name)
+    setEmailAddress(editAccount.email_address)
+    setImapHost(editAccount.imap_host)
+    setImapPort(String(editAccount.imap_port))
+    setImapTls(Boolean(editAccount.imap_tls))
+    setImapUsername(editAccount.imap_username)
+    setImapPassword("")
+    setPop3Host(editAccount.pop3_host ?? "")
+    setPop3Port(String(editAccount.pop3_port ?? 995))
+    setPop3Tls(editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls))
+  }, [editAccount])
 
   const handleTestImap = async () => {
     if (!hasElectron()) return
@@ -88,33 +106,55 @@ export function AccountForm({ onCreated }: Props) {
       !emailAddress.trim() ||
       !imapHost.trim() ||
       !imapUsername.trim() ||
-      !imapPassword
+      (!isEdit && !imapPassword)
     ) {
-      toast.error("Bitte alle Felder inkl. Passwort ausfüllen.")
+      toast.error(
+        isEdit
+          ? "Bitte Pflichtfelder ausfüllen. Passwort nur bei Änderung."
+          : "Bitte alle Felder inkl. Passwort ausfüllen.",
+      )
       return
     }
     setSaving(true)
     try {
-      const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateAccount, {
-        displayName: displayName.trim(),
-        emailAddress: emailAddress.trim(),
-        imapHost: imapHost.trim(),
-        imapPort: parseInt(imapPort, 10) || 993,
-        imapTls,
-        imapUsername: imapUsername.trim(),
-        imapPassword,
-        protocol,
-        pop3Host: pop3Host.trim() || null,
-        pop3Port: parseInt(pop3Port, 10) || 995,
-        pop3Tls,
-      })
-      if (res.id != null) {
-        toast.success("Konto gespeichert.")
-        // Match old page.tsx:367 behaviour — only clear the password so
-        // power users can quickly add another account on the same server
-        // without re-typing host/username/port/TLS.
+      if (isEdit && editAccount) {
+        await invokeIpc(IPCChannels.Email.UpdateAccount, {
+          id: editAccount.id,
+          displayName: displayName.trim(),
+          emailAddress: emailAddress.trim(),
+          imapHost: imapHost.trim(),
+          imapPort: parseInt(imapPort, 10) || 993,
+          imapTls,
+          imapUsername: imapUsername.trim(),
+          ...(imapPassword ? { imapPassword } : {}),
+          protocol,
+          pop3Host: pop3Host.trim() || null,
+          pop3Port: parseInt(pop3Port, 10) || 995,
+          pop3Tls,
+        })
+        toast.success("Konto aktualisiert.")
         setImapPassword("")
         onCreated()
+        onCancelEdit?.()
+      } else {
+        const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateAccount, {
+          displayName: displayName.trim(),
+          emailAddress: emailAddress.trim(),
+          imapHost: imapHost.trim(),
+          imapPort: parseInt(imapPort, 10) || 993,
+          imapTls,
+          imapUsername: imapUsername.trim(),
+          imapPassword,
+          protocol,
+          pop3Host: pop3Host.trim() || null,
+          pop3Port: parseInt(pop3Port, 10) || 995,
+          pop3Tls,
+        })
+        if (res.id != null) {
+          toast.success("Konto gespeichert.")
+          setImapPassword("")
+          onCreated()
+        }
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen.")
@@ -126,9 +166,12 @@ export function AccountForm({ onCreated }: Props) {
   return (
     <div className="space-y-3 rounded-lg border bg-card p-4">
       <div>
-        <h4 className="text-sm font-semibold">Neues Konto anlegen</h4>
+        <h4 className="text-sm font-semibold">
+          {isEdit ? "Konto bearbeiten" : "Neues Konto anlegen"}
+        </h4>
         <p className="text-xs text-muted-foreground">
           IMAP oder POP3. Zugangsdaten werden im System-Schlüsselbund gespeichert.
+          {isEdit ? " Passwort leer lassen, um es nicht zu ändern." : null}
         </p>
       </div>
 
@@ -277,6 +320,11 @@ export function AccountForm({ onCreated }: Props) {
             POP3 testen
           </Button>
         )}
+        {isEdit && onCancelEdit ? (
+          <Button type="button" size="sm" variant="ghost" onClick={onCancelEdit}>
+            Abbrechen
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="sm"
@@ -284,7 +332,7 @@ export function AccountForm({ onCreated }: Props) {
           disabled={saving}
         >
           {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-          Speichern
+          {isEdit ? "Aktualisieren" : "Speichern"}
         </Button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-export type MailView = "inbox" | "sent" | "archived" | "drafts"
+export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam"
 
 export type EmailAccount = {
   id: number
@@ -37,6 +37,7 @@ export type EmailMessage = {
   body_text: string | null
   body_html: string | null
   seen_local: number
+  is_spam?: number
   archived?: number
   outbound_hold?: number
   outbound_block_reason?: string | null

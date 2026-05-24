@@ -3,11 +3,13 @@ import { getEmailAiApiKey } from './email-ai-keytar';
 
 const KEY_BASE = 'email_ai_base_url';
 const KEY_MODEL = 'email_ai_model';
+const KEY_EMBED_MODEL = 'email_ai_embedding_model';
 
-export function getAiSettings(): { baseUrl: string; model: string } {
+export function getAiSettings(): { baseUrl: string; model: string; embeddingModel: string } {
   const baseUrl = (getSyncInfo(KEY_BASE) || 'https://api.openai.com/v1').replace(/\/$/, '');
   const model = getSyncInfo(KEY_MODEL) || 'gpt-4o-mini';
-  return { baseUrl, model };
+  const embeddingModel = getSyncInfo(KEY_EMBED_MODEL) || 'text-embedding-3-small';
+  return { baseUrl, model, embeddingModel };
 }
 
 export function setAiSettings(input: { baseUrl?: string; model?: string }): void {
@@ -47,4 +49,30 @@ export async function runChatCompletion(systemPrompt: string, userContent: strin
   const text = data.choices?.[0]?.message?.content?.trim();
   if (!text) throw new Error('Leere KI-Antwort');
   return text;
+}
+
+export async function runEmbedding(text: string): Promise<number[] | null> {
+  const apiKey = await getEmailAiApiKey();
+  if (!apiKey) return null;
+  const input = text.trim().slice(0, 8000);
+  if (!input) return null;
+  const { baseUrl, embeddingModel } = getAiSettings();
+  const url = `${baseUrl}/embeddings`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model: embeddingModel, input }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { data?: { embedding?: number[] }[] };
+    const vec = data.data?.[0]?.embedding;
+    if (!vec || !Array.isArray(vec)) return null;
+    return vec;
+  } catch {
+    return null;
+  }
 }

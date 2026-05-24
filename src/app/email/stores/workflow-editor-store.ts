@@ -64,7 +64,7 @@ export const useWorkflowEditorStore = create<State>((set, get) => ({
     const { nodes, edges } = get()
     const gn = nodes.map((n) => ({
       id: n.id,
-      type: n.type as "trigger" | "condition" | "action",
+      type: n.type as "trigger" | "condition" | "action" | "registry",
       data: n.data as WorkflowGraphDocument["nodes"][number]["data"],
     }))
     const ge = edges.map((e) => ({

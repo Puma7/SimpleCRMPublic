@@ -84,7 +84,18 @@ export function useEmailMessages() {
       }
       try {
         const full = await invokeIpc<EmailMessage | null>(IPCChannels.Email.GetMessage, m.id)
-        setSelectedMessage(full ?? m)
+        const msg = full ?? m
+        setSelectedMessage(msg)
+        if (m.uid >= 0 && !m.seen_local) {
+          await invokeIpc(IPCChannels.Email.SetMessageSeen, {
+            messageId: m.id,
+            seen: true,
+          })
+          setSelectedMessage({ ...msg, seen_local: 1 })
+          setMessages((prev) =>
+            prev.map((row) => (row.id === m.id ? { ...row, seen_local: 1 } : row)),
+          )
+        }
       } catch (e) {
         logError("use-email-messages: open message", e)
         setSelectedMessage(m)

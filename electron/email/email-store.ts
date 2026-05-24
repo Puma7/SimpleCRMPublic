@@ -77,6 +77,7 @@ export type EmailMessageRow = {
   has_attachments: number;
   attachments_json: string | null;
   assigned_to: string | null;
+  is_spam: number;
   /** POP3 server UIDL when message came from POP3 (stable key). */
   pop3_uidl: string | null;
   created_at: string;
@@ -291,6 +292,13 @@ export function getFolderByAccountAndPath(accountId: number, path: string): Emai
   return stmt.get(accountId, path) as EmailFolderRow | undefined;
 }
 
+export function getFolderById(folderId: number): EmailFolderRow | undefined {
+  const stmt = getDb().prepare(
+    `SELECT id, account_id, path, delimiter, uidvalidity, uidvalidity_str, last_uid, last_synced_at, pop3_uidl_str FROM ${EMAIL_FOLDERS_TABLE} WHERE id = ?`,
+  );
+  return stmt.get(folderId) as EmailFolderRow | undefined;
+}
+
 export function upsertEmailFolder(input: {
   accountId: number;
   path: string;
@@ -368,14 +376,14 @@ export function listMessagesForFolder(
      WHERE folder_id = ? AND soft_deleted = 0
        AND (uid >= 0 OR pop3_uidl IS NOT NULL)
        AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
-       AND archived = 0
+       AND archived = 0 AND is_spam = 0
      ORDER BY datetime(COALESCE(date_received, created_at)) DESC
      LIMIT ? OFFSET ?`,
   );
   return stmt.all(folderId, limit, offset) as EmailMessageRow[];
 }
 
-export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'all';
+export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'all';
 
 export function listMessagesForAccountView(
   accountId: number,
@@ -396,13 +404,15 @@ export function listMessagesForAccountView(
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   if (view === 'inbox') {
-    sql += ` AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0`;
+    sql += ` AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0`;
   } else if (view === 'sent') {
-    sql += ` AND m.folder_kind = 'sent'`;
+    sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
   } else if (view === 'archived') {
-    sql += ` AND m.archived = 1 AND ${nonDraftMail}`;
+    sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0`;
   } else if (view === 'drafts') {
     sql += ` AND m.folder_kind = 'draft'`;
+  } else if (view === 'spam') {
+    sql += ` AND ${nonDraftMail} AND m.is_spam = 1`;
   } else {
     sql += ` AND ${nonDraftMail}`;
   }
@@ -586,6 +596,12 @@ export function setMessageSeenLocal(messageId: number, seen: boolean): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ? WHERE id = ?`)
     .run(seen ? 1 : 0, messageId);
+}
+
+export function setMessageSpam(messageId: number, spam: boolean): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ? WHERE id = ?`)
+    .run(spam ? 1 : 0, messageId);
 }
 
 export function listTagsForMessage(messageId: number): string[] {

@@ -7,6 +7,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   AtSign,
+  BookOpen,
   BrainCircuit,
   Download,
   KeyRound,
@@ -24,6 +25,7 @@ import { TeamPanel } from "./settings/team-panel"
 import { CannedPanel } from "./settings/canned-panel"
 import { PromptsPanel } from "./settings/prompts-panel"
 import { ExportPanel } from "./settings/export-panel"
+import { KnowledgePanel } from "./settings/knowledge-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -37,6 +39,7 @@ export const SETTINGS_TABS: TabDef[] = [
   { id: "smtp", label: "SMTP", icon: Send, render: () => <SmtpPanel /> },
   { id: "oauth", label: "OAuth", icon: KeyRound, render: () => <OAuthPanel /> },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
+  { id: "knowledge", label: "Wissensbasis", icon: BookOpen, render: () => <KnowledgePanel /> },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "prompts", label: "KI-Prompts", icon: Sparkles, render: () => <PromptsPanel /> },

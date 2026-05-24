@@ -36,7 +36,9 @@ SimpleCRM kann **E-Mail-Konten** einbinden (IMAP oder POP3), Mails **lesen**, **
 ## Workflows (Kurz)
 
 - **Auslöser:** z. B. neue Mail, gesendete Mail, neuer Entwurf, **Zeitplan** (Cron).
-- **Aktionen:** z. B. Tags, Kategorie, Archiv, Weiterleitungskopie, Sperre vor dem Versand.
+- **Aktionen:** z. B. Tags, Kategorie, Archiv, Weiterleitungskopie, Sperre vor dem Versand; erweiterte Knoten (KI, Code, CRM) über die **Palette** im Editor.
+- **Vorlagen**, **Test (Dry-Run)** mit Nachrichten-ID und **Lauf-Historie** im Workflow-Editor.
+- **Wissensbasis** für KI-Workflows: **E-Mail → Einstellungen** (Zahnrad in der E-Mail-Ansicht) → Tab **Wissensbasis**.
 - Unter **Workflows** den grafischen Editor nutzen und speichern — Zeitpläne werden im Hintergrund neu geladen.
 
 ## Datenexport (DSGVO-Hilfe)

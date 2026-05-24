@@ -37,6 +37,15 @@ import { WorkflowList, type WorkflowRow } from "./workflow-list"
 import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
 import { JsonDevDrawer } from "./json-dev-drawer"
+import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
+import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
+import { WorkflowRunHistory } from "./workflow-run-history"
+import type { WorkflowTemplateDto } from "@shared/workflow-types"
+import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import {
+  enrichRegistryFlowNodes,
+  enrichRegistryGraphDocument,
+} from "./enrich-registry-labels"
 
 const WorkflowCanvas = lazy(async () => {
   const m = await import("./workflow-canvas")
@@ -82,6 +91,7 @@ export function WorkflowShell() {
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editName, setEditName] = useState("")
+  const [editTrigger, setEditTrigger] = useState("inbound")
   const [editPriority, setEditPriority] = useState("100")
   const [editEnabled, setEditEnabled] = useState(true)
   const [editCron, setEditCron] = useState("")
@@ -91,7 +101,13 @@ export function WorkflowShell() {
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [versionsOpen, setVersionsOpen] = useState(false)
+  const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+
+  const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
+  const graphNodes = useWorkflowEditorStore((s) => s.nodes)
 
   const load = useCallback(async () => {
     if (!hasElectron()) {
@@ -119,6 +135,7 @@ export function WorkflowShell() {
   const applyRow = (w: FullWorkflowRow) => {
     setSelectedId(w.id)
     setEditName(w.name)
+    setEditTrigger(w.trigger || "inbound")
     setEditPriority(String(w.priority))
     setEditJson(w.definition_json)
     setEditCron(w.cron_expr ?? "")
@@ -135,8 +152,20 @@ export function WorkflowShell() {
         doc = null
       }
     }
-    useWorkflowEditorStore.getState().resetFromGraph(doc)
+    const enriched = catalogLoaded
+      ? enrichRegistryGraphDocument(doc, labelByType)
+      : doc
+    useWorkflowEditorStore.getState().resetFromGraph(enriched)
   }
+
+  useEffect(() => {
+    if (!catalogLoaded || labelByType.size === 0) return
+    const nodes = useWorkflowEditorStore.getState().nodes
+    const next = enrichRegistryFlowNodes(nodes, labelByType)
+    if (next !== nodes) {
+      useWorkflowEditorStore.getState().setNodes(next)
+    }
+  }, [catalogLoaded, labelByType])
 
   const selectRowById = (id: number) => {
     const w = rows.find((r) => r.id === id)
@@ -188,7 +217,13 @@ export function WorkflowShell() {
       if (!compiled.success || !compiled.definitionJson) {
         throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
       }
-      const trig = triggerFromGraph(graphDoc)
+      const trig = editTrigger.trim() || triggerFromGraph(graphDoc)
+      if (selectedId != null) {
+        await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, {
+          workflowId: selectedId,
+          label: "Vor Speichern",
+        })
+      }
       await invokeIpc(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
@@ -293,6 +328,24 @@ export function WorkflowShell() {
               Inbound auf bestehende Mails
             </Button>
 
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={selectedId == null}
+              onClick={() => setTemplatesOpen(true)}
+            >
+              Vorlagen
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={selectedId == null}
+              onClick={() => setVersionsOpen(true)}
+            >
+              Versionen
+            </Button>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -321,6 +374,25 @@ export function WorkflowShell() {
                 onChange={(e) => setEditName(e.target.value)}
                 className="h-8"
               />
+            </div>
+            <div className="min-w-[160px] space-y-1">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Auslöser (DB)
+              </Label>
+              <select
+                className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                value={editTrigger}
+                onChange={(e) => setEditTrigger(e.target.value)}
+              >
+                <option value="inbound">E-Mail eingehend</option>
+                <option value="outbound">E-Mail ausgehend</option>
+                <option value="draft_created">Entwurf erstellt</option>
+                <option value="schedule">Zeitplan</option>
+                <option value="manual">Manuell</option>
+                <option value="crm.deal_stage_changed">Deal-Phase</option>
+                <option value="task.due">Aufgabe fällig</option>
+                <option value="calendar.event_start">Termin</option>
+              </select>
             </div>
             <div className="w-[90px] space-y-1">
               <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -376,6 +448,66 @@ export function WorkflowShell() {
                 Aktiv
               </Label>
             </div>
+            <div className="w-[100px] space-y-1">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Test-Nachricht-ID
+              </Label>
+              <Input
+                value={testMessageId}
+                onChange={(e) => setTestMessageId(e.target.value)}
+                className="h-8 font-mono text-xs"
+                placeholder="123"
+              />
+            </div>
+            {(() => {
+              const trimmed = testMessageId.trim()
+              const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
+              const idValid = trimmed.length > 0 && Number.isFinite(parsedId) && parsedId > 0
+              const testDisabled = selectedId == null || !idValid
+              let testTooltip = "Workflow ohne Schreibzugriff an der gewählten Nachricht testen."
+              if (!trimmed) {
+                testTooltip =
+                  "Bitte eine Nachrichten-ID eingeben (Zahl aus dem Postfach, Spalte in der Nachrichtenliste)."
+              } else if (!idValid) {
+                testTooltip = "Die Nachrichten-ID muss eine positive ganze Zahl sein."
+              }
+              return (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={testDisabled}
+                        onClick={async () => {
+                          if (!Number.isFinite(parsedId) || selectedId == null) return
+                          const r = await invokeIpc<{
+                            success: boolean
+                            log?: string[]
+                            error?: string
+                          }>(IPCChannels.Email.TestWorkflowOnMessage, {
+                            workflowId: selectedId,
+                            messageId: parsedId,
+                            dryRun: true,
+                          })
+                          if (r.success) {
+                            toast.success(
+                              `Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`,
+                            )
+                          } else {
+                            toast.error(r.error ?? "Test fehlgeschlagen")
+                          }
+                        }}
+                      >
+                        Test (Dry-Run)
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">{testTooltip}</TooltipContent>
+                </Tooltip>
+              )
+            })()}
             <div className="flex items-center gap-2 self-end pb-0.5">
               <Button
                 type="button"
@@ -440,10 +572,17 @@ export function WorkflowShell() {
             <ResizableHandle />
             <ResizablePanel defaultSize={24} minSize={18}>
               {selectedId != null ? (
-                <NodePropertiesPanel
-                  selectedNodeId={selectedNodeId}
-                  onClearSelection={() => setSelectedNodeId(null)}
-                />
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">
+                    <NodePropertiesPanel
+                      selectedNodeId={selectedNodeId}
+                      onClearSelection={() => setSelectedNodeId(null)}
+                    />
+                  </div>
+                  <div className="flex min-h-[200px] flex-[2] flex-col overflow-hidden border-t">
+                    <WorkflowRunHistory workflowId={selectedId} graphNodes={graphNodes} />
+                  </div>
+                </div>
               ) : (
                 <aside className="flex h-full items-center justify-center border-l bg-muted/10 p-6 text-center">
                   <p className="text-sm text-muted-foreground">
@@ -460,6 +599,22 @@ export function WorkflowShell() {
           onOpenChange={setJsonDrawerOpen}
           jsonValue={editJson}
           onJsonChange={setEditJson}
+        />
+        <WorkflowTemplatesDialog
+          open={templatesOpen}
+          onOpenChange={setTemplatesOpen}
+          onPick={(t: WorkflowTemplateDto) => {
+            useWorkflowEditorStore.getState().resetFromGraph(t.graph)
+            toast.success(`Vorlage „${t.name}" geladen — bitte speichern.`)
+          }}
+        />
+        <WorkflowVersionsDialog
+          workflowId={selectedId}
+          open={versionsOpen}
+          onOpenChange={setVersionsOpen}
+          onRestored={() => {
+            if (selectedId != null) selectRowById(selectedId)
+          }}
         />
       </div>
     </TooltipProvider>

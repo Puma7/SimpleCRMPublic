@@ -106,7 +106,7 @@ export function listCategoryCountsForAccount(accountId: number): { categoryId: n
       `SELECT mc.category_id as categoryId, COUNT(DISTINCT mc.message_id) as count
        FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc
        INNER JOIN ${EMAIL_MESSAGES_TABLE} m ON m.id = mc.message_id
-       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.archived = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL) AND m.folder_kind = 'inbox'
+       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.archived = 0 AND m.is_spam = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL) AND m.folder_kind = 'inbox'
        GROUP BY mc.category_id`,
     )
     .all(accountId) as { categoryId: number; count: number }[];

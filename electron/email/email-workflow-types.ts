@@ -11,9 +11,18 @@ export type ConditionField =
   | 'from_address'
   | 'combined_text'
   | 'to_address'
-  | 'cc_address';
+  | 'cc_address'
+  | 'has_attachments'
+  | 'attachment_names'
+  | 'attachment_types';
 
-export type ConditionOp = 'contains' | 'equals' | 'regex' | 'domain_ends_with';
+export type ConditionOp =
+  | 'contains'
+  | 'equals'
+  | 'regex'
+  | 'domain_ends_with'
+  | 'is_true'
+  | 'is_false';
 
 export type WorkflowCondition = {
   field: ConditionField;
@@ -22,7 +31,14 @@ export type WorkflowCondition = {
   caseInsensitive?: boolean;
 };
 
-export type WorkflowConditionGroup = { all: WorkflowCondition[] };
+/** Single condition or negated condition (for if/else branches). */
+export type WorkflowConditionItem = WorkflowCondition | { not: WorkflowCondition };
+
+export type WorkflowConditionGroup =
+  | { all: WorkflowConditionItem[] }
+  | { any: WorkflowConditionItem[] };
+
+export type WorkflowRuleWhen = WorkflowCondition | WorkflowConditionGroup | null;
 
 export type WorkflowThenStep =
   | { type: 'tag'; tag: string }
@@ -33,10 +49,11 @@ export type WorkflowThenStep =
   | { type: 'link_customer' }
   | { type: 'forward_copy'; to: string }
   | { type: 'tag_attachment_meta'; tag: string }
+  | { type: 'ai_review'; promptId: number; blockKeyword?: string }
   | { type: 'stop' };
 
 export type WorkflowRule = {
-  when: WorkflowCondition | WorkflowConditionGroup | null;
+  when: WorkflowRuleWhen;
   then: WorkflowThenStep[];
 };
 
@@ -117,6 +134,17 @@ function matchAddressListOp(
 }
 
 function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, string>): boolean {
+  if (cond.field === 'has_attachments') {
+    const has = ctx.has_attachments === 'true' || ctx.has_attachments === '1';
+    if (cond.op === 'is_true') return has;
+    if (cond.op === 'is_false') return !has;
+    if (cond.op === 'equals') {
+      const want = cond.value.toLowerCase() === 'true' || cond.value === '1';
+      return has === want;
+    }
+    return false;
+  }
+
   let haystack = '';
   switch (cond.field) {
     case 'subject':
@@ -139,6 +167,12 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
       break;
     case 'combined_text':
       haystack = ctx.combined_text;
+      break;
+    case 'attachment_names':
+      haystack = ctx.attachment_names;
+      break;
+    case 'attachment_types':
+      haystack = ctx.attachment_types;
       break;
     default:
       haystack = ctx.combined_text;
@@ -184,13 +218,20 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
   return false;
 }
 
-export function evaluateWorkflowWhen(
-  when: WorkflowRule['when'],
-  ctx: Record<string, string>,
-): boolean {
+function matchConditionItem(item: WorkflowConditionItem, ctx: Record<string, string>): boolean {
+  if ('not' in item && item.not) {
+    return !matchSingleCondition(item.not, ctx);
+  }
+  return matchSingleCondition(item as WorkflowCondition, ctx);
+}
+
+export function evaluateWorkflowWhen(when: WorkflowRuleWhen, ctx: Record<string, string>): boolean {
   if (when == null) return true;
   if ('all' in when && Array.isArray(when.all)) {
-    return when.all.every((c) => matchSingleCondition(c, ctx));
+    return when.all.every((c) => matchConditionItem(c, ctx));
+  }
+  if ('any' in when && Array.isArray(when.any)) {
+    return when.any.some((c) => matchConditionItem(c, ctx));
   }
   return matchSingleCondition(when as WorkflowCondition, ctx);
 }
@@ -205,4 +246,36 @@ export function parseWorkflowDefinition(json: string): WorkflowDefinitionV1 {
     throw new Error('Workflow-Definition: version 1 und rules[] erforderlich');
   }
   return p;
+}
+
+/** Build attachment-related context fields from stored JSON metadata. */
+export function attachmentContextFromJson(attachmentsJson: string | null, hasAttachments: number): {
+  has_attachments: string;
+  attachment_names: string;
+  attachment_types: string;
+} {
+  let names: string[] = [];
+  let types: string[] = [];
+  if (attachmentsJson) {
+    try {
+      const meta = JSON.parse(attachmentsJson) as {
+        filename?: string | null;
+        contentType?: string | null;
+      }[];
+      if (Array.isArray(meta)) {
+        for (const a of meta) {
+          if (a.filename) names.push(a.filename);
+          if (a.contentType) types.push(a.contentType);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const has = Boolean(hasAttachments) || names.length > 0;
+  return {
+    has_attachments: has ? 'true' : 'false',
+    attachment_names: names.join('\n'),
+    attachment_types: types.join('\n'),
+  };
 }

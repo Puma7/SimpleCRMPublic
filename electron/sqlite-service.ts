@@ -47,6 +47,16 @@ import {
     createEmailMessageAttachmentsTable,
     createEmailMessagesFtsTable,
     createEmailWorkflowForwardDedupTable,
+    createEmailWorkflowRunStepsTable,
+    createWorkflowKnowledgeBasesTable,
+    createWorkflowKnowledgeChunksTable,
+    createWorkflowDelayedJobsTable,
+    createEmailWorkflowVersionsTable,
+    EMAIL_WORKFLOW_VERSIONS_TABLE,
+    EMAIL_WORKFLOW_RUN_STEPS_TABLE,
+    WORKFLOW_KNOWLEDGE_BASES_TABLE,
+    WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
+    WORKFLOW_DELAYED_JOBS_TABLE,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -126,6 +136,11 @@ export function initializeDatabase() {
             db.exec(createEmailTeamMembersTable);
             db.exec(createEmailMessageAttachmentsTable);
             db.exec(createEmailWorkflowForwardDedupTable);
+            db.exec(createEmailWorkflowRunStepsTable);
+            db.exec(createWorkflowKnowledgeBasesTable);
+            db.exec(createWorkflowKnowledgeChunksTable);
+            db.exec(createWorkflowDelayedJobsTable);
+            db.exec(createEmailWorkflowVersionsTable);
             setupEmailFtsIndex();
             indexes.forEach(index => db.exec(index));
             // Seed initial sync info if needed
@@ -475,6 +490,7 @@ function runMigrations() {
                 { name: 'attachments_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN attachments_json TEXT` },
                 { name: 'assigned_to', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN assigned_to TEXT` },
                 { name: 'pop3_uidl', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pop3_uidl TEXT` },
+                { name: 'is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN is_spam INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {
@@ -500,6 +516,50 @@ function runMigrations() {
             if (!wn.has('schedule_account_id')) {
                 console.log('Adding schedule_account_id to email_workflows...');
                 db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN schedule_account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL`);
+            }
+            if (!wn.has('execution_mode')) {
+                console.log('Adding execution_mode to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'graph'`);
+            }
+            if (!wn.has('engine_version')) {
+                console.log('Adding engine_version to email_workflows...');
+                db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN engine_version INTEGER NOT NULL DEFAULT 1`);
+            }
+        }
+
+        const ensureMigrationTable = (tableName: string, createTableSql: string, tableIndexes: string[]) => {
+            const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+            if (!exists) {
+                console.log(`Table ${tableName} not found, creating...`);
+                db.exec(createTableSql);
+                for (const indexSql of tableIndexes) {
+                    if (indexSql.includes(tableName)) {
+                        db.exec(indexSql);
+                    }
+                }
+            }
+        };
+        ensureMigrationTable(EMAIL_WORKFLOW_RUN_STEPS_TABLE, createEmailWorkflowRunStepsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_run_steps_run ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(run_id);`,
+        ]);
+        ensureMigrationTable(WORKFLOW_KNOWLEDGE_BASES_TABLE, createWorkflowKnowledgeBasesTable, []);
+        ensureMigrationTable(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE, createWorkflowKnowledgeChunksTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_kb_chunks_kb ON ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}(knowledge_base_id);`,
+        ]);
+        ensureMigrationTable(WORKFLOW_DELAYED_JOBS_TABLE, createWorkflowDelayedJobsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_delayed_execute ON ${WORKFLOW_DELAYED_JOBS_TABLE}(status, execute_at);`,
+        ]);
+        ensureMigrationTable(EMAIL_WORKFLOW_VERSIONS_TABLE, createEmailWorkflowVersionsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_wf_versions_wf ON ${EMAIL_WORKFLOW_VERSIONS_TABLE}(workflow_id);`,
+        ]);
+
+        const kbChunkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE);
+        if (kbChunkTable) {
+            const kc = db.prepare(`PRAGMA table_info(${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE})`).all() as { name: string }[];
+            const kn = new Set(kc.map((c) => c.name));
+            if (!kn.has('embedding_json')) {
+                console.log('Adding embedding_json to workflow_knowledge_chunks...');
+                db.exec(`ALTER TABLE ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} ADD COLUMN embedding_json TEXT`);
             }
         }
 
@@ -1938,6 +1998,16 @@ export function updateDealStage(dealId: number, newStage: string): { success: bo
       } catch (e) {
         console.error('Failed to log stage change activity:', e);
       }
+      void import('./workflow/workflow-trigger-dispatch')
+        .then((m) =>
+          m.fireDealStageChangedWorkflows(
+            dealId,
+            Number(deal.customer_id),
+            String(oldStage ?? ''),
+            newStage,
+          ),
+        )
+        .catch((e) => console.warn('[workflow] deal stage trigger', e));
     }
 
     return { success: result.changes > 0, error: result.changes === 0 ? 'Deal not found' : undefined };
