@@ -60,6 +60,8 @@ src/.DS_Store
 !docs/INDEX.md
 !docs/LEARNINGS.md
 !docs/LEARNINGS_WORKFLOW.md
+!docs/EMAIL_PRODUCT_GUIDE.md
+!docs/EMAIL_ROADMAP.md
 !AGENTS.md
 
 coverage/

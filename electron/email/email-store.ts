@@ -225,17 +225,24 @@ export type EmailTeamMemberRow = {
   id: string;
   display_name: string;
   role: string;
+  signature_html: string | null;
   sort_order: number;
   created_at: string;
 };
 
 export function listEmailTeamMembers(): EmailTeamMemberRow[] {
   const stmt = getDb().prepare(
-    `SELECT id, display_name, role, sort_order, created_at FROM ${EMAIL_TEAM_MEMBERS_TABLE} ORDER BY sort_order ASC, display_name ASC`,
+    `SELECT id, display_name, role, signature_html, sort_order, created_at FROM ${EMAIL_TEAM_MEMBERS_TABLE} ORDER BY sort_order ASC, display_name ASC`,
   );
   let rows = stmt.all() as EmailTeamMemberRow[];
   if (rows.length === 0) {
-    upsertEmailTeamMember({ id: 'agent-1', displayName: 'Agent 1', role: 'agent', sortOrder: 0 });
+    upsertEmailTeamMember({
+      id: 'agent-1',
+      displayName: 'Kundenservice',
+      role: 'agent',
+      sortOrder: 0,
+      signatureHtml: '<p>Mit freundlichen Grüßen<br/>Ihr Kundenservice</p>',
+    });
     rows = stmt.all() as EmailTeamMemberRow[];
   }
   return rows;
@@ -246,24 +253,38 @@ export function upsertEmailTeamMember(input: {
   displayName: string;
   role?: string;
   sortOrder?: number;
+  signatureHtml?: string | null;
 }): void {
   const now = new Date().toISOString();
   getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_TEAM_MEMBERS_TABLE} (id, display_name, role, sort_order, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO ${EMAIL_TEAM_MEMBERS_TABLE} (id, display_name, role, signature_html, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          display_name = excluded.display_name,
          role = excluded.role,
+         signature_html = excluded.signature_html,
          sort_order = excluded.sort_order`,
     )
     .run(
       input.id.trim(),
       input.displayName.trim(),
       input.role?.trim() || 'agent',
+      input.signatureHtml?.trim() || null,
       input.sortOrder ?? 0,
       now,
     );
+}
+
+/** Default footer for compose (first member with signature, else display name only). */
+export function getDefaultComposeSignatureHtml(): string | null {
+  const rows = listEmailTeamMembers();
+  const withSig = rows.find((r) => r.signature_html?.trim());
+  if (withSig?.signature_html) return withSig.signature_html.trim();
+  if (rows.length > 0) {
+    return `<p>Mit freundlichen Grüßen<br/>${rows[0]!.display_name}</p>`;
+  }
+  return null;
 }
 
 export function deleteEmailTeamMember(id: string): void {
@@ -436,6 +457,66 @@ export function listMessagesForAccountView(
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
 
+/** Unified inbox: same view rules across every configured account. */
+export function listMessagesForAllAccountsView(
+  view: AccountMailView,
+  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+): EmailMessageRow[] {
+  const limit = opts.limit ?? 200;
+  const offset = opts.offset ?? 0;
+  let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
+  const params: (string | number)[] = [];
+
+  if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash') {
+    sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
+    params.push(opts.categoryId);
+  }
+
+  if (view === 'trash') {
+    sql += ` WHERE m.soft_deleted = 1`;
+  } else {
+    sql += ` WHERE m.soft_deleted = 0`;
+  }
+  const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
+  if (view === 'trash') {
+    sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+  }
+  if (view === 'inbox') {
+    sql += ` AND (
+      (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0)
+      OR ${outboundHeldInInbox}
+    )`;
+  } else if (view === 'sent') {
+    sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
+  } else if (view === 'archived') {
+    sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0`;
+  } else if (view === 'drafts') {
+    sql += ` AND m.folder_kind = 'draft'`;
+  } else if (view === 'spam') {
+    sql += ` AND ${nonDraftMail} AND m.is_spam = 1`;
+  } else {
+    sql += ` AND ${nonDraftMail}`;
+  }
+
+  sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+  return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+}
+
+export function listMessagesForMailScope(
+  accountScope: number | 'all',
+  view: AccountMailView,
+  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+): EmailMessageRow[] {
+  if (accountScope === 'all') {
+    return listMessagesForAllAccountsView(view, opts);
+  }
+  return listMessagesForAccountView(accountScope, view, opts);
+}
+
 export type MailFolderCounts = {
   inbox: number;
   inboxUnread: number;
@@ -486,6 +567,54 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     spam: Number(row?.spam) || 0,
     trash: Number(row?.trash) || 0,
   };
+}
+
+/** Folder badges when „Alle Konten“ is selected — sums across accounts. */
+export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
+  const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
+  const inboxBase = `soft_deleted = 0 AND (
+    (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0)
+    OR ${outboundHeldInInbox}
+  )`;
+  const row = getDb()
+    .prepare(
+      `SELECT
+        SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
+        SUM(CASE WHEN ${inboxBase} THEN 1 ELSE 0 END) AS inbox,
+        SUM(CASE WHEN ${inboxBase} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
+        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
+        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam
+      FROM ${EMAIL_MESSAGES_TABLE}`,
+    )
+    .get() as {
+    trash: number | null;
+    inbox: number | null;
+    inbox_unread: number | null;
+    sent: number | null;
+    drafts: number | null;
+    archived: number | null;
+    spam: number | null;
+  };
+
+  return {
+    inbox: Number(row?.inbox) || 0,
+    inboxUnread: Number(row?.inbox_unread) || 0,
+    sent: Number(row?.sent) || 0,
+    drafts: Number(row?.drafts) || 0,
+    archived: Number(row?.archived) || 0,
+    spam: Number(row?.spam) || 0,
+    trash: Number(row?.trash) || 0,
+  };
+}
+
+export function getMailFolderCountsForScope(accountScope: number | 'all'): MailFolderCounts {
+  if (accountScope === 'all') {
+    return getMailFolderCountsForAllAccounts();
+  }
+  return getMailFolderCountsForAccount(accountScope);
 }
 
 export function getEmailMessageById(id: number): EmailMessageRow | undefined {

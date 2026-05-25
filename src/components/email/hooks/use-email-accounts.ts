@@ -25,9 +25,12 @@ export function useEmailAccounts() {
       // Functional update avoids stale-closure: only initialise to list[0] when
       // the user has not picked an account yet. Preserves existing selection
       // on every subsequent reload (e.g. after adding an account in Settings).
-      setSelectedAccountId((prev) =>
-        prev === null && list.length > 0 ? list[0]!.id : prev,
-      )
+      setSelectedAccountId((prev) => {
+        if (prev !== null) return prev
+        if (list.length === 0) return null
+        if (list.length > 1) return "all"
+        return list[0]!.id
+      })
       try {
         setTeamMembers(await invokeIpc<TeamMember[]>(IPCChannels.Email.ListTeamMembers))
       } catch (e) {

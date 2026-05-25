@@ -25,9 +25,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import {
   applyCannedTemplate,
   firstAddress,
+  type EmailAccount,
   formatFrom,
   hasElectron,
   invokeIpc,
@@ -41,6 +43,7 @@ import { logError } from "./log"
 import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 
 type Props = {
+  accounts: EmailAccount[]
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
   customers: CustomerOpt[]
@@ -51,7 +54,7 @@ function sanitizeComposeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
 }
 
-export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Props) {
+export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSent }: Props) {
   const {
     composeIntent,
     setComposeIntent,
@@ -89,9 +92,16 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
       return
     }
     if (initialisedForIntentRef.current === composeIntent) return
-    if (!hasElectron() || selectedAccountId == null) return
+    let messageAccountId: number | undefined
+    if (composeIntent.mode === "reply" || composeIntent.mode === "forward") {
+      messageAccountId = composeIntent.message.account_id
+    }
+    const accountIdAtOpen = resolveComposeAccountId(selectedAccountId, {
+      messageAccountId,
+      firstAccountId: accounts[0]?.id,
+    })
+    if (!hasElectron() || accountIdAtOpen == null) return
     initialisedForIntentRef.current = composeIntent
-    const accountIdAtOpen = selectedAccountId
     let cancelled = false
     void (async () => {
       try {
@@ -145,6 +155,13 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             ).trim()}`
           : ""
 
+        const sigRes = await invokeIpc<{ html: string | null }>(
+          IPCChannels.Email.GetComposeSignature,
+        )
+        const sigHtml =
+          composeIntent.mode === "new" && sigRes.html
+            ? sanitizeComposeHtml(sigRes.html)
+            : ""
         const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateComposeDraft, {
           accountId: accountIdAtOpen,
           subject: subj,
@@ -159,10 +176,13 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
           setTo(toAddr)
           setCc("")
           setSubject(subj)
+          const bodyPart = quoted
+            ? sanitizeComposeHtml(`<p>${quoted.replace(/\n/g, "<br/>")}</p>`)
+            : ""
           setBodyHtml(
-            quoted
-              ? sanitizeComposeHtml(`<p>${quoted.replace(/\n/g, "<br/>")}</p>`)
-              : "",
+            bodyPart && sigHtml
+              ? `${bodyPart}<br/><br/>${sigHtml}`
+              : bodyPart || sigHtml,
           )
         }
       } catch (e) {
@@ -172,7 +192,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId])
+  }, [isOpen, composeIntent, selectedAccountId, accounts])
 
   const closeDialog = () => {
     setComposeIntent({ mode: "closed" })

@@ -16,6 +16,8 @@ import {
   listMessagesForFolder,
   listMessagesForAccountView,
   getMailFolderCountsForAccount,
+  getMailFolderCountsForScope,
+  listMessagesForMailScope,
   getEmailMessageById,
   createComposeDraft,
   updateComposeDraft,
@@ -30,6 +32,7 @@ import {
   listEmailTeamMembers,
   upsertEmailTeamMember,
   deleteEmailTeamMember,
+  getDefaultComposeSignatureHtml,
   type EmailAccountRow,
 } from '../email/email-store';
 import { sendComposeDraft } from '../email/email-compose-send';
@@ -38,6 +41,7 @@ import {
   listCategories,
   createCategory,
   listCategoryCountsForAccount,
+  listCategoryCountsForMailScope,
   addInternalNote,
   listInternalNotes,
   listCannedResponses,
@@ -49,10 +53,22 @@ import {
   updateAiPrompt,
   deleteAiPrompt,
   searchMessagesForAccount,
+  searchMessagesForMailScope,
   setMessageCustomerId,
 } from '../email/email-crm-store';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
+import {
+  AI_PROVIDER_PRESETS,
+  clearAiProfileApiKey,
+  createAiProfile,
+  deleteAiProfile,
+  ensureDefaultAiProfiles,
+  listAiProfiles,
+  saveAiProfileApiKey,
+  updateAiProfile,
+  type AiProviderPreset,
+} from '../email/email-ai-profiles';
 import { syncInboxImap, testImapConnection } from '../email/email-imap-sync';
 import { syncInboxPop3, testPop3Connection } from '../email/email-pop3-sync';
 import {
@@ -517,14 +533,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (
         _event: IpcMainInvokeEvent,
         payload: {
-          accountId: number;
+          accountId: number | 'all';
           view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
         },
       ) => {
-        return listMessagesForAccountView(payload.accountId, payload.view, {
+        return listMessagesForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
           categoryId: payload.categoryId,
@@ -540,13 +556,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (
         _event: IpcMainInvokeEvent,
         payload: {
-          accountId: number;
+          accountId: number | 'all';
           query: string;
           limit?: number;
           view?: import('../email/email-store').AccountMailView;
         },
       ) => {
-        return searchMessagesForAccount(
+        return searchMessagesForMailScope(
           payload.accountId,
           payload.query,
           payload.limit ?? 80,
@@ -643,15 +659,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.CategoryCounts, async (_event: IpcMainInvokeEvent, accountId: number) => {
-      return listCategoryCountsForAccount(accountId);
-    }, { logger }),
+    registerIpcHandler(
+      IPCChannels.Email.CategoryCounts,
+      async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
+        listCategoryCountsForMailScope(accountId),
+      { logger },
+    ),
   );
 
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.MailFolderCounts,
-      async (_event: IpcMainInvokeEvent, accountId: number) => getMailFolderCountsForAccount(accountId),
+      async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
+        getMailFolderCountsForScope(accountId),
       { logger },
     ),
   );
@@ -735,7 +755,18 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetAiSettings, async () => {
-      return { success: true as const, ...getAiSettings() };
+      await ensureDefaultAiProfiles();
+      const profiles = listAiProfiles().map((p) => ({
+        id: p.id,
+        label: p.label,
+        provider: p.provider,
+        baseUrl: p.base_url,
+        model: p.model,
+        embeddingModel: p.embedding_model,
+        isDefault: p.is_default === 1,
+      }));
+      const legacy = getAiSettings();
+      return { success: true as const, ...legacy, profiles, providerPresets: AI_PROVIDER_PRESETS };
     }, { logger }),
   );
 
@@ -760,6 +791,100 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.ClearAiApiKey, async () => {
       await deleteEmailAiApiKey();
       return { success: true as const };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListAiProfiles, async () => {
+      await ensureDefaultAiProfiles();
+      return listAiProfiles();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveAiProfile,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id?: number;
+          label: string;
+          provider: AiProviderPreset;
+          baseUrl: string;
+          model: string;
+          embeddingModel?: string | null;
+          isDefault?: boolean;
+          apiKey?: string;
+        },
+      ) => {
+        await ensureDefaultAiProfiles();
+        let profileId = payload.id;
+        if (profileId != null && profileId > 0) {
+          updateAiProfile(profileId, {
+            label: payload.label,
+            provider: payload.provider,
+            baseUrl: payload.baseUrl,
+            model: payload.model,
+            embeddingModel: payload.embeddingModel,
+            isDefault: payload.isDefault,
+          });
+        } else {
+          profileId = createAiProfile({
+            label: payload.label,
+            provider: payload.provider,
+            baseUrl: payload.baseUrl,
+            model: payload.model,
+            embeddingModel: payload.embeddingModel,
+            isDefault: payload.isDefault ?? listAiProfiles().length === 0,
+          });
+        }
+        if (payload.apiKey?.trim()) {
+          const row = listAiProfiles().find((p) => p.id === profileId);
+          if (row) await saveAiProfileApiKey(row.keytar_account, payload.apiKey.trim());
+        }
+        return { success: true as const, id: profileId };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteAiProfile, async (_event: IpcMainInvokeEvent, id: number) => {
+      deleteAiProfile(id);
+      await ensureDefaultAiProfiles();
+      return { success: true as const };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetAiProfileApiKey,
+      async (_event: IpcMainInvokeEvent, payload: { profileId: number; apiKey: string }) => {
+        const row = listAiProfiles().find((p) => p.id === payload.profileId);
+        if (!row) return { success: false as const, error: 'Profil nicht gefunden' };
+        await saveAiProfileApiKey(row.keytar_account, payload.apiKey.trim());
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ClearAiProfileApiKey,
+      async (_event: IpcMainInvokeEvent, profileId: number) => {
+        const row = listAiProfiles().find((p) => p.id === profileId);
+        if (!row) return { success: false as const, error: 'Profil nicht gefunden' };
+        await clearAiProfileApiKey(row.keytar_account);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetComposeSignature, async () => {
+      return { html: getDefaultComposeSignatureHtml() };
     }, { logger }),
   );
 
@@ -912,8 +1037,21 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SaveTeamMember,
-      async (_event: IpcMainInvokeEvent, payload: { id: string; displayName: string; role?: string }) => {
-        upsertEmailTeamMember(payload);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id: string;
+          displayName: string;
+          role?: string;
+          signatureHtml?: string | null;
+        },
+      ) => {
+        upsertEmailTeamMember({
+          id: payload.id,
+          displayName: payload.displayName,
+          role: payload.role,
+          signatureHtml: payload.signatureHtml,
+        });
         return { success: true as const };
       },
       { logger },

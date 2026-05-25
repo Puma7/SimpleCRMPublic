@@ -19,6 +19,8 @@
 | [EMAIL_PHASES.md](EMAIL_PHASES.md) | Implementation checklist (phases 1–4) |
 | [EMAIL_INBOX_CAPABILITIES.md](EMAIL_INBOX_CAPABILITIES.md) | Feature matrix (inbox, archive, spam, …) |
 | [USER_GUIDE_EMAIL.md](USER_GUIDE_EMAIL.md) | End-user oriented |
+| [**EMAIL_PRODUCT_GUIDE.md**](EMAIL_PRODUCT_GUIDE.md) | **Product logic** — Konten, Kategorien, Aktionen, Team, KI |
+| [EMAIL_ROADMAP.md](EMAIL_ROADMAP.md) | Planned improvements from user feedback |
 | [email-system-deep-review.md](email-system-deep-review.md) | Risks and review notes |
 | [WORKFLOW_SPAM_ROUTING.md](WORKFLOW_SPAM_ROUTING.md) | Spam pipeline design |
 | [OUTBOUND_EMAIL_WORKFLOW.md](OUTBOUND_EMAIL_WORKFLOW.md) | Outbound quality gate |

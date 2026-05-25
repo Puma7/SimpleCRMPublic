@@ -118,9 +118,25 @@ export function WorkflowShell() {
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [triggerFilter, setTriggerFilter] = useState<
+    "all" | "inbound" | "outbound" | "other"
+  >("all")
 
   const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
+
+  const filteredRows = useMemo(() => {
+    if (triggerFilter === "all") return rows
+    if (triggerFilter === "inbound") {
+      return rows.filter((w) => w.trigger === "inbound" || w.trigger === "draft_created")
+    }
+    if (triggerFilter === "outbound") {
+      return rows.filter((w) => w.trigger === "outbound")
+    }
+    return rows.filter(
+      (w) => !["inbound", "outbound", "draft_created"].includes(w.trigger),
+    )
+  }, [rows, triggerFilter])
 
   const triggerKindDisplay = useMemo(() => {
     const triggerNode = graphNodes.find((n) => n.type === "trigger")
@@ -670,13 +686,36 @@ export function WorkflowShell() {
               minSize="14%"
               maxSize="30%"
             >
-              <WorkflowList
-                rows={rows}
-                selectedId={selectedId}
-                loading={loading}
-                onSelect={selectRowById}
-                onCreate={() => void handleCreate()}
-              />
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 gap-1 border-b p-2">
+                  {(
+                    [
+                      ["all", "Alle"],
+                      ["inbound", "Eingehend"],
+                      ["outbound", "Ausgehend"],
+                      ["other", "Sonstige"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <Button
+                      key={id}
+                      type="button"
+                      size="sm"
+                      variant={triggerFilter === id ? "default" : "outline"}
+                      className="h-7 flex-1 px-1 text-xs"
+                      onClick={() => setTriggerFilter(id)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+                <WorkflowList
+                  rows={filteredRows}
+                  selectedId={selectedId}
+                  loading={loading}
+                  onSelect={selectRowById}
+                  onCreate={() => void handleCreate()}
+                />
+              </div>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel id={WORKFLOW_PANE_IDS[1]} defaultSize="55%">

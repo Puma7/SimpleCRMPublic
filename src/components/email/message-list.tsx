@@ -4,11 +4,13 @@ import { Loader2, Paperclip, Search } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import { formatFrom, type EmailMessage } from "./types"
+import { isAllAccountsScope } from "./account-scope"
+import { formatFrom, type EmailAccount, type EmailMessage } from "./types"
 import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
   messages: EmailMessage[]
+  accounts: EmailAccount[]
   loading: boolean
   onOpen: (m: EmailMessage) => void | Promise<void>
 }
@@ -27,8 +29,12 @@ function formatDate(iso: string | null): string {
   return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })
 }
 
-export function MessageList({ messages, loading, onOpen }: Props) {
-  const { searchQuery, setSearchQuery, selectedMessage } = useMailWorkspace()
+export function MessageList({ messages, accounts, loading, onOpen }: Props) {
+  const { searchQuery, setSearchQuery, selectedMessage, selectedAccountId } =
+    useMailWorkspace()
+  const showAccount = isAllAccountsScope(selectedAccountId)
+  const accountLabel = (id: number) =>
+    accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
 
   return (
     <section className="flex h-full min-h-0 flex-col border-r">
@@ -104,6 +110,11 @@ export function MessageList({ messages, loading, onOpen }: Props) {
                         <div className="flex items-center gap-1.5 pt-0.5">
                           {m.has_attachments ? (
                             <Paperclip className="h-3 w-3 text-muted-foreground" />
+                          ) : null}
+                          {showAccount ? (
+                            <span className="rounded bg-muted px-1 text-[9px] font-medium text-muted-foreground">
+                              {accountLabel(m.account_id)}
+                            </span>
                           ) : null}
                           {m.ticket_code ? (
                             <span className="rounded bg-primary/10 px-1 text-[9px] font-medium text-primary">

@@ -413,8 +413,27 @@ export const createEmailTeamMembersTable = `
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'agent',
+    signature_html TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const EMAIL_AI_PROFILES_TABLE = 'email_ai_profiles';
+
+export const createEmailAiProfilesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_AI_PROFILES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'custom',
+    base_url TEXT NOT NULL,
+    model TEXT NOT NULL,
+    embedding_model TEXT,
+    keytar_account TEXT NOT NULL UNIQUE,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `;
 

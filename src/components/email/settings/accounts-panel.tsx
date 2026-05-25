@@ -5,6 +5,8 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Mail, Pencil, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
@@ -18,6 +20,7 @@ export function AccountsPanel() {
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
+  const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
 
   const load = useCallback(async () => {
     if (!hasElectron()) {
@@ -28,6 +31,10 @@ export function AccountsPanel() {
     try {
       const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
       setAccounts(list)
+      const wf = await invokeIpc<{ imapDeleteOptIn: boolean }>(
+        IPCChannels.Email.GetWorkflowAutomationSettings,
+      )
+      setImapDeleteOptIn(wf.imapDeleteOptIn)
     } catch (e) {
       logError("accounts-panel: load", e)
       toast.error("Konten konnten nicht geladen werden.")
@@ -65,8 +72,29 @@ export function AccountsPanel() {
       <div>
         <h3 className="text-base font-semibold">Konten</h3>
         <p className="text-sm text-muted-foreground">
-          Verwalten Sie Ihre IMAP- und POP3-Konten. Das aktive Konto wird in der Seitenleiste der Inbox ausgewählt.
+          Verwalten Sie IMAP- und POP3-Konten. Im Postfach wählen Sie oben ein Konto oder{" "}
+          <strong>Alle Konten</strong> (Shared Inbox für viele Shops).
         </p>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+        <div className="space-y-1">
+          <Label htmlFor="imap-delete-opt-in">IMAP-Löschung auf dem Server (Workflows)</Label>
+          <p className="text-xs text-muted-foreground">
+            Erlaubt dem Workflow-Knoten „Auf Server löschen“. Der Papierkorb im Postfach ist davon
+            unabhängig (nur lokale Ausblendung).
+          </p>
+        </div>
+        <Switch
+          id="imap-delete-opt-in"
+          checked={imapDeleteOptIn}
+          onCheckedChange={(v) => {
+            setImapDeleteOptIn(v)
+            void invokeIpc(IPCChannels.Email.SetWorkflowAutomationSettings, {
+              imapDeleteOptIn: v,
+            }).then(() => toast.success("Gespeichert"))
+          }}
+        />
       </div>
 
       <div className="rounded-lg border">

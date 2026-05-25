@@ -44,6 +44,8 @@ import {
     createEmailCannedResponsesTable,
     createEmailAiPromptsTable,
     createEmailTeamMembersTable,
+    createEmailAiProfilesTable,
+    EMAIL_AI_PROFILES_TABLE,
     createEmailMessageAttachmentsTable,
     createEmailMessagesFtsTable,
     createEmailWorkflowForwardDedupTable,
@@ -267,6 +269,7 @@ export function initializeDatabase() {
         ensureTableExists(EMAIL_CANNED_RESPONSES_TABLE, createEmailCannedResponsesTable, []);
         ensureTableExists(EMAIL_AI_PROMPTS_TABLE, createEmailAiPromptsTable, []);
         ensureTableExists(EMAIL_TEAM_MEMBERS_TABLE, createEmailTeamMembersTable, []);
+        ensureTableExists(EMAIL_AI_PROFILES_TABLE, createEmailAiProfilesTable, []);
         ensureTableExists(EMAIL_MESSAGE_ATTACHMENTS_TABLE, createEmailMessageAttachmentsTable, [
             `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
         ]);
@@ -524,6 +527,15 @@ function runMigrations() {
             if (!wn.has('engine_version')) {
                 console.log('Adding engine_version to email_workflows...');
                 db.exec(`ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN engine_version INTEGER NOT NULL DEFAULT 1`);
+            }
+        }
+
+        const teamTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_TEAM_MEMBERS_TABLE);
+        if (teamTable) {
+            const tc = db.prepare(`PRAGMA table_info(${EMAIL_TEAM_MEMBERS_TABLE})`).all() as { name: string }[];
+            if (!tc.some((c) => c.name === 'signature_html')) {
+                console.log('Adding signature_html to email_team_members...');
+                db.exec(`ALTER TABLE ${EMAIL_TEAM_MEMBERS_TABLE} ADD COLUMN signature_html TEXT`);
             }
         }
 

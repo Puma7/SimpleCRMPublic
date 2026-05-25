@@ -4,6 +4,7 @@ import { Loader2, Plus, Workflow } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
+import { workflowTriggerLabel } from "./trigger-labels"
 
 export type WorkflowRow = {
   id: number
@@ -56,7 +57,8 @@ export function WorkflowList({ rows, selectedId, loading, onSelect, onCreate }: 
                   <div className="min-w-0 flex-1">
                     <div className="truncate">{w.name}</div>
                     <div className="truncate text-[10px] text-muted-foreground">
-                      {w.trigger} · P{w.priority} {w.enabled ? "" : "· inaktiv"}
+                      {workflowTriggerLabel(w.trigger)} · P{w.priority}{" "}
+                      {w.enabled ? "" : "· inaktiv"}
                     </div>
                   </div>
                 </button>

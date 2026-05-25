@@ -23,7 +23,12 @@ export type EmailAccount = {
   updated_at: string
 }
 
-export type TeamMember = { id: string; display_name: string; role: string }
+export type TeamMember = {
+  id: string
+  display_name: string
+  role: string
+  signature_html?: string | null
+}
 
 export type EmailMessage = {
   id: number

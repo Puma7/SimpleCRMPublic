@@ -1,5 +1,12 @@
 import { listAiPrompts } from '../../email/email-crm-store';
 import { runChatCompletion } from '../../email/email-openai';
+
+function profileIdFromConfig(config: Record<string, unknown>): number | null {
+  const v = config.profileId;
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 import {
   addMessageTag,
   createComposeDraft,
@@ -34,6 +41,7 @@ export function registerAiNodes(register: Reg): void {
         const out = await runChatCompletion(
           'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Prüfauftrag problematisch ist.',
           user,
+          profileIdFromConfig(config),
         );
         ctx.ai.lastResponse = out;
         const blocked = out.toUpperCase().includes(blockKw.toUpperCase());
@@ -134,7 +142,7 @@ export function registerAiNodes(register: Reg): void {
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.outbound_review' };
 
       try {
-        const out = await runChatCompletion(system, userParts.join('\n'));
+        const out = await runChatCompletion(system, userParts.join('\n'), profileIdFromConfig(config));
         ctx.ai.lastResponse = out;
         const parsed = parseOutboundReviewResponse(out);
         if (!parsed.ok) {
@@ -166,6 +174,7 @@ export function registerAiNodes(register: Reg): void {
       const out = await runChatCompletion(
         'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text.',
         user,
+        profileIdFromConfig(config),
       );
       ctx.ai.lastResponse = out;
       const key = String(config.targetVariable ?? 'ai.text');
@@ -216,6 +225,7 @@ export function registerAiNodes(register: Reg): void {
         const out = await runChatCompletion(
           'Du bewertest ob eine E-Mail Spam oder unerwünscht ist. Antworte NUR mit einer ganzen Zahl von 1 bis 100. 1 = sicher kein Spam, 100 = sehr wahrscheinlich Spam. Kein anderer Text, keine Erklärung.',
           prompt,
+          profileIdFromConfig(config),
         );
         ctx.ai.lastResponse = out;
         const score = parseSpamScore(out);
@@ -248,7 +258,11 @@ export function registerAiNodes(register: Reg): void {
           : buildMetadataContextFromMessage(ctx.message).combined_text;
       const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${text}`;
       if (ctx.dryRun) return { status: 'ok' };
-      const out = await runChatCompletion('Du bist ein E-Mail-Klassifizierer.', prompt);
+      const out = await runChatCompletion(
+        'Du bist ein E-Mail-Klassifizierer.',
+        prompt,
+        profileIdFromConfig(config),
+      );
       ctx.ai.lastResponse = out;
       const label = out.trim().split(/\s+/)[0] ?? '';
       if (ctx.messageId != null && label) addMessageTag(ctx.messageId, `ki:${label}`);
@@ -264,6 +278,7 @@ export function registerAiNodes(register: Reg): void {
     defaultConfig: {
       systemPrompt: 'Du bist ein CRM-Assistent. Nutze die Wissensbasis. Antworte kurz.',
       knowledgeBaseId: null,
+      profileId: null,
       createDraft: true,
     },
     execute: async (ctx, config) => {
@@ -279,7 +294,7 @@ export function registerAiNodes(register: Reg): void {
         kbText ? `\nWissensbasis:\n${kbText}` : '',
       ].join('\n');
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run agent' };
-      const out = await runChatCompletion(system, user);
+      const out = await runChatCompletion(system, user, profileIdFromConfig(config));
       ctx.ai.lastResponse = out;
       const variables: Record<string, string | number | boolean | null> = {
         'ai.agent.response': out,

@@ -63,7 +63,10 @@ function MailShellInner() {
         onSync={handleSyncWithCategories}
         syncing={syncing}
         canSync={selectedAccountId != null}
-        canCompose={selectedAccountId != null}
+        canCompose={
+          selectedAccountId != null &&
+          (selectedAccountId !== "all" || accounts.length > 0)
+        }
       />
 
       <div className="flex min-h-0 flex-1">
@@ -94,6 +97,7 @@ function MailShellInner() {
           >
             <MessageList
               messages={messages}
+              accounts={accounts}
               loading={loadingMessages}
               onOpen={openMessage}
             />
@@ -117,6 +121,7 @@ function MailShellInner() {
       </div>
 
       <ComposeDialog
+        accounts={accounts}
         cannedList={cannedList}
         aiPrompts={aiPrompts}
         customers={customers}
