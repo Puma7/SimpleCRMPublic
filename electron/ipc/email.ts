@@ -337,6 +337,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             oauth_provider: null,
             oauth_refresh_keytar_key: null,
             sent_folder_path: 'Sent',
+            imap_sync_seen_on_open: 1,
             created_at: '',
             updated_at: '',
           };

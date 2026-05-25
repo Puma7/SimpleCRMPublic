@@ -85,7 +85,7 @@ export function snippetFromParsed(textBody: string | null, htmlBody: string | nu
 /** Serialize RFC822 headers from mailparser for support/debug display. */
 export function rawHeadersFromParsed(parsed: {
   headerLines?: string[];
-  headers?: { get?: (key: string) => unknown } & Iterable<[string, unknown]>;
+  headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
 }): string | null {
   if (parsed.headerLines?.length) {
     return parsed.headerLines.join('\n');
