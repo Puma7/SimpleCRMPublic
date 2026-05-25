@@ -111,7 +111,6 @@ export function MessageViewer(props: Props) {
     (mailView === "drafts" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
-  const isLocalComposeDraft = selectedMessage != null && selectedMessage.uid < 0
   const inDraftsView = mailView === "drafts"
 
   if (!selectedMessage) {
