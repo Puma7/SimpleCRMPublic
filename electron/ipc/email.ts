@@ -30,6 +30,9 @@ import {
   setMessageSeenLocal,
   setMessageSpam,
   setMessageAssignedTo,
+  addMessageTag,
+  removeMessageTag,
+  moveMessageToMailView,
   listEmailTeamMembers,
   upsertEmailTeamMember,
   deleteEmailTeamMember,
@@ -43,9 +46,16 @@ import { testSmtpConnection } from '../email/email-smtp';
 import {
   listCategories,
   createCategory,
+  updateCategory,
+  deleteCategory,
+  setMessageCategory,
+  clearMessageCategory,
+  getMessageCategoryId,
   listCategoryCountsForAccount,
   listCategoryCountsForMailScope,
   addInternalNote,
+  updateInternalNote,
+  deleteInternalNote,
   listInternalNotes,
   listCannedResponses,
   createCannedResponse,
@@ -553,6 +563,49 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.AddMessageTag,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; tag: string }) => {
+        addMessageTag(payload.messageId, payload.tag);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RemoveMessageTag,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; tag: string }) => {
+        removeMessageTag(payload.messageId, payload.tag);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.MoveMessageToView,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; view: import('../email/email-store').AccountMailView },
+      ) => {
+        try {
+          moveMessageToMailView(payload.messageId, payload.view);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Verschieben fehlgeschlagen',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.ListMessagesByView,
       async (
         _event: IpcMainInvokeEvent,
@@ -684,6 +737,74 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.UpdateCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          categoryId: number;
+          name?: string;
+          parentId?: number | null;
+          sortOrder?: number;
+        },
+      ) => {
+        try {
+          updateCategory(payload.categoryId, {
+            name: payload.name,
+            parentId: payload.parentId,
+            sortOrder: payload.sortOrder,
+          });
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Kategorie konnte nicht gespeichert werden',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteCategory, async (_event: IpcMainInvokeEvent, categoryId: number) => {
+      try {
+        deleteCategory(categoryId);
+        return { success: true as const };
+      } catch (e) {
+        return {
+          success: false as const,
+          error: e instanceof Error ? e.message : 'Kategorie konnte nicht gelöscht werden',
+        };
+      }
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryId: number | null },
+      ) => {
+        if (payload.categoryId == null) {
+          clearMessageCategory(payload.messageId);
+        } else {
+          setMessageCategory(payload.messageId, payload.categoryId);
+        }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetMessageCategory, async (_event: IpcMainInvokeEvent, messageId: number) => {
+      return { categoryId: getMessageCategoryId(messageId) };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.CategoryCounts,
       async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
         listCategoryCountsForMailScope(accountId),
@@ -709,6 +830,31 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       },
       { logger },
     ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.UpdateInternalNote,
+      async (_event: IpcMainInvokeEvent, payload: { noteId: number; body: string }) => {
+        try {
+          updateInternalNote(payload.noteId, payload.body);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Notiz konnte nicht gespeichert werden',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteInternalNote, async (_event: IpcMainInvokeEvent, noteId: number) => {
+      deleteInternalNote(noteId);
+      return { success: true as const };
+    }, { logger }),
   );
 
   disposers.push(

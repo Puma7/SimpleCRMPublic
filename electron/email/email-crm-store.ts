@@ -88,6 +88,12 @@ export function setMessageCategory(messageId: number, categoryId: number): void 
   ).run(messageId, categoryId);
 }
 
+export function clearMessageCategory(messageId: number): void {
+  getDb()
+    .prepare(`DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ?`)
+    .run(messageId);
+}
+
 export function assignCategoryPathToMessage(messageId: number, path: string): void {
   const id = ensureCategoryPath(path);
   setMessageCategory(messageId, id);
@@ -144,12 +150,64 @@ export function addInternalNote(messageId: number, body: string): void {
     .run(messageId, body.trim());
 }
 
+export function updateInternalNote(noteId: number, body: string): void {
+  const trimmed = body.trim();
+  if (!trimmed) throw new Error('Notiz darf nicht leer sein');
+  getDb()
+    .prepare(`UPDATE ${EMAIL_INTERNAL_NOTES_TABLE} SET body = ? WHERE id = ?`)
+    .run(trimmed, noteId);
+}
+
+export function deleteInternalNote(noteId: number): void {
+  getDb().prepare(`DELETE FROM ${EMAIL_INTERNAL_NOTES_TABLE} WHERE id = ?`).run(noteId);
+}
+
 export function listInternalNotes(messageId: number): { id: number; body: string; created_at: string }[] {
   return getDb()
     .prepare(
       `SELECT id, body, created_at FROM ${EMAIL_INTERNAL_NOTES_TABLE} WHERE message_id = ? ORDER BY id ASC`,
     )
     .all(messageId) as { id: number; body: string; created_at: string }[];
+}
+
+export function updateCategory(
+  categoryId: number,
+  input: { name?: string; parentId?: number | null; sortOrder?: number },
+): void {
+  const row = getDb()
+    .prepare(`SELECT id, parent_id FROM ${EMAIL_CATEGORIES_TABLE} WHERE id = ?`)
+    .get(categoryId) as { id: number; parent_id: number | null } | undefined;
+  if (!row) throw new Error('Kategorie nicht gefunden');
+  const sets: string[] = [];
+  const vals: (string | number | null)[] = [];
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (!name) throw new Error('Name darf nicht leer sein');
+    sets.push('name = ?');
+    vals.push(name);
+  }
+  if (input.parentId !== undefined) {
+    if (input.parentId === categoryId) throw new Error('Kategorie kann nicht sich selbst übergeordnet sein');
+    sets.push('parent_id = ?');
+    vals.push(input.parentId);
+  }
+  if (input.sortOrder !== undefined) {
+    sets.push('sort_order = ?');
+    vals.push(input.sortOrder);
+  }
+  if (sets.length === 0) return;
+  vals.push(categoryId);
+  getDb()
+    .prepare(`UPDATE ${EMAIL_CATEGORIES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
+}
+
+export function deleteCategory(categoryId: number): void {
+  const child = getDb()
+    .prepare(`SELECT id FROM ${EMAIL_CATEGORIES_TABLE} WHERE parent_id = ? LIMIT 1`)
+    .get(categoryId) as { id: number } | undefined;
+  if (child) throw new Error('Unterkategorien zuerst löschen');
+  getDb().prepare(`DELETE FROM ${EMAIL_CATEGORIES_TABLE} WHERE id = ?`).run(categoryId);
 }
 
 export type CannedRow = { id: number; title: string; body: string; sort_order: number };

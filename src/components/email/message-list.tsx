@@ -5,14 +5,16 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
-import { formatFrom, type EmailAccount, type EmailMessage } from "./types"
+import { formatFrom, type EmailAccount, type EmailMessage, type MailView } from "./types"
 import { useMailWorkspace } from "./workspace-context"
+import { setMailDragData } from "./mail-drag"
 
 type Props = {
   messages: EmailMessage[]
   accounts: EmailAccount[]
   loading: boolean
   onOpen: (m: EmailMessage) => void | Promise<void>
+  onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
 }
 
 /** Compact date+time so the column stays readable when the list pane is narrow. */
@@ -66,6 +68,11 @@ export function MessageList({ messages, accounts, loading, onOpen }: Props) {
                 <li key={m.id}>
                   <button
                     type="button"
+                    draggable={m.uid >= 0}
+                    onDragStart={(e) => {
+                      if (m.uid < 0) return
+                      setMailDragData(e.dataTransfer, m.id)
+                    }}
                     onClick={() => void onOpen(m)}
                     className={cn(
                       "w-full px-3 py-2.5 text-left transition-colors hover:bg-muted/60",

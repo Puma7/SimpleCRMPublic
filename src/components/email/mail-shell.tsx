@@ -1,5 +1,6 @@
 "use client"
 
+import { useCallback } from "react"
 import { useDefaultLayout } from "react-resizable-panels"
 import {
   ResizableHandle,
@@ -29,6 +30,9 @@ function MailShellInner() {
   const { setComposeIntent, selectedAccountId } = useMailWorkspace()
   const { accounts, teamMembers, loadingAccounts } = useEmailAccounts()
   const { categories, countForCategory, loadCategories } = useEmailCategories()
+  const reloadCategories = useCallback(async () => {
+    if (selectedAccountId != null) await loadCategories(selectedAccountId)
+  }, [selectedAccountId, loadCategories])
   const { reloadCounts } = useMailFolderCounts()
   const {
     messages,
@@ -38,9 +42,10 @@ function MailShellInner() {
     refreshList: refreshListBase,
     refreshCurrentMessage,
     handleSync,
+    moveMessageToView,
   } = useEmailMessages()
-  const refreshList = async () => {
-    await refreshListBase()
+  const refreshList = async (opts?: { preserveSelection?: boolean }) => {
+    await refreshListBase(opts)
     if (selectedAccountId != null) await reloadCounts(selectedAccountId)
   }
 
@@ -52,7 +57,7 @@ function MailShellInner() {
         await reloadCounts(accountId)
       },
     })
-  const { messageTags, internalNotes, messageAttachments, reloadNotes } =
+  const { messageTags, internalNotes, messageAttachments, reloadNotes, reloadTags } =
     useMessageMetadata()
   const { cannedList, aiPrompts } = useMailAuxData()
 
@@ -87,6 +92,8 @@ function MailShellInner() {
               loadingAccounts={loadingAccounts}
               categories={categories}
               countForCategory={countForCategory}
+              onCategoriesChanged={reloadCategories}
+              onMoveMessageToView={moveMessageToView}
             />
           </ResizablePanel>
           <ResizableHandle />
@@ -100,16 +107,19 @@ function MailShellInner() {
               accounts={accounts}
               loading={loadingMessages}
               onOpen={openMessage}
+              onMoveMessageToView={moveMessageToView}
             />
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel id={MAIL_PANE_IDS[2]} defaultSize="50%">
             <MessageViewer
               teamMembers={teamMembers}
+              categories={categories}
               messageTags={messageTags}
               internalNotes={internalNotes}
               messageAttachments={messageAttachments}
               reloadNotes={reloadNotes}
+              reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
               refreshList={refreshList}
               onReply={(m) => setComposeIntent({ mode: "reply", message: m })}

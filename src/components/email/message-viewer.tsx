@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -38,6 +39,7 @@ import {
   hasElectron,
   invokeIpc,
   stripHtmlToText,
+  type CategoryRow,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -45,6 +47,7 @@ import {
 } from "./types"
 import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
+import { setMailDragData } from "./mail-drag"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -53,7 +56,9 @@ type Props = {
   messageAttachments: MessageAttachment[]
   reloadNotes: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
-  refreshList: () => void | Promise<void>
+  refreshList: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
+  categories: CategoryRow[]
+  reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage) => void
   onForward: (m: EmailMessage) => void
 }
@@ -65,6 +70,8 @@ export function MessageViewer(props: Props) {
     internalNotes,
     messageAttachments,
     reloadNotes,
+    reloadTags,
+    categories,
     refreshCurrentMessage,
     refreshList,
     onReply,
@@ -112,9 +119,9 @@ export function MessageViewer(props: Props) {
 
   const handleRestore = async () => {
     await invokeIpc(IPCChannels.Email.RestoreMessage, selectedMessage.id)
-    toast.success("Wiederhergestellt")
-    await refreshList()
-    setSelectedMessage(null)
+    toast.success("Wiederhergestellt (vorheriger Ordner)")
+    await refreshCurrentMessage()
+    await refreshList({ preserveSelection: true })
   }
 
   const handleArchive = async () => {
@@ -136,7 +143,7 @@ export function MessageViewer(props: Props) {
     })
     toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
     await refreshCurrentMessage()
-    await refreshList()
+    await refreshList({ preserveSelection: true })
   }
 
   const handleToggleSpam = async () => {
@@ -339,7 +346,22 @@ export function MessageViewer(props: Props) {
             <ScrollArea className="flex-1">
               <div className="mx-auto max-w-3xl space-y-4 p-6">
                 <div className="space-y-1">
-                  <h2 className="text-xl font-semibold leading-tight tracking-tight">
+                  <h2
+                    className={cn(
+                      "text-xl font-semibold leading-tight tracking-tight",
+                      selectedMessage.uid >= 0 && "cursor-grab active:cursor-grabbing",
+                    )}
+                    draggable={selectedMessage.uid >= 0}
+                    onDragStart={(e) => {
+                      if (selectedMessage.uid < 0) return
+                      setMailDragData(e.dataTransfer, selectedMessage.id)
+                    }}
+                    title={
+                      selectedMessage.uid >= 0
+                        ? "In einen Ordner in der Seitenleiste ziehen"
+                        : undefined
+                    }
+                  >
                     {selectedMessage.subject || "(Ohne Betreff)"}
                   </h2>
                   {isOutboundHeld ? (
@@ -488,9 +510,11 @@ export function MessageViewer(props: Props) {
           {metadataPanelOpen ? (
             <MessageMetadataPanel
               teamMembers={teamMembers}
+              categories={categories}
               messageTags={messageTags}
               internalNotes={internalNotes}
               reloadNotes={reloadNotes}
+              reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
             />
           ) : null}

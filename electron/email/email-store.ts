@@ -909,6 +909,14 @@ export function addMessageTag(messageId: number, tag: string): void {
     .run(messageId, t);
 }
 
+export function removeMessageTag(messageId: number, tag: string): void {
+  const t = tag.trim();
+  if (!t) return;
+  getDb()
+    .prepare(`DELETE FROM ${EMAIL_MESSAGE_TAGS_TABLE} WHERE message_id = ? AND tag = ?`)
+    .run(messageId, t);
+}
+
 export function setOutboundHold(messageId: number, hold: boolean, reason: string | null): void {
   getDb()
     .prepare(
@@ -1009,10 +1017,107 @@ export function listConversationMessagesForScope(
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
 
+type TrashSnapshotRow = {
+  archived: number;
+  is_spam: number;
+  folder_kind: string;
+  trash_prev_archived: number | null;
+  trash_prev_is_spam: number | null;
+  trash_prev_folder_kind: string | null;
+};
+
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {
+  const row = getDb()
+    .prepare(
+      `SELECT archived, is_spam, folder_kind, trash_prev_archived, trash_prev_is_spam, trash_prev_folder_kind
+       FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`,
+    )
+    .get(messageId) as TrashSnapshotRow | undefined;
+  if (!row) return;
+
+  if (deleted) {
+    getDb()
+      .prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE}
+         SET soft_deleted = 1,
+             trash_prev_archived = ?,
+             trash_prev_is_spam = ?,
+             trash_prev_folder_kind = ?
+         WHERE id = ?`,
+      )
+      .run(row.archived ?? 0, row.is_spam ?? 0, row.folder_kind ?? 'inbox', messageId);
+    return;
+  }
+
+  const archived = row.trash_prev_archived ?? row.archived ?? 0;
+  const isSpam = row.trash_prev_is_spam ?? row.is_spam ?? 0;
+  const folderKind = row.trash_prev_folder_kind ?? row.folder_kind ?? 'inbox';
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = ? WHERE id = ?`)
-    .run(deleted ? 1 : 0, messageId);
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET soft_deleted = 0,
+           archived = ?,
+           is_spam = ?,
+           folder_kind = ?,
+           trash_prev_archived = NULL,
+           trash_prev_is_spam = NULL,
+           trash_prev_folder_kind = NULL
+       WHERE id = ?`,
+    )
+    .run(archived, isSpam, folderKind, messageId);
+}
+
+/** Move a message into a mail sidebar view (inbox, archive, spam, trash). */
+export function moveMessageToMailView(messageId: number, view: AccountMailView): void {
+  if (view === 'trash') {
+    setMessageSoftDeleted(messageId, true);
+    return;
+  }
+  const row = getEmailMessageById(messageId);
+  if (!row) throw new Error('Nachricht nicht gefunden');
+  if (row.uid < 0 && !row.pop3_uidl) {
+    throw new Error('Entwürfe können nicht per Ordner verschoben werden');
+  }
+
+  switch (view) {
+    case 'inbox':
+      getDb()
+        .prepare(
+          `UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET soft_deleted = 0, archived = 0, is_spam = 0,
+               folder_kind = 'inbox',
+               trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
+           WHERE id = ?`,
+        )
+        .run(messageId);
+      break;
+    case 'archived':
+      getDb()
+        .prepare(
+          `UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET soft_deleted = 0, archived = 1, is_spam = 0,
+               trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
+           WHERE id = ?`,
+        )
+        .run(messageId);
+      break;
+    case 'spam':
+      getDb()
+        .prepare(
+          `UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET soft_deleted = 0, archived = 0, is_spam = 1,
+               trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
+           WHERE id = ?`,
+        )
+        .run(messageId);
+      break;
+    case 'sent':
+    case 'drafts':
+    case 'all':
+      throw new Error('Dieser Ordner unterstützt kein Verschieben per Drag & Drop');
+    default:
+      break;
+  }
 }
 
 export function markDraftAsSent(draftMessageId: number): void {

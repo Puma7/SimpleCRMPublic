@@ -52,5 +52,18 @@ export function useMessageMetadata() {
     )
   }
 
-  return { messageTags, internalNotes, messageAttachments, reloadNotes }
+  const reloadTags = async () => {
+    if (!selectedMessage || !hasElectron()) return
+    setMessageTags(
+      await invokeIpc<string[]>(IPCChannels.Email.ListMessageTags, selectedMessage.id),
+    )
+  }
+
+  return {
+    messageTags,
+    internalNotes,
+    messageAttachments,
+    reloadNotes,
+    reloadTags,
+  }
 }

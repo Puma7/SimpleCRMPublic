@@ -174,6 +174,21 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: recordArray,
   });
   set(IPCChannels.Email.ListMessageTags, { payload: positiveInt, result: z.array(z.string()) });
+  set(IPCChannels.Email.AddMessageTag, {
+    payload: z.object({ messageId: positiveInt, tag: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.RemoveMessageTag, {
+    payload: z.object({ messageId: positiveInt, tag: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.MoveMessageToView, {
+    payload: z.object({
+      messageId: positiveInt,
+      view: z.enum(['inbox', 'sent', 'archived', 'drafts', 'spam', 'trash']),
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.SoftDeleteMessage, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.RestoreMessage, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.SetMessageArchived, {
@@ -305,6 +320,30 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.UpdateCategory, {
+    payload: z.object({
+      categoryId: positiveInt,
+      name: nonEmptyString.optional(),
+      parentId: z.number().int().positive().nullable().optional(),
+      sortOrder: z.number().int().optional(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.DeleteCategory, {
+    payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.SetMessageCategory, {
+    payload: z.object({
+      messageId: positiveInt,
+      categoryId: z.number().int().positive().nullable(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetMessageCategory, {
+    payload: positiveInt,
+    result: z.object({ categoryId: z.number().int().positive().nullable() }),
+  });
   set(IPCChannels.Email.CategoryCounts, {
     payload: mailAccountScopeSchema,
     result: z.array(
@@ -323,6 +362,14 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.ListInternalNotes, { payload: positiveInt, result: recordArray });
   set(IPCChannels.Email.AddInternalNote, {
     payload: z.object({ messageId: positiveInt, body: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.UpdateInternalNote, {
+    payload: z.object({ noteId: positiveInt, body: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.DeleteInternalNote, {
+    payload: positiveInt,
     result: standardResult,
   });
   set(IPCChannels.Email.ListCannedResponses, { payload: voidPayload, result: recordArray });

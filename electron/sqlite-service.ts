@@ -511,6 +511,18 @@ function runMigrations() {
                     mcn = readMsgCols2();
                 }
             }
+            const trashSnap = [
+                { name: 'trash_prev_archived', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_archived INTEGER` },
+                { name: 'trash_prev_is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_is_spam INTEGER` },
+                { name: 'trash_prev_folder_kind', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_folder_kind TEXT` },
+            ];
+            for (const col of trashSnap) {
+                if (!mcn.has(col.name)) {
+                    console.log(`Adding ${col.name} to email_messages...`);
+                    db.exec(col.sql);
+                    mcn = readMsgCols2();
+                }
+            }
         }
 
         const wfTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_WORKFLOWS_TABLE);
