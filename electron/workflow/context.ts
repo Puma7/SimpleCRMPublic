@@ -15,6 +15,27 @@ function extractAddressList(json: string | null): string {
   }
 }
 
+/** Metadata-only context for GDPR-conscious KI nodes (no body_text). */
+export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
+  const fromAddr = extractAddressList(row.from_json);
+  const toAddr = extractAddressList(row.to_json);
+  const ccAddr = extractAddressList(row.cc_json);
+  const sub = row.subject ?? '';
+  const snip = row.snippet ?? '';
+  const att = attachmentContextFromJson(row.attachments_json, row.has_attachments);
+  const metaCombined = [sub, snip, fromAddr, toAddr, ccAddr].join('\n');
+  return {
+    subject: sub,
+    body_text: '',
+    snippet: snip,
+    from_address: fromAddr,
+    to_address: toAddr,
+    cc_address: ccAddr,
+    combined_text: metaCombined,
+    ...att,
+  };
+}
+
 export function buildStringContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
   const fromAddr = extractAddressList(row.from_json);
   const toAddr = extractAddressList(row.to_json);

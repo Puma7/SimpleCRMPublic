@@ -116,6 +116,172 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplateDto[] = [
     } as WorkflowGraphDocument,
   },
   {
+    id: 'inbound-spam-ai',
+    name: 'Eingehend: KI-Spam-Pipeline (DSGVO)',
+    description:
+      'Absender-Filter (Whitelist/Blacklist/PayPal/Amazon) → KI-Spam-Score nur Metadaten → Schwellwert → Spam markieren.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'sf1',
+          type: 'registry',
+          data: { nodeType: 'email.sender_filter', config: { useGlobalLists: true, useBuiltinTrusted: true } },
+        },
+        {
+          id: 'tag_trusted',
+          type: 'registry',
+          data: { nodeType: 'email.tag', config: { tag: 'pre-filter-trusted' } },
+        },
+        {
+          id: 'spam_bl',
+          type: 'registry',
+          data: { nodeType: 'email.mark_spam', config: { spam: true, tag: 'blacklist', moveImap: false } },
+        },
+        {
+          id: 'ai_score',
+          type: 'registry',
+          data: { nodeType: 'ai.spam_score', config: { contextMode: 'metadata' } },
+        },
+        {
+          id: 'th1',
+          type: 'registry',
+          data: { nodeType: 'logic.threshold', config: { variable: 'ai.spam_score', operator: 'gte', value: 70 } },
+        },
+        {
+          id: 'spam_ai',
+          type: 'registry',
+          data: { nodeType: 'email.mark_spam', config: { spam: true, tag: 'ki-spam', moveImap: false } },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'sf1' },
+        { id: 'e_wl', source: 'sf1', target: 'tag_trusted', label: 'whitelist' },
+        { id: 'e_bl', source: 'sf1', target: 'spam_bl', label: 'blacklist' },
+        { id: 'e_def', source: 'sf1', target: 'ai_score', label: 'default' },
+        { id: 'e_ai', source: 'ai_score', target: 'th1' },
+        { id: 'e_yes', source: 'th1', target: 'spam_ai', label: 'yes' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'inbound-invoice-forward',
+    name: 'Eingehend: Rechnung weiterleiten',
+    description: 'Rechnung erkennen (Betreff/PDF) → Kategorie → Kopie an Buchhaltung.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          data: {
+            field: 'subject',
+            op: 'contains',
+            value: 'Rechnung',
+            caseInsensitive: true,
+          },
+        },
+        {
+          id: 'c2',
+          type: 'condition',
+          data: {
+            field: 'attachment_names',
+            op: 'contains',
+            value: '.pdf',
+            caseInsensitive: true,
+          },
+        },
+        { id: 'a1', type: 'action', data: { actionType: 'tag', tag: 'rechnung' } },
+        { id: 'a2', type: 'action', data: { actionType: 'set_category', path: 'Rechnungen' } },
+        {
+          id: 'fwd',
+          type: 'registry',
+          data: {
+            nodeType: 'email.forward_copy',
+            config: { to: 'buchhaltung@example.com' },
+          },
+        },
+        {
+          id: 'cls',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.classify',
+            config: { labels: 'Rechnung,Support,Vertrieb,Spam', contextMode: 'metadata' },
+          },
+        },
+        {
+          id: 'sw1',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'ai.class', cases: 'rechnung,support,vertrieb' } },
+        },
+        {
+          id: 'cat_r',
+          type: 'action',
+          data: { actionType: 'set_category', path: 'Buchhaltung/Rechnungen' },
+        },
+        {
+          id: 'cat_s',
+          type: 'action',
+          data: { actionType: 'set_category', path: 'Support' },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'c2', label: 'ja' },
+        { id: 'e2', source: 'c2', target: 'a1', label: 'ja' },
+        { id: 'e3', source: 'a1', target: 'a2' },
+        { id: 'e4', source: 'a2', target: 'fwd' },
+        { id: 'e5', source: 't1', target: 'cls' },
+        { id: 'e6', source: 'cls', target: 'sw1' },
+        { id: 'e7', source: 'sw1', target: 'cat_r', label: 'rechnung' },
+        { id: 'e8', source: 'sw1', target: 'cat_s', label: 'support' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'inbound-routing-ki',
+    name: 'Eingehend: Themen & Mitarbeiter (KI)',
+    description: 'KI-Klassifizierung (Metadaten) → Schalter → Kategorie / Zuweisung.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'cls',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.classify',
+            config: { labels: 'Rechnung,Support,Vertrieb,Spam', contextMode: 'metadata' },
+          },
+        },
+        {
+          id: 'sw1',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'ai.class', cases: 'rechnung,support,vertrieb' } },
+        },
+        { id: 'cat_r', type: 'action', data: { actionType: 'set_category', path: 'Buchhaltung/Rechnungen' } },
+        { id: 'cat_s', type: 'action', data: { actionType: 'set_category', path: 'Support' } },
+        {
+          id: 'asg',
+          type: 'registry',
+          data: { nodeType: 'email.assign', config: { teamMemberId: '' } },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'cls' },
+        { id: 'e1', source: 'cls', target: 'sw1' },
+        { id: 'e2', source: 'sw1', target: 'cat_r', label: 'rechnung' },
+        { id: 'e3', source: 'sw1', target: 'cat_s', label: 'support' },
+        { id: 'e4', source: 'sw1', target: 'asg', label: 'vertrieb' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'crm-task-from-mail',
     name: 'CRM: Aufgabe aus E-Mail',
     description: 'Legt Follow-up-Aufgabe an wenn Kunde verknüpft.',

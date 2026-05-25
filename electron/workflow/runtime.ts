@@ -207,6 +207,10 @@ async function walkGraph(
       port = result.port === 'no' ? 'no' : 'yes';
     } else if (regType === 'logic.switch') {
       port = String(result.port ?? 'default');
+    } else if (regType === 'logic.threshold') {
+      port = result.port === 'no' ? 'no' : 'yes';
+    } else if (regType === 'email.sender_filter') {
+      port = String(result.port ?? 'default');
     } else if (result.port === 'error') {
       port = 'no';
     } else if (result.port) {

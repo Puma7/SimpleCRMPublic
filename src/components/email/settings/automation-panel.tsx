@@ -15,6 +15,9 @@ import { hasElectron, invokeIpc } from "../types"
 export function AutomationPanel() {
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
+  const [senderWhitelist, setSenderWhitelist] = useState("")
+  const [senderBlacklist, setSenderBlacklist] = useState("")
+  const [spamScoreThreshold, setSpamScoreThreshold] = useState("70")
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
   const [apiEnabled, setApiEnabled] = useState(false)
   const [apiPort, setApiPort] = useState("3847")
@@ -30,11 +33,18 @@ export function AutomationPanel() {
     }
     setLoading(true)
     try {
-      const wf = await invokeIpc<{ imapDeleteOptIn: boolean; httpAllowlist: string }>(
-        IPCChannels.Email.GetWorkflowAutomationSettings,
-      )
+      const wf = await invokeIpc<{
+        imapDeleteOptIn: boolean
+        httpAllowlist: string
+        senderWhitelist: string
+        senderBlacklist: string
+        spamScoreThreshold: string
+      }>(IPCChannels.Email.GetWorkflowAutomationSettings)
       setImapDeleteOptIn(wf.imapDeleteOptIn)
       setHttpAllowlist(wf.httpAllowlist)
+      setSenderWhitelist(wf.senderWhitelist ?? "")
+      setSenderBlacklist(wf.senderBlacklist ?? "")
+      setSpamScoreThreshold(wf.spamScoreThreshold ?? "70")
 
       const api = await invokeIpc<AutomationApiSettings>(IPCChannels.Automation.GetSettings)
       setApiSettings(api)
@@ -56,6 +66,9 @@ export function AutomationPanel() {
     await invokeIpc(IPCChannels.Email.SetWorkflowAutomationSettings, {
       imapDeleteOptIn,
       httpAllowlist,
+      senderWhitelist,
+      senderBlacklist,
+      spamScoreThreshold,
     })
     toast.success("Workflow-Optionen gespeichert.")
   }
@@ -210,8 +223,55 @@ export function AutomationPanel() {
         <div>
           <h3 className="text-base font-semibold">Workflow-Automatisierung (intern)</h3>
           <p className="text-sm text-muted-foreground">
-            Optionen für IMAP-Löschung und ausgehende HTTP-Knoten in SimpleCRM-Workflows.
+            Absender-Listen, Spam-Schwellwert, IMAP-Löschung und HTTP-Knoten für Workflows (z. B.
+            KI-Spam-Pipeline).
           </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="sender-whitelist">Absender-Whitelist</Label>
+          <p className="text-xs text-muted-foreground">
+            Kommagetrennt: E-Mail oder Domain (z. B. paypal.com, buchhaltung@firma.de). Diese Mails
+            überspringen die KI-Spam-Prüfung im Standard-Workflow.
+          </p>
+          <Input
+            id="sender-whitelist"
+            value={senderWhitelist}
+            disabled={loading}
+            onChange={(e) => setSenderWhitelist(e.target.value)}
+            placeholder="paypal.com, amazon.de"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="sender-blacklist">Absender-Blacklist</Label>
+          <p className="text-xs text-muted-foreground">
+            Absender, die sofort als Spam behandelt werden (vor der KI).
+          </p>
+          <Input
+            id="sender-blacklist"
+            value={senderBlacklist}
+            disabled={loading}
+            onChange={(e) => setSenderBlacklist(e.target.value)}
+            placeholder="spam.example.com"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="spam-threshold">Spam-Schwellwert (1–100)</Label>
+          <p className="text-xs text-muted-foreground">
+            Empfohlener Grenzwert für den Knoten „Schwellwert“ nach „KI-Spam-Wahrscheinlichkeit“ (z. B.
+            70 = ab 70 als Spam markieren).
+          </p>
+          <Input
+            id="spam-threshold"
+            type="number"
+            min={1}
+            max={100}
+            value={spamScoreThreshold}
+            disabled={loading}
+            onChange={(e) => setSpamScoreThreshold(e.target.value)}
+          />
         </div>
 
         <div className="flex items-center justify-between gap-4 rounded-lg border p-4">

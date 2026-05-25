@@ -75,6 +75,34 @@ export function registerLogicNodes(register: Reg): void {
   });
 
   register({
+    type: 'logic.threshold',
+    label: 'Schwellwert',
+    category: 'logic',
+    canvasType: 'registry',
+    description: 'Vergleicht eine Workflow-Variable (z. B. ai.spam_score) mit einem Grenzwert.',
+    defaultConfig: { variable: 'ai.spam_score', operator: 'gte', value: 70 },
+    execute: async (ctx, config) => {
+      const field = String(config.variable ?? 'ai.spam_score');
+      const raw = ctx.variables[field];
+      const num = typeof raw === 'number' ? raw : parseFloat(String(raw ?? ''));
+      if (!Number.isFinite(num)) {
+        return { status: 'error', message: `Variable ${field} ist keine Zahl` };
+      }
+      const op = String(config.operator ?? 'gte') === 'lte' ? 'lte' : 'gte';
+      const thresh = Number(config.value ?? 70);
+      if (!Number.isFinite(thresh)) {
+        return { status: 'error', message: 'Schwellwert ungültig' };
+      }
+      const match = op === 'gte' ? num >= thresh : num <= thresh;
+      return {
+        status: 'ok',
+        port: match ? 'yes' : 'no',
+        variables: { 'threshold.matched': match },
+      };
+    },
+  });
+
+  register({
     type: 'logic.switch',
     label: 'Schalter',
     category: 'logic',

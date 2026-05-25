@@ -2,7 +2,8 @@ import { listAiPrompts } from '../../email/email-crm-store';
 import { runChatCompletion } from '../../email/email-openai';
 import { addMessageTag, createComposeDraft, setOutboundHold } from '../../email/email-store';
 // createComposeDraft used by ai.agent
-import { interpolateTemplate } from '../context';
+import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
+import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
 import { searchKnowledgeChunks } from '../knowledge-base';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
 
@@ -71,15 +72,79 @@ export function registerAiNodes(register: Reg): void {
   });
 
   register({
+    type: 'ai.spam_score',
+    label: 'KI-Spam-Wahrscheinlichkeit',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Bewertet Spam 1–100 (nur Metadaten, kein E-Mail-Volltext). Antwort der KI muss eine Zahl sein.',
+    defaultConfig: {
+      contextMode: 'metadata',
+      thresholdHint: 70,
+    },
+    execute: async (ctx, config) => {
+      if (!ctx.message) return { status: 'skipped', message: 'Keine Nachricht' };
+      const mode = String(config.contextMode ?? 'metadata');
+      const strings =
+        mode === 'full'
+          ? ctx.strings
+          : buildMetadataContextFromMessage(ctx.message);
+      const user = formatMetadataForSpamPrompt({
+        subject: strings.subject,
+        snippet: strings.snippet,
+        from_address: strings.from_address,
+        to_address: strings.to_address,
+        cc_address: strings.cc_address,
+        has_attachments: strings.has_attachments,
+        attachment_names: strings.attachment_names,
+        attachment_types: strings.attachment_types,
+      });
+      const custom = String(config.customPrompt ?? '').trim();
+      const prompt = custom
+        ? interpolateTemplate(custom, { ...ctx, strings })
+        : user;
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          message: 'dry-run spam_score',
+          variables: { 'ai.spam_score': 1, 'ai.spam_context': mode },
+        };
+      }
+      try {
+        const out = await runChatCompletion(
+          'Du bewertest ob eine E-Mail Spam oder unerwünscht ist. Antworte NUR mit einer ganzen Zahl von 1 bis 100. 1 = sicher kein Spam, 100 = sehr wahrscheinlich Spam. Kein anderer Text, keine Erklärung.',
+          prompt,
+        );
+        ctx.ai.lastResponse = out;
+        const score = parseSpamScore(out);
+        return {
+          status: 'ok',
+          variables: {
+            'ai.spam_score': score,
+            'ai.spam_context': mode,
+          },
+        };
+      } catch (e) {
+        return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+
+  register({
     type: 'ai.classify',
     label: 'KI-Klassifizierung',
     category: 'ai',
     canvasType: 'registry',
-    defaultConfig: { labels: 'Rechnung,Support,Spam' },
+    defaultConfig: { labels: 'Rechnung,Support,Spam', contextMode: 'metadata' },
     execute: async (ctx, config) => {
       const labels = String(config.labels ?? '').split(',').map((s) => s.trim()).filter(Boolean);
       if (labels.length === 0) return { status: 'skipped' };
-      const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${ctx.strings.combined_text}`;
+      const mode = String(config.contextMode ?? 'metadata');
+      const text =
+        mode === 'full' || !ctx.message
+          ? ctx.strings.combined_text
+          : buildMetadataContextFromMessage(ctx.message).combined_text;
+      const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${text}`;
       if (ctx.dryRun) return { status: 'ok' };
       const out = await runChatCompletion('Du bist ein E-Mail-Klassifizierer.', prompt);
       ctx.ai.lastResponse = out;
