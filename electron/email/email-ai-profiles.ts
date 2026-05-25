@@ -13,7 +13,7 @@ const LEGACY_MIGRATED = 'email_ai_profiles_legacy_migrated';
 import {
   AI_PROVIDER_PRESETS,
   type AiProviderPresetId,
-} from '@shared/ai-provider-presets';
+} from '../../shared/ai-provider-presets';
 
 export type AiProviderPreset = AiProviderPresetId;
 
