@@ -26,6 +26,11 @@ export function useEmailMessages() {
   const [syncing, setSyncing] = useState(false)
   const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectedMessageIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    selectedMessageIdRef.current = selectedMessage?.id ?? null
+  }, [selectedMessage?.id])
 
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -46,7 +51,7 @@ export function useEmailMessages() {
       opts?: { preserveSelection?: boolean },
     ) => {
       if (!hasElectron()) return
-      const keepId = opts?.preserveSelection ? selectedMessage?.id : undefined
+      const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
       setLoadingMessages(true)
       try {
         let list: EmailMessage[]
@@ -83,7 +88,7 @@ export function useEmailMessages() {
         setLoadingMessages(false)
       }
     },
-    [setSelectedMessage, selectedMessage?.id],
+    [setSelectedMessage],
   )
 
   useEffect(() => {
