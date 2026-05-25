@@ -2,6 +2,8 @@
 
 Konkrete Erkenntnisse aus Design, Implementierung und QA — **kurz**, damit sie beim nächsten Refactor nicht verloren gehen.
 
+**Siehe auch:** [LEARNINGS.md](LEARNINGS.md) (Index), [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) (Workflows), [AGENT_HANDOFF.md](AGENT_HANDOFF.md) (AI-Kontinuität).
+
 ## Protokolle & Identität
 
 - **POP3-Message-Nummern** sind sitzungsabhängig. **Nie** allein als Datenbank-Schlüssel verwenden. Stabil: **UIDL** + eigene Spalte (`pop3_uidl`).
@@ -15,7 +17,14 @@ Konkrete Erkenntnisse aus Design, Implementierung und QA — **kurz**, damit sie
 ## Workflows & Sicherheit
 
 - **Outbound fail-open** bei Exceptions war ein Sicherheitsrisiko. **Fail-closed** mit Hold — aber: alle Workflows **trotzdem ausführen**, damit Logging und spätere Regeln nicht „stumm“ wegfallen.
+- **Outbound blockiert:** Entwurf bleibt lokal; `outbound_hold=1`; Warnbanner im Text; erscheint im **Posteingang** (nicht nur Entwürfe). Details: `email-outbound-review.ts`, [OUTBOUND_EMAIL_WORKFLOW.md](OUTBOUND_EMAIL_WORKFLOW.md).
+- **Ausgang prüfen (Compose):** IPC `validate-outbound` mit Dry-Run — darf Hold/Banner **nicht** persistieren.
 - **`forward_copy`:** Dedupe **vor** SMTP blockiert Retries nach SMTP-Fehler. Dedupe **nach** erfolgreichem Send ist robuster.
+
+## Posteingang-Liste & Held drafts
+
+- Inbox-SQL enthält ausnahmsweise Entwürfe mit `outbound_hold=1` (`uid < 0`), damit blockierte Sendungen sichtbar sind.
+- Outbound threading: `Message-ID`, `In-Reply-To`, `References` in `email-outbound-threading.ts` + `sendComposeDraft`.
 
 ## IMAP / Netzwerk
 

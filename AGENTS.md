@@ -2,6 +2,16 @@
 
 ## Cursor Cloud specific instructions
 
+### Documentation for AI continuity
+
+| Read first | Purpose |
+|------------|---------|
+| [`docs/AGENT_HANDOFF.md`](docs/AGENT_HANDOFF.md) | **Session handoff** — what was built, branch/PR, architecture, file map, open items |
+| [`docs/LEARNINGS.md`](docs/LEARNINGS.md) | Master learnings index |
+| [`docs/INDEX.md`](docs/INDEX.md) | Full documentation map |
+
+Domain: [`docs/DEVELOPER_EMAIL.md`](docs/DEVELOPER_EMAIL.md), [`docs/WORKFLOW_PHASES.md`](docs/WORKFLOW_PHASES.md).
+
 ### Project overview
 
 SimpleCRM is an Electron + React + TypeScript desktop CRM app. All data is stored locally in SQLite (`better-sqlite3`). There is no backend server; everything runs inside the Electron main process plus a Vite-served renderer.
