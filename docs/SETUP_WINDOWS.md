@@ -113,7 +113,7 @@ This starts **4 concurrent processes**:
 On first launch the app creates an empty SQLite database. You can:
 - Configure an **MSSQL connection** (for JTL sync) under **Settings**
 - Add **E-Mail accounts** under the **E-Mail** section
-- Optionally seed test data (see section 5)
+- Optionally seed test data (see section 6)
 
 ---
 
@@ -139,7 +139,94 @@ The NSIS installer is created in the `dist-build\` directory. Double-click the `
 
 ---
 
-## 5. Seed Test Data (Optional)
+## 5. Pull the Latest `main` Branch (While Testing)
+
+When you test SimpleCRM from a local clone, **new releases on GitHub do not replace your dev build automatically**. To run the newest code from `main`, pull from Git, reinstall dependencies if needed, and restart the app.
+
+> **Your data is kept.** Customers, e-mail, and settings live in `%APPDATA%\simplecrm\database.sqlite` (see section 7). Updating source code does not delete that database.
+
+### Before you pull
+
+1. **Stop the running app** — close the Electron window and press `Ctrl+C` in the terminal where `npm run electron:dev` is running.
+2. Open PowerShell in your clone folder, e.g. `Set-Location C:\Users\You\SimpleCRMPublic`.
+3. Optional: see whether you have local changes:
+
+```powershell
+git status
+```
+
+If you have uncommitted work you want to keep, stash it first:
+
+```powershell
+git stash push -m "WIP before main update"
+```
+
+### Option A — Test exactly what is on `main` (recommended for “latest stable”)
+
+```powershell
+git fetch origin
+git checkout main
+git pull origin main
+npm install --legacy-peer-deps
+npm run electron:dev
+```
+
+Use `npm run build` followed by `npm run electron:start` if you want to test the **production build** instead of hot-reload dev mode.
+
+### Option B — Stay on a feature branch but include latest `main`
+
+Use this when you test a PR branch but need current `main` merged in:
+
+```powershell
+git fetch origin
+git merge origin/main
+# Alternative (linear history): git rebase origin/main
+npm install --legacy-peer-deps
+npm run electron:dev
+```
+
+If Git reports merge conflicts, resolve them in your editor, then `git add .` and `git commit` (merge) or `git rebase --continue` (rebase).
+
+### After `npm install` (only if needed)
+
+Run these if install failed, native modules were upgraded, or Electron/Node versions changed:
+
+```powershell
+npx electron-rebuild -f -w better-sqlite3,keytar
+```
+
+If the app still behaves oddly after a big pull, do a clean rebuild:
+
+```powershell
+npm run build
+```
+
+### Restore stashed work
+
+```powershell
+git stash list
+git stash pop
+```
+
+### Installed `.exe` vs. git clone
+
+| How you run SimpleCRM | How to get the latest version |
+|----------------------|-------------------------------|
+| **Git clone** (`npm run electron:dev` / `electron:start`) | `git pull origin main` + `npm install` (this section) |
+| **Windows installer** from `dist-build\` | Use **Update** in the app (status bar / update UI). That uses `electron-updater` and GitHub releases published via `npm run electron:publish`. Dev folders are not updated that way. |
+
+To ship a new installer after pulling `main`:
+
+```powershell
+git pull origin main
+npm install --legacy-peer-deps
+npm run build
+npm run electron:build
+```
+
+---
+
+## 6. Seed Test Data (Optional)
 
 Populate the database with sample customers and products for testing:
 
@@ -159,7 +246,7 @@ npm run cleanup-db
 
 ---
 
-## 6. Where Data Is Stored
+## 7. Where Data Is Stored
 
 | Data | Location |
 |------|----------|
@@ -180,7 +267,7 @@ explorer "$env:APPDATA\simplecrm"
 
 ---
 
-## 7. Running Tests
+## 8. Running Tests
 
 ```powershell
 # All tests
@@ -198,7 +285,7 @@ npm run test:coverage
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 ### `node-gyp` / `better-sqlite3` build errors
 
@@ -278,10 +365,11 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ---
 
-## 9. Useful Commands Reference
+## 10. Useful Commands Reference
 
 | Command | Description |
 |---------|-------------|
+| `git pull origin main` | Update source to latest `main` (then `npm install`) |
 | `npm run electron:dev` | Start development mode (hot-reload) |
 | `npm run build` | Build renderer + main process |
 | `npm run electron:start` | Run the built app (no packaging) |
@@ -293,7 +381,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ---
 
-## 10. Project Structure (Quick Reference)
+## 11. Project Structure (Quick Reference)
 
 ```
 SimpleCRMPublic/
