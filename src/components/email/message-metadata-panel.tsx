@@ -22,7 +22,6 @@ import {
   type InternalNote,
   type TeamMember,
 } from "./types"
-import { isAllAccountsScope } from "./account-scope"
 import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
@@ -55,11 +54,8 @@ export function MessageMetadataPanel({
       setConversation([])
       return
     }
-    const accountId = isAllAccountsScope(selectedAccountId)
-      ? selectedMessage.account_id
-      : selectedAccountId
     void invokeIpc<EmailMessage[]>(IPCChannels.Email.ListConversationMessages, {
-      accountId,
+      accountId: selectedAccountId,
       messageId: selectedMessage.id,
       ticketCode: selectedMessage.ticket_code,
       customerId: selectedMessage.customer_id,

@@ -26,3 +26,14 @@ export function validateRecipientField(raw: string, label: string): { ok: true }
   }
   return { ok: true }
 }
+
+/** Canonical `{ value: [{ address, name? }] }` JSON for SQLite recipient columns. */
+export function recipientJsonFromField(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const addrs = extractEmailAddressesFromRecipientField(trimmed)
+  if (addrs.length === 0) return null
+  return JSON.stringify({
+    value: addrs.map((address) => ({ address })),
+  })
+}

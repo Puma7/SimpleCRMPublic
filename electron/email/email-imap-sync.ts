@@ -74,7 +74,12 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
 
       const storedStr = folderRow ? storedUidValidityString(folderRow) : null;
       if (folderRow && uidValidityMismatch(storedStr, uidValidityStr)) {
-        getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ?`).run(folderRow.id);
+        // Keep local compose drafts (negative uid) — only drop synced server mail.
+        getDb()
+          .prepare(
+            `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ? AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+          )
+          .run(folderRow.id);
         lastUid = 0;
       }
 
@@ -103,6 +108,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
 
       let maxProcessed = lastUid;
       for (const uid of toFetch) {
+        try {
         const msg = await client.fetchOne(
           String(uid),
           { source: true, uid: true, flags: true, threadId: true },
@@ -162,6 +168,13 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         }
         fetched += 1;
         maxProcessed = Math.max(maxProcessed, uid);
+        } catch (perMsgErr) {
+          console.warn(
+            `[imap-sync] UID ${uid} account ${accountId} skipped:`,
+            perMsgErr instanceof Error ? perMsgErr.message : perMsgErr,
+          );
+          maxProcessed = Math.max(maxProcessed, uid);
+        }
       }
 
       if (toFetch.length > 0) {

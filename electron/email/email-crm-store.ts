@@ -322,7 +322,7 @@ export function searchMessagesForAllAccounts(
       }
     }
   }
-  const term = `%${q.trim().replace(/%/g, '\\%')}%`;
+  const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
@@ -365,7 +365,7 @@ export function searchMessagesForAccount(
       }
     }
   }
-  const term = `%${q.trim().replace(/%/g, '\\%')}%`;
+  const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m

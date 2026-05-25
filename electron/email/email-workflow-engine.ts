@@ -24,6 +24,7 @@ import {
   parseWorkflowDefinition,
 } from './email-workflow-types';
 import { listAiPrompts } from './email-crm-store';
+import { addressesFromRecipientJson } from './email-parse-utils';
 import { runChatCompletion } from './email-openai';
 import { sendSmtpForAccount } from './email-smtp';
 
@@ -56,13 +57,7 @@ export function outboundPayloadFromMessage(
 }
 
 function extractAddressList(json: string | null): string {
-  if (!json) return '';
-  try {
-    const parsed = JSON.parse(json) as { value?: { address?: string }[] };
-    return parsed?.value?.map((v) => v.address ?? '').filter(Boolean).join(', ') ?? '';
-  } catch {
-    return '';
-  }
+  return addressesFromRecipientJson(json);
 }
 
 function buildInboundContext(row: EmailMessageRow) {
@@ -316,13 +311,15 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
   const workflows = listWorkflowsByTrigger('inbound');
   for (const wf of workflows) {
     if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    let markApplied = false;
     try {
-      await executeWorkflowForTrigger({
+      const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: 'inbound',
         direction: 'inbound',
         message: row,
       });
+      if (r.status === 'ok') markApplied = true;
     } catch (e) {
       insertWorkflowRun({
         workflowId: wf.id,
@@ -332,7 +329,7 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    markWorkflowAppliedToMessage(messageId, wf.id);
+    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
 }
 
@@ -344,13 +341,15 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   const workflows = listWorkflowsByTrigger('draft_created');
   for (const wf of workflows) {
     if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    let markApplied = false;
     try {
-      await executeWorkflowForTrigger({
+      const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: 'draft_created',
         direction: 'draft_created',
         message: row,
       });
+      if (r.status === 'ok') markApplied = true;
     } catch (e) {
       insertWorkflowRun({
         workflowId: wf.id,
@@ -360,7 +359,7 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    markWorkflowAppliedToMessage(messageId, wf.id);
+    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
 }
 
@@ -373,11 +372,13 @@ export async function evaluateOutboundWorkflows(
 }> {
   const dryRun = options?.dryRun === true;
   if (!payload.messageId || payload.messageId <= 0) {
-    return { allowed: true, reason: null };
+    if (dryRun) return { allowed: true, reason: null };
+    return { allowed: false, reason: 'Kein gültiger Entwurf für die Ausgangsprüfung' };
   }
   const row = getEmailMessageById(payload.messageId);
   if (!row) {
-    return { allowed: true, reason: null };
+    if (dryRun) return { allowed: true, reason: null };
+    return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 
   if (!dryRun) {

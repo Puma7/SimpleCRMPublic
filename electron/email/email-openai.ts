@@ -43,6 +43,7 @@ export async function runChatCompletion(
       ],
       temperature: 0.3,
     }),
+    signal: AbortSignal.timeout(90_000),
   });
   if (!res.ok) {
     const t = await res.text();
@@ -72,6 +73,7 @@ export async function runEmbedding(text: string, profileId?: number | null): Pro
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({ model: embeddingModel, input }),
+      signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { data?: { embedding?: number[] }[] };

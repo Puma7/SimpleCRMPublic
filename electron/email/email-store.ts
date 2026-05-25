@@ -873,9 +873,25 @@ export function listConversationMessages(
     limit?: number;
   },
 ): EmailMessageRow[] {
+  return listConversationMessagesForScope(accountId, opts);
+}
+
+export function listConversationMessagesForScope(
+  accountScope: number | 'all',
+  opts: {
+    excludeMessageId?: number;
+    ticketCode?: string | null;
+    customerId?: number | null;
+    limit?: number;
+  },
+): EmailMessageRow[] {
   const limit = Math.min(opts.limit ?? 20, 50);
-  const clauses: string[] = ['m.account_id = ?', 'm.soft_deleted = 0'];
-  const params: (string | number)[] = [accountId];
+  const clauses: string[] = ['m.soft_deleted = 0'];
+  const params: (string | number)[] = [];
+  if (accountScope !== 'all') {
+    clauses.push('m.account_id = ?');
+    params.push(accountScope);
+  }
   if (opts.excludeMessageId != null) {
     clauses.push('m.id != ?');
     params.push(opts.excludeMessageId);

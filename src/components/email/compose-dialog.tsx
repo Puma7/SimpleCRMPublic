@@ -81,7 +81,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
   // Re-init when the intent actually changes (user clicks Reply on another mail),
   // but NOT when unrelated context values (e.g. selectedAccountId) change while
   // the dialog is open — that would clobber typed content.
-  const initialisedForIntentRef = useRef<ComposeIntent | null>(null)
+  const initialisedDraftKeyRef = useRef<string | null>(null)
   // Guards against Radix firing onOpenChange(false) multiple times (e.g. rapid
   // ESC, or close-button double-click) which could otherwise kick off two
   // parallel saveDraft → closeDialog chains with stale closures.
@@ -89,21 +89,26 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
 
   useEffect(() => {
     if (!isOpen) {
-      initialisedForIntentRef.current = null
+      initialisedDraftKeyRef.current = null
       return
     }
-    if (initialisedForIntentRef.current === composeIntent) return
     let messageAccountId: number | undefined
     if (composeIntent.mode === "reply" || composeIntent.mode === "forward") {
       messageAccountId = composeIntent.message.account_id
     }
-    const accountIdAtOpen = resolveComposeAccountId(selectedAccountId, {
+    const resolvedAccountId = resolveComposeAccountId(selectedAccountId, {
       messageAccountId,
       firstAccountId: accounts[0]?.id,
     })
+    const accountIdAtOpen =
+      composeIntent.mode === "new" && composeAccountId != null
+        ? composeAccountId
+        : resolvedAccountId
+    const draftInitKey = `${composeIntent.mode}:${accountIdAtOpen ?? ""}:${composeIntent.mode === "draft" ? composeIntent.messageId : ""}`
+    if (initialisedDraftKeyRef.current === draftInitKey) return
     if (!hasElectron() || accountIdAtOpen == null) return
     setComposeAccountId(accountIdAtOpen)
-    initialisedForIntentRef.current = composeIntent
+    initialisedDraftKeyRef.current = draftInitKey
     let cancelled = false
     void (async () => {
       try {
@@ -195,7 +200,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, composeAccountId])
 
   const closeDialog = () => {
     setComposeIntent({ mode: "closed" })
@@ -423,6 +428,33 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
               </SelectContent>
             </Select>
           </div>
+
+          {accounts.length > 1 && composeIntent.mode === "new" && composeAccountId != null ? (
+            <div className="grid grid-cols-[60px_1fr] items-center gap-x-3">
+              <Label className="justify-self-end text-xs text-muted-foreground">Von</Label>
+              <Select
+                value={String(composeAccountId)}
+                onValueChange={(v) => {
+                  const id = parseInt(v, 10)
+                  if (!Number.isFinite(id)) return
+                  setComposeAccountId(id)
+                  setDraftId(null)
+                  initialisedDraftKeyRef.current = null
+                }}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Konto" />
+                </SelectTrigger>
+                <SelectContent>
+                  {accounts.map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>
+                      {a.display_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
 
           <div className="grid grid-cols-[60px_1fr] items-center gap-x-3 gap-y-2">
             <Label className="justify-self-end text-xs text-muted-foreground">An</Label>

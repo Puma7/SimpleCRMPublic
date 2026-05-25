@@ -1,6 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import {
+  extractEmailAddressesFromRecipientField,
+  recipientJsonFromField,
+  validateRecipientField,
+} from '../../shared/email-recipient-parse';
+import {
   getEmailAccountById,
   getEmailMessageById,
   markDraftAsSent,
@@ -14,10 +19,59 @@ import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
 } from './email-outbound-threading';
-import { getDb } from '../sqlite-service';
+import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
 const MAX_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+function smtpCommittedKey(draftMessageId: number): string {
+  return `email_compose_smtp_ok:${draftMessageId}`;
+}
+
+function isSmtpCommitted(draftMessageId: number): boolean {
+  return getSyncInfo(smtpCommittedKey(draftMessageId)) === '1';
+}
+
+function markSmtpCommitted(draftMessageId: number): void {
+  setSyncInfo(smtpCommittedKey(draftMessageId), '1');
+}
+
+function clearSmtpCommitted(draftMessageId: number): void {
+  setSyncInfo(smtpCommittedKey(draftMessageId), '');
+}
+
+async function finalizeSentDraft(input: {
+  accountId: number;
+  draftMessageId: number;
+  from: string;
+  to: string;
+  cc?: string;
+  subject: string;
+  text: string;
+  html?: string;
+  messageId: string;
+  inReplyTo?: string;
+  references?: string;
+}): Promise<void> {
+  try {
+    await appendSentToImap({
+      accountId: input.accountId,
+      from: input.from,
+      to: input.to,
+      cc: input.cc,
+      subject: input.subject,
+      text: input.text,
+      html: input.html,
+      messageId: input.messageId,
+      inReplyTo: input.inReplyTo,
+      references: input.references,
+    });
+  } catch {
+    /* Sent-Ordner optional */
+  }
+  markDraftAsSent(input.draftMessageId);
+  clearSmtpCommitted(input.draftMessageId);
+}
 
 export async function sendComposeDraft(input: {
   accountId: number;
@@ -34,25 +88,34 @@ export async function sendComposeDraft(input: {
   if (!draft || draft.uid >= 0) {
     return { ok: false, error: 'Ungültiger Entwurf' };
   }
+  if (draft.folder_kind === 'sent') {
+    return { ok: true };
+  }
+  if (draft.account_id !== input.accountId) {
+    return { ok: false, error: 'Entwurf gehört zu einem anderen Konto' };
+  }
+
+  const toCheck = validateRecipientField(input.to, 'An');
+  if (!toCheck.ok) {
+    return { ok: false, error: toCheck.error };
+  }
+  if (input.cc?.trim()) {
+    const ccCheck = validateRecipientField(input.cc, 'Cc');
+    if (!ccCheck.ok) {
+      return { ok: false, error: ccCheck.error };
+    }
+  }
 
   const html = input.bodyHtml ?? draft.body_html ?? undefined;
-  const toJson =
-    input.to.trim() ?
-      JSON.stringify({
-        value: input.to.split(/[,;]+/).map((a) => ({ address: a.trim() })).filter((x) => x.address),
-      })
-    : null;
+  const toJson = recipientJsonFromField(input.to);
+  const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
 
   updateComposeDraft(input.draftMessageId, {
     subject: input.subject,
     bodyText: input.bodyText,
     bodyHtml: html ?? null,
     toJson,
-    ccJson: input.cc?.trim()
-      ? JSON.stringify({
-          value: input.cc.split(/[,;]+/).map((a) => ({ address: a.trim() })).filter((x) => x.address),
-        })
-      : null,
+    ccJson,
   });
 
   const { clearOutboundHoldForResend } = await import('./email-outbound-review');
@@ -99,7 +162,6 @@ export async function sendComposeDraft(input: {
   const acc = getEmailAccountById(input.accountId);
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
-  const outboundMessageId = generateOutboundMessageId(acc.email_address);
   const threadHeaders = buildOutboundThreadingHeaders(
     parentForThreading
       ? {
@@ -109,53 +171,8 @@ export async function sendComposeDraft(input: {
       : null,
   );
 
-  const smtpAttachments: { filename: string; path: string }[] = [];
-  for (const p of input.attachmentPaths ?? []) {
-    try {
-      const st = fs.statSync(p);
-      if (!st.isFile()) continue;
-      if (st.size > MAX_COMPOSE_ATTACHMENT_BYTES) {
-        return { ok: false, error: `Anhang zu groß (max. 25 MB): ${path.basename(p)}` };
-      }
-      smtpAttachments.push({ filename: path.basename(p), path: p });
-    } catch {
-      return { ok: false, error: `Anhang nicht lesbar: ${path.basename(p)}` };
-    }
-  }
-
-  try {
-    await sendSmtpForAccount(input.accountId, {
-      from: acc.email_address,
-      to: input.to,
-      cc: input.cc,
-      subject: finalSubject,
-      text: input.bodyText,
-      html: html || undefined,
-      attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
-      messageId: outboundMessageId,
-      inReplyTo: threadHeaders.inReplyTo,
-      references: threadHeaders.references,
-    });
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-
-  try {
-    await appendSentToImap({
-      accountId: input.accountId,
-      from: acc.email_address,
-      to: input.to,
-      cc: input.cc,
-      subject: finalSubject,
-      text: input.bodyText,
-      html: html || undefined,
-      messageId: outboundMessageId,
-      inReplyTo: threadHeaders.inReplyTo,
-      references: threadHeaders.references,
-    });
-  } catch {
-    /* Sent-Ordner optional */
-  }
+  const outboundMessageId =
+    draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
 
   const refsHeader = threadHeaders.references ?? null;
   const inReplyHeader = threadHeaders.inReplyTo ?? null;
@@ -175,6 +192,74 @@ export async function sendComposeDraft(input: {
       input.draftMessageId,
     );
 
-  markDraftAsSent(input.draftMessageId);
+  if (isSmtpCommitted(input.draftMessageId)) {
+    await finalizeSentDraft({
+      accountId: input.accountId,
+      draftMessageId: input.draftMessageId,
+      from: acc.email_address,
+      to: input.to,
+      cc: input.cc,
+      subject: finalSubject,
+      text: input.bodyText,
+      html: html || undefined,
+      messageId: outboundMessageId,
+      inReplyTo: threadHeaders.inReplyTo,
+      references: threadHeaders.references,
+    });
+    return { ok: true };
+  }
+
+  const smtpAttachments: { filename: string; path: string }[] = [];
+  for (const p of input.attachmentPaths ?? []) {
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) continue;
+      if (st.size > MAX_COMPOSE_ATTACHMENT_BYTES) {
+        return { ok: false, error: `Anhang zu groß (max. 25 MB): ${path.basename(p)}` };
+      }
+      smtpAttachments.push({ filename: path.basename(p), path: p });
+    } catch {
+      return { ok: false, error: `Anhang nicht lesbar: ${path.basename(p)}` };
+    }
+  }
+
+  const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
+  const smtpCc = input.cc?.trim()
+    ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+    : undefined;
+
+  try {
+    await sendSmtpForAccount(input.accountId, {
+      from: acc.email_address,
+      to: smtpTo,
+      cc: smtpCc,
+      subject: finalSubject,
+      text: input.bodyText,
+      html: html || undefined,
+      attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
+      messageId: outboundMessageId,
+      inReplyTo: threadHeaders.inReplyTo,
+      references: threadHeaders.references,
+    });
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  markSmtpCommitted(input.draftMessageId);
+
+  await finalizeSentDraft({
+    accountId: input.accountId,
+    draftMessageId: input.draftMessageId,
+    from: acc.email_address,
+    to: smtpTo,
+    cc: smtpCc,
+    subject: finalSubject,
+    text: input.bodyText,
+    html: html || undefined,
+    messageId: outboundMessageId,
+    inReplyTo: threadHeaders.inReplyTo,
+    references: threadHeaders.references,
+  });
+
   return { ok: true };
 }

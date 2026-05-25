@@ -75,6 +75,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
       continue;
     }
 
+    try {
     const raw = await pop3.RETR(num);
     const parsed = await simpleParser(typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw as Buffer));
     const messageId = parsed.messageId ?? null;
@@ -129,6 +130,12 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     known.add(uidl);
     maxNum = Math.max(maxNum, num);
     fetched += 1;
+    } catch (perMsgErr) {
+      console.warn(
+        `[pop3-sync] UIDL ${uidl} account ${accountId} skipped:`,
+        perMsgErr instanceof Error ? perMsgErr.message : perMsgErr,
+      );
+    }
   }
 
   await pop3.QUIT().catch(() => undefined);
