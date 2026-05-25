@@ -680,7 +680,7 @@ export function WorkflowShell() {
                     Inbound-Backfill
                   </Button>
                   <Button type="button" size="sm" variant="link" className="h-8 px-0" asChild>
-                    <Link to="/email/settings" search={{ tab: "automation" }}>
+                    <Link to="/email/settings" search={{ tab: "mailSecurity" }}>
                       <ExternalLink className="mr-1 h-3.5 w-3.5" />
                       Automatisierung (IMAP/HTTP)
                     </Link>

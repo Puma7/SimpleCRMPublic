@@ -66,6 +66,19 @@ export function MessageMetadataPanel({
   const [newTag, setNewTag] = useState("")
   const [messageCategoryId, setMessageCategoryId] = useState<number | null>(null)
   const [conversation, setConversation] = useState<EmailMessage[]>([])
+  const [security, setSecurity] = useState<{
+    authSpf: string | null
+    authDkim: string | null
+    authDmarc: string | null
+    authArc: string | null
+    rspamdScore: number | null
+    rspamdAction: string | null
+    rspamdSymbols: string | null
+    securityCheckedAt: string | null
+    authError: string | null
+    rspamdError: string | null
+  } | null>(null)
+  const [securityLoading, setSecurityLoading] = useState(false)
 
   useEffect(() => {
     if (!selectedMessage || !hasElectron()) {
@@ -78,6 +91,45 @@ export function MessageMetadataPanel({
     )
       .then((r) => setMessageCategoryId(r.categoryId))
       .catch(() => setMessageCategoryId(null))
+  }, [selectedMessage?.id])
+
+  useEffect(() => {
+    if (!selectedMessage || !hasElectron()) {
+      setSecurity(null)
+      return
+    }
+    setSecurityLoading(true)
+    void invokeIpc<{
+      success: boolean
+      authSpf?: string | null
+      authDkim?: string | null
+      authDmarc?: string | null
+      authArc?: string | null
+      rspamdScore?: number | null
+      rspamdAction?: string | null
+      rspamdSymbols?: string | null
+      securityCheckedAt?: string | null
+      authError?: string | null
+      rspamdError?: string | null
+    }>(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
+      .then((r) => {
+        if (r.success) {
+          setSecurity({
+            authSpf: r.authSpf ?? null,
+            authDkim: r.authDkim ?? null,
+            authDmarc: r.authDmarc ?? null,
+            authArc: r.authArc ?? null,
+            rspamdScore: r.rspamdScore ?? null,
+            rspamdAction: r.rspamdAction ?? null,
+            rspamdSymbols: r.rspamdSymbols ?? null,
+            securityCheckedAt: r.securityCheckedAt ?? null,
+            authError: r.authError ?? null,
+            rspamdError: r.rspamdError ?? null,
+          })
+        } else setSecurity(null)
+      })
+      .catch(() => setSecurity(null))
+      .finally(() => setSecurityLoading(false))
   }, [selectedMessage?.id])
 
   useEffect(() => {
@@ -334,6 +386,94 @@ export function MessageMetadataPanel({
                 +
               </Button>
             </div>
+          </div>
+
+          <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-xs">Mail-Sicherheit</Label>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 text-[10px]"
+                disabled={securityLoading}
+                onClick={() => {
+                  if (!selectedMessage) return
+                  void (async () => {
+                    setSecurityLoading(true)
+                    try {
+                      await invokeIpc(IPCChannels.Email.RunMailSecurityCheck, selectedMessage.id)
+                      const r = await invokeIpc<{
+                        success: boolean
+                        authSpf?: string | null
+                        authDkim?: string | null
+                        authDmarc?: string | null
+                        authArc?: string | null
+                        rspamdScore?: number | null
+                        rspamdAction?: string | null
+                        rspamdSymbols?: string | null
+                        securityCheckedAt?: string | null
+                        authError?: string | null
+                        rspamdError?: string | null
+                      }>(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
+                      if (r.success) {
+                        setSecurity({
+                          authSpf: r.authSpf ?? null,
+                          authDkim: r.authDkim ?? null,
+                          authDmarc: r.authDmarc ?? null,
+                          authArc: r.authArc ?? null,
+                          rspamdScore: r.rspamdScore ?? null,
+                          rspamdAction: r.rspamdAction ?? null,
+                          rspamdSymbols: r.rspamdSymbols ?? null,
+                          securityCheckedAt: r.securityCheckedAt ?? null,
+                          authError: r.authError ?? null,
+                          rspamdError: r.rspamdError ?? null,
+                        })
+                      }
+                      toast.success("Prüfung abgeschlossen")
+                    } catch {
+                      toast.error("Sicherheitsprüfung fehlgeschlagen")
+                    } finally {
+                      setSecurityLoading(false)
+                    }
+                  })()
+                }}
+              >
+                Erneut prüfen
+              </Button>
+            </div>
+            {securityLoading && !security ? (
+              <p className="text-[10px] text-muted-foreground">Lädt…</p>
+            ) : security?.securityCheckedAt ? (
+              <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
+                <dt className="text-muted-foreground">SPF</dt>
+                <dd className="font-mono">{security.authSpf ?? "—"}</dd>
+                <dt className="text-muted-foreground">DKIM</dt>
+                <dd className="font-mono">{security.authDkim ?? "—"}</dd>
+                <dt className="text-muted-foreground">DMARC</dt>
+                <dd className="font-mono">{security.authDmarc ?? "—"}</dd>
+                <dt className="text-muted-foreground">ARC</dt>
+                <dd className="font-mono">{security.authArc ?? "—"}</dd>
+                {security.rspamdScore != null ? (
+                  <>
+                    <dt className="text-muted-foreground">Rspamd</dt>
+                    <dd className="font-mono">
+                      {security.rspamdScore}
+                      {security.rspamdAction ? ` (${security.rspamdAction})` : ""}
+                    </dd>
+                  </>
+                ) : null}
+              </dl>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">
+                Noch nicht geprüft (läuft normalerweise beim Sync).
+              </p>
+            )}
+            {security?.authError || security?.rspamdError ? (
+              <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                {[security.authError, security.rspamdError].filter(Boolean).join(" · ")}
+              </p>
+            ) : null}
           </div>
 
           {conversation.length > 0 ? (

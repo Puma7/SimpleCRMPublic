@@ -503,6 +503,17 @@ function runMigrations() {
                 { name: 'pop3_uidl', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pop3_uidl TEXT` },
                 { name: 'raw_headers', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_headers TEXT` },
                 { name: 'is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN is_spam INTEGER NOT NULL DEFAULT 0` },
+                { name: 'auth_spf', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_spf TEXT` },
+                { name: 'auth_dkim', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_dkim TEXT` },
+                { name: 'auth_dmarc', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_dmarc TEXT` },
+                { name: 'auth_arc', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_arc TEXT` },
+                { name: 'auth_dkim_domains', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_dkim_domains TEXT` },
+                { name: 'auth_error', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_error TEXT` },
+                { name: 'rspamd_score', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN rspamd_score REAL` },
+                { name: 'rspamd_action', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN rspamd_action TEXT` },
+                { name: 'rspamd_symbols', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN rspamd_symbols TEXT` },
+                { name: 'rspamd_error', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN rspamd_error TEXT` },
+                { name: 'security_checked_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN security_checked_at TEXT` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {

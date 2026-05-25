@@ -27,6 +27,7 @@ export type SettingsTab =
   | "oauth"
   | "ai"
   | "knowledge"
+  | "mailSecurity"
   | "automation"
   | "team"
   | "canned"
@@ -118,6 +119,7 @@ const VALID_SETTINGS_TABS: SettingsTab[] = [
   "oauth",
   "ai",
   "knowledge",
+  "mailSecurity",
   "automation",
   "team",
   "canned",

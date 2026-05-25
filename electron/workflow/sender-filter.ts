@@ -1,3 +1,5 @@
+import type { EmailMessageRow } from '../email/email-store';
+import { addressesFromRecipientJson } from '../email/email-parse-utils';
 import { getSyncInfo } from '../sqlite-service';
 
 /** Domains commonly used for transactional mail (PayPal, Amazon, …) — pre-filter before KI. */
@@ -108,4 +110,10 @@ export function evaluateSenderFilter(
   }
 
   return 'default';
+}
+
+/** Global lists only — for pre-workflow mail security (no builtin trusted bypass). */
+export function classifySenderForMessage(row: EmailMessageRow): SenderFilterResult {
+  const from = addressesFromRecipientJson(row.from_json);
+  return evaluateSenderFilter(from, { useBuiltinTrusted: false });
 }

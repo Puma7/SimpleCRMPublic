@@ -2,6 +2,7 @@ import type { EmailMessageRow } from '../email/email-store';
 import { getCustomerById } from '../sqlite-service';
 import type { OutboundDraftPayload } from '../email/email-workflow-engine';
 import { attachmentContextFromJson } from '../email/email-workflow-types';
+import { securityVariablesFromRow } from '../email/mail-security-store';
 import type { WorkflowContext, WorkflowStringContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 
@@ -117,6 +118,9 @@ export function createWorkflowContext(input: {
     ...(input.initialVariables ?? {}),
     ...(input.eventVariables ?? {}),
   };
+  if (message) {
+    Object.assign(vars, securityVariablesFromRow(message));
+  }
   if (message?.customer_id) {
     const c = getCustomerById(message.customer_id);
     if (c) {

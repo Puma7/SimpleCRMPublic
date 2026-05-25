@@ -83,6 +83,17 @@ export type EmailMessageRow = {
   /** POP3 server UIDL when message came from POP3 (stable key). */
   pop3_uidl: string | null;
   raw_headers: string | null;
+  auth_spf: string | null;
+  auth_dkim: string | null;
+  auth_dmarc: string | null;
+  auth_arc: string | null;
+  auth_dkim_domains: string | null;
+  auth_error: string | null;
+  rspamd_score: number | null;
+  rspamd_action: string | null;
+  rspamd_symbols: string | null;
+  rspamd_error: string | null;
+  security_checked_at: string | null;
   created_at: string;
 };
 
