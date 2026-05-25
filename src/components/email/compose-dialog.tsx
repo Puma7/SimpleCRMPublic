@@ -4,8 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import DOMPurify from "dompurify"
-import ReactQuill from "react-quill"
-import "react-quill/dist/quill.snow.css"
+import { ComposeQuillEditor } from "./compose-quill-editor"
 import { validateRecipientField } from "@shared/email-recipient-parse"
 import { Loader2, Paperclip, X } from "lucide-react"
 import {
@@ -75,6 +74,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
   const [sending, setSending] = useState(false)
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
+  /** Resolved SMTP account for the open draft (never "all"). */
+  const [composeAccountId, setComposeAccountId] = useState<number | null>(null)
 
   // Track which composeIntent the dialog has initialised for.
   // Re-init when the intent actually changes (user clicks Reply on another mail),
@@ -101,6 +102,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
       firstAccountId: accounts[0]?.id,
     })
     if (!hasElectron() || accountIdAtOpen == null) return
+    setComposeAccountId(accountIdAtOpen)
     initialisedForIntentRef.current = composeIntent
     let cancelled = false
     void (async () => {
@@ -113,6 +115,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
             composeIntent.messageId,
           )
           if (cancelled || !existing) return
+          setComposeAccountId(existing.account_id)
           setTo("")
           setCc("")
           setSubject(existing.subject ?? "")
@@ -196,6 +199,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
 
   const closeDialog = () => {
     setComposeIntent({ mode: "closed" })
+    setComposeAccountId(null)
     setDraftId(null)
     setReplyToId(null)
     setTo("")
@@ -269,7 +273,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
   }
 
   const handleSend = async () => {
-    if (!hasElectron() || draftId == null || selectedAccountId == null) return
+    if (!hasElectron() || draftId == null || composeAccountId == null) return
     const toCheck = validateRecipientField(to, "An")
     if (!toCheck.ok) {
       toast.error(toCheck.error)
@@ -290,7 +294,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
       const r = await invokeIpc<{ success: boolean; error?: string }>(
         IPCChannels.Email.SendCompose,
         {
-          accountId: selectedAccountId,
+          accountId: composeAccountId,
           draftMessageId: draftId,
           subject,
           bodyText: plain,
@@ -444,7 +448,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
           </div>
 
           <div className="[&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-toolbar]:rounded-t-md rounded-md border bg-background">
-            <ReactQuill theme="snow" value={bodyHtml} onChange={setBodyHtml} />
+            <ComposeQuillEditor value={bodyHtml} onChange={setBodyHtml} />
           </div>
 
           <div className="space-y-2">

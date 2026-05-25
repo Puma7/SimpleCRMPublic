@@ -26,8 +26,9 @@ export function useEmailAccounts() {
       // the user has not picked an account yet. Preserves existing selection
       // on every subsequent reload (e.g. after adding an account in Settings).
       setSelectedAccountId((prev) => {
-        if (prev !== null) return prev
         if (list.length === 0) return null
+        if (prev === "all" && list.length < 2) return list[0]!.id
+        if (prev !== null) return prev
         if (list.length > 1) return "all"
         return list[0]!.id
       })
