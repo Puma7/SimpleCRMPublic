@@ -407,13 +407,17 @@ export function listMessagesForAccountView(
   }
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
   if (view === 'trash') {
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
   }
   if (view === 'inbox') {
-    sql += ` AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0`;
+    sql += ` AND (
+      (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0)
+      OR ${outboundHeldInInbox}
+    )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
   } else if (view === 'archived') {
@@ -445,16 +449,17 @@ export type MailFolderCounts = {
 /** Per-folder message totals for sidebar badges (current account). */
 export function getMailFolderCountsForAccount(accountId: number): MailFolderCounts {
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
+  const inboxBase = `soft_deleted = 0 AND (
+    (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0)
+    OR ${outboundHeldInInbox}
+  )`;
   const row = getDb()
     .prepare(
       `SELECT
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
-        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail}
-          AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
-          AND archived = 0 AND is_spam = 0 THEN 1 ELSE 0 END) AS inbox,
-        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail}
-          AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
-          AND archived = 0 AND is_spam = 0 AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
+        SUM(CASE WHEN ${inboxBase} THEN 1 ELSE 0 END) AS inbox,
+        SUM(CASE WHEN ${inboxBase} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
         SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
         SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,

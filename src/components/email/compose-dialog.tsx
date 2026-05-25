@@ -52,8 +52,14 @@ function sanitizeComposeHtml(html: string): string {
 }
 
 export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Props) {
-  const { composeIntent, setComposeIntent, selectedAccountId, selectedMessage } =
-    useMailWorkspace()
+  const {
+    composeIntent,
+    setComposeIntent,
+    selectedAccountId,
+    selectedMessage,
+    setMailView,
+    setSelectedMessage,
+  } = useMailWorkspace()
 
   const isOpen = composeIntent.mode !== "closed"
 
@@ -240,7 +246,24 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
         },
       )
       if (!r.success) {
-        toast.error(r.error ?? "Versand fehlgeschlagen")
+        const blocked = (r.error ?? "").length > 0
+        if (blocked) {
+          toast.warning(r.error ?? "Versand durch Ausgangsprüfung blockiert")
+          closeDialog()
+          setMailView("inbox")
+          await onSent()
+          try {
+            const full = await invokeIpc<EmailMessage | null>(
+              IPCChannels.Email.GetMessage,
+              draftId,
+            )
+            if (full) setSelectedMessage(full)
+          } catch (e) {
+            logError("compose-dialog: load blocked draft", e)
+          }
+        } else {
+          toast.error("Versand fehlgeschlagen")
+        }
         return
       }
       toast.success("E-Mail gesendet.")

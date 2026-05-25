@@ -34,6 +34,8 @@ export type OutboundDraftPayload = {
   bodyHtml?: string;
   to: string;
   cc?: string;
+  inReplyToMessageId?: number | null;
+  attachmentCount?: number;
 };
 
 function extractAddressList(json: string | null): string {
@@ -377,14 +379,16 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
           fresh?.outbound_block_reason ||
           r.blockReason ||
           'Ausgehende Nachricht durch Workflow zurückgestellt. Bitte Text prüfen.';
+        const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+        returnOutboundDraftToInbox(payload.messageId, reason);
         return { allowed: false, reason };
       }
       const checkHold = getEmailMessageById(payload.messageId);
       if (checkHold?.outbound_hold) {
-        return {
-          allowed: false,
-          reason: checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.',
-        };
+        const reason = checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
+        const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+        returnOutboundDraftToInbox(payload.messageId, reason);
+        return { allowed: false, reason };
       }
       if (r.status === 'error') {
         parseOrEngineError = r.log.join('; ');
@@ -403,7 +407,10 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
   }
 
   if (parseOrEngineError) {
-    setOutboundHold(payload.messageId, true, `Workflow-Fehler: ${parseOrEngineError}`);
+    const reason = `Workflow-Fehler: ${parseOrEngineError}`;
+    setOutboundHold(payload.messageId, true, reason);
+    const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+    returnOutboundDraftToInbox(payload.messageId, reason);
     return {
       allowed: false,
       reason: 'Ausgehender Workflow fehlgeschlagen; Versand aus Sicherheitsgründen blockiert.',
@@ -412,10 +419,10 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
 
   const after = getEmailMessageById(payload.messageId);
   if (after?.outbound_hold) {
-    return {
-      allowed: false,
-      reason: after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.',
-    };
+    const reason = after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
+    const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+    returnOutboundDraftToInbox(payload.messageId, reason);
+    return { allowed: false, reason };
   }
   return { allowed: true, reason: null };
 }

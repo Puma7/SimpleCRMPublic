@@ -29,6 +29,28 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplateDto[] = [
     },
   },
   {
+    id: 'outbound-quality-check',
+    name: 'Ausgehend: KI-Qualitätsprüfung',
+    description:
+      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. Blockierte Entwürfe erscheinen im Posteingang mit Hinweis.',
+    trigger: 'outbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        {
+          id: 'r1',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.outbound_review',
+            config: { promptId: 0, checkReplyContext: true },
+          },
+        },
+      ],
+      edges: [{ id: 'e0', source: 't1', target: 'r1' }],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'outbound-sensitive',
     name: 'Ausgehend: Sensible Daten',
     description: 'Blockiert IBAN/Passwort-Muster vor dem Versand.',

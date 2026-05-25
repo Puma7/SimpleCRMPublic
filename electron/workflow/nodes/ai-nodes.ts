@@ -1,6 +1,12 @@
 import { listAiPrompts } from '../../email/email-crm-store';
 import { runChatCompletion } from '../../email/email-openai';
-import { addMessageTag, createComposeDraft, setOutboundHold } from '../../email/email-store';
+import {
+  addMessageTag,
+  createComposeDraft,
+  getEmailMessageById,
+  setOutboundHold,
+} from '../../email/email-store';
+import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
 import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
@@ -33,8 +39,10 @@ export function registerAiNodes(register: Reg): void {
         const blocked = out.toUpperCase().includes(blockKw.toUpperCase());
         if (blocked && ctx.direction === 'outbound') {
           const id = ctx.messageId ?? ctx.outbound?.messageId;
-          if (id != null) setOutboundHold(id, true, 'KI-Prüfung: Versand blockiert');
-          return { status: 'ok', blocked: true, blockReason: 'KI-Prüfung' };
+          const parsed = parseOutboundReviewResponse(out);
+          const reason = parsed.reason || 'KI-Prüfung: Versand blockiert';
+          if (id != null) setOutboundHold(id, true, reason);
+          return { status: 'ok', blocked: true, blockReason: reason };
         }
         if (blocked && ctx.messageId != null) addMessageTag(ctx.messageId, 'ki-review-block');
         return { status: 'ok' };
@@ -45,6 +53,100 @@ export function registerAiNodes(register: Reg): void {
           return { status: 'error', blocked: true, blockReason: 'KI-Fehler' };
         }
         return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+
+  register({
+    type: 'ai.outbound_review',
+    label: 'KI-Ausgangsprüfung',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Prüft ausgehende E-Mails (Ton, Rechtschreibung, Anhang, Betrugs-Antworten) vor dem Versand.',
+    defaultConfig: { promptId: 0, checkReplyContext: true },
+    execute: async (ctx, config) => {
+      if (ctx.direction !== 'outbound') {
+        return { status: 'skipped', message: 'Nur für ausgehende E-Mails' };
+      }
+      const id = ctx.messageId ?? ctx.outbound?.messageId;
+      if (id == null) return { status: 'error', message: 'Kein Entwurf' };
+
+      const promptId = Number(config.promptId ?? 0);
+      const prompts = listAiPrompts();
+      const custom = promptId > 0 ? prompts.find((x) => x.id === promptId) : undefined;
+
+      let parentBlock = '';
+      if (config.checkReplyContext !== false && ctx.outbound?.inReplyToMessageId) {
+        const parent = getEmailMessageById(ctx.outbound.inReplyToMessageId);
+        if (parent) {
+          let fromAddr = '';
+          try {
+            if (parent.from_json) {
+              const parsed = JSON.parse(parent.from_json) as { value?: { address?: string }[] };
+              fromAddr =
+                parsed?.value?.map((v) => v.address ?? '').filter(Boolean).join(', ') ?? '';
+            }
+          } catch {
+            fromAddr = '';
+          }
+          parentBlock = [
+            '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
+            `Von: ${fromAddr}`,
+            `Betreff: ${parent.subject ?? ''}`,
+            `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
+            `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
+          ].join('\n');
+        }
+      }
+
+      const attCount = ctx.outbound?.attachmentCount ?? 0;
+      const userParts = [
+        custom
+          ? interpolateTemplate(
+              custom.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text),
+              ctx,
+            )
+          : [
+              'Prüfe die folgende ausgehende E-Mail vor dem Versand an Kunden.',
+              '',
+              'Kriterien: professioneller Ton, korrekte Anrede/Namen, Rechtschreibung, vollständige Inhalte,',
+              'fehlende Anhänge wenn im Text versprochen, keine Antwort auf Phishing/Betrug (Bank, Login, Dringlichkeit).',
+              '',
+              `Anzahl Anhänge beim Versand: ${attCount}`,
+              '',
+              'Ausgehende E-Mail:',
+              ctx.strings.combined_text,
+              parentBlock,
+            ].join('\n'),
+      ];
+
+      const system = [
+        'Du bist Qualitätsprüfer für ausgehende Kunden-E-Mails.',
+        'Antworte NUR in diesem Format:',
+        'STATUS: OK',
+        'oder',
+        'STATUS: BLOCK',
+        'REASON: Kurze deutsche Begründung für den Nutzer',
+        'CODE: optionaler_code (z.B. MISSING_ATTACHMENT, PHISHING_REPLY, TONE, SPELLING, WRONG_NAME)',
+      ].join('\n');
+
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.outbound_review' };
+
+      try {
+        const out = await runChatCompletion(system, userParts.join('\n'));
+        ctx.ai.lastResponse = out;
+        const parsed = parseOutboundReviewResponse(out);
+        if (!parsed.ok) {
+          const reason = parsed.reason || 'Ausgehende KI-Prüfung fehlgeschlagen';
+          if (!ctx.dryRun) setOutboundHold(id, true, reason);
+          return { status: 'ok', blocked: true, blockReason: reason };
+        }
+        return { status: 'ok' };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!ctx.dryRun) setOutboundHold(id, true, `KI-Fehler: ${msg}`);
+        return { status: 'error', blocked: true, blockReason: `KI-Fehler: ${msg}` };
       }
     },
   });

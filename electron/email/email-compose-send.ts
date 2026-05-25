@@ -1,6 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { getEmailAccountById, getEmailMessageById, markDraftAsSent } from './email-store';
+import {
+  getEmailAccountById,
+  getEmailMessageById,
+  markDraftAsSent,
+  updateComposeDraft,
+} from './email-store';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { sendSmtpForAccount } from './email-smtp';
 import { appendSentToImap } from './email-imap-append';
@@ -30,13 +35,38 @@ export async function sendComposeDraft(input: {
     return { ok: false, error: 'Ungültiger Entwurf' };
   }
 
+  const html = input.bodyHtml ?? draft.body_html ?? undefined;
+  const toJson =
+    input.to.trim() ?
+      JSON.stringify({
+        value: input.to.split(/[,;]+/).map((a) => ({ address: a.trim() })).filter((x) => x.address),
+      })
+    : null;
+
+  updateComposeDraft(input.draftMessageId, {
+    subject: input.subject,
+    bodyText: input.bodyText,
+    bodyHtml: html ?? null,
+    toJson,
+    ccJson: input.cc?.trim()
+      ? JSON.stringify({
+          value: input.cc.split(/[,;]+/).map((a) => ({ address: a.trim() })).filter((x) => x.address),
+        })
+      : null,
+  });
+
+  const { clearOutboundHoldForResend } = await import('./email-outbound-review');
+  clearOutboundHoldForResend(input.draftMessageId);
+
   const outbound = await evaluateOutboundWorkflows({
     messageId: input.draftMessageId,
     subject: input.subject,
     bodyText: input.bodyText,
-    bodyHtml: input.bodyHtml ?? draft.body_html ?? undefined,
+    bodyHtml: html ?? undefined,
     to: input.to,
     cc: input.cc,
+    inReplyToMessageId: input.inReplyToMessageId,
+    attachmentCount: input.attachmentPaths?.length ?? 0,
   });
   if (!outbound.allowed) {
     return { ok: false, error: outbound.reason || 'Outbound blockiert' };
@@ -68,8 +98,6 @@ export async function sendComposeDraft(input: {
 
   const acc = getEmailAccountById(input.accountId);
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
-
-  const html = input.bodyHtml ?? draft.body_html ?? undefined;
 
   const outboundMessageId = generateOutboundMessageId(acc.email_address);
   const threadHeaders = buildOutboundThreadingHeaders(

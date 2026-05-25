@@ -469,6 +469,54 @@ function AssignFields({
   )
 }
 
+function OutboundReviewFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
+  useEffect(() => {
+    if (!hasElectron()) return
+    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+  }, [])
+
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">KI-Prompt (optional)</Label>
+        <Select
+          value={String(config.promptId ?? 0)}
+          onValueChange={(v) => patchConfig(patch, config, "promptId", parseInt(v, 10))}
+        >
+          <SelectTrigger className="h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="0">Standard (Ton, Anhang, Betrug)</SelectItem>
+            {aiPrompts.map((p) => (
+              <SelectItem key={p.id} value={String(p.id)}>
+                {p.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-xs">Antwort-Kontext prüfen</Label>
+        <Switch
+          checked={config.checkReplyContext !== false}
+          onCheckedChange={(on) => patchConfig(patch, config, "checkReplyContext", on)}
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Blockierte Entwürfe landen im Posteingang mit gelbem Hinweis im Text.
+      </p>
+    </div>
+  )
+}
+
 function ClassifyFields({
   config,
   patch,
@@ -553,6 +601,9 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
       ) : null}
       {d.nodeType === "ai.classify" ? (
         <ClassifyFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.outbound_review" ? (
+        <OutboundReviewFields config={d.config ?? {}} patch={patch} />
       ) : null}
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>

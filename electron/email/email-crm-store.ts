@@ -235,6 +235,7 @@ function ftsMatchExpression(raw: string): string | null {
 
 function viewFilterClause(view: import('./email-store').AccountMailView): string {
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
   switch (view) {
     case 'trash':
       return 'm.soft_deleted = 1';
@@ -247,7 +248,10 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
     case 'drafts':
       return `m.soft_deleted = 0 AND m.folder_kind = 'draft'`;
     case 'inbox':
-      return `m.soft_deleted = 0 AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0`;
+      return `m.soft_deleted = 0 AND (
+        (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0)
+        OR ${outboundHeldInInbox}
+      )`;
     default:
       return 'm.soft_deleted = 0';
   }
