@@ -57,6 +57,7 @@ export function AiPanel() {
     AI_PROVIDER_PRESETS.openai.defaultEmbeddingModel ?? "",
   )
   const [apiKey, setApiKey] = useState("")
+  const [saving, setSaving] = useState(false)
 
   const applyPreset = useCallback(
     (p: AiProviderPresetId, presetMap: Record<string, ProviderPreset>) => {
@@ -75,7 +76,7 @@ export function AiPanel() {
     [],
   )
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (preferProfileId?: number | null) => {
     if (!hasElectron()) return
     try {
       const s = await invokeIpc<{
@@ -86,7 +87,12 @@ export function AiPanel() {
       setPresets(merged)
       const list = s.profiles ?? []
       setProfiles(list)
-      const active = list.find((p) => p.isDefault) ?? list[0]
+      const active =
+        (preferProfileId != null
+          ? list.find((p) => p.id === preferProfileId)
+          : undefined) ??
+        list.find((p) => p.isDefault) ??
+        list[0]
       if (active) {
         setSelectedId(active.id)
         setLabel(active.label)
@@ -121,6 +127,7 @@ export function AiPanel() {
   }
 
   const save = async () => {
+    if (saving) return
     if (!hasElectron() || !label.trim()) {
       toast.error("Bitte eine Bezeichnung eingeben.")
       return
@@ -129,6 +136,8 @@ export function AiPanel() {
       toast.error("Base-URL und Chat-Modell sind erforderlich.")
       return
     }
+    const isNew = selectedId == null
+    setSaving(true)
     try {
       const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
         IPCChannels.Email.SaveAiProfile,
@@ -149,12 +158,18 @@ export function AiPanel() {
         toast.error(r.error ?? "Speichern fehlgeschlagen.")
         return
       }
+      const savedId = r?.id ?? selectedId
+      if (savedId != null) {
+        setSelectedId(savedId)
+      }
       setApiKey("")
-      toast.success("KI-Profil gespeichert.")
-      await load()
+      toast.success(isNew ? "Neues KI-Profil angelegt." : "KI-Profil gespeichert.")
+      await load(savedId ?? undefined)
     } catch (e) {
       console.error(e)
       toast.error("KI-Profil konnte nicht gespeichert werden.")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -194,6 +209,12 @@ export function AiPanel() {
           + Profil
         </Button>
       </div>
+      {selectedId == null ? (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          Neues Profil: Bezeichnung eintragen und <strong>Speichern</strong> — jeder Speichern-Klick
+          ohne ausgewähltes Profil legt sonst ein weiteres Profil an.
+        </p>
+      ) : null}
 
       <div className="grid gap-3 rounded-lg border p-4">
         <div className="space-y-1.5">
@@ -252,8 +273,8 @@ export function AiPanel() {
           />
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button type="button" onClick={() => void save()}>
-            Speichern
+          <Button type="button" disabled={saving} onClick={() => void save()}>
+            {saving ? "Speichern…" : selectedId == null ? "Profil anlegen" : "Speichern"}
           </Button>
           {selectedId != null ? (
             <Button
@@ -268,7 +289,7 @@ export function AiPanel() {
               Key löschen
             </Button>
           ) : null}
-          {selectedId != null && profiles.length > 1 ? (
+          {selectedId != null ? (
             <Button
               type="button"
               variant="destructive"
