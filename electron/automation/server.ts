@@ -34,16 +34,31 @@ export async function startAutomationApiServer(logger: Pick<typeof console, 'inf
     socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server!.listen(port, host, () => {
-      logger.info(`[automation-api] listening on http://${host}:${port}/api/v1`);
-      if (host === '0.0.0.0') {
-        logger.warn('[automation-api] LAN bind active — ensure firewall rules restrict access');
-      }
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => {
+        server = null;
+        reject(err);
+      };
+      server!.once('error', onError);
+      server!.listen(port, host, () => {
+        server!.off('error', onError);
+        logger.info(`[automation-api] listening on http://${host}:${port}/api/v1`);
+        if (host === '0.0.0.0') {
+          logger.warn('[automation-api] LAN bind active — ensure firewall rules restrict access');
+        }
+        resolve();
+      });
     });
-    server!.on('error', reject);
-  });
+  } catch (err) {
+    server = null;
+    const code = err && typeof err === 'object' && 'code' in err ? String((err as NodeJS.ErrnoException).code) : '';
+    if (code === 'EADDRINUSE') {
+      logger.warn(`[automation-api] port ${port} already in use — API not started`);
+      return;
+    }
+    throw err;
+  }
 }
 
 export async function stopAutomationApiServer(): Promise<void> {

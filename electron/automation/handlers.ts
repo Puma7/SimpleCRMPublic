@@ -7,6 +7,8 @@ import {
   sendJson,
   sendError,
   parsePositiveInt,
+  coercePositiveInt,
+  parseQueryPositiveInt,
   clampLimit,
   clampOffset,
 } from './http-response';
@@ -143,12 +145,16 @@ async function dispatch(ctx: RouteContext, res: ServerResponse, apiScopes: Autom
   // --- Deals ---
   if (path === '/deals' && method === 'GET') {
     if (!needScope(res, ['read'], apiScopes)) return;
-    const customerId = query.get('customerId');
+    const customerIdQ = parseQueryPositiveInt(query, 'customerId');
+    if (customerIdQ.invalid) {
+      sendError(res, 400, 'validation_error', 'customerId muss eine positive Ganzzahl sein');
+      return;
+    }
     sendJson(res, 200, {
       data: DealService.list({
         limit: clampLimit(query.get('limit')),
         offset: clampOffset(query.get('offset')),
-        customerId: customerId ? parsePositiveInt(customerId) ?? undefined : undefined,
+        customerId: customerIdQ.value,
       }),
     });
     return;
@@ -282,7 +288,11 @@ async function dispatch(ctx: RouteContext, res: ServerResponse, apiScopes: Autom
   if (taskToggleMatch && method === 'POST') {
     if (!needScope(res, ['write'], apiScopes)) return;
     const id = parsePositiveInt(taskToggleMatch[1])!;
-    const completed = Boolean((body as { completed?: boolean })?.completed);
+    const completed = (body as { completed?: unknown })?.completed;
+    if (typeof completed !== 'boolean') {
+      sendError(res, 400, 'validation_error', 'completed (boolean) ist erforderlich');
+      return;
+    }
     const result = TaskService.toggleCompletion(id, completed);
     if (!result.success) {
       sendError(res, 404, 'not_found', result.error ?? 'Aufgabe nicht gefunden');
@@ -416,9 +426,18 @@ async function dispatch(ctx: RouteContext, res: ServerResponse, apiScopes: Autom
       messageId?: number;
       variables?: Record<string, string | number | boolean | null>;
     };
+    let messageId: number | undefined;
+    if (b?.messageId != null) {
+      const mid = coercePositiveInt(b.messageId);
+      if (mid == null) {
+        sendError(res, 400, 'validation_error', 'messageId muss eine positive Ganzzahl sein');
+        return;
+      }
+      messageId = mid;
+    }
     const result = await WorkflowApiService.execute(id, {
       dryRun: b?.dryRun,
-      messageId: b?.messageId,
+      messageId,
       variables: b?.variables,
     });
     if (!result.success) {
@@ -445,10 +464,12 @@ export async function handleAutomationRequest(req: IncomingMessage, res: ServerR
   }
 
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-  let pathname = url.pathname;
-  if (pathname.startsWith(AUTOMATION_API_PREFIX)) {
-    pathname = pathname.slice(AUTOMATION_API_PREFIX.length) || '/';
+  const rawPath = url.pathname;
+  if (!rawPath.startsWith(AUTOMATION_API_PREFIX)) {
+    sendError(res, 404, 'not_found', `API nur unter ${AUTOMATION_API_PREFIX}`);
+    return;
   }
+  const pathname = rawPath.slice(AUTOMATION_API_PREFIX.length) || '/';
 
   const publicPaths = new Set(['/health', '/openapi.json']);
   const isPublic = publicPaths.has(pathname) && req.method === 'GET';

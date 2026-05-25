@@ -35,6 +35,30 @@ export function parsePositiveInt(raw: string | undefined): number | null {
   return n;
 }
 
+/** Coerce JSON/query values to a positive integer ID. */
+export function coercePositiveInt(raw: unknown): number | null {
+  if (raw == null) return null;
+  if (typeof raw === 'number') {
+    return Number.isInteger(raw) && raw >= 1 ? raw : null;
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    return parsePositiveInt(raw.trim());
+  }
+  return null;
+}
+
+/** When query param is present but not a valid positive int, return null and caller should 400. */
+export function parseQueryPositiveInt(
+  query: URLSearchParams,
+  key: string,
+): { value?: number; invalid: boolean } {
+  const raw = query.get(key);
+  if (raw == null || raw === '') return { invalid: false };
+  const value = parsePositiveInt(raw);
+  if (value == null) return { invalid: true };
+  return { value, invalid: false };
+}
+
 export function clampLimit(raw: string | null, max = 500, fallback = 100): number {
   const n = raw ? parseInt(raw, 10) : fallback;
   if (!Number.isFinite(n) || n < 1) return fallback;

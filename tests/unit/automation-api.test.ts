@@ -221,6 +221,36 @@ describe('automation handlers', () => {
     });
   });
 
+  test('returns 404 without /api/v1 prefix', async () => {
+    const { req, res, done } = mockReqRes({ method: 'GET', url: '/customers' });
+    await handleAutomationRequest(req, res);
+    const r = await done;
+    expect(r.status).toBe(404);
+  });
+
+  test('returns 400 for invalid customerId query on deals', async () => {
+    const { req, res, done } = mockReqRes({
+      method: 'GET',
+      url: '/api/v1/deals?customerId=abc',
+      headers: { authorization: 'Bearer scrm_test_key_12345678901234567890123456789012' },
+    });
+    await handleAutomationRequest(req, res);
+    const r = await done;
+    expect(r.status).toBe(400);
+  });
+
+  test('task toggle requires completed boolean', async () => {
+    const { req, res, done } = mockReqRes({
+      method: 'POST',
+      url: '/api/v1/tasks/1/toggle',
+      headers: { authorization: 'Bearer scrm_test_key_12345678901234567890123456789012' },
+      body: '{}',
+    });
+    await handleAutomationRequest(req, res);
+    const r = await done;
+    expect(r.status).toBe(400);
+  });
+
   test('returns 429 when rate limit exceeded', async () => {
     const key = 'scrm_test_key_12345678901234567890123456789012';
     for (let i = 0; i < 60; i++) {

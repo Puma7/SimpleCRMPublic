@@ -57,3 +57,8 @@ Stand: Implementierung Phase A/B.
 - Mock-Requests normalisieren Header wie Node (`authorization` lowercase).
 - E-Mail-Actions: Whitelist im `switch`; unbekannte `action` → 400.
 - Workflow-Execute: deaktivierte Workflows abgelehnt; `dryRun` default `true`.
+- Routen nur unter `/api/v1` (kein Bypass ohne Prefix).
+- Query-/JSON-IDs: positive Ganzzahlen (`coercePositiveInt`); ungültige `customerId`-Query → 400.
+- Task-Toggle: `completed` muss explizit boolean sein.
+- Key-Generierung: mindestens ein Scope (UI + IPC).
+- Port-Konflikt (`EADDRINUSE`): Server startet nicht, App bleibt stabil.
