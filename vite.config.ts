@@ -84,7 +84,7 @@ export default defineConfig({
   },
   clearScreen: false,
   optimizeDeps: {
-    include: ['@supabase/postgrest-js'],
+    include: ['@supabase/postgrest-js', '@xyflow/react', '@xyflow/system'],
     exclude: ['electron'],
   },
 })

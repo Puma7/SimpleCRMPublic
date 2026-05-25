@@ -1,6 +1,6 @@
 "use client"
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { WorkflowGraphDocument } from "@shared/email-workflow-graph"
@@ -60,11 +60,7 @@ import {
   enrichRegistryGraphDocument,
 } from "./enrich-registry-labels"
 import { workflowTriggerLabel } from "./trigger-labels"
-
-const WorkflowCanvas = lazy(async () => {
-  const m = await import("./workflow-canvas")
-  return { default: m.WorkflowCanvas }
-})
+import { WorkflowCanvas } from "./workflow-canvas"
 
 type AccountOpt = { id: number; display_name: string }
 
@@ -753,15 +749,7 @@ export function WorkflowShell() {
                     <div className="absolute left-3 top-3 z-10">
                       <NodePalette />
                     </div>
-                    <Suspense
-                      fallback={
-                        <div className="flex h-full items-center justify-center">
-                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                        </div>
-                      }
-                    >
-                      <WorkflowCanvas onSelectionChange={setSelectedNodeId} />
-                    </Suspense>
+                    <WorkflowCanvas onSelectionChange={setSelectedNodeId} />
                   </>
                 )}
               </div>
