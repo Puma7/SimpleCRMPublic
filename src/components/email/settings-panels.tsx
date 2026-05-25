@@ -149,8 +149,9 @@ export function SettingsPanelsPage() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SettingsNav current={settingsTab} onSelect={selectTab} />
         <ScrollArea className="flex-1">
-        <SettingsPanels current={settingsTab} />
-      </ScrollArea>
+          <SettingsPanels current={settingsTab} />
+        </ScrollArea>
+      </div>
     </div>
   )
 }
