@@ -31,6 +31,7 @@ import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
+import { EmailUiModeToggle } from "./beta/email-ui-mode-toggle"
 
 type TabDef = {
   id: SettingsTab
@@ -155,8 +156,9 @@ export function SettingsPanelsPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-      <header className="flex h-12 shrink-0 items-center border-b px-4">
+      <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4">
         <h1 className="text-lg font-semibold tracking-tight">Einstellungen</h1>
+        <EmailUiModeToggle />
       </header>
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SettingsNav current={settingsTab} onSelect={selectTab} />

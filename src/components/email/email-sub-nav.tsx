@@ -3,6 +3,8 @@
 import { Link, useMatchRoute } from "@tanstack/react-router"
 import { BarChart3, FlaskConical, Inbox, Settings, Workflow } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useMailWorkspace } from "./workspace-context"
+import { EmailUiModeToggle } from "./beta/email-ui-mode-toggle"
 
 const SVELTE_LAB_ENABLED = import.meta.env.VITE_ENABLE_SVELTE_LAB === "true"
 
@@ -25,9 +27,16 @@ const ITEMS = [
 
 export function EmailSubNav() {
   const matchRoute = useMatchRoute()
+  const { emailUiMode } = useMailWorkspace()
+  const onSettings = !!matchRoute({ to: "/email/settings", fuzzy: false })
 
   return (
-    <div className="border-b bg-muted/30">
+    <div
+      className={cn(
+        "border-b",
+        emailUiMode === "beta" ? "border-primary/20 bg-primary/5" : "bg-muted/30",
+      )}
+    >
       <nav
         className="flex h-11 items-stretch gap-0 px-2"
         aria-label="E-Mail-Bereiche"
@@ -56,6 +65,14 @@ export function EmailSubNav() {
             </Link>
           )
         })}
+        <div className="ml-auto flex items-center gap-2 self-center pr-2">
+          {emailUiMode === "beta" ? (
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+              Beta
+            </span>
+          ) : null}
+          <EmailUiModeToggle />
+        </div>
       </nav>
     </div>
   )

@@ -13,6 +13,11 @@ import {
 } from "react"
 import type { MailAccountScope } from "./account-scope"
 import type { EmailMessage, MailView } from "./types"
+import {
+  readEmailUiMode,
+  writeEmailUiMode,
+  type EmailUiMode,
+} from "@/lib/email-ui-mode"
 
 export type ComposeIntent =
   | { mode: "closed" }
@@ -72,6 +77,9 @@ type MailWorkspaceState = {
    */
   accountsRevision: number
   bumpAccountsRevision: () => void
+  /** Classic sidebar tabs vs. beta hub (Einstellungen); persisted in localStorage. */
+  emailUiMode: EmailUiMode
+  setEmailUiMode: (mode: EmailUiMode) => void
 }
 
 const MailWorkspaceContext = createContext<MailWorkspaceState | null>(null)
@@ -171,6 +179,12 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   )
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
+  const [emailUiMode, setEmailUiModeState] = useState<EmailUiMode>(() => readEmailUiMode())
+
+  const setEmailUiMode = useCallback((mode: EmailUiMode) => {
+    setEmailUiModeState(mode)
+    writeEmailUiMode(mode)
+  }, [])
 
   const bumpAccountsRevision = useCallback(() => {
     setAccountsRevision((v) => v + 1)
@@ -214,6 +228,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setMetadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
+      emailUiMode,
+      setEmailUiMode,
     }),
     [
       selectedAccountScope,
@@ -227,6 +243,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       metadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
+      emailUiMode,
+      setEmailUiMode,
     ],
   )
 
