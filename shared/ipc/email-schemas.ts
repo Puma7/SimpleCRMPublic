@@ -572,6 +572,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       embeddingModel: z.string().nullable().optional(),
       isDefault: z.boolean().optional(),
       sortOrder: z.number().int().optional(),
+      apiKey: z.string().optional(),
     }),
     result: standardResult,
   });

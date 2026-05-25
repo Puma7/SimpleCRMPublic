@@ -129,6 +129,18 @@ describe('IPC contracts', () => {
     ).not.toThrow();
   });
 
+  test('Email.SaveAiProfile payload preserves apiKey', () => {
+    const parsed = getPayloadSchema(IPCChannels.Email.SaveAiProfile).parse({
+      id: 1,
+      label: 'Open Router',
+      provider: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-3.5-sonnet',
+      apiKey: 'sk-or-v1-test-secret',
+    }) as { apiKey?: string };
+    expect(parsed.apiKey).toBe('sk-or-v1-test-secret');
+  });
+
   test('Email.AddKnowledgeChunk payload accepts title and content', () => {
     expect(() =>
       getPayloadSchema(IPCChannels.Email.AddKnowledgeChunk).parse({
