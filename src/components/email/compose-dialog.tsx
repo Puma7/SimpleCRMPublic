@@ -447,7 +447,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
             />
           </div>
 
-          <div className="[&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-toolbar]:rounded-t-md rounded-md border bg-background">
+          <div className="compose-quill rounded-md border bg-background [&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:min-h-[240px] [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted">
             <ComposeQuillEditor value={bodyHtml} onChange={setBodyHtml} />
           </div>
 
