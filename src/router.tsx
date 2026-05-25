@@ -22,10 +22,12 @@ import CustomFieldsPage from './app/settings/custom-fields/page'
 import ProductsPage from './app/products/page'
 import ProductsLoading from './app/products/loading'
 import FollowUpPage from './app/followup/page'
+import EmailModuleLayout from './app/email/layout'
 import EmailPage from './app/email/page'
 import EmailWorkflowsPage from './app/email/workflows/page'
 import EmailSettingsPage from './app/email/settings/page'
 import EmailReportingPage from './app/email/reporting/page'
+import { SETTINGS_TAB_IDS } from './components/email/settings-panels'
 
 const rootRoute = createRootRoute({ component: App })
 
@@ -53,10 +55,37 @@ const customFieldsRoute = createRoute({ getParentRoute: () => settingsRoute, pat
 const productsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/products', component: ProductsPage, pendingComponent: ProductsLoading })
 const followUpRoute = createRoute({ getParentRoute: () => rootRoute, path: '/followup', component: FollowUpPage })
 
-const emailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/email', component: EmailPage })
-const emailWorkflowsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/email/workflows', component: EmailWorkflowsPage })
-const emailSettingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/email/settings', component: EmailSettingsPage })
-const emailReportingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/email/reporting', component: EmailReportingPage })
+const emailLayoutRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/email',
+  component: EmailModuleLayout,
+})
+const emailIndexRoute = createRoute({
+  getParentRoute: () => emailLayoutRoute,
+  path: '/',
+  component: EmailPage,
+})
+const emailWorkflowsRoute = createRoute({
+  getParentRoute: () => emailLayoutRoute,
+  path: '/workflows',
+  component: EmailWorkflowsPage,
+})
+const emailSettingsRoute = createRoute({
+  getParentRoute: () => emailLayoutRoute,
+  path: '/settings',
+  validateSearch: (search: Record<string, unknown>) => {
+    const tab = typeof search.tab === 'string' ? search.tab : undefined
+    const validTab =
+      tab && (SETTINGS_TAB_IDS as readonly string[]).includes(tab) ? tab : 'accounts'
+    return { tab: validTab as (typeof SETTINGS_TAB_IDS)[number] }
+  },
+  component: EmailSettingsPage,
+})
+const emailReportingRoute = createRoute({
+  getParentRoute: () => emailLayoutRoute,
+  path: '/reporting',
+  component: EmailReportingPage,
+})
 
 const catchAllRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -77,10 +106,12 @@ const routeTree = rootRoute.addChildren([
   settingsRoute.addChildren([settingsIndexRoute, customFieldsRoute]),
   productsRoute,
   followUpRoute,
-  emailRoute,
-  emailWorkflowsRoute,
-  emailSettingsRoute,
-  emailReportingRoute,
+  emailLayoutRoute.addChildren([
+    emailIndexRoute,
+    emailWorkflowsRoute,
+    emailSettingsRoute,
+    emailReportingRoute,
+  ]),
   catchAllRoute,
 ])
 

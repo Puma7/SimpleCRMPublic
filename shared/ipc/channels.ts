@@ -140,6 +140,7 @@ const EmailChannels = literal({
   ListCategories: 'email:list-categories',
   CreateCategory: 'email:create-category',
   CategoryCounts: 'email:category-counts',
+  MailFolderCounts: 'email:mail-folder-counts',
   AddInternalNote: 'email:add-internal-note',
   ListInternalNotes: 'email:list-internal-notes',
   ListCannedResponses: 'email:list-canned',

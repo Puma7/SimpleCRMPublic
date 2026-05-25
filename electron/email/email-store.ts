@@ -432,6 +432,57 @@ export function listMessagesForAccountView(
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
 
+export type MailFolderCounts = {
+  inbox: number;
+  inboxUnread: number;
+  sent: number;
+  drafts: number;
+  archived: number;
+  spam: number;
+  trash: number;
+};
+
+/** Per-folder message totals for sidebar badges (current account). */
+export function getMailFolderCountsForAccount(accountId: number): MailFolderCounts {
+  const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const row = getDb()
+    .prepare(
+      `SELECT
+        SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
+        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail}
+          AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
+          AND archived = 0 AND is_spam = 0 THEN 1 ELSE 0 END) AS inbox,
+        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail}
+          AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
+          AND archived = 0 AND is_spam = 0 AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
+        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
+        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam
+      FROM ${EMAIL_MESSAGES_TABLE}
+      WHERE account_id = ?`,
+    )
+    .get(accountId) as {
+    trash: number | null;
+    inbox: number | null;
+    inbox_unread: number | null;
+    sent: number | null;
+    drafts: number | null;
+    archived: number | null;
+    spam: number | null;
+  };
+
+  return {
+    inbox: Number(row?.inbox) || 0,
+    inboxUnread: Number(row?.inbox_unread) || 0,
+    sent: Number(row?.sent) || 0,
+    drafts: Number(row?.drafts) || 0,
+    archived: Number(row?.archived) || 0,
+    spam: Number(row?.spam) || 0,
+    trash: Number(row?.trash) || 0,
+  };
+}
+
 export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   const stmt = getDb().prepare(`SELECT * FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`);
   return stmt.get(id) as EmailMessageRow | undefined;

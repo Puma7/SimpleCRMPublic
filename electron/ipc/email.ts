@@ -15,6 +15,7 @@ import {
   getFolderByAccountAndPath,
   listMessagesForFolder,
   listMessagesForAccountView,
+  getMailFolderCountsForAccount,
   getEmailMessageById,
   createComposeDraft,
   updateComposeDraft,
@@ -595,6 +596,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.CategoryCounts, async (_event: IpcMainInvokeEvent, accountId: number) => {
       return listCategoryCountsForAccount(accountId);
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.MailFolderCounts,
+      async (_event: IpcMainInvokeEvent, accountId: number) => getMailFolderCountsForAccount(accountId),
+      { logger },
+    ),
   );
 
   disposers.push(

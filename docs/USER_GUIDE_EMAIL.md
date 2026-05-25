@@ -4,12 +4,14 @@ SimpleCRM kann **E-Mail-Konten** einbinden (IMAP oder POP3), Mails **lesen**, **
 
 ## Wo Sie was finden
 
-| Bereich | Navigation |
-|---------|------------|
-| **Posteingang & Nachrichten** | Menü **E-Mail** (oder Route `/email`) |
-| **Workflows automatisieren** | **E-Mail → Workflows** |
-| **SMTP, KI, OAuth, Team, Export** | **E-Mail → Einstellungen** (SMTP & KI) |
-| **Zahlen & Übersicht** | **E-Mail → Reporting** (`/email/reporting`) |
+Unter **E-Mail** in der Hauptnavigation gibt es eine **Unterleiste** mit vier Bereichen:
+
+| Bereich | Tab in der E-Mail-Ansicht |
+|---------|---------------------------|
+| **Posteingang & Nachrichten** | **Postfach** (`/email`) |
+| **Workflows automatisieren** | **Workflows** |
+| **Zahlen & Übersicht** | **Auswertung** |
+| **Konten, SMTP, KI, Team, Export** | **Einstellungen** (gruppierte Tabs) |
 
 ## Konto anlegen
 
@@ -21,7 +23,7 @@ SimpleCRM kann **E-Mail-Konten** einbinden (IMAP oder POP3), Mails **lesen**, **
 ## Postfach nutzen
 
 - **Synchronisieren:** Konten werden regelmäßig abgeglichen; Sie können auch manuell aktualisieren.
-- **Ansichten:** Posteingang, Gesendet, Entwürfe, Archiv.
+- **Ansichten:** Posteingang, Gesendet, Entwürfe, Archiv, Spam, Papierkorb (Zähler in der Sidebar).
 - **Kategorien** links filtern die Liste (nur sinnvoll in der Inbox-Ansicht).
 - **Suche** durchsucht Betreff, Kurztext und Inhalt (schneller mit der eingebauten Volltextsuche, wo verfügbar).
 - **Nachricht:** Kunde verknüpfen, interne Notizen, Tags, **Zuweisung** an Teammitglieder, Anhänge **öffnen** oder **speichern**.
@@ -38,7 +40,8 @@ SimpleCRM kann **E-Mail-Konten** einbinden (IMAP oder POP3), Mails **lesen**, **
 - **Auslöser:** z. B. neue Mail, gesendete Mail, neuer Entwurf, **Zeitplan** (Cron).
 - **Aktionen:** z. B. Tags, Kategorie, Archiv, Weiterleitungskopie, Sperre vor dem Versand; erweiterte Knoten (KI, Code, CRM) über die **Palette** im Editor.
 - **Vorlagen**, **Test (Dry-Run)** mit Nachrichten-ID und **Lauf-Historie** im Workflow-Editor.
-- **Wissensbasis** für KI-Workflows: **E-Mail → Einstellungen** (Zahnrad in der E-Mail-Ansicht) → Tab **Wissensbasis**.
+- **Wissensbasis** für KI-Workflows: **E-Mail → Einstellungen** → Gruppe **KI & Automation** → **Wissensbasis**.
+- **IMAP-Löschen / HTTP-Allowlist:** **Einstellungen → Automatisierung** (Link auch im Workflow-Editor unter **Erweitert**).
 - Unter **Workflows** den grafischen Editor nutzen und speichern — Zeitpläne werden im Hintergrund neu geladen.
 
 ## Datenexport (DSGVO-Hilfe)

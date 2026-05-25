@@ -45,8 +45,6 @@ type MailWorkspaceState = {
   setSearchQuery: Dispatch<SetStateAction<string>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
-  settingsOpen: boolean
-  setSettingsOpen: Dispatch<SetStateAction<boolean>>
   settingsTab: SettingsTab
   setSettingsTab: Dispatch<SetStateAction<SettingsTab>>
   /**
@@ -114,6 +112,7 @@ const VALID_SETTINGS_TABS: SettingsTab[] = [
   "oauth",
   "ai",
   "knowledge",
+  "automation",
   "team",
   "canned",
   "prompts",
@@ -142,7 +141,6 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
       LS_KEYS.settingsTab,
@@ -196,8 +194,6 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSearchQuery,
       composeIntent,
       setComposeIntent,
-      settingsOpen,
-      setSettingsOpen,
       settingsTab,
       setSettingsTab,
       settingsAccountId,
@@ -214,7 +210,6 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       selectedMessage,
       searchQuery,
       composeIntent,
-      settingsOpen,
       settingsTab,
       settingsAccountId,
       metadataPanelOpen,

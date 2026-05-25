@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
+import { Copy } from "lucide-react"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -54,6 +55,31 @@ export function MessageMetadataPanel({
 
       <ScrollArea className="flex-1">
         <div className="space-y-5 p-4">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Nachrichten-ID</Label>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded border bg-muted/50 px-2 py-1 font-mono text-xs">
+                {selectedMessage.id}
+              </code>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="h-8 w-8 shrink-0"
+                aria-label="ID kopieren"
+                onClick={() => {
+                  void navigator.clipboard.writeText(String(selectedMessage.id))
+                  toast.success("Nachrichten-ID kopiert")
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Für Workflow-Tests (Dry-Run) im Bereich Workflows → Erweitert.
+            </p>
+          </div>
+
           <div className="space-y-1.5">
             <Label className="text-xs">Zuweisung</Label>
             <Select
