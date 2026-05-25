@@ -2,7 +2,7 @@ import type { WorkflowGraphDocument, WorkflowGraphNode } from '../../shared/emai
 import { outgoing, pickEdge, parseGraphDocument } from './graph-walk-utils';
 export { parseGraphDocument, resolveResumeNodeAfter } from './graph-walk-utils';
 import {
-  evaluateWorkflowWhen,
+  matchConditionItem,
   type WorkflowCondition,
   type WorkflowConditionItem,
 } from '../email/email-workflow-types';
@@ -38,6 +38,14 @@ function configFromActionData(data: Record<string, unknown>): { type: string; co
   return { type: registryType, config };
 }
 
+function requiresInboundConditionGate(node: WorkflowGraphNode): boolean {
+  if (node.type === 'action') return true;
+  if (node.type !== 'registry') return false;
+  const reg = registryTypeOf(node);
+  if (!reg) return true;
+  return reg.startsWith('email.') || reg.startsWith('ai.');
+}
+
 function registryTypeOf(node: WorkflowGraphNode): string | undefined {
   if (node.type !== 'registry' && node.type !== 'action') return undefined;
   const data = node.data as Record<string, unknown>;
@@ -61,8 +69,7 @@ async function executeNode(
     const data = node.data as Record<string, unknown>;
     const cond = conditionFromNodeData(data);
     const item: WorkflowConditionItem = data.negated ? { not: cond } : cond;
-    const when = 'not' in item && item.not ? { not: item.not } : item;
-    const match = evaluateWorkflowWhen(when as WorkflowCondition, ctx.strings);
+    const match = matchConditionItem(item, ctx.strings);
     log.push(match ? `condition:${data.field}:yes` : `condition:${data.field}:no`);
     return { status: 'ok', port: match ? 'yes' : 'no' };
   }
@@ -85,6 +92,11 @@ type WalkOptions = {
   allowRevisit?: boolean;
 };
 
+type InboundBranchGate = {
+  /** True after a Bedingung node matched on the ja branch in this trigger branch. */
+  conditionOk: boolean;
+};
+
 async function walkGraph(
   ctx: WorkflowContext,
   doc: WorkflowGraphDocument,
@@ -92,6 +104,7 @@ async function walkGraph(
   log: string[],
   visited?: Set<string>,
   options?: WalkOptions,
+  inboundGate?: InboundBranchGate,
 ): Promise<GraphRunResult> {
   const nodesById = new Map(doc.nodes.map((n) => [n.id, n]));
   let currentId: string | undefined = startNodeId;
@@ -108,6 +121,17 @@ async function walkGraph(
 
     const node = nodesById.get(currentId);
     if (!node) break;
+
+    const gate = inboundGate;
+    if (
+      gate &&
+      ctx.direction === 'inbound' &&
+      requiresInboundConditionGate(node) &&
+      !gate.conditionOk
+    ) {
+      log.push(`skip:${node.id}:no_prior_condition`);
+      break;
+    }
 
     const regType = registryTypeOf(node);
 
@@ -140,9 +164,15 @@ async function walkGraph(
         ctx.variables['loop.index'] = i;
         log.push(`loop:${i}:${items[i]}`);
         const branchLog = [...log];
-        const r = await walkGraph(ctx, doc, eachEdge.target, branchLog, new Set<string>(), {
-          allowRevisit: true,
-        });
+        const r = await walkGraph(
+          ctx,
+          doc,
+          eachEdge.target,
+          branchLog,
+          new Set<string>(),
+          { allowRevisit: true },
+          gate,
+        );
         log.push(...r.log);
         if (r.blocked) return r;
         if (r.status === 'error') {
@@ -153,6 +183,13 @@ async function walkGraph(
       }
       currentId = doneEdge?.target;
       continue;
+    }
+
+    if (node.type === 'condition' && gate) {
+      const data = node.data as Record<string, unknown>;
+      const cond = conditionFromNodeData(data);
+      const item: WorkflowConditionItem = data.negated ? { not: cond } : cond;
+      gate.conditionOk = matchConditionItem(item, ctx.strings);
     }
 
     const t0 = Date.now();
@@ -274,7 +311,8 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
   let merged: GraphRunResult = { log, status: 'ok', blocked: false, blockReason: null };
   for (const edge of outs) {
     const branchLog = [...log, `branch:${edge.target}`];
-    const r = await walkGraph(ctx, doc, edge.target, branchLog);
+    const branchGate: InboundBranchGate = { conditionOk: false };
+    const r = await walkGraph(ctx, doc, edge.target, branchLog, undefined, undefined, branchGate);
     merged.log.push(...r.log);
     if (r.blocked) return r;
     if (r.status === 'error') merged.status = 'error';

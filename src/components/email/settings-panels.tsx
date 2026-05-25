@@ -3,7 +3,6 @@
 import type { ReactElement } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   AtSign,
@@ -64,19 +63,9 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
 ]
 
 function SettingsPanels({ current }: { current: SettingsTab }) {
+  const active = TAB_DEFS.find((t) => t.id === current) ?? TAB_DEFS[0]!
   return (
-    <Tabs value={current} className="w-full">
-      {TAB_DEFS.map((t) => (
-        <TabsContent
-          key={t.id}
-          value={t.id}
-          className="mt-0 data-[state=inactive]:hidden"
-          forceMount
-        >
-          <div className="mx-auto max-w-2xl p-6">{t.render()}</div>
-        </TabsContent>
-      ))}
-    </Tabs>
+    <div className="mx-auto w-full max-w-2xl p-6">{active.render()}</div>
   )
 }
 

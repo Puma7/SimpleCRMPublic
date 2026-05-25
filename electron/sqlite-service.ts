@@ -472,6 +472,10 @@ function runMigrations() {
             addAcc('oauth_provider', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN oauth_provider TEXT`);
             addAcc('oauth_refresh_keytar_key', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN oauth_refresh_keytar_key TEXT UNIQUE`);
             addAcc('sent_folder_path', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN sent_folder_path TEXT DEFAULT 'Sent'`);
+            addAcc(
+                'imap_sync_seen_on_open',
+                `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_seen_on_open INTEGER NOT NULL DEFAULT 1`,
+            );
         }
 
         if (emailFolderExists) {
@@ -497,9 +501,22 @@ function runMigrations() {
                 { name: 'attachments_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN attachments_json TEXT` },
                 { name: 'assigned_to', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN assigned_to TEXT` },
                 { name: 'pop3_uidl', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pop3_uidl TEXT` },
+                { name: 'raw_headers', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_headers TEXT` },
                 { name: 'is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN is_spam INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of extraMsg) {
+                if (!mcn.has(col.name)) {
+                    console.log(`Adding ${col.name} to email_messages...`);
+                    db.exec(col.sql);
+                    mcn = readMsgCols2();
+                }
+            }
+            const trashSnap = [
+                { name: 'trash_prev_archived', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_archived INTEGER` },
+                { name: 'trash_prev_is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_is_spam INTEGER` },
+                { name: 'trash_prev_folder_kind', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_folder_kind TEXT` },
+            ];
+            for (const col of trashSnap) {
                 if (!mcn.has(col.name)) {
                     console.log(`Adding ${col.name} to email_messages...`);
                     db.exec(col.sql);

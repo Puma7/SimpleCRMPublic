@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import {
+  AI_PROVIDER_PRESETS,
+  AI_PROVIDER_PRESET_IDS,
+  type AiProviderPresetId,
+} from "@shared/ai-provider-presets"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,92 +30,139 @@ type AiProfile = {
   isDefault: boolean
 }
 
-type ProviderPreset = { label: string; baseUrl: string; defaultModel: string }
+type ProviderPreset = {
+  label: string
+  baseUrl: string
+  defaultModel: string
+  defaultEmbeddingModel?: string
+}
 
-const PROVIDER_ORDER = [
-  "openai",
-  "openrouter",
-  "anthropic",
-  "google",
-  "deepseek",
-  "ollama",
-  "custom",
-] as const
+function mergePresets(
+  fromIpc?: Record<string, ProviderPreset>,
+): Record<string, ProviderPreset> {
+  return { ...AI_PROVIDER_PRESETS, ...(fromIpc ?? {}) }
+}
 
 export function AiPanel() {
   const [profiles, setProfiles] = useState<AiProfile[]>([])
-  const [presets, setPresets] = useState<Record<string, ProviderPreset>>({})
+  const [presets, setPresets] = useState<Record<string, ProviderPreset>>(
+    () => mergePresets(),
+  )
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [label, setLabel] = useState("")
-  const [provider, setProvider] = useState<string>("openai")
-  const [baseUrl, setBaseUrl] = useState("")
-  const [model, setModel] = useState("")
-  const [embeddingModel, setEmbeddingModel] = useState("text-embedding-3-small")
+  const [provider, setProvider] = useState<AiProviderPresetId>("openai")
+  const [baseUrl, setBaseUrl] = useState(AI_PROVIDER_PRESETS.openai.baseUrl)
+  const [model, setModel] = useState(AI_PROVIDER_PRESETS.openai.defaultModel)
+  const [embeddingModel, setEmbeddingModel] = useState(
+    AI_PROVIDER_PRESETS.openai.defaultEmbeddingModel ?? "",
+  )
   const [apiKey, setApiKey] = useState("")
+
+  const applyPreset = useCallback(
+    (p: AiProviderPresetId, presetMap: Record<string, ProviderPreset>) => {
+      setProvider(p)
+      const preset = presetMap[p]
+      if (!preset) return
+      if (p === "custom") {
+        return
+      }
+      setBaseUrl(preset.baseUrl)
+      setModel(preset.defaultModel)
+      if (preset.defaultEmbeddingModel) {
+        setEmbeddingModel(preset.defaultEmbeddingModel)
+      }
+    },
+    [],
+  )
 
   const load = useCallback(async () => {
     if (!hasElectron()) return
-    const s = await invokeIpc<{
-      profiles?: AiProfile[]
-      providerPresets?: Record<string, ProviderPreset>
-    }>(IPCChannels.Email.GetAiSettings)
-    setProfiles(s.profiles ?? [])
-    setPresets(s.providerPresets ?? {})
-    const active = s.profiles?.find((p) => p.isDefault) ?? s.profiles?.[0]
-    if (active) {
-      setSelectedId(active.id)
-      setLabel(active.label)
-      setProvider(active.provider)
-      setBaseUrl(active.baseUrl)
-      setModel(active.model)
-      setEmbeddingModel(active.embeddingModel ?? "text-embedding-3-small")
+    try {
+      const s = await invokeIpc<{
+        profiles?: AiProfile[]
+        providerPresets?: Record<string, ProviderPreset>
+      }>(IPCChannels.Email.GetAiSettings)
+      const merged = mergePresets(s.providerPresets)
+      setPresets(merged)
+      const list = s.profiles ?? []
+      setProfiles(list)
+      const active = list.find((p) => p.isDefault) ?? list[0]
+      if (active) {
+        setSelectedId(active.id)
+        setLabel(active.label)
+        setProvider(active.provider as AiProviderPresetId)
+        setBaseUrl(active.baseUrl)
+        setModel(active.model)
+        setEmbeddingModel(active.embeddingModel ?? "")
+      } else {
+        setSelectedId(null)
+        setLabel("Neues Profil")
+        applyPreset("openai", merged)
+      }
+    } catch (e) {
+      console.error(e)
+      toast.error("KI-Einstellungen konnten nicht geladen werden.")
+      setPresets(mergePresets())
     }
-  }, [])
+  }, [applyPreset])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const applyPreset = (p: string) => {
-    setProvider(p)
-    const preset = presets[p]
-    if (preset) {
-      setBaseUrl(preset.baseUrl)
-      setModel(preset.defaultModel)
-    }
-  }
-
   const selectProfile = (p: AiProfile) => {
     setSelectedId(p.id)
     setLabel(p.label)
-    setProvider(p.provider)
+    setProvider(p.provider as AiProviderPresetId)
     setBaseUrl(p.baseUrl)
     setModel(p.model)
-    setEmbeddingModel(p.embeddingModel ?? "text-embedding-3-small")
+    setEmbeddingModel(p.embeddingModel ?? "")
     setApiKey("")
   }
 
   const save = async () => {
-    if (!hasElectron() || !label.trim()) return
-    await invokeIpc(IPCChannels.Email.SaveAiProfile, {
-      id: selectedId ?? undefined,
-      label: label.trim(),
-      provider,
-      baseUrl: baseUrl.trim(),
-      model: model.trim(),
-      embeddingModel: embeddingModel.trim() || null,
-      isDefault: profiles.length === 0 || profiles.find((p) => p.id === selectedId)?.isDefault,
-      apiKey: apiKey.trim() || undefined,
-    })
-    setApiKey("")
-    toast.success("KI-Profil gespeichert.")
-    await load()
+    if (!hasElectron() || !label.trim()) {
+      toast.error("Bitte eine Bezeichnung eingeben.")
+      return
+    }
+    if (!baseUrl.trim() || !model.trim()) {
+      toast.error("Base-URL und Chat-Modell sind erforderlich.")
+      return
+    }
+    try {
+      const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
+        IPCChannels.Email.SaveAiProfile,
+        {
+          id: selectedId ?? undefined,
+          label: label.trim(),
+          provider,
+          baseUrl: baseUrl.trim(),
+          model: model.trim(),
+          embeddingModel: embeddingModel.trim() || null,
+          isDefault:
+            profiles.length === 0 ||
+            Boolean(profiles.find((p) => p.id === selectedId)?.isDefault),
+          apiKey: apiKey.trim() || undefined,
+        },
+      )
+      if (r && "success" in r && r.success === false) {
+        toast.error(r.error ?? "Speichern fehlgeschlagen.")
+        return
+      }
+      setApiKey("")
+      toast.success("KI-Profil gespeichert.")
+      await load()
+    } catch (e) {
+      console.error(e)
+      toast.error("KI-Profil konnte nicht gespeichert werden.")
+    }
   }
 
   const addNew = () => {
     setSelectedId(null)
     setLabel("Neues Profil")
-    applyPreset("openai")
+    setApiKey("")
+    applyPreset("openai", presets)
   }
 
   return (
@@ -118,10 +170,10 @@ export function AiPanel() {
       <div>
         <h3 className="text-base font-semibold">KI-Profile (Anbieter &amp; Modelle)</h3>
         <p className="text-sm text-muted-foreground">
-          Jeder Eintrag hat einen eigenen API-Key (Keytar) und ein Modell. In Workflows wählen Sie
-          das Profil am KI-Knoten (<code className="rounded bg-muted px-1">profileId</code> in den
-          Experten-JSON-Einstellungen oder künftig per Dropdown). Keys und Modelle sind getrennt —
-          ein Key kann mehrere Profile nutzen, typischerweise je ein Profil pro Anbieter/Modell.
+          Ein Profil = ein Anbieter mit API-Key. Das <strong>Chat-Modell</strong> nutzen Composer
+          und Workflow-KI-Knoten. Das optionale <strong>Embedding-Modell</strong> nur für die
+          Wissensbasis (semantische Suche) — nicht gleichzeitig als Chat-Modell gedacht, sondern
+          als zweiter Endpunkt desselben Anbieters.
         </p>
       </div>
 
@@ -150,18 +202,25 @@ export function AiPanel() {
         </div>
         <div className="space-y-1.5">
           <Label>Anbieter-Vorlage</Label>
-          <Select value={provider} onValueChange={applyPreset}>
+          <Select
+            value={provider}
+            onValueChange={(v) => applyPreset(v as AiProviderPresetId, presets)}
+          >
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {PROVIDER_ORDER.map((id) => (
+              {AI_PROVIDER_PRESET_IDS.map((id) => (
                 <SelectItem key={id} value={id}>
                   {presets[id]?.label ?? id}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground">
+            OpenAI, Open Router usw. füllen Base-URL und Standardmodelle vor. Bei „frei“ alles
+            manuell eintragen.
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label>Base URL (OpenAI-kompatibel)</Label>
@@ -169,11 +228,19 @@ export function AiPanel() {
         </div>
         <div className="space-y-1.5">
           <Label>Chat-Modell</Label>
-          <Input value={model} onChange={(e) => setModel(e.target.value)} />
+          <Input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="z. B. gpt-4o-mini"
+          />
         </div>
         <div className="space-y-1.5">
-          <Label>Embedding-Modell (Wissensbasis)</Label>
-          <Input value={embeddingModel} onChange={(e) => setEmbeddingModel(e.target.value)} />
+          <Label>Embedding-Modell (optional, Wissensbasis)</Label>
+          <Input
+            value={embeddingModel}
+            onChange={(e) => setEmbeddingModel(e.target.value)}
+            placeholder="z. B. text-embedding-3-small"
+          />
         </div>
         <div className="space-y-1.5">
           <Label>API-Key (nur bei Speichern setzen)</Label>
@@ -193,9 +260,9 @@ export function AiPanel() {
               type="button"
               variant="outline"
               onClick={() =>
-                void invokeIpc(IPCChannels.Email.ClearAiProfileApiKey, selectedId).then(() =>
-                  toast.success("API-Key des Profils entfernt"),
-                )
+                void invokeIpc(IPCChannels.Email.ClearAiProfileApiKey, selectedId)
+                  .then(() => toast.success("API-Key des Profils entfernt"))
+                  .catch(() => toast.error("API-Key konnte nicht entfernt werden."))
               }
             >
               Key löschen
@@ -206,10 +273,12 @@ export function AiPanel() {
               type="button"
               variant="destructive"
               onClick={() =>
-                void invokeIpc(IPCChannels.Email.DeleteAiProfile, selectedId).then(async () => {
-                  toast.success("Profil gelöscht")
-                  await load()
-                })
+                void invokeIpc(IPCChannels.Email.DeleteAiProfile, selectedId)
+                  .then(async () => {
+                    toast.success("Profil gelöscht")
+                    await load()
+                  })
+                  .catch(() => toast.error("Profil konnte nicht gelöscht werden."))
               }
             >
               Profil löschen

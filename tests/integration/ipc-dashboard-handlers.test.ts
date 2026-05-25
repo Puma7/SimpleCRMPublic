@@ -51,9 +51,9 @@ describe('registerDashboardHandlers', () => {
       sqliteMocks.getRecentCustomers.mockReturnValue(customers);
 
       const handler = handlers.get(IPCChannels.Dashboard.GetRecentCustomers);
-      const result = await handler({});
+      const result = await handler({}, 10);
       expect(result).toEqual(customers);
-      expect(sqliteMocks.getRecentCustomers).toHaveBeenCalledTimes(1);
+      expect(sqliteMocks.getRecentCustomers).toHaveBeenCalledWith(10);
     });
 
     test('returns empty array when service returns empty', async () => {
@@ -78,9 +78,9 @@ describe('registerDashboardHandlers', () => {
       sqliteMocks.getUpcomingTasks.mockReturnValue(tasks);
 
       const handler = handlers.get(IPCChannels.Dashboard.GetUpcomingTasks);
-      const result = await handler({});
+      const result = await handler({}, 3);
       expect(result).toEqual(tasks);
-      expect(sqliteMocks.getUpcomingTasks).toHaveBeenCalledTimes(1);
+      expect(sqliteMocks.getUpcomingTasks).toHaveBeenCalledWith(3);
     });
 
     test('rethrows when service throws', async () => {

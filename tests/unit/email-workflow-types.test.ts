@@ -15,6 +15,15 @@ describe('email-workflow-types', () => {
     combined_text: 'Rechnung Mai kunde@example.com info@firma.de rechnung@firma.de',
   };
 
+  it('treats empty contains value as non-match', () => {
+    expect(
+      evaluateWorkflowWhen(
+        { field: 'combined_text', op: 'contains', value: '', caseInsensitive: true },
+        ctx,
+      ),
+    ).toBe(false);
+  });
+
   it('matches to_address contains per recipient (Rechnung routing)', () => {
     expect(
       evaluateWorkflowWhen(

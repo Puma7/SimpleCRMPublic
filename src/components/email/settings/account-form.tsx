@@ -28,9 +28,11 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [pop3Host, setPop3Host] = useState("")
   const [pop3Port, setPop3Port] = useState("995")
   const [pop3Tls, setPop3Tls] = useState(true)
+  const [imapSyncSeenOnOpen, setImapSyncSeenOnOpen] = useState(true)
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
 
   useEffect(() => {
@@ -46,15 +48,31 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setPop3Host(editAccount.pop3_host ?? "")
     setPop3Port(String(editAccount.pop3_port ?? 995))
     setPop3Tls(editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls))
+    setImapSyncSeenOnOpen(editAccount.imap_sync_seen_on_open !== 0)
   }, [editAccount])
 
   const handleTestImap = async () => {
     if (!hasElectron()) return
+    if (!imapHost.trim() || !imapUsername.trim()) {
+      const msg = "Bitte IMAP-Host und Benutzername ausfüllen."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
+    if (!isEdit && !imapPassword) {
+      const msg = "Bitte Passwort eingeben (neues Konto)."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
     setTesting(true)
+    setTestFeedback("IMAP-Verbindung wird getestet …")
+    const loadingId = toast.loading("IMAP-Verbindung wird getestet …")
     try {
       const result = await invokeIpc<{ success: boolean; error?: string }>(
         IPCChannels.Email.TestImap,
         {
+          ...(isEdit && editAccount ? { accountId: editAccount.id } : {}),
           imapHost: imapHost.trim(),
           imapPort: parseInt(imapPort, 10) || 993,
           imapTls,
@@ -62,10 +80,19 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           imapPassword,
         },
       )
-      if (result.success) toast.success("IMAP-Verbindung erfolgreich.")
-      else toast.error(result.error ?? "Verbindung fehlgeschlagen.")
+      if (result.success) {
+        const msg = "IMAP-Verbindung erfolgreich."
+        setTestFeedback(msg)
+        toast.success(msg, { id: loadingId })
+      } else {
+        const msg = result.error ?? "Verbindung fehlgeschlagen."
+        setTestFeedback(msg)
+        toast.error(msg, { id: loadingId })
+      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Verbindung fehlgeschlagen.")
+      const msg = e instanceof Error ? e.message : "Verbindung fehlgeschlagen."
+      setTestFeedback(msg)
+      toast.error(msg, { id: loadingId })
     } finally {
       setTesting(false)
     }
@@ -74,15 +101,26 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const handleTestPop3 = async () => {
     if (!hasElectron()) return
     const host = pop3Host.trim() || imapHost.trim()
-    if (!host || !imapUsername.trim() || !imapPassword) {
-      toast.error("POP3-Host, Benutzer und Passwort ausfüllen.")
+    if (!host || !imapUsername.trim()) {
+      const msg = "POP3-Host und Benutzer ausfüllen."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
+    if (!isEdit && !imapPassword) {
+      const msg = "Bitte Passwort eingeben (neues Konto)."
+      setTestFeedback(msg)
+      toast.error(msg)
       return
     }
     setTestingPop3(true)
+    setTestFeedback("POP3-Verbindung wird getestet …")
+    const loadingId = toast.loading("POP3-Verbindung wird getestet …")
     try {
       const result = await invokeIpc<{ success: boolean; error?: string }>(
         IPCChannels.Email.TestPop3,
         {
+          ...(isEdit && editAccount ? { accountId: editAccount.id } : {}),
           host,
           port: parseInt(pop3Port, 10) || 995,
           tls: pop3Tls,
@@ -90,10 +128,19 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           password: imapPassword,
         },
       )
-      if (result.success) toast.success("POP3-Verbindung erfolgreich.")
-      else toast.error(result.error ?? "POP3 fehlgeschlagen.")
+      if (result.success) {
+        const msg = "POP3-Verbindung erfolgreich."
+        setTestFeedback(msg)
+        toast.success(msg, { id: loadingId })
+      } else {
+        const msg = result.error ?? "POP3 fehlgeschlagen."
+        setTestFeedback(msg)
+        toast.error(msg, { id: loadingId })
+      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "POP3 fehlgeschlagen.")
+      const msg = e instanceof Error ? e.message : "POP3 fehlgeschlagen."
+      setTestFeedback(msg)
+      toast.error(msg, { id: loadingId })
     } finally {
       setTestingPop3(false)
     }
@@ -131,6 +178,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           pop3Host: pop3Host.trim() || null,
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
+          imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
@@ -149,6 +197,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           pop3Host: pop3Host.trim() || null,
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
+          imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
         })
         if (res.id != null) {
           toast.success("Konto gespeichert.")
@@ -275,6 +324,31 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
         </div>
       </div>
 
+      {protocol === "imap" ? (
+        <div className="flex items-start gap-3 rounded-md border bg-muted/30 px-3 py-2.5">
+          <Switch
+            id="acc-sync-seen"
+            checked={imapSyncSeenOnOpen}
+            onCheckedChange={setImapSyncSeenOnOpen}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="acc-sync-seen" className="cursor-pointer text-sm font-normal">
+              Beim Öffnen als gelesen auf dem IMAP-Server markieren
+            </Label>
+            <p className="text-[11px] text-muted-foreground">
+              Beim Abruf liest SimpleCRM den Server-Status (gelesen/ungelesen). Beim
+              Öffnen einer Mail hier können Sie optional auch den Server-Status setzen.
+              POP3 unterstützt keinen Gelesen-Status auf dem Server.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          POP3 hat keinen Gelesen-Status auf dem Server — nur die lokale Anzeige in
+          SimpleCRM.
+        </p>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="acc-user">Benutzername</Label>
@@ -292,6 +366,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
             type="password"
             value={imapPassword}
             onChange={(e) => setImapPassword(e.target.value)}
+            placeholder={isEdit ? "Leer = gespeichertes Passwort beim Test" : undefined}
           />
         </div>
       </div>
@@ -320,6 +395,20 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
             POP3 testen
           </Button>
         )}
+        {testFeedback ? (
+          <p
+            className={`w-full text-sm ${
+              testFeedback.includes("erfolgreich")
+                ? "text-green-600 dark:text-green-400"
+                : testFeedback.includes("wird getestet")
+                  ? "text-muted-foreground"
+                  : "text-destructive"
+            }`}
+            role="status"
+          >
+            {testFeedback}
+          </p>
+        ) : null}
         {isEdit && onCancelEdit ? (
           <Button type="button" size="sm" variant="ghost" onClick={onCancelEdit}>
             Abbrechen

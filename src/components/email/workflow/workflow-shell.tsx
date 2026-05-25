@@ -10,6 +10,7 @@ import {
   Code2,
   Download,
   ExternalLink,
+  LayoutGrid,
   Loader2,
   PlayCircle,
   Save,
@@ -51,6 +52,7 @@ import { JsonDevDrawer } from "./json-dev-drawer"
 import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
+import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 import {
@@ -258,6 +260,12 @@ export function WorkflowShell() {
         throw new Error("Workflow braucht mindestens einen Trigger-Knoten.")
       }
       const trig = triggerFromGraph(graphDoc) || "inbound"
+      if (trig === "inbound" && graphHasTriggerToActionShortcut(graphDoc)) {
+        toast.warning(
+          "Aktionen hängen direkt am Trigger ohne Bedingung — sie würden auf jede Mail angewendet. Bitte Trigger → Bedingung → (Ja) → Aktion verbinden.",
+          { duration: 8000 },
+        )
+      }
       if (selectedId != null) {
         await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, {
           workflowId: selectedId,
@@ -480,6 +488,20 @@ export function WorkflowShell() {
                 </Label>
               </div>
               <div className="flex items-center gap-2 self-end pb-0.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="gap-2"
+                  title="Knoten automatisch anordnen (von oben nach unten)"
+                  onClick={() => {
+                    useWorkflowEditorStore.getState().applyAutoLayout()
+                    toast.success("Layout angewendet — bitte speichern, um Positionen zu behalten.")
+                  }}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                  Anordnen
+                </Button>
                 <Button
                   type="button"
                   size="sm"

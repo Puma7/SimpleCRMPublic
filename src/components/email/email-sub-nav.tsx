@@ -1,14 +1,26 @@
 "use client"
 
 import { Link, useMatchRoute } from "@tanstack/react-router"
-import { BarChart3, Inbox, Settings, Workflow } from "lucide-react"
+import { BarChart3, FlaskConical, Inbox, Settings, Workflow } from "lucide-react"
 import { cn } from "@/lib/utils"
+
+const SVELTE_LAB_ENABLED = import.meta.env.VITE_ENABLE_SVELTE_LAB === "true"
 
 const ITEMS = [
   { to: "/email" as const, label: "Postfach", icon: Inbox, exact: true },
   { to: "/email/workflows" as const, label: "Workflows", icon: Workflow, exact: false },
   { to: "/email/reporting" as const, label: "Auswertung", icon: BarChart3, exact: false },
   { to: "/email/settings" as const, label: "Einstellungen", icon: Settings, exact: false },
+  ...(SVELTE_LAB_ENABLED
+    ? [
+        {
+          to: "/email/svelte-lab" as const,
+          label: "Svelte Lab",
+          icon: FlaskConical,
+          exact: false,
+        },
+      ]
+    : []),
 ] as const
 
 export function EmailSubNav() {

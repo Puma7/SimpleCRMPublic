@@ -14,7 +14,12 @@ export function PromptsPanel() {
 
   const load = useCallback(async () => {
     if (!hasElectron()) return
-    setPrompts(await invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts))
+    try {
+      setPrompts(await invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts))
+    } catch (e) {
+      console.error(e)
+      toast.error("KI-Prompts konnten nicht geladen werden.")
+    }
   }, [])
 
   useEffect(() => {
@@ -46,12 +51,22 @@ export function PromptsPanel() {
                 const userTemplate = (
                   document.getElementById(`pt-${p.id}`) as HTMLTextAreaElement
                 ).value
-                await invokeIpc(IPCChannels.Email.SaveAiPrompt, {
-                  id: p.id,
-                  label,
-                  userTemplate,
-                })
-                toast.success("Gespeichert")
+                if (!label.trim()) {
+                  toast.error("Bitte eine Bezeichnung eingeben.")
+                  return
+                }
+                try {
+                  await invokeIpc(IPCChannels.Email.SaveAiPrompt, {
+                    id: p.id,
+                    label: label.trim(),
+                    userTemplate,
+                  })
+                  toast.success("Gespeichert")
+                  await load()
+                } catch (e) {
+                  console.error(e)
+                  toast.error("Prompt konnte nicht gespeichert werden.")
+                }
               }}
             >
               Speichern
@@ -64,11 +79,17 @@ export function PromptsPanel() {
         variant="secondary"
         size="sm"
         onClick={async () => {
-          await invokeIpc(IPCChannels.Email.SaveAiPrompt, {
-            label: "Neu",
-            userTemplate: "{{text}}",
-          })
-          await load()
+          try {
+            await invokeIpc(IPCChannels.Email.SaveAiPrompt, {
+              label: "Neu",
+              userTemplate: "{{text}}",
+            })
+            await load()
+            toast.success("Prompt angelegt")
+          } catch (e) {
+            console.error(e)
+            toast.error("Neuer Prompt konnte nicht angelegt werden.")
+          }
         }}
       >
         <Plus className="mr-2 h-4 w-4" />

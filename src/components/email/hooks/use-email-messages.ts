@@ -38,8 +38,15 @@ export function useEmailMessages() {
   }, [searchQuery])
 
   const loadMessages = useCallback(
-    async (accountScope: MailAccountScope, view: MailView, catId: number | null, query: string) => {
+    async (
+      accountScope: MailAccountScope,
+      view: MailView,
+      catId: number | null,
+      query: string,
+      opts?: { preserveSelection?: boolean },
+    ) => {
       if (!hasElectron()) return
+      const keepId = opts?.preserveSelection ? selectedMessage?.id : undefined
       setLoadingMessages(true)
       try {
         let list: EmailMessage[]
@@ -59,7 +66,16 @@ export function useEmailMessages() {
           })
         }
         setMessages(list)
-        setSelectedMessage(null)
+        if (keepId != null) {
+          const still = list.find((m) => m.id === keepId)
+          if (still) {
+            setSelectedMessage((prev) =>
+              prev?.id === keepId ? { ...prev, ...still } : still,
+            )
+          }
+        } else {
+          setSelectedMessage(null)
+        }
       } catch (e) {
         logError("use-email-messages: load", e)
         toast.error("Nachrichten konnten nicht geladen werden.")
@@ -67,7 +83,7 @@ export function useEmailMessages() {
         setLoadingMessages(false)
       }
     },
-    [setSelectedMessage],
+    [setSelectedMessage, selectedMessage?.id],
   )
 
   useEffect(() => {
@@ -119,11 +135,54 @@ export function useEmailMessages() {
     }
   }, [selectedMessage, setSelectedMessage])
 
-  const refreshList = useCallback(async () => {
-    if (selectedAccountId != null) {
-      await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
-    }
-  }, [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages])
+  const refreshList = useCallback(
+    async (opts?: { preserveSelection?: boolean }) => {
+      if (selectedAccountId != null) {
+        await loadMessages(
+          selectedAccountId,
+          mailView,
+          categoryFilterId,
+          debouncedSearchQ,
+          opts,
+        )
+      }
+    },
+    [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages],
+  )
+
+  const moveMessageToView = useCallback(
+    async (messageId: number, targetView: MailView) => {
+      if (!hasElectron()) return false
+      try {
+        const r = await invokeIpc<{ success: boolean; error?: string }>(
+          IPCChannels.Email.MoveMessageToView,
+          { messageId, view: targetView },
+        )
+        if (!r.success) {
+          toast.error(r.error ?? "Verschieben fehlgeschlagen")
+          return false
+        }
+        const labels: Record<MailView, string> = {
+          inbox: "Posteingang",
+          sent: "Gesendet",
+          drafts: "Entwürfe",
+          archived: "Archiv",
+          spam: "Spam",
+          trash: "Papierkorb",
+        }
+        toast.success(`Nachricht → ${labels[targetView]}`)
+        if (selectedMessage?.id === messageId && targetView !== mailView) {
+          setSelectedMessage(null)
+        }
+        await refreshList()
+        return true
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Verschieben fehlgeschlagen")
+        return false
+      }
+    },
+    [mailView, refreshList, selectedMessage?.id, setSelectedMessage],
+  )
 
   const handleSync = useCallback(
     async (opts?: HandleSyncOptions) => {
@@ -173,5 +232,6 @@ export function useEmailMessages() {
     refreshList,
     refreshCurrentMessage,
     handleSync,
+    moveMessageToView,
   }
 }

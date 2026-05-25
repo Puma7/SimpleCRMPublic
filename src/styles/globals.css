@@ -143,6 +143,13 @@
   * {
     border-color: var(--color-border);
   }
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);

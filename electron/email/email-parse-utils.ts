@@ -82,6 +82,36 @@ export function snippetFromParsed(textBody: string | null, htmlBody: string | nu
   return null;
 }
 
+/** Serialize RFC822 headers from mailparser for support/debug display. */
+export function rawHeadersFromParsed(parsed: {
+  headerLines?: string[];
+  headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
+}): string | null {
+  if (parsed.headerLines?.length) {
+    return parsed.headerLines.join('\n');
+  }
+  const headers = parsed.headers;
+  if (!headers) return null;
+  const lines: string[] = [];
+  if (typeof headers.get === 'function') {
+    const keys = new Set<string>();
+    if (Symbol.iterator in Object(headers)) {
+      for (const [key] of headers as Iterable<[string, unknown]>) {
+        keys.add(key);
+      }
+    }
+    for (const key of keys) {
+      const val = headers.get!(key);
+      if (Array.isArray(val)) {
+        for (const v of val) lines.push(`${key}: ${String(v)}`);
+      } else if (val != null) {
+        lines.push(`${key}: ${String(val)}`);
+      }
+    }
+  }
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
 export function parseAttachmentsMeta(parsed: {
   attachments?: { filename?: string; contentType?: string; size?: number }[];
 }): { hasAttachments: boolean; json: string | null } {

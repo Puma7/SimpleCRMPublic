@@ -27,6 +27,27 @@ export function validateRecipientField(raw: string, label: string): { ok: true }
   return { ok: true }
 }
 
+/** Display string for compose fields from stored `to_json` / `cc_json`. */
+export function recipientFieldFromJson(json: string | null | undefined): string {
+  if (!json?.trim()) return ''
+  try {
+    const parsed = JSON.parse(json) as {
+      value?: { address?: string; name?: string }[]
+    }
+    const parts = (parsed.value ?? [])
+      .map((v) => {
+        const addr = v.address?.trim()
+        if (!addr) return ''
+        const name = v.name?.trim()
+        return name ? `${name} <${addr}>` : addr
+      })
+      .filter(Boolean)
+    return parts.join(', ')
+  } catch {
+    return ''
+  }
+}
+
 /** Canonical `{ value: [{ address, name? }] }` JSON for SQLite recipient columns. */
 export function recipientJsonFromField(raw: string): string | null {
   const trimmed = raw.trim()

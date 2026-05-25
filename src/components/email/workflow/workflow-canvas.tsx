@@ -362,8 +362,14 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
       fitView
       className="bg-muted/20"
       defaultEdgeOptions={{
-        labelStyle: { fontSize: 10, fill: "var(--foreground)" },
-        labelBgStyle: { fill: "var(--background)", fillOpacity: 0.85 },
+        type: "smoothstep",
+        labelShowBg: false,
+        style: { strokeWidth: 1.5, stroke: "hsl(var(--muted-foreground) / 0.55)" },
+        labelStyle: {
+          fontSize: 10,
+          fontWeight: 600,
+          fill: "hsl(var(--foreground))",
+        },
       }}
     >
       <Background gap={16} size={1} />

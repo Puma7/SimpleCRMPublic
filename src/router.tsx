@@ -27,7 +27,10 @@ import EmailPage from './app/email/page'
 import EmailWorkflowsPage from './app/email/workflows/page'
 import EmailSettingsPage from './app/email/settings/page'
 import EmailReportingPage from './app/email/reporting/page'
+import EmailSvelteLabPage from './app/email/svelte-lab/page'
 import { SETTINGS_TAB_IDS } from './components/email/settings-panels'
+
+const svelteLabEnabled = import.meta.env.VITE_ENABLE_SVELTE_LAB === 'true'
 
 const rootRoute = createRootRoute({ component: App })
 
@@ -86,6 +89,11 @@ const emailReportingRoute = createRoute({
   path: '/reporting',
   component: EmailReportingPage,
 })
+const emailSvelteLabRoute = createRoute({
+  getParentRoute: () => emailLayoutRoute,
+  path: '/svelte-lab',
+  component: EmailSvelteLabPage,
+})
 
 const catchAllRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -111,6 +119,7 @@ const routeTree = rootRoute.addChildren([
     emailWorkflowsRoute,
     emailSettingsRoute,
     emailReportingRoute,
+    ...(svelteLabEnabled ? [emailSvelteLabRoute] : []),
   ]),
   catchAllRoute,
 ])

@@ -5,28 +5,29 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
-import { formatFrom, type EmailAccount, type EmailMessage } from "./types"
+import { formatFrom, type EmailAccount, type EmailMessage, type MailView } from "./types"
 import { useMailWorkspace } from "./workspace-context"
+import { setMailDragData } from "./mail-drag"
 
 type Props = {
   messages: EmailMessage[]
   accounts: EmailAccount[]
   loading: boolean
   onOpen: (m: EmailMessage) => void | Promise<void>
+  onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
 }
 
-function formatDate(iso: string | null): string {
+/** Compact date+time so the column stays readable when the list pane is narrow. */
+function formatListDateTime(iso: string | null): string {
   if (!iso) return ""
   const d = new Date(iso)
-  const today = new Date()
-  if (d.toDateString() === today.toDateString()) {
-    return d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-  }
-  const diffDays = Math.floor((today.getTime() - d.getTime()) / 86400000)
-  if (diffDays < 7) {
-    return d.toLocaleDateString("de-DE", { weekday: "short" })
-  }
-  return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })
+  if (Number.isNaN(d.getTime())) return ""
+  return d.toLocaleString("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
 }
 
 export function MessageList({ messages, accounts, loading, onOpen }: Props) {
@@ -67,6 +68,11 @@ export function MessageList({ messages, accounts, loading, onOpen }: Props) {
                 <li key={m.id}>
                   <button
                     type="button"
+                    draggable={m.uid >= 0}
+                    onDragStart={(e) => {
+                      if (m.uid < 0) return
+                      setMailDragData(e.dataTransfer, m.id)
+                    }}
                     onClick={() => void onOpen(m)}
                     className={cn(
                       "w-full px-3 py-2.5 text-left transition-colors hover:bg-muted/60",
@@ -80,20 +86,26 @@ export function MessageList({ messages, accounts, loading, onOpen }: Props) {
                           unread ? "bg-primary" : "bg-transparent",
                         )}
                       />
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <span
-                            className={cn(
-                              "truncate text-xs",
-                              unread ? "font-semibold" : "text-muted-foreground",
-                            )}
-                          >
-                            {formatFrom(m.from_json)}
-                          </span>
-                          <span className="shrink-0 text-[10px] text-muted-foreground">
-                            {formatDate(m.date_received)}
-                          </span>
-                        </div>
+                      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
+                        <span
+                          className={cn(
+                            "truncate text-xs",
+                            unread ? "font-semibold" : "text-muted-foreground",
+                          )}
+                        >
+                          {formatFrom(m.from_json)}
+                        </span>
+                        <time
+                          dateTime={m.date_received ?? undefined}
+                          className="row-span-2 shrink-0 self-start whitespace-nowrap text-[10px] tabular-nums text-muted-foreground"
+                          title={
+                            m.date_received
+                              ? new Date(m.date_received).toLocaleString("de-DE")
+                              : undefined
+                          }
+                        >
+                          {formatListDateTime(m.date_received)}
+                        </time>
                         <div
                           className={cn(
                             "truncate text-sm",
@@ -103,11 +115,11 @@ export function MessageList({ messages, accounts, loading, onOpen }: Props) {
                           {m.subject || "(Ohne Betreff)"}
                         </div>
                         {m.snippet ? (
-                          <div className="line-clamp-1 text-xs text-muted-foreground">
+                          <div className="col-span-2 line-clamp-1 text-xs text-muted-foreground">
                             {m.snippet}
                           </div>
                         ) : null}
-                        <div className="flex items-center gap-1.5 pt-0.5">
+                        <div className="col-span-2 flex items-center gap-1.5 pt-0.5">
                           {m.has_attachments ? (
                             <Paperclip className="h-3 w-3 text-muted-foreground" />
                           ) : null}

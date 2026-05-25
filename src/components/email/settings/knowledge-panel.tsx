@@ -20,8 +20,13 @@ export function KnowledgePanel() {
 
   const load = useCallback(async () => {
     if (!hasElectron()) return
-    const rows = await invokeIpc<Kb[]>(IPCChannels.Email.ListKnowledgeBases)
-    setList(rows)
+    try {
+      const rows = await invokeIpc<Kb[]>(IPCChannels.Email.ListKnowledgeBases)
+      setList(rows)
+    } catch (e) {
+      console.error(e)
+      toast.error("Wissensbasen konnten nicht geladen werden.")
+    }
   }, [])
 
   useEffect(() => {
@@ -29,33 +34,67 @@ export function KnowledgePanel() {
   }, [load])
 
   const createKb = async () => {
-    if (!newName.trim()) return
-    await invokeIpc(IPCChannels.Email.CreateKnowledgeBase, {
-      name: newName.trim(),
-    })
-    setNewName("")
-    toast.success("Wissensbasis angelegt.")
-    await load()
+    if (!newName.trim()) {
+      toast.error("Bitte einen Namen eingeben.")
+      return
+    }
+    try {
+      const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
+        IPCChannels.Email.CreateKnowledgeBase,
+        { name: newName.trim() },
+      )
+      if (r && "success" in r && r.success === false) {
+        toast.error(r.error ?? "Anlegen fehlgeschlagen.")
+        return
+      }
+      setNewName("")
+      toast.success("Wissensbasis angelegt.")
+      await load()
+      if (r?.id) setSelectedId(r.id)
+    } catch (e) {
+      console.error(e)
+      toast.error("Wissensbasis konnte nicht angelegt werden.")
+    }
   }
 
   const addChunk = async () => {
-    if (selectedId == null || !chunkBody.trim()) return
-    await invokeIpc(IPCChannels.Email.AddKnowledgeChunk, {
-      knowledgeBaseId: selectedId,
-      title: chunkTitle.trim() || "Eintrag",
-      content: chunkBody,
-    })
-    setChunkBody("")
-    toast.success("Eintrag hinzugefügt.")
+    if (selectedId == null) {
+      toast.error("Bitte zuerst eine Wissensbasis auswählen.")
+      return
+    }
+    if (!chunkBody.trim()) {
+      toast.error("Bitte Inhalt eingeben.")
+      return
+    }
+    try {
+      await invokeIpc(IPCChannels.Email.AddKnowledgeChunk, {
+        knowledgeBaseId: selectedId,
+        title: chunkTitle.trim() || "Eintrag",
+        content: chunkBody.trim(),
+      })
+      setChunkBody("")
+      toast.success("Eintrag hinzugefügt.")
+    } catch (e) {
+      console.error(e)
+      toast.error("Eintrag konnte nicht gespeichert werden.")
+    }
   }
 
   const importFile = async () => {
-    if (selectedId == null) return
-    const r = await invokeIpc<{ success: boolean; id: number | null }>(
-      IPCChannels.Email.ImportKnowledgeFile,
-      { knowledgeBaseId: selectedId },
-    )
-    if (r.id) toast.success("Datei importiert.")
+    if (selectedId == null) {
+      toast.error("Bitte zuerst eine Wissensbasis auswählen.")
+      return
+    }
+    try {
+      const r = await invokeIpc<{ success: boolean; id: number | null }>(
+        IPCChannels.Email.ImportKnowledgeFile,
+        { knowledgeBaseId: selectedId },
+      )
+      if (r.id) toast.success("Datei importiert.")
+    } catch (e) {
+      console.error(e)
+      toast.error("Import fehlgeschlagen.")
+    }
   }
 
   return (

@@ -77,6 +77,57 @@ export function AccountsPanel() {
         </p>
       </div>
 
+      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Posteingang nach Workflow-Fehler reparieren</p>
+          <p className="text-xs text-muted-foreground">
+            Wenn nach dem Abruf alle Mails nur unter Archiv erscheinen, haben eingehende Workflows
+            sie vermutlich automatisch archiviert (z. B. Standard-Workflow „Amazon & Newsletter“
+            mit fehlerhafter Verzweigung — behoben in dieser Version). Hier können Sie betroffene
+            Inbox-Mails pro Konto zurück in den Posteingang holen.
+          </p>
+        </div>
+        {accounts.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {accounts.map((a) => (
+              <Button
+                key={a.id}
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  void (async () => {
+                    if (!hasElectron()) return
+                    const ok = window.confirm(
+                      `Alle archivierten Posteingangs-Mails von „${a.display_name}“ wieder im Posteingang anzeigen?`,
+                    )
+                    if (!ok) return
+                    try {
+                      const r = await invokeIpc<{ restored: number }>(
+                        IPCChannels.Email.RestoreInboxFromArchive,
+                        a.id,
+                      )
+                      toast.success(
+                        r.restored > 0
+                          ? `${r.restored} Nachricht(en) zurück in den Posteingang geholt.`
+                          : "Keine archivierten Posteingangs-Mails gefunden.",
+                      )
+                      bumpAccountsRevision()
+                    } catch (e) {
+                      toast.error(
+                        e instanceof Error ? e.message : "Zurückholen fehlgeschlagen.",
+                      )
+                    }
+                  })()
+                }}
+              >
+                {a.display_name}: aus Archiv holen
+              </Button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
       <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
         <div className="space-y-1">
           <Label htmlFor="imap-delete-opt-in">IMAP-Löschung auf dem Server (Workflows)</Label>

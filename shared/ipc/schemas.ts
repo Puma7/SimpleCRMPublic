@@ -192,13 +192,15 @@ baseSchemaMap.set(IPCChannels.Dashboard.GetStats, {
   result: z.any(),
 });
 
+const dashboardLimitPayload = z.number().int().positive().optional();
+
 baseSchemaMap.set(IPCChannels.Dashboard.GetRecentCustomers, {
-  payload: z.undefined(),
+  payload: dashboardLimitPayload,
   result: z.array(z.any()),
 });
 
 baseSchemaMap.set(IPCChannels.Dashboard.GetUpcomingTasks, {
-  payload: z.undefined(),
+  payload: dashboardLimitPayload,
   result: z.array(z.any()),
 });
 

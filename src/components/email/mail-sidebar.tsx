@@ -1,7 +1,7 @@
 "use client"
 
-import { type ReactNode } from "react"
-import { Archive, FileEdit, Inbox, Send, ShieldAlert, Tag, Trash2 } from "lucide-react"
+import { type ReactNode, useState } from "react"
+import { Archive, FileEdit, FolderCog, Inbox, Send, ShieldAlert, Tag, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -16,13 +16,20 @@ import { cn } from "@/lib/utils"
 import type { CategoryRow, EmailAccount, MailView } from "./types"
 import { useMailFolderCounts, type MailFolderCounts } from "./hooks/use-mail-folder-counts"
 import { useMailWorkspace } from "./workspace-context"
+import { CategoryManageDialog } from "./category-manage-dialog"
+import { readMailDragData } from "./mail-drag"
+import { Button } from "@/components/ui/button"
 
 type Props = {
   accounts: EmailAccount[]
   loadingAccounts: boolean
   categories: CategoryRow[]
   countForCategory: (id: number) => number
+  onCategoriesChanged: () => void | Promise<void>
+  onMoveMessageToView: (messageId: number, view: MailView) => Promise<boolean>
 }
+
+const DROPPABLE_VIEWS: MailView[] = ["inbox", "archived", "spam", "trash"]
 
 const FOLDERS: {
   id: MailView
@@ -44,7 +51,11 @@ export function MailSidebar({
   loadingAccounts,
   categories,
   countForCategory,
+  onCategoriesChanged,
+  onMoveMessageToView,
 }: Props) {
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
+  const [dropTarget, setDropTarget] = useState<MailView | null>(null)
   const {
     selectedAccountId,
     setSelectedAccountId,
@@ -147,6 +158,7 @@ export function MailSidebar({
             const total = countKey ? counts[countKey] : 0
             const unread = unreadKey ? counts[unreadKey] : 0
             const badge = unread > 0 ? unread : total > 0 ? total : null
+            const canDrop = DROPPABLE_VIEWS.includes(id)
             return (
               <button
                 key={id}
@@ -156,9 +168,32 @@ export function MailSidebar({
                   setCategoryFilterId(null)
                   setSearchQuery("")
                 }}
+                onDragOver={
+                  canDrop
+                    ? (e) => {
+                        if (!readMailDragData(e.dataTransfer)) return
+                        e.preventDefault()
+                        e.dataTransfer.dropEffect = "move"
+                        setDropTarget(id)
+                      }
+                    : undefined
+                }
+                onDragLeave={canDrop ? () => setDropTarget((t) => (t === id ? null : t)) : undefined}
+                onDrop={
+                  canDrop
+                    ? (e) => {
+                        e.preventDefault()
+                        setDropTarget(null)
+                        const payload = readMailDragData(e.dataTransfer)
+                        if (!payload) return
+                        void onMoveMessageToView(payload.messageId, id)
+                      }
+                    : undefined
+                }
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
                   mailView === id && categoryFilterId === null && "bg-muted font-medium",
+                  dropTarget === id && "ring-2 ring-primary ring-offset-1",
                 )}
               >
                 <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -183,9 +218,21 @@ export function MailSidebar({
         <Separator className="my-1" />
 
         <div className="space-y-0.5 p-2">
-          <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Kategorien
-          </p>
+          <div className="flex items-center justify-between gap-1 px-2 pb-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Kategorien
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0"
+              aria-label="Kategorien verwalten"
+              onClick={() => setCategoryDialogOpen(true)}
+            >
+              <FolderCog className="h-3.5 w-3.5" />
+            </Button>
+          </div>
           <button
             type="button"
             className={cn(
@@ -203,6 +250,13 @@ export function MailSidebar({
           {renderCategories()}
         </div>
       </ScrollArea>
+
+      <CategoryManageDialog
+        open={categoryDialogOpen}
+        onOpenChange={setCategoryDialogOpen}
+        categories={categories}
+        onChanged={onCategoriesChanged}
+      />
     </aside>
   )
 }

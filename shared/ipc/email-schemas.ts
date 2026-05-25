@@ -49,6 +49,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       pop3Host: z.string().nullable().optional(),
       pop3Port: z.number().int().positive().optional(),
       pop3Tls: z.boolean().optional(),
+      imapSyncSeenOnOpen: z.boolean().optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), id: positiveInt }),
@@ -77,6 +78,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         pop3Port: z.number().int().positive().nullable().optional(),
         pop3Tls: z.boolean().nullable().optional(),
         sentFolderPath: z.string().nullable().optional(),
+        imapSyncSeenOnOpen: z.boolean().optional(),
       })
       .passthrough(),
     result: standardResult,
@@ -84,6 +86,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.DeleteAccount, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.TestImap, {
     payload: z.object({
+      accountId: positiveInt.optional(),
       imapHost: nonEmptyString,
       imapPort: z.number().int().positive(),
       imapTls: z.boolean(),
@@ -125,7 +128,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       port: z.number().int().positive(),
       secure: z.boolean(),
       user: nonEmptyString,
-      pass: z.string(),
+      password: z.string(),
     }),
     result: standardResult,
   });
@@ -171,11 +174,46 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: recordArray,
   });
   set(IPCChannels.Email.ListMessageTags, { payload: positiveInt, result: z.array(z.string()) });
+  set(IPCChannels.Email.AddMessageTag, {
+    payload: z.object({ messageId: positiveInt, tag: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.RemoveMessageTag, {
+    payload: z.object({ messageId: positiveInt, tag: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.MoveMessageToView, {
+    payload: z.object({
+      messageId: positiveInt,
+      view: z.enum(['inbox', 'sent', 'archived', 'drafts', 'spam', 'trash']),
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.SoftDeleteMessage, { payload: positiveInt, result: standardResult });
+  set(IPCChannels.Email.DeleteComposeDraft, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.RestoreMessage, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.SetMessageArchived, {
     payload: z.object({ messageId: positiveInt, archived: z.boolean() }),
     result: standardResult,
+  });
+  set(IPCChannels.Email.RestoreInboxFromArchive, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true), restored: z.number().int().nonnegative() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.GetMessageRawHeaders, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        rawHeaders: z.string().nullable(),
+        messageIdHeader: z.string().nullable(),
+        fromJson: z.string().nullable(),
+      }),
+      failResult,
+    ]),
   });
   set(IPCChannels.Email.SetMessageSeen, {
     payload: z.object({ messageId: positiveInt, seen: z.boolean() }),
@@ -283,6 +321,30 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.UpdateCategory, {
+    payload: z.object({
+      categoryId: positiveInt,
+      name: nonEmptyString.optional(),
+      parentId: z.number().int().positive().nullable().optional(),
+      sortOrder: z.number().int().optional(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.DeleteCategory, {
+    payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.SetMessageCategory, {
+    payload: z.object({
+      messageId: positiveInt,
+      categoryId: z.number().int().positive().nullable(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetMessageCategory, {
+    payload: positiveInt,
+    result: z.object({ categoryId: z.number().int().positive().nullable() }),
+  });
   set(IPCChannels.Email.CategoryCounts, {
     payload: mailAccountScopeSchema,
     result: z.array(
@@ -301,6 +363,14 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.ListInternalNotes, { payload: positiveInt, result: recordArray });
   set(IPCChannels.Email.AddInternalNote, {
     payload: z.object({ messageId: positiveInt, body: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.UpdateInternalNote, {
+    payload: z.object({ noteId: positiveInt, body: nonEmptyString }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.DeleteInternalNote, {
+    payload: positiveInt,
     result: standardResult,
   });
   set(IPCChannels.Email.ListCannedResponses, { payload: voidPayload, result: recordArray });
@@ -337,13 +407,46 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  const aiProviderPresetIdSchema = z.enum([
+    'openai',
+    'openrouter',
+    'anthropic',
+    'google',
+    'deepseek',
+    'ollama',
+    'custom',
+  ]);
+  const aiProfileSummarySchema = z.object({
+    id: positiveInt,
+    label: z.string(),
+    provider: z.string(),
+    baseUrl: z.string(),
+    model: z.string(),
+    embeddingModel: z.string().nullable(),
+    isDefault: z.boolean(),
+  });
   set(IPCChannels.Email.GetAiSettings, {
     payload: voidPayload,
-    result: z.object({
-      baseUrl: z.string(),
-      model: z.string(),
-      embeddingModel: z.string().optional(),
-    }),
+    result: z
+      .object({
+        success: z.literal(true).optional(),
+        baseUrl: z.string(),
+        model: z.string(),
+        embeddingModel: z.string().optional(),
+        profiles: z.array(aiProfileSummarySchema).optional(),
+        providerPresets: z
+          .record(
+            z.string(),
+            z.object({
+              label: z.string(),
+              baseUrl: z.string(),
+              defaultModel: z.string(),
+              defaultEmbeddingModel: z.string().optional(),
+            }),
+          )
+          .optional(),
+      })
+      .passthrough(),
   });
   set(IPCChannels.Email.SetAiSettings, {
     payload: z.object({
@@ -359,7 +462,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       id: z.number().int().positive().optional(),
       label: nonEmptyString,
-      provider: z.string(),
+      provider: aiProviderPresetIdSchema,
       baseUrl: z.string(),
       model: z.string(),
       embeddingModel: z.string().nullable().optional(),
@@ -516,8 +619,15 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.DeleteKnowledgeBase, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.AddKnowledgeChunk, {
-    payload: z.object({ knowledgeBaseId: positiveInt, text: nonEmptyString }),
-    result: standardResult,
+    payload: z.object({
+      knowledgeBaseId: positiveInt,
+      title: z.string().optional(),
+      content: nonEmptyString,
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), id: positiveInt }),
+      failResult,
+    ]),
   });
   set(IPCChannels.Email.ImportKnowledgeFile, {
     payload: z.object({ knowledgeBaseId: positiveInt }),

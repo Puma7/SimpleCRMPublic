@@ -64,10 +64,17 @@ export type GraphRegistryNodeData = {
   label?: string;
 };
 
+export type WorkflowGraphNodePosition = {
+  x: number;
+  y: number;
+};
+
 export type WorkflowGraphNode = {
   id: string;
   type: 'trigger' | 'condition' | 'action' | 'registry';
   data: GraphTriggerNodeData | GraphConditionNodeData | GraphActionNodeData | GraphRegistryNodeData;
+  /** Canvas position (React Flow); persisted in graph_json. */
+  position?: WorkflowGraphNodePosition;
 };
 
 export type WorkflowGraphEdge = {

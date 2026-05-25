@@ -29,6 +29,14 @@ describe('resolveResumeNodeAfter', () => {
   });
 });
 
+describe('pickEdge (condition branches)', () => {
+  it('does not follow yes edge when port is no and only ja branch exists', () => {
+    const edges = [{ id: 'e1', source: 'c_amz', target: 'a_amz_tag', label: 'ja' }];
+    expect(pickEdge(edges, 'no')).toBeUndefined();
+    expect(pickEdge(edges, 'yes')?.target).toBe('a_amz_tag');
+  });
+});
+
 describe('pickEdge (logic.switch)', () => {
   it('matches case-insensitive port labels', () => {
     const edges = [

@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { Copy } from "lucide-react"
+import { Copy, Pencil, Trash2, X } from "lucide-react"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -15,9 +16,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { CustomerCombobox } from "@/components/customer-combobox"
 import {
+  hasElectron,
   invokeIpc,
-  type CustomerOpt,
+  type CategoryRow,
   type EmailMessage,
   type InternalNote,
   type TeamMember,
@@ -26,24 +29,56 @@ import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
   teamMembers: TeamMember[]
-  customers: CustomerOpt[]
+  categories: CategoryRow[]
   messageTags: string[]
   internalNotes: InternalNote[]
   reloadNotes: () => void | Promise<void>
+  reloadTags: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
+}
+
+function categoryPathLabel(categories: CategoryRow[], id: number): string {
+  const parts: string[] = []
+  let cur = categories.find((c) => c.id === id)
+  while (cur) {
+    parts.unshift(cur.name)
+    cur =
+      cur.parent_id != null
+        ? categories.find((c) => c.id === cur!.parent_id)
+        : undefined
+  }
+  return parts.join(" / ")
 }
 
 export function MessageMetadataPanel({
   teamMembers,
-  customers,
+  categories,
   messageTags,
   internalNotes,
   reloadNotes,
+  reloadTags,
   refreshCurrentMessage,
 }: Props) {
   const { selectedMessage, selectedAccountId } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
+  const [editingNoteBody, setEditingNoteBody] = useState("")
+  const [newTag, setNewTag] = useState("")
+  const [messageCategoryId, setMessageCategoryId] = useState<number | null>(null)
   const [conversation, setConversation] = useState<EmailMessage[]>([])
+
+  useEffect(() => {
+    if (!selectedMessage || !hasElectron()) {
+      setMessageCategoryId(null)
+      return
+    }
+    void invokeIpc<{ categoryId: number | null }>(
+      IPCChannels.Email.GetMessageCategory,
+      selectedMessage.id,
+    )
+      .then((r) => setMessageCategoryId(r.categoryId))
+      .catch(() => setMessageCategoryId(null))
+  }, [selectedMessage?.id])
 
   useEffect(() => {
     if (!selectedMessage || selectedAccountId == null) {
@@ -71,6 +106,8 @@ export function MessageMetadataPanel({
   ])
 
   if (!selectedMessage) return null
+
+  const assignedMember = teamMembers.find((t) => t.id === selectedMessage.assigned_to)
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-l bg-muted/10">
@@ -118,7 +155,11 @@ export function MessageMetadataPanel({
                   teamMemberId: tid,
                 })
                 await refreshCurrentMessage()
-                toast.success("Zuweisung gespeichert")
+                const name =
+                  tid == null
+                    ? "— niemand —"
+                    : teamMembers.find((t) => t.id === tid)?.display_name ?? tid
+                toast.success(`Zugewiesen: ${name}`)
               }}
             >
               <SelectTrigger className="h-9">
@@ -133,53 +174,167 @@ export function MessageMetadataPanel({
                 ))}
               </SelectContent>
             </Select>
+            {assignedMember ? (
+              <p className="text-[10px] text-muted-foreground">
+                Aktuell: <span className="font-medium text-foreground">{assignedMember.display_name}</span>
+              </p>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">Aktuell: nicht zugewiesen</p>
+            )}
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-xs">Kunde</Label>
+            <Label className="text-xs">Kategorie</Label>
             <Select
-              value={
-                selectedMessage.customer_id ? String(selectedMessage.customer_id) : "none"
-              }
+              value={messageCategoryId != null ? String(messageCategoryId) : "none"}
               onValueChange={async (v) => {
-                const cid = v === "none" ? null : parseInt(v, 10)
-                await invokeIpc(IPCChannels.Email.LinkCustomer, {
+                const categoryId = v === "none" ? null : parseInt(v, 10)
+                await invokeIpc(IPCChannels.Email.SetMessageCategory, {
                   messageId: selectedMessage.id,
-                  customerId: cid,
+                  categoryId: Number.isFinite(categoryId) ? categoryId : null,
                 })
-                await refreshCurrentMessage()
-                toast.success("Verknüpfung gespeichert")
+                setMessageCategoryId(categoryId)
+                toast.success(
+                  categoryId == null
+                    ? "Kategorie entfernt"
+                    : `Kategorie: ${categoryPathLabel(categories, categoryId)}`,
+                )
               }}
             >
               <SelectTrigger className="h-9">
-                <SelectValue placeholder="Kunde" />
+                <SelectValue placeholder="Kategorie" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">— keiner —</SelectItem>
-                {customers.map((c) => (
+                <SelectItem value="none">— keine —</SelectItem>
+                {categories.map((c) => (
                   <SelectItem key={c.id} value={String(c.id)}>
-                    {c.name}
+                    {categoryPathLabel(categories, c.id)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-[10px] text-muted-foreground">
+              Neue Kategorien: Seitenleiste → Kategorien → Verwalten.
+            </p>
           </div>
 
-          {messageTags.length > 0 ? (
-            <div className="space-y-1.5">
-              <Label className="text-xs">Tags</Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Kunde</Label>
+            <CustomerCombobox
+              value={selectedMessage.customer_id ?? undefined}
+              placeholder="Kunde suchen…"
+              onValueChange={async (v) => {
+                const cid = v ? parseInt(v, 10) : null
+                await invokeIpc(IPCChannels.Email.LinkCustomer, {
+                  messageId: selectedMessage.id,
+                  customerId: Number.isFinite(cid) ? cid : null,
+                })
+                await refreshCurrentMessage()
+                toast.success("Verknüpfung gespeichert")
+              }}
+            />
+            {selectedMessage.customer_id ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-0 text-xs text-muted-foreground"
+                onClick={async () => {
+                  await invokeIpc(IPCChannels.Email.LinkCustomer, {
+                    messageId: selectedMessage.id,
+                    customerId: null,
+                  })
+                  await refreshCurrentMessage()
+                  toast.success("Kundenverknüpfung entfernt")
+                }}
+              >
+                Verknüpfung entfernen
+              </Button>
+            ) : null}
+          </div>
+
+          {selectedMessage.archived ? (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
+              <p className="font-medium">Im Archiv</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Eingehende Workflows können neue Mails automatisch archivieren
+                (Einstellungen → Workflows). Nutzen Sie „Aus Archiv“ in der
+                Toolbar, um die Nachricht wieder im Posteingang zu sehen.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">Tags</Label>
+            {messageTags.length > 0 ? (
               <div className="flex flex-wrap gap-1">
                 {messageTags.map((t) => (
                   <span
                     key={t}
-                    className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                    className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 pl-2 pr-1 py-0.5 text-[10px] font-medium text-primary"
                   >
                     {t}
+                    <button
+                      type="button"
+                      className="rounded-full p-0.5 hover:bg-primary/20"
+                      aria-label={`Tag ${t} entfernen`}
+                      onClick={async () => {
+                        await invokeIpc(IPCChannels.Email.RemoveMessageTag, {
+                          messageId: selectedMessage.id,
+                          tag: t,
+                        })
+                        await reloadTags()
+                        toast.success("Tag entfernt")
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
                   </span>
                 ))}
               </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">Keine Tags.</p>
+            )}
+            <div className="flex gap-1">
+              <Input
+                value={newTag}
+                onChange={(e) => setNewTag(e.target.value)}
+                placeholder="Neuer Tag…"
+                className="h-8 text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newTag.trim()) {
+                    void (async () => {
+                      await invokeIpc(IPCChannels.Email.AddMessageTag, {
+                        messageId: selectedMessage.id,
+                        tag: newTag.trim(),
+                      })
+                      setNewTag("")
+                      await reloadTags()
+                      toast.success("Tag hinzugefügt")
+                    })()
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-8 shrink-0"
+                disabled={!newTag.trim()}
+                onClick={async () => {
+                  await invokeIpc(IPCChannels.Email.AddMessageTag, {
+                    messageId: selectedMessage.id,
+                    tag: newTag.trim(),
+                  })
+                  setNewTag("")
+                  await reloadTags()
+                  toast.success("Tag hinzugefügt")
+                }}
+              >
+                +
+              </Button>
             </div>
-          ) : null}
+          </div>
 
           {conversation.length > 0 ? (
             <div className="space-y-1.5">
@@ -220,7 +375,79 @@ export function MessageMetadataPanel({
                     key={n.id}
                     className="rounded bg-background px-2 py-1.5 text-xs shadow-sm"
                   >
-                    {n.body}
+                    {editingNoteId === n.id ? (
+                      <div className="space-y-1">
+                        <Textarea
+                          value={editingNoteBody}
+                          onChange={(e) => setEditingNoteBody(e.target.value)}
+                          className="min-h-[60px] text-xs"
+                        />
+                        <div className="flex gap-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 flex-1"
+                            onClick={async () => {
+                              const r = await invokeIpc<{ success: boolean; error?: string }>(
+                                IPCChannels.Email.UpdateInternalNote,
+                                { noteId: n.id, body: editingNoteBody },
+                              )
+                              if (!r.success) {
+                                toast.error(r.error ?? "Speichern fehlgeschlagen")
+                                return
+                              }
+                              setEditingNoteId(null)
+                              await reloadNotes()
+                              toast.success("Notiz gespeichert")
+                            }}
+                          >
+                            Speichern
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7"
+                            onClick={() => setEditingNoteId(null)}
+                          >
+                            Abbrechen
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="whitespace-pre-wrap">{n.body}</p>
+                        <div className="mt-1 flex gap-1">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            aria-label="Notiz bearbeiten"
+                            onClick={() => {
+                              setEditingNoteId(n.id)
+                              setEditingNoteBody(n.body)
+                            }}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-destructive"
+                            aria-label="Notiz löschen"
+                            onClick={async () => {
+                              await invokeIpc(IPCChannels.Email.DeleteInternalNote, n.id)
+                              await reloadNotes()
+                              toast.success("Notiz gelöscht")
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -243,6 +470,7 @@ export function MessageMetadataPanel({
                 })
                 setNewNote("")
                 await reloadNotes()
+                toast.success("Notiz hinzugefügt")
               }}
             >
               Speichern

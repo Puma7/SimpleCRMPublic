@@ -22,6 +22,11 @@ declare module 'mailparser' {
       size?: number;
       content?: Buffer;
     }[];
+    headerLines?: string[];
+    headers?: {
+      get?: (key: string) => unknown;
+      [Symbol.iterator]?: () => IterableIterator<[string, unknown]>;
+    };
   }
 
   export function simpleParser(source: Buffer | string | Readable): Promise<ParsedMail>;

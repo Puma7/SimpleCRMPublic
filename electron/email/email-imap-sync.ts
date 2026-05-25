@@ -18,7 +18,13 @@ import {
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
-import { addressJson, formatDate, parseAttachmentsMeta, snippetFromParsed } from './email-parse-utils';
+import {
+  addressJson,
+  formatDate,
+  parseAttachmentsMeta,
+  rawHeadersFromParsed,
+  snippetFromParsed,
+} from './email-parse-utils';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -150,6 +156,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           imapThreadId,
           hasAttachments,
           attachmentsJson,
+          rawHeaders: rawHeadersFromParsed(parsed),
         });
         if (isNew && localMsgId > 0) {
           const { persistParsedAttachments } = await import('./email-message-attachments-store');
@@ -210,6 +217,9 @@ export function syncInboxImap(accountId: number): Promise<ImapSyncResult> {
 }
 
 export async function testImapConnection(account: EmailAccountRow, password: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!password?.trim()) {
+    return { ok: false, error: 'Kein Passwort angegeben (Feld ausfüllen oder gespeichertes Konto testen).' };
+  }
   const client = new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
@@ -219,8 +229,8 @@ export async function testImapConnection(account: EmailAccountRow, password: str
       pass: password,
     },
     logger: false,
-    connectionTimeout: 90_000,
-    socketTimeout: 120_000,
+    connectionTimeout: 25_000,
+    socketTimeout: 30_000,
   });
   try {
     await client.connect();

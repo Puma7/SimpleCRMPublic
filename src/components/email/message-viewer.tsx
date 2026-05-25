@@ -1,9 +1,11 @@
 "use client"
 
+import { useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import {
   Archive,
+  Code2,
   Forward,
   Mail,
   MailOpen,
@@ -15,8 +17,26 @@ import {
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   Tooltip,
   TooltipContent,
@@ -24,11 +44,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import {
+  firstAddress,
   formatFrom,
   hasElectron,
   invokeIpc,
   stripHtmlToText,
-  type CustomerOpt,
+  type CategoryRow,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -36,16 +57,18 @@ import {
 } from "./types"
 import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
+import { setMailDragData } from "./mail-drag"
 
 type Props = {
   teamMembers: TeamMember[]
-  customers: CustomerOpt[]
   messageTags: string[]
   internalNotes: InternalNote[]
   messageAttachments: MessageAttachment[]
   reloadNotes: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
-  refreshList: () => void | Promise<void>
+  refreshList: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
+  categories: CategoryRow[]
+  reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage) => void
   onForward: (m: EmailMessage) => void
 }
@@ -53,11 +76,12 @@ type Props = {
 export function MessageViewer(props: Props) {
   const {
     teamMembers,
-    customers,
     messageTags,
     internalNotes,
     messageAttachments,
     reloadNotes,
+    reloadTags,
+    categories,
     refreshCurrentMessage,
     refreshList,
     onReply,
@@ -72,6 +96,11 @@ export function MessageViewer(props: Props) {
     setComposeIntent,
   } = useMailWorkspace()
 
+  const [rawHeadersOpen, setRawHeadersOpen] = useState(false)
+  const [rawHeadersText, setRawHeadersText] = useState<string | null>(null)
+  const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
+  const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
+
   const isOutboundHeld =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
@@ -82,6 +111,7 @@ export function MessageViewer(props: Props) {
     (mailView === "drafts" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
+  const inDraftsView = mailView === "drafts"
 
   if (!selectedMessage) {
     return (
@@ -94,16 +124,31 @@ export function MessageViewer(props: Props) {
 
   const handleSoftDelete = async () => {
     await invokeIpc(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
-    toast.success("Ausgeblendet (soft)")
+    toast.success("In den Papierkorb verschoben")
+    await refreshList()
+    setSelectedMessage(null)
+  }
+
+  const handleDeleteLocalDraft = async () => {
+    const r = await invokeIpc<{ success: boolean; error?: string }>(
+      IPCChannels.Email.DeleteComposeDraft,
+      selectedMessage.id,
+    )
+    if (!r.success) {
+      toast.error(r.error ?? "Entwurf konnte nicht gelöscht werden")
+      return
+    }
+    toast.success("Entwurf endgültig gelöscht")
+    setDeleteDraftOpen(false)
     await refreshList()
     setSelectedMessage(null)
   }
 
   const handleRestore = async () => {
     await invokeIpc(IPCChannels.Email.RestoreMessage, selectedMessage.id)
-    toast.success("Wiederhergestellt")
-    await refreshList()
-    setSelectedMessage(null)
+    toast.success("Wiederhergestellt (vorheriger Ordner)")
+    await refreshCurrentMessage()
+    await refreshList({ preserveSelection: true })
   }
 
   const handleArchive = async () => {
@@ -125,7 +170,7 @@ export function MessageViewer(props: Props) {
     })
     toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
     await refreshCurrentMessage()
-    await refreshList()
+    await refreshList({ preserveSelection: true })
   }
 
   const handleToggleSpam = async () => {
@@ -140,13 +185,16 @@ export function MessageViewer(props: Props) {
     else await refreshCurrentMessage()
   }
 
-  // Text-only rendering — the original UI never rendered raw HTML from emails,
-  // to avoid tracking pixels, external CSS and other exfiltration vectors.
+  // Text-only rendering — prefer the richer source (blocked compose drafts often store
+  // only the warning banner in body_text while the letter lives in body_html).
+  const bodyFromText = selectedMessage.body_text?.trim() ?? ""
+  const bodyFromHtml = selectedMessage.body_html
+    ? stripHtmlToText(selectedMessage.body_html)
+    : ""
   const bodyText =
-    selectedMessage.body_text?.trim() ||
-    (selectedMessage.body_html ? stripHtmlToText(selectedMessage.body_html) : "") ||
-    selectedMessage.snippet ||
-    "—"
+    bodyFromHtml.length > bodyFromText.length + 30
+      ? bodyFromHtml
+      : bodyFromText || bodyFromHtml || selectedMessage.snippet || "—"
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -167,19 +215,43 @@ export function MessageViewer(props: Props) {
               </Button>
             ) : null}
             {isDraft ? (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="gap-2"
+                  onClick={() =>
+                    setComposeIntent({ mode: "draft", messageId: selectedMessage.id })
+                  }
+                >
+                  Bearbeiten
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  className="gap-2"
+                  onClick={() => setDeleteDraftOpen(true)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Entwurf löschen
+                </Button>
+              </>
+            ) : null}
+            {inDraftsView && !inTrash && selectedMessage.uid >= 0 ? (
               <Button
                 type="button"
                 size="sm"
-                variant="default"
+                variant="destructive"
                 className="gap-2"
-                onClick={() =>
-                  setComposeIntent({ mode: "draft", messageId: selectedMessage.id })
-                }
+                onClick={() => void handleSoftDelete()}
               >
-                Bearbeiten
+                <Trash2 className="h-4 w-4" />
+                Löschen
               </Button>
             ) : null}
-            {selectedMessage.uid >= 0 && !inTrash ? (
+            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView ? (
               <>
                 <Button
                   type="button"
@@ -247,6 +319,49 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   className="gap-1.5"
+                  onClick={() => {
+                    if (!hasElectron()) return
+                    setRawHeadersOpen(true)
+                    setRawHeadersLoading(true)
+                    setRawHeadersText(null)
+                    void invokeIpc<{
+                      success: boolean
+                      rawHeaders?: string | null
+                      messageIdHeader?: string | null
+                      fromJson?: string | null
+                      error?: string
+                    }>(IPCChannels.Email.GetMessageRawHeaders, selectedMessage.id)
+                      .then((r) => {
+                        if (!r.success) {
+                          toast.error(r.error ?? "Header konnten nicht geladen werden.")
+                          return
+                        }
+                        const parts: string[] = []
+                        const fromAddr = firstAddress(r.fromJson ?? selectedMessage.from_json)
+                        if (fromAddr) parts.push(`From (parsed): ${fromAddr}`)
+                        if (r.messageIdHeader) parts.push(`Message-ID: ${r.messageIdHeader}`)
+                        if (r.rawHeaders?.trim()) {
+                          parts.push("", "--- RFC822 Header ---", r.rawHeaders)
+                        } else {
+                          parts.push(
+                            "",
+                            "(Keine gespeicherten Roh-Header — nur bei Mails nach Update/Sync verfügbar. Absender oben aus From.)",
+                          )
+                        }
+                        setRawHeadersText(parts.join("\n"))
+                      })
+                      .catch(() => toast.error("Header konnten nicht geladen werden."))
+                      .finally(() => setRawHeadersLoading(false))
+                  }}
+                >
+                  <Code2 className="h-4 w-4" />
+                  <span className="hidden lg:inline">Header</span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-1.5"
                   onClick={() => void handleSoftDelete()}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -285,7 +400,22 @@ export function MessageViewer(props: Props) {
             <ScrollArea className="flex-1">
               <div className="mx-auto max-w-3xl space-y-4 p-6">
                 <div className="space-y-1">
-                  <h2 className="text-xl font-semibold leading-tight tracking-tight">
+                  <h2
+                    className={cn(
+                      "text-xl font-semibold leading-tight tracking-tight",
+                      selectedMessage.uid >= 0 && "cursor-grab active:cursor-grabbing",
+                    )}
+                    draggable={selectedMessage.uid >= 0}
+                    onDragStart={(e) => {
+                      if (selectedMessage.uid < 0) return
+                      setMailDragData(e.dataTransfer, selectedMessage.id)
+                    }}
+                    title={
+                      selectedMessage.uid >= 0
+                        ? "In einen Ordner in der Seitenleiste ziehen"
+                        : undefined
+                    }
+                  >
                     {selectedMessage.subject || "(Ohne Betreff)"}
                   </h2>
                   {isOutboundHeld ? (
@@ -314,9 +444,16 @@ export function MessageViewer(props: Props) {
 
                 <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <p className="font-medium">{formatFrom(selectedMessage.from_json)}</p>
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="font-medium">{formatFrom(selectedMessage.from_json)}</p>
+                      {firstAddress(selectedMessage.from_json) ? (
+                        <p className="font-mono text-xs text-primary break-all">
+                          {firstAddress(selectedMessage.from_json)}
+                        </p>
+                      ) : null}
+                    </div>
                     {selectedMessage.date_received ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-xs text-muted-foreground shrink-0">
                         {new Date(selectedMessage.date_received).toLocaleString("de-DE")}
                       </p>
                     ) : null}
@@ -427,15 +564,56 @@ export function MessageViewer(props: Props) {
           {metadataPanelOpen ? (
             <MessageMetadataPanel
               teamMembers={teamMembers}
-              customers={customers}
+              categories={categories}
               messageTags={messageTags}
               internalNotes={internalNotes}
               reloadNotes={reloadNotes}
+              reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
             />
           ) : null}
         </div>
       </div>
+      <Dialog open={rawHeadersOpen} onOpenChange={setRawHeadersOpen}>
+        <DialogContent className="max-h-[85vh] max-w-2xl flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>E-Mail-Header / Rohdaten</DialogTitle>
+            <DialogDescription>
+              RFC822-Header und Message-ID zur Prüfung von Absender und Technik (Support).
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[60vh] rounded border bg-muted/30 p-3">
+            {rawHeadersLoading ? (
+              <p className="text-sm text-muted-foreground">Lädt…</p>
+            ) : (
+              <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
+                {rawHeadersText ?? "—"}
+              </pre>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={deleteDraftOpen} onOpenChange={setDeleteDraftOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Entwurf endgültig löschen?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Der lokale Entwurf wird unwiderruflich entfernt (inkl. leerer Entwürfe aus
+              fehlgeschlagenem Verfassen). Dies ersetzt keinen Server-Entwurf auf dem Mailserver.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => void handleDeleteLocalDraft()}
+            >
+              Löschen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </TooltipProvider>
   )
 }

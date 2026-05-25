@@ -25,10 +25,15 @@ import {
   listTagsForMessage,
   listConversationMessagesForScope,
   setMessageSoftDeleted,
+  deleteLocalComposeDraft,
   setMessageArchived,
+  restoreInboxMessagesFromArchive,
   setMessageSeenLocal,
   setMessageSpam,
   setMessageAssignedTo,
+  addMessageTag,
+  removeMessageTag,
+  moveMessageToMailView,
   listEmailTeamMembers,
   upsertEmailTeamMember,
   deleteEmailTeamMember,
@@ -42,9 +47,16 @@ import { testSmtpConnection } from '../email/email-smtp';
 import {
   listCategories,
   createCategory,
+  updateCategory,
+  deleteCategory,
+  setMessageCategory,
+  clearMessageCategory,
+  getMessageCategoryId,
   listCategoryCountsForAccount,
   listCategoryCountsForMailScope,
   addInternalNote,
+  updateInternalNote,
+  deleteInternalNote,
   listInternalNotes,
   listCannedResponses,
   createCannedResponse,
@@ -171,6 +183,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Host?: string | null;
           pop3Port?: number;
           pop3Tls?: boolean;
+          imapSyncSeenOnOpen?: boolean;
         },
       ) => {
         const keytarAccountKey = `email-${randomUUID()}`;
@@ -188,6 +201,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             pop3Host: payload.pop3Host,
             pop3Port: payload.pop3Port,
             pop3Tls: payload.pop3Tls,
+            imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
           });
           return { success: true as const, id };
         } catch (err) {
@@ -224,6 +238,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Port?: number | null;
           pop3Tls?: boolean | null;
           sentFolderPath?: string | null;
+          imapSyncSeenOnOpen?: boolean;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -249,6 +264,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Port: payload.pop3Port ?? undefined,
           pop3Tls: payload.pop3Tls === undefined ? undefined : Boolean(payload.pop3Tls),
           sentFolderPath: payload.sentFolderPath,
+          imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -275,6 +291,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (
         _event: IpcMainInvokeEvent,
         payload: {
+          accountId?: number;
           imapHost: string;
           imapPort: number;
           imapTls: boolean;
@@ -282,33 +299,50 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapPassword: string;
         },
       ) => {
-        const tempKey = 'test-temp';
-        const row = {
-          id: 0,
-          display_name: '',
-          email_address: '',
-          imap_host: payload.imapHost.trim(),
-          imap_port: payload.imapPort,
-          imap_tls: payload.imapTls ? 1 : 0,
-          imap_username: payload.imapUsername.trim(),
-          keytar_account_key: tempKey,
-          smtp_host: null,
-          smtp_port: null,
-          smtp_tls: null,
-          smtp_username: null,
-          smtp_use_imap_auth: 1,
-          smtp_keytar_account_key: null,
-          protocol: 'imap' as const,
-          pop3_host: null,
-          pop3_port: 995,
-          pop3_tls: 1,
-          oauth_provider: null,
-          oauth_refresh_keytar_key: null,
-          sent_folder_path: 'Sent',
-          created_at: '',
-          updated_at: '',
-        };
-        const result = await testImapConnection(row, payload.imapPassword);
+        let password = payload.imapPassword?.trim() ?? '';
+        let row: EmailAccountRow;
+        if (payload.accountId != null && payload.accountId > 0) {
+          const acc = getEmailAccountById(payload.accountId);
+          if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+          row = {
+            ...acc,
+            imap_host: payload.imapHost.trim(),
+            imap_port: payload.imapPort,
+            imap_tls: payload.imapTls ? 1 : 0,
+            imap_username: payload.imapUsername.trim(),
+          };
+          if (!password) {
+            password = (await getEmailPassword(acc.keytar_account_key)) ?? '';
+          }
+        } else {
+          row = {
+            id: 0,
+            display_name: '',
+            email_address: '',
+            imap_host: payload.imapHost.trim(),
+            imap_port: payload.imapPort,
+            imap_tls: payload.imapTls ? 1 : 0,
+            imap_username: payload.imapUsername.trim(),
+            keytar_account_key: 'test-temp',
+            smtp_host: null,
+            smtp_port: null,
+            smtp_tls: null,
+            smtp_username: null,
+            smtp_use_imap_auth: 1,
+            smtp_keytar_account_key: null,
+            protocol: 'imap',
+            pop3_host: null,
+            pop3_port: 995,
+            pop3_tls: 1,
+            oauth_provider: null,
+            oauth_refresh_keytar_key: null,
+            sent_folder_path: 'Sent',
+            imap_sync_seen_on_open: 1,
+            created_at: '',
+            updated_at: '',
+          };
+        }
+        const result = await testImapConnection(row, password);
         if (result.ok) {
           return { success: true as const };
         }
@@ -531,6 +565,49 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.AddMessageTag,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; tag: string }) => {
+        addMessageTag(payload.messageId, payload.tag);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RemoveMessageTag,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; tag: string }) => {
+        removeMessageTag(payload.messageId, payload.tag);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.MoveMessageToView,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; view: import('../email/email-store').AccountMailView },
+      ) => {
+        try {
+          moveMessageToMailView(payload.messageId, payload.view);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Verschieben fehlgeschlagen',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.ListMessagesByView,
       async (
         _event: IpcMainInvokeEvent,
@@ -662,6 +739,74 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.UpdateCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          categoryId: number;
+          name?: string;
+          parentId?: number | null;
+          sortOrder?: number;
+        },
+      ) => {
+        try {
+          updateCategory(payload.categoryId, {
+            name: payload.name,
+            parentId: payload.parentId,
+            sortOrder: payload.sortOrder,
+          });
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Kategorie konnte nicht gespeichert werden',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteCategory, async (_event: IpcMainInvokeEvent, categoryId: number) => {
+      try {
+        deleteCategory(categoryId);
+        return { success: true as const };
+      } catch (e) {
+        return {
+          success: false as const,
+          error: e instanceof Error ? e.message : 'Kategorie konnte nicht gelöscht werden',
+        };
+      }
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryId: number | null },
+      ) => {
+        if (payload.categoryId == null) {
+          clearMessageCategory(payload.messageId);
+        } else {
+          setMessageCategory(payload.messageId, payload.categoryId);
+        }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetMessageCategory, async (_event: IpcMainInvokeEvent, messageId: number) => {
+      return { categoryId: getMessageCategoryId(messageId) };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.CategoryCounts,
       async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
         listCategoryCountsForMailScope(accountId),
@@ -687,6 +832,31 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       },
       { logger },
     ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.UpdateInternalNote,
+      async (_event: IpcMainInvokeEvent, payload: { noteId: number; body: string }) => {
+        try {
+          updateInternalNote(payload.noteId, payload.body);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Notiz konnte nicht gespeichert werden',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.DeleteInternalNote, async (_event: IpcMainInvokeEvent, noteId: number) => {
+      deleteInternalNote(noteId);
+      return { success: true as const };
+    }, { logger }),
   );
 
   disposers.push(
@@ -970,6 +1140,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.DeleteComposeDraft,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        try {
+          deleteLocalComposeDraft(messageId);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Entwurf konnte nicht gelöscht werden',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
     registerIpcHandler(IPCChannels.Email.RestoreMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       setMessageSoftDeleted(messageId, false);
       return { success: true as const };
@@ -989,6 +1177,34 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.RestoreInboxFromArchive,
+      async (_event: IpcMainInvokeEvent, accountId: number) => {
+        const restored = restoreInboxMessagesFromArchive(accountId);
+        return { success: true as const, restored };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetMessageRawHeaders,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const row = getEmailMessageById(messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        return {
+          success: true as const,
+          rawHeaders: row.raw_headers ?? null,
+          messageIdHeader: row.message_id ?? null,
+          fromJson: row.from_json ?? null,
+        };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.SetMessageSeen,
       async (
         _event: IpcMainInvokeEvent,
@@ -997,7 +1213,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
         setMessageSeenLocal(payload.messageId, payload.seen);
-        if (payload.syncToServer !== false) {
+        const acc = getEmailAccountById(row.account_id);
+        const accountWantsSync =
+          acc != null &&
+          (acc.protocol || 'imap') === 'imap' &&
+          (acc.imap_sync_seen_on_open ?? 1) !== 0;
+        const syncToServer =
+          payload.syncToServer !== undefined
+            ? payload.syncToServer
+            : accountWantsSync;
+        if (syncToServer) {
           try {
             await syncSeenFlagToServer(row, payload.seen);
           } catch (e) {

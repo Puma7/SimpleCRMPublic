@@ -33,6 +33,7 @@ export type EmailAccountRow = {
   oauth_provider: string | null;
   oauth_refresh_keytar_key: string | null;
   sent_folder_path: string | null;
+  imap_sync_seen_on_open: number;
   created_at: string;
   updated_at: string;
 };
@@ -81,6 +82,7 @@ export type EmailMessageRow = {
   is_spam: number;
   /** POP3 server UIDL when message came from POP3 (stable key). */
   pop3_uidl: string | null;
+  raw_headers: string | null;
   created_at: string;
 };
 
@@ -88,6 +90,7 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
             COALESCE(protocol, 'imap') AS protocol, pop3_host, pop3_port, pop3_tls, oauth_provider, oauth_refresh_keytar_key,
             COALESCE(sent_folder_path, 'Sent') AS sent_folder_path,
+            COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
             created_at, updated_at`;
 
 export function listEmailAccounts(): EmailAccountRow[] {
@@ -119,6 +122,7 @@ export function createEmailAccountRecord(input: {
   pop3Host?: string | null;
   pop3Port?: number;
   pop3Tls?: boolean;
+  imapSyncSeenOnOpen?: boolean;
 }): { id: number; keytarAccountKey: string } {
   const keytarAccountKey = input.keytarAccountKey ?? `email-${randomUUID()}`;
   const now = new Date().toISOString();
@@ -126,13 +130,14 @@ export function createEmailAccountRecord(input: {
   const p3h = input.pop3Host?.trim() || null;
   const p3p = input.pop3Port ?? 995;
   const p3t = input.pop3Tls !== false ? 1 : 0;
+  const syncSeen = input.imapSyncSeenOnOpen !== false ? 1 : 0;
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNTS_TABLE} (
       display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
       smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
-      protocol, pop3_host, pop3_port, pop3_tls,
+      protocol, pop3_host, pop3_port, pop3_tls, imap_sync_seen_on_open,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const result = stmt.run(
     input.displayName,
@@ -152,6 +157,7 @@ export function createEmailAccountRecord(input: {
     p3h,
     p3p,
     p3t,
+    syncSeen,
     now,
     now,
   );
@@ -180,6 +186,7 @@ export function updateEmailAccountRecord(
     oauthProvider: string | null;
     oauthRefreshKeytarKey: string | null;
     sentFolderPath: string | null;
+    imapSyncSeenOnOpen: boolean;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -209,6 +216,10 @@ export function updateEmailAccountRecord(
   if (input.oauthProvider !== undefined) { sets.push('oauth_provider = ?'); vals.push(input.oauthProvider); }
   if (input.oauthRefreshKeytarKey !== undefined) { sets.push('oauth_refresh_keytar_key = ?'); vals.push(input.oauthRefreshKeytarKey); }
   if (input.sentFolderPath !== undefined) { sets.push('sent_folder_path = ?'); vals.push(input.sentFolderPath); }
+  if (input.imapSyncSeenOnOpen !== undefined) {
+    sets.push('imap_sync_seen_on_open = ?');
+    vals.push(input.imapSyncSeenOnOpen ? 1 : 0);
+  }
 
   if (sets.length === 0) return;
   sets.push('updated_at = ?');
@@ -723,6 +734,7 @@ export function insertOrUpdateEmailMessage(input: {
   attachmentsJson?: string | null;
   /** POP3: stable server UIDL — row is keyed by this, not by volatile message number. */
   pop3Uidl?: string | null;
+  rawHeaders?: string | null;
 }): { id: number; isNew: boolean } {
   const hasAtt = input.hasAttachments ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
@@ -756,7 +768,8 @@ export function insertOrUpdateEmailMessage(input: {
           imap_thread_id = COALESCE(?, imap_thread_id),
           has_attachments = ?,
           attachments_json = COALESCE(?, attachments_json),
-          seen_local = MAX(seen_local, ?)
+          seen_local = MAX(seen_local, ?),
+          raw_headers = COALESCE(?, raw_headers)
         WHERE id = ?`,
       ).run(
         input.messageId,
@@ -774,6 +787,7 @@ export function insertOrUpdateEmailMessage(input: {
         hasAtt,
         attJson,
         input.seenLocal ? 1 : 0,
+        input.rawHeaders ?? null,
         byUidl.id,
       );
       return { id: byUidl.id, isNew: false };
@@ -792,9 +806,9 @@ export function insertOrUpdateEmailMessage(input: {
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
       subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
-      imap_thread_id, has_attachments, attachments_json, pop3_uidl,
+      imap_thread_id, has_attachments, attachments_json, pop3_uidl, raw_headers,
       thread_id, ticket_code, customer_id, folder_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -811,6 +825,7 @@ export function insertOrUpdateEmailMessage(input: {
       has_attachments = excluded.has_attachments,
       attachments_json = COALESCE(excluded.attachments_json, ${EMAIL_MESSAGES_TABLE}.attachments_json),
       pop3_uidl = COALESCE(excluded.pop3_uidl, ${EMAIL_MESSAGES_TABLE}.pop3_uidl),
+      raw_headers = COALESCE(excluded.raw_headers, ${EMAIL_MESSAGES_TABLE}.raw_headers),
       seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
   );
   const result = stmt.run(
@@ -833,12 +848,30 @@ export function insertOrUpdateEmailMessage(input: {
     hasAtt,
     attJson,
     pop3Uidl,
+    input.rawHeaders ?? null,
   );
   const row = db
     .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
     .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
   const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
   return { id, isNew };
+}
+
+/** Undo workflow auto-archive for synced inbox mail (not spam/trash). */
+export function restoreInboxMessagesFromArchive(accountId: number): number {
+  const r = getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET archived = 0
+       WHERE account_id = ?
+         AND archived = 1
+         AND soft_deleted = 0
+         AND is_spam = 0
+         AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
+         AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+    )
+    .run(accountId);
+  return r.changes;
 }
 
 export function setMessageArchived(messageId: number, archived: boolean): void {
@@ -873,6 +906,14 @@ export function addMessageTag(messageId: number, tag: string): void {
     .prepare(
       `INSERT OR IGNORE INTO ${EMAIL_MESSAGE_TAGS_TABLE} (message_id, tag) VALUES (?, ?)`,
     )
+    .run(messageId, t);
+}
+
+export function removeMessageTag(messageId: number, tag: string): void {
+  const t = tag.trim();
+  if (!t) return;
+  getDb()
+    .prepare(`DELETE FROM ${EMAIL_MESSAGE_TAGS_TABLE} WHERE message_id = ? AND tag = ?`)
     .run(messageId, t);
 }
 
@@ -976,10 +1017,119 @@ export function listConversationMessagesForScope(
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
 
+type TrashSnapshotRow = {
+  archived: number;
+  is_spam: number;
+  folder_kind: string;
+  trash_prev_archived: number | null;
+  trash_prev_is_spam: number | null;
+  trash_prev_folder_kind: string | null;
+};
+
+/** Permanently remove a local compose draft (negative IMAP uid). Not recoverable. */
+export function deleteLocalComposeDraft(messageId: number): void {
+  const row = getEmailMessageById(messageId);
+  if (!row) {
+    throw new Error('Entwurf nicht gefunden');
+  }
+  if (row.uid >= 0) {
+    throw new Error('Nur lokale Entwürfe können endgültig gelöscht werden');
+  }
+  getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(messageId);
+}
+
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {
+  const row = getDb()
+    .prepare(
+      `SELECT archived, is_spam, folder_kind, trash_prev_archived, trash_prev_is_spam, trash_prev_folder_kind
+       FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`,
+    )
+    .get(messageId) as TrashSnapshotRow | undefined;
+  if (!row) return;
+
+  if (deleted) {
+    getDb()
+      .prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE}
+         SET soft_deleted = 1,
+             trash_prev_archived = ?,
+             trash_prev_is_spam = ?,
+             trash_prev_folder_kind = ?
+         WHERE id = ?`,
+      )
+      .run(row.archived ?? 0, row.is_spam ?? 0, row.folder_kind ?? 'inbox', messageId);
+    return;
+  }
+
+  const archived = row.trash_prev_archived ?? row.archived ?? 0;
+  const isSpam = row.trash_prev_is_spam ?? row.is_spam ?? 0;
+  const folderKind = row.trash_prev_folder_kind ?? row.folder_kind ?? 'inbox';
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = ? WHERE id = ?`)
-    .run(deleted ? 1 : 0, messageId);
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET soft_deleted = 0,
+           archived = ?,
+           is_spam = ?,
+           folder_kind = ?,
+           trash_prev_archived = NULL,
+           trash_prev_is_spam = NULL,
+           trash_prev_folder_kind = NULL
+       WHERE id = ?`,
+    )
+    .run(archived, isSpam, folderKind, messageId);
+}
+
+/** Move a message into a mail sidebar view (inbox, archive, spam, trash). */
+export function moveMessageToMailView(messageId: number, view: AccountMailView): void {
+  if (view === 'trash') {
+    setMessageSoftDeleted(messageId, true);
+    return;
+  }
+  const row = getEmailMessageById(messageId);
+  if (!row) throw new Error('Nachricht nicht gefunden');
+  if (row.uid < 0 && !row.pop3_uidl) {
+    throw new Error('Entwürfe können nicht per Ordner verschoben werden');
+  }
+
+  switch (view) {
+    case 'inbox':
+      getDb()
+        .prepare(
+          `UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET soft_deleted = 0, archived = 0, is_spam = 0,
+               folder_kind = 'inbox',
+               trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
+           WHERE id = ?`,
+        )
+        .run(messageId);
+      break;
+    case 'archived':
+      getDb()
+        .prepare(
+          `UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET soft_deleted = 0, archived = 1, is_spam = 0,
+               trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
+           WHERE id = ?`,
+        )
+        .run(messageId);
+      break;
+    case 'spam':
+      getDb()
+        .prepare(
+          `UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET soft_deleted = 0, archived = 0, is_spam = 1,
+               trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
+           WHERE id = ?`,
+        )
+        .run(messageId);
+      break;
+    case 'sent':
+    case 'drafts':
+    case 'all':
+      throw new Error('Dieser Ordner unterstützt kein Verschieben per Drag & Drop');
+    default:
+      break;
+  }
 }
 
 export function markDraftAsSent(draftMessageId: number): void {
