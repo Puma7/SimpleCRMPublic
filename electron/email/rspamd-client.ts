@@ -19,6 +19,7 @@ type RspamdJson = {
  * POST full message to Rspamd controller (/checkv2). Optional localhost daemon.
  */
 export async function checkMessageWithRspamd(input: {
+  rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;

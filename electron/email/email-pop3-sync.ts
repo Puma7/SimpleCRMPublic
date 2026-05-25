@@ -22,6 +22,7 @@ import {
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
+import { rfc822SourceToStorageB64 } from './mail-eml-build';
 
 const POP_FOLDER = 'INBOX';
 
@@ -83,7 +84,9 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
 
     try {
     const raw = await pop3.RETR(num);
-    const parsed = await simpleParser(typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw as Buffer));
+    const sourceBuf =
+      typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw as Buffer);
+    const parsed = await simpleParser(sourceBuf);
     const messageId = parsed.messageId ?? null;
     const inReplyTo = parsed.inReplyTo ?? null;
     const refs = parsed.references
@@ -116,6 +119,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
       hasAttachments,
       attachmentsJson,
       rawHeaders: rawHeadersFromParsed(parsed),
+      rawRfc822B64: rfc822SourceToStorageB64(sourceBuf),
     });
 
     if (isNew && localMsgId > 0) {

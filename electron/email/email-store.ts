@@ -83,6 +83,8 @@ export type EmailMessageRow = {
   /** POP3 server UIDL when message came from POP3 (stable key). */
   pop3_uidl: string | null;
   raw_headers: string | null;
+  /** Full RFC822 message as received (base64), for .eml export / Rohdaten. */
+  raw_rfc822_b64: string | null;
   auth_spf: string | null;
   auth_dkim: string | null;
   auth_dmarc: string | null;
@@ -746,6 +748,7 @@ export function insertOrUpdateEmailMessage(input: {
   /** POP3: stable server UIDL — row is keyed by this, not by volatile message number. */
   pop3Uidl?: string | null;
   rawHeaders?: string | null;
+  rawRfc822B64?: string | null;
 }): { id: number; isNew: boolean } {
   const hasAtt = input.hasAttachments ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
@@ -780,7 +783,8 @@ export function insertOrUpdateEmailMessage(input: {
           has_attachments = ?,
           attachments_json = COALESCE(?, attachments_json),
           seen_local = MAX(seen_local, ?),
-          raw_headers = COALESCE(?, raw_headers)
+          raw_headers = COALESCE(?, raw_headers),
+          raw_rfc822_b64 = COALESCE(?, raw_rfc822_b64)
         WHERE id = ?`,
       ).run(
         input.messageId,
@@ -799,6 +803,7 @@ export function insertOrUpdateEmailMessage(input: {
         attJson,
         input.seenLocal ? 1 : 0,
         input.rawHeaders ?? null,
+        input.rawRfc822B64 ?? null,
         byUidl.id,
       );
       return { id: byUidl.id, isNew: false };
@@ -817,9 +822,9 @@ export function insertOrUpdateEmailMessage(input: {
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
       subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
-      imap_thread_id, has_attachments, attachments_json, pop3_uidl, raw_headers,
+      imap_thread_id, has_attachments, attachments_json, pop3_uidl, raw_headers, raw_rfc822_b64,
       thread_id, ticket_code, customer_id, folder_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -837,6 +842,7 @@ export function insertOrUpdateEmailMessage(input: {
       attachments_json = COALESCE(excluded.attachments_json, ${EMAIL_MESSAGES_TABLE}.attachments_json),
       pop3_uidl = COALESCE(excluded.pop3_uidl, ${EMAIL_MESSAGES_TABLE}.pop3_uidl),
       raw_headers = COALESCE(excluded.raw_headers, ${EMAIL_MESSAGES_TABLE}.raw_headers),
+      raw_rfc822_b64 = COALESCE(excluded.raw_rfc822_b64, ${EMAIL_MESSAGES_TABLE}.raw_rfc822_b64),
       seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
   );
   const result = stmt.run(
@@ -860,6 +866,7 @@ export function insertOrUpdateEmailMessage(input: {
     attJson,
     pop3Uidl,
     input.rawHeaders ?? null,
+    input.rawRfc822B64 ?? null,
   );
   const row = db
     .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
