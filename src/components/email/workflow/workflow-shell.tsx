@@ -52,6 +52,7 @@ import { JsonDevDrawer } from "./json-dev-drawer"
 import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
+import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 import {
@@ -259,6 +260,12 @@ export function WorkflowShell() {
         throw new Error("Workflow braucht mindestens einen Trigger-Knoten.")
       }
       const trig = triggerFromGraph(graphDoc) || "inbound"
+      if (trig === "inbound" && graphHasTriggerToActionShortcut(graphDoc)) {
+        toast.warning(
+          "Aktionen hängen direkt am Trigger ohne Bedingung — sie würden auf jede Mail angewendet. Bitte Trigger → Bedingung → (Ja) → Aktion verbinden.",
+          { duration: 8000 },
+        )
+      }
       if (selectedId != null) {
         await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, {
           workflowId: selectedId,

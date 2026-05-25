@@ -274,6 +274,10 @@ async function runRulesInbound(
   const ctx = buildInboundContext(row);
   const log: string[] = [];
   for (const rule of def.rules) {
+    if (rule.when == null && rule.then.some((s) => s.type !== 'stop')) {
+      log.push('skip_rule:unconditional');
+      continue;
+    }
     if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {

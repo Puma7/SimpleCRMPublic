@@ -219,7 +219,7 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
   return false;
 }
 
-function matchConditionItem(item: WorkflowConditionItem, ctx: Record<string, string>): boolean {
+export function matchConditionItem(item: WorkflowConditionItem, ctx: Record<string, string>): boolean {
   if ('not' in item && item.not) {
     return !matchSingleCondition(item.not, ctx);
   }
@@ -233,6 +233,9 @@ export function evaluateWorkflowWhen(when: WorkflowRuleWhen, ctx: Record<string,
   }
   if ('any' in when && Array.isArray(when.any)) {
     return when.any.some((c) => matchConditionItem(c, ctx));
+  }
+  if (typeof when === 'object' && when !== null && 'not' in when) {
+    return matchConditionItem(when as WorkflowConditionItem, ctx);
   }
   return matchSingleCondition(when as WorkflowCondition, ctx);
 }

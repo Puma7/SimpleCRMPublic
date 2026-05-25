@@ -163,6 +163,8 @@ function walkFrom(
 
 function flushRule(state: CompileState, rules: WorkflowRule[]): void {
   if (state.then.length === 0 && state.conditions.length === 0) return;
+  // Paths that reach actions without a Bedingung must not become when:null (matches all mail).
+  if (state.then.length > 0 && state.conditions.length === 0) return;
   const when =
     state.conditions.length === 0
       ? null

@@ -90,6 +90,16 @@ export function applyAutoLayoutToDocument(
   }
 }
 
+/** True if Trigger connects directly to an Aktion (Bedingung übersprungen). */
+export function graphHasTriggerToActionShortcut(doc: WorkflowGraphDocument): boolean {
+  const typeById = new Map(doc.nodes.map((n) => [n.id, n.type]));
+  return doc.edges.some((e) => {
+    if (typeById.get(e.source) !== "trigger") return false
+    const tgt = typeById.get(e.target)
+    return tgt === "action" || tgt === "registry"
+  })
+}
+
 export function documentWithResolvedPositions(
   doc: WorkflowGraphDocument,
   opts?: { autoLayoutMissing?: boolean },
