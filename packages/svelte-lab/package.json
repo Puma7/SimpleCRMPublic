@@ -1,0 +1,22 @@
+{
+  "name": "@simplecrm/svelte-lab",
+  "private": true,
+  "version": "0.0.0-beta",
+  "description": "Isolated Svelte / Svelte Flow sandbox — not part of the React bundle",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5174 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 5174 --strictPort"
+  },
+  "dependencies": {
+    "@xyflow/svelte": "^1.5.2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@xyflow/system": "^0.0.76",
+    "svelte": "^5.25.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

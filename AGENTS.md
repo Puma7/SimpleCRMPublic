@@ -40,3 +40,4 @@ See `package.json` `scripts` for the full list.
 - **Dev mode** (`npm run electron:dev`) starts four concurrent processes: Vite build watcher, TypeScript compiler watcher, Electron main via nodemon, and Vite dev server on port 5173. DevTools open automatically in dev mode.
 - The SQLite database file is created at `~/.config/simplecrm/database.sqlite` (on Linux).
 - The app UI is in German (e.g., "Kunden" = Customers, "Aufgaben" = Tasks, "Kalender" = Calendar, "Einstellungen" = Settings).
+- **Workflow graph UI:** `@xyflow/react` v12 (`^12.10.1`). Optional isolated Svelte experiment: `packages/svelte-lab` (`@xyflow/svelte`), see `packages/svelte-lab/README.md` and `VITE_ENABLE_SVELTE_LAB`.
