@@ -21,6 +21,7 @@ import {
   updateComposeDraft,
   listMessageIdsForWorkflowBackfill,
   listTagsForMessage,
+  listConversationMessages,
   setMessageSoftDeleted,
   setMessageArchived,
   setMessageSeenLocal,
@@ -524,8 +525,45 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SearchMessages,
-      async (_event: IpcMainInvokeEvent, payload: { accountId: number; query: string; limit?: number }) => {
-        return searchMessagesForAccount(payload.accountId, payload.query, payload.limit ?? 80);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          accountId: number;
+          query: string;
+          limit?: number;
+          view?: import('../email/email-store').AccountMailView;
+        },
+      ) => {
+        return searchMessagesForAccount(
+          payload.accountId,
+          payload.query,
+          payload.limit ?? 80,
+          payload.view,
+        );
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListConversationMessages,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          accountId: number;
+          messageId: number;
+          ticketCode?: string | null;
+          customerId?: number | null;
+          limit?: number;
+        },
+      ) => {
+        return listConversationMessages(payload.accountId, {
+          excludeMessageId: payload.messageId,
+          ticketCode: payload.ticketCode,
+          customerId: payload.customerId,
+          limit: payload.limit,
+        });
       },
       { logger },
     ),

@@ -5,6 +5,10 @@ import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { sendSmtpForAccount } from './email-smtp';
 import { appendSentToImap } from './email-imap-append';
 import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
+import {
+  buildOutboundThreadingHeaders,
+  generateOutboundMessageId,
+} from './email-outbound-threading';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
@@ -40,11 +44,12 @@ export async function sendComposeDraft(input: {
 
   let ticketCode: string | null = null;
   let threadId: string | null = null;
+  let parentForThreading: ReturnType<typeof getEmailMessageById> | null = null;
   if (input.inReplyToMessageId) {
-    const parent = getEmailMessageById(input.inReplyToMessageId);
-    if (parent?.ticket_code) {
-      ticketCode = parent.ticket_code;
-      threadId = parent.thread_id;
+    parentForThreading = getEmailMessageById(input.inReplyToMessageId);
+    if (parentForThreading?.ticket_code) {
+      ticketCode = parentForThreading.ticket_code;
+      threadId = parentForThreading.thread_id;
     }
   }
   if (!ticketCode) {
@@ -65,6 +70,16 @@ export async function sendComposeDraft(input: {
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
   const html = input.bodyHtml ?? draft.body_html ?? undefined;
+
+  const outboundMessageId = generateOutboundMessageId(acc.email_address);
+  const threadHeaders = buildOutboundThreadingHeaders(
+    parentForThreading
+      ? {
+          message_id: parentForThreading.message_id,
+          references_header: parentForThreading.references_header,
+        }
+      : null,
+  );
 
   const smtpAttachments: { filename: string; path: string }[] = [];
   for (const p of input.attachmentPaths ?? []) {
@@ -89,6 +104,9 @@ export async function sendComposeDraft(input: {
       text: input.bodyText,
       html: html || undefined,
       attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
+      messageId: outboundMessageId,
+      inReplyTo: threadHeaders.inReplyTo,
+      references: threadHeaders.references,
     });
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -103,16 +121,31 @@ export async function sendComposeDraft(input: {
       subject: finalSubject,
       text: input.bodyText,
       html: html || undefined,
+      messageId: outboundMessageId,
+      inReplyTo: threadHeaders.inReplyTo,
+      references: threadHeaders.references,
     });
   } catch {
     /* Sent-Ordner optional */
   }
 
+  const refsHeader = threadHeaders.references ?? null;
+  const inReplyHeader = threadHeaders.inReplyTo ?? null;
   getDb()
     .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET subject = ?, body_text = ?, body_html = COALESCE(?, body_html), ticket_code = ?, thread_id = ? WHERE id = ?`,
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET subject = ?, body_text = ?, body_html = COALESCE(?, body_html), ticket_code = ?, thread_id = ?, message_id = ?, in_reply_to = ?, references_header = ? WHERE id = ?`,
     )
-    .run(finalSubject, input.bodyText, html ?? null, ticketCode, threadId, input.draftMessageId);
+    .run(
+      finalSubject,
+      input.bodyText,
+      html ?? null,
+      ticketCode,
+      threadId,
+      outboundMessageId,
+      inReplyHeader,
+      refsHeader,
+      input.draftMessageId,
+    );
 
   markDraftAsSent(input.draftMessageId);
   return { ok: true };

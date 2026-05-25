@@ -173,6 +173,31 @@ export function registerEmailNodes(register: Reg): void {
   });
 
   register({
+    type: 'email.set_priority',
+    label: 'Priorität setzen',
+    category: 'email',
+    canvasType: 'registry',
+    description: 'Setzt Tags priority:hoch, priority:normal oder priority:niedrig für Sortierung/Filter.',
+    defaultConfig: { level: 'normal' },
+    execute: async (ctx, config) => {
+      const { messageId } = requireMessage(ctx);
+      const level = String(config.level ?? 'normal').toLowerCase();
+      const allowed = new Set(['hoch', 'high', 'normal', 'niedrig', 'low']);
+      if (!allowed.has(level)) {
+        return { status: 'error', message: 'level muss hoch, normal oder niedrig sein' };
+      }
+      const tag =
+        level === 'hoch' || level === 'high'
+          ? 'priority:hoch'
+          : level === 'niedrig' || level === 'low'
+            ? 'priority:niedrig'
+            : 'priority:normal';
+      if (!ctx.dryRun) addMessageTag(messageId, tag);
+      return { status: 'ok', variables: { 'email.priority': tag } };
+    },
+  });
+
+  register({
     type: 'email.sender_filter',
     label: 'Absender-Filter',
     category: 'email',

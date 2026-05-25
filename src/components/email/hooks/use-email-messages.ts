@@ -47,6 +47,7 @@ export function useEmailMessages() {
             accountId,
             query: query.trim(),
             limit: 150,
+            view,
           })
         } else {
           list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.ListMessagesByView, {

@@ -69,7 +69,10 @@ export function MessageViewer(props: Props) {
     metadataPanelOpen,
     setMetadataPanelOpen,
     mailView,
+    setComposeIntent,
   } = useMailWorkspace()
+
+  const isDraft = selectedMessage != null && selectedMessage.uid < 0 && mailView === "drafts"
 
   const inTrash = mailView === "trash"
 
@@ -154,6 +157,19 @@ export function MessageViewer(props: Props) {
               >
                 <RotateCcw className="h-4 w-4" />
                 Wiederherstellen
+              </Button>
+            ) : null}
+            {isDraft ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                className="gap-2"
+                onClick={() =>
+                  setComposeIntent({ mode: "draft", messageId: selectedMessage.id })
+                }
+              >
+                Bearbeiten
               </Button>
             ) : null}
             {selectedMessage.uid >= 0 && !inTrash ? (

@@ -37,12 +37,18 @@ function buildRfc822(input: {
   subject: string;
   text?: string;
   html?: string;
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
 }): Buffer {
   const lines: string[] = [];
   lines.push(`From: ${input.from}`);
   lines.push(`To: ${input.to}`);
   if (input.cc?.trim()) lines.push(`Cc: ${input.cc.trim()}`);
   lines.push(`Subject: ${encodeRfc2047(input.subject)}`);
+  if (input.messageId) lines.push(`Message-ID: ${input.messageId}`);
+  if (input.inReplyTo) lines.push(`In-Reply-To: ${input.inReplyTo}`);
+  if (input.references) lines.push(`References: ${input.references}`);
   lines.push('MIME-Version: 1.0');
   if (input.html?.trim()) {
     const boundary = `b_${Math.random().toString(36).slice(2)}`;
@@ -73,6 +79,9 @@ export async function appendSentToImap(input: {
   subject: string;
   text?: string;
   html?: string;
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
 }): Promise<void> {
   const acc = getEmailAccountById(input.accountId);
   if (!acc || (acc.protocol || 'imap') !== 'imap') return;

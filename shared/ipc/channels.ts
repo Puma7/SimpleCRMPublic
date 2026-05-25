@@ -142,6 +142,7 @@ const EmailChannels = literal({
   ListMessageTags: 'email:list-message-tags',
   ListMessagesByView: 'email:list-messages-by-view',
   SearchMessages: 'email:search-messages',
+  ListConversationMessages: 'email:list-conversation-messages',
   SendCompose: 'email:send-compose',
   TestSmtp: 'email:test-smtp',
   ListCategories: 'email:list-categories',

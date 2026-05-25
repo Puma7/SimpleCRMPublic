@@ -233,11 +233,33 @@ function ftsMatchExpression(raw: string): string | null {
   return tokens.join(' AND ');
 }
 
+function viewFilterClause(view: import('./email-store').AccountMailView): string {
+  const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
+  switch (view) {
+    case 'trash':
+      return 'm.soft_deleted = 1';
+    case 'archived':
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.archived = 1 AND m.is_spam = 0`;
+    case 'spam':
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.is_spam = 1`;
+    case 'sent':
+      return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
+    case 'drafts':
+      return `m.soft_deleted = 0 AND m.folder_kind = 'draft'`;
+    case 'inbox':
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0`;
+    default:
+      return 'm.soft_deleted = 0';
+  }
+}
+
 export function searchMessagesForAccount(
   accountId: number,
   q: string,
   limit = 100,
+  view?: import('./email-store').AccountMailView,
 ): import('./email-store').EmailMessageRow[] {
+  const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
   const fts = ftsMatchExpression(q);
   if (fts) {
     const ftsTable = getDb()
@@ -249,7 +271,7 @@ export function searchMessagesForAccount(
           .prepare(
             `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-             WHERE m.account_id = ? AND m.soft_deleted = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
+             WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
              AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ?`,
@@ -265,7 +287,7 @@ export function searchMessagesForAccount(
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        INNER JOIN ${EMAIL_FOLDERS_TABLE} f ON f.id = m.folder_id
-       WHERE m.account_id = ? AND m.soft_deleted = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
+       WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
        AND (
          m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
        )

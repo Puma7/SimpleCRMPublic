@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Copy } from "lucide-react"
@@ -18,6 +18,7 @@ import {
 import {
   invokeIpc,
   type CustomerOpt,
+  type EmailMessage,
   type InternalNote,
   type TeamMember,
 } from "./types"
@@ -40,8 +41,34 @@ export function MessageMetadataPanel({
   reloadNotes,
   refreshCurrentMessage,
 }: Props) {
-  const { selectedMessage } = useMailWorkspace()
+  const { selectedMessage, selectedAccountId } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
+  const [conversation, setConversation] = useState<EmailMessage[]>([])
+
+  useEffect(() => {
+    if (!selectedMessage || selectedAccountId == null) {
+      setConversation([])
+      return
+    }
+    if (!selectedMessage.ticket_code && !selectedMessage.customer_id) {
+      setConversation([])
+      return
+    }
+    void invokeIpc<EmailMessage[]>(IPCChannels.Email.ListConversationMessages, {
+      accountId: selectedAccountId,
+      messageId: selectedMessage.id,
+      ticketCode: selectedMessage.ticket_code,
+      customerId: selectedMessage.customer_id,
+      limit: 20,
+    })
+      .then(setConversation)
+      .catch(() => setConversation([]))
+  }, [
+    selectedMessage?.id,
+    selectedMessage?.ticket_code,
+    selectedMessage?.customer_id,
+    selectedAccountId,
+  ])
 
   if (!selectedMessage) return null
 
@@ -151,6 +178,25 @@ export function MessageMetadataPanel({
                   </span>
                 ))}
               </div>
+            </div>
+          ) : null}
+
+          {conversation.length > 0 ? (
+            <div className="space-y-1.5">
+              <Label className="text-xs">Kommunikation (Ticket/Kunde)</Label>
+              <ul className="max-h-40 space-y-1 overflow-y-auto rounded border bg-background p-2 text-xs">
+                {conversation.map((m) => (
+                  <li key={m.id} className="border-b border-border/50 pb-1 last:border-0">
+                    <p className="font-medium line-clamp-1">{m.subject || "(Ohne Betreff)"}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {m.date_received
+                        ? new Date(m.date_received).toLocaleString("de-DE")
+                        : "—"}
+                      {m.ticket_code ? ` · ${m.ticket_code}` : ""}
+                    </p>
+                  </li>
+                ))}
+              </ul>
             </div>
           ) : null}
 

@@ -729,6 +729,42 @@ export function createComposeDraft(input: {
   return id;
 }
 
+/** Related messages for CRM thread view (ticket and/or linked customer). */
+export function listConversationMessages(
+  accountId: number,
+  opts: {
+    excludeMessageId?: number;
+    ticketCode?: string | null;
+    customerId?: number | null;
+    limit?: number;
+  },
+): EmailMessageRow[] {
+  const limit = Math.min(opts.limit ?? 20, 50);
+  const clauses: string[] = ['m.account_id = ?', 'm.soft_deleted = 0'];
+  const params: (string | number)[] = [accountId];
+  if (opts.excludeMessageId != null) {
+    clauses.push('m.id != ?');
+    params.push(opts.excludeMessageId);
+  }
+  const orParts: string[] = [];
+  if (opts.ticketCode?.trim()) {
+    orParts.push('m.ticket_code = ?');
+    params.push(opts.ticketCode.trim());
+  }
+  if (opts.customerId != null && opts.customerId > 0) {
+    orParts.push('m.customer_id = ?');
+    params.push(opts.customerId);
+  }
+  if (orParts.length === 0) return [];
+  clauses.push(`(${orParts.join(' OR ')})`);
+  params.push(limit);
+  const sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+    LIMIT ?`;
+  return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+}
+
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = ? WHERE id = ?`)

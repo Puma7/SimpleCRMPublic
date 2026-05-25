@@ -38,6 +38,9 @@ export async function sendSmtpForAccount(
     text?: string;
     html?: string;
     attachments?: SmtpAttachment[];
+    messageId?: string;
+    inReplyTo?: string;
+    references?: string;
   },
 ): Promise<void> {
   const acc = getEmailAccountById(accountId);
@@ -78,6 +81,10 @@ export async function sendSmtpForAccount(
     subject: mail.subject,
     text: mail.text,
     html: mail.html,
+    encoding: 'utf-8',
+    messageId: mail.messageId,
+    inReplyTo: mail.inReplyTo,
+    references: mail.references,
     attachments: mail.attachments?.map((a) => ({
       filename: a.filename,
       path: a.path,
