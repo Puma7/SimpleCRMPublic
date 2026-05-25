@@ -14,6 +14,7 @@ import {
   Sparkles,
   Type,
   Users,
+  Wrench,
   Workflow,
 } from "lucide-react"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
@@ -27,6 +28,7 @@ import { PromptsPanel } from "./settings/prompts-panel"
 import { ExportPanel } from "./settings/export-panel"
 import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
+import { MiscPanel } from "./settings/misc-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -51,6 +53,7 @@ const TAB_DEFS: TabDef[] = [
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
+  { id: "misc", label: "Sonstiges", icon: Wrench, render: () => <MiscPanel /> },
 ]
 
 export const SETTINGS_TAB_IDS = TAB_DEFS.map((t) => t.id)
@@ -60,6 +63,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "KI & Automation", tabIds: ["ai", "knowledge", "automation", "prompts"] },
   { label: "Team & Vorlagen", tabIds: ["team", "canned"] },
   { label: "Datenschutz", tabIds: ["export"] },
+  { label: "Sonstiges", tabIds: ["misc"] },
 ]
 
 function SettingsPanels({ current }: { current: SettingsTab }) {

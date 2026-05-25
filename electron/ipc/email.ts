@@ -27,7 +27,6 @@ import {
   setMessageSoftDeleted,
   deleteLocalComposeDraft,
   setMessageArchived,
-  restoreInboxMessagesFromArchive,
   setMessageSeenLocal,
   setMessageSpam,
   setMessageAssignedTo,
@@ -42,6 +41,10 @@ import {
   saveAccountSignature,
   type EmailAccountRow,
 } from '../email/email-store';
+import {
+  previewInboxArchiveRecovery,
+  restoreInboxMessagesFromArchiveSafe,
+} from '../email/email-inbox-recovery';
 import { sendComposeDraft } from '../email/email-compose-send';
 import { testSmtpConnection } from '../email/email-smtp';
 import {
@@ -1177,10 +1180,33 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
-      IPCChannels.Email.RestoreInboxFromArchive,
+      IPCChannels.Email.PreviewRestoreInboxFromArchive,
       async (_event: IpcMainInvokeEvent, accountId: number) => {
-        const restored = restoreInboxMessagesFromArchive(accountId);
-        return { success: true as const, restored };
+        const preview = previewInboxArchiveRecovery(accountId);
+        if (!preview) {
+          return { success: false as const, error: 'Konto nicht gefunden' };
+        }
+        return { success: true as const, ...preview };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RestoreInboxFromArchive,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { accountId: number; expectedCount: number; confirmPhrase: string },
+      ) => {
+        const result = restoreInboxMessagesFromArchiveSafe(payload);
+        if (!result.ok) {
+          return { success: false as const, error: result.error };
+        }
+        logger.warn(
+          `[IPC] RestoreInboxFromArchive account=${payload.accountId} restored=${result.restored}`,
+        );
+        return { success: true as const, restored: result.restored };
       },
       { logger },
     ),
