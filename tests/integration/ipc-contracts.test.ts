@@ -71,4 +71,47 @@ describe('IPC contracts', () => {
       getPayloadSchema(IPCChannels.FollowUp.CreateSavedView).parse({ name: 'My View' })
     ).toThrow();
   });
+
+  test('Email channels have registered payload and result schemas', () => {
+    const emailChannels = Object.values(IPCChannels.Email);
+    for (const channel of emailChannels) {
+      expect(() => getPayloadSchema(channel as any)).not.toThrow();
+      expect(() => getResultSchema(channel as any)).not.toThrow();
+    }
+  });
+
+  test('Email signature IPC payloads validate', () => {
+    expect(() =>
+      getPayloadSchema(IPCChannels.Email.GetComposeSignature).parse({ accountId: 1 })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Email.SaveAccountSignature).parse({
+        accountId: 1,
+        signatureHtml: '<p>Hi</p>',
+      })
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Email.GetComposeSignature).parse({ html: '<p>x</p>' })
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Email.ListAccountSignatures).parse([
+        { account_id: 1, display_name: 'A', email_address: 'a@x.de', signature_html: null },
+      ])
+    ).not.toThrow();
+  });
+
+  test('Email.SendCompose payload validates required fields', () => {
+    expect(() =>
+      getPayloadSchema(IPCChannels.Email.SendCompose).parse({
+        accountId: 1,
+        draftMessageId: 2,
+        subject: 'Hi',
+        bodyText: 'Text',
+        to: 'a@example.com',
+      })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Email.SendCompose).parse({ accountId: 1 })
+    ).toThrow();
+  });
 });

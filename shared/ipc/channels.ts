@@ -168,6 +168,8 @@ const EmailChannels = literal({
   SetAiProfileApiKey: 'email:set-ai-profile-api-key',
   ClearAiProfileApiKey: 'email:clear-ai-profile-api-key',
   GetComposeSignature: 'email:get-compose-signature',
+  ListAccountSignatures: 'email:list-account-signatures',
+  SaveAccountSignature: 'email:save-account-signature',
   LinkCustomer: 'email:link-customer',
   SoftDeleteMessage: 'email:soft-delete-message',
   RestoreMessage: 'email:restore-message',

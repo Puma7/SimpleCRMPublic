@@ -165,6 +165,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
 
         const sigRes = await invokeIpc<{ html: string | null }>(
           IPCChannels.Email.GetComposeSignature,
+          { accountId: accountIdAtOpen },
         )
         const sigHtml =
           composeIntent.mode === "new" && sigRes.html

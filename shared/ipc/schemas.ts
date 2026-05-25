@@ -1,5 +1,6 @@
 import { z, ZodTypeAny } from 'zod';
 import { AllowedInvokeChannels, DeprecatedInvokeChannels, IPCChannels, InvokeChannel } from './channels';
+import { applyEmailIpcSchemas } from './email-schemas';
 
 type SchemaEntry = {
   payload: ZodTypeAny;
@@ -463,47 +464,7 @@ baseSchemaMap.set(IPCChannels.FollowUp.DeleteSavedView, {
   result: z.any(),
 });
 
-const mailAccountScopeSchema = z.union([z.literal('all'), z.number().int().positive()]);
-
-baseSchemaMap.set(IPCChannels.Email.SendCompose, {
-  payload: z.object({
-    accountId: z.number().int().positive(),
-    draftMessageId: z.number().int().positive(),
-    subject: z.string(),
-    bodyText: z.string(),
-    bodyHtml: z.string().nullable().optional(),
-    to: z.string().min(1),
-    cc: z.string().optional(),
-    inReplyToMessageId: z.number().int().positive().nullable().optional(),
-    attachmentPaths: z.array(z.string()).optional(),
-  }),
-  result: z.union([
-    z.object({ success: z.literal(true) }),
-    z.object({ success: z.literal(false), error: z.string().optional() }),
-  ]),
-});
-
-baseSchemaMap.set(IPCChannels.Email.ListMessagesByView, {
-  payload: z.object({
-    accountId: mailAccountScopeSchema,
-    view: z.enum(['inbox', 'sent', 'archived', 'drafts', 'spam', 'trash', 'all']),
-    limit: z.number().int().positive().optional(),
-    offset: z.number().int().nonnegative().optional(),
-    categoryId: z.number().int().positive().nullable().optional(),
-  }),
-  result: z.array(z.any()),
-});
-
-baseSchemaMap.set(IPCChannels.Email.ListConversationMessages, {
-  payload: z.object({
-    accountId: mailAccountScopeSchema,
-    messageId: z.number().int().positive(),
-    ticketCode: z.string().nullable().optional(),
-    customerId: z.number().int().positive().nullable().optional(),
-    limit: z.number().int().positive().optional(),
-  }),
-  result: z.array(z.any()),
-});
+applyEmailIpcSchemas(baseSchemaMap);
 
 export const IpcSchemas: Record<InvokeChannel, SchemaEntry> = Object.fromEntries(
   Array.from(baseSchemaMap.entries())

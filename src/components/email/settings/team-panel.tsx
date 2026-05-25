@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { hasElectron, invokeIpc, type TeamMember } from "../types"
+import { AccountSignaturesSection } from "./account-signatures-section"
 
 export function TeamPanel() {
   const [team, setTeam] = useState<TeamMember[]>([])
@@ -46,12 +47,11 @@ export function TeamPanel() {
       <div>
         <h3 className="text-base font-semibold">Team, Zuweisung &amp; Signaturen</h3>
         <p className="text-sm text-muted-foreground">
-          Jedes Mitglied kann Nachrichten zugewiesen bekommen (Metadaten-Panel) und eine
-          HTML-Signatur für neue E-Mails. Bei mehreren Mitgliedern wird die Signatur des ersten
-          Eintrags (nach Sortierung) unter neue Entwürfe gesetzt — vorbereitet für spätere
-          Mehrbenutzer-Anmeldung pro Mitarbeiter.
+          Mitglieder können Nachrichten zugewiesen bekommen. Unter „Signatur pro Konto“ legen Sie
+          Shop-spezifische Fußzeilen fest; die Team-Signatur dient als Fallback.
         </p>
       </div>
+      <AccountSignaturesSection />
       <div className="space-y-2">
         {team.length === 0 ? (
           <p className="text-sm text-muted-foreground">Noch keine Mitglieder.</p>

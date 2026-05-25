@@ -7,6 +7,7 @@ import {
   EMAIL_MESSAGE_TAGS_TABLE,
   EMAIL_MESSAGE_CATEGORIES_TABLE,
   EMAIL_TEAM_MEMBERS_TABLE,
+  EMAIL_ACCOUNT_SIGNATURES_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
 
@@ -276,8 +277,44 @@ export function upsertEmailTeamMember(input: {
     );
 }
 
-/** Default footer for compose (first member with signature, else display name only). */
-export function getDefaultComposeSignatureHtml(): string | null {
+export type AccountSignatureRow = {
+  account_id: number;
+  display_name: string;
+  email_address: string;
+  signature_html: string | null;
+};
+
+export function listAccountSignatureRows(): AccountSignatureRow[] {
+  return getDb()
+    .prepare(
+      `SELECT a.id AS account_id, a.display_name, a.email_address, s.signature_html
+       FROM ${EMAIL_ACCOUNTS_TABLE} a
+       LEFT JOIN ${EMAIL_ACCOUNT_SIGNATURES_TABLE} s ON s.account_id = a.id
+       ORDER BY a.id ASC`,
+    )
+    .all() as AccountSignatureRow[];
+}
+
+export function saveAccountSignature(accountId: number, signatureHtml: string | null): void {
+  const trimmed = signatureHtml?.trim() || null;
+  if (!trimmed) {
+    getDb()
+      .prepare(`DELETE FROM ${EMAIL_ACCOUNT_SIGNATURES_TABLE} WHERE account_id = ?`)
+      .run(accountId);
+    return;
+  }
+  getDb()
+    .prepare(
+      `INSERT INTO ${EMAIL_ACCOUNT_SIGNATURES_TABLE} (account_id, signature_html, updated_at)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT(account_id) DO UPDATE SET
+         signature_html = excluded.signature_html,
+         updated_at = datetime('now')`,
+    )
+    .run(accountId, trimmed);
+}
+
+function getTeamFallbackSignatureHtml(): string | null {
   const rows = listEmailTeamMembers();
   const withSig = rows.find((r) => r.signature_html?.trim());
   if (withSig?.signature_html) return withSig.signature_html.trim();
@@ -285,6 +322,30 @@ export function getDefaultComposeSignatureHtml(): string | null {
     return `<p>Mit freundlichen Grüßen<br/>${rows[0]!.display_name}</p>`;
   }
   return null;
+}
+
+/** Compose footer for a specific mail account (per-account → team → account display name). */
+export function getComposeSignatureHtml(accountId: number): string | null {
+  const acc = getEmailAccountById(accountId);
+  if (!acc) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT signature_html FROM ${EMAIL_ACCOUNT_SIGNATURES_TABLE} WHERE account_id = ?`,
+    )
+    .get(accountId) as { signature_html: string | null } | undefined;
+  if (row?.signature_html?.trim()) {
+    return row.signature_html.trim();
+  }
+  const teamFallback = getTeamFallbackSignatureHtml();
+  if (teamFallback) return teamFallback;
+  return `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
+}
+
+/** @deprecated Use getComposeSignatureHtml(accountId) */
+export function getDefaultComposeSignatureHtml(): string | null {
+  const accounts = listEmailAccounts();
+  if (accounts.length === 0) return getTeamFallbackSignatureHtml();
+  return getComposeSignatureHtml(accounts[0]!.id);
 }
 
 export function deleteEmailTeamMember(id: string): void {

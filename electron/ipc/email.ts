@@ -32,7 +32,9 @@ import {
   listEmailTeamMembers,
   upsertEmailTeamMember,
   deleteEmailTeamMember,
-  getDefaultComposeSignatureHtml,
+  getComposeSignatureHtml,
+  listAccountSignatureRows,
+  saveAccountSignature,
   type EmailAccountRow,
 } from '../email/email-store';
 import { sendComposeDraft } from '../email/email-compose-send';
@@ -883,9 +885,33 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetComposeSignature, async () => {
-      return { html: getDefaultComposeSignatureHtml() };
-    }, { logger }),
+    registerIpcHandler(
+      IPCChannels.Email.GetComposeSignature,
+      async (_event: IpcMainInvokeEvent, payload: { accountId: number }) => {
+        return { html: getComposeSignatureHtml(payload.accountId) };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListAccountSignatures, async () => listAccountSignatureRows(), {
+      logger,
+    }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveAccountSignature,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { accountId: number; signatureHtml: string | null },
+      ) => {
+        saveAccountSignature(payload.accountId, payload.signatureHtml);
+        return { success: true as const };
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

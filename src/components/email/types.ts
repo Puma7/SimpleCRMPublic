@@ -30,6 +30,13 @@ export type TeamMember = {
   signature_html?: string | null
 }
 
+export type AccountSignature = {
+  account_id: number
+  display_name: string
+  email_address: string
+  signature_html: string | null
+}
+
 export type EmailMessage = {
   id: number
   account_id: number
