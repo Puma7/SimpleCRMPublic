@@ -857,23 +857,6 @@ export function insertOrUpdateEmailMessage(input: {
   return { id, isNew };
 }
 
-/** Undo workflow auto-archive for synced inbox mail (not spam/trash). */
-export function restoreInboxMessagesFromArchive(accountId: number): number {
-  const r = getDb()
-    .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE}
-       SET archived = 0
-       WHERE account_id = ?
-         AND archived = 1
-         AND soft_deleted = 0
-         AND is_spam = 0
-         AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
-         AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
-    )
-    .run(accountId);
-  return r.changes;
-}
-
 export function setMessageArchived(messageId: number, archived: boolean): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id = ?`)

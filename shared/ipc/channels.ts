@@ -184,6 +184,7 @@ const EmailChannels = literal({
   DeleteComposeDraft: 'email:delete-compose-draft',
   RestoreMessage: 'email:restore-message',
   SetMessageArchived: 'email:set-message-archived',
+  PreviewRestoreInboxFromArchive: 'email:preview-restore-inbox-from-archive',
   RestoreInboxFromArchive: 'email:restore-inbox-from-archive',
   GetMessageRawHeaders: 'email:get-message-raw-headers',
   SetMessageSeen: 'email:set-message-seen',

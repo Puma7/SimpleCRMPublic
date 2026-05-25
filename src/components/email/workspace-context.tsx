@@ -32,6 +32,7 @@ export type SettingsTab =
   | "canned"
   | "prompts"
   | "export"
+  | "misc"
 
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
@@ -122,6 +123,7 @@ const VALID_SETTINGS_TABS: SettingsTab[] = [
   "canned",
   "prompts",
   "export",
+  "misc",
 ]
 
 export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
