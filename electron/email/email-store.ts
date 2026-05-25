@@ -383,7 +383,7 @@ export function listMessagesForFolder(
   return stmt.all(folderId, limit, offset) as EmailMessageRow[];
 }
 
-export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'all';
+export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
 
 export function listMessagesForAccountView(
   accountId: number,
@@ -395,14 +395,23 @@ export function listMessagesForAccountView(
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
   const params: (string | number)[] = [];
 
-  if (opts.categoryId != null && opts.categoryId > 0) {
+  if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash') {
     sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
     params.push(opts.categoryId);
   }
 
-  sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+  if (view === 'trash') {
+    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 1`;
+  } else {
+    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+  }
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
+  if (view === 'trash') {
+    sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+  }
   if (view === 'inbox') {
     sql += ` AND ${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0`;
   } else if (view === 'sent') {

@@ -8,10 +8,12 @@ import { toast } from "sonner"
 import {
   ArrowLeft,
   Code2,
+  Download,
   Loader2,
   PlayCircle,
   Save,
   Trash2,
+  Upload,
   Workflow,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -270,6 +272,48 @@ export function WorkflowShell() {
     }
   }
 
+  const handleExportFile = async () => {
+    if (!hasElectron() || selectedId == null) return
+    try {
+      const res = await invokeIpc<{ success: boolean; error?: string; path?: string }>(
+        IPCChannels.Email.ExportWorkflowBundleToFile,
+        selectedId,
+      )
+      if (!res.success) {
+        if (res.error !== "Abgebrochen") toast.error(res.error ?? "Export fehlgeschlagen")
+        return
+      }
+      toast.success("Workflow exportiert.")
+    } catch (e) {
+      logError("workflow-shell: export file", e)
+      toast.error("Export fehlgeschlagen.")
+    }
+  }
+
+  const handleImportFile = async () => {
+    if (!hasElectron()) return
+    try {
+      const res = await invokeIpc<{
+        success: boolean
+        id?: number | null
+        canceled?: boolean
+      }>(IPCChannels.Email.ImportWorkflowBundleFromFile)
+      if (res.canceled) return
+      if (res.id != null) {
+        toast.success("Workflow importiert.")
+        await load()
+        const imported = await invokeIpc<FullWorkflowRow | null>(
+          IPCChannels.Email.GetWorkflow,
+          res.id,
+        )
+        if (imported) applyRow(imported)
+      }
+    } catch (e) {
+      logError("workflow-shell: import file", e)
+      toast.error(e instanceof Error ? e.message : "Import fehlgeschlagen.")
+    }
+  }
+
   const handleBackfill = async () => {
     if (!hasElectron()) return
     setBackfilling(true)
@@ -337,6 +381,27 @@ export function WorkflowShell() {
               Inbound auf bestehende Mails
             </Button>
 
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void handleImportFile()}
+              className="gap-2"
+            >
+              <Upload className="h-4 w-4" />
+              Import
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={selectedId == null}
+              onClick={() => void handleExportFile()}
+              className="gap-2"
+            >
+              <Download className="h-4 w-4" />
+              Export
+            </Button>
             <Button
               type="button"
               size="sm"

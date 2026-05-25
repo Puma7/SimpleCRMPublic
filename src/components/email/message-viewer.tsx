@@ -68,7 +68,10 @@ export function MessageViewer(props: Props) {
     setSelectedMessage,
     metadataPanelOpen,
     setMetadataPanelOpen,
+    mailView,
   } = useMailWorkspace()
+
+  const inTrash = mailView === "trash"
 
   if (!selectedMessage) {
     return (
@@ -90,6 +93,7 @@ export function MessageViewer(props: Props) {
     await invokeIpc(IPCChannels.Email.RestoreMessage, selectedMessage.id)
     toast.success("Wiederhergestellt")
     await refreshList()
+    setSelectedMessage(null)
   }
 
   const handleArchive = async () => {
@@ -140,7 +144,19 @@ export function MessageViewer(props: Props) {
         {/* Actions toolbar */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4 py-2">
           <div className="flex items-center gap-1">
-            {selectedMessage.uid >= 0 ? (
+            {inTrash ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                onClick={() => void handleRestore()}
+                className="gap-2"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Wiederherstellen
+              </Button>
+            ) : null}
+            {selectedMessage.uid >= 0 && !inTrash ? (
               <>
                 <Button
                   type="button"
@@ -225,20 +241,7 @@ export function MessageViewer(props: Props) {
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Ausblenden</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => void handleRestore()}
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Wiederherstellen</TooltipContent>
+                  <TooltipContent>In Papierkorb</TooltipContent>
                 </Tooltip>
               </>
             ) : null}

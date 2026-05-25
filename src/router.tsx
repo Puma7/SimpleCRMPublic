@@ -1,4 +1,10 @@
-import { createRouter, createRoute, createRootRoute, redirect } from '@tanstack/react-router'
+import {
+  createHashHistory,
+  createRouter,
+  createRoute,
+  createRootRoute,
+  redirect,
+} from '@tanstack/react-router'
 
 import App from './App'
 import HomePage from './app/page'
@@ -78,8 +84,22 @@ const routeTree = rootRoute.addChildren([
   catchAllRoute,
 ])
 
+/** Electron/file:// and dev need hash routing so in-app links never become file:///path */
+function createAppHistory() {
+  if (typeof window === 'undefined') return undefined
+  const inElectron = Boolean(
+    (window as unknown as { electronAPI?: { invoke?: unknown } }).electronAPI?.invoke,
+  )
+  const needsHash =
+    inElectron ||
+    window.location.protocol === 'file:' ||
+    window.location.protocol === 'app:'
+  return needsHash ? createHashHistory() : undefined
+}
+
 export const router = createRouter({
   routeTree,
+  history: createAppHistory(),
   defaultPreload: 'intent',
   defaultPreloadStaleTime: 0,
 })

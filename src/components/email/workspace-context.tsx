@@ -26,6 +26,7 @@ export type SettingsTab =
   | "oauth"
   | "ai"
   | "knowledge"
+  | "automation"
   | "team"
   | "canned"
   | "prompts"
@@ -106,7 +107,7 @@ function writeLS(key: string, value: unknown): void {
   }
 }
 
-const VALID_MAIL_VIEWS: MailView[] = ["inbox", "sent", "archived", "drafts", "spam"]
+const VALID_MAIL_VIEWS: MailView[] = ["inbox", "sent", "archived", "drafts", "spam", "trash"]
 const VALID_SETTINGS_TABS: SettingsTab[] = [
   "accounts",
   "smtp",

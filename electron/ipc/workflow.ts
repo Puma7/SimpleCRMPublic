@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { IpcMainInvokeEvent, dialog } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
@@ -18,6 +19,8 @@ import { listPluginManifests, loadWorkflowPlugins } from '../workflow/plugins';
 import { compileGraphToDefinition } from '../email/email-workflow-graph-compile';
 import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
 import { restartEmailWorkflowCrons } from '../email/email-imap-services';
+import { isImapDeleteOptInEnabled, setImapDeleteOptIn } from '../email/email-imap-move';
+import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import {
   listWorkflowVersions,
   saveWorkflowVersion,
@@ -109,6 +112,87 @@ export function registerWorkflowHandlers(options: {
         });
         restartEmailWorkflowCrons(logger);
         return { success: true as const, id };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ExportWorkflowBundleToFile,
+      async (_event: IpcMainInvokeEvent, workflowId: number) => {
+        const row = getWorkflowById(workflowId);
+        if (!row) return { success: false as const, error: 'Workflow nicht gefunden' };
+        const bundle = exportWorkflowBundle(row);
+        const safeName = row.name.replace(/[^\wäöüÄÖÜß.-]+/g, '_').slice(0, 80) || 'workflow';
+        const dlg = await dialog.showSaveDialog({
+          title: 'Workflow exportieren',
+          defaultPath: `${safeName}.json`,
+          filters: [{ name: 'Workflow JSON', extensions: ['json'] }],
+        });
+        if (dlg.canceled || !dlg.filePath) return { success: false as const, error: 'Abgebrochen' };
+        await fs.promises.writeFile(dlg.filePath, JSON.stringify(bundle, null, 2), 'utf8');
+        return { success: true as const, path: dlg.filePath };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ImportWorkflowBundleFromFile, async () => {
+      const r = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [{ name: 'Workflow JSON', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePaths[0]) return { success: true as const, id: null, canceled: true as const };
+      const json = await fs.promises.readFile(r.filePaths[0], 'utf8');
+      const bundle = parseWorkflowImport(json);
+      const w = bundle.workflow;
+      const graphStr = w.graph_json ? JSON.stringify(w.graph_json) : null;
+      let defJson = w.definition_json;
+      if (w.graph_json) {
+        defJson = JSON.stringify(compileGraphToDefinition(w.graph_json));
+      }
+      const id = createWorkflow({
+        name: `${w.name} (Import)`,
+        trigger: w.trigger,
+        priority: w.priority,
+        definitionJson: defJson,
+        graphJson: graphStr,
+        cronExpr: w.cron_expr,
+        scheduleAccountId: w.schedule_account_id,
+        enabled: w.enabled,
+        executionMode: w.execution_mode ?? 'graph',
+        engineVersion: w.engine_version ?? 1,
+      });
+      restartEmailWorkflowCrons(logger);
+      return { success: true as const, id, canceled: false as const };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetWorkflowAutomationSettings, async () => {
+      return {
+        imapDeleteOptIn: isImapDeleteOptInEnabled(),
+        httpAllowlist: getSyncInfo('workflow_http_allowlist') ?? '',
+      };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetWorkflowAutomationSettings,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { imapDeleteOptIn?: boolean; httpAllowlist?: string },
+      ) => {
+        if (payload.imapDeleteOptIn !== undefined) {
+          setImapDeleteOptIn(payload.imapDeleteOptIn);
+        }
+        if (payload.httpAllowlist !== undefined) {
+          setSyncInfo('workflow_http_allowlist', payload.httpAllowlist.trim());
+        }
+        return { success: true as const };
       },
       { logger },
     ),
