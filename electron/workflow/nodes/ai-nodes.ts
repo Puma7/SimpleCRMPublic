@@ -1,4 +1,5 @@
-import { listAiPrompts } from '../../email/email-crm-store';
+import { listAiPrompts, type AiPromptRow } from '../../email/email-crm-store';
+import { resolvePromptProfileId } from '../../email/email-ai-profiles';
 import { runChatCompletion } from '../../email/email-openai';
 
 function profileIdFromConfig(config: Record<string, unknown>): number | null {
@@ -6,6 +7,16 @@ function profileIdFromConfig(config: Record<string, unknown>): number | null {
   if (v == null || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Workflow-Knoten: explizites Profil im Knoten, sonst Prompt-Zuweisung, sonst Standard. */
+function effectiveProfileId(
+  prompt: Pick<AiPromptRow, 'profile_id'>,
+  config: Record<string, unknown>,
+): number | null {
+  const fromConfig = profileIdFromConfig(config);
+  if (fromConfig != null) return fromConfig;
+  return resolvePromptProfileId(prompt);
 }
 import {
   addMessageTag,
@@ -41,7 +52,7 @@ export function registerAiNodes(register: Reg): void {
         const out = await runChatCompletion(
           'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Prüfauftrag problematisch ist.',
           user,
-          profileIdFromConfig(config),
+          effectiveProfileId(p, config),
         );
         ctx.ai.lastResponse = out;
         const blocked = out.toUpperCase().includes(blockKw.toUpperCase());
@@ -142,7 +153,11 @@ export function registerAiNodes(register: Reg): void {
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.outbound_review' };
 
       try {
-        const out = await runChatCompletion(system, userParts.join('\n'), profileIdFromConfig(config));
+        const out = await runChatCompletion(
+          system,
+          userParts.join('\n'),
+          custom ? effectiveProfileId(custom, config) : profileIdFromConfig(config),
+        );
         ctx.ai.lastResponse = out;
         const parsed = parseOutboundReviewResponse(out);
         if (!parsed.ok) {
@@ -174,7 +189,7 @@ export function registerAiNodes(register: Reg): void {
       const out = await runChatCompletion(
         'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text.',
         user,
-        profileIdFromConfig(config),
+        effectiveProfileId(p, config),
       );
       ctx.ai.lastResponse = out;
       const key = String(config.targetVariable ?? 'ai.text');

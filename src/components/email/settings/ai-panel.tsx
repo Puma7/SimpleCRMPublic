@@ -28,6 +28,7 @@ type AiProfile = {
   model: string
   embeddingModel: string | null
   isDefault: boolean
+  hasApiKey?: boolean
 }
 
 type ProviderPreset = {
@@ -115,6 +116,8 @@ export function AiPanel() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const selectedProfile = profiles.find((p) => p.id === selectedId)
 
   const selectProfile = (p: AiProfile) => {
     setSelectedId(p.id)
@@ -265,6 +268,19 @@ export function AiPanel() {
         </div>
         <div className="space-y-1.5">
           <Label>API-Key (nur bei Speichern setzen)</Label>
+          {selectedId != null ? (
+            <p
+              className={
+                selectedProfile?.hasApiKey
+                  ? "text-xs text-green-700 dark:text-green-400"
+                  : "text-xs text-amber-700 dark:text-amber-400"
+              }
+            >
+              {selectedProfile?.hasApiKey
+                ? "Für dieses Profil ist ein API-Key hinterlegt. Neues Feld leer lassen, um den bestehenden Key zu behalten."
+                : "Für dieses Profil ist noch kein API-Key hinterlegt — bitte eintragen und Speichern."}
+            </p>
+          ) : null}
           <Input
             type="password"
             value={apiKey}

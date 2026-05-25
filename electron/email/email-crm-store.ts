@@ -237,6 +237,7 @@ export type AiPromptRow = {
   label: string;
   user_template: string;
   target: string;
+  profile_id: number | null;
   sort_order: number;
 };
 export function listAiPrompts(): AiPromptRow[] {
@@ -245,16 +246,29 @@ export function listAiPrompts(): AiPromptRow[] {
     .all() as AiPromptRow[];
 }
 
-export function createAiPrompt(input: { label: string; userTemplate: string; target?: string }): number {
+export function createAiPrompt(input: {
+  label: string;
+  userTemplate: string;
+  target?: string;
+  profileId?: number | null;
+}): number {
   const maxRow = getDb()
     .prepare(`SELECT COALESCE(MAX(sort_order), -1) AS m FROM ${EMAIL_AI_PROMPTS_TABLE}`)
     .get() as { m: number };
   const sortOrder = (maxRow?.m ?? -1) + 1;
+  const profileId =
+    input.profileId != null && input.profileId > 0 ? input.profileId : null;
   const r = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, sort_order) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, profile_id, sort_order) VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(input.label.trim(), input.userTemplate, input.target ?? 'full_body', sortOrder);
+    .run(
+      input.label.trim(),
+      input.userTemplate,
+      input.target ?? 'full_body',
+      profileId,
+      sortOrder,
+    );
   return Number(r.lastInsertRowid);
 }
 
@@ -283,13 +297,23 @@ export function moveAiPrompt(id: number, direction: 'up' | 'down'): boolean {
 
 export function updateAiPrompt(
   id: number,
-  input: Partial<{ label: string; userTemplate: string; target: string; sortOrder: number }>,
+  input: Partial<{
+    label: string;
+    userTemplate: string;
+    target: string;
+    profileId: number | null;
+    sortOrder: number;
+  }>,
 ): void {
   const sets: string[] = [];
   const vals: unknown[] = [];
   if (input.label !== undefined) { sets.push('label = ?'); vals.push(input.label); }
   if (input.userTemplate !== undefined) { sets.push('user_template = ?'); vals.push(input.userTemplate); }
   if (input.target !== undefined) { sets.push('target = ?'); vals.push(input.target); }
+  if (input.profileId !== undefined) {
+    sets.push('profile_id = ?');
+    vals.push(input.profileId != null && input.profileId > 0 ? input.profileId : null);
+  }
   if (input.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(input.sortOrder); }
   if (sets.length === 0) return;
   vals.push(id);

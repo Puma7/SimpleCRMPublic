@@ -1,8 +1,8 @@
 import { listAiPrompts, moveAiPrompt } from '../../electron/email/email-crm-store';
 
 const prompts = [
-  { id: 1, label: 'A', user_template: 'a', target: 'full_body', sort_order: 0 },
-  { id: 2, label: 'B', user_template: 'b', target: 'full_body', sort_order: 1 },
+  { id: 1, label: 'A', user_template: 'a', target: 'full_body', profile_id: null, sort_order: 0 },
+  { id: 2, label: 'B', user_template: 'b', target: 'full_body', profile_id: null, sort_order: 1 },
 ];
 
 jest.mock('../../electron/sqlite-service', () => {

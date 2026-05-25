@@ -29,6 +29,14 @@ import { hasElectron, invokeIpc, type AiPrompt } from "../types"
 
 type SortMode = "manual" | "label-asc" | "label-desc" | "newest"
 
+type AiProfileOption = {
+  id: number
+  label: string
+  isDefault: boolean
+}
+
+const DEFAULT_PROFILE_VALUE = "__default__"
+
 const PLACEHOLDERS = [
   "{{text}}",
   "{{customer.name}}",
@@ -49,9 +57,29 @@ export function PromptsPanel() {
   const [sortMode, setSortMode] = useState<SortMode>("manual")
   const [label, setLabel] = useState("")
   const [userTemplate, setUserTemplate] = useState("")
+  const [profileId, setProfileId] = useState<number | null>(null)
+  const [aiProfiles, setAiProfiles] = useState<AiProfileOption[]>([])
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
+  const loadProfiles = useCallback(async () => {
+    if (!hasElectron()) return
+    try {
+      const s = await invokeIpc<{ profiles?: AiProfileOption[] }>(
+        IPCChannels.Email.GetAiSettings,
+      )
+      setAiProfiles(
+        (s.profiles ?? []).map((p) => ({
+          id: p.id,
+          label: p.label,
+          isDefault: p.isDefault,
+        })),
+      )
+    } catch {
+      setAiProfiles([])
+    }
+  }, [])
 
   const load = useCallback(async () => {
     if (!hasElectron()) {
@@ -60,6 +88,7 @@ export function PromptsPanel() {
     }
     setLoading(true)
     try {
+      await loadProfiles()
       const rows = await invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts)
       setPrompts(rows)
       return rows
@@ -70,7 +99,7 @@ export function PromptsPanel() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loadProfiles])
 
   useEffect(() => {
     void load()
@@ -113,6 +142,9 @@ export function PromptsPanel() {
     setSelectedId(p.id)
     setLabel(p.label)
     setUserTemplate(p.user_template)
+    setProfileId(
+      p.profile_id != null && p.profile_id > 0 ? p.profile_id : null,
+    )
     setDirty(false)
   }, [])
 
@@ -137,6 +169,7 @@ export function PromptsPanel() {
         id: selectedId,
         label: label.trim(),
         userTemplate,
+        profileId,
       })
       setDirty(false)
       toast.success("Prompt gespeichert.")
@@ -240,7 +273,8 @@ export function PromptsPanel() {
           KI-Prompts (Composer)
         </h3>
         <p className="text-sm text-muted-foreground">
-          Vorlagen für „KI auf Text…“ im Composer. Reihenfolge bei Sortierung „Manuell“ = Dropdown im
+          Vorlagen für „KI auf Text…“ im Composer. Jedem Prompt kann ein KI-Profil zugewiesen werden;
+          ohne Zuweisung wird das Standard-Profil genutzt. Reihenfolge bei „Manuell“ = Dropdown im
           Composer.
         </p>
       </div>
@@ -385,6 +419,40 @@ export function PromptsPanel() {
                       setDirty(true)
                     }}
                   />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>KI-Profil</Label>
+                  <Select
+                    value={
+                      profileId != null && profileId > 0
+                        ? String(profileId)
+                        : DEFAULT_PROFILE_VALUE
+                    }
+                    onValueChange={(v) => {
+                      setProfileId(
+                        v === DEFAULT_PROFILE_VALUE ? null : Number(v),
+                      )
+                      setDirty(true)
+                    }}
+                  >
+                    <SelectTrigger id="prompt-profile">
+                      <SelectValue placeholder="Standard-Profil" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={DEFAULT_PROFILE_VALUE}>
+                        Standard-Profil (Standard)
+                      </SelectItem>
+                      {aiProfiles.map((pr) => (
+                        <SelectItem key={pr.id} value={String(pr.id)}>
+                          {pr.label}
+                          {pr.isDefault ? " · Standard" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    API-Key und Modell kommen aus dem gewählten Profil (Tab „KI-Profil“).
+                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="prompt-template">Prompt-Text</Label>

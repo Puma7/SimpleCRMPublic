@@ -25,7 +25,10 @@ export async function runChatCompletion(
   const runtime = await getResolvedAiRuntime(profileId);
   const apiKey = runtime.apiKey;
   if (!apiKey) {
-    throw new Error('Kein KI-API-Schlüssel hinterlegt (Einstellungen → KI-Profil).');
+    const hint = runtime.profileLabel
+      ? `Kein API-Schlüssel für KI-Profil „${runtime.profileLabel}" (Einstellungen → KI-Profil).`
+      : 'Kein KI-API-Schlüssel hinterlegt (Einstellungen → KI-Profil).';
+    throw new Error(hint);
   }
   const { baseUrl, model } = runtime;
   const url = `${baseUrl}/chat/completions`;
