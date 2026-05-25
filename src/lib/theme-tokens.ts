@@ -122,6 +122,48 @@ function primaryFg(mode: ColorMode, tone: BgTone): string {
 }
 
 /** Apply semantic CRM tokens + layout attributes on documentElement. */
+const CRM_INLINE_PROPS = [
+  "--crm-background",
+  "--crm-foreground",
+  "--crm-card",
+  "--crm-card-foreground",
+  "--crm-muted",
+  "--crm-muted-foreground",
+  "--crm-border",
+  "--crm-primary",
+  "--crm-primary-foreground",
+  "--crm-accent",
+  "--crm-ring",
+  "--crm-destructive",
+  "--crm-sidebar",
+  "--crm-sidebar-foreground",
+  "--crm-sidebar-accent",
+  "--crm-sidebar-border",
+  "--crm-glow-accent",
+  "--crm-shadow-sm",
+  "--crm-shadow-md",
+  "--radius",
+  "--density-scale",
+  "--font-sans-active",
+  "--font-display-serif",
+  "--font-label-mono",
+] as const
+
+/** Remove OKLCH overrides (classic shell / HSL fallback). */
+export function clearThemeTokens(): void {
+  if (typeof document === "undefined") return
+  const root = document.documentElement
+  root.removeAttribute("data-tokens-applied")
+  root.removeAttribute("data-color-mode")
+  root.removeAttribute("data-bg-tone")
+  root.removeAttribute("data-density")
+  root.removeAttribute("data-sidebar-mode")
+  root.removeAttribute("data-font-family")
+  for (const prop of CRM_INLINE_PROPS) {
+    root.style.removeProperty(prop)
+  }
+}
+
 export function applyThemeTokens(settings: ThemeTokenSettings): void {
   if (typeof document === "undefined") return
   const root = document.documentElement
@@ -177,5 +219,4 @@ export function applyThemeTokens(settings: ThemeTokenSettings): void {
 
 export function setThemeTokens(settings: ThemeTokenSettings): void {
   writeThemeTokens(settings)
-  applyThemeTokens(settings)
 }

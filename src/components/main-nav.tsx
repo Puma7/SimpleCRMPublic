@@ -1,7 +1,8 @@
 // @ts-nocheck
 import { Link } from "@tanstack/react-router"
-import { Users, FileBox, CheckSquare, CheckCircle, Settings, CalendarDays, Package, ListChecks, LayoutDashboard, Mail } from "lucide-react"
+import { Search, Users, FileBox, CheckSquare, CheckCircle, Settings, CalendarDays, Package, ListChecks, LayoutDashboard, Mail } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { UiThemeToggle } from "@/components/beta/ui-theme-toggle"
 
 const navLinks = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
@@ -38,17 +39,31 @@ export function MainNav({ className, ...props }: React.HTMLAttributes<HTMLElemen
             </Link>
           ))}
         </div>
-        <Link
-          to="/settings"
-          className={cn(
-            "ml-auto flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary"
-          )}
-          activeProps={{ className: "text-primary" }}
-          inactiveProps={{ className: "text-muted-foreground" }}
-        >
-          <Settings className="h-4 w-4" />
-          <span>Einstellungen</span>
-        </Link>
+        <div className="ml-auto flex items-center gap-3">
+          <button
+            type="button"
+            className="hidden items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground sm:flex"
+            title="Befehlspalette (Strg+K)"
+            onClick={() =>
+              window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }))
+            }
+          >
+            <Search className="h-3.5 w-3.5" />
+            <span>Strg+K</span>
+          </button>
+          <UiThemeToggle />
+          <Link
+            to="/settings"
+            className={cn(
+              "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary"
+            )}
+            activeProps={{ className: "text-primary" }}
+            inactiveProps={{ className: "text-muted-foreground" }}
+          >
+            <Settings className="h-4 w-4" />
+            <span>Einstellungen</span>
+          </Link>
+        </div>
       </div>
     </nav>
   )

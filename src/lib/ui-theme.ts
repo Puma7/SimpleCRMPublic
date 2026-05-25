@@ -1,3 +1,5 @@
+import { applyThemeTokens, clearThemeTokens, readThemeTokens } from "./theme-tokens"
+
 export type UiTheme = "classic" | "beta"
 
 const KEY = "simplecrm:uiTheme"
@@ -28,11 +30,17 @@ export function writeUiTheme(theme: UiTheme): void {
   }
 }
 
+/** Shell theme only — color mode is owned by theme tokens when beta is active. */
 export function applyUiTheme(theme: UiTheme): void {
   if (typeof document === "undefined") return
-  document.documentElement.setAttribute("data-ui-theme", theme)
-  if (theme === "beta") document.documentElement.classList.add("dark")
-  else document.documentElement.classList.remove("dark")
+  const root = document.documentElement
+  root.setAttribute("data-ui-theme", theme)
+  if (theme === "beta") {
+    applyThemeTokens(readThemeTokens())
+  } else {
+    clearThemeTokens()
+    root.classList.remove("dark")
+  }
 }
 
 export function setUiTheme(theme: UiTheme): void {

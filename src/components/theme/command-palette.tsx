@@ -9,7 +9,6 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command"
 import { useUiTheme } from "@/components/beta/ui-theme-provider"
@@ -135,12 +134,10 @@ export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
     <CommandDialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Befehlspalette"
-      description="Springen, Aktionen, Theme"
-      className="command-palette-glow"
+      contentClassName="command-palette-glow sm:max-w-lg"
     >
       <CommandInput placeholder="Suche, springe zu, Aktion…" />
-      <CommandList>
+      <CommandList className="max-h-[min(360px,50vh)]">
         <CommandEmpty>Keine Treffer.</CommandEmpty>
         {recentEntries.length > 0 ? (
           <CommandGroup heading="Kürzlich">
@@ -168,11 +165,10 @@ export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
               ))}
           </CommandGroup>
         ))}
+        <div className="border-t px-3 py-2 text-[10px] text-muted-foreground">
+          ↑↓ navigieren · ↵ ausführen · Esc schließen · Strg+K öffnen
+        </div>
       </CommandList>
-      <CommandSeparator />
-      <p className="px-3 py-2 text-[10px] text-muted-foreground">
-        ↑↓ navigieren · ↵ ausführen · Esc schließen · Strg+K öffnen
-      </p>
     </CommandDialog>
   )
 }

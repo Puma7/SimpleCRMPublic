@@ -2,7 +2,8 @@
  * SimpleCRM v0.2 beta — dunkles Prototyp-Theme (Claude Design).
  * Aktiv mit [data-ui-theme="beta"] auf <html>.
  */
-[data-ui-theme="beta"] {
+/** Fallback HSL palette when OKLCH tokens are not applied yet. */
+[data-ui-theme="beta"]:not([data-tokens-applied]) {
   color-scheme: dark;
 
   --background: 224 28% 7%;

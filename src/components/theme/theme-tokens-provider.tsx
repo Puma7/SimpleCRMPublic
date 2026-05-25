@@ -9,10 +9,12 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { UI_THEME_CHANGED, readUiTheme } from "@/lib/ui-theme"
 import {
   DEFAULT_THEME_TOKENS,
   THEME_TOKENS_CHANGED,
   applyThemeTokens,
+  clearThemeTokens,
   readThemeTokens,
   setThemeTokens,
   type ThemeTokenSettings,
@@ -27,29 +29,41 @@ type Ctx = {
 
 const ThemeTokensContext = createContext<Ctx | null>(null)
 
+function syncTokensToDocument(settings: ThemeTokenSettings): void {
+  if (readUiTheme() === "beta") applyThemeTokens(settings)
+  else clearThemeTokens()
+}
+
 export function ThemeTokensProvider({ children }: { children: ReactNode }) {
   const [tokens, setTokensState] = useState<ThemeTokenSettings>(() => readThemeTokens())
 
-  const sync = useCallback(() => {
+  const syncAll = useCallback(() => {
     const t = readThemeTokens()
     setTokensState(t)
-    applyThemeTokens(t)
+    syncTokensToDocument(t)
   }, [])
 
   useEffect(() => {
-    applyThemeTokens(tokens)
-    const onChange = () => sync()
-    window.addEventListener(THEME_TOKENS_CHANGED, onChange)
-    return () => window.removeEventListener(THEME_TOKENS_CHANGED, onChange)
-  }, [tokens, sync])
+    syncAll()
+    const onTokens = () => syncAll()
+    const onShell = () => syncAll()
+    window.addEventListener(THEME_TOKENS_CHANGED, onTokens)
+    window.addEventListener(UI_THEME_CHANGED, onShell)
+    return () => {
+      window.removeEventListener(THEME_TOKENS_CHANGED, onTokens)
+      window.removeEventListener(UI_THEME_CHANGED, onShell)
+    }
+  }, [syncAll])
 
   const setTokens = useCallback((next: ThemeTokenSettings) => {
     setThemeTokens(next)
     setTokensState(next)
+    syncTokensToDocument(next)
   }, [])
 
   const patchTokens = useCallback((patch: Partial<ThemeTokenSettings>) => {
-    setTokens({ ...readThemeTokens(), ...patch })
+    const next = { ...readThemeTokens(), ...patch }
+    setTokens(next)
   }, [setTokens])
 
   const resetTokens = useCallback(() => {

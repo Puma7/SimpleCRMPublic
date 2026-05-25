@@ -114,3 +114,14 @@ html[data-density="cozy"] {
 .command-palette-glow {
   box-shadow: var(--crm-shadow-md), 0 0 0 1px color-mix(in oklch, var(--crm-primary) 35%, transparent);
 }
+
+/* cmdk contrast guard when shell/light tokens interact with .dark variants */
+html[data-tokens-applied] [cmdk-root],
+html[data-tokens-applied] [cmdk-dialog] {
+  color: var(--crm-foreground);
+}
+
+html[data-tokens-applied] [cmdk-item][data-selected="true"] {
+  background: color-mix(in oklch, var(--crm-primary) 18%, var(--crm-card));
+  color: var(--crm-foreground);
+}

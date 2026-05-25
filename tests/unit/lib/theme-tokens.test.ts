@@ -1,6 +1,7 @@
 import {
   DEFAULT_THEME_TOKENS,
   applyThemeTokens,
+  clearThemeTokens,
   readThemeTokens,
   writeThemeTokens,
 } from "@/lib/theme-tokens"
@@ -8,7 +9,7 @@ import {
 describe("theme-tokens", () => {
   beforeEach(() => {
     localStorage.clear()
-    document.documentElement.removeAttribute("data-tokens-applied")
+    clearThemeTokens()
   })
 
   it("returns defaults when storage empty", () => {
@@ -28,5 +29,13 @@ describe("theme-tokens", () => {
     expect(document.documentElement.getAttribute("data-color-mode")).toBe("light")
     expect(document.documentElement.getAttribute("data-sidebar-mode")).toBe("rail")
     expect(document.documentElement.style.getPropertyValue("--crm-background")).toContain("oklch")
+    expect(document.documentElement.classList.contains("dark")).toBe(false)
+  })
+
+  it("clearThemeTokens removes applied state", () => {
+    applyThemeTokens(DEFAULT_THEME_TOKENS)
+    clearThemeTokens()
+    expect(document.documentElement.hasAttribute("data-tokens-applied")).toBe(false)
+    expect(document.documentElement.style.getPropertyValue("--crm-background")).toBe("")
   })
 })
