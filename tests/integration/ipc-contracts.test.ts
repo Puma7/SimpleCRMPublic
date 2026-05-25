@@ -100,6 +100,12 @@ describe('IPC contracts', () => {
     ).not.toThrow();
   });
 
+  test('Dashboard list payloads accept optional limit', () => {
+    expect(() => getPayloadSchema(IPCChannels.Dashboard.GetRecentCustomers).parse(5)).not.toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Dashboard.GetRecentCustomers).parse(undefined)).not.toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Dashboard.GetUpcomingTasks).parse(3)).not.toThrow();
+  });
+
   test('Email.SendCompose payload validates required fields', () => {
     expect(() =>
       getPayloadSchema(IPCChannels.Email.SendCompose).parse({

@@ -21,18 +21,18 @@ export function registerDashboardHandlers(options: DashboardHandlersOptions) {
     }
   }, { logger }));
 
-  disposers.push(registerIpcHandler(IPCChannels.Dashboard.GetRecentCustomers, async () => {
+  disposers.push(registerIpcHandler(IPCChannels.Dashboard.GetRecentCustomers, async (_event, limit?: number) => {
     try {
-      return getRecentCustomers();
+      return getRecentCustomers(limit ?? 5);
     } catch (error) {
       logger.error('IPC Error getting recent customers:', error);
       throw error;
     }
   }, { logger }));
 
-  disposers.push(registerIpcHandler(IPCChannels.Dashboard.GetUpcomingTasks, async () => {
+  disposers.push(registerIpcHandler(IPCChannels.Dashboard.GetUpcomingTasks, async (_event, limit?: number) => {
     try {
-      return getUpcomingTasks();
+      return getUpcomingTasks(limit ?? 5);
     } catch (error) {
       logger.error('IPC Error getting upcoming tasks:', error);
       throw error;
