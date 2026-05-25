@@ -66,6 +66,7 @@ import {
   createAiPrompt,
   updateAiPrompt,
   deleteAiPrompt,
+  moveAiPrompt,
   searchMessagesForAccount,
   searchMessagesForMailScope,
   setMessageCustomerId,
@@ -923,6 +924,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       deleteAiPrompt(id);
       return { success: true as const };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ReorderAiPrompt,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { id: number; direction: 'up' | 'down' },
+      ) => {
+        const ok = moveAiPrompt(payload.id, payload.direction);
+        return ok
+          ? ({ success: true as const } as const)
+          : ({ success: false as const, error: 'Verschieben nicht möglich' } as const);
+      },
+      { logger },
+    ),
   );
 
   disposers.push(
