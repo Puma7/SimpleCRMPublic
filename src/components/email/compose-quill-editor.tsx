@@ -47,8 +47,6 @@ export function ComposeQuillEditor({ value, onChange }: Props) {
       quillRef.current = null
       container.innerHTML = ""
     }
-    // Mount once; external value sync is handled below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
