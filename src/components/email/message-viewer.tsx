@@ -158,13 +158,16 @@ export function MessageViewer(props: Props) {
     else await refreshCurrentMessage()
   }
 
-  // Text-only rendering — the original UI never rendered raw HTML from emails,
-  // to avoid tracking pixels, external CSS and other exfiltration vectors.
+  // Text-only rendering — prefer the richer source (blocked compose drafts often store
+  // only the warning banner in body_text while the letter lives in body_html).
+  const bodyFromText = selectedMessage.body_text?.trim() ?? ""
+  const bodyFromHtml = selectedMessage.body_html
+    ? stripHtmlToText(selectedMessage.body_html)
+    : ""
   const bodyText =
-    selectedMessage.body_text?.trim() ||
-    (selectedMessage.body_html ? stripHtmlToText(selectedMessage.body_html) : "") ||
-    selectedMessage.snippet ||
-    "—"
+    bodyFromHtml.length > bodyFromText.length + 30
+      ? bodyFromHtml
+      : bodyFromText || bodyFromHtml || selectedMessage.snippet || "—"
 
   return (
     <TooltipProvider delayDuration={150}>

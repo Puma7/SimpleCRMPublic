@@ -398,7 +398,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       if (!r.success) {
         const blocked = (r.error ?? "").length > 0
         if (blocked) {
-          toast.warning(r.error ?? "Versand durch Ausgangsprüfung blockiert")
+          toast.warning(
+            r.error ??
+              "Versand blockiert — Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten).",
+          )
           closeDialog()
           setMailView("inbox")
           await onSent()
@@ -407,7 +410,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               IPCChannels.Email.GetMessage,
               draftId,
             )
-            if (full) setSelectedMessage(full)
+            if (full) {
+              setSelectedMessage(full)
+              setComposeIntent({ mode: "draft", messageId: full.id })
+            }
           } catch (e) {
             logError("compose-dialog: load blocked draft", e)
           }
