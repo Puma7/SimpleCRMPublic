@@ -181,6 +181,7 @@ const EmailChannels = literal({
   SaveAccountSignature: 'email:save-account-signature',
   LinkCustomer: 'email:link-customer',
   SoftDeleteMessage: 'email:soft-delete-message',
+  DeleteComposeDraft: 'email:delete-compose-draft',
   RestoreMessage: 'email:restore-message',
   SetMessageArchived: 'email:set-message-archived',
   RestoreInboxFromArchive: 'email:restore-inbox-from-archive',

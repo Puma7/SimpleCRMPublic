@@ -190,6 +190,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.SoftDeleteMessage, { payload: positiveInt, result: standardResult });
+  set(IPCChannels.Email.DeleteComposeDraft, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.RestoreMessage, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.SetMessageArchived, {
     payload: z.object({ messageId: positiveInt, archived: z.boolean() }),

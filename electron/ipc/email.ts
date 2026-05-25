@@ -25,6 +25,7 @@ import {
   listTagsForMessage,
   listConversationMessagesForScope,
   setMessageSoftDeleted,
+  deleteLocalComposeDraft,
   setMessageArchived,
   restoreInboxMessagesFromArchive,
   setMessageSeenLocal,
@@ -1135,6 +1136,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       setMessageSoftDeleted(messageId, true);
       return { success: true as const };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.DeleteComposeDraft,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        try {
+          deleteLocalComposeDraft(messageId);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Entwurf konnte nicht gelöscht werden',
+          };
+        }
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

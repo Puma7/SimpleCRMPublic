@@ -1026,6 +1026,18 @@ type TrashSnapshotRow = {
   trash_prev_folder_kind: string | null;
 };
 
+/** Permanently remove a local compose draft (negative IMAP uid). Not recoverable. */
+export function deleteLocalComposeDraft(messageId: number): void {
+  const row = getEmailMessageById(messageId);
+  if (!row) {
+    throw new Error('Entwurf nicht gefunden');
+  }
+  if (row.uid >= 0) {
+    throw new Error('Nur lokale Entwürfe können endgültig gelöscht werden');
+  }
+  getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(messageId);
+}
+
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {
   const row = getDb()
     .prepare(

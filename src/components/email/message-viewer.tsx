@@ -21,6 +21,16 @@ import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -89,6 +99,7 @@ export function MessageViewer(props: Props) {
   const [rawHeadersOpen, setRawHeadersOpen] = useState(false)
   const [rawHeadersText, setRawHeadersText] = useState<string | null>(null)
   const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
+  const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
 
   const isOutboundHeld =
     selectedMessage != null &&
@@ -100,6 +111,8 @@ export function MessageViewer(props: Props) {
     (mailView === "drafts" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
+  const isLocalComposeDraft = selectedMessage != null && selectedMessage.uid < 0
+  const inDraftsView = mailView === "drafts"
 
   if (!selectedMessage) {
     return (
@@ -112,7 +125,22 @@ export function MessageViewer(props: Props) {
 
   const handleSoftDelete = async () => {
     await invokeIpc(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
-    toast.success("Ausgeblendet (soft)")
+    toast.success("In den Papierkorb verschoben")
+    await refreshList()
+    setSelectedMessage(null)
+  }
+
+  const handleDeleteLocalDraft = async () => {
+    const r = await invokeIpc<{ success: boolean; error?: string }>(
+      IPCChannels.Email.DeleteComposeDraft,
+      selectedMessage.id,
+    )
+    if (!r.success) {
+      toast.error(r.error ?? "Entwurf konnte nicht gelöscht werden")
+      return
+    }
+    toast.success("Entwurf endgültig gelöscht")
+    setDeleteDraftOpen(false)
     await refreshList()
     setSelectedMessage(null)
   }
@@ -188,19 +216,43 @@ export function MessageViewer(props: Props) {
               </Button>
             ) : null}
             {isDraft ? (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="gap-2"
+                  onClick={() =>
+                    setComposeIntent({ mode: "draft", messageId: selectedMessage.id })
+                  }
+                >
+                  Bearbeiten
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  className="gap-2"
+                  onClick={() => setDeleteDraftOpen(true)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Entwurf löschen
+                </Button>
+              </>
+            ) : null}
+            {inDraftsView && !inTrash && selectedMessage.uid >= 0 ? (
               <Button
                 type="button"
                 size="sm"
-                variant="default"
+                variant="destructive"
                 className="gap-2"
-                onClick={() =>
-                  setComposeIntent({ mode: "draft", messageId: selectedMessage.id })
-                }
+                onClick={() => void handleSoftDelete()}
               >
-                Bearbeiten
+                <Trash2 className="h-4 w-4" />
+                Löschen
               </Button>
             ) : null}
-            {selectedMessage.uid >= 0 && !inTrash ? (
+            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView ? (
               <>
                 <Button
                   type="button"
@@ -542,6 +594,27 @@ export function MessageViewer(props: Props) {
           </ScrollArea>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteDraftOpen} onOpenChange={setDeleteDraftOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Entwurf endgültig löschen?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Der lokale Entwurf wird unwiderruflich entfernt (inkl. leerer Entwürfe aus
+              fehlgeschlagenem Verfassen). Dies ersetzt keinen Server-Entwurf auf dem Mailserver.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => void handleDeleteLocalDraft()}
+            >
+              Löschen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </TooltipProvider>
   )
 }
