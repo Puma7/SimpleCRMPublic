@@ -83,6 +83,8 @@ import {
   deleteAiProfile,
   ensureDefaultAiProfiles,
   listAiProfiles,
+  profileHasApiKey,
+  resolvePromptProfileId,
   saveAiProfileApiKey,
   updateAiProfile,
   type AiProviderPreset,
@@ -908,12 +910,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SaveAiPrompt,
-      async (_event: IpcMainInvokeEvent, payload: { id?: number; label: string; userTemplate: string; target?: string }) => {
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id?: number;
+          label: string;
+          userTemplate: string;
+          target?: string;
+          profileId?: number | null;
+        },
+      ) => {
         if (payload.id) {
           updateAiPrompt(payload.id, {
             label: payload.label,
             userTemplate: payload.userTemplate,
             target: payload.target,
+            profileId: payload.profileId,
           });
           return { success: true as const, id: payload.id };
         }
@@ -921,6 +933,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           label: payload.label,
           userTemplate: payload.userTemplate,
           target: payload.target,
+          profileId: payload.profileId,
         });
         return { success: true as const, id };
       },
@@ -954,15 +967,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetAiSettings, async () => {
       await ensureDefaultAiProfiles();
-      const profiles = listAiProfiles().map((p) => ({
-        id: p.id,
-        label: p.label,
-        provider: p.provider,
-        baseUrl: p.base_url,
-        model: p.model,
-        embeddingModel: p.embedding_model,
-        isDefault: p.is_default === 1,
-      }));
+      const rows = listAiProfiles();
+      const profiles = await Promise.all(
+        rows.map(async (p) => ({
+          id: p.id,
+          label: p.label,
+          provider: p.provider,
+          baseUrl: p.base_url,
+          model: p.model,
+          embeddingModel: p.embedding_model,
+          isDefault: p.is_default === 1,
+          hasApiKey: await profileHasApiKey(p.id),
+        })),
+      );
       const legacy = getAiSettings();
       return { success: true as const, ...legacy, profiles, providerPresets: AI_PROVIDER_PRESETS };
     }, { logger }),
@@ -1135,9 +1152,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             .replace(/\{\{customer\.email\}\}/g, cust.email ?? '');
         }
         try {
+          const profileId = resolvePromptProfileId(p);
           const out = await runChatCompletion(
             'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.',
             user,
+            profileId,
           );
           return { success: true as const, text: out };
         } catch (e) {

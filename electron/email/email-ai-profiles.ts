@@ -104,9 +104,26 @@ export function getDefaultAiProfile(): EmailAiProfileRow | undefined {
 
 export function resolveAiProfile(profileId?: number | null): EmailAiProfileRow | undefined {
   if (profileId != null && profileId > 0) {
-    return getAiProfileById(profileId);
+    const row = getAiProfileById(profileId);
+    if (row) return row;
   }
   return getDefaultAiProfile();
+}
+
+/** Prompt assignment → valid profile id, else default profile id (null if none). */
+export function resolvePromptProfileId(prompt: { profile_id?: number | null }): number | null {
+  if (prompt.profile_id != null && prompt.profile_id > 0) {
+    const row = getAiProfileById(prompt.profile_id);
+    if (row) return row.id;
+  }
+  return getDefaultAiProfile()?.id ?? null;
+}
+
+export async function profileHasApiKey(profileId: number): Promise<boolean> {
+  const row = getAiProfileById(profileId);
+  if (!row) return false;
+  const key = await getAiProfileApiKey(row.keytar_account);
+  return Boolean(key?.trim());
 }
 
 export function createAiProfile(input: {

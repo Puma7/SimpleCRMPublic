@@ -456,6 +456,7 @@ export const createEmailAiPromptsTable = `
     label TEXT NOT NULL,
     user_template TEXT NOT NULL,
     target TEXT NOT NULL DEFAULT 'full_body',
+    profile_id INTEGER REFERENCES ${EMAIL_AI_PROFILES_TABLE}(id) ON DELETE SET NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );

@@ -485,6 +485,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       label: nonEmptyString,
       userTemplate: z.string(),
       target: z.string().optional(),
+      profileId: z.number().int().positive().nullable().optional(),
     }),
     result: standardResult,
   });
@@ -524,6 +525,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     model: z.string(),
     embeddingModel: z.string().nullable(),
     isDefault: z.boolean(),
+    hasApiKey: z.boolean().optional(),
   });
   set(IPCChannels.Email.GetAiSettings, {
     payload: voidPayload,

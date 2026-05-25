@@ -665,6 +665,18 @@ function runMigrations() {
         db.prepare(`UPDATE ${TASKS_TABLE} SET priority = 'Medium' WHERE priority = 'Mittel'`).run();
         db.prepare(`UPDATE ${TASKS_TABLE} SET priority = 'Low'    WHERE priority = 'Niedrig'`).run();
 
+        const aiPromptsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_AI_PROMPTS_TABLE);
+        if (aiPromptsTable) {
+            const promptCols = db.prepare(`PRAGMA table_info(${EMAIL_AI_PROMPTS_TABLE})`).all() as { name: string }[];
+            const promptColNames = new Set(promptCols.map((c) => c.name));
+            if (!promptColNames.has('profile_id')) {
+                console.log('Adding profile_id to email_ai_prompts...');
+                db.exec(
+                    `ALTER TABLE ${EMAIL_AI_PROMPTS_TABLE} ADD COLUMN profile_id INTEGER REFERENCES ${EMAIL_AI_PROFILES_TABLE}(id) ON DELETE SET NULL`,
+                );
+            }
+        }
+
         // Add more migrations here as needed
 
     } catch (error) {
