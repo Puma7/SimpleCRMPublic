@@ -275,6 +275,7 @@ export const createEmailAccountsTable = `
     oauth_provider TEXT,
     oauth_refresh_keytar_key TEXT UNIQUE,
     sent_folder_path TEXT DEFAULT 'Sent',
+    imap_sync_seen_on_open INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );

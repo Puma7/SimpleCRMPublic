@@ -28,6 +28,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [pop3Host, setPop3Host] = useState("")
   const [pop3Port, setPop3Port] = useState("995")
   const [pop3Tls, setPop3Tls] = useState(true)
+  const [imapSyncSeenOnOpen, setImapSyncSeenOnOpen] = useState(true)
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -47,6 +48,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setPop3Host(editAccount.pop3_host ?? "")
     setPop3Port(String(editAccount.pop3_port ?? 995))
     setPop3Tls(editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls))
+    setImapSyncSeenOnOpen(editAccount.imap_sync_seen_on_open !== 0)
   }, [editAccount])
 
   const handleTestImap = async () => {
@@ -176,6 +178,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           pop3Host: pop3Host.trim() || null,
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
+          imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
@@ -194,6 +197,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           pop3Host: pop3Host.trim() || null,
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
+          imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
         })
         if (res.id != null) {
           toast.success("Konto gespeichert.")
@@ -319,6 +323,31 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           </Label>
         </div>
       </div>
+
+      {protocol === "imap" ? (
+        <div className="flex items-start gap-3 rounded-md border bg-muted/30 px-3 py-2.5">
+          <Switch
+            id="acc-sync-seen"
+            checked={imapSyncSeenOnOpen}
+            onCheckedChange={setImapSyncSeenOnOpen}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="acc-sync-seen" className="cursor-pointer text-sm font-normal">
+              Beim Öffnen als gelesen auf dem IMAP-Server markieren
+            </Label>
+            <p className="text-[11px] text-muted-foreground">
+              Beim Abruf liest SimpleCRM den Server-Status (gelesen/ungelesen). Beim
+              Öffnen einer Mail hier können Sie optional auch den Server-Status setzen.
+              POP3 unterstützt keinen Gelesen-Status auf dem Server.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          POP3 hat keinen Gelesen-Status auf dem Server — nur die lokale Anzeige in
+          SimpleCRM.
+        </p>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">

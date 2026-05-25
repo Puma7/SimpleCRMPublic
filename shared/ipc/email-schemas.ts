@@ -49,6 +49,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       pop3Host: z.string().nullable().optional(),
       pop3Port: z.number().int().positive().optional(),
       pop3Tls: z.boolean().optional(),
+      imapSyncSeenOnOpen: z.boolean().optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), id: positiveInt }),
@@ -77,6 +78,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         pop3Port: z.number().int().positive().nullable().optional(),
         pop3Tls: z.boolean().nullable().optional(),
         sentFolderPath: z.string().nullable().optional(),
+        imapSyncSeenOnOpen: z.boolean().optional(),
       })
       .passthrough(),
     result: standardResult,

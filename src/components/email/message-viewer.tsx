@@ -28,7 +28,6 @@ import {
   hasElectron,
   invokeIpc,
   stripHtmlToText,
-  type CustomerOpt,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -39,7 +38,6 @@ import { MessageMetadataPanel } from "./message-metadata-panel"
 
 type Props = {
   teamMembers: TeamMember[]
-  customers: CustomerOpt[]
   messageTags: string[]
   internalNotes: InternalNote[]
   messageAttachments: MessageAttachment[]
@@ -53,7 +51,6 @@ type Props = {
 export function MessageViewer(props: Props) {
   const {
     teamMembers,
-    customers,
     messageTags,
     internalNotes,
     messageAttachments,
@@ -427,7 +424,6 @@ export function MessageViewer(props: Props) {
           {metadataPanelOpen ? (
             <MessageMetadataPanel
               teamMembers={teamMembers}
-              customers={customers}
               messageTags={messageTags}
               internalNotes={internalNotes}
               reloadNotes={reloadNotes}

@@ -33,6 +33,7 @@ export type EmailAccountRow = {
   oauth_provider: string | null;
   oauth_refresh_keytar_key: string | null;
   sent_folder_path: string | null;
+  imap_sync_seen_on_open: number;
   created_at: string;
   updated_at: string;
 };
@@ -88,6 +89,7 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
             COALESCE(protocol, 'imap') AS protocol, pop3_host, pop3_port, pop3_tls, oauth_provider, oauth_refresh_keytar_key,
             COALESCE(sent_folder_path, 'Sent') AS sent_folder_path,
+            COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
             created_at, updated_at`;
 
 export function listEmailAccounts(): EmailAccountRow[] {
@@ -119,6 +121,7 @@ export function createEmailAccountRecord(input: {
   pop3Host?: string | null;
   pop3Port?: number;
   pop3Tls?: boolean;
+  imapSyncSeenOnOpen?: boolean;
 }): { id: number; keytarAccountKey: string } {
   const keytarAccountKey = input.keytarAccountKey ?? `email-${randomUUID()}`;
   const now = new Date().toISOString();
@@ -126,13 +129,14 @@ export function createEmailAccountRecord(input: {
   const p3h = input.pop3Host?.trim() || null;
   const p3p = input.pop3Port ?? 995;
   const p3t = input.pop3Tls !== false ? 1 : 0;
+  const syncSeen = input.imapSyncSeenOnOpen !== false ? 1 : 0;
   const stmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNTS_TABLE} (
       display_name, email_address, imap_host, imap_port, imap_tls, imap_username, keytar_account_key,
       smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
-      protocol, pop3_host, pop3_port, pop3_tls,
+      protocol, pop3_host, pop3_port, pop3_tls, imap_sync_seen_on_open,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const result = stmt.run(
     input.displayName,
@@ -152,6 +156,7 @@ export function createEmailAccountRecord(input: {
     p3h,
     p3p,
     p3t,
+    syncSeen,
     now,
     now,
   );
@@ -180,6 +185,7 @@ export function updateEmailAccountRecord(
     oauthProvider: string | null;
     oauthRefreshKeytarKey: string | null;
     sentFolderPath: string | null;
+    imapSyncSeenOnOpen: boolean;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -209,6 +215,10 @@ export function updateEmailAccountRecord(
   if (input.oauthProvider !== undefined) { sets.push('oauth_provider = ?'); vals.push(input.oauthProvider); }
   if (input.oauthRefreshKeytarKey !== undefined) { sets.push('oauth_refresh_keytar_key = ?'); vals.push(input.oauthRefreshKeytarKey); }
   if (input.sentFolderPath !== undefined) { sets.push('sent_folder_path = ?'); vals.push(input.sentFolderPath); }
+  if (input.imapSyncSeenOnOpen !== undefined) {
+    sets.push('imap_sync_seen_on_open = ?');
+    vals.push(input.imapSyncSeenOnOpen ? 1 : 0);
+  }
 
   if (sets.length === 0) return;
   sets.push('updated_at = ?');

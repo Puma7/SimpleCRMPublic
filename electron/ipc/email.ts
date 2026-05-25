@@ -171,6 +171,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Host?: string | null;
           pop3Port?: number;
           pop3Tls?: boolean;
+          imapSyncSeenOnOpen?: boolean;
         },
       ) => {
         const keytarAccountKey = `email-${randomUUID()}`;
@@ -188,6 +189,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             pop3Host: payload.pop3Host,
             pop3Port: payload.pop3Port,
             pop3Tls: payload.pop3Tls,
+            imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
           });
           return { success: true as const, id };
         } catch (err) {
@@ -224,6 +226,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Port?: number | null;
           pop3Tls?: boolean | null;
           sentFolderPath?: string | null;
+          imapSyncSeenOnOpen?: boolean;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -249,6 +252,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Port: payload.pop3Port ?? undefined,
           pop3Tls: payload.pop3Tls === undefined ? undefined : Boolean(payload.pop3Tls),
           sentFolderPath: payload.sentFolderPath,
+          imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -1014,7 +1018,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
         setMessageSeenLocal(payload.messageId, payload.seen);
-        if (payload.syncToServer !== false) {
+        const acc = getEmailAccountById(row.account_id);
+        const accountWantsSync =
+          acc != null &&
+          (acc.protocol || 'imap') === 'imap' &&
+          (acc.imap_sync_seen_on_open ?? 1) !== 0;
+        const syncToServer =
+          payload.syncToServer !== undefined
+            ? payload.syncToServer
+            : accountWantsSync;
+        if (syncToServer) {
           try {
             await syncSeenFlagToServer(row, payload.seen);
           } catch (e) {

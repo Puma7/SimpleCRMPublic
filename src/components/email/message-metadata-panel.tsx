@@ -15,9 +15,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { CustomerCombobox } from "@/components/customer-combobox"
 import {
   invokeIpc,
-  type CustomerOpt,
   type EmailMessage,
   type InternalNote,
   type TeamMember,
@@ -26,7 +26,6 @@ import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
   teamMembers: TeamMember[]
-  customers: CustomerOpt[]
   messageTags: string[]
   internalNotes: InternalNote[]
   reloadNotes: () => void | Promise<void>
@@ -35,7 +34,6 @@ type Props = {
 
 export function MessageMetadataPanel({
   teamMembers,
-  customers,
   messageTags,
   internalNotes,
   reloadNotes,
@@ -137,33 +135,49 @@ export function MessageMetadataPanel({
 
           <div className="space-y-1.5">
             <Label className="text-xs">Kunde</Label>
-            <Select
-              value={
-                selectedMessage.customer_id ? String(selectedMessage.customer_id) : "none"
-              }
+            <CustomerCombobox
+              value={selectedMessage.customer_id ?? undefined}
+              placeholder="Kunde suchen…"
               onValueChange={async (v) => {
-                const cid = v === "none" ? null : parseInt(v, 10)
+                const cid = v ? parseInt(v, 10) : null
                 await invokeIpc(IPCChannels.Email.LinkCustomer, {
                   messageId: selectedMessage.id,
-                  customerId: cid,
+                  customerId: Number.isFinite(cid) ? cid : null,
                 })
                 await refreshCurrentMessage()
                 toast.success("Verknüpfung gespeichert")
               }}
-            >
-              <SelectTrigger className="h-9">
-                <SelectValue placeholder="Kunde" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">— keiner —</SelectItem>
-                {customers.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            />
+            {selectedMessage.customer_id ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-0 text-xs text-muted-foreground"
+                onClick={async () => {
+                  await invokeIpc(IPCChannels.Email.LinkCustomer, {
+                    messageId: selectedMessage.id,
+                    customerId: null,
+                  })
+                  await refreshCurrentMessage()
+                  toast.success("Kundenverknüpfung entfernt")
+                }}
+              >
+                Verknüpfung entfernen
+              </Button>
+            ) : null}
           </div>
+
+          {selectedMessage.archived ? (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
+              <p className="font-medium">Im Archiv</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Eingehende Workflows können neue Mails automatisch archivieren
+                (Einstellungen → Workflows). Nutzen Sie „Aus Archiv“ in der
+                Toolbar, um die Nachricht wieder im Posteingang zu sehen.
+              </p>
+            </div>
+          ) : null}
 
           {messageTags.length > 0 ? (
             <div className="space-y-1.5">

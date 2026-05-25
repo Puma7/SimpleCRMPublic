@@ -38,6 +38,20 @@ import {
   type CustomerOpt,
   type EmailMessage,
 } from "./types"
+
+function customerOptFromDbRow(row: Record<string, unknown>): CustomerOpt {
+  const name =
+    (typeof row.name === "string" && row.name) ||
+    [row.firstName, row.lastName].filter(Boolean).join(" ").trim() ||
+    (typeof row.company === "string" ? row.company : "") ||
+    "Unbekannt"
+  return {
+    id: Number(row.id),
+    name,
+    firstName: typeof row.firstName === "string" ? row.firstName : undefined,
+    email: typeof row.email === "string" ? row.email : undefined,
+  }
+}
 import { logError } from "./log"
 import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 
@@ -45,7 +59,6 @@ type Props = {
   accounts: EmailAccount[]
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
-  customers: CustomerOpt[]
   onSent: () => void | Promise<void>
 }
 
@@ -53,7 +66,7 @@ function sanitizeComposeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
 }
 
-export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSent }: Props) {
+export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props) {
   const {
     composeIntent,
     setComposeIntent,
@@ -367,17 +380,28 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSe
           <div className="flex flex-wrap gap-2">
             <Select
               onValueChange={(id) => {
-                const c = cannedList.find((x) => x.id === parseInt(id, 10))
-                if (!c) return
-                const block = applyCannedTemplate(
-                  c.body,
-                  selectedMessage?.customer_id ?? null,
-                  customers,
-                )
-                const frag = sanitizeComposeHtml(
-                  `<p>${block.replace(/\n/g, "<br/>")}</p>`,
-                )
-                setBodyHtml((prev) => `${prev}${frag}`)
+                void (async () => {
+                  const c = cannedList.find((x) => x.id === parseInt(id, 10))
+                  if (!c) return
+                  let customer: CustomerOpt | null = null
+                  const cid = selectedMessage?.customer_id
+                  if (cid && hasElectron()) {
+                    try {
+                      const row = (await invokeIpc(
+                        IPCChannels.Db.GetCustomer,
+                        cid,
+                      )) as Record<string, unknown> | null
+                      if (row && row.id != null) customer = customerOptFromDbRow(row)
+                    } catch (e) {
+                      logError("compose: load customer for template", e)
+                    }
+                  }
+                  const block = applyCannedTemplate(c.body, customer)
+                  const frag = sanitizeComposeHtml(
+                    `<p>${block.replace(/\n/g, "<br/>")}</p>`,
+                  )
+                  setBodyHtml((prev) => `${prev}${frag}`)
+                })()
               }}
             >
               <SelectTrigger className="h-8 w-[180px] text-xs">

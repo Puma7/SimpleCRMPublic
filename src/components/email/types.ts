@@ -19,6 +19,8 @@ export type EmailAccount = {
   smtp_username?: string | null
   smtp_use_imap_auth?: number | null
   sent_folder_path?: string | null
+  /** IMAP: mark \\Seen on server when opening a message locally (POP3: ignored). */
+  imap_sync_seen_on_open?: number | null
   created_at: string
   updated_at: string
 }
@@ -152,13 +154,8 @@ export function formatFrom(fromJson: string | null): string {
   }
 }
 
-export function applyCannedTemplate(
-  body: string,
-  customerId: number | null,
-  customers: CustomerOpt[],
-): string {
-  let c: CustomerOpt | undefined
-  if (customerId) c = customers.find((x) => x.id === customerId)
+export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
+  const c = customer ?? undefined
   return body
     .replace(/\{\{customer\.name\}\}/g, c?.name ?? "")
     .replace(

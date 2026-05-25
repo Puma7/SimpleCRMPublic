@@ -54,7 +54,7 @@ function MailShellInner() {
     })
   const { messageTags, internalNotes, messageAttachments, reloadNotes } =
     useMessageMetadata()
-  const { customers, cannedList, aiPrompts } = useMailAuxData()
+  const { cannedList, aiPrompts } = useMailAuxData()
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
@@ -106,7 +106,6 @@ function MailShellInner() {
           <ResizablePanel id={MAIL_PANE_IDS[2]} defaultSize="50%">
             <MessageViewer
               teamMembers={teamMembers}
-              customers={customers}
               messageTags={messageTags}
               internalNotes={internalNotes}
               messageAttachments={messageAttachments}
@@ -124,7 +123,6 @@ function MailShellInner() {
         accounts={accounts}
         cannedList={cannedList}
         aiPrompts={aiPrompts}
-        customers={customers}
         onSent={refreshList}
       />
     </div>

@@ -472,6 +472,10 @@ function runMigrations() {
             addAcc('oauth_provider', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN oauth_provider TEXT`);
             addAcc('oauth_refresh_keytar_key', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN oauth_refresh_keytar_key TEXT UNIQUE`);
             addAcc('sent_folder_path', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN sent_folder_path TEXT DEFAULT 'Sent'`);
+            addAcc(
+                'imap_sync_seen_on_open',
+                `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_seen_on_open INTEGER NOT NULL DEFAULT 1`,
+            );
         }
 
         if (emailFolderExists) {
