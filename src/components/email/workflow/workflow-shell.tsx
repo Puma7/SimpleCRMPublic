@@ -73,20 +73,14 @@ type FullWorkflowRow = WorkflowRow & {
   updated_at: string
 }
 
-const EMPTY_DEF = `{
-  "version": 1,
-  "rules": [
-    {
-      "when": {
-        "field": "subject",
-        "op": "contains",
-        "value": "Beispiel",
-        "caseInsensitive": true
-      },
-      "then": [{ "type": "tag", "tag": "Beispiel" }]
-    }
-  ]
-}`
+/** Leerer Graph-Start — Nutzer baut modular aus Palette-Knoten (kein festes Regelprogramm). */
+const BLANK_INBOUND_GRAPH = {
+  version: 1 as const,
+  nodes: [{ id: "trigger-1", type: "trigger" as const, data: { kind: "inbound" as const } }],
+  edges: [] as { id: string; source: string; target: string; label?: string }[],
+}
+
+const EMPTY_DEF = `{"version":1,"rules":[]}`
 
 function triggerFromGraph(doc: WorkflowGraphDocument): string {
   const t = doc.nodes.find((n) => n.type === "trigger")
@@ -197,6 +191,7 @@ export function WorkflowShell() {
           trigger: "inbound",
           priority: 100,
           definitionJson: EMPTY_DEF,
+          graphJson: JSON.stringify(BLANK_INBOUND_GRAPH),
           enabled: true,
         },
       )
@@ -224,13 +219,18 @@ export function WorkflowShell() {
     setSaving(true)
     try {
       const graphDoc = useWorkflowEditorStore.getState().toGraphDocument()
+      const hasNodes = graphDoc.nodes.length > 0
       const compiled = await invokeIpc<{
         success: boolean
         definitionJson?: string
         error?: string
+        registryOnly?: boolean
       }>(IPCChannels.Email.CompileWorkflowGraph, graphDoc)
-      if (!compiled.success || !compiled.definitionJson) {
+      if (!compiled.success) {
         throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
+      }
+      if (!hasNodes) {
+        throw new Error("Workflow braucht mindestens einen Trigger-Knoten.")
       }
       const trig = triggerFromGraph(graphDoc) || "inbound"
       if (selectedId != null) {
@@ -244,7 +244,7 @@ export function WorkflowShell() {
         name: editName.trim(),
         trigger: trig,
         priority: parseInt(editPriority, 10) || 100,
-        definitionJson: compiled.definitionJson,
+        definitionJson: compiled.definitionJson ?? EMPTY_DEF,
         graphJson: JSON.stringify(graphDoc),
         cronExpr: editCron.trim() || null,
         scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,

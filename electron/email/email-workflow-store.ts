@@ -5,6 +5,11 @@ import {
   EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE,
 } from '../database-schema';
 import { DEFAULT_INBOUND_WORKFLOW, DEFAULT_OUTBOUND_WORKFLOW } from './email-workflow-defaults';
+import {
+  buildDefaultInboundGraph,
+  buildDefaultOutboundGraph,
+} from '../workflow/graph-presets';
+import { migrateLegacyWorkflowsWithoutGraph } from '../workflow/workflow-graph-resolve';
 
 export type EmailWorkflowRow = {
   id: number;
@@ -42,7 +47,7 @@ export function ensureDefaultWorkflowsSeeded(): void {
 
   const ins = getDb().prepare(
     `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, execution_mode, engine_version, created_at, updated_at)
-     VALUES (?, ?, 1, ?, ?, NULL, NULL, NULL, 'graph', 1, ?, ?)`,
+     VALUES (?, ?, 1, ?, ?, ?, NULL, NULL, 'graph', 1, ?, ?)`,
   );
   const t = nowIso();
   ins.run(
@@ -50,6 +55,7 @@ export function ensureDefaultWorkflowsSeeded(): void {
     'inbound',
     10,
     JSON.stringify(DEFAULT_INBOUND_WORKFLOW),
+    JSON.stringify(buildDefaultInboundGraph()),
     t,
     t,
   );
@@ -58,13 +64,19 @@ export function ensureDefaultWorkflowsSeeded(): void {
     'outbound',
     10,
     JSON.stringify(DEFAULT_OUTBOUND_WORKFLOW),
+    JSON.stringify(buildDefaultOutboundGraph()),
     t,
     t,
   );
 }
 
+function touchWorkflowListMigration(): void {
+  migrateLegacyWorkflowsWithoutGraph();
+}
+
 export function listWorkflowsByTrigger(trigger: string): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
+  touchWorkflowListMigration();
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE trigger = ? AND enabled = 1 ORDER BY priority ASC, id ASC`,
   );
@@ -83,6 +95,7 @@ export function listWorkflowsWithCron(): EmailWorkflowRow[] {
 
 export function listAllWorkflows(): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
+  touchWorkflowListMigration();
   const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} ORDER BY trigger ASC, priority ASC, id ASC`)
     .all() as Record<string, unknown>[];

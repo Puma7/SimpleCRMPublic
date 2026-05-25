@@ -16,6 +16,7 @@ import {
   workflowDirectionForTrigger,
   workflowTriggerNeedsMessage,
 } from './workflow-trigger-utils';
+import { resolveWorkflowGraph } from './workflow-graph-resolve';
 
 /** Execute single workflow — prefers graph runtime when graph_json present */
 export async function executeWorkflowForTrigger(input: {
@@ -42,52 +43,55 @@ export async function executeWorkflowForTrigger(input: {
     direction: input.direction,
   });
 
-  const useGraph =
-    (input.workflow.execution_mode ?? 'graph') === 'graph' &&
-    Boolean(input.workflow.graph_json?.trim());
+  const mode = input.workflow.execution_mode ?? 'graph';
+  const { doc, source } = resolveWorkflowGraph(input.workflow);
 
-  if (useGraph) {
-    const doc = parseGraphDocument(input.workflow.graph_json);
-    if (doc) {
-      const graphInput = {
-        workflow: input.workflow,
-        trigger: input.trigger,
-        direction: input.direction,
-        runId,
-        message: input.message,
-        outbound: input.outbound,
-        dryRun: input.dryRun,
-        eventStrings: input.eventStrings,
-        eventVariables: input.eventVariables,
-        initialVariables: input.initialVariables,
-      };
-      const result = input.startNodeId
-        ? await runWorkflowGraphFromNode({ ...graphInput, startNodeId: input.startNodeId })
-        : await runWorkflowGraph(graphInput);
-      finishWorkflowRun(runId, {
-        status: result.status,
-        logJson: JSON.stringify(result.log),
-      });
-      return {
-        runId,
-        status: result.status,
-        log: result.log,
-        blocked: result.blocked,
-        blockReason: result.blockReason,
-      };
-    }
+  if (mode !== 'compiled' && doc) {
+    const graphInput = {
+      workflow: { ...input.workflow, graph_json: JSON.stringify(doc) },
+      trigger: input.trigger,
+      direction: input.direction,
+      runId,
+      message: input.message,
+      outbound: input.outbound,
+      dryRun: input.dryRun,
+      eventStrings: input.eventStrings,
+      eventVariables: input.eventVariables,
+      initialVariables: input.initialVariables,
+    };
+    const result = input.startNodeId
+      ? await runWorkflowGraphFromNode({ ...graphInput, startNodeId: input.startNodeId })
+      : await runWorkflowGraph(graphInput);
+    const log = [`graph_source:${source}`, ...result.log];
+    finishWorkflowRun(runId, {
+      status: result.status,
+      logJson: JSON.stringify(log),
+    });
+    return {
+      runId,
+      status: result.status,
+      log,
+      blocked: result.blocked,
+      blockReason: result.blockReason,
+    };
   }
 
-  const { runCompiledWorkflow } = await import('./compiled-fallback');
-  const result = await runCompiledWorkflow({
-    workflow: input.workflow,
-    runId,
-    message: input.message,
-    outbound: input.outbound,
-    direction: input.direction,
-  });
-  finishWorkflowRun(runId, { status: result.status, logJson: JSON.stringify(result.log) });
-  return { runId, ...result };
+  if (mode === 'compiled') {
+    const { runCompiledWorkflow } = await import('./compiled-fallback');
+    const result = await runCompiledWorkflow({
+      workflow: input.workflow,
+      runId,
+      message: input.message,
+      outbound: input.outbound,
+      direction: input.direction,
+    });
+    finishWorkflowRun(runId, { status: result.status, logJson: JSON.stringify(result.log) });
+    return { runId, ...result };
+  }
+
+  const log = ['graph_empty:keine ausführbaren Knoten'];
+  finishWorkflowRun(runId, { status: 'ok', logJson: JSON.stringify(log) });
+  return { runId, status: 'ok', log, blocked: false, blockReason: null };
 }
 
 export async function executeWorkflowNow(

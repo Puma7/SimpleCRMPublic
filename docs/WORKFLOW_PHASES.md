@@ -14,8 +14,11 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 
 ## Architektur (kurz)
 
-- **Ausführung:** `execution_mode = graph` (Standard) → `runWorkflowGraph`; sonst `compiled-fallback` → bestehende Regel-Engine.
-- **Knoten:** `electron/workflow/nodes/*` registriert in `register-builtin-nodes.ts`.
+- **Modular (Standard):** Jeder Flow ist ein **Graph aus Einzelknoten** (`graph_json`). Laufzeit = `runWorkflowGraph` + **Node Registry** (`registerWorkflowNode`). Kein festes Programm — Vorlagen/Defaults sind nur vorgefüllte Graphen.
+- **Legacy-Export:** `definition_json` ist optionaler **Export** linearer Regeln (Palette: Bedingung + klassische Aktionen). Registry-Knoten (`ai.spam_score`, `logic.threshold`, …) laufen **nur** im Graph-Interpreter.
+- **`execution_mode = compiled`:** Nur wenn explizit gesetzt — alte Regel-Engine ohne Registry-Knoten.
+- **Plugins:** Jeder Handler in `~/.config/simplecrm/workflow-plugins/*.json` wird als Knotentyp `plugin.<id>.<handler>` registriert.
+- **Migration:** Workflows ohne `graph_json` werden einmalig aus `definition_json` in einen Graph überführt (`definition-to-graph.ts`).
 - **IPC:** `workflow:*` Kanäle in `shared/ipc/channels.ts`, Handler `electron/ipc/workflow.ts`.
 
 ## Backlog P1–P7 (✅ umgesetzt)

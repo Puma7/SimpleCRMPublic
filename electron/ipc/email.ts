@@ -1060,7 +1060,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.CompileWorkflowGraph,
       async (_event: IpcMainInvokeEvent, graph: WorkflowGraphDocument) => {
         const def = compileGraphToDefinition(graph);
-        return { success: true as const, definitionJson: definitionToJson(def) };
+        const registryOnly = graph.nodes.some(
+          (n) => n.type === 'registry' || (n.type === 'action' && !('actionType' in (n.data as object))),
+        );
+        return {
+          success: true as const,
+          definitionJson: definitionToJson(def),
+          registryOnly,
+        };
       },
       { logger },
     ),
