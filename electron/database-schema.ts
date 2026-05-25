@@ -329,6 +329,7 @@ export const createEmailMessagesTable = `
     assigned_to TEXT,
     is_spam INTEGER NOT NULL DEFAULT 0,
     pop3_uidl TEXT,
+    raw_headers TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (folder_id) REFERENCES ${EMAIL_FOLDERS_TABLE}(id) ON DELETE CASCADE,

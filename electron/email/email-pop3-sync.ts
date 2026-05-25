@@ -15,7 +15,13 @@ import {
   type EmailAccountRow,
 } from './email-store';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
-import { addressJson, formatDate, parseAttachmentsMeta, snippetFromParsed } from './email-parse-utils';
+import {
+  addressJson,
+  formatDate,
+  parseAttachmentsMeta,
+  rawHeadersFromParsed,
+  snippetFromParsed,
+} from './email-parse-utils';
 
 const POP_FOLDER = 'INBOX';
 
@@ -109,6 +115,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
       seenLocal: false,
       hasAttachments,
       attachmentsJson,
+      rawHeaders: rawHeadersFromParsed(parsed),
     });
 
     if (isNew && localMsgId > 0) {

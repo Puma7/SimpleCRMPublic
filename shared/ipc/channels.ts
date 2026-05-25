@@ -174,6 +174,8 @@ const EmailChannels = literal({
   SoftDeleteMessage: 'email:soft-delete-message',
   RestoreMessage: 'email:restore-message',
   SetMessageArchived: 'email:set-message-archived',
+  RestoreInboxFromArchive: 'email:restore-inbox-from-archive',
+  GetMessageRawHeaders: 'email:get-message-raw-headers',
   SetMessageSeen: 'email:set-message-seen',
   SetMessageSpam: 'email:set-message-spam',
   PickComposeAttachments: 'email:pick-compose-attachments',

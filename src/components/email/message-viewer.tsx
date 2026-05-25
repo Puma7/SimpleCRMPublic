@@ -1,9 +1,11 @@
 "use client"
 
+import { useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import {
   Archive,
+  Code2,
   Forward,
   Mail,
   MailOpen,
@@ -18,12 +20,20 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import {
+  firstAddress,
   formatFrom,
   hasElectron,
   invokeIpc,
@@ -68,6 +78,10 @@ export function MessageViewer(props: Props) {
     mailView,
     setComposeIntent,
   } = useMailWorkspace()
+
+  const [rawHeadersOpen, setRawHeadersOpen] = useState(false)
+  const [rawHeadersText, setRawHeadersText] = useState<string | null>(null)
+  const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
 
   const isOutboundHeld =
     selectedMessage != null &&
@@ -244,6 +258,49 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   className="gap-1.5"
+                  onClick={() => {
+                    if (!hasElectron()) return
+                    setRawHeadersOpen(true)
+                    setRawHeadersLoading(true)
+                    setRawHeadersText(null)
+                    void invokeIpc<{
+                      success: boolean
+                      rawHeaders?: string | null
+                      messageIdHeader?: string | null
+                      fromJson?: string | null
+                      error?: string
+                    }>(IPCChannels.Email.GetMessageRawHeaders, selectedMessage.id)
+                      .then((r) => {
+                        if (!r.success) {
+                          toast.error(r.error ?? "Header konnten nicht geladen werden.")
+                          return
+                        }
+                        const parts: string[] = []
+                        const fromAddr = firstAddress(r.fromJson ?? selectedMessage.from_json)
+                        if (fromAddr) parts.push(`From (parsed): ${fromAddr}`)
+                        if (r.messageIdHeader) parts.push(`Message-ID: ${r.messageIdHeader}`)
+                        if (r.rawHeaders?.trim()) {
+                          parts.push("", "--- RFC822 Header ---", r.rawHeaders)
+                        } else {
+                          parts.push(
+                            "",
+                            "(Keine gespeicherten Roh-Header — nur bei Mails nach Update/Sync verfügbar. Absender oben aus From.)",
+                          )
+                        }
+                        setRawHeadersText(parts.join("\n"))
+                      })
+                      .catch(() => toast.error("Header konnten nicht geladen werden."))
+                      .finally(() => setRawHeadersLoading(false))
+                  }}
+                >
+                  <Code2 className="h-4 w-4" />
+                  <span className="hidden lg:inline">Header</span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-1.5"
                   onClick={() => void handleSoftDelete()}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -311,9 +368,16 @@ export function MessageViewer(props: Props) {
 
                 <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <p className="font-medium">{formatFrom(selectedMessage.from_json)}</p>
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="font-medium">{formatFrom(selectedMessage.from_json)}</p>
+                      {firstAddress(selectedMessage.from_json) ? (
+                        <p className="font-mono text-xs text-primary break-all">
+                          {firstAddress(selectedMessage.from_json)}
+                        </p>
+                      ) : null}
+                    </div>
                     {selectedMessage.date_received ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-xs text-muted-foreground shrink-0">
                         {new Date(selectedMessage.date_received).toLocaleString("de-DE")}
                       </p>
                     ) : null}
@@ -432,6 +496,25 @@ export function MessageViewer(props: Props) {
           ) : null}
         </div>
       </div>
+      <Dialog open={rawHeadersOpen} onOpenChange={setRawHeadersOpen}>
+        <DialogContent className="max-h-[85vh] max-w-2xl flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>E-Mail-Header / Rohdaten</DialogTitle>
+            <DialogDescription>
+              RFC822-Header und Message-ID zur Prüfung von Absender und Technik (Support).
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[60vh] rounded border bg-muted/30 p-3">
+            {rawHeadersLoading ? (
+              <p className="text-sm text-muted-foreground">Lädt…</p>
+            ) : (
+              <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
+                {rawHeadersText ?? "—"}
+              </pre>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   )
 }

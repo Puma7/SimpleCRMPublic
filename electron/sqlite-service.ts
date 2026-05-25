@@ -501,6 +501,7 @@ function runMigrations() {
                 { name: 'attachments_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN attachments_json TEXT` },
                 { name: 'assigned_to', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN assigned_to TEXT` },
                 { name: 'pop3_uidl', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pop3_uidl TEXT` },
+                { name: 'raw_headers', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_headers TEXT` },
                 { name: 'is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN is_spam INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of extraMsg) {

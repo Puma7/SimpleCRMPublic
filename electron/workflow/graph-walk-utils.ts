@@ -34,8 +34,10 @@ export function pickEdge(
     const byLabel = edges.find((e) => (e.label ?? '').toLowerCase() === lower);
     if (byLabel) return byLabel;
   }
-  if (port === 'yes') return edges.find((e) => edgeIsYes(e)) ?? edges[0];
-  if (port === 'no') return edges.find((e) => edgeIsNo(e)) ?? edges[1] ?? edges[0];
+  if (port === 'yes') return edges.find((e) => edgeIsYes(e));
+  // Do not fall back to the first/yes edge when the condition failed — that caused
+  // inbound workflows to archive every message when only a "ja" branch was wired.
+  if (port === 'no') return edges.find((e) => edgeIsNo(e));
   if (port === 'done') return edges.find((e) => edgeIsDone(e)) ?? undefined;
   if (port === 'each') return edges.find((e) => edgeIsEach(e)) ?? edges[0];
   return edges[0];

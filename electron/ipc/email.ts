@@ -26,6 +26,7 @@ import {
   listConversationMessagesForScope,
   setMessageSoftDeleted,
   setMessageArchived,
+  restoreInboxMessagesFromArchive,
   setMessageSeenLocal,
   setMessageSpam,
   setMessageAssignedTo,
@@ -1003,6 +1004,34 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; archived: boolean }) => {
         setMessageArchived(payload.messageId, payload.archived);
         return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RestoreInboxFromArchive,
+      async (_event: IpcMainInvokeEvent, accountId: number) => {
+        const restored = restoreInboxMessagesFromArchive(accountId);
+        return { success: true as const, restored };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetMessageRawHeaders,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const row = getEmailMessageById(messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        return {
+          success: true as const,
+          rawHeaders: row.raw_headers ?? null,
+          messageIdHeader: row.message_id ?? null,
+          fromJson: row.from_json ?? null,
+        };
       },
       { logger },
     ),

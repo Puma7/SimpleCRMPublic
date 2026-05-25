@@ -187,6 +187,7 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
     return ci ? haystack.toLowerCase() === needle.toLowerCase() : haystack === needle;
   }
   if (cond.op === 'contains') {
+    if (!needle.trim()) return false;
     if (isAddressField(cond.field)) {
       return matchAddressListOp(cond.field, ctx, 'contains', needle, ci);
     }

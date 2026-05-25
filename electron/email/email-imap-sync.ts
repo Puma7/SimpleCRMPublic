@@ -18,7 +18,13 @@ import {
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
-import { addressJson, formatDate, parseAttachmentsMeta, snippetFromParsed } from './email-parse-utils';
+import {
+  addressJson,
+  formatDate,
+  parseAttachmentsMeta,
+  rawHeadersFromParsed,
+  snippetFromParsed,
+} from './email-parse-utils';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -150,6 +156,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           imapThreadId,
           hasAttachments,
           attachmentsJson,
+          rawHeaders: rawHeadersFromParsed(parsed),
         });
         if (isNew && localMsgId > 0) {
           const { persistParsedAttachments } = await import('./email-message-attachments-store');

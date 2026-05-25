@@ -82,6 +82,7 @@ export type EmailMessageRow = {
   is_spam: number;
   /** POP3 server UIDL when message came from POP3 (stable key). */
   pop3_uidl: string | null;
+  raw_headers: string | null;
   created_at: string;
 };
 
@@ -733,6 +734,7 @@ export function insertOrUpdateEmailMessage(input: {
   attachmentsJson?: string | null;
   /** POP3: stable server UIDL — row is keyed by this, not by volatile message number. */
   pop3Uidl?: string | null;
+  rawHeaders?: string | null;
 }): { id: number; isNew: boolean } {
   const hasAtt = input.hasAttachments ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
@@ -766,7 +768,8 @@ export function insertOrUpdateEmailMessage(input: {
           imap_thread_id = COALESCE(?, imap_thread_id),
           has_attachments = ?,
           attachments_json = COALESCE(?, attachments_json),
-          seen_local = MAX(seen_local, ?)
+          seen_local = MAX(seen_local, ?),
+          raw_headers = COALESCE(?, raw_headers)
         WHERE id = ?`,
       ).run(
         input.messageId,
@@ -784,6 +787,7 @@ export function insertOrUpdateEmailMessage(input: {
         hasAtt,
         attJson,
         input.seenLocal ? 1 : 0,
+        input.rawHeaders ?? null,
         byUidl.id,
       );
       return { id: byUidl.id, isNew: false };
@@ -802,9 +806,9 @@ export function insertOrUpdateEmailMessage(input: {
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
       subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
-      imap_thread_id, has_attachments, attachments_json, pop3_uidl,
+      imap_thread_id, has_attachments, attachments_json, pop3_uidl, raw_headers,
       thread_id, ticket_code, customer_id, folder_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -821,6 +825,7 @@ export function insertOrUpdateEmailMessage(input: {
       has_attachments = excluded.has_attachments,
       attachments_json = COALESCE(excluded.attachments_json, ${EMAIL_MESSAGES_TABLE}.attachments_json),
       pop3_uidl = COALESCE(excluded.pop3_uidl, ${EMAIL_MESSAGES_TABLE}.pop3_uidl),
+      raw_headers = COALESCE(excluded.raw_headers, ${EMAIL_MESSAGES_TABLE}.raw_headers),
       seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
   );
   const result = stmt.run(
@@ -843,12 +848,30 @@ export function insertOrUpdateEmailMessage(input: {
     hasAtt,
     attJson,
     pop3Uidl,
+    input.rawHeaders ?? null,
   );
   const row = db
     .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
     .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
   const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
   return { id, isNew };
+}
+
+/** Undo workflow auto-archive for synced inbox mail (not spam/trash). */
+export function restoreInboxMessagesFromArchive(accountId: number): number {
+  const r = getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET archived = 0
+       WHERE account_id = ?
+         AND archived = 1
+         AND soft_deleted = 0
+         AND is_spam = 0
+         AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '')
+         AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+    )
+    .run(accountId);
+  return r.changes;
 }
 
 export function setMessageArchived(messageId: number, archived: boolean): void {

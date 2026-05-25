@@ -180,6 +180,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({ messageId: positiveInt, archived: z.boolean() }),
     result: standardResult,
   });
+  set(IPCChannels.Email.RestoreInboxFromArchive, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true), restored: z.number().int().nonnegative() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.GetMessageRawHeaders, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        rawHeaders: z.string().nullable(),
+        messageIdHeader: z.string().nullable(),
+        fromJson: z.string().nullable(),
+      }),
+      failResult,
+    ]),
+  });
   set(IPCChannels.Email.SetMessageSeen, {
     payload: z.object({ messageId: positiveInt, seen: z.boolean() }),
     result: standardResult,
