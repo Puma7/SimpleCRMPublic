@@ -11,6 +11,7 @@ import {
   Download,
   KeyRound,
   Send,
+  Shield,
   Sparkles,
   Type,
   Users,
@@ -27,6 +28,7 @@ import { PromptsPanel } from "./settings/prompts-panel"
 import { ExportPanel } from "./settings/export-panel"
 import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
+import { MailSecurityPanel } from "./settings/mail-security-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -41,6 +43,12 @@ const TAB_DEFS: TabDef[] = [
   { id: "oauth", label: "OAuth", icon: KeyRound, render: () => <OAuthPanel /> },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
   { id: "knowledge", label: "Wissensbasis", icon: BookOpen, render: () => <KnowledgePanel /> },
+  {
+    id: "mailSecurity",
+    label: "Mail-Sicherheit",
+    icon: Shield,
+    render: () => <MailSecurityPanel />,
+  },
   {
     id: "automation",
     label: "Automatisierung",
@@ -57,7 +65,10 @@ export const SETTINGS_TAB_IDS = TAB_DEFS.map((t) => t.id)
 
 export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "smtp", "oauth"] },
-  { label: "KI & Automation", tabIds: ["ai", "knowledge", "automation", "prompts"] },
+  {
+    label: "KI & Automation",
+    tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
+  },
   { label: "Team & Vorlagen", tabIds: ["team", "canned"] },
   { label: "Datenschutz", tabIds: ["export"] },
 ]

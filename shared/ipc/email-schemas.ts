@@ -594,18 +594,32 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({
       imapDeleteOptIn: z.boolean(),
       httpAllowlist: z.string(),
-      senderWhitelist: z.string(),
-      senderBlacklist: z.string(),
-      spamScoreThreshold: z.string(),
     }),
   });
   set(IPCChannels.Email.SetWorkflowAutomationSettings, {
     payload: z.object({
       imapDeleteOptIn: z.boolean().optional(),
       httpAllowlist: z.string().optional(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetMailSecuritySettings, {
+    payload: voidPayload,
+    result: z.object({
+      senderWhitelist: z.string(),
+      senderBlacklist: z.string(),
+      spamScoreThreshold: z.string(),
+      useBuiltinTrustedSenders: z.boolean(),
+      autoBlacklistBeforeWorkflow: z.boolean(),
+    }),
+  });
+  set(IPCChannels.Email.SetMailSecuritySettings, {
+    payload: z.object({
       senderWhitelist: z.string().optional(),
       senderBlacklist: z.string().optional(),
       spamScoreThreshold: z.string().optional(),
+      useBuiltinTrustedSenders: z.boolean().optional(),
+      autoBlacklistBeforeWorkflow: z.boolean().optional(),
     }),
     result: standardResult,
   });

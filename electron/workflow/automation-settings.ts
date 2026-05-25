@@ -1,9 +1,6 @@
-import { getSyncInfo } from '../sqlite-service';
+import { getMailSecuritySpamScoreThreshold } from '../email/mail-security-settings';
 
-/** Global spam score threshold from Einstellungen → Automatisierung (1–100). */
+/** Global spam score threshold from Einstellungen → Mail-Sicherheit (1–100). */
 export function getWorkflowSpamScoreThreshold(): number {
-  const raw = getSyncInfo('workflow_spam_score_threshold');
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return 70;
-  return Math.max(1, Math.min(100, Math.floor(n)));
+  return getMailSecuritySpamScoreThreshold();
 }

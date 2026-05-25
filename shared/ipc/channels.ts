@@ -211,6 +211,8 @@ const EmailChannels = literal({
   ExportWorkflowBundleToFile: 'workflow:export-bundle-to-file',
   GetWorkflowAutomationSettings: 'workflow:get-automation-settings',
   SetWorkflowAutomationSettings: 'workflow:set-automation-settings',
+  GetMailSecuritySettings: 'email:get-mail-security-settings',
+  SetMailSecuritySettings: 'email:set-mail-security-settings',
   ListKnowledgeBases: 'workflow:list-knowledge-bases',
   CreateKnowledgeBase: 'workflow:create-knowledge-base',
   DeleteKnowledgeBase: 'workflow:delete-knowledge-base',

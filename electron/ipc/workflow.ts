@@ -22,6 +22,10 @@ import { restartEmailWorkflowCrons } from '../email/email-imap-services';
 import { isImapDeleteOptInEnabled, setImapDeleteOptIn } from '../email/email-imap-move';
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import {
+  getMailSecuritySettings,
+  setMailSecuritySettings,
+} from '../email/mail-security-settings';
+import {
   listWorkflowVersions,
   saveWorkflowVersion,
   getWorkflowVersion,
@@ -186,9 +190,6 @@ export function registerWorkflowHandlers(options: {
       return {
         imapDeleteOptIn: isImapDeleteOptInEnabled(),
         httpAllowlist: getSyncInfo('workflow_http_allowlist') ?? '',
-        senderWhitelist: getSyncInfo('workflow_sender_whitelist') ?? '',
-        senderBlacklist: getSyncInfo('workflow_sender_blacklist') ?? '',
-        spamScoreThreshold: getSyncInfo('workflow_spam_score_threshold') ?? '70',
       };
     }, { logger }),
   );
@@ -201,9 +202,6 @@ export function registerWorkflowHandlers(options: {
         payload: {
           imapDeleteOptIn?: boolean;
           httpAllowlist?: string;
-          senderWhitelist?: string;
-          senderBlacklist?: string;
-          spamScoreThreshold?: string;
         },
       ) => {
         if (payload.imapDeleteOptIn !== undefined) {
@@ -212,16 +210,32 @@ export function registerWorkflowHandlers(options: {
         if (payload.httpAllowlist !== undefined) {
           setSyncInfo('workflow_http_allowlist', payload.httpAllowlist.trim());
         }
-        if (payload.senderWhitelist !== undefined) {
-          setSyncInfo('workflow_sender_whitelist', payload.senderWhitelist.trim());
-        }
-        if (payload.senderBlacklist !== undefined) {
-          setSyncInfo('workflow_sender_blacklist', payload.senderBlacklist.trim());
-        }
-        if (payload.spamScoreThreshold !== undefined) {
-          const t = Math.max(1, Math.min(100, Math.floor(Number(payload.spamScoreThreshold) || 70)));
-          setSyncInfo('workflow_spam_score_threshold', String(t));
-        }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetMailSecuritySettings, async () => getMailSecuritySettings(), {
+      logger,
+    }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMailSecuritySettings,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: Partial<{
+          senderWhitelist: string;
+          senderBlacklist: string;
+          spamScoreThreshold: string;
+          useBuiltinTrustedSenders: boolean;
+          autoBlacklistBeforeWorkflow: boolean;
+        }>,
+      ) => {
+        setMailSecuritySettings(payload);
         return { success: true as const };
       },
       { logger },

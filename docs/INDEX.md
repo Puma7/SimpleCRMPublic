@@ -24,6 +24,7 @@
 | [email-system-deep-review.md](email-system-deep-review.md) | Risks and review notes |
 | [WORKFLOW_SPAM_ROUTING.md](WORKFLOW_SPAM_ROUTING.md) | Spam pipeline design |
 | [OUTBOUND_EMAIL_WORKFLOW.md](OUTBOUND_EMAIL_WORKFLOW.md) | Outbound quality gate |
+| [MAIL_SECURITY.md](MAIL_SECURITY.md) | Static mail security (lists, roadmap: SPF, AV, …) |
 
 ## Workflows
 
