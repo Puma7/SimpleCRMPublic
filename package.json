@@ -13,7 +13,7 @@
     "build:electron:watch": "vite build --watch",
     "electron:compile": "tsc -p tsconfig.electron.json",
     "electron:compile:watch": "tsc -p tsconfig.electron.json --watch",
-    "electron:dev:main": "nodemon --watch dist-electron --delay 500ms --exec \"cross-env NODE_ENV=development electron dist-electron/main.js\" --ext js",
+    "electron:dev:main": "nodemon --watch dist-electron --delay 2500ms --exec \"cross-env NODE_ENV=development electron dist-electron/main.js\" --ext js",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --max-warnings 0",
     "svelte-lab:dev": "npm run dev --prefix packages/svelte-lab",

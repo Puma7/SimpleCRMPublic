@@ -347,6 +347,21 @@ npm run build:electron:main
 
 Then retry `npm run electron:dev` or `npm run electron:start`.
 
+### Multiple app windows or DevTools in dev mode
+
+**Symptom:** `npm run electron:dev` opens two or three SimpleCRM windows and/or several Chrome DevTools panels.
+
+**Cause:**
+
+1. **Nodemon** watches `dist-electron/` and restarts Electron whenever `tsc --watch` or `vite build --watch` writes files. On startup many files are written in quick succession, so several Electron processes can start before the previous one exits.
+2. **Dev mode** intentionally opens DevTools (`NODE_ENV=development` in `electron/main.js`). A detached DevTools window used to appear in addition to the dedicated “SimpleCRM DevTools” window.
+
+**What you can do:**
+
+- Close all SimpleCRM/Electron windows, end stray `electron.exe` processes in Task Manager, then start **once**: `npm run electron:dev`.
+- Do not run `npm run electron:dev` in two terminals at the same time.
+- Toggle DevTools with **F12** or **Ctrl+Shift+I**.
+
 ### Electron window is blank (white screen)
 
 **Symptom:** The app window opens but shows nothing.

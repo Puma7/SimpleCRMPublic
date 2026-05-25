@@ -15,6 +15,21 @@ log.catchErrors(); // Catch unhandled errors
 Object.assign(console, log.functions); // Override console functions
 
 const isDevelopment = process.env.NODE_ENV === 'development';
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.focus();
+    }
+  });
+}
+
 // Reduce log noise and protect secrets by defaulting to warn in production
 log.transports.file.level = isDevelopment ? 'debug' : 'warn';
 log.transports.file.maxSize = 5 * 1024 * 1024; // 5 MB rotation cap
@@ -206,9 +221,8 @@ async function createMainWindow() {
     try {
       const toolsWindow = ensureDevToolsWindow();
       if (!mainWindow.webContents.isDevToolsOpened()) {
-        // Use a dedicated window to avoid DevTools restoring off-screen.
-        mainWindow.webContents.openDevTools({ mode: 'detach', activate: true });
-        log.info('[Electron Main] DevTools opened (detach mode).');
+        mainWindow.webContents.openDevTools({ activate: true });
+        log.info('[Electron Main] DevTools opened.');
       } else {
         mainWindow.webContents.focusDevTools();
         log.info('[Electron Main] DevTools focused.');
@@ -285,8 +299,9 @@ async function createMainWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     log.debug('[Electron Main] Renderer finished loading, sending initial window state.');
     emitWindowState();
-    openDevToolsBar();
-    setTimeout(openDevToolsBar, 1000);
+    if (isDevelopment) {
+      openDevToolsBar();
+    }
   });
 
   if (!loadURLFunction) {
@@ -357,7 +372,7 @@ initializeApp()
           mainWindow.webContents.closeDevTools();
         } else {
           ensureDevToolsWindow();
-          mainWindow.webContents.openDevTools({ mode: 'detach', activate: true });
+          mainWindow.webContents.openDevTools({ activate: true });
         }
       };
 
