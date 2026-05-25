@@ -48,6 +48,8 @@ export type EmailMessage = {
   snippet: string | null
   date_received: string | null
   from_json: string | null
+  to_json?: string | null
+  cc_json?: string | null
   body_text: string | null
   body_html: string | null
   seen_local: number

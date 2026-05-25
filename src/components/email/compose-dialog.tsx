@@ -1,11 +1,17 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import DOMPurify from "dompurify"
-import { ComposeQuillEditor } from "./compose-quill-editor"
-import { validateRecipientField } from "@shared/email-recipient-parse"
+import {
+  ComposeQuillEditor,
+  type ComposeQuillEditorHandle,
+} from "./compose-quill-editor"
+import {
+  recipientFieldFromJson,
+  validateRecipientField,
+} from "@shared/email-recipient-parse"
 import { Loader2, Paperclip, X } from "lucide-react"
 import {
   Dialog,
@@ -99,6 +105,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   // ESC, or close-button double-click) which could otherwise kick off two
   // parallel saveDraft → closeDialog chains with stale closures.
   const closingRef = useRef(false)
+  const editorRef = useRef<ComposeQuillEditorHandle>(null)
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!isOpen) {
@@ -134,8 +142,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           )
           if (cancelled || !existing) return
           setComposeAccountId(existing.account_id)
-          setTo("")
-          setCc("")
+          setTo(recipientFieldFromJson(existing.to_json))
+          setCc(recipientFieldFromJson(existing.cc_json))
           setSubject(existing.subject ?? "")
           const html = existing.body_html
             ? sanitizeComposeHtml(existing.body_html)
@@ -216,6 +224,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     }
   }, [isOpen, composeIntent, selectedAccountId, accounts, composeAccountId])
 
+  const getEditorHtml = useCallback(() => editorRef.current?.getHtml() ?? bodyHtml, [bodyHtml])
+
   const closeDialog = () => {
     setComposeIntent({ mode: "closed" })
     setComposeAccountId(null)
@@ -235,34 +245,92 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     // close the dialog on completion.
     if (sending) return
     closingRef.current = true
-    void saveDraft().then(closeDialog)
+    void (async () => {
+      const ok = await saveDraft({ silent: true })
+      if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
+      closeDialog()
+      void onSent()
+    })()
   }
 
-  const saveDraft = async () => {
-    if (!hasElectron() || draftId == null) return
-    try {
-      const safeHtml = sanitizeComposeHtml(bodyHtml)
-      const plain = stripHtmlToText(safeHtml)
-      await invokeIpc(IPCChannels.Email.UpdateComposeDraft, {
-        messageId: draftId,
-        subject,
-        bodyText: plain,
-        bodyHtml: safeHtml || undefined,
-        to,
-        cc: cc || undefined,
-      })
-    } catch (e) {
-      logError("compose-dialog: save draft", e)
+  const saveDraft = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!hasElectron() || draftId == null) return false
+      try {
+        const rawHtml = getEditorHtml()
+        if (rawHtml !== bodyHtml) setBodyHtml(rawHtml)
+        const safeHtml = sanitizeComposeHtml(rawHtml)
+        const plain = stripHtmlToText(safeHtml)
+        await invokeIpc(IPCChannels.Email.UpdateComposeDraft, {
+          messageId: draftId,
+          subject,
+          bodyText: plain,
+          bodyHtml: safeHtml || undefined,
+          to,
+          cc: cc || undefined,
+        })
+        return true
+      } catch (e) {
+        logError("compose-dialog: save draft", e)
+        if (!opts?.silent) {
+          toast.error("Entwurf konnte nicht gespeichert werden.")
+        }
+        return false
+      }
+    },
+    [draftId, subject, to, cc, bodyHtml, getEditorHtml],
+  )
+
+  useEffect(() => {
+    if (!isOpen || draftId == null || initialisedDraftKeyRef.current == null) return
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
+    autosaveTimerRef.current = setTimeout(() => {
+      void saveDraft({ silent: true })
+    }, 2000)
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     }
-  }
+  }, [isOpen, draftId, to, cc, subject, bodyHtml, saveDraft])
 
   const handleCheckOutbound = async () => {
     if (!hasElectron() || draftId == null) return
+    const toCheck = validateRecipientField(to, "An")
+    if (!toCheck.ok) {
+      toast.error(toCheck.error)
+      return
+    }
+    if (cc.trim()) {
+      const ccCheck = validateRecipientField(cc, "Cc")
+      if (!ccCheck.ok) {
+        toast.error(ccCheck.error)
+        return
+      }
+    }
     setCheckingOutbound(true)
     try {
-      await saveDraft()
-      const safeHtml = sanitizeComposeHtml(bodyHtml)
+      const saved = await saveDraft()
+      if (!saved) return
+
+      type WfRow = { trigger: string; enabled: number }
+      const workflows = await invokeIpc<WfRow[]>(IPCChannels.Email.ListWorkflows)
+      const outboundActive = workflows.filter(
+        (w) => w.trigger === "outbound" && w.enabled === 1,
+      )
+      if (outboundActive.length === 0) {
+        toast.info(
+          "Keine aktiven Ausgangs-Workflows. Legen Sie unter Einstellungen → Workflows einen Workflow mit Auslöser „Ausgang“ an.",
+        )
+        return
+      }
+
+      const rawHtml = getEditorHtml()
+      const safeHtml = sanitizeComposeHtml(rawHtml)
       const plain = stripHtmlToText(safeHtml)
+      if (!plain.trim() && !safeHtml.replace(/<[^>]+>/g, "").trim()) {
+        toast.error("Bitte zuerst einen Nachrichtentext eingeben.")
+        return
+      }
+
       const r = await invokeIpc<{ success: boolean; allowed?: boolean; reason?: string | null }>(
         IPCChannels.Email.ValidateOutbound,
         {
@@ -280,7 +348,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         return
       }
       if (r.allowed) {
-        toast.success("Ausgangsprüfung: OK — Versand erlaubt.")
+        toast.success(
+          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand erlaubt.`,
+        )
       } else {
         toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.")
       }
@@ -307,8 +377,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     }
     setSending(true)
     try {
-      await saveDraft()
-      const safeHtml = sanitizeComposeHtml(bodyHtml)
+      const saved = await saveDraft()
+      if (!saved) return
+      const safeHtml = sanitizeComposeHtml(getEditorHtml())
       const plain = stripHtmlToText(safeHtml)
       const r = await invokeIpc<{ success: boolean; error?: string }>(
         IPCChannels.Email.SendCompose,
@@ -362,7 +433,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         if (!open) requestClose()
       }}
     >
-      <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col gap-3 p-0">
+      <DialogContent className="flex max-h-[92vh] max-w-4xl flex-col gap-3 p-0">
         <DialogHeader className="border-b px-6 pt-6 pb-3">
           <DialogTitle>
             {composeIntent.mode === "reply"
@@ -460,11 +531,14 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               <Select
                 value={String(composeAccountId)}
                 onValueChange={(v) => {
-                  const id = parseInt(v, 10)
-                  if (!Number.isFinite(id)) return
-                  setComposeAccountId(id)
-                  setDraftId(null)
-                  initialisedDraftKeyRef.current = null
+                  void (async () => {
+                    const id = parseInt(v, 10)
+                    if (!Number.isFinite(id)) return
+                    await saveDraft({ silent: true })
+                    setComposeAccountId(id)
+                    setDraftId(null)
+                    initialisedDraftKeyRef.current = null
+                  })()
                 }}
               >
                 <SelectTrigger className="h-9">
@@ -504,9 +578,17 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             />
           </div>
 
-          <div className="compose-quill rounded-md border bg-background [&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:min-h-[240px] [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted">
-            <ComposeQuillEditor value={bodyHtml} onChange={setBodyHtml} />
+          <div className="compose-quill compose-editor-resize rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted">
+            <ComposeQuillEditor
+              ref={editorRef}
+              value={bodyHtml}
+              onChange={setBodyHtml}
+            />
           </div>
+          <p className="text-[10px] text-muted-foreground">
+            Nachrichtenbereich unten am Rand ziehen, um die Höhe anzupassen. Änderungen werden
+            automatisch im Entwurf gespeichert.
+          </p>
 
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -562,7 +644,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           <Button
             type="button"
             variant="secondary"
-            onClick={() => void saveDraft().then(() => toast.success("Entwurf gespeichert"))}
+            onClick={() =>
+              void saveDraft().then((ok) => {
+                if (ok) toast.success("Entwurf gespeichert")
+              })
+            }
           >
             Entwurf speichern
           </Button>

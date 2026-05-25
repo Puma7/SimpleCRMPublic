@@ -1,5 +1,6 @@
 import {
   extractEmailAddressesFromRecipientField,
+  recipientFieldFromJson,
   recipientJsonFromField,
 } from '../../shared/email-recipient-parse';
 import {
@@ -29,5 +30,10 @@ describe('email recipient mapping', () => {
 
   it('extractEmailAddresses rejects invalid tokens', () => {
     expect(extractEmailAddressesFromRecipientField('not-an-email')).toEqual([]);
+  });
+
+  it('recipientFieldFromJson round-trips compose fields', () => {
+    const json = recipientJsonFromField('Shop <shop@example.com>, b@example.com');
+    expect(recipientFieldFromJson(json)).toBe('shop@example.com, b@example.com');
   });
 });
