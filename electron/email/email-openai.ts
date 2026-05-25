@@ -1,5 +1,5 @@
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
-import { getEmailAiApiKey } from './email-ai-keytar';
+import { getResolvedAiRuntime } from './email-ai-profiles';
 
 const KEY_BASE = 'email_ai_base_url';
 const KEY_MODEL = 'email_ai_model';
@@ -17,12 +17,17 @@ export function setAiSettings(input: { baseUrl?: string; model?: string }): void
   if (input.model !== undefined) setSyncInfo(KEY_MODEL, input.model);
 }
 
-export async function runChatCompletion(systemPrompt: string, userContent: string): Promise<string> {
-  const apiKey = await getEmailAiApiKey();
+export async function runChatCompletion(
+  systemPrompt: string,
+  userContent: string,
+  profileId?: number | null,
+): Promise<string> {
+  const runtime = await getResolvedAiRuntime(profileId);
+  const apiKey = runtime.apiKey;
   if (!apiKey) {
-    throw new Error('Kein KI-API-Schlüssel hinterlegt (Einstellungen).');
+    throw new Error('Kein KI-API-Schlüssel hinterlegt (Einstellungen → KI-Profil).');
   }
-  const { baseUrl, model } = getAiSettings();
+  const { baseUrl, model } = runtime;
   const url = `${baseUrl}/chat/completions`;
   const res = await fetch(url, {
     method: 'POST',
@@ -38,6 +43,7 @@ export async function runChatCompletion(systemPrompt: string, userContent: strin
       ],
       temperature: 0.3,
     }),
+    signal: AbortSignal.timeout(90_000),
   });
   if (!res.ok) {
     const t = await res.text();
@@ -51,12 +57,13 @@ export async function runChatCompletion(systemPrompt: string, userContent: strin
   return text;
 }
 
-export async function runEmbedding(text: string): Promise<number[] | null> {
-  const apiKey = await getEmailAiApiKey();
+export async function runEmbedding(text: string, profileId?: number | null): Promise<number[] | null> {
+  const runtime = await getResolvedAiRuntime(profileId);
+  const apiKey = runtime.apiKey;
   if (!apiKey) return null;
   const input = text.trim().slice(0, 8000);
   if (!input) return null;
-  const { baseUrl, embeddingModel } = getAiSettings();
+  const { baseUrl, embeddingModel } = runtime;
   const url = `${baseUrl}/embeddings`;
   try {
     const res = await fetch(url, {
@@ -66,6 +73,7 @@ export async function runEmbedding(text: string): Promise<number[] | null> {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({ model: embeddingModel, input }),
+      signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { data?: { embedding?: number[] }[] };

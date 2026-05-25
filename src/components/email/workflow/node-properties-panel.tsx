@@ -297,6 +297,270 @@ type RegistryFieldProps = FieldProps & {
   labelByType: Map<string, string>
 }
 
+function patchConfig(
+  patch: (p: Record<string, unknown>) => void,
+  config: Record<string, unknown>,
+  key: string,
+  value: unknown,
+) {
+  patch({ config: { ...config, [key]: value } })
+}
+
+function SenderFilterFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <p className="text-[11px] text-muted-foreground">
+        Kanten: <strong>whitelist</strong> (vertrauenswürdig), <strong>blacklist</strong> (Spam),
+        <strong> default</strong> (weiter zur KI).
+      </p>
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={config.useGlobalLists !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "useGlobalLists", v)}
+        />
+        <Label className="text-xs font-normal">Globale Listen aus Einstellungen</Label>
+      </div>
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={config.useBuiltinTrusted !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "useBuiltinTrusted", v)}
+        />
+        <Label className="text-xs font-normal">PayPal/Amazon/Lidl-Standardliste</Label>
+      </div>
+    </div>
+  )
+}
+
+function SpamScoreFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Kontext für KI</Label>
+        <Select
+          value={String(config.contextMode ?? "metadata")}
+          onValueChange={(v) => patchConfig(patch, config, "contextMode", v)}
+        >
+          <SelectTrigger className="h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="metadata">Nur Metadaten (DSGVO)</SelectItem>
+            <SelectItem value="full">Volltext (nicht empfohlen)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Variable <code className="text-[10px]">ai.spam_score</code> (1–100). Danach Knoten
+        „Schwellwert“ verwenden.
+      </p>
+    </div>
+  )
+}
+
+function ThresholdFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Variable</Label>
+        <Input
+          className="h-9"
+          value={String(config.variable ?? "ai.spam_score")}
+          onChange={(e) => patchConfig(patch, config, "variable", e.target.value)}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Operator</Label>
+          <Select
+            value={String(config.operator ?? "gte")}
+            onValueChange={(v) => patchConfig(patch, config, "operator", v)}
+          >
+            <SelectTrigger className="h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="gte">≥ (Spam ab Wert)</SelectItem>
+              <SelectItem value="lte">≤</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Schwellwert (1–100)</Label>
+          <Input
+            type="number"
+            min={1}
+            max={100}
+            className="h-9"
+            disabled={config.useGlobalThreshold === true}
+            value={String(config.value ?? 70)}
+            onChange={(e) => patchConfig(patch, config, "value", parseInt(e.target.value, 10) || 70)}
+          />
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-xs">Globaler Spam-Schwellwert (Einstellungen)</Label>
+        <Switch
+          checked={config.useGlobalThreshold === true}
+          onCheckedChange={(on) => patchConfig(patch, config, "useGlobalThreshold", on)}
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Kanten: <strong>yes</strong> / <strong>no</strong> (auch „ja“/„nein“).
+      </p>
+    </div>
+  )
+}
+
+function MarkSpamFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Tag</Label>
+        <Input
+          className="h-9"
+          value={String(config.tag ?? "auto-spam")}
+          onChange={(e) => patchConfig(patch, config, "tag", e.target.value)}
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={config.moveImap === true}
+          onCheckedChange={(v) => patchConfig(patch, config, "moveImap", v)}
+        />
+        <Label className="text-xs font-normal">Zusätzlich IMAP-Ordner Spam</Label>
+      </div>
+    </div>
+  )
+}
+
+function AssignFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-1.5 rounded-md border p-3">
+      <Label className="text-xs">Team-Mitglied-ID</Label>
+      <Input
+        className="h-9 font-mono text-xs"
+        value={String(config.teamMemberId ?? "")}
+        onChange={(e) => patchConfig(patch, config, "teamMemberId", e.target.value)}
+        placeholder="UUID aus Team-Einstellungen"
+      />
+    </div>
+  )
+}
+
+function OutboundReviewFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
+  useEffect(() => {
+    if (!hasElectron()) return
+    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+  }, [])
+
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">KI-Prompt (optional)</Label>
+        <Select
+          value={String(config.promptId ?? 0)}
+          onValueChange={(v) => patchConfig(patch, config, "promptId", parseInt(v, 10))}
+        >
+          <SelectTrigger className="h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="0">Standard (Ton, Anhang, Betrug)</SelectItem>
+            {aiPrompts.map((p) => (
+              <SelectItem key={p.id} value={String(p.id)}>
+                {p.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-xs">Antwort-Kontext prüfen</Label>
+        <Switch
+          checked={config.checkReplyContext !== false}
+          onCheckedChange={(on) => patchConfig(patch, config, "checkReplyContext", on)}
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Blockierte Entwürfe landen im Posteingang mit gelbem Hinweis im Text.
+      </p>
+    </div>
+  )
+}
+
+function ClassifyFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Kategorien (kommagetrennt)</Label>
+        <Input
+          className="h-9"
+          value={String(config.labels ?? "")}
+          onChange={(e) => patchConfig(patch, config, "labels", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Kontext</Label>
+        <Select
+          value={String(config.contextMode ?? "metadata")}
+          onValueChange={(v) => patchConfig(patch, config, "contextMode", v)}
+        >
+          <SelectTrigger className="h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="metadata">Nur Metadaten</SelectItem>
+            <SelectItem value="full">Volltext</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  )
+}
+
 function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
   const d = node.data as {
     nodeType?: string
@@ -327,6 +591,27 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
           Verwenden Sie die Ausgänge <strong>Je Element</strong> (Schleifenkörper) und{" "}
           <strong>Fertig</strong> (nach der Schleife).
         </p>
+      ) : null}
+      {d.nodeType === "email.sender_filter" ? (
+        <SenderFilterFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.spam_score" ? (
+        <SpamScoreFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "logic.threshold" ? (
+        <ThresholdFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.mark_spam" ? (
+        <MarkSpamFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.assign" ? (
+        <AssignFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.classify" ? (
+        <ClassifyFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.outbound_review" ? (
+        <OutboundReviewFields config={d.config ?? {}} patch={patch} />
       ) : null}
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>

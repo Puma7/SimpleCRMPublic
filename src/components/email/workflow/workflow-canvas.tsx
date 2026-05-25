@@ -162,7 +162,10 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
   const title = d.label?.trim() || d.nodeType || "Erweiterter Knoten"
   const isLoop = d.nodeType === "logic.loop"
   const isSwitch = d.nodeType === "logic.switch"
+  const isSenderFilter = d.nodeType === "email.sender_filter"
+  const isThreshold = d.nodeType === "logic.threshold"
   const switchPorts = isSwitch ? switchCaseHandles(d.config) : []
+  const filterPorts = ["whitelist", "blacklist", "default"] as const
 
   return (
     <div
@@ -219,6 +222,48 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
               />
             )
           })}
+        </>
+      ) : isSenderFilter ? (
+        <>
+          <div className="relative mt-2 flex justify-between px-1 text-[9px] font-medium text-violet-800 dark:text-violet-300">
+            <span>Whitelist</span>
+            <span>Blacklist</span>
+            <span>Default</span>
+          </div>
+          {filterPorts.map((port, i) => {
+            const left = 18 + i * 32
+            return (
+              <Handle
+                key={port}
+                id={port}
+                type="source"
+                position={Position.Bottom}
+                style={{ left: `${left}%` }}
+                className="!bg-violet-500"
+              />
+            )
+          })}
+        </>
+      ) : isThreshold ? (
+        <>
+          <div className="relative mt-2 flex justify-between px-4 text-[9px] font-medium text-violet-800 dark:text-violet-300">
+            <span>Ja</span>
+            <span>Nein</span>
+          </div>
+          <Handle
+            id="yes"
+            type="source"
+            position={Position.Bottom}
+            style={{ left: "30%" }}
+            className="!bg-violet-500"
+          />
+          <Handle
+            id="no"
+            type="source"
+            position={Position.Bottom}
+            style={{ left: "70%" }}
+            className="!bg-violet-500"
+          />
         </>
       ) : (
         <Handle type="source" position={Position.Bottom} className="!bg-violet-500" />
@@ -277,6 +322,11 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
           else if (params.sourceHandle === "each") label = "each"
         } else if (nt === "logic.switch" && params.sourceHandle) {
           label = params.sourceHandle
+        } else if (nt === "email.sender_filter" && params.sourceHandle) {
+          label = params.sourceHandle
+        } else if (nt === "logic.threshold") {
+          if (params.sourceHandle === "no") label = "no"
+          else label = "yes"
         }
       }
       setEdges(

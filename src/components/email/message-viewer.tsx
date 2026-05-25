@@ -69,7 +69,17 @@ export function MessageViewer(props: Props) {
     metadataPanelOpen,
     setMetadataPanelOpen,
     mailView,
+    setComposeIntent,
   } = useMailWorkspace()
+
+  const isOutboundHeld =
+    selectedMessage != null &&
+    selectedMessage.uid < 0 &&
+    (selectedMessage.outbound_hold ?? 0) > 0
+  const isDraft =
+    selectedMessage != null &&
+    selectedMessage.uid < 0 &&
+    (mailView === "drafts" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
 
@@ -154,6 +164,19 @@ export function MessageViewer(props: Props) {
               >
                 <RotateCcw className="h-4 w-4" />
                 Wiederherstellen
+              </Button>
+            ) : null}
+            {isDraft ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                className="gap-2"
+                onClick={() =>
+                  setComposeIntent({ mode: "draft", messageId: selectedMessage.id })
+                }
+              >
+                Bearbeiten
               </Button>
             ) : null}
             {selectedMessage.uid >= 0 && !inTrash ? (
@@ -265,6 +288,18 @@ export function MessageViewer(props: Props) {
                   <h2 className="text-xl font-semibold leading-tight tracking-tight">
                     {selectedMessage.subject || "(Ohne Betreff)"}
                   </h2>
+                  {isOutboundHeld ? (
+                    <div
+                      role="alert"
+                      className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
+                    >
+                      <p className="font-semibold">Ausgangsprüfung — Versand blockiert</p>
+                      <p className="mt-1 text-[13px] leading-snug">
+                        {selectedMessage.outbound_block_reason ||
+                          "Die E-Mail entspricht nicht den Prüfkriterien. Bitte korrigieren und erneut senden."}
+                      </p>
+                    </div>
+                  ) : null}
                   {selectedMessage.archived ? (
                     <span className="inline-block rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-700 dark:text-amber-400">
                       Archiviert

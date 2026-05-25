@@ -2,9 +2,12 @@ import {
   addMessageTag,
   setMessageArchived,
   setMessageSeenLocal,
+  setMessageSpam,
+  setMessageAssignedTo,
   setOutboundHold,
   getEmailAccountById,
 } from '../../email/email-store';
+import { evaluateSenderFilter } from '../sender-filter';
 import { assignCategoryPathToMessage } from '../../email/email-crm-store';
 import { sendSmtpForAccount } from '../../email/email-smtp';
 import { syncSeenFlagToServer } from '../../email/email-imap-flags';
@@ -166,6 +169,106 @@ export function registerEmailNodes(register: Reg): void {
         bodyText: body,
       });
       return { status: 'ok', variables: { 'draft.id': id } };
+    },
+  });
+
+  register({
+    type: 'email.set_priority',
+    label: 'Priorität setzen',
+    category: 'email',
+    canvasType: 'registry',
+    description: 'Setzt Tags priority:hoch, priority:normal oder priority:niedrig für Sortierung/Filter.',
+    defaultConfig: { level: 'normal' },
+    execute: async (ctx, config) => {
+      const { messageId } = requireMessage(ctx);
+      const level = String(config.level ?? 'normal').toLowerCase();
+      const allowed = new Set(['hoch', 'high', 'normal', 'niedrig', 'low']);
+      if (!allowed.has(level)) {
+        return { status: 'error', message: 'level muss hoch, normal oder niedrig sein' };
+      }
+      const tag =
+        level === 'hoch' || level === 'high'
+          ? 'priority:hoch'
+          : level === 'niedrig' || level === 'low'
+            ? 'priority:niedrig'
+            : 'priority:normal';
+      if (!ctx.dryRun) addMessageTag(messageId, tag);
+      return { status: 'ok', variables: { 'email.priority': tag } };
+    },
+  });
+
+  register({
+    type: 'email.sender_filter',
+    label: 'Absender-Filter',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Whitelist/Blacklist und bekannte Absender (PayPal, Amazon, …) vor KI-Spam-Prüfung. Kanten: whitelist | blacklist | default.',
+    defaultConfig: {
+      useGlobalLists: true,
+      useBuiltinTrusted: true,
+      extraWhitelist: '',
+      extraBlacklist: '',
+    },
+    execute: async (ctx, config) => {
+      const from = ctx.strings.from_address ?? '';
+      const result = evaluateSenderFilter(from, {
+        useGlobalLists: config.useGlobalLists !== false,
+        useBuiltinTrusted: config.useBuiltinTrusted !== false,
+        extraWhitelist: String(config.extraWhitelist ?? ''),
+        extraBlacklist: String(config.extraBlacklist ?? ''),
+      });
+      return {
+        status: 'ok',
+        port: result,
+        variables: { 'sender.filter': result },
+      };
+    },
+  });
+
+  register({
+    type: 'email.mark_spam',
+    label: 'Als Spam markieren',
+    category: 'email',
+    canvasType: 'registry',
+    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false },
+    execute: async (ctx, config) => {
+      const { row, messageId } = requireMessage(ctx);
+      const spam = config.spam !== false;
+      const tag = String(config.tag ?? 'auto-spam').trim();
+      if (!ctx.dryRun) {
+        setMessageSpam(messageId, spam);
+        if (tag) addMessageTag(messageId, tag);
+        if (config.moveImap === true && spam) {
+          const { moveImapMessage } = await import('../../email/email-imap-move');
+          await moveImapMessage(row, 'Spam');
+        }
+      }
+      return { status: 'ok', variables: { 'email.is_spam': spam } };
+    },
+  });
+
+  register({
+    type: 'email.assign',
+    label: 'Mitarbeiter zuweisen',
+    category: 'email',
+    canvasType: 'registry',
+    defaultConfig: { teamMemberId: '' },
+    execute: async (ctx, config) => {
+      const { messageId } = requireMessage(ctx);
+      const raw = config.teamMemberId;
+      const teamMemberId =
+        raw === null || raw === undefined || raw === ''
+          ? null
+          : String(raw).trim();
+      if (teamMemberId !== null && !teamMemberId) {
+        return { status: 'error', message: 'teamMemberId leer' };
+      }
+      if (!ctx.dryRun) setMessageAssignedTo(messageId, teamMemberId);
+      return {
+        status: 'ok',
+        variables: { 'email.assigned_to': teamMemberId },
+      };
     },
   });
 

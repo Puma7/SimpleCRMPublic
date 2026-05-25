@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type CategoryRow, type CatCount } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
@@ -11,12 +12,15 @@ export function useEmailCategories() {
   const [categories, setCategories] = useState<CategoryRow[]>([])
   const [catCounts, setCatCounts] = useState<CatCount[]>([])
 
-  const loadCategories = useCallback(async (accountId: number) => {
+  const loadCategories = useCallback(async (accountScope: MailAccountScope) => {
     if (!hasElectron()) return
     try {
       const cats = await invokeIpc<CategoryRow[]>(IPCChannels.Email.ListCategories)
       setCategories(cats)
-      const counts = await invokeIpc<CatCount[]>(IPCChannels.Email.CategoryCounts, accountId)
+      const counts = await invokeIpc<CatCount[]>(
+        IPCChannels.Email.CategoryCounts,
+        accountScope,
+      )
       setCatCounts(counts)
     } catch (e) {
       logError("use-email-categories: load", e)

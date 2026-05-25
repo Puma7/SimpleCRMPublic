@@ -100,6 +100,31 @@ export function getMessageCategoryId(messageId: number): number | null {
   return row?.category_id ?? null;
 }
 
+export function listCategoryCountsForMailScope(
+  accountScope: number | 'all',
+): { categoryId: number; count: number }[] {
+  if (accountScope === 'all') {
+    return listCategoryCountsForAllAccounts();
+  }
+  return listCategoryCountsForAccount(accountScope);
+}
+
+/** Inbox messages per category summed across all accounts. */
+export function listCategoryCountsForAllAccounts(): { categoryId: number; count: number }[] {
+  return getDb()
+    .prepare(
+      `SELECT mc.category_id AS categoryId, COUNT(*) AS count
+       FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc
+       INNER JOIN ${EMAIL_MESSAGES_TABLE} m ON m.id = mc.message_id
+       WHERE m.soft_deleted = 0
+         AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '')
+         AND m.archived = 0 AND m.is_spam = 0
+         AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
+       GROUP BY mc.category_id`,
+    )
+    .all() as { categoryId: number; count: number }[];
+}
+
 export function listCategoryCountsForAccount(accountId: number): { categoryId: number; count: number }[] {
   const rows = getDb()
     .prepare(
@@ -233,11 +258,48 @@ function ftsMatchExpression(raw: string): string | null {
   return tokens.join(' AND ');
 }
 
-export function searchMessagesForAccount(
-  accountId: number,
+function viewFilterClause(view: import('./email-store').AccountMailView): string {
+  const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
+  switch (view) {
+    case 'trash':
+      return 'm.soft_deleted = 1';
+    case 'archived':
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.archived = 1 AND m.is_spam = 0`;
+    case 'spam':
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.is_spam = 1`;
+    case 'sent':
+      return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
+    case 'drafts':
+      return `m.soft_deleted = 0 AND m.folder_kind = 'draft'`;
+    case 'inbox':
+      return `m.soft_deleted = 0 AND (
+        (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0)
+        OR ${outboundHeldInInbox}
+      )`;
+    default:
+      return 'm.soft_deleted = 0';
+  }
+}
+
+export function searchMessagesForMailScope(
+  accountScope: number | 'all',
   q: string,
   limit = 100,
+  view?: import('./email-store').AccountMailView,
 ): import('./email-store').EmailMessageRow[] {
+  if (accountScope === 'all') {
+    return searchMessagesForAllAccounts(q, limit, view);
+  }
+  return searchMessagesForAccount(accountScope, q, limit, view);
+}
+
+export function searchMessagesForAllAccounts(
+  q: string,
+  limit = 100,
+  view?: import('./email-store').AccountMailView,
+): import('./email-store').EmailMessageRow[] {
+  const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
   const fts = ftsMatchExpression(q);
   if (fts) {
     const ftsTable = getDb()
@@ -249,7 +311,50 @@ export function searchMessagesForAccount(
           .prepare(
             `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-             WHERE m.account_id = ? AND m.soft_deleted = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
+             WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+             AND fts MATCH ?
+             ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+             LIMIT ?`,
+          )
+          .all(fts, limit) as import('./email-store').EmailMessageRow[];
+      } catch {
+        /* FTS fallback */
+      }
+    }
+  }
+  const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
+  return getDb()
+    .prepare(
+      `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+       WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+       AND (
+         m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
+       )
+       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+       LIMIT ?`,
+    )
+    .all(term, term, term, limit) as import('./email-store').EmailMessageRow[];
+}
+
+export function searchMessagesForAccount(
+  accountId: number,
+  q: string,
+  limit = 100,
+  view?: import('./email-store').AccountMailView,
+): import('./email-store').EmailMessageRow[] {
+  const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
+  const fts = ftsMatchExpression(q);
+  if (fts) {
+    const ftsTable = getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
+    if (ftsTable) {
+      try {
+        return getDb()
+          .prepare(
+            `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+             INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
+             WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
              AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ?`,
@@ -260,12 +365,12 @@ export function searchMessagesForAccount(
       }
     }
   }
-  const term = `%${q.trim().replace(/%/g, '\\%')}%`;
+  const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        INNER JOIN ${EMAIL_FOLDERS_TABLE} f ON f.id = m.folder_id
-       WHERE m.account_id = ? AND m.soft_deleted = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
+       WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
        AND (
          m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
        )

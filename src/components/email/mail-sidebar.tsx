@@ -103,8 +103,18 @@ export function MailSidebar({
           Konto
         </label>
         <Select
-          value={selectedAccountId != null ? String(selectedAccountId) : ""}
-          onValueChange={(v) => setSelectedAccountId(v ? parseInt(v, 10) : null)}
+          value={
+            selectedAccountId === "all"
+              ? "all"
+              : selectedAccountId != null
+                ? String(selectedAccountId)
+                : ""
+          }
+          onValueChange={(v) => {
+            if (!v) setSelectedAccountId(null)
+            else if (v === "all") setSelectedAccountId("all")
+            else setSelectedAccountId(parseInt(v, 10))
+          }}
           disabled={loadingAccounts || accounts.length === 0}
         >
           <SelectTrigger className="h-9">
@@ -119,6 +129,9 @@ export function MailSidebar({
             />
           </SelectTrigger>
           <SelectContent>
+            {accounts.length > 1 ? (
+              <SelectItem value="all">Alle Konten</SelectItem>
+            ) : null}
             {accounts.map((a) => (
               <SelectItem key={a.id} value={String(a.id)}>
                 {a.display_name}

@@ -39,8 +39,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useDefaultLayout } from "react-resizable-panels"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { hasElectron, invokeIpc } from "../types"
+import { useHasElectron } from "../use-has-electron"
 import { logError } from "../log"
 import { WorkflowList, type WorkflowRow } from "./workflow-list"
 import { NodePalette } from "./node-palette"
@@ -73,20 +75,16 @@ type FullWorkflowRow = WorkflowRow & {
   updated_at: string
 }
 
-const EMPTY_DEF = `{
-  "version": 1,
-  "rules": [
-    {
-      "when": {
-        "field": "subject",
-        "op": "contains",
-        "value": "Beispiel",
-        "caseInsensitive": true
-      },
-      "then": [{ "type": "tag", "tag": "Beispiel" }]
-    }
-  ]
-}`
+/** Leerer Graph-Start — Nutzer baut modular aus Palette-Knoten (kein festes Regelprogramm). */
+const BLANK_INBOUND_GRAPH = {
+  version: 1 as const,
+  nodes: [{ id: "trigger-1", type: "trigger" as const, data: { kind: "inbound" as const } }],
+  edges: [] as { id: string; source: string; target: string; label?: string }[],
+}
+
+const EMPTY_DEF = `{"version":1,"rules":[]}`
+
+const WORKFLOW_PANE_IDS = ["workflow-list", "workflow-canvas", "workflow-props"] as const
 
 function triggerFromGraph(doc: WorkflowGraphDocument): string {
   const t = doc.nodes.find((n) => n.type === "trigger")
@@ -97,6 +95,11 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 }
 
 export function WorkflowShell() {
+  const electronReady = useHasElectron()
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "email-workflow-panes",
+    panelIds: [...WORKFLOW_PANE_IDS],
+  })
   const [rows, setRows] = useState<FullWorkflowRow[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -115,9 +118,25 @@ export function WorkflowShell() {
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [triggerFilter, setTriggerFilter] = useState<
+    "all" | "inbound" | "outbound" | "other"
+  >("all")
 
   const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
+
+  const filteredRows = useMemo(() => {
+    if (triggerFilter === "all") return rows
+    if (triggerFilter === "inbound") {
+      return rows.filter((w) => w.trigger === "inbound" || w.trigger === "draft_created")
+    }
+    if (triggerFilter === "outbound") {
+      return rows.filter((w) => w.trigger === "outbound")
+    }
+    return rows.filter(
+      (w) => !["inbound", "outbound", "draft_created"].includes(w.trigger),
+    )
+  }, [rows, triggerFilter])
 
   const triggerKindDisplay = useMemo(() => {
     const triggerNode = graphNodes.find((n) => n.type === "trigger")
@@ -197,6 +216,7 @@ export function WorkflowShell() {
           trigger: "inbound",
           priority: 100,
           definitionJson: EMPTY_DEF,
+          graphJson: JSON.stringify(BLANK_INBOUND_GRAPH),
           enabled: true,
         },
       )
@@ -224,13 +244,18 @@ export function WorkflowShell() {
     setSaving(true)
     try {
       const graphDoc = useWorkflowEditorStore.getState().toGraphDocument()
+      const hasNodes = graphDoc.nodes.length > 0
       const compiled = await invokeIpc<{
         success: boolean
         definitionJson?: string
         error?: string
+        registryOnly?: boolean
       }>(IPCChannels.Email.CompileWorkflowGraph, graphDoc)
-      if (!compiled.success || !compiled.definitionJson) {
+      if (!compiled.success) {
         throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
+      }
+      if (!hasNodes) {
+        throw new Error("Workflow braucht mindestens einen Trigger-Knoten.")
       }
       const trig = triggerFromGraph(graphDoc) || "inbound"
       if (selectedId != null) {
@@ -244,13 +269,13 @@ export function WorkflowShell() {
         name: editName.trim(),
         trigger: trig,
         priority: parseInt(editPriority, 10) || 100,
-        definitionJson: compiled.definitionJson,
+        definitionJson: compiled.definitionJson ?? EMPTY_DEF,
         graphJson: JSON.stringify(graphDoc),
         cronExpr: editCron.trim() || null,
         scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
         enabled: editEnabled,
       })
-      setEditJson(compiled.definitionJson)
+      setEditJson(compiled.definitionJson ?? EMPTY_DEF)
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
@@ -337,7 +362,7 @@ export function WorkflowShell() {
     }
   }
 
-  if (!hasElectron()) {
+  if (!electronReady) {
     return (
       <div className="container max-w-2xl py-10">
         <Card>
@@ -521,7 +546,7 @@ export function WorkflowShell() {
                         )
                       }
                     >
-                      <option value="">— keins (nur Log) —</option>
+                      <option value="">— keins (nur Graph-Lauf) —</option>
                       {accounts.map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.display_name}
@@ -575,6 +600,52 @@ export function WorkflowShell() {
                       </Button>
                     )
                   })()}
+                  {(() => {
+                    const row = rows.find((w) => w.id === selectedId)
+                    const trig = row?.trigger ?? "inbound"
+                    const needsMsg = trig === "inbound" || trig === "outbound" || trig === "draft_created"
+                    const trimmed = testMessageId.trim()
+                    const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
+                    const msgOk =
+                      !needsMsg ||
+                      (trimmed.length > 0 && Number.isFinite(parsedId) && parsedId > 0)
+                    return (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        disabled={selectedId == null || !msgOk}
+                        onClick={async () => {
+                          if (selectedId == null) return
+                          const r = await invokeIpc<{
+                            success: boolean
+                            status?: string
+                            blocked?: boolean
+                            blockReason?: string | null
+                            log?: string[]
+                            error?: string
+                          }>(IPCChannels.Email.ExecuteWorkflowNow, {
+                            workflowId: selectedId,
+                            messageId: needsMsg ? parsedId : undefined,
+                            dryRun: false,
+                          })
+                          if (!r.success) {
+                            toast.error(r.error ?? "Ausführung fehlgeschlagen")
+                            return
+                          }
+                          if (r.blocked) {
+                            toast.warning(r.blockReason ?? "Workflow blockiert")
+                          } else {
+                            toast.success(
+                              `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
+                            )
+                          }
+                        }}
+                      >
+                        Jetzt ausführen
+                      </Button>
+                    )
+                  })()}
                   <Button
                     type="button"
                     size="sm"
@@ -603,18 +674,51 @@ export function WorkflowShell() {
         ) : null}
 
         <div className="flex min-h-0 flex-1">
-          <ResizablePanelGroup direction="horizontal" autoSaveId="email-workflow-panes">
-            <ResizablePanel defaultSize={18} minSize={14} maxSize={28}>
-              <WorkflowList
-                rows={rows}
-                selectedId={selectedId}
-                loading={loading}
-                onSelect={selectRowById}
-                onCreate={() => void handleCreate()}
-              />
+          <ResizablePanelGroup
+            direction="horizontal"
+            id="email-workflow-panes"
+            defaultLayout={defaultLayout}
+            onLayoutChanged={onLayoutChanged}
+          >
+            <ResizablePanel
+              id={WORKFLOW_PANE_IDS[0]}
+              defaultSize="20%"
+              minSize="14%"
+              maxSize="30%"
+            >
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 gap-1 border-b p-2">
+                  {(
+                    [
+                      ["all", "Alle"],
+                      ["inbound", "Eingehend"],
+                      ["outbound", "Ausgehend"],
+                      ["other", "Sonstige"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <Button
+                      key={id}
+                      type="button"
+                      size="sm"
+                      variant={triggerFilter === id ? "default" : "outline"}
+                      className="h-7 flex-1 px-1 text-xs"
+                      onClick={() => setTriggerFilter(id)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+                <WorkflowList
+                  rows={filteredRows}
+                  selectedId={selectedId}
+                  loading={loading}
+                  onSelect={selectRowById}
+                  onCreate={() => void handleCreate()}
+                />
+              </div>
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize={58}>
+            <ResizablePanel id={WORKFLOW_PANE_IDS[1]} defaultSize="55%">
               <div className="relative h-full w-full">
                 {selectedId == null ? (
                   <div className="flex h-full items-center justify-center p-6 text-center">
@@ -641,7 +745,11 @@ export function WorkflowShell() {
               </div>
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize={24} minSize={18}>
+            <ResizablePanel
+              id={WORKFLOW_PANE_IDS[2]}
+              defaultSize="25%"
+              minSize="18%"
+            >
               {selectedId != null ? (
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">

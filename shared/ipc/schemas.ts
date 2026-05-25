@@ -1,5 +1,6 @@
 import { z, ZodTypeAny } from 'zod';
 import { AllowedInvokeChannels, DeprecatedInvokeChannels, IPCChannels, InvokeChannel } from './channels';
+import { applyEmailIpcSchemas } from './email-schemas';
 
 type SchemaEntry = {
   payload: ZodTypeAny;
@@ -462,6 +463,8 @@ baseSchemaMap.set(IPCChannels.FollowUp.DeleteSavedView, {
   payload: z.number().int().positive(),
   result: z.any(),
 });
+
+applyEmailIpcSchemas(baseSchemaMap);
 
 export const IpcSchemas: Record<InvokeChannel, SchemaEntry> = Object.fromEntries(
   Array.from(baseSchemaMap.entries())

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
+import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
@@ -37,20 +38,21 @@ export function useEmailMessages() {
   }, [searchQuery])
 
   const loadMessages = useCallback(
-    async (accountId: number, view: MailView, catId: number | null, query: string) => {
+    async (accountScope: MailAccountScope, view: MailView, catId: number | null, query: string) => {
       if (!hasElectron()) return
       setLoadingMessages(true)
       try {
         let list: EmailMessage[]
         if (query.trim() && view !== "trash") {
           list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.SearchMessages, {
-            accountId,
+            accountId: accountScope,
             query: query.trim(),
             limit: 150,
+            view,
           })
         } else {
           list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.ListMessagesByView, {
-            accountId,
+            accountId: accountScope,
             view,
             limit: 250,
             categoryId: view === "inbox" ? catId : null,
@@ -128,21 +130,32 @@ export function useEmailMessages() {
       if (!hasElectron() || selectedAccountId == null) return
       setSyncing(true)
       try {
-        const result = await invokeIpc<{
-          success: boolean
-          fetched?: number
-          error?: string
-        }>(IPCChannels.Email.SyncAccount, selectedAccountId)
-        if (result.success) {
-          toast.success(
-            `Synchronisation abgeschlossen (${result.fetched ?? 0} neue/aktualisierte Nachrichten).`,
-          )
-          await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
-          // Preserve parity with old page.tsx:388-389 — also refresh category counts.
-          if (opts?.onAfterSync) {
-            await opts.onAfterSync(selectedAccountId)
+        const accountIds =
+          selectedAccountId === "all"
+            ? (await invokeIpc<{ id: number }[]>(IPCChannels.Email.ListAccounts)).map((a) => a.id)
+            : [selectedAccountId]
+        let totalFetched = 0
+        let hadError = false
+        for (const accountId of accountIds) {
+          const result = await invokeIpc<{
+            success: boolean
+            fetched?: number
+            error?: string
+          }>(IPCChannels.Email.SyncAccount, accountId)
+          if (result.success) {
+            totalFetched += result.fetched ?? 0
+            if (opts?.onAfterSync) await opts.onAfterSync(accountId)
+          } else {
+            hadError = true
+            toast.error(result.error ?? `Sync fehlgeschlagen (Konto ${accountId}).`)
           }
-        } else toast.error(result.error ?? "Sync fehlgeschlagen.")
+        }
+        if (!hadError) {
+          toast.success(
+            `Synchronisation abgeschlossen (${totalFetched} neue/aktualisierte Nachrichten).`,
+          )
+        }
+        await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Sync fehlgeschlagen.")
       } finally {

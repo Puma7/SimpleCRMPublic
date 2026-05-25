@@ -1,13 +1,63 @@
 /** Shared helpers for IMAP/POP3 mail parsing (DRY). */
 
-export function addressJson(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null;
+export type CanonicalAddressJson = {
+  value: { address: string; name?: string }[];
+};
+
+/** Normalize mailparser / stored JSON to `{ value: [{ address, name? }] }`. */
+export function normalizeAddressJson(value: unknown): CanonicalAddressJson | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string') {
+    try {
+      return normalizeAddressJson(JSON.parse(value) as unknown);
+    } catch {
+      return null;
+    }
   }
+  if (Array.isArray(value)) {
+    const valueArr = value
+      .map((entry) => {
+        if (typeof entry === 'string' && entry.includes('@')) {
+          return { address: entry.trim().toLowerCase() };
+        }
+        if (entry && typeof entry === 'object' && 'address' in entry) {
+          const addr = String((entry as { address?: string }).address ?? '').trim();
+          if (!addr.includes('@')) return null;
+          const name = (entry as { name?: string }).name;
+          return name ? { address: addr, name: String(name) } : { address: addr };
+        }
+        return null;
+      })
+      .filter((x): x is { address: string; name?: string } => x != null);
+    return valueArr.length > 0 ? { value: valueArr } : null;
+  }
+  if (typeof value === 'object' && value !== null && 'value' in value) {
+    const inner = (value as { value?: unknown }).value;
+    if (Array.isArray(inner)) {
+      return normalizeAddressJson(inner);
+    }
+  }
+  return null;
+}
+
+export function addressJson(value: unknown): string | null {
+  const canonical = normalizeAddressJson(value);
+  if (!canonical) return null;
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(canonical);
   } catch {
     return null;
+  }
+}
+
+/** Comma-separated addresses for workflow context / SMTP display. */
+export function addressesFromRecipientJson(json: string | null): string {
+  if (!json) return '';
+  try {
+    const canonical = normalizeAddressJson(JSON.parse(json) as unknown);
+    return canonical?.value.map((v) => v.address).filter(Boolean).join(', ') ?? '';
+  } catch {
+    return '';
   }
 }
 

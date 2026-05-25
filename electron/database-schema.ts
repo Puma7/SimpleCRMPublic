@@ -31,6 +31,7 @@ export const EMAIL_INTERNAL_NOTES_TABLE = 'email_internal_notes';
 export const EMAIL_CANNED_RESPONSES_TABLE = 'email_canned_responses';
 export const EMAIL_AI_PROMPTS_TABLE = 'email_ai_prompts';
 export const EMAIL_TEAM_MEMBERS_TABLE = 'email_team_members';
+export const EMAIL_ACCOUNT_SIGNATURES_TABLE = 'email_account_signatures';
 export const EMAIL_MESSAGE_ATTACHMENTS_TABLE = 'email_message_attachments';
 export const EMAIL_MESSAGES_FTS_TABLE = 'email_messages_fts';
 export const EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE = 'email_workflow_forward_dedup';
@@ -413,8 +414,37 @@ export const createEmailTeamMembersTable = `
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'agent',
+    signature_html TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+/** Per-mail-account HTML footer for compose (multi-shop). */
+export const createEmailAccountSignaturesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_ACCOUNT_SIGNATURES_TABLE} (
+    account_id INTEGER PRIMARY KEY,
+    signature_html TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const EMAIL_AI_PROFILES_TABLE = 'email_ai_profiles';
+
+export const createEmailAiProfilesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_AI_PROFILES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'custom',
+    base_url TEXT NOT NULL,
+    model TEXT NOT NULL,
+    embedding_model TEXT,
+    keytar_account TEXT NOT NULL UNIQUE,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `;
 

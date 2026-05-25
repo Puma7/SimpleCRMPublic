@@ -4,8 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import DOMPurify from "dompurify"
-import ReactQuill from "react-quill"
-import "react-quill/dist/quill.snow.css"
+import { ComposeQuillEditor } from "./compose-quill-editor"
 import { validateRecipientField } from "@shared/email-recipient-parse"
 import { Loader2, Paperclip, X } from "lucide-react"
 import {
@@ -25,9 +24,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import {
   applyCannedTemplate,
   firstAddress,
+  type EmailAccount,
   formatFrom,
   hasElectron,
   invokeIpc,
@@ -41,6 +42,7 @@ import { logError } from "./log"
 import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 
 type Props = {
+  accounts: EmailAccount[]
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
   customers: CustomerOpt[]
@@ -51,9 +53,15 @@ function sanitizeComposeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
 }
 
-export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Props) {
-  const { composeIntent, setComposeIntent, selectedAccountId, selectedMessage } =
-    useMailWorkspace()
+export function ComposeDialog({ accounts, cannedList, aiPrompts, customers, onSent }: Props) {
+  const {
+    composeIntent,
+    setComposeIntent,
+    selectedAccountId,
+    selectedMessage,
+    setMailView,
+    setSelectedMessage,
+  } = useMailWorkspace()
 
   const isOpen = composeIntent.mode !== "closed"
 
@@ -64,13 +72,16 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
   const [subject, setSubject] = useState("")
   const [bodyHtml, setBodyHtml] = useState("")
   const [sending, setSending] = useState(false)
+  const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
+  /** Resolved SMTP account for the open draft (never "all"). */
+  const [composeAccountId, setComposeAccountId] = useState<number | null>(null)
 
   // Track which composeIntent the dialog has initialised for.
   // Re-init when the intent actually changes (user clicks Reply on another mail),
   // but NOT when unrelated context values (e.g. selectedAccountId) change while
   // the dialog is open — that would clobber typed content.
-  const initialisedForIntentRef = useRef<ComposeIntent | null>(null)
+  const initialisedDraftKeyRef = useRef<string | null>(null)
   // Guards against Radix firing onOpenChange(false) multiple times (e.g. rapid
   // ESC, or close-button double-click) which could otherwise kick off two
   // parallel saveDraft → closeDialog chains with stale closures.
@@ -78,13 +89,26 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
 
   useEffect(() => {
     if (!isOpen) {
-      initialisedForIntentRef.current = null
+      initialisedDraftKeyRef.current = null
       return
     }
-    if (initialisedForIntentRef.current === composeIntent) return
-    if (!hasElectron() || selectedAccountId == null) return
-    initialisedForIntentRef.current = composeIntent
-    const accountIdAtOpen = selectedAccountId
+    let messageAccountId: number | undefined
+    if (composeIntent.mode === "reply" || composeIntent.mode === "forward") {
+      messageAccountId = composeIntent.message.account_id
+    }
+    const resolvedAccountId = resolveComposeAccountId(selectedAccountId, {
+      messageAccountId,
+      firstAccountId: accounts[0]?.id,
+    })
+    const accountIdAtOpen =
+      composeIntent.mode === "new" && composeAccountId != null
+        ? composeAccountId
+        : resolvedAccountId
+    const draftInitKey = `${composeIntent.mode}:${accountIdAtOpen ?? ""}:${composeIntent.mode === "draft" ? composeIntent.messageId : ""}`
+    if (initialisedDraftKeyRef.current === draftInitKey) return
+    if (!hasElectron() || accountIdAtOpen == null) return
+    setComposeAccountId(accountIdAtOpen)
+    initialisedDraftKeyRef.current = draftInitKey
     let cancelled = false
     void (async () => {
       try {
@@ -96,6 +120,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             composeIntent.messageId,
           )
           if (cancelled || !existing) return
+          setComposeAccountId(existing.account_id)
           setTo("")
           setCc("")
           setSubject(existing.subject ?? "")
@@ -138,6 +163,14 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             ).trim()}`
           : ""
 
+        const sigRes = await invokeIpc<{ html: string | null }>(
+          IPCChannels.Email.GetComposeSignature,
+          { accountId: accountIdAtOpen },
+        )
+        const sigHtml =
+          composeIntent.mode === "new" && sigRes.html
+            ? sanitizeComposeHtml(sigRes.html)
+            : ""
         const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateComposeDraft, {
           accountId: accountIdAtOpen,
           subject: subj,
@@ -152,10 +185,13 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
           setTo(toAddr)
           setCc("")
           setSubject(subj)
+          const bodyPart = quoted
+            ? sanitizeComposeHtml(`<p>${quoted.replace(/\n/g, "<br/>")}</p>`)
+            : ""
           setBodyHtml(
-            quoted
-              ? sanitizeComposeHtml(`<p>${quoted.replace(/\n/g, "<br/>")}</p>`)
-              : "",
+            bodyPart && sigHtml
+              ? `${bodyPart}<br/><br/>${sigHtml}`
+              : bodyPart || sigHtml,
           )
         }
       } catch (e) {
@@ -165,10 +201,11 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, composeAccountId])
 
   const closeDialog = () => {
     setComposeIntent({ mode: "closed" })
+    setComposeAccountId(null)
     setDraftId(null)
     setReplyToId(null)
     setTo("")
@@ -206,8 +243,43 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
     }
   }
 
+  const handleCheckOutbound = async () => {
+    if (!hasElectron() || draftId == null) return
+    setCheckingOutbound(true)
+    try {
+      await saveDraft()
+      const safeHtml = sanitizeComposeHtml(bodyHtml)
+      const plain = stripHtmlToText(safeHtml)
+      const r = await invokeIpc<{ success: boolean; allowed?: boolean; reason?: string | null }>(
+        IPCChannels.Email.ValidateOutbound,
+        {
+          messageId: draftId,
+          subject,
+          bodyText: plain,
+          bodyHtml: safeHtml || undefined,
+          to,
+          cc: cc || undefined,
+          attachmentCount: attachmentPaths.length,
+        },
+      )
+      if (!r.success) {
+        toast.error("Ausgangsprüfung fehlgeschlagen")
+        return
+      }
+      if (r.allowed) {
+        toast.success("Ausgangsprüfung: OK — Versand erlaubt.")
+      } else {
+        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")
+    } finally {
+      setCheckingOutbound(false)
+    }
+  }
+
   const handleSend = async () => {
-    if (!hasElectron() || draftId == null || selectedAccountId == null) return
+    if (!hasElectron() || draftId == null || composeAccountId == null) return
     const toCheck = validateRecipientField(to, "An")
     if (!toCheck.ok) {
       toast.error(toCheck.error)
@@ -228,7 +300,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
       const r = await invokeIpc<{ success: boolean; error?: string }>(
         IPCChannels.Email.SendCompose,
         {
-          accountId: selectedAccountId,
+          accountId: composeAccountId,
           draftMessageId: draftId,
           subject,
           bodyText: plain,
@@ -240,7 +312,24 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
         },
       )
       if (!r.success) {
-        toast.error(r.error ?? "Versand fehlgeschlagen")
+        const blocked = (r.error ?? "").length > 0
+        if (blocked) {
+          toast.warning(r.error ?? "Versand durch Ausgangsprüfung blockiert")
+          closeDialog()
+          setMailView("inbox")
+          await onSent()
+          try {
+            const full = await invokeIpc<EmailMessage | null>(
+              IPCChannels.Email.GetMessage,
+              draftId,
+            )
+            if (full) setSelectedMessage(full)
+          } catch (e) {
+            logError("compose-dialog: load blocked draft", e)
+          }
+        } else {
+          toast.error("Versand fehlgeschlagen")
+        }
         return
       }
       toast.success("E-Mail gesendet.")
@@ -341,6 +430,33 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             </Select>
           </div>
 
+          {accounts.length > 1 && composeIntent.mode === "new" && composeAccountId != null ? (
+            <div className="grid grid-cols-[60px_1fr] items-center gap-x-3">
+              <Label className="justify-self-end text-xs text-muted-foreground">Von</Label>
+              <Select
+                value={String(composeAccountId)}
+                onValueChange={(v) => {
+                  const id = parseInt(v, 10)
+                  if (!Number.isFinite(id)) return
+                  setComposeAccountId(id)
+                  setDraftId(null)
+                  initialisedDraftKeyRef.current = null
+                }}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Konto" />
+                </SelectTrigger>
+                <SelectContent>
+                  {accounts.map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>
+                      {a.display_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
           <div className="grid grid-cols-[60px_1fr] items-center gap-x-3 gap-y-2">
             <Label className="justify-self-end text-xs text-muted-foreground">An</Label>
             <Input
@@ -364,8 +480,8 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             />
           </div>
 
-          <div className="[&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-toolbar]:rounded-t-md rounded-md border bg-background">
-            <ReactQuill theme="snow" value={bodyHtml} onChange={setBodyHtml} />
+          <div className="compose-quill rounded-md border bg-background [&_.ql-container]:min-h-[260px] [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:min-h-[240px] [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted">
+            <ComposeQuillEditor value={bodyHtml} onChange={setBodyHtml} />
           </div>
 
           <div className="space-y-2">
@@ -425,6 +541,15 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             onClick={() => void saveDraft().then(() => toast.success("Entwurf gespeichert"))}
           >
             Entwurf speichern
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={checkingOutbound || sending || draftId == null}
+            onClick={() => void handleCheckOutbound()}
+          >
+            {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Ausgang prüfen
           </Button>
           <Button type="button" onClick={() => void handleSend()} disabled={sending}>
             {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}

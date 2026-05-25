@@ -23,7 +23,19 @@ export type EmailAccount = {
   updated_at: string
 }
 
-export type TeamMember = { id: string; display_name: string; role: string }
+export type TeamMember = {
+  id: string
+  display_name: string
+  role: string
+  signature_html?: string | null
+}
+
+export type AccountSignature = {
+  account_id: number
+  display_name: string
+  email_address: string
+  signature_html: string | null
+}
 
 export type EmailMessage = {
   id: number
@@ -79,16 +91,32 @@ export type MessageAttachment = {
   content_type: string | null
 }
 
-export const hasElectron = (): boolean =>
-  typeof window !== "undefined" &&
-  !!(window as { electronAPI?: unknown }).electronAPI &&
-  typeof (window as { electronAPI?: { invoke?: unknown } }).electronAPI?.invoke === "function"
+type ElectronInvoke = (channel: string, ...args: unknown[]) => Promise<unknown>
 
-export const invokeIpc = <T,>(channel: string, ...args: unknown[]): Promise<T> =>
-  (window as { electronAPI: { invoke: (c: string, ...a: unknown[]) => Promise<T> } }).electronAPI.invoke(
-    channel,
-    ...args,
-  )
+function getElectronInvoke(): ElectronInvoke | null {
+  if (typeof window === "undefined") return null
+  const w = window as {
+    electronAPI?: { invoke?: ElectronInvoke }
+    electron?: { ipcRenderer?: { invoke?: ElectronInvoke } }
+  }
+  if (typeof w.electronAPI?.invoke === "function") {
+    return w.electronAPI.invoke.bind(w.electronAPI)
+  }
+  if (typeof w.electron?.ipcRenderer?.invoke === "function") {
+    return w.electron.ipcRenderer.invoke.bind(w.electron.ipcRenderer)
+  }
+  return null
+}
+
+export const hasElectron = (): boolean => getElectronInvoke() != null
+
+export const invokeIpc = <T,>(channel: string, ...args: unknown[]): Promise<T> => {
+  const invoke = getElectronInvoke()
+  if (!invoke) {
+    return Promise.reject(new Error(`Electron API not available for '${channel}'`))
+  }
+  return invoke(channel, ...args) as Promise<T>
+}
 
 export function stripHtmlToText(html: string): string {
   return html

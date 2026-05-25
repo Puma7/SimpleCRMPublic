@@ -24,6 +24,7 @@ import {
   parseWorkflowDefinition,
 } from './email-workflow-types';
 import { listAiPrompts } from './email-crm-store';
+import { addressesFromRecipientJson } from './email-parse-utils';
 import { runChatCompletion } from './email-openai';
 import { sendSmtpForAccount } from './email-smtp';
 
@@ -34,16 +35,29 @@ export type OutboundDraftPayload = {
   bodyHtml?: string;
   to: string;
   cc?: string;
+  inReplyToMessageId?: number | null;
+  attachmentCount?: number;
 };
 
+export function outboundPayloadFromMessage(
+  row: EmailMessageRow,
+  opts: { attachmentCount?: number } = {},
+): OutboundDraftPayload {
+  const to = extractAddressList(row.to_json);
+  const cc = extractAddressList(row.cc_json);
+  return {
+    messageId: row.id,
+    subject: row.subject ?? '',
+    bodyText: row.body_text ?? '',
+    bodyHtml: row.body_html ?? undefined,
+    to,
+    cc: cc || undefined,
+    attachmentCount: opts.attachmentCount ?? 0,
+  };
+}
+
 function extractAddressList(json: string | null): string {
-  if (!json) return '';
-  try {
-    const parsed = JSON.parse(json) as { value?: { address?: string }[] };
-    return parsed?.value?.map((v) => v.address ?? '').filter(Boolean).join(', ') ?? '';
-  } catch {
-    return '';
-  }
+  return addressesFromRecipientJson(json);
 }
 
 function buildInboundContext(row: EmailMessageRow) {
@@ -297,13 +311,15 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
   const workflows = listWorkflowsByTrigger('inbound');
   for (const wf of workflows) {
     if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    let markApplied = false;
     try {
-      await executeWorkflowForTrigger({
+      const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: 'inbound',
         direction: 'inbound',
         message: row,
       });
+      if (r.status === 'ok') markApplied = true;
     } catch (e) {
       insertWorkflowRun({
         workflowId: wf.id,
@@ -313,7 +329,7 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    markWorkflowAppliedToMessage(messageId, wf.id);
+    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
 }
 
@@ -325,13 +341,15 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   const workflows = listWorkflowsByTrigger('draft_created');
   for (const wf of workflows) {
     if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    let markApplied = false;
     try {
-      await executeWorkflowForTrigger({
+      const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: 'draft_created',
         direction: 'draft_created',
         message: row,
       });
+      if (r.status === 'ok') markApplied = true;
     } catch (e) {
       insertWorkflowRun({
         workflowId: wf.id,
@@ -341,23 +359,31 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    markWorkflowAppliedToMessage(messageId, wf.id);
+    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
 }
 
-export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): Promise<{
+export async function evaluateOutboundWorkflows(
+  payload: OutboundDraftPayload,
+  options?: { dryRun?: boolean },
+): Promise<{
   allowed: boolean;
   reason: string | null;
 }> {
+  const dryRun = options?.dryRun === true;
   if (!payload.messageId || payload.messageId <= 0) {
-    return { allowed: true, reason: null };
+    if (dryRun) return { allowed: true, reason: null };
+    return { allowed: false, reason: 'Kein gültiger Entwurf für die Ausgangsprüfung' };
   }
   const row = getEmailMessageById(payload.messageId);
   if (!row) {
-    return { allowed: true, reason: null };
+    if (dryRun) return { allowed: true, reason: null };
+    return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 
-  setOutboundHold(payload.messageId, false, null);
+  if (!dryRun) {
+    setOutboundHold(payload.messageId, false, null);
+  }
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = listWorkflowsByTrigger('outbound');
@@ -370,21 +396,26 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
         direction: 'outbound',
         message: row,
         outbound: payload,
+        dryRun,
       });
       if (r.blocked) {
-        const fresh = getEmailMessageById(payload.messageId);
         const reason =
-          fresh?.outbound_block_reason ||
           r.blockReason ||
           'Ausgehende Nachricht durch Workflow zurückgestellt. Bitte Text prüfen.';
+        if (!dryRun) {
+          const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+          returnOutboundDraftToInbox(payload.messageId, reason);
+        }
         return { allowed: false, reason };
       }
-      const checkHold = getEmailMessageById(payload.messageId);
-      if (checkHold?.outbound_hold) {
-        return {
-          allowed: false,
-          reason: checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.',
-        };
+      if (!dryRun) {
+        const checkHold = getEmailMessageById(payload.messageId);
+        if (checkHold?.outbound_hold) {
+          const reason = checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
+          const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+          returnOutboundDraftToInbox(payload.messageId, reason);
+          return { allowed: false, reason };
+        }
       }
       if (r.status === 'error') {
         parseOrEngineError = r.log.join('; ');
@@ -403,19 +434,26 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
   }
 
   if (parseOrEngineError) {
-    setOutboundHold(payload.messageId, true, `Workflow-Fehler: ${parseOrEngineError}`);
+    const reason = `Workflow-Fehler: ${parseOrEngineError}`;
+    if (!dryRun) {
+      setOutboundHold(payload.messageId, true, reason);
+      const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+      returnOutboundDraftToInbox(payload.messageId, reason);
+    }
     return {
       allowed: false,
       reason: 'Ausgehender Workflow fehlgeschlagen; Versand aus Sicherheitsgründen blockiert.',
     };
   }
 
-  const after = getEmailMessageById(payload.messageId);
-  if (after?.outbound_hold) {
-    return {
-      allowed: false,
-      reason: after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.',
-    };
+  if (!dryRun) {
+    const after = getEmailMessageById(payload.messageId);
+    if (after?.outbound_hold) {
+      const reason = after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
+      const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+      returnOutboundDraftToInbox(payload.messageId, reason);
+      return { allowed: false, reason };
+    }
   }
   return { allowed: true, reason: null };
 }
@@ -423,37 +461,60 @@ export async function evaluateOutboundWorkflows(payload: OutboundDraftPayload): 
 export async function runScheduledWorkflowFire(workflowId: number): Promise<void> {
   const { getWorkflowById } = await import('./email-workflow-store');
   const wf = getWorkflowById(workflowId);
-  const accounts = listEmailAccounts();
-  const log: string[] = [`scheduled_fire`, `accounts:${accounts.length}`];
-  let status: 'ok' | 'error' = 'ok';
-  if (wf?.schedule_account_id != null) {
+  if (!wf || wf.enabled !== 1) return;
+
+  const syncLog: string[] = [];
+  if (wf.schedule_account_id != null) {
     const accId = wf.schedule_account_id;
     try {
-      const { getEmailAccountById } = await import('./email-store');
       const acc = getEmailAccountById(accId);
       if (!acc) {
-        log.push(`sync_skip:no_account:${accId}`);
+        syncLog.push(`sync_skip:no_account:${accId}`);
       } else if ((acc.protocol || 'imap') === 'pop3') {
         const { syncInboxPop3 } = await import('./email-pop3-sync');
         const r = await syncInboxPop3(accId);
-        log.push(`pop3_fetched:${r.fetched}`);
+        syncLog.push(`pop3_fetched:${r.fetched}`);
       } else {
         const { syncInboxImap } = await import('./email-imap-sync');
         const r = await syncInboxImap(accId);
-        log.push(`imap_fetched:${r.fetched}`);
+        syncLog.push(`imap_fetched:${r.fetched}`);
       }
     } catch (e) {
-      status = 'error';
-      log.push(`sync_error:${e instanceof Error ? e.message : String(e)}`);
+      syncLog.push(`sync_error:${e instanceof Error ? e.message : String(e)}`);
     }
-  } else {
-    log.push('sync_skip:no_schedule_account');
   }
-  insertWorkflowRun({
-    workflowId,
-    messageId: null,
-    direction: 'schedule',
-    status,
-    logJson: JSON.stringify(log),
-  });
+
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
+  const trigger = (wf.trigger === 'schedule' ? 'schedule' : wf.trigger) as import('../../shared/workflow-types').WorkflowTriggerKind;
+  try {
+    await executeWorkflowForTrigger({
+      workflow: wf,
+      trigger,
+      direction: 'schedule',
+      message: null,
+      initialVariables: {
+        'schedule.sync_log': syncLog.join('; ') || 'ok',
+      },
+      eventStrings: {
+        subject: '',
+        body_text: '',
+        snippet: syncLog.join('\n'),
+        from_address: '',
+        to_address: '',
+        cc_address: '',
+        combined_text: syncLog.join('\n'),
+        has_attachments: 'false',
+        attachment_names: '',
+        attachment_types: '',
+      },
+    });
+  } catch (e) {
+    insertWorkflowRun({
+      workflowId,
+      messageId: null,
+      direction: 'schedule',
+      status: 'error',
+      logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`, ...syncLog]),
+    });
+  }
 }

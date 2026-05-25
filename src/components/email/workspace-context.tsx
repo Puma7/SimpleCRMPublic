@@ -11,6 +11,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react"
+import type { MailAccountScope } from "./account-scope"
 import type { EmailMessage, MailView } from "./types"
 
 export type ComposeIntent =
@@ -33,8 +34,12 @@ export type SettingsTab =
   | "export"
 
 type MailWorkspaceState = {
-  selectedAccountId: number | null
-  setSelectedAccountId: Dispatch<SetStateAction<number | null>>
+  /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
+  selectedAccountScope: MailAccountScope | null
+  setSelectedAccountScope: Dispatch<SetStateAction<MailAccountScope | null>>
+  /** @deprecated Alias — use selectedAccountScope */
+  selectedAccountId: MailAccountScope | null
+  setSelectedAccountId: Dispatch<SetStateAction<MailAccountScope | null>>
   mailView: MailView
   setMailView: Dispatch<SetStateAction<MailView>>
   categoryFilterId: number | null
@@ -120,10 +125,11 @@ const VALID_SETTINGS_TABS: SettingsTab[] = [
 ]
 
 export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
-  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(() =>
-    readLS<number | null>(
+  const [selectedAccountScope, setSelectedAccountScope] = useState<MailAccountScope | null>(() =>
+    readLS<MailAccountScope | null>(
       LS_KEYS.selectedAccountId,
       (raw) => {
+        if (raw === "all") return "all"
         const n = parseInt(raw, 10)
         return Number.isFinite(n) ? n : null
       },
@@ -168,8 +174,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
 
   // Persist the few slices that deserve it.
   useEffect(() => {
-    writeLS(LS_KEYS.selectedAccountId, selectedAccountId)
-  }, [selectedAccountId])
+    writeLS(LS_KEYS.selectedAccountId, selectedAccountScope)
+  }, [selectedAccountScope])
   useEffect(() => {
     writeLS(LS_KEYS.mailView, mailView)
   }, [mailView])
@@ -182,8 +188,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<MailWorkspaceState>(
     () => ({
-      selectedAccountId,
-      setSelectedAccountId,
+      selectedAccountScope,
+      setSelectedAccountScope,
+      selectedAccountId: selectedAccountScope,
+      setSelectedAccountId: setSelectedAccountScope,
       mailView,
       setMailView,
       categoryFilterId,
@@ -204,7 +212,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       bumpAccountsRevision,
     }),
     [
-      selectedAccountId,
+      selectedAccountScope,
       mailView,
       categoryFilterId,
       selectedMessage,

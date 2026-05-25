@@ -15,6 +15,27 @@ function extractAddressList(json: string | null): string {
   }
 }
 
+/** Metadata-only context for GDPR-conscious KI nodes (no body_text). */
+export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
+  const fromAddr = extractAddressList(row.from_json);
+  const toAddr = extractAddressList(row.to_json);
+  const ccAddr = extractAddressList(row.cc_json);
+  const sub = row.subject ?? '';
+  const snip = row.snippet ?? '';
+  const att = attachmentContextFromJson(row.attachments_json, row.has_attachments);
+  const metaCombined = [sub, snip, fromAddr, toAddr, ccAddr].join('\n');
+  return {
+    subject: sub,
+    body_text: '',
+    snippet: snip,
+    from_address: fromAddr,
+    to_address: toAddr,
+    cc_address: ccAddr,
+    combined_text: metaCombined,
+    ...att,
+  };
+}
+
 export function buildStringContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
   const fromAddr = extractAddressList(row.from_json);
   const toAddr = extractAddressList(row.to_json);
@@ -37,6 +58,7 @@ export function buildStringContextFromMessage(row: EmailMessageRow): WorkflowStr
 
 export function buildStringContextFromOutbound(payload: OutboundDraftPayload): WorkflowStringContext {
   const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const attCount = payload.attachmentCount ?? 0;
   return {
     subject: payload.subject,
     body_text: payload.bodyText,
@@ -44,8 +66,15 @@ export function buildStringContextFromOutbound(payload: OutboundDraftPayload): W
     from_address: '',
     to_address: payload.to,
     cc_address: payload.cc ?? '',
-    combined_text: [payload.subject, payload.bodyText, htmlPlain, payload.to, payload.cc ?? ''].join('\n'),
-    has_attachments: 'false',
+    combined_text: [
+      payload.subject,
+      payload.bodyText,
+      htmlPlain,
+      payload.to,
+      payload.cc ?? '',
+      `attachment_count:${attCount}`,
+    ].join('\n'),
+    has_attachments: attCount > 0 ? 'true' : 'false',
     attachment_names: '',
     attachment_types: '',
   };
@@ -95,6 +124,9 @@ export function createWorkflowContext(input: {
       vars['customer.name'] = c.name ?? '';
       vars['customer.email'] = c.email ?? '';
     }
+  }
+  if (outbound) {
+    vars['outbound.attachment_count'] = outbound.attachmentCount ?? 0;
   }
 
   return {

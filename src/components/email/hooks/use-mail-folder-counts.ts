@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
@@ -29,10 +30,13 @@ export function useMailFolderCounts() {
   const { selectedAccountId, accountsRevision, mailView } = useMailWorkspace()
   const [counts, setCounts] = useState<MailFolderCounts>(EMPTY)
 
-  const load = useCallback(async (accountId: number) => {
+  const load = useCallback(async (accountScope: MailAccountScope) => {
     if (!hasElectron()) return
     try {
-      const c = await invokeIpc<MailFolderCounts>(IPCChannels.Email.MailFolderCounts, accountId)
+      const c = await invokeIpc<MailFolderCounts>(
+        IPCChannels.Email.MailFolderCounts,
+        accountScope,
+      )
       setCounts(c)
     } catch {
       setCounts(EMPTY)

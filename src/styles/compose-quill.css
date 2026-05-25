@@ -1,0 +1,39 @@
+/* Quill snow defaults use fixed #fff / #444 — override for app theme tokens. */
+.compose-quill .ql-toolbar.ql-snow,
+.compose-quill .ql-container.ql-snow {
+  border-color: hsl(var(--border));
+}
+
+.compose-quill .ql-toolbar.ql-snow {
+  background-color: hsl(var(--muted));
+}
+
+.compose-quill .ql-container.ql-snow {
+  background-color: hsl(var(--background));
+}
+
+.compose-quill .ql-editor {
+  color: hsl(var(--foreground));
+}
+
+.compose-quill .ql-editor.ql-blank::before {
+  color: hsl(var(--muted-foreground));
+  font-style: normal;
+}
+
+.compose-quill .ql-snow .ql-stroke {
+  stroke: hsl(var(--foreground));
+}
+
+.compose-quill .ql-snow .ql-fill {
+  fill: hsl(var(--foreground));
+}
+
+.compose-quill .ql-snow .ql-picker {
+  color: hsl(var(--foreground));
+}
+
+.compose-quill .ql-snow .ql-picker-options {
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+}

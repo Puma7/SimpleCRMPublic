@@ -1,8 +1,22 @@
 import { listAiPrompts } from '../../email/email-crm-store';
 import { runChatCompletion } from '../../email/email-openai';
-import { addMessageTag, createComposeDraft, setOutboundHold } from '../../email/email-store';
+
+function profileIdFromConfig(config: Record<string, unknown>): number | null {
+  const v = config.profileId;
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+import {
+  addMessageTag,
+  createComposeDraft,
+  getEmailMessageById,
+  setOutboundHold,
+} from '../../email/email-store';
+import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
-import { interpolateTemplate } from '../context';
+import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
+import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
 import { searchKnowledgeChunks } from '../knowledge-base';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
 
@@ -27,23 +41,120 @@ export function registerAiNodes(register: Reg): void {
         const out = await runChatCompletion(
           'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Prüfauftrag problematisch ist.',
           user,
+          profileIdFromConfig(config),
         );
         ctx.ai.lastResponse = out;
         const blocked = out.toUpperCase().includes(blockKw.toUpperCase());
         if (blocked && ctx.direction === 'outbound') {
           const id = ctx.messageId ?? ctx.outbound?.messageId;
-          if (id != null) setOutboundHold(id, true, 'KI-Prüfung: Versand blockiert');
-          return { status: 'ok', blocked: true, blockReason: 'KI-Prüfung' };
+          const parsed = parseOutboundReviewResponse(out);
+          const reason = parsed.reason || 'KI-Prüfung: Versand blockiert';
+          if (!ctx.dryRun && id != null) setOutboundHold(id, true, reason);
+          return { status: 'ok', blocked: true, blockReason: reason };
         }
         if (blocked && ctx.messageId != null) addMessageTag(ctx.messageId, 'ki-review-block');
         return { status: 'ok' };
       } catch (e) {
         if (ctx.direction === 'outbound') {
           const id = ctx.messageId ?? ctx.outbound?.messageId;
-          if (id != null) setOutboundHold(id, true, 'KI-Fehler');
+          if (!ctx.dryRun && id != null) setOutboundHold(id, true, 'KI-Fehler');
           return { status: 'error', blocked: true, blockReason: 'KI-Fehler' };
         }
         return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+
+  register({
+    type: 'ai.outbound_review',
+    label: 'KI-Ausgangsprüfung',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Prüft ausgehende E-Mails (Ton, Rechtschreibung, Anhang, Betrugs-Antworten) vor dem Versand.',
+    defaultConfig: { promptId: 0, checkReplyContext: true },
+    execute: async (ctx, config) => {
+      if (ctx.direction !== 'outbound') {
+        return { status: 'skipped', message: 'Nur für ausgehende E-Mails' };
+      }
+      const id = ctx.messageId ?? ctx.outbound?.messageId;
+      if (id == null) return { status: 'error', message: 'Kein Entwurf' };
+
+      const promptId = Number(config.promptId ?? 0);
+      const prompts = listAiPrompts();
+      const custom = promptId > 0 ? prompts.find((x) => x.id === promptId) : undefined;
+
+      let parentBlock = '';
+      if (config.checkReplyContext !== false && ctx.outbound?.inReplyToMessageId) {
+        const parent = getEmailMessageById(ctx.outbound.inReplyToMessageId);
+        if (parent) {
+          let fromAddr = '';
+          try {
+            if (parent.from_json) {
+              const parsed = JSON.parse(parent.from_json) as { value?: { address?: string }[] };
+              fromAddr =
+                parsed?.value?.map((v) => v.address ?? '').filter(Boolean).join(', ') ?? '';
+            }
+          } catch {
+            fromAddr = '';
+          }
+          parentBlock = [
+            '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
+            `Von: ${fromAddr}`,
+            `Betreff: ${parent.subject ?? ''}`,
+            `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
+            `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
+          ].join('\n');
+        }
+      }
+
+      const attCount = ctx.outbound?.attachmentCount ?? 0;
+      const userParts = [
+        custom
+          ? interpolateTemplate(
+              custom.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text),
+              ctx,
+            )
+          : [
+              'Prüfe die folgende ausgehende E-Mail vor dem Versand an Kunden.',
+              '',
+              'Kriterien: professioneller Ton, korrekte Anrede/Namen, Rechtschreibung, vollständige Inhalte,',
+              'fehlende Anhänge wenn im Text versprochen, keine Antwort auf Phishing/Betrug (Bank, Login, Dringlichkeit).',
+              '',
+              `Anzahl Anhänge beim Versand: ${attCount}`,
+              '',
+              'Ausgehende E-Mail:',
+              ctx.strings.combined_text,
+              parentBlock,
+            ].join('\n'),
+      ];
+
+      const system = [
+        'Du bist Qualitätsprüfer für ausgehende Kunden-E-Mails.',
+        'Antworte NUR in diesem Format:',
+        'STATUS: OK',
+        'oder',
+        'STATUS: BLOCK',
+        'REASON: Kurze deutsche Begründung für den Nutzer',
+        'CODE: optionaler_code (z.B. MISSING_ATTACHMENT, PHISHING_REPLY, TONE, SPELLING, WRONG_NAME)',
+      ].join('\n');
+
+      if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.outbound_review' };
+
+      try {
+        const out = await runChatCompletion(system, userParts.join('\n'), profileIdFromConfig(config));
+        ctx.ai.lastResponse = out;
+        const parsed = parseOutboundReviewResponse(out);
+        if (!parsed.ok) {
+          const reason = parsed.reason || 'Ausgehende KI-Prüfung fehlgeschlagen';
+          if (!ctx.dryRun) setOutboundHold(id, true, reason);
+          return { status: 'ok', blocked: true, blockReason: reason };
+        }
+        return { status: 'ok' };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!ctx.dryRun) setOutboundHold(id, true, `KI-Fehler: ${msg}`);
+        return { status: 'error', blocked: true, blockReason: `KI-Fehler: ${msg}` };
       }
     },
   });
@@ -63,6 +174,7 @@ export function registerAiNodes(register: Reg): void {
       const out = await runChatCompletion(
         'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text.',
         user,
+        profileIdFromConfig(config),
       );
       ctx.ai.lastResponse = out;
       const key = String(config.targetVariable ?? 'ai.text');
@@ -71,17 +183,86 @@ export function registerAiNodes(register: Reg): void {
   });
 
   register({
+    type: 'ai.spam_score',
+    label: 'KI-Spam-Wahrscheinlichkeit',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Bewertet Spam 1–100 (nur Metadaten, kein E-Mail-Volltext). Antwort der KI muss eine Zahl sein.',
+    defaultConfig: {
+      contextMode: 'metadata',
+      thresholdHint: 70,
+    },
+    execute: async (ctx, config) => {
+      if (!ctx.message) return { status: 'skipped', message: 'Keine Nachricht' };
+      const mode = String(config.contextMode ?? 'metadata');
+      const strings =
+        mode === 'full'
+          ? ctx.strings
+          : buildMetadataContextFromMessage(ctx.message);
+      const user = formatMetadataForSpamPrompt({
+        subject: strings.subject,
+        snippet: strings.snippet,
+        from_address: strings.from_address,
+        to_address: strings.to_address,
+        cc_address: strings.cc_address,
+        has_attachments: strings.has_attachments,
+        attachment_names: strings.attachment_names,
+        attachment_types: strings.attachment_types,
+      });
+      const custom = String(config.customPrompt ?? '').trim();
+      const prompt = custom
+        ? interpolateTemplate(custom, { ...ctx, strings })
+        : user;
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          message: 'dry-run spam_score',
+          variables: { 'ai.spam_score': 1, 'ai.spam_context': mode },
+        };
+      }
+      try {
+        const out = await runChatCompletion(
+          'Du bewertest ob eine E-Mail Spam oder unerwünscht ist. Antworte NUR mit einer ganzen Zahl von 1 bis 100. 1 = sicher kein Spam, 100 = sehr wahrscheinlich Spam. Kein anderer Text, keine Erklärung.',
+          prompt,
+          profileIdFromConfig(config),
+        );
+        ctx.ai.lastResponse = out;
+        const score = parseSpamScore(out);
+        return {
+          status: 'ok',
+          variables: {
+            'ai.spam_score': score,
+            'ai.spam_context': mode,
+          },
+        };
+      } catch (e) {
+        return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+
+  register({
     type: 'ai.classify',
     label: 'KI-Klassifizierung',
     category: 'ai',
     canvasType: 'registry',
-    defaultConfig: { labels: 'Rechnung,Support,Spam' },
+    defaultConfig: { labels: 'Rechnung,Support,Spam', contextMode: 'metadata' },
     execute: async (ctx, config) => {
       const labels = String(config.labels ?? '').split(',').map((s) => s.trim()).filter(Boolean);
       if (labels.length === 0) return { status: 'skipped' };
-      const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${ctx.strings.combined_text}`;
+      const mode = String(config.contextMode ?? 'metadata');
+      const text =
+        mode === 'full' || !ctx.message
+          ? ctx.strings.combined_text
+          : buildMetadataContextFromMessage(ctx.message).combined_text;
+      const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${text}`;
       if (ctx.dryRun) return { status: 'ok' };
-      const out = await runChatCompletion('Du bist ein E-Mail-Klassifizierer.', prompt);
+      const out = await runChatCompletion(
+        'Du bist ein E-Mail-Klassifizierer.',
+        prompt,
+        profileIdFromConfig(config),
+      );
       ctx.ai.lastResponse = out;
       const label = out.trim().split(/\s+/)[0] ?? '';
       if (ctx.messageId != null && label) addMessageTag(ctx.messageId, `ki:${label}`);
@@ -97,6 +278,7 @@ export function registerAiNodes(register: Reg): void {
     defaultConfig: {
       systemPrompt: 'Du bist ein CRM-Assistent. Nutze die Wissensbasis. Antworte kurz.',
       knowledgeBaseId: null,
+      profileId: null,
       createDraft: true,
     },
     execute: async (ctx, config) => {
@@ -112,7 +294,7 @@ export function registerAiNodes(register: Reg): void {
         kbText ? `\nWissensbasis:\n${kbText}` : '',
       ].join('\n');
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run agent' };
-      const out = await runChatCompletion(system, user);
+      const out = await runChatCompletion(system, user, profileIdFromConfig(config));
       ctx.ai.lastResponse = out;
       const variables: Record<string, string | number | boolean | null> = {
         'ai.agent.response': out,

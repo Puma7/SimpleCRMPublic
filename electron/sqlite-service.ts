@@ -44,6 +44,9 @@ import {
     createEmailCannedResponsesTable,
     createEmailAiPromptsTable,
     createEmailTeamMembersTable,
+    createEmailAccountSignaturesTable,
+    createEmailAiProfilesTable,
+    EMAIL_AI_PROFILES_TABLE,
     createEmailMessageAttachmentsTable,
     createEmailMessagesFtsTable,
     createEmailWorkflowForwardDedupTable,
@@ -71,6 +74,7 @@ import {
     EMAIL_CANNED_RESPONSES_TABLE,
     EMAIL_AI_PROMPTS_TABLE,
     EMAIL_TEAM_MEMBERS_TABLE,
+    EMAIL_ACCOUNT_SIGNATURES_TABLE,
     EMAIL_MESSAGE_ATTACHMENTS_TABLE,
     EMAIL_MESSAGES_FTS_TABLE,
     EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE,
@@ -134,6 +138,7 @@ export function initializeDatabase() {
             db.exec(createEmailCannedResponsesTable);
             db.exec(createEmailAiPromptsTable);
             db.exec(createEmailTeamMembersTable);
+            db.exec(createEmailAccountSignaturesTable);
             db.exec(createEmailMessageAttachmentsTable);
             db.exec(createEmailWorkflowForwardDedupTable);
             db.exec(createEmailWorkflowRunStepsTable);
@@ -267,6 +272,8 @@ export function initializeDatabase() {
         ensureTableExists(EMAIL_CANNED_RESPONSES_TABLE, createEmailCannedResponsesTable, []);
         ensureTableExists(EMAIL_AI_PROMPTS_TABLE, createEmailAiPromptsTable, []);
         ensureTableExists(EMAIL_TEAM_MEMBERS_TABLE, createEmailTeamMembersTable, []);
+        ensureTableExists(EMAIL_ACCOUNT_SIGNATURES_TABLE, createEmailAccountSignaturesTable, []);
+        ensureTableExists(EMAIL_AI_PROFILES_TABLE, createEmailAiProfilesTable, []);
         ensureTableExists(EMAIL_MESSAGE_ATTACHMENTS_TABLE, createEmailMessageAttachmentsTable, [
             `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
         ]);
@@ -527,6 +534,15 @@ function runMigrations() {
             }
         }
 
+        const teamTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_TEAM_MEMBERS_TABLE);
+        if (teamTable) {
+            const tc = db.prepare(`PRAGMA table_info(${EMAIL_TEAM_MEMBERS_TABLE})`).all() as { name: string }[];
+            if (!tc.some((c) => c.name === 'signature_html')) {
+                console.log('Adding signature_html to email_team_members...');
+                db.exec(`ALTER TABLE ${EMAIL_TEAM_MEMBERS_TABLE} ADD COLUMN signature_html TEXT`);
+            }
+        }
+
         const ensureMigrationTable = (tableName: string, createTableSql: string, tableIndexes: string[]) => {
             const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
             if (!exists) {
@@ -539,6 +555,7 @@ function runMigrations() {
                 }
             }
         };
+        ensureMigrationTable(EMAIL_ACCOUNT_SIGNATURES_TABLE, createEmailAccountSignaturesTable, []);
         ensureMigrationTable(EMAIL_WORKFLOW_RUN_STEPS_TABLE, createEmailWorkflowRunStepsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_run_steps_run ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(run_id);`,
         ]);
