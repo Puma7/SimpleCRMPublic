@@ -107,10 +107,15 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const closingRef = useRef(false)
   const editorRef = useRef<ComposeQuillEditorHandle>(null)
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Bumped to re-run draft bootstrap (e.g. „Von“-Konto gewechselt) without stale-effect cancel. */
+  const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
+  const [draftBootstrapping, setDraftBootstrapping] = useState(false)
+  const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
 
   useEffect(() => {
     if (!isOpen) {
       initialisedDraftKeyRef.current = null
+      setDraftBootstrapping(false)
       return
     }
     let messageAccountId: number | undefined
@@ -125,12 +130,18 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       composeIntent.mode === "new" && composeAccountId != null
         ? composeAccountId
         : resolvedAccountId
-    const draftInitKey = `${composeIntent.mode}:${accountIdAtOpen ?? ""}:${composeIntent.mode === "draft" ? composeIntent.messageId : ""}`
+    const draftInitKey = `${composeIntent.mode}:${accountIdAtOpen ?? ""}:${composeIntent.mode === "draft" ? composeIntent.messageId : ""}:g${draftBootstrapGen}`
     if (initialisedDraftKeyRef.current === draftInitKey) return
-    if (!hasElectron() || accountIdAtOpen == null) return
+    if (!hasElectron()) return
+    if (accountIdAtOpen == null) {
+      toast.error(
+        "Bitte wählen Sie ein E-Mail-Konto in der Seitenleiste (nicht „Alle Konten“, sofern mehrere Konten aktiv sind).",
+      )
+      return
+    }
     setComposeAccountId(accountIdAtOpen)
-    initialisedDraftKeyRef.current = draftInitKey
     let cancelled = false
+    setDraftBootstrapping(true)
     void (async () => {
       try {
         if (composeIntent.mode === "draft") {
@@ -140,7 +151,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             IPCChannels.Email.GetMessage,
             composeIntent.messageId,
           )
-          if (cancelled || !existing) return
+          if (cancelled) return
+          if (!existing) {
+            toast.error("Entwurf nicht gefunden.")
+            return
+          }
+          initialisedDraftKeyRef.current = draftInitKey
           setComposeAccountId(existing.account_id)
           setTo(recipientFieldFromJson(existing.to_json))
           setCc(recipientFieldFromJson(existing.cc_json))
@@ -192,14 +208,17 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           composeIntent.mode === "new" && sigRes.html
             ? sanitizeComposeHtml(sigRes.html)
             : ""
-        const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateComposeDraft, {
+        const res = await invokeIpc<
+          { success: boolean; id?: number; error?: string }
+        >(IPCChannels.Email.CreateComposeDraft, {
           accountId: accountIdAtOpen,
           subject: subj,
           bodyText: quoted,
           to: toAddr,
         })
         if (cancelled) return
-        if (res.id != null) {
+        if (res.success && res.id != null) {
+          initialisedDraftKeyRef.current = draftInitKey
           setDraftId(res.id)
           setReplyToId(composeIntent.mode === "reply" ? sourceMsg?.id ?? null : null)
           setAttachmentPaths([])
@@ -214,15 +233,19 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               ? `${bodyPart}<br/><br/>${sigHtml}`
               : bodyPart || sigHtml,
           )
+        } else {
+          toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Entwurf konnte nicht angelegt werden.")
+      } finally {
+        if (!cancelled) setDraftBootstrapping(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts, composeAccountId])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, draftBootstrapGen])
 
   const getEditorHtml = useCallback(() => editorRef.current?.getHtml() ?? bodyHtml, [bodyHtml])
 
@@ -449,13 +472,26 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 : "Neue Nachricht"}
           </DialogTitle>
           <DialogDescription>
-            Textbausteine und KI-Prompts pflegen Sie in den Einstellungen.
+            Textbausteine und „KI auf Text“ (Prompt aus Einstellungen → E-Mail → KI-Prompts) bearbeiten
+            den Nachrichtentext. Zum Senden wird zuerst ein lokaler Entwurf angelegt.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6">
+          {draftBootstrapping || (draftId == null && hasElectron()) ? (
+            <div
+              className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+              role="status"
+            >
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              {draftBootstrapping
+                ? "Entwurf wird vorbereitet…"
+                : "Entwurf konnte nicht geladen werden. Dialog schließen und erneut „Verfassen“ wählen."}
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Select
+              disabled={draftId == null || draftBootstrapping}
               onValueChange={(id) => {
                 void (async () => {
                   const c = cannedList.find((x) => x.id === parseInt(id, 10))
@@ -493,33 +529,56 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               </SelectContent>
             </Select>
             <Select
-              onValueChange={async (id) => {
-                const pid = parseInt(id, 10)
-                try {
-                  const src = stripHtmlToText(bodyHtml)
-                  const r = await invokeIpc<{
-                    success: boolean
-                    text?: string
-                    error?: string
-                  }>(IPCChannels.Email.AiTransformText, {
-                    promptId: pid,
-                    text: src,
-                    customerId: selectedMessage?.customer_id ?? null,
-                  })
-                  if (r.success && r.text) {
-                    setBodyHtml(
-                      sanitizeComposeHtml(
-                        `<p>${r.text.replace(/\n/g, "<br/>")}</p>`,
-                      ),
-                    )
-                  } else toast.error(r.error ?? "KI-Fehler")
-                } catch (e) {
-                  toast.error(e instanceof Error ? e.message : "KI-Fehler")
-                }
+              key={aiPromptSelectKey}
+              disabled={draftId == null || draftBootstrapping || aiPrompts.length === 0}
+              onValueChange={(id) => {
+                void (async () => {
+                  const pid = parseInt(id, 10)
+                  if (!Number.isFinite(pid)) return
+                  const rawHtml = getEditorHtml()
+                  const src = stripHtmlToText(rawHtml)
+                  if (!src.trim()) {
+                    toast.error("Bitte zuerst Nachrichtentext eingeben, dann einen KI-Prompt wählen.")
+                    setAiPromptSelectKey((k) => k + 1)
+                    return
+                  }
+                  try {
+                    const r = await invokeIpc<{
+                      success: boolean
+                      text?: string
+                      error?: string
+                    }>(IPCChannels.Email.AiTransformText, {
+                      promptId: pid,
+                      text: src,
+                      customerId: selectedMessage?.customer_id ?? null,
+                    })
+                    if (r.success && r.text?.trim()) {
+                      setBodyHtml(
+                        sanitizeComposeHtml(
+                          `<p>${r.text.replace(/\n/g, "<br/>")}</p>`,
+                        ),
+                      )
+                      toast.success("Text durch KI ersetzt")
+                    } else {
+                      toast.error(
+                        r.error ??
+                          "KI-Antwort leer. Prüfen Sie Einstellungen → E-Mail → KI (API-Schlüssel und Prompts).",
+                      )
+                    }
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "KI-Fehler")
+                  } finally {
+                    setAiPromptSelectKey((k) => k + 1)
+                  }
+                })()
               }}
             >
-              <SelectTrigger className="h-8 w-[180px] text-xs">
-                <SelectValue placeholder="KI auf Text" />
+              <SelectTrigger className="h-8 w-[200px] text-xs">
+                <SelectValue
+                  placeholder={
+                    aiPrompts.length === 0 ? "Keine KI-Prompts" : "KI auf Text…"
+                  }
+                />
               </SelectTrigger>
               <SelectContent>
                 {aiPrompts.map((p) => (
@@ -541,9 +600,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                     const id = parseInt(v, 10)
                     if (!Number.isFinite(id)) return
                     await saveDraft({ silent: true })
-                    setComposeAccountId(id)
-                    setDraftId(null)
                     initialisedDraftKeyRef.current = null
+                    setDraftId(null)
+                    setComposeAccountId(id)
+                    setDraftBootstrapGen((g) => g + 1)
                   })()
                 }}
               >
@@ -667,7 +727,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Ausgang prüfen
           </Button>
-          <Button type="button" onClick={() => void handleSend()} disabled={sending}>
+          <Button
+            type="button"
+            onClick={() => void handleSend()}
+            disabled={sending || draftId == null || draftBootstrapping || composeAccountId == null}
+          >
             {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Senden
           </Button>
