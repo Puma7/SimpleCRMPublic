@@ -5,10 +5,12 @@ import { Mail } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { EmailSubNav } from "@/components/email/email-sub-nav"
 import { MailWorkspaceProvider } from "@/components/email/workspace-context"
-import { hasElectron } from "@/components/email/types"
+import { useHasElectron } from "@/components/email/use-has-electron"
 
 export default function EmailModuleLayout() {
-  if (!hasElectron()) {
+  const electronReady = useHasElectron()
+
+  if (!electronReady) {
     return (
       <div className="container max-w-2xl py-10">
         <Card>

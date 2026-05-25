@@ -57,8 +57,8 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron'],
-              output: { entryFileNames: 'electron/preload.js' },
+              external: (id) => id === 'electron' || id.startsWith('electron/'),
+              output: { entryFileNames: 'electron/preload.js', format: 'cjs' },
             },
           },
         },

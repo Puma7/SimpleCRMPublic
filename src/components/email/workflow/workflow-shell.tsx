@@ -39,8 +39,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useDefaultLayout } from "react-resizable-panels"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { hasElectron, invokeIpc } from "../types"
+import { useHasElectron } from "../use-has-electron"
 import { logError } from "../log"
 import { WorkflowList, type WorkflowRow } from "./workflow-list"
 import { NodePalette } from "./node-palette"
@@ -82,6 +84,8 @@ const BLANK_INBOUND_GRAPH = {
 
 const EMPTY_DEF = `{"version":1,"rules":[]}`
 
+const WORKFLOW_PANE_IDS = ["workflow-list", "workflow-canvas", "workflow-props"] as const
+
 function triggerFromGraph(doc: WorkflowGraphDocument): string {
   const t = doc.nodes.find((n) => n.type === "trigger")
   if (t && t.data && typeof t.data === "object" && "kind" in t.data) {
@@ -91,6 +95,11 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 }
 
 export function WorkflowShell() {
+  const electronReady = useHasElectron()
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "email-workflow-panes",
+    panelIds: [...WORKFLOW_PANE_IDS],
+  })
   const [rows, setRows] = useState<FullWorkflowRow[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -250,7 +259,7 @@ export function WorkflowShell() {
         scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
         enabled: editEnabled,
       })
-      setEditJson(compiled.definitionJson)
+      setEditJson(compiled.definitionJson ?? EMPTY_DEF)
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
@@ -337,7 +346,7 @@ export function WorkflowShell() {
     }
   }
 
-  if (!hasElectron()) {
+  if (!electronReady) {
     return (
       <div className="container max-w-2xl py-10">
         <Card>
@@ -649,8 +658,18 @@ export function WorkflowShell() {
         ) : null}
 
         <div className="flex min-h-0 flex-1">
-          <ResizablePanelGroup direction="horizontal" autoSaveId="email-workflow-panes">
-            <ResizablePanel defaultSize={18} minSize={14} maxSize={28}>
+          <ResizablePanelGroup
+            direction="horizontal"
+            id="email-workflow-panes"
+            defaultLayout={defaultLayout}
+            onLayoutChanged={onLayoutChanged}
+          >
+            <ResizablePanel
+              id={WORKFLOW_PANE_IDS[0]}
+              defaultSize="20%"
+              minSize="14%"
+              maxSize="30%"
+            >
               <WorkflowList
                 rows={rows}
                 selectedId={selectedId}
@@ -660,7 +679,7 @@ export function WorkflowShell() {
               />
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize={58}>
+            <ResizablePanel id={WORKFLOW_PANE_IDS[1]} defaultSize="55%">
               <div className="relative h-full w-full">
                 {selectedId == null ? (
                   <div className="flex h-full items-center justify-center p-6 text-center">
@@ -687,7 +706,11 @@ export function WorkflowShell() {
               </div>
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize={24} minSize={18}>
+            <ResizablePanel
+              id={WORKFLOW_PANE_IDS[2]}
+              defaultSize="25%"
+              minSize="18%"
+            >
               {selectedId != null ? (
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">

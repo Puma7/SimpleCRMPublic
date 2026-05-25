@@ -1,10 +1,13 @@
 "use client"
 
+import { useDefaultLayout } from "react-resizable-panels"
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
+
+const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer"] as const
 import { useMailWorkspace } from "./workspace-context"
 import { MailTopbar } from "./mail-topbar"
 import { MailSidebar } from "./mail-sidebar"
@@ -19,6 +22,10 @@ import { useMailAuxData } from "./hooks/use-mail-aux-data"
 import { useMailFolderCounts } from "./hooks/use-mail-folder-counts"
 
 function MailShellInner() {
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "email-panes",
+    panelIds: [...MAIL_PANE_IDS],
+  })
   const { setComposeIntent, selectedAccountId } = useMailWorkspace()
   const { accounts, teamMembers, loadingAccounts } = useEmailAccounts()
   const { categories, countForCategory, loadCategories } = useEmailCategories()
@@ -60,8 +67,18 @@ function MailShellInner() {
       />
 
       <div className="flex min-h-0 flex-1">
-        <ResizablePanelGroup direction="horizontal" autoSaveId="email-panes">
-          <ResizablePanel defaultSize={18} minSize={14} maxSize={26}>
+        <ResizablePanelGroup
+          direction="horizontal"
+          id="email-panes"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+        >
+          <ResizablePanel
+            id={MAIL_PANE_IDS[0]}
+            defaultSize="20%"
+            minSize="14%"
+            maxSize="30%"
+          >
             <MailSidebar
               accounts={accounts}
               loadingAccounts={loadingAccounts}
@@ -70,7 +87,11 @@ function MailShellInner() {
             />
           </ResizablePanel>
           <ResizableHandle />
-          <ResizablePanel defaultSize={30} minSize={22}>
+          <ResizablePanel
+            id={MAIL_PANE_IDS[1]}
+            defaultSize="30%"
+            minSize="22%"
+          >
             <MessageList
               messages={messages}
               loading={loadingMessages}
@@ -78,7 +99,7 @@ function MailShellInner() {
             />
           </ResizablePanel>
           <ResizableHandle />
-          <ResizablePanel defaultSize={52}>
+          <ResizablePanel id={MAIL_PANE_IDS[2]} defaultSize="50%">
             <MessageViewer
               teamMembers={teamMembers}
               customers={customers}
