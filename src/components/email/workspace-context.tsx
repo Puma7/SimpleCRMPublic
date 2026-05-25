@@ -13,11 +13,8 @@ import {
 } from "react"
 import type { MailAccountScope } from "./account-scope"
 import type { EmailMessage, MailView } from "./types"
-import {
-  readEmailUiMode,
-  writeEmailUiMode,
-  type EmailUiMode,
-} from "@/lib/email-ui-mode"
+import type { EmailUiMode } from "@/lib/email-ui-mode"
+import { UI_THEME_CHANGED, readUiTheme, setUiTheme } from "@/lib/ui-theme"
 
 export type ComposeIntent =
   | { mode: "closed" }
@@ -179,11 +176,25 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   )
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
-  const [emailUiMode, setEmailUiModeState] = useState<EmailUiMode>(() => readEmailUiMode())
+  const [emailUiMode, setEmailUiModeState] = useState<EmailUiMode>(() => readUiTheme())
 
   const setEmailUiMode = useCallback((mode: EmailUiMode) => {
     setEmailUiModeState(mode)
-    writeEmailUiMode(mode)
+    setUiTheme(mode)
+  }, [])
+
+  useEffect(() => {
+    const sync = () => setEmailUiModeState(readUiTheme())
+    window.addEventListener(UI_THEME_CHANGED, sync)
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== "simplecrm:uiTheme" && e.key !== "email:uiMode") return
+      sync()
+    }
+    window.addEventListener("storage", onStorage)
+    return () => {
+      window.removeEventListener(UI_THEME_CHANGED, sync)
+      window.removeEventListener("storage", onStorage)
+    }
   }, [])
 
   const bumpAccountsRevision = useCallback(() => {

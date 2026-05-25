@@ -1,22 +1,7 @@
-export type EmailUiMode = "classic" | "beta"
+import { readUiTheme, writeUiTheme, type UiTheme } from "./ui-theme"
 
-const LS_KEY = "email:uiMode"
+/** @deprecated Prefer `UiTheme` from `@/lib/ui-theme` — same storage key. */
+export type EmailUiMode = UiTheme
 
-export function readEmailUiMode(): EmailUiMode {
-  if (typeof window === "undefined") return "classic"
-  try {
-    const raw = window.localStorage.getItem(LS_KEY)
-    return raw === "beta" ? "beta" : "classic"
-  } catch {
-    return "classic"
-  }
-}
-
-export function writeEmailUiMode(mode: EmailUiMode): void {
-  if (typeof window === "undefined") return
-  try {
-    window.localStorage.setItem(LS_KEY, mode)
-  } catch {
-    /* ignore */
-  }
-}
+export const readEmailUiMode = readUiTheme
+export const writeEmailUiMode = writeUiTheme

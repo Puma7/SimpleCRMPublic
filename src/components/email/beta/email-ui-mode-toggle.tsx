@@ -1,22 +1,22 @@
 "use client"
 
 import { useMatchRoute, useNavigate } from "@tanstack/react-router"
-import { useMailWorkspace } from "../workspace-context"
+import { useUiTheme } from "@/components/beta/ui-theme-provider"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 export function EmailUiModeToggle({ className }: { className?: string }) {
-  const { emailUiMode, setEmailUiMode } = useMailWorkspace()
+  const { theme, setTheme } = useUiTheme()
   const navigate = useNavigate()
   const onSettings = !!useMatchRoute({ to: "/email/settings", fuzzy: false })
 
   const select = (mode: "classic" | "beta") => {
-    setEmailUiMode(mode)
+    setTheme(mode)
     if (!onSettings) return
     if (mode === "beta") {
       void navigate({
         to: "/email/settings",
-        search: { section: "overview", intelligenceTab: "profiles", tab: "accounts" },
+        search: { section: "mailboxes", intelligenceTab: "profiles", tab: "accounts" },
       })
     } else {
       void navigate({
@@ -38,7 +38,7 @@ export function EmailUiModeToggle({ className }: { className?: string }) {
       <Button
         type="button"
         size="sm"
-        variant={emailUiMode === "classic" ? "secondary" : "ghost"}
+        variant={theme === "classic" ? "secondary" : "ghost"}
         className="h-7 px-2.5 text-xs"
         onClick={() => select("classic")}
       >
@@ -47,11 +47,11 @@ export function EmailUiModeToggle({ className }: { className?: string }) {
       <Button
         type="button"
         size="sm"
-        variant={emailUiMode === "beta" ? "secondary" : "ghost"}
+        variant={theme === "beta" ? "secondary" : "ghost"}
         className="h-7 px-2.5 text-xs"
         onClick={() => select("beta")}
       >
-        Beta
+        Beta v0.2
       </Button>
     </div>
   )
