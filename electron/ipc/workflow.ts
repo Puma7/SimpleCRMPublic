@@ -13,6 +13,8 @@ import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   addTextChunk,
+  getKnowledgeBaseDocument,
+  saveKnowledgeBaseDocument,
   importFileToKnowledgeBase,
 } from '../workflow/knowledge-base';
 import { listPluginManifests, loadWorkflowPlugins } from '../workflow/plugins';
@@ -268,11 +270,62 @@ export function registerWorkflowHandlers(options: {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.GetKnowledgeBaseDocument,
+      async (_event: IpcMainInvokeEvent, knowledgeBaseId: number) => {
+        const doc = getKnowledgeBaseDocument(knowledgeBaseId);
+        if (!doc) return { success: false as const, error: 'Wissensbasis nicht gefunden' };
+        return { success: true as const, content: doc.content, fileName: doc.fileName };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveKnowledgeBaseDocument,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { knowledgeBaseId: number; content: string },
+      ) => {
+        try {
+          saveKnowledgeBaseDocument(payload.knowledgeBaseId, payload.content);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Speichern fehlgeschlagen',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ExportKnowledgeBaseDocument,
+      async (_event: IpcMainInvokeEvent, knowledgeBaseId: number) => {
+        const doc = getKnowledgeBaseDocument(knowledgeBaseId);
+        if (!doc) return { success: false as const, error: 'Wissensbasis nicht gefunden' };
+        const r = await dialog.showSaveDialog({
+          defaultPath: doc.fileName,
+          filters: [{ name: 'Markdown', extensions: ['md'] }],
+        });
+        if (r.canceled || !r.filePath) return { success: true as const, path: null };
+        fs.writeFileSync(r.filePath, doc.content, 'utf8');
+        return { success: true as const, path: r.filePath };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.ImportKnowledgeFile,
       async (_event: IpcMainInvokeEvent, payload: { knowledgeBaseId: number }) => {
         const r = await dialog.showOpenDialog({
           properties: ['openFile'],
-          filters: [{ name: 'Text', extensions: ['txt', 'md', 'json'] }],
+          filters: [{ name: 'Markdown', extensions: ['md', 'txt'] }],
         });
         if (r.canceled || !r.filePaths[0]) return { success: true as const, id: null };
         const id = importFileToKnowledgeBase(payload.knowledgeBaseId, r.filePaths[0]);

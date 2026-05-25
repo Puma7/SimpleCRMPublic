@@ -646,9 +646,37 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.GetKnowledgeBaseDocument, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        content: z.string(),
+        fileName: z.string(),
+      }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.SaveKnowledgeBaseDocument, {
+    payload: z.object({
+      knowledgeBaseId: positiveInt,
+      content: z.string(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ExportKnowledgeBaseDocument, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true), path: z.string().nullable() }),
+      failResult,
+    ]),
+  });
   set(IPCChannels.Email.ImportKnowledgeFile, {
     payload: z.object({ knowledgeBaseId: positiveInt }),
-    result: standardResult,
+    result: z.union([
+      z.object({ success: z.literal(true), id: z.number().int().nullable() }),
+      failResult,
+    ]),
   });
   set(IPCChannels.Email.ListWorkflowPlugins, { payload: voidPayload, result: recordArray });
   set(IPCChannels.Email.ListWorkflowVersions, { payload: positiveInt, result: recordArray });
