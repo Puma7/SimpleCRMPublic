@@ -84,6 +84,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.DeleteAccount, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.TestImap, {
     payload: z.object({
+      accountId: positiveInt.optional(),
       imapHost: nonEmptyString,
       imapPort: z.number().int().positive(),
       imapTls: z.boolean(),
@@ -125,7 +126,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       port: z.number().int().positive(),
       secure: z.boolean(),
       user: nonEmptyString,
-      pass: z.string(),
+      password: z.string(),
     }),
     result: standardResult,
   });

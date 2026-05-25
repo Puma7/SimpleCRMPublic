@@ -210,6 +210,9 @@ export function syncInboxImap(accountId: number): Promise<ImapSyncResult> {
 }
 
 export async function testImapConnection(account: EmailAccountRow, password: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!password?.trim()) {
+    return { ok: false, error: 'Kein Passwort angegeben (Feld ausfüllen oder gespeichertes Konto testen).' };
+  }
   const client = new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
@@ -219,8 +222,8 @@ export async function testImapConnection(account: EmailAccountRow, password: str
       pass: password,
     },
     logger: false,
-    connectionTimeout: 90_000,
-    socketTimeout: 120_000,
+    connectionTimeout: 25_000,
+    socketTimeout: 30_000,
   });
   try {
     await client.connect();

@@ -7,6 +7,7 @@ import Titlebar from '@/components/ui/titlebar';
 import { MainNav } from '@/components/main-nav';
 import { UpdateStatusDisplay } from '@/components/update-status-display';
 import { ErrorBoundary } from '@/components/error-boundary';
+import { Toaster } from '@/components/ui/sonner';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
       <Titlebar />
       <MainNav />
       <UpdateStatusDisplay />
+      <Toaster richColors closeButton position="bottom-right" />
       <div className="font-sans antialiased">
         <ErrorBoundary>
           <Outlet />

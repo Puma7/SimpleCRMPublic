@@ -275,6 +275,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (
         _event: IpcMainInvokeEvent,
         payload: {
+          accountId?: number;
           imapHost: string;
           imapPort: number;
           imapTls: boolean;
@@ -282,33 +283,49 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           imapPassword: string;
         },
       ) => {
-        const tempKey = 'test-temp';
-        const row = {
-          id: 0,
-          display_name: '',
-          email_address: '',
-          imap_host: payload.imapHost.trim(),
-          imap_port: payload.imapPort,
-          imap_tls: payload.imapTls ? 1 : 0,
-          imap_username: payload.imapUsername.trim(),
-          keytar_account_key: tempKey,
-          smtp_host: null,
-          smtp_port: null,
-          smtp_tls: null,
-          smtp_username: null,
-          smtp_use_imap_auth: 1,
-          smtp_keytar_account_key: null,
-          protocol: 'imap' as const,
-          pop3_host: null,
-          pop3_port: 995,
-          pop3_tls: 1,
-          oauth_provider: null,
-          oauth_refresh_keytar_key: null,
-          sent_folder_path: 'Sent',
-          created_at: '',
-          updated_at: '',
-        };
-        const result = await testImapConnection(row, payload.imapPassword);
+        let password = payload.imapPassword?.trim() ?? '';
+        let row: EmailAccountRow;
+        if (payload.accountId != null && payload.accountId > 0) {
+          const acc = getEmailAccountById(payload.accountId);
+          if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+          row = {
+            ...acc,
+            imap_host: payload.imapHost.trim(),
+            imap_port: payload.imapPort,
+            imap_tls: payload.imapTls ? 1 : 0,
+            imap_username: payload.imapUsername.trim(),
+          };
+          if (!password) {
+            password = (await getEmailPassword(acc.keytar_account_key)) ?? '';
+          }
+        } else {
+          row = {
+            id: 0,
+            display_name: '',
+            email_address: '',
+            imap_host: payload.imapHost.trim(),
+            imap_port: payload.imapPort,
+            imap_tls: payload.imapTls ? 1 : 0,
+            imap_username: payload.imapUsername.trim(),
+            keytar_account_key: 'test-temp',
+            smtp_host: null,
+            smtp_port: null,
+            smtp_tls: null,
+            smtp_username: null,
+            smtp_use_imap_auth: 1,
+            smtp_keytar_account_key: null,
+            protocol: 'imap',
+            pop3_host: null,
+            pop3_port: 995,
+            pop3_tls: 1,
+            oauth_provider: null,
+            oauth_refresh_keytar_key: null,
+            sent_folder_path: 'Sent',
+            created_at: '',
+            updated_at: '',
+          };
+        }
+        const result = await testImapConnection(row, password);
         if (result.ok) {
           return { success: true as const };
         }
