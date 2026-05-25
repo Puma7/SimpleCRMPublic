@@ -28,6 +28,13 @@ describe('IPC contracts', () => {
     ).not.toThrow();
   });
 
+  test('Automation channels are in AllowedInvokeChannels', () => {
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.GetSettings);
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.SetSettings);
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.GenerateApiKey);
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.RevokeApiKey);
+  });
+
   test('FollowUp channels are in AllowedInvokeChannels', () => {
     expect(AllowedInvokeChannels).toContain(IPCChannels.FollowUp.GetItems);
     expect(AllowedInvokeChannels).toContain(IPCChannels.FollowUp.GetQueueCounts);

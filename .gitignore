@@ -50,6 +50,9 @@ src/.DS_Store
 !docs/SETUP_WINDOWS.md
 !docs/WORKFLOW_VISION.md
 !docs/WORKFLOW_PHASES.md
+!docs/API_V1.md
+!docs/SECURITY_AUTOMATION_API.md
+!docs/EXTERNAL_AUTOMATION_API_PLAN.md
 !AGENTS.md
 
 coverage/
