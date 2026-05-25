@@ -62,46 +62,154 @@ export function listKnowledgeBases(): KnowledgeBaseRow[] {
     .all() as KnowledgeBaseRow[];
 }
 
-export function createKnowledgeBase(name: string, description?: string | null): number {
-  const r = getDb()
+function knowledgeMarkdownPath(knowledgeBaseId: number): string {
+  return path.join(knowledgeStorageDir(), `${knowledgeBaseId}.md`);
+}
+
+function defaultMarkdownTemplate(name: string): string {
+  return `# ${name.trim()}\n\nHier steht der Wissenstext für diesen Bereich (Markdown).\n`;
+}
+
+/** Load document from disk or migrate legacy DB chunks into one .md file. */
+export function getKnowledgeBaseDocument(knowledgeBaseId: number): {
+  content: string;
+  fileName: string;
+} | null {
+  const kb = getDb()
+    .prepare(`SELECT id, name FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE id = ?`)
+    .get(knowledgeBaseId) as { id: number; name: string } | undefined;
+  if (!kb) return null;
+
+  const filePath = knowledgeMarkdownPath(knowledgeBaseId);
+  if (fs.existsSync(filePath)) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return { content, fileName: `${kb.id}-${sanitizeFileSlug(kb.name)}.md` };
+  }
+
+  const chunks = getDb()
     .prepare(
-      `INSERT INTO ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (name, description, created_at) VALUES (?, ?, ?)`,
+      `SELECT title, content FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
+       WHERE knowledge_base_id = ? ORDER BY id ASC`,
     )
-    .run(name.trim(), description ?? null, new Date().toISOString());
-  return Number(r.lastInsertRowid);
+    .all(knowledgeBaseId) as { title: string | null; content: string }[];
+
+  if (chunks.length === 0) {
+    const template = defaultMarkdownTemplate(kb.name);
+    fs.writeFileSync(filePath, template, 'utf8');
+    return { content: template, fileName: `${kb.id}-${sanitizeFileSlug(kb.name)}.md` };
+  }
+
+  const merged = chunks
+    .map((c) => {
+      const title = c.title?.trim();
+      if (title && title !== 'Dokument') {
+        return `## ${title}\n\n${c.content}`;
+      }
+      return c.content;
+    })
+    .join('\n\n---\n\n');
+  fs.writeFileSync(filePath, merged, 'utf8');
+  syncChunksFromDocument(knowledgeBaseId, merged, kb.name);
+  return { content: merged, fileName: `${kb.id}-${sanitizeFileSlug(kb.name)}.md` };
 }
 
-export function deleteKnowledgeBase(id: number): void {
-  getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`).run(id);
-  getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE id = ?`).run(id);
+function sanitizeFileSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9äöüß]+/gi, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'wissensbasis';
 }
 
-export function addTextChunk(knowledgeBaseId: number, title: string, content: string): number {
-  const r = getDb()
-    .prepare(
-      `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
-       (knowledge_base_id, title, content, source_path, created_at)
-       VALUES (?, ?, ?, NULL, ?)`,
-    )
-    .run(knowledgeBaseId, title, content, new Date().toISOString());
-  const id = Number(r.lastInsertRowid);
-  void storeEmbedding(id, `${title}\n${content}`);
-  return id;
+/** Persist markdown file and refresh the single search index chunk. */
+export function saveKnowledgeBaseDocument(knowledgeBaseId: number, content: string): void {
+  const kb = getDb()
+    .prepare(`SELECT name FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE id = ?`)
+    .get(knowledgeBaseId) as { name: string } | undefined;
+  if (!kb) throw new Error('Wissensbasis nicht gefunden');
+  const normalized = content.trimEnd() + (content.endsWith('\n') ? '' : '\n');
+  const filePath = knowledgeMarkdownPath(knowledgeBaseId);
+  fs.writeFileSync(filePath, normalized, 'utf8');
+  syncChunksFromDocument(knowledgeBaseId, normalized, kb.name);
 }
 
-export function importFileToKnowledgeBase(knowledgeBaseId: number, filePath: string): number {
-  const content = fs.readFileSync(filePath, 'utf8');
-  const title = path.basename(filePath);
+function syncChunksFromDocument(
+  knowledgeBaseId: number,
+  content: string,
+  title: string,
+): void {
+  getDb()
+    .prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`)
+    .run(knowledgeBaseId);
+  const capped = content.slice(0, 500_000);
   const r = getDb()
     .prepare(
       `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
        (knowledge_base_id, title, content, source_path, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(knowledgeBaseId, title, content.slice(0, 500_000), filePath, new Date().toISOString());
+    .run(
+      knowledgeBaseId,
+      title.trim() || 'Dokument',
+      capped,
+      knowledgeMarkdownPath(knowledgeBaseId),
+      new Date().toISOString(),
+    );
   const id = Number(r.lastInsertRowid);
-  void storeEmbedding(id, content.slice(0, 8000));
+  void storeEmbedding(id, capped.slice(0, 8000));
+}
+
+export function createKnowledgeBase(name: string, description?: string | null): number {
+  const r = getDb()
+    .prepare(
+      `INSERT INTO ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (name, description, created_at) VALUES (?, ?, ?)`,
+    )
+    .run(name.trim(), description ?? null, new Date().toISOString());
+  const id = Number(r.lastInsertRowid);
+  const template = defaultMarkdownTemplate(name);
+  fs.writeFileSync(knowledgeMarkdownPath(id), template, 'utf8');
+  syncChunksFromDocument(id, template, name);
   return id;
+}
+
+export function deleteKnowledgeBase(id: number): void {
+  const filePath = knowledgeMarkdownPath(id);
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      /* ignore */
+    }
+  }
+  getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`).run(id);
+  getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE id = ?`).run(id);
+}
+
+export function addTextChunk(knowledgeBaseId: number, title: string, content: string): number {
+  const doc = getKnowledgeBaseDocument(knowledgeBaseId);
+  if (!doc) throw new Error('Wissensbasis nicht gefunden');
+  const section = `## ${title.trim() || 'Eintrag'}\n\n${content.trim()}`;
+  const merged = doc.content.trim() ? `${doc.content.trimEnd()}\n\n${section}\n` : `${section}\n`;
+  saveKnowledgeBaseDocument(knowledgeBaseId, merged);
+  const row = getDb()
+    .prepare(
+      `SELECT id FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(knowledgeBaseId) as { id: number } | undefined;
+  return row?.id ?? 0;
+}
+
+/** Replace the whole knowledge-base document from an uploaded .md/.txt file. */
+export function importFileToKnowledgeBase(knowledgeBaseId: number, filePath: string): number {
+  const content = fs.readFileSync(filePath, 'utf8');
+  saveKnowledgeBaseDocument(knowledgeBaseId, content);
+  const row = getDb()
+    .prepare(
+      `SELECT id FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(knowledgeBaseId) as { id: number } | undefined;
+  return row?.id ?? 0;
 }
 
 function keywordSearch(

@@ -64,8 +64,16 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
 
 function SettingsPanels({ current }: { current: SettingsTab }) {
   const active = TAB_DEFS.find((t) => t.id === current) ?? TAB_DEFS[0]!
+  const wide = current === "knowledge"
   return (
-    <div className="mx-auto w-full max-w-2xl p-6">{active.render()}</div>
+    <div
+      className={cn(
+        "mx-auto w-full p-6",
+        wide ? "max-w-4xl" : "max-w-2xl",
+      )}
+    >
+      {active.render()}
+    </div>
   )
 }
 
