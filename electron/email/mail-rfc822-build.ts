@@ -1,10 +1,15 @@
 /** Build a minimal RFC822 buffer from stored headers + body for mailauth / Rspamd. */
 
 export function buildRfc822FromStored(input: {
+  rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
 }): Buffer | null {
+  if (input.rawRfc822B64?.trim()) {
+    return Buffer.from(input.rawRfc822B64, 'base64');
+  }
+
   const raw = input.rawHeaders?.trim();
   if (!raw) return null;
 
