@@ -198,6 +198,40 @@ export function registerEmailNodes(register: Reg): void {
   });
 
   register({
+    type: 'email.auth_check',
+    label: 'Auth-Prüfung (SPF/DKIM/DMARC/ARC)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Verzweigt nach gespeicherten mailauth-Ergebnissen (nach Sync). Kanten: pass | fail | none | default.',
+    defaultConfig: { protocol: 'dmarc', treatSoftfailAsFail: true },
+    execute: async (ctx, config) => {
+      const protocol = String(config.protocol ?? 'dmarc').toLowerCase();
+      const key =
+        protocol === 'spf'
+          ? 'auth.spf'
+          : protocol === 'dkim'
+            ? 'auth.dkim'
+            : protocol === 'arc'
+              ? 'auth.arc'
+              : 'auth.dmarc';
+      const value = String(ctx.variables[key] ?? 'none').toLowerCase();
+      const softIsFail = config.treatSoftfailAsFail !== false;
+      const failSet = new Set(['fail', 'permerror', ...(softIsFail ? ['softfail', 'policy'] : [])]);
+      let port: string;
+      if (value === 'pass') port = 'pass';
+      else if (failSet.has(value)) port = 'fail';
+      else if (value === 'none' || value === 'neutral' || value === 'skipped') port = 'none';
+      else port = 'default';
+      return {
+        status: 'ok',
+        port,
+        variables: { [`auth.check.${protocol}`]: value },
+      };
+    },
+  });
+
+  register({
     type: 'email.sender_filter',
     label: 'Absender-Filter',
     category: 'email',

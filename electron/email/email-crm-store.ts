@@ -246,23 +246,51 @@ export function listAiPrompts(): AiPromptRow[] {
 }
 
 export function createAiPrompt(input: { label: string; userTemplate: string; target?: string }): number {
+  const maxRow = getDb()
+    .prepare(`SELECT COALESCE(MAX(sort_order), -1) AS m FROM ${EMAIL_AI_PROMPTS_TABLE}`)
+    .get() as { m: number };
+  const sortOrder = (maxRow?.m ?? -1) + 1;
   const r = getDb()
     .prepare(
       `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, sort_order) VALUES (?, ?, ?, ?)`,
     )
-    .run(input.label.trim(), input.userTemplate, input.target ?? 'full_body', 0);
+    .run(input.label.trim(), input.userTemplate, input.target ?? 'full_body', sortOrder);
   return Number(r.lastInsertRowid);
+}
+
+/** Swap sort_order with neighbour (Composer dropdown order). */
+export function moveAiPrompt(id: number, direction: 'up' | 'down'): boolean {
+  const rows = listAiPrompts();
+  const idx = rows.findIndex((r) => r.id === id);
+  if (idx < 0) return false;
+  const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (swapIdx < 0 || swapIdx >= rows.length) return false;
+  const a = rows[idx]!;
+  const b = rows[swapIdx]!;
+  const aOrder = a.sort_order;
+  const bOrder = b.sort_order;
+  const db = getDb();
+  db.prepare(`UPDATE ${EMAIL_AI_PROMPTS_TABLE} SET sort_order = ? WHERE id = ?`).run(
+    bOrder,
+    a.id,
+  );
+  db.prepare(`UPDATE ${EMAIL_AI_PROMPTS_TABLE} SET sort_order = ? WHERE id = ?`).run(
+    aOrder,
+    b.id,
+  );
+  return true;
 }
 
 export function updateAiPrompt(
   id: number,
-  input: Partial<{ label: string; userTemplate: string; target: string }>,
+  input: Partial<{ label: string; userTemplate: string; target: string; sortOrder: number }>,
 ): void {
   const sets: string[] = [];
   const vals: unknown[] = [];
   if (input.label !== undefined) { sets.push('label = ?'); vals.push(input.label); }
   if (input.userTemplate !== undefined) { sets.push('user_template = ?'); vals.push(input.userTemplate); }
   if (input.target !== undefined) { sets.push('target = ?'); vals.push(input.target); }
+  if (input.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(input.sortOrder); }
   if (sets.length === 0) return;
   vals.push(id);
   getDb()

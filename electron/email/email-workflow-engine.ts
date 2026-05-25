@@ -311,6 +311,10 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
   if (!row) return;
   if (row.uid < 0 && !row.pop3_uidl) return;
 
+  const { runMailSecurityPipeline } = await import('./mail-security-pipeline');
+  const security = await runMailSecurityPipeline(messageId);
+  if (security.preWorkflow.skippedWorkflows) return;
+
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = listWorkflowsByTrigger('inbound');
   for (const wf of workflows) {

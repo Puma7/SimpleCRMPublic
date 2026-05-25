@@ -232,6 +232,82 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.GetMessageSecurity, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        authSpf: z.string().nullable(),
+        authDkim: z.string().nullable(),
+        authDmarc: z.string().nullable(),
+        authArc: z.string().nullable(),
+        authDkimDomains: z.string().nullable(),
+        authError: z.string().nullable(),
+        rspamdScore: z.number().nullable(),
+        rspamdAction: z.string().nullable(),
+        rspamdSymbols: z.string().nullable(),
+        rspamdError: z.string().nullable(),
+        securityCheckedAt: z.string().nullable(),
+      }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.GetMailSecuritySettings, {
+    payload: z.undefined().optional(),
+    result: z.object({
+      mailauthEnabled: z.boolean(),
+      rspamdEnabled: z.boolean(),
+      rspamdUrl: z.string(),
+      rspamdTimeoutMs: z.number(),
+      rspamdSpamScore: z.number(),
+      autoSpamDmarcFail: z.boolean(),
+      autoSpamSpfFail: z.boolean(),
+      autoSpamRspamd: z.boolean(),
+      senderWhitelist: z.string(),
+      senderBlacklist: z.string(),
+      spamScoreThreshold: z.number(),
+    }),
+  });
+  set(IPCChannels.Email.SetMailSecuritySettings, {
+    payload: z.object({
+      mailauthEnabled: z.boolean().optional(),
+      rspamdEnabled: z.boolean().optional(),
+      rspamdUrl: z.string().optional(),
+      rspamdTimeoutMs: z.number().optional(),
+      rspamdSpamScore: z.number().optional(),
+      autoSpamDmarcFail: z.boolean().optional(),
+      autoSpamSpfFail: z.boolean().optional(),
+      autoSpamRspamd: z.boolean().optional(),
+      senderWhitelist: z.string().optional(),
+      senderBlacklist: z.string().optional(),
+      spamScoreThreshold: z.number().optional(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.RunMailSecurityCheck, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        authChecked: z.boolean(),
+        rspamdChecked: z.boolean(),
+        authSpf: z.string().nullable().optional(),
+        authDmarc: z.string().nullable().optional(),
+        rspamdScore: z.number().nullable().optional(),
+      }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.TestRspamdConnection, {
+    payload: z.object({
+      rspamdUrl: z.string().optional(),
+      rspamdTimeoutMs: z.number().optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), message: z.string() }),
+      failResult,
+    ]),
+  });
   set(IPCChannels.Email.SetMessageSeen, {
     payload: z.object({ messageId: positiveInt, seen: z.boolean() }),
     result: standardResult,
@@ -413,6 +489,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.DeleteAiPrompt, { payload: positiveInt, result: standardResult });
+  set(IPCChannels.Email.ReorderAiPrompt, {
+    payload: z.object({
+      id: positiveInt,
+      direction: z.enum(['up', 'down']),
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.AiTransformText, {
     payload: z.object({
       promptId: positiveInt,

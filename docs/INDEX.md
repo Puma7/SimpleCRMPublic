@@ -18,6 +18,7 @@
 | [DEVELOPER_EMAIL.md](DEVELOPER_EMAIL.md) | Technical map (paths, invariants, IPC) |
 | [EMAIL_PHASES.md](EMAIL_PHASES.md) | Implementation checklist (phases 1–4) |
 | [EMAIL_INBOX_CAPABILITIES.md](EMAIL_INBOX_CAPABILITIES.md) | Feature matrix (inbox, archive, spam, …) |
+| [MAIL_SECURITY.md](MAIL_SECURITY.md) | P2 mailauth + P3 Rspamd (Desktop-Mail-Sicherheit) |
 | [USER_GUIDE_EMAIL.md](USER_GUIDE_EMAIL.md) | End-user oriented |
 | [**EMAIL_PRODUCT_GUIDE.md**](EMAIL_PRODUCT_GUIDE.md) | **Product logic** — Konten, Kategorien, Aktionen, Team, KI |
 | [EMAIL_ROADMAP.md](EMAIL_ROADMAP.md) | Planned improvements from user feedback |

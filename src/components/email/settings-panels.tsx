@@ -16,6 +16,7 @@ import {
   Users,
   Wrench,
   Workflow,
+  ShieldCheck,
 } from "lucide-react"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
 import { AccountsPanel } from "./settings/accounts-panel"
@@ -28,6 +29,7 @@ import { PromptsPanel } from "./settings/prompts-panel"
 import { ExportPanel } from "./settings/export-panel"
 import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
+import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 
 type TabDef = {
@@ -43,6 +45,12 @@ const TAB_DEFS: TabDef[] = [
   { id: "oauth", label: "OAuth", icon: KeyRound, render: () => <OAuthPanel /> },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
   { id: "knowledge", label: "Wissensbasis", icon: BookOpen, render: () => <KnowledgePanel /> },
+  {
+    id: "mailSecurity",
+    label: "Mail-Sicherheit",
+    icon: ShieldCheck,
+    render: () => <MailSecurityPanel />,
+  },
   {
     id: "automation",
     label: "Automatisierung",
@@ -60,7 +68,10 @@ export const SETTINGS_TAB_IDS = TAB_DEFS.map((t) => t.id)
 
 export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "smtp", "oauth"] },
-  { label: "KI & Automation", tabIds: ["ai", "knowledge", "automation", "prompts"] },
+  {
+    label: "KI & Automation",
+    tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
+  },
   { label: "Team & Vorlagen", tabIds: ["team", "canned"] },
   { label: "Datenschutz", tabIds: ["export"] },
   { label: "Sonstiges", tabIds: ["misc"] },
@@ -68,12 +79,12 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
 
 function SettingsPanels({ current }: { current: SettingsTab }) {
   const active = TAB_DEFS.find((t) => t.id === current) ?? TAB_DEFS[0]!
-  const wide = current === "knowledge"
+  const wide = current === "knowledge" || current === "prompts"
   return (
     <div
       className={cn(
         "mx-auto w-full p-6",
-        wide ? "max-w-4xl" : "max-w-2xl",
+        wide ? "max-w-5xl" : "max-w-2xl",
       )}
     >
       {active.render()}

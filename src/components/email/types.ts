@@ -86,6 +86,7 @@ export type AiPrompt = {
   label: string
   user_template: string
   target?: string
+  sort_order?: number
 }
 export type InternalNote = { id: number; body: string; created_at: string }
 export type MessageAttachment = {

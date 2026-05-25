@@ -69,6 +69,7 @@ import {
   createAiPrompt,
   updateAiPrompt,
   deleteAiPrompt,
+  moveAiPrompt,
   searchMessagesForAccount,
   searchMessagesForMailScope,
   setMessageCustomerId,
@@ -93,6 +94,12 @@ import {
   runInboundWorkflowsForMessage,
   runDraftCreatedWorkflowsForMessage,
 } from '../email/email-workflow-engine';
+import {
+  getMailSecuritySettings,
+  saveMailSecuritySettings,
+} from '../email/mail-security-settings';
+import { runMailSecurityPipeline } from '../email/mail-security-pipeline';
+import { checkMessageWithRspamd } from '../email/rspamd-client';
 import {
   getGoogleOAuthAppSettings,
   setGoogleOAuthAppSettings,
@@ -929,6 +936,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ReorderAiPrompt,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { id: number; direction: 'up' | 'down' },
+      ) => {
+        const ok = moveAiPrompt(payload.id, payload.direction);
+        return ok
+          ? ({ success: true as const } as const)
+          : ({ success: false as const, error: 'Verschieben nicht möglich' } as const);
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
     registerIpcHandler(IPCChannels.Email.GetAiSettings, async () => {
       await ensureDefaultAiProfiles();
       const profiles = listAiProfiles().map((p) => ({
@@ -1224,6 +1247,100 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           messageIdHeader: row.message_id ?? null,
           fromJson: row.from_json ?? null,
         };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetMailSecuritySettings, async () => {
+      return getMailSecuritySettings();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMailSecuritySettings,
+      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof saveMailSecuritySettings>[0]) => {
+        saveMailSecuritySettings(payload);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetMessageSecurity,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const row = getEmailMessageById(messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        return {
+          success: true as const,
+          authSpf: row.auth_spf ?? null,
+          authDkim: row.auth_dkim ?? null,
+          authDmarc: row.auth_dmarc ?? null,
+          authArc: row.auth_arc ?? null,
+          authDkimDomains: row.auth_dkim_domains ?? null,
+          authError: row.auth_error ?? null,
+          rspamdScore: row.rspamd_score ?? null,
+          rspamdAction: row.rspamd_action ?? null,
+          rspamdSymbols: row.rspamd_symbols ?? null,
+          rspamdError: row.rspamd_error ?? null,
+          securityCheckedAt: row.security_checked_at ?? null,
+        };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RunMailSecurityCheck,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const row = getEmailMessageById(messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const r = await runMailSecurityPipeline(messageId);
+        const updated = getEmailMessageById(messageId);
+        return {
+          success: true as const,
+          authChecked: r.authChecked,
+          rspamdChecked: r.rspamdChecked,
+          authSpf: updated?.auth_spf ?? null,
+          authDmarc: updated?.auth_dmarc ?? null,
+          rspamdScore: updated?.rspamd_score ?? null,
+        };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.TestRspamdConnection,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { rspamdUrl?: string; rspamdTimeoutMs?: number } = {},
+      ) => {
+        const settings = getMailSecuritySettings();
+        const baseUrl = (payload.rspamdUrl ?? settings.rspamdUrl).replace(/\/$/, '');
+        const timeoutMs = payload.rspamdTimeoutMs ?? settings.rspamdTimeoutMs;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(`${baseUrl}/stat`, { signal: controller.signal });
+          if (!res.ok) {
+            return { success: false as const, error: `HTTP ${res.status}` };
+          }
+          return { success: true as const, message: `Rspamd erreichbar (${baseUrl})` };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        } finally {
+          clearTimeout(timer);
+        }
       },
       { logger },
     ),

@@ -15,6 +15,8 @@ Stand: Erweiterung nach Produkt-Rundgang (Branch `cursor/email-product-feedback-
 
 | Priorität | Thema |
 |-----------|--------|
+| Erledigt | **P2 mailauth** — SPF/DKIM/DMARC/ARC auf `raw_headers` + Body (`docs/MAIL_SECURITY.md`) |
+| Erledigt | **P3 Rspamd** — optional HTTP `/checkv2` (localhost) |
 | Hoch | Mehrbenutzer + Signatur des eingeloggten Users |
 | Hoch | KI-Profil-Auswahl im Workflow-Knoten-UI (`profileId` Dropdown) |
 | Mittel | Manuelle Kategorie am Thread |
