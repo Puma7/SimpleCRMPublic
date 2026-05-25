@@ -413,6 +413,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.DeleteAiPrompt, { payload: positiveInt, result: standardResult });
+  set(IPCChannels.Email.ReorderAiPrompt, {
+    payload: z.object({
+      id: positiveInt,
+      direction: z.enum(['up', 'down']),
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.AiTransformText, {
     payload: z.object({
       promptId: positiveInt,

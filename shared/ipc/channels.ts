@@ -166,6 +166,7 @@ const EmailChannels = literal({
   ListAiPrompts: 'email:list-ai-prompts',
   SaveAiPrompt: 'email:save-ai-prompt',
   DeleteAiPrompt: 'email:delete-ai-prompt',
+  ReorderAiPrompt: 'email:reorder-ai-prompt',
   AiTransformText: 'email:ai-transform-text',
   GetAiSettings: 'email:get-ai-settings',
   SetAiSettings: 'email:set-ai-settings',
