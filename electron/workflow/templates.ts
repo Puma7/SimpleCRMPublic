@@ -170,7 +170,10 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplateDto[] = [
         {
           id: 'th1',
           type: 'registry',
-          data: { nodeType: 'logic.threshold', config: { variable: 'ai.spam_score', operator: 'gte', value: 70 } },
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'ai.spam_score', operator: 'gte', value: 70, useGlobalThreshold: true },
+          },
         },
         {
           id: 'spam_ai',
@@ -302,6 +305,104 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplateDto[] = [
         { id: 'e4', source: 'sw1', target: 'asg', label: 'vertrieb' },
       ],
     } as WorkflowGraphDocument,
+  },
+  {
+    id: 'schedule-inbox-sync',
+    name: 'Zeitplan: Postfach sync + Log',
+    description:
+      'Cron-Workflow: optional IMAP/POP3-Sync des geplanten Kontos, danach Graph-Lauf (z. B. sync.run).',
+    trigger: 'schedule',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'schedule' } },
+        {
+          id: 'sync1',
+          type: 'registry',
+          data: { nodeType: 'sync.run', config: { scope: 'email_inbox' } },
+        },
+      ],
+      edges: [{ id: 'e0', source: 't1', target: 'sync1' }],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'manual-ping-log',
+    name: 'Manuell: System-Check',
+    description: 'Manueller Trigger für Wartungs- oder Test-Flows (HTTP, Variablen, CRM).',
+    trigger: 'manual',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'manual' } },
+        {
+          id: 'v1',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.set_variable',
+            config: { name: 'manual.ran_at', value: '{{schedule.sync_log}}' },
+          },
+        },
+      ],
+      edges: [{ id: 'e0', source: 't1', target: 'v1' }],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'crm-deal-won-task',
+    name: 'CRM: Aufgabe bei Deal gewonnen',
+    description: 'Legt Follow-up-Aufgabe an wenn Deal-Phase auf gewonnen wechselt.',
+    trigger: 'crm.deal_stage_changed',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'crm.deal_stage_changed' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          data: { field: 'combined_text', op: 'contains', value: 'gewonnen', caseInsensitive: true },
+        },
+        {
+          id: 'task1',
+          type: 'registry',
+          data: {
+            nodeType: 'crm.create_task',
+            config: { title: 'Deal abschließen', priority: 'high', daysUntilDue: 1 },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'task1', label: 'ja' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'inbound-newsletter-archive',
+    name: 'Eingehend: Newsletter archivieren',
+    description: 'Erkennt Newsletter im Betreff und archiviert automatisch.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          data: {
+            field: 'subject',
+            op: 'contains',
+            value: 'newsletter',
+            caseInsensitive: true,
+          },
+        },
+        { id: 'a1', type: 'action', data: { actionType: 'tag', tag: 'newsletter' } },
+        { id: 'a2', type: 'action', data: { actionType: 'archive' } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
+        { id: 'e2', source: 'a1', target: 'a2' },
+      ],
+    },
   },
   {
     id: 'crm-task-from-mail',

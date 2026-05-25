@@ -1,6 +1,7 @@
 import { getWorkflowById, listAllWorkflows } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
 import { executeWorkflowForTrigger } from '../workflow/workflow-executor';
+import { workflowDirectionForTrigger } from '../workflow/workflow-trigger-utils';
 import { listRecentWorkflowRuns } from '../workflow/run-steps';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 
@@ -62,8 +63,7 @@ export const WorkflowApiService = {
     }
 
     const trigger = (wf.trigger as WorkflowTriggerKind) || 'manual';
-    const direction =
-      trigger === 'outbound' ? 'outbound' : trigger === 'schedule' ? 'schedule' : 'manual';
+    const direction = workflowDirectionForTrigger(trigger);
 
     const result = await executeWorkflowForTrigger({
       workflow: wf,

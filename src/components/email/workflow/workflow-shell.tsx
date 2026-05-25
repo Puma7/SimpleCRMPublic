@@ -521,7 +521,7 @@ export function WorkflowShell() {
                         )
                       }
                     >
-                      <option value="">— keins (nur Log) —</option>
+                      <option value="">— keins (nur Graph-Lauf) —</option>
                       {accounts.map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.display_name}
@@ -572,6 +572,52 @@ export function WorkflowShell() {
                         }}
                       >
                         Dry-Run testen
+                      </Button>
+                    )
+                  })()}
+                  {(() => {
+                    const row = rows.find((w) => w.id === selectedId)
+                    const trig = row?.trigger ?? "inbound"
+                    const needsMsg = trig === "inbound" || trig === "outbound" || trig === "draft_created"
+                    const trimmed = testMessageId.trim()
+                    const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
+                    const msgOk =
+                      !needsMsg ||
+                      (trimmed.length > 0 && Number.isFinite(parsedId) && parsedId > 0)
+                    return (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        disabled={selectedId == null || !msgOk}
+                        onClick={async () => {
+                          if (selectedId == null) return
+                          const r = await invokeIpc<{
+                            success: boolean
+                            status?: string
+                            blocked?: boolean
+                            blockReason?: string | null
+                            log?: string[]
+                            error?: string
+                          }>(IPCChannels.Email.ExecuteWorkflowNow, {
+                            workflowId: selectedId,
+                            messageId: needsMsg ? parsedId : undefined,
+                            dryRun: false,
+                          })
+                          if (!r.success) {
+                            toast.error(r.error ?? "Ausführung fehlgeschlagen")
+                            return
+                          }
+                          if (r.blocked) {
+                            toast.warning(r.blockReason ?? "Workflow blockiert")
+                          } else {
+                            toast.success(
+                              `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
+                            )
+                          }
+                        }}
+                      >
+                        Jetzt ausführen
                       </Button>
                     )
                   })()}

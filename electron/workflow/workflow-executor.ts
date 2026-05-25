@@ -1,5 +1,6 @@
 import type { EmailMessageRow } from '../email/email-store';
 import type { OutboundDraftPayload } from '../email/email-workflow-engine';
+import { outboundPayloadFromMessage } from '../email/email-workflow-engine';
 import {
   getWorkflowById,
   type EmailWorkflowRow,
@@ -11,6 +12,10 @@ import { runWorkflowGraph, runWorkflowGraphFromNode, parseGraphDocument } from '
 // parseGraphDocument used for graph presence check
 import { startWorkflowRun, finishWorkflowRun } from './run-steps';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
+import {
+  workflowDirectionForTrigger,
+  workflowTriggerNeedsMessage,
+} from './workflow-trigger-utils';
 
 /** Execute single workflow — prefers graph runtime when graph_json present */
 export async function executeWorkflowForTrigger(input: {
@@ -85,24 +90,66 @@ export async function executeWorkflowForTrigger(input: {
   return { runId, ...result };
 }
 
+export async function executeWorkflowNow(
+  workflowId: number,
+  options: { messageId?: number | null; dryRun?: boolean } = {},
+): Promise<{
+  success: boolean;
+  runId?: number;
+  status?: 'ok' | 'error' | 'blocked';
+  blocked?: boolean;
+  blockReason?: string | null;
+  log?: string[];
+  error?: string;
+}> {
+  const wf = getWorkflowById(workflowId);
+  if (!wf) return { success: false, error: 'Workflow nicht gefunden' };
+  if (wf.enabled !== 1) return { success: false, error: 'Workflow ist deaktiviert' };
+
+  const trigger = (wf.trigger as WorkflowTriggerKind) || 'manual';
+  const direction = workflowDirectionForTrigger(trigger);
+  const dryRun = options.dryRun !== false;
+
+  let message: EmailMessageRow | null = null;
+  if (options.messageId != null) {
+    const { getEmailMessageById } = await import('../email/email-store');
+    message = getEmailMessageById(options.messageId) ?? null;
+    if (!message) return { success: false, error: 'Nachricht nicht gefunden' };
+  } else if (workflowTriggerNeedsMessage(trigger)) {
+    return { success: false, error: 'Für diesen Trigger ist eine Nachricht-ID erforderlich' };
+  }
+
+  let outbound: OutboundDraftPayload | null = null;
+  if (trigger === 'outbound' && message) {
+    outbound = outboundPayloadFromMessage(message);
+  }
+
+  const r = await executeWorkflowForTrigger({
+    workflow: wf,
+    trigger,
+    direction,
+    message,
+    outbound,
+    dryRun,
+  });
+
+  return {
+    success: true,
+    runId: r.runId,
+    status: r.status,
+    blocked: r.blocked,
+    blockReason: r.blockReason,
+    log: r.log,
+  };
+}
+
 export async function testWorkflowOnMessage(
   workflowId: number,
   messageId: number,
   dryRun = true,
 ): Promise<{ success: boolean; runId?: number; log?: string[]; error?: string }> {
-  const wf = getWorkflowById(workflowId);
-  if (!wf) return { success: false, error: 'Workflow nicht gefunden' };
-  const { getEmailMessageById } = await import('../email/email-store');
-  const msg = getEmailMessageById(messageId);
-  if (!msg) return { success: false, error: 'Nachricht nicht gefunden' };
-  const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
-  const r = await executeWorkflowForTrigger({
-    workflow: wf,
-    trigger,
-    direction: trigger === 'outbound' ? 'outbound' : 'inbound',
-    message: msg,
-    dryRun,
-  });
+  const r = await executeWorkflowNow(workflowId, { messageId, dryRun });
+  if (!r.success) return { success: false, error: r.error };
   return { success: true, runId: r.runId, log: r.log };
 }
 

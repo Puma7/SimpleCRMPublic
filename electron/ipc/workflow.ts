@@ -4,7 +4,7 @@ import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getWorkflowById, createWorkflow, updateWorkflow } from '../email/email-workflow-store';
 import { listWorkflowNodeCatalog, ensureBuiltinWorkflowNodes } from '../workflow/registry';
-import { testWorkflowOnMessage } from '../workflow/workflow-executor';
+import { executeWorkflowNow, testWorkflowOnMessage } from '../workflow/workflow-executor';
 import { listRecentWorkflowRuns, listWorkflowRunSteps } from '../workflow/run-steps';
 import { WORKFLOW_TEMPLATES } from '../workflow/templates';
 import { exportWorkflowBundle, parseWorkflowImport } from '../workflow/export-import';
@@ -49,6 +49,17 @@ export function registerWorkflowHandlers(options: {
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId: number; dryRun?: boolean },
       ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, payload.dryRun !== false),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ExecuteWorkflowNow,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { workflowId: number; messageId?: number | null; dryRun?: boolean },
+      ) => executeWorkflowNow(payload.workflowId, payload),
       { logger },
     ),
   );

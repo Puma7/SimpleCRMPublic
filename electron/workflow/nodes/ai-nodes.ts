@@ -41,7 +41,7 @@ export function registerAiNodes(register: Reg): void {
           const id = ctx.messageId ?? ctx.outbound?.messageId;
           const parsed = parseOutboundReviewResponse(out);
           const reason = parsed.reason || 'KI-Prüfung: Versand blockiert';
-          if (id != null) setOutboundHold(id, true, reason);
+          if (!ctx.dryRun && id != null) setOutboundHold(id, true, reason);
           return { status: 'ok', blocked: true, blockReason: reason };
         }
         if (blocked && ctx.messageId != null) addMessageTag(ctx.messageId, 'ki-review-block');
@@ -49,7 +49,7 @@ export function registerAiNodes(register: Reg): void {
       } catch (e) {
         if (ctx.direction === 'outbound') {
           const id = ctx.messageId ?? ctx.outbound?.messageId;
-          if (id != null) setOutboundHold(id, true, 'KI-Fehler');
+          if (!ctx.dryRun && id != null) setOutboundHold(id, true, 'KI-Fehler');
           return { status: 'error', blocked: true, blockReason: 'KI-Fehler' };
         }
         return { status: 'error', message: e instanceof Error ? e.message : String(e) };

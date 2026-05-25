@@ -181,6 +181,7 @@ const EmailChannels = literal({
   CompileWorkflowGraph: 'email:compile-workflow-graph',
   ListWorkflowNodeCatalog: 'workflow:list-node-catalog',
   TestWorkflowOnMessage: 'workflow:test-on-message',
+  ExecuteWorkflowNow: 'workflow:execute-now',
   ListWorkflowRuns: 'workflow:list-runs',
   ListWorkflowRunSteps: 'workflow:list-run-steps',
   ListWorkflowTemplates: 'workflow:list-templates',

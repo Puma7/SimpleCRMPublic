@@ -70,6 +70,7 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
   const [subject, setSubject] = useState("")
   const [bodyHtml, setBodyHtml] = useState("")
   const [sending, setSending] = useState(false)
+  const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
 
   // Track which composeIntent the dialog has initialised for.
@@ -209,6 +210,41 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
       })
     } catch (e) {
       logError("compose-dialog: save draft", e)
+    }
+  }
+
+  const handleCheckOutbound = async () => {
+    if (!hasElectron() || draftId == null) return
+    setCheckingOutbound(true)
+    try {
+      await saveDraft()
+      const safeHtml = sanitizeComposeHtml(bodyHtml)
+      const plain = stripHtmlToText(safeHtml)
+      const r = await invokeIpc<{ success: boolean; allowed?: boolean; reason?: string | null }>(
+        IPCChannels.Email.ValidateOutbound,
+        {
+          messageId: draftId,
+          subject,
+          bodyText: plain,
+          bodyHtml: safeHtml || undefined,
+          to,
+          cc: cc || undefined,
+          attachmentCount: attachmentPaths.length,
+        },
+      )
+      if (!r.success) {
+        toast.error("Ausgangsprüfung fehlgeschlagen")
+        return
+      }
+      if (r.allowed) {
+        toast.success("Ausgangsprüfung: OK — Versand erlaubt.")
+      } else {
+        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")
+    } finally {
+      setCheckingOutbound(false)
     }
   }
 
@@ -448,6 +484,15 @@ export function ComposeDialog({ cannedList, aiPrompts, customers, onSent }: Prop
             onClick={() => void saveDraft().then(() => toast.success("Entwurf gespeichert"))}
           >
             Entwurf speichern
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={checkingOutbound || sending || draftId == null}
+            onClick={() => void handleCheckOutbound()}
+          >
+            {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Ausgang prüfen
           </Button>
           <Button type="button" onClick={() => void handleSend()} disabled={sending}>
             {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}

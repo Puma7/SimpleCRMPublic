@@ -421,16 +421,28 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ValidateOutbound,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; subject: string; bodyText: string; bodyHtml?: string; to: string; cc?: string },
+        payload: {
+          messageId: number;
+          subject: string;
+          bodyText: string;
+          bodyHtml?: string;
+          to: string;
+          cc?: string;
+          attachmentCount?: number;
+        },
       ) => {
-        const result = await evaluateOutboundWorkflows({
-          messageId: payload.messageId,
-          subject: payload.subject,
-          bodyText: payload.bodyText,
-          bodyHtml: payload.bodyHtml,
-          to: payload.to,
-          cc: payload.cc,
-        });
+        const result = await evaluateOutboundWorkflows(
+          {
+            messageId: payload.messageId,
+            subject: payload.subject,
+            bodyText: payload.bodyText,
+            bodyHtml: payload.bodyHtml,
+            to: payload.to,
+            cc: payload.cc,
+            attachmentCount: payload.attachmentCount ?? 0,
+          },
+          { dryRun: true },
+        );
         return { success: true as const, allowed: result.allowed, reason: result.reason };
       },
       { logger },

@@ -1,4 +1,5 @@
 import { getWorkflowById } from '../../email/email-workflow-store';
+import { getWorkflowSpamScoreThreshold } from '../automation-settings';
 import { scheduleDelayedJob } from '../delayed-jobs';
 import { parseGraphDocument, resolveResumeNodeAfter } from '../runtime';
 import type { RegisteredWorkflowNode } from '../types';
@@ -89,7 +90,10 @@ export function registerLogicNodes(register: Reg): void {
         return { status: 'error', message: `Variable ${field} ist keine Zahl` };
       }
       const op = String(config.operator ?? 'gte') === 'lte' ? 'lte' : 'gte';
-      const thresh = Number(config.value ?? 70);
+      const useGlobal = config.useGlobalThreshold === true;
+      const thresh = useGlobal
+        ? getWorkflowSpamScoreThreshold()
+        : Number(config.value ?? 70);
       if (!Number.isFinite(thresh)) {
         return { status: 'error', message: 'Schwellwert ungültig' };
       }

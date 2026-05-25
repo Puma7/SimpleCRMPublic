@@ -403,16 +403,24 @@ function ThresholdFields({
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label className="text-xs">Schwellwert</Label>
+          <Label className="text-xs">Schwellwert (1–100)</Label>
           <Input
             type="number"
             min={1}
             max={100}
             className="h-9"
+            disabled={config.useGlobalThreshold === true}
             value={String(config.value ?? 70)}
             onChange={(e) => patchConfig(patch, config, "value", parseInt(e.target.value, 10) || 70)}
           />
         </div>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-xs">Globaler Spam-Schwellwert (Einstellungen)</Label>
+        <Switch
+          checked={config.useGlobalThreshold === true}
+          onCheckedChange={(on) => patchConfig(patch, config, "useGlobalThreshold", on)}
+        />
       </div>
       <p className="text-[11px] text-muted-foreground">
         Kanten: <strong>yes</strong> / <strong>no</strong> (auch „ja“/„nein“).
