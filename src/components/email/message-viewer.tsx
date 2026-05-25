@@ -58,6 +58,7 @@ import {
 import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
+import { MessageAiSuggestions } from "./message-ai-suggestions"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -446,6 +447,11 @@ export function MessageViewer(props: Props) {
                     </span>
                   ) : null}
                 </div>
+
+                <MessageAiSuggestions
+                  message={selectedMessage}
+                  onDraftReply={() => onReply(selectedMessage)}
+                />
 
                 <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">

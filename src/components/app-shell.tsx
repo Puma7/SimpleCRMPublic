@@ -1,5 +1,6 @@
 "use client"
 
+import { useCallback, useState } from "react"
 import { Outlet, useRouterState } from "@tanstack/react-router"
 import { ThemeProvider } from "next-themes"
 import Titlebar from "@/components/ui/titlebar"
@@ -9,6 +10,11 @@ import { ErrorBoundary } from "@/components/error-boundary"
 import { Toaster } from "@/components/ui/sonner"
 import { BetaAppShell } from "@/components/beta/beta-app-shell"
 import { useUiTheme } from "@/components/beta/ui-theme-provider"
+import {
+  CommandPalette,
+  useCommandPaletteShortcut,
+} from "@/components/theme/command-palette"
+import { ThemeTweaksPanel } from "@/components/theme/theme-tweaks-panel"
 import { cn } from "@/lib/utils"
 
 function AppMain() {
@@ -37,15 +43,21 @@ function betaBreadcrumbs(pathname: string): { label: string; muted?: boolean }[]
       { label: "Konten" },
     ]
   }
-  if (pathname.startsWith("/email")) {
-    return [
-      { label: "Kommunikation", muted: true },
-      { label: "E-Mail" },
-    ]
+  if (pathname.startsWith("/email/workflows")) {
+    return [{ label: "Kommunikation", muted: true }, { label: "Workflows" }]
   }
-  if (pathname.startsWith("/customers")) return [{ label: "Arbeitsfläche", muted: true }, { label: "Kunden" }]
-  if (pathname.startsWith("/deals")) return [{ label: "Arbeitsfläche", muted: true }, { label: "Deals" }]
-  if (pathname.startsWith("/tasks")) return [{ label: "Arbeitsfläche", muted: true }, { label: "Aufgaben" }]
+  if (pathname.startsWith("/email")) {
+    return [{ label: "Kommunikation", muted: true }, { label: "Postfach" }]
+  }
+  if (pathname.startsWith("/customers")) {
+    return [{ label: "Arbeitsfläche", muted: true }, { label: "Kunden" }]
+  }
+  if (pathname.startsWith("/deals")) {
+    return [{ label: "Arbeitsfläche", muted: true }, { label: "Deals" }]
+  }
+  if (pathname.startsWith("/tasks")) {
+    return [{ label: "Arbeitsfläche", muted: true }, { label: "Aufgaben" }]
+  }
   if (pathname === "/" || pathname === "") return [{ label: "Dashboard" }]
   return [{ label: "SimpleCRM" }]
 }
@@ -54,13 +66,22 @@ export function AppShell() {
   const { theme } = useUiTheme()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isBeta = theme === "beta"
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [tweaksOpen, setTweaksOpen] = useState(false)
+
+  const openPalette = useCallback(() => setPaletteOpen(true), [])
+  useCommandPaletteShortcut(openPalette)
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
       <div className="flex h-screen min-h-0 flex-col overflow-hidden font-sans antialiased">
         <Titlebar />
         {isBeta ? (
-          <BetaAppShell breadcrumbs={betaBreadcrumbs(pathname)}>
+          <BetaAppShell
+            breadcrumbs={betaBreadcrumbs(pathname)}
+            onOpenCommandPalette={openPalette}
+            onOpenTweaks={() => setTweaksOpen(true)}
+          >
             <UpdateStatusDisplay />
             <AppMain />
           </BetaAppShell>
@@ -72,6 +93,15 @@ export function AppShell() {
           </>
         )}
         <Toaster richColors closeButton position="bottom-right" />
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          onOpenTweaks={() => {
+            setPaletteOpen(false)
+            setTweaksOpen(true)
+          }}
+        />
+        <ThemeTweaksPanel open={tweaksOpen} onOpenChange={setTweaksOpen} />
       </div>
     </ThemeProvider>
   )

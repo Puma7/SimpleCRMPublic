@@ -23,6 +23,8 @@ export type ComposeIntent =
   | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 
+export type MessageListFilter = "all" | "unread" | "attachment" | "customer" | "workflow"
+
 export type SettingsTab =
   | "accounts"
   | "smtp"
@@ -52,6 +54,8 @@ type MailWorkspaceState = {
   setSelectedMessage: Dispatch<SetStateAction<EmailMessage | null>>
   searchQuery: string
   setSearchQuery: Dispatch<SetStateAction<string>>
+  messageListFilter: MessageListFilter
+  setMessageListFilter: Dispatch<SetStateAction<MessageListFilter>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
   settingsTab: SettingsTab
@@ -155,6 +159,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [categoryFilterId, setCategoryFilterId] = useState<number | null>(null)
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
+  const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
@@ -229,6 +234,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSelectedMessage,
       searchQuery,
       setSearchQuery,
+      messageListFilter,
+      setMessageListFilter,
       composeIntent,
       setComposeIntent,
       settingsTab,
@@ -248,6 +255,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       categoryFilterId,
       selectedMessage,
       searchQuery,
+      messageListFilter,
       composeIntent,
       settingsTab,
       settingsAccountId,

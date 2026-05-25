@@ -7,9 +7,8 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { Loader2, PenSquare, RefreshCw, Search } from "lucide-react"
+import { Loader2, PenSquare, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { useMailWorkspace } from "../workspace-context"
 import { MailSidebar } from "../mail-sidebar"
 import { MessageList } from "../message-list"
@@ -23,6 +22,7 @@ import { useMessageMetadata } from "../hooks/use-message-metadata"
 import { useMailAuxData } from "../hooks/use-mail-aux-data"
 import { useMailFolderCounts } from "../hooks/use-mail-folder-counts"
 import { BetaEmailSubnav } from "./beta-email-subnav"
+import { ContextBar } from "@/components/theme/context-bar"
 
 const PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
 
@@ -35,8 +35,6 @@ export function BetaMailShell() {
     setComposeIntent,
     selectedAccountId,
     selectedMessage,
-    searchQuery,
-    setSearchQuery,
     setMetadataPanelOpen,
   } = useMailWorkspace()
 
@@ -77,47 +75,44 @@ export function BetaMailShell() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <BetaEmailSubnav />
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-card/20 px-3 py-2">
-        <div className="relative min-w-[200px] flex-1 max-w-lg">
-          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-          <Input
-            className="h-8 border-border/50 bg-muted/20 pl-8 text-xs"
-            placeholder="Nachrichten durchsuchen…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 gap-1.5"
-          onClick={() => setComposeIntent({ mode: "new" })}
-          disabled={
-            selectedAccountId == null ||
-            (selectedAccountId !== "all" && !accounts.length) ||
-            (selectedAccountId === "all" && accounts.length === 0)
-          }
-        >
-          <PenSquare className="h-3.5 w-3.5" />
-          Verfassen
-        </Button>
-        <Button
-          type="button"
-          size="icon"
-          variant="outline"
-          className="h-8 w-8"
-          disabled={selectedAccountId == null || syncing}
-          onClick={() => void handleSyncWithCategories()}
-        >
-          {syncing ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3.5 w-3.5" />
-          )}
-        </Button>
-      </div>
-
+      <ContextBar
+        eyebrow="Kommunikation"
+        title="Postfach"
+        breadcrumbs={[{ label: "E-Mail", muted: true }, { label: "Postfach" }]}
+        tabs={<BetaEmailSubnav embedded />}
+        actions={
+          <>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 gap-1.5 crm-glow-button"
+              onClick={() => setComposeIntent({ mode: "new" })}
+              disabled={
+                selectedAccountId == null ||
+                (selectedAccountId !== "all" && !accounts.length) ||
+                (selectedAccountId === "all" && accounts.length === 0)
+              }
+            >
+              <PenSquare className="h-3.5 w-3.5" />
+              Verfassen
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="h-8 w-8"
+              disabled={selectedAccountId == null || syncing}
+              onClick={() => void handleSyncWithCategories()}
+            >
+              {syncing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          </>
+        }
+      />
       <ResizablePanelGroup
         direction="horizontal"
         id="email-beta-panes"
