@@ -1849,7 +1849,7 @@ export function deleteCalendarEvent(id: number): Database.RunResult {
 export function getAllDeals(
   limit: number = 100,
   offset: number = 0,
-  filter: { stage?: string; query?: string } = {}
+  filter: { stage?: string; query?: string; customer_id?: number } = {}
 ): any[] {
   let sql = `
     SELECT d.*, c.name as customer_name
@@ -1859,6 +1859,11 @@ export function getAllDeals(
   `;
 
   const params: any[] = [];
+
+  if (filter.customer_id != null) {
+    sql += ` AND d.customer_id = ?`;
+    params.push(filter.customer_id);
+  }
 
   // Add stage filter if provided
   if (filter.stage) {

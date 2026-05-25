@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { Link } from "@tanstack/react-router"
-import { Users, FileBox, CheckSquare, CheckCircle, Settings, CalendarDays, Package, ListChecks, LayoutDashboard, Mail, BarChart3 } from "lucide-react"
+import { Users, FileBox, CheckSquare, CheckCircle, Settings, CalendarDays, Package, ListChecks, LayoutDashboard, Mail } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navLinks = [
@@ -12,7 +12,6 @@ const navLinks = [
   { to: "/products", label: "Produkte", icon: Package },
   { to: "/calendar", label: "Kalender", icon: CalendarDays },
   { to: "/email", label: "E-Mail", icon: Mail },
-  { to: "/email/reporting", label: "Mail-Report", icon: BarChart3 },
 ] as const
 
 export function MainNav({ className, ...props }: React.HTMLAttributes<HTMLElement>) {

@@ -179,70 +179,56 @@ export function MessageViewer(props: Props) {
                   Weiterleiten
                 </Button>
                 <div className="mx-1 h-6 w-px bg-border" />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => void handleToggleSeen()}
-                    >
-                      {selectedMessage.seen_local ? (
-                        <Mail className="h-4 w-4" />
-                      ) : (
-                        <MailOpen className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {selectedMessage.seen_local
-                      ? "Als ungelesen markieren"
-                      : "Als gelesen markieren"}
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => void handleToggleSpam()}
-                    >
-                      <ShieldAlert className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {selectedMessage.is_spam ? "Kein Spam" : "Als Spam markieren"}
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => void handleArchive()}
-                    >
-                      <Archive className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {selectedMessage.archived ? "Aus Archiv holen" : "Archivieren"}
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => void handleSoftDelete()}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>In Papierkorb</TooltipContent>
-                </Tooltip>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-1.5"
+                  onClick={() => void handleToggleSeen()}
+                >
+                  {selectedMessage.seen_local ? (
+                    <Mail className="h-4 w-4" />
+                  ) : (
+                    <MailOpen className="h-4 w-4" />
+                  )}
+                  <span className="hidden lg:inline">
+                    {selectedMessage.seen_local ? "Ungelesen" : "Gelesen"}
+                  </span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-1.5"
+                  onClick={() => void handleToggleSpam()}
+                >
+                  <ShieldAlert className="h-4 w-4" />
+                  <span className="hidden lg:inline">
+                    {selectedMessage.is_spam ? "Kein Spam" : "Spam"}
+                  </span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-1.5"
+                  onClick={() => void handleArchive()}
+                >
+                  <Archive className="h-4 w-4" />
+                  <span className="hidden lg:inline">
+                    {selectedMessage.archived ? "Aus Archiv" : "Archiv"}
+                  </span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-1.5"
+                  onClick={() => void handleSoftDelete()}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span className="hidden lg:inline">Papierkorb</span>
+                </Button>
               </>
             ) : null}
           </div>

@@ -22,17 +22,7 @@ import { cn } from "@/lib/utils"
 import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
-
-const TRIGGER_LABELS: Record<string, string> = {
-  inbound: "E-Mail eingehend",
-  outbound: "E-Mail ausgehend",
-  draft_created: "Entwurf erstellt",
-  schedule: "Zeitplan (Cron)",
-  manual: "Manuell",
-  "crm.deal_stage_changed": "Deal-Phase",
-  "task.due": "Aufgabe fällig",
-  "calendar.event_start": "Termin",
-}
+import { workflowTriggerLabel } from "./trigger-labels"
 
 const CONDITION_FIELD_LABELS: Record<string, string> = {
   subject: "Betreff",
@@ -68,7 +58,7 @@ function TriggerNodeCard({ data, selected }: NodeProps) {
         Trigger
       </div>
       <div className="text-sm font-medium text-foreground">
-        {TRIGGER_LABELS[d.kind ?? "inbound"] ?? d.kind}
+        {workflowTriggerLabel(d.kind)}
       </div>
       <Handle type="source" position={Position.Bottom} className="!bg-emerald-500" />
     </div>

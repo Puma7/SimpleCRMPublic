@@ -1,49 +1,56 @@
 "use client"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Mail } from "lucide-react"
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { MailWorkspaceProvider, useMailWorkspace } from "./workspace-context"
+import { useMailWorkspace } from "./workspace-context"
 import { MailTopbar } from "./mail-topbar"
 import { MailSidebar } from "./mail-sidebar"
 import { MessageList } from "./message-list"
 import { MessageViewer } from "./message-viewer"
 import { ComposeDialog } from "./compose-dialog"
-import { SettingsDialog } from "./settings-dialog"
 import { useEmailAccounts } from "./hooks/use-email-accounts"
 import { useEmailMessages } from "./hooks/use-email-messages"
 import { useEmailCategories } from "./hooks/use-email-categories"
 import { useMessageMetadata } from "./hooks/use-message-metadata"
 import { useMailAuxData } from "./hooks/use-mail-aux-data"
-import { hasElectron } from "./types"
+import { useMailFolderCounts } from "./hooks/use-mail-folder-counts"
 
 function MailShellInner() {
   const { setComposeIntent, selectedAccountId } = useMailWorkspace()
   const { accounts, teamMembers, loadingAccounts } = useEmailAccounts()
   const { categories, countForCategory, loadCategories } = useEmailCategories()
+  const { reloadCounts } = useMailFolderCounts()
   const {
     messages,
     loadingMessages,
     syncing,
     openMessage,
-    refreshList,
+    refreshList: refreshListBase,
     refreshCurrentMessage,
     handleSync,
   } = useEmailMessages()
+  const refreshList = async () => {
+    await refreshListBase()
+    if (selectedAccountId != null) await reloadCounts(selectedAccountId)
+  }
 
   // Preserve old behaviour: after a sync the category counts must refresh as well.
   const handleSyncWithCategories = () =>
-    void handleSync({ onAfterSync: (accountId) => loadCategories(accountId) })
+    void handleSync({
+      onAfterSync: async (accountId) => {
+        await loadCategories(accountId)
+        await reloadCounts(accountId)
+      },
+    })
   const { messageTags, internalNotes, messageAttachments, reloadNotes } =
     useMessageMetadata()
   const { customers, cannedList, aiPrompts } = useMailAuxData()
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden bg-background">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <MailTopbar
         onCompose={() => setComposeIntent({ mode: "new" })}
         onSync={handleSyncWithCategories}
@@ -94,35 +101,11 @@ function MailShellInner() {
         customers={customers}
         onSent={refreshList}
       />
-      <SettingsDialog />
     </div>
   )
 }
 
+/** Postfach-Inhalt (Provider und Sub-Nav liegen im E-Mail-Layout). */
 export function MailShell() {
-  if (!hasElectron()) {
-    return (
-      <div className="container max-w-2xl py-10">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Mail className="h-5 w-5" />
-              E-Mail
-            </CardTitle>
-            <CardDescription>
-              Das E-Mail-Modul ist nur in der Desktop-App (Electron) verfügbar. Bitte starten Sie SimpleCRM mit{" "}
-              <code className="rounded bg-muted px-1">npm run electron:dev</code>.
-            </CardDescription>
-          </CardHeader>
-          <CardContent />
-        </Card>
-      </div>
-    )
-  }
-
-  return (
-    <MailWorkspaceProvider>
-      <MailShellInner />
-    </MailWorkspaceProvider>
-  )
+  return <MailShellInner />
 }

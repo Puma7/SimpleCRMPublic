@@ -1,15 +1,6 @@
 "use client"
 
-import { Link } from "@tanstack/react-router"
-import {
-  BarChart3,
-  Loader2,
-  Mail,
-  PenSquare,
-  RefreshCw,
-  Settings,
-  Workflow,
-} from "lucide-react"
+import { Loader2, Mail, PenSquare, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Tooltip,
@@ -17,7 +8,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
   onCompose: () => void
@@ -28,14 +18,12 @@ type Props = {
 }
 
 export function MailTopbar({ onCompose, onSync, syncing, canSync, canCompose }: Props) {
-  const { setSettingsOpen } = useMailWorkspace()
-
   return (
     <TooltipProvider delayDuration={150}>
-      <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex items-center gap-2">
-          <Mail className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold tracking-tight">E-Mail</h1>
+      <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Mail className="h-4 w-4 text-primary" />
+          <span className="font-medium text-foreground">Postfach</span>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -58,6 +46,7 @@ export function MailTopbar({ onCompose, onSync, syncing, canSync, canCompose }: 
                 variant="outline"
                 onClick={onSync}
                 disabled={!canSync || syncing}
+                aria-label="Synchronisieren"
               >
                 {syncing ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -66,45 +55,7 @@ export function MailTopbar({ onCompose, onSync, syncing, canSync, canCompose }: 
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Synchronisieren</TooltipContent>
-          </Tooltip>
-
-          <div className="mx-1 h-6 w-px bg-border" />
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button type="button" size="icon" variant="ghost" asChild>
-                <Link to="/email/workflows">
-                  <Workflow className="h-4 w-4" />
-                </Link>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Workflows</TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button type="button" size="icon" variant="ghost" asChild>
-                <Link to="/email/reporting">
-                  <BarChart3 className="h-4 w-4" />
-                </Link>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Auswertung</TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <Settings className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Einstellungen</TooltipContent>
+            <TooltipContent>Konto synchronisieren</TooltipContent>
           </Tooltip>
         </div>
       </header>

@@ -32,6 +32,10 @@ const {
   initializeMssqlService,
   closeMssqlPool,
 } = require('../dist-electron/electron/mssql-keytar-service');
+const {
+  startAutomationApiServer,
+  stopAutomationApiServer,
+} = require('../dist-electron/electron/automation/server');
 
 // Keep a global reference of the mainWindow object
 let mainWindow;
@@ -343,6 +347,8 @@ initializeApp()
 
       startEmailBackgroundServices(log).catch((err) => log.warn('[email] background services', err));
 
+      startAutomationApiServer(log).catch((err) => log.warn('[automation-api] start failed', err));
+
       const toggleDevTools = () => {
         if (!mainWindow || mainWindow.isDestroyed()) {
           return;
@@ -411,6 +417,7 @@ app.on('will-quit', () => {
   } catch (e) {
     log.warn('[email] stop background', e);
   }
+  stopAutomationApiServer().catch((err) => log.warn('[automation-api] stop failed', err));
   globalShortcut.unregisterAll();
   if (typeof cleanupIpcHandlers === 'function') {
     try {

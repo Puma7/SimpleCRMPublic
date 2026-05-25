@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import type { CategoryRow, EmailAccount, MailView } from "./types"
+import { useMailFolderCounts, type MailFolderCounts } from "./hooks/use-mail-folder-counts"
 import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
@@ -23,13 +24,19 @@ type Props = {
   countForCategory: (id: number) => number
 }
 
-const FOLDERS: { id: MailView; label: string; icon: typeof Inbox }[] = [
-  { id: "inbox", label: "Posteingang", icon: Inbox },
-  { id: "sent", label: "Gesendet", icon: Send },
-  { id: "drafts", label: "Entwürfe", icon: FileEdit },
-  { id: "archived", label: "Archiv", icon: Archive },
-  { id: "spam", label: "Spam", icon: ShieldAlert },
-  { id: "trash", label: "Papierkorb", icon: Trash2 },
+const FOLDERS: {
+  id: MailView
+  label: string
+  icon: typeof Inbox
+  countKey: keyof MailFolderCounts
+  unreadKey?: keyof MailFolderCounts
+}[] = [
+  { id: "inbox", label: "Posteingang", icon: Inbox, countKey: "inbox", unreadKey: "inboxUnread" },
+  { id: "sent", label: "Gesendet", icon: Send, countKey: "sent" },
+  { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
+  { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
+  { id: "spam", label: "Spam", icon: ShieldAlert, countKey: "spam" },
+  { id: "trash", label: "Papierkorb", icon: Trash2, countKey: "trash" },
 ]
 
 export function MailSidebar({
@@ -47,6 +54,7 @@ export function MailSidebar({
     setCategoryFilterId,
     setSearchQuery,
   } = useMailWorkspace()
+  const { counts } = useMailFolderCounts()
 
   const renderCategories = (): ReactNode => {
     const roots = categories
@@ -122,24 +130,41 @@ export function MailSidebar({
 
       <ScrollArea className="flex-1">
         <div className="space-y-0.5 p-2">
-          {FOLDERS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => {
-                setMailView(id)
-                setCategoryFilterId(null)
-                setSearchQuery("")
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
-                mailView === id && categoryFilterId === null && "bg-muted font-medium",
-              )}
-            >
-              <Icon className="h-4 w-4 text-muted-foreground" />
-              {label}
-            </button>
-          ))}
+          {FOLDERS.map(({ id, label, icon: Icon, countKey, unreadKey }) => {
+            const total = countKey ? counts[countKey] : 0
+            const unread = unreadKey ? counts[unreadKey] : 0
+            const badge = unread > 0 ? unread : total > 0 ? total : null
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => {
+                  setMailView(id)
+                  setCategoryFilterId(null)
+                  setSearchQuery("")
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+                  mailView === id && categoryFilterId === null && "bg-muted font-medium",
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {badge != null ? (
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums",
+                      unread > 0
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {badge > 99 ? "99+" : badge}
+                  </span>
+                ) : null}
+              </button>
+            )
+          })}
         </div>
 
         <Separator className="my-1" />

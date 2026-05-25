@@ -85,6 +85,13 @@ const JtlChannels = literal({
   CreateOrder: 'jtl:create-order',
 });
 
+const AutomationChannels = literal({
+  GetSettings: 'automation:get-settings',
+  SetSettings: 'automation:set-settings',
+  GenerateApiKey: 'automation:generate-api-key',
+  RevokeApiKey: 'automation:revoke-api-key',
+});
+
 const FollowUpChannels = literal({
   GetItems: 'followup:get-items',
   GetQueueCounts: 'followup:get-queue-counts',
@@ -140,6 +147,7 @@ const EmailChannels = literal({
   ListCategories: 'email:list-categories',
   CreateCategory: 'email:create-category',
   CategoryCounts: 'email:category-counts',
+  MailFolderCounts: 'email:mail-folder-counts',
   AddInternalNote: 'email:add-internal-note',
   ListInternalNotes: 'email:list-internal-notes',
   ListCannedResponses: 'email:list-canned',
@@ -215,6 +223,7 @@ export const IPCChannels = {
   Dashboard: DashboardChannels,
   CustomFields: CustomFieldChannels,
   Email: EmailChannels,
+  Automation: AutomationChannels,
   FollowUp: FollowUpChannels,
 } as const;
 
@@ -233,6 +242,7 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Dashboard),
   ...Object.values(IPCChannels.CustomFields),
   ...Object.values(IPCChannels.Email),
+  ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
 );
 
