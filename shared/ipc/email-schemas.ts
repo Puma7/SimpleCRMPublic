@@ -337,13 +337,46 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  const aiProviderPresetIdSchema = z.enum([
+    'openai',
+    'openrouter',
+    'anthropic',
+    'google',
+    'deepseek',
+    'ollama',
+    'custom',
+  ]);
+  const aiProfileSummarySchema = z.object({
+    id: positiveInt,
+    label: z.string(),
+    provider: z.string(),
+    baseUrl: z.string(),
+    model: z.string(),
+    embeddingModel: z.string().nullable(),
+    isDefault: z.boolean(),
+  });
   set(IPCChannels.Email.GetAiSettings, {
     payload: voidPayload,
-    result: z.object({
-      baseUrl: z.string(),
-      model: z.string(),
-      embeddingModel: z.string().optional(),
-    }),
+    result: z
+      .object({
+        success: z.literal(true).optional(),
+        baseUrl: z.string(),
+        model: z.string(),
+        embeddingModel: z.string().optional(),
+        profiles: z.array(aiProfileSummarySchema).optional(),
+        providerPresets: z
+          .record(
+            z.string(),
+            z.object({
+              label: z.string(),
+              baseUrl: z.string(),
+              defaultModel: z.string(),
+              defaultEmbeddingModel: z.string().optional(),
+            }),
+          )
+          .optional(),
+      })
+      .passthrough(),
   });
   set(IPCChannels.Email.SetAiSettings, {
     payload: z.object({
@@ -359,7 +392,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       id: z.number().int().positive().optional(),
       label: nonEmptyString,
-      provider: z.string(),
+      provider: aiProviderPresetIdSchema,
       baseUrl: z.string(),
       model: z.string(),
       embeddingModel: z.string().nullable().optional(),
@@ -516,8 +549,15 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.DeleteKnowledgeBase, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.AddKnowledgeChunk, {
-    payload: z.object({ knowledgeBaseId: positiveInt, text: nonEmptyString }),
-    result: standardResult,
+    payload: z.object({
+      knowledgeBaseId: positiveInt,
+      title: z.string().optional(),
+      content: nonEmptyString,
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), id: positiveInt }),
+      failResult,
+    ]),
   });
   set(IPCChannels.Email.ImportKnowledgeFile, {
     payload: z.object({ knowledgeBaseId: positiveInt }),

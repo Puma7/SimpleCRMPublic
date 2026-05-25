@@ -10,14 +10,12 @@ import { getEmailAiApiKey, saveEmailAiApiKey } from './email-ai-keytar';
 const KEYTAR_SERVICE = 'SimpleCRMElectron-EmailAI';
 const LEGACY_MIGRATED = 'email_ai_profiles_legacy_migrated';
 
-export type AiProviderPreset =
-  | 'openai'
-  | 'openrouter'
-  | 'anthropic'
-  | 'google'
-  | 'deepseek'
-  | 'ollama'
-  | 'custom';
+import {
+  AI_PROVIDER_PRESETS,
+  type AiProviderPresetId,
+} from '@shared/ai-provider-presets';
+
+export type AiProviderPreset = AiProviderPresetId;
 
 export type EmailAiProfileRow = {
   id: number;
@@ -31,46 +29,7 @@ export type EmailAiProfileRow = {
   sort_order: number;
 };
 
-export const AI_PROVIDER_PRESETS: Record<
-  AiProviderPreset,
-  { label: string; baseUrl: string; defaultModel: string }
-> = {
-  openai: {
-    label: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
-  },
-  openrouter: {
-    label: 'Open Router',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openai/gpt-4o-mini',
-  },
-  anthropic: {
-    label: 'Anthropic (OpenAI-kompatibel)',
-    baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-3-5-haiku-latest',
-  },
-  google: {
-    label: 'Google Gemini (OpenAI-kompatibel)',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.0-flash',
-  },
-  deepseek: {
-    label: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-  },
-  ollama: {
-    label: 'Ollama (lokal)',
-    baseUrl: 'http://127.0.0.1:11434/v1',
-    defaultModel: 'llama3.2',
-  },
-  custom: {
-    label: 'OpenAI-kompatibel (frei)',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
-  },
-};
+export { AI_PROVIDER_PRESETS };
 
 function listProfilesRaw(): EmailAiProfileRow[] {
   return getDb()

@@ -100,6 +100,45 @@ describe('IPC contracts', () => {
     ).not.toThrow();
   });
 
+  test('Email.GetAiSettings result accepts profiles and providerPresets', () => {
+    expect(() =>
+      getResultSchema(IPCChannels.Email.GetAiSettings).parse({
+        success: true,
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o-mini',
+        embeddingModel: 'text-embedding-3-small',
+        profiles: [
+          {
+            id: 1,
+            label: 'Standard',
+            provider: 'openai',
+            baseUrl: 'https://api.openai.com/v1',
+            model: 'gpt-4o-mini',
+            embeddingModel: null,
+            isDefault: true,
+          },
+        ],
+        providerPresets: {
+          openai: {
+            label: 'OpenAI',
+            baseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test('Email.AddKnowledgeChunk payload accepts title and content', () => {
+    expect(() =>
+      getPayloadSchema(IPCChannels.Email.AddKnowledgeChunk).parse({
+        knowledgeBaseId: 1,
+        title: 'FAQ',
+        content: 'Antwort hier',
+      }),
+    ).not.toThrow();
+  });
+
   test('Dashboard list payloads accept optional limit', () => {
     expect(() => getPayloadSchema(IPCChannels.Dashboard.GetRecentCustomers).parse(5)).not.toThrow();
     expect(() => getPayloadSchema(IPCChannels.Dashboard.GetRecentCustomers).parse(undefined)).not.toThrow();
