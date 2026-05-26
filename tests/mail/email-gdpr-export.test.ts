@@ -103,4 +103,43 @@ describe('exportEmailGdprPackage', () => {
     const r = await exportEmailGdprPackage();
     expect(r.ok).toBe(false);
   });
+
+  test('fails when dialog returns no filePath', async () => {
+    (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: false, filePath: undefined });
+    const r = await exportEmailGdprPackage();
+    expect(r.ok).toBe(false);
+  });
+
+  test('handles stream and archive errors', async () => {
+    (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: false, filePath: outFile });
+    const writeStream = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+    writeStream.destroy = jest.fn();
+    jest.spyOn(fs, 'createWriteStream').mockReturnValue(writeStream as never);
+    const promise = exportEmailGdprPackage();
+    process.nextTick(() => writeStream.emit('error', new Error('disk full')));
+    const r = await promise;
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/disk full/);
+  });
+
+  test('paginates messages and notes batches', async () => {
+    stmt.all.mockReset();
+    stmt.all
+      .mockReturnValueOnce([{ id: 1, display_name: 'A', email_address: 'a@x.de' }])
+      .mockReturnValueOnce(Array.from({ length: 2000 }, (_, i) => ({ id: i + 1 })))
+      .mockReturnValueOnce([{ id: 2001 }])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([{ id: 1, note: 'n' }])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([{ id: 1, name: 'W', trigger: 'inbound' }])
+      .mockReturnValueOnce([{ id: 1, workflow_id: 1, status: 'ok' }]);
+    (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: false, filePath: outFile });
+    const writeStream = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+    writeStream.destroy = jest.fn();
+    jest.spyOn(fs, 'createWriteStream').mockReturnValue(writeStream as never);
+    const promise = exportEmailGdprPackage();
+    process.nextTick(() => writeStream.emit('close'));
+    const r = await promise;
+    expect(r.ok).toBe(true);
+  });
 });

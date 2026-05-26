@@ -107,13 +107,64 @@ describe('mail-eml-build', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  test('formatEmlDisplayAppendix', () => {
-    const appendix = formatEmlDisplayAppendix(
-      messageRow({ pop3_uidl: 'uidl-1' }),
-      { source: 'reconstructed', attachmentCount: 2, note: 'note' },
+  test('formatMailboxList with display names and invalid json fallback', () => {
+    const named = buildEmlForMessage(
+      messageRow({
+        from_json: JSON.stringify({ value: [{ address: 'a@b.de', name: 'Alice "A"' }] }),
+        to_json: 'not-json-but-fallback@x.de',
+        body_html: null,
+        body_text: 'Only plain',
+        raw_headers: null,
+      }),
+      [],
     );
-    expect(appendix).toContain('Rekonstruktion');
-    expect(appendix).toContain('POP3 UIDL');
-    expect(appendix).toContain('Auth:');
+    expect(named.eml).toContain('Alice');
+    expect(named.eml).toContain('text/plain');
+  });
+
+  test('html-only single part and empty attachment file skipped', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'eml2-'));
+    const empty = path.join(tmp, 'empty.bin');
+    fs.writeFileSync(empty, Buffer.alloc(0));
+    const row = messageRow({ body_text: null, raw_headers: 'From: x@y.de\r\nSubject: H' });
+    const eml = buildEmlForMessage(row, [
+      {
+        id: 2,
+        message_id: 1,
+        filename_display: 'empty.bin',
+        content_type: 'application/octet-stream',
+        size_bytes: 0,
+        storage_path: empty,
+        created_at: 't',
+      },
+    ]);
+    expect(eml.eml).toContain('text/html');
+    expect(eml.meta.note).toMatch(/rekonstruiert aus gespeicherten Headern/);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('unreadable attachment is skipped', () => {
+    const row = messageRow({ raw_headers: 'From: z@y.de' });
+    const eml = buildEmlForMessage(row, [
+      {
+        id: 3,
+        message_id: 1,
+        filename_display: 'nope.bin',
+        content_type: 'application/octet-stream',
+        size_bytes: 1,
+        storage_path: '/proc/self/mem',
+        created_at: 't',
+      },
+    ]);
+    expect(eml.eml).not.toContain('nope.bin');
+  });
+
+  test('formatEmlDisplayAppendix original source without auth', () => {
+    const appendix = formatEmlDisplayAppendix(
+      messageRow({ auth_spf: null, auth_dkim: null, auth_dmarc: null }),
+      { source: 'original', attachmentCount: 0 },
+    );
+    expect(appendix).toContain('Original-Rohmail');
+    expect(appendix).not.toContain('Auth:');
   });
 });

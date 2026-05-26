@@ -39,6 +39,8 @@
     "test:all": "pnpm test:coverage && pnpm test:e2e",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage --selectProjects unit integration",
+    "test:mail": "jest --config jest.mail.config.cjs --coverageThreshold='{}'",
+    "test:mail:coverage": "jest --config jest.mail.config.cjs",
     "test:electron": "jest --testMatch='**/__tests__/electron/**/*.test.ts'",
     "test:frontend": "jest --testMatch='**/__tests__/frontend/**/*.test.tsx'"
   },

@@ -126,6 +126,37 @@ describe('email-workflow-store', () => {
     expect(() => updateWorkflow(9, { name: 'x' })).toThrow(/nicht gefunden/);
   });
 
+  test('updateWorkflow all optional fields', () => {
+    stmt.get.mockReturnValue({
+      id: 1,
+      name: 'W',
+      trigger: 'inbound',
+      enabled: 1,
+      priority: 1,
+      definition_json: '{}',
+      graph_json: null,
+      cron_expr: null,
+      schedule_account_id: null,
+      execution_mode: 'graph',
+      engine_version: 1,
+      created_at: 't',
+      updated_at: 't',
+    });
+    updateWorkflow(1, {
+      name: 'N',
+      trigger: 'outbound',
+      priority: 2,
+      definitionJson: '{"version":1,"rules":[]}',
+      graphJson: '{}',
+      cronExpr: '0 * * * *',
+      enabled: false,
+      scheduleAccountId: 3,
+      executionMode: 'legacy',
+      engineVersion: 2,
+    });
+    expect(stmt.run).toHaveBeenCalled();
+  });
+
   test('updateWorkflow no-op when no fields', () => {
     stmt.get.mockReturnValue({
       id: 1,
@@ -144,5 +175,10 @@ describe('email-workflow-store', () => {
     });
     updateWorkflow(1, {});
     expect(stmt.run).not.toHaveBeenCalled();
+  });
+
+  test('wasWorkflowAppliedToMessage false when missing', () => {
+    stmt.get.mockReturnValue(undefined);
+    expect(wasWorkflowAppliedToMessage(1, 9)).toBe(false);
   });
 });

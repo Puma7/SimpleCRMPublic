@@ -114,4 +114,53 @@ describe('rspamd-client', () => {
     expect(r.symbols.some((s) => s.startsWith('HIGH'))).toBe(true);
     expect(r.symbols.some((s) => s.startsWith('LOW'))).toBe(false);
   });
+
+  test('handles fetch network error', async () => {
+    (buildRfc822FromStored as jest.Mock).mockReturnValue(Buffer.from('raw'));
+    global.fetch = jest.fn().mockRejectedValue(new Error('network down')) as typeof fetch;
+    const r = await checkMessageWithRspamd({
+      rawHeaders: 'From: a@b.de',
+      bodyText: 'hi',
+      bodyHtml: null,
+      baseUrl: 'http://127.0.0.1:11333',
+      timeoutMs: 1000,
+    });
+    expect(r.error).toBe('network down');
+  });
+
+  test('parses json without symbols and non-numeric score', async () => {
+    (buildRfc822FromStored as jest.Mock).mockReturnValue(Buffer.from('raw'));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ action: 'no action' }),
+    }) as typeof fetch;
+    const r = await checkMessageWithRspamd({
+      rawHeaders: 'From: a@b.de',
+      bodyText: 'hi',
+      bodyHtml: null,
+      baseUrl: 'http://127.0.0.1:11333',
+      timeoutMs: 1000,
+    });
+    expect(r.score).toBeNull();
+    expect(r.symbols).toEqual([]);
+  });
+
+  test('HTTP error without response text', async () => {
+    (buildRfc822FromStored as jest.Mock).mockReturnValue(Buffer.from('raw'));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => {
+        throw new Error('no body');
+      },
+    }) as typeof fetch;
+    const r = await checkMessageWithRspamd({
+      rawHeaders: 'From: a@b.de',
+      bodyText: 'hi',
+      bodyHtml: null,
+      baseUrl: 'http://127.0.0.1:11333',
+      timeoutMs: 1000,
+    });
+    expect(r.error).toBe('Rspamd HTTP 500');
+  });
 });

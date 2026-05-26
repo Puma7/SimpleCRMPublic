@@ -56,4 +56,48 @@ describe('mail-security-static', () => {
     const r = applyPreWorkflowMailSecurity(3);
     expect(r.tags).toContain('rspamd-high');
   });
+
+  test('uses preloaded row without store lookup', () => {
+    const row = { id: 9, auth_dmarc: 'pass', auth_spf: 'pass', rspamd_score: 0 } as never;
+    const r = applyPreWorkflowMailSecurity(9, row);
+    expect(getEmailMessageById).not.toHaveBeenCalled();
+    expect(r.tags).toEqual([]);
+  });
+
+  test('spf fail auto-spam when enabled', () => {
+    const { getMailSecuritySettings } = require('../../electron/email/mail-security-settings');
+    (getMailSecuritySettings as jest.Mock).mockReturnValueOnce({
+      autoSpamDmarcFail: false,
+      autoSpamSpfFail: true,
+      autoSpamRspamd: false,
+      rspamdSpamScore: 10,
+    });
+    (classifySenderForMessage as jest.Mock).mockReturnValue('ok');
+    (getEmailMessageById as jest.Mock).mockReturnValue({ id: 4, auth_dmarc: 'pass', auth_spf: 'fail' });
+    const r = applyPreWorkflowMailSecurity(4);
+    expect(r.tags).toContain('auth-spf-fail');
+  });
+
+  test('rspamd below threshold does not tag', () => {
+    (classifySenderForMessage as jest.Mock).mockReturnValue('ok');
+    (getEmailMessageById as jest.Mock).mockReturnValue({
+      id: 5,
+      auth_dmarc: 'pass',
+      auth_spf: 'pass',
+      rspamd_score: 5,
+    });
+    const r = applyPreWorkflowMailSecurity(5);
+    expect(r.tags).toEqual([]);
+  });
+
+  test('rspamd null score skipped', () => {
+    (classifySenderForMessage as jest.Mock).mockReturnValue('ok');
+    (getEmailMessageById as jest.Mock).mockReturnValue({
+      id: 6,
+      auth_dmarc: 'pass',
+      auth_spf: 'pass',
+      rspamd_score: null,
+    });
+    expect(applyPreWorkflowMailSecurity(6).tags).toEqual([]);
+  });
 });
