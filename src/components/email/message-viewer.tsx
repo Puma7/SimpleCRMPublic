@@ -70,7 +70,7 @@ type Props = {
   refreshList: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
   categories: CategoryRow[]
   reloadTags: () => void | Promise<void>
-  onReply: (m: EmailMessage) => void
+  onReply: (m: EmailMessage, initialReplyHtml?: string) => void
   onForward: (m: EmailMessage) => void
   /** Beta layout: Metadaten in eigener Spalte. */
   metadataPlacement?: "inline" | "external"
@@ -450,7 +450,9 @@ export function MessageViewer(props: Props) {
 
                 <MessageAiSuggestions
                   message={selectedMessage}
-                  onDraftReply={() => onReply(selectedMessage)}
+                  onDraftReply={(opts) =>
+                    onReply(selectedMessage, opts?.initialReplyHtml)
+                  }
                 />
 
                 <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">

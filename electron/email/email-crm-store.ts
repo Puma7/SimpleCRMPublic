@@ -36,6 +36,31 @@ export function seedEmailCrmDefaults(): void {
     getDb()
       .prepare(`INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, sort_order) VALUES (?, ?, ?, ?)`)
       .run('Höflicher formulieren', 'Formuliere den folgenden Text höflich und professionell auf Deutsch:\n\n{{text}}', 'full_body', 0);
+    getDb()
+      .prepare(`INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, sort_order) VALUES (?, ?, ?, ?)`)
+      .run(
+        'Antwort entwerfen',
+        'Schreibe eine professionelle Antwort auf Deutsch auf die folgende E-Mail.\nAntworte nur mit dem Antworttext (Begrüßung und Grußformel), ohne Betreffzeile und ohne das Original zitieren.\n\nVon: {{from}}\nBetreff: {{subject}}\n\n{{body}}',
+        'reply',
+        1,
+      );
+  } else {
+    const replyCount = getDb()
+      .prepare(`SELECT COUNT(*) as n FROM ${EMAIL_AI_PROMPTS_TABLE} WHERE target = 'reply'`)
+      .get() as { n: number };
+    if (replyCount.n === 0) {
+      const maxRow = getDb()
+        .prepare(`SELECT COALESCE(MAX(sort_order), -1) AS m FROM ${EMAIL_AI_PROMPTS_TABLE}`)
+        .get() as { m: number };
+      getDb()
+        .prepare(`INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, sort_order) VALUES (?, ?, ?, ?)`)
+        .run(
+          'Antwort entwerfen',
+          'Schreibe eine professionelle Antwort auf Deutsch auf die folgende E-Mail.\nAntworte nur mit dem Antworttext (Begrüßung und Grußformel), ohne Betreffzeile und ohne das Original zitieren.\n\nVon: {{from}}\nBetreff: {{subject}}\n\n{{body}}',
+          'reply',
+          (maxRow?.m ?? -1) + 1,
+        );
+    }
   }
 }
 

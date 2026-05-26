@@ -514,6 +514,10 @@ function runMigrations() {
                 { name: 'rspamd_symbols', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN rspamd_symbols TEXT` },
                 { name: 'rspamd_error', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN rspamd_error TEXT` },
                 { name: 'security_checked_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN security_checked_at TEXT` },
+                { name: 'reply_suggestion_text', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_text TEXT` },
+                { name: 'reply_suggestion_status', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_status TEXT` },
+                { name: 'reply_suggestion_error', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_error TEXT` },
+                { name: 'reply_suggestion_updated_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_updated_at TEXT` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {

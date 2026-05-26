@@ -122,7 +122,9 @@ function MailShellInner() {
             reloadTags={reloadTags}
             refreshCurrentMessage={refreshCurrentMessage}
             refreshList={refreshList}
-            onReply={(m) => setComposeIntent({ mode: "reply", message: m })}
+            onReply={(m, initialReplyHtml) =>
+              setComposeIntent({ mode: "reply", message: m, initialReplyHtml })
+            }
             onForward={(m) => setComposeIntent({ mode: "forward", message: m })}
             metadataPlacement="external"
           />

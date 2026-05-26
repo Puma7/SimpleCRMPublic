@@ -75,6 +75,11 @@ import {
   setMessageCustomerId,
 } from '../email/email-crm-store';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
+import {
+  ensureReplySuggestion,
+  generateAndStoreReplySuggestion,
+  getReplySuggestion,
+} from '../email/email-reply-ai';
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
 import {
   AI_PROVIDER_PRESETS,
@@ -1176,6 +1181,42 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetReplySuggestion,
+      async (_event: IpcMainInvokeEvent, messageId: number) => getReplySuggestion(messageId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.EnsureReplySuggestion,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; force?: boolean },
+      ) => {
+        ensureReplySuggestion(payload.messageId, { force: payload.force });
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GenerateReplyDraft,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; promptId?: number; customerId?: number | null },
+      ) => generateAndStoreReplySuggestion(payload.messageId, {
+        promptId: payload.promptId,
+        customerId: payload.customerId,
+      }),
       { logger },
     ),
   );

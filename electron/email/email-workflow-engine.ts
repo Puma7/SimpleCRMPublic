@@ -339,6 +339,9 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
     }
     if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
+
+  const { ensureReplySuggestion } = await import('./email-reply-ai');
+  ensureReplySuggestion(messageId);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {

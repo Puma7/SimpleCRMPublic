@@ -17,7 +17,7 @@ import type { EmailMessage, MailView } from "./types"
 export type ComposeIntent =
   | { mode: "closed" }
   | { mode: "new" }
-  | { mode: "reply"; message: EmailMessage }
+  | { mode: "reply"; message: EmailMessage; initialReplyHtml?: string }
   | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 

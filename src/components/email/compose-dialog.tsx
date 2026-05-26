@@ -32,6 +32,12 @@ import {
 } from "@/components/ui/select"
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import {
+  buildReplyComposeHtml,
+  mergeComposeHtml,
+  plainTextToReplyHtml,
+  splitComposeHtml,
+} from "@shared/compose-body"
+import {
   applyCannedTemplate,
   firstAddress,
   type EmailAccount,
@@ -225,14 +231,21 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           setTo(toAddr)
           setCc("")
           setSubject(subj)
-          const bodyPart = quoted
-            ? sanitizeComposeHtml(`<p>${quoted.replace(/\n/g, "<br/>")}</p>`)
-            : ""
-          setBodyHtml(
-            bodyPart && sigHtml
-              ? `${bodyPart}<br/><br/>${sigHtml}`
-              : bodyPart || sigHtml,
-          )
+          const initialReplyHtml =
+            composeIntent.mode === "reply" && composeIntent.initialReplyHtml
+              ? composeIntent.initialReplyHtml
+              : composeIntent.mode === "reply" || composeIntent.mode === "forward"
+                ? "<p><br></p>"
+                : ""
+          const composed = buildReplyComposeHtml({
+            replyHtml: initialReplyHtml
+              ? sanitizeComposeHtml(initialReplyHtml)
+              : "",
+            quotedPlain: quoted,
+            signatureHtml:
+              sigHtml && composeIntent.mode !== "forward" ? sigHtml : undefined,
+          })
+          setBodyHtml(composed || sigHtml || "")
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -513,7 +526,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const frag = sanitizeComposeHtml(
                     `<p>${block.replace(/\n/g, "<br/>")}</p>`,
                   )
-                  setBodyHtml((prev) => `${prev}${frag}`)
+                  setBodyHtml((prev) => {
+                    const { editableHtml, quotedHtml } = splitComposeHtml(prev)
+                    return mergeComposeHtml(`${editableHtml}${frag}`, quotedHtml)
+                  })
                 })()
               }}
             >
@@ -536,9 +552,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const pid = parseInt(id, 10)
                   if (!Number.isFinite(pid)) return
                   const rawHtml = getEditorHtml()
-                  const src = stripHtmlToText(rawHtml)
+                  const { editableHtml, quotedHtml } = splitComposeHtml(rawHtml)
+                  const src = stripHtmlToText(editableHtml)
                   if (!src.trim()) {
-                    toast.error("Bitte zuerst Nachrichtentext eingeben, dann einen KI-Prompt wählen.")
+                    toast.error(
+                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben, dann einen KI-Prompt wählen.",
+                    )
                     setAiPromptSelectKey((k) => k + 1)
                     return
                   }
@@ -553,12 +572,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       customerId: selectedMessage?.customer_id ?? null,
                     })
                     if (r.success && r.text?.trim()) {
-                      setBodyHtml(
-                        sanitizeComposeHtml(
-                          `<p>${r.text.replace(/\n/g, "<br/>")}</p>`,
-                        ),
+                      const transformed = sanitizeComposeHtml(
+                        plainTextToReplyHtml(r.text),
                       )
-                      toast.success("Text durch KI ersetzt")
+                      setBodyHtml(mergeComposeHtml(transformed, quotedHtml))
+                      toast.success("KI-Text eingefügt (Zitat unverändert)")
                     } else {
                       toast.error(
                         r.error ??
@@ -581,11 +599,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 />
               </SelectTrigger>
               <SelectContent>
-                {aiPrompts.map((p) => (
-                  <SelectItem key={p.id} value={String(p.id)}>
-                    {p.label}
-                  </SelectItem>
-                ))}
+                {aiPrompts
+                  .filter((p) => p.target !== "reply")
+                  .map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </div>

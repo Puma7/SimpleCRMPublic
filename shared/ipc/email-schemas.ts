@@ -508,6 +508,33 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.GetReplySuggestion, {
+    payload: positiveInt,
+    result: z.object({
+      status: z.enum(['none', 'pending', 'ready', 'failed', 'skipped']),
+      text: z.string().nullable(),
+      error: z.string().nullable(),
+      updatedAt: z.string().nullable(),
+    }),
+  });
+  set(IPCChannels.Email.EnsureReplySuggestion, {
+    payload: z.object({
+      messageId: positiveInt,
+      force: z.boolean().optional(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GenerateReplyDraft, {
+    payload: z.object({
+      messageId: positiveInt,
+      promptId: positiveInt.optional(),
+      customerId: z.number().int().positive().nullable().optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), text: z.string() }),
+      failResult,
+    ]),
+  });
   const aiProviderPresetIdSchema = z.enum([
     'openai',
     'openrouter',
