@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { hasElectron, invokeIpc } from "../types"
+import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
 
 type AiProfile = {
   id: number
@@ -184,7 +185,9 @@ export function AiPanel() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
+      <ReplySuggestionSettingsSection />
+
       <div>
         <h3 className="text-base font-semibold">KI-Profile (Anbieter &amp; Modelle)</h3>
         <p className="text-sm text-muted-foreground">
