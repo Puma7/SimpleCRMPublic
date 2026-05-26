@@ -343,7 +343,7 @@ export async function runInboundWorkflowsForMessage(
   }
 
   const { ensureReplySuggestion } = await import('./email-reply-ai');
-  ensureReplySuggestion(messageId, { row: freshRow });
+  ensureReplySuggestion(messageId, { row: freshRow, trigger: 'inbound' });
 
   const { maybeSendVacationAutoReply } = await import('./email-vacation');
   await maybeSendVacationAutoReply(messageId, freshRow);

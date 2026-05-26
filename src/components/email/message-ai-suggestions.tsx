@@ -49,7 +49,10 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
 
   useEffect(() => {
     if (!hasElectron()) return
-    void invokeIpc(IPCChannels.Email.EnsureReplySuggestion, { messageId: message.id })
+    void invokeIpc(IPCChannels.Email.EnsureReplySuggestion, {
+      messageId: message.id,
+      trigger: "open",
+    })
     void loadSuggestion()
   }, [message.id, loadSuggestion])
 

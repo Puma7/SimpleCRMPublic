@@ -653,8 +653,24 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       messageId: positiveInt,
       force: z.boolean().optional(),
+      trigger: z.enum(['inbound', 'open']).optional(),
     }),
     result: standardResult,
+  });
+  const replySuggestionSettingsSchema = z.object({
+    autoEnabled: z.boolean(),
+    triggerOnInbound: z.boolean(),
+    triggerOnOpen: z.boolean(),
+    categoryMode: z.enum(['any', 'only_listed']),
+    categoryIds: z.array(positiveInt),
+  });
+  set(IPCChannels.Email.GetReplySuggestionSettings, {
+    payload: voidPayload,
+    result: replySuggestionSettingsSchema,
+  });
+  set(IPCChannels.Email.SetReplySuggestionSettings, {
+    payload: replySuggestionSettingsSchema.partial(),
+    result: replySuggestionSettingsSchema,
   });
   set(IPCChannels.Email.GenerateReplyDraft, {
     payload: z.object({

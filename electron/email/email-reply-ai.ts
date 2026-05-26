@@ -5,6 +5,8 @@ import { resolvePromptProfileId } from './email-ai-profiles';
 import { runChatCompletion } from './email-openai';
 import { getEmailMessageById, type EmailMessageRow } from './email-store';
 import { hasAnyAiProfileWithKey } from './email-ai-profiles';
+import type { ReplySuggestionAutoTrigger } from '../../shared/reply-suggestion-settings';
+import { shouldAutoEnsureReplySuggestion } from './reply-suggestion-settings';
 
 const REPLY_BODY_MAX = 12_000;
 const INFLIGHT = new Set<number>();
@@ -254,8 +256,15 @@ async function runSuggestionJob(messageId: number): Promise<void> {
 /** Queue background reply suggestion (serialized, rate-limited). */
 export function ensureReplySuggestion(
   messageId: number,
-  opts?: { force?: boolean; row?: EmailMessageRow },
+  opts?: {
+    force?: boolean;
+    row?: EmailMessageRow;
+    /** inbound = after sync/workflows; open = message opened in UI */
+    trigger?: ReplySuggestionAutoTrigger;
+  },
 ): void {
+  const trigger = opts?.trigger ?? 'inbound';
+  if (!opts?.force && !shouldAutoEnsureReplySuggestion(messageId, trigger)) return;
   const row = opts?.row ?? getEmailMessageById(messageId);
   if (!row || !canSuggestReplyForMessage(row)) return;
   const current = getReplySuggestion(messageId);
