@@ -4,11 +4,13 @@ import { useMatchRoute, useNavigate } from "@tanstack/react-router"
 import { useUiTheme } from "@/components/beta/ui-theme-provider"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 
 export function EmailUiModeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useUiTheme()
   const navigate = useNavigate()
-  const onSettings = !!useMatchRoute({ to: "/email/settings", fuzzy: false })
+  const matchRoute = useMatchRoute()
+  const onSettings = !!matchRoute({ to: "/email/settings", fuzzy: false })
 
   const select = (mode: "classic" | "beta") => {
     setTheme(mode)
@@ -16,12 +18,12 @@ export function EmailUiModeToggle({ className }: { className?: string }) {
     if (mode === "beta") {
       void navigate({
         to: "/email/settings",
-        search: { section: "mailboxes", intelligenceTab: "profiles", tab: "accounts" },
+        search: emailSettingsSearch({ section: "mailboxes" }),
       })
     } else {
       void navigate({
         to: "/email/settings",
-        search: { tab: "accounts", section: "overview", intelligenceTab: "profiles" },
+        search: emailSettingsSearch({ tab: "accounts", section: "overview" }),
       })
     }
   }

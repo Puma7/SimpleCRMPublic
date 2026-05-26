@@ -14,6 +14,7 @@ import {
 } from "./beta-settings-sections"
 import { BetaSettingsOverview } from "./beta-settings-overview"
 import { EmailUiModeToggle } from "./email-ui-mode-toggle"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 
 type Props = {
   section: BetaSettingsSection
@@ -27,10 +28,10 @@ export function BetaSettingsPage({ section, intelligenceTab }: Props) {
   const goSection = (next: BetaSettingsSection, intel?: BetaIntelligenceTab) => {
     void navigate({
       to: "/email/settings",
-      search: {
+      search: emailSettingsSearch({
         section: next,
         intelligenceTab: intel ?? intelligenceTab,
-      },
+      }),
     })
   }
 

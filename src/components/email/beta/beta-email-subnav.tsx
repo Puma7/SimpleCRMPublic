@@ -3,12 +3,13 @@
 import { Link, useMatchRoute } from "@tanstack/react-router"
 import { BarChart3, Inbox, Settings, Workflow } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 
 const ITEMS = [
-  { to: "/email" as const, label: "Postfach", icon: Inbox, exact: true },
-  { to: "/email/workflows" as const, label: "Workflows", icon: Workflow },
-  { to: "/email/reporting" as const, label: "Auswertung", icon: BarChart3 },
-  { to: "/email/settings" as const, label: "Einstellungen", icon: Settings },
+  { to: "/email" as const, label: "Postfach", icon: Inbox, exact: true as const },
+  { to: "/email/workflows" as const, label: "Workflows", icon: Workflow, exact: false as const },
+  { to: "/email/reporting" as const, label: "Auswertung", icon: BarChart3, exact: false as const },
+  { to: "/email/settings" as const, label: "Einstellungen", icon: Settings, exact: false as const },
 ] as const
 
 export function BetaEmailSubnav({ embedded }: { embedded?: boolean }) {
@@ -26,7 +27,7 @@ export function BetaEmailSubnav({ embedded }: { embedded?: boolean }) {
               to={to}
               search={
                 to === "/email/settings"
-                  ? { section: "mailboxes", tab: "accounts", intelligenceTab: "profiles" }
+                  ? emailSettingsSearch({ section: "mailboxes" })
                   : undefined
               }
               className={cn(

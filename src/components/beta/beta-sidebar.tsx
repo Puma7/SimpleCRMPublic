@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useThemeTokens } from "@/components/theme/theme-tokens-provider"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import {
   Tooltip,
   TooltipContent,
@@ -170,7 +171,7 @@ export function BetaSidebar() {
         <div className="shrink-0 border-t border-sidebar-border p-2">
           <Link
             to="/email/settings"
-            search={{ section: "mailboxes", tab: "accounts", intelligenceTab: "profiles" }}
+            search={emailSettingsSearch({ section: "mailboxes" })}
             className={cn(
               "flex items-center rounded-lg font-medium transition-colors",
               rail ? "justify-center p-2.5" : "gap-2.5 px-2.5 py-2.5 text-sm",

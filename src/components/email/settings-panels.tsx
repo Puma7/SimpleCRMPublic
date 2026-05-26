@@ -18,6 +18,7 @@ import {
   Workflow,
   ShieldCheck,
 } from "lucide-react"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
 import { AccountsPanel } from "./settings/accounts-panel"
 import { SmtpPanel } from "./settings/smtp-panel"
@@ -151,7 +152,7 @@ export function SettingsPanelsPage() {
 
   const selectTab = (tab: SettingsTab) => {
     setSettingsTab(tab)
-    void navigate({ to: "/email/settings", search: { tab } })
+    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab }) })
   }
 
   return (

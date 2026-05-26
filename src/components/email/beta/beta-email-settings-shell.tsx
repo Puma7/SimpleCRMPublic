@@ -14,6 +14,7 @@ import {
   Wrench,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { BetaAccountsSettings } from "./beta-accounts-settings"
 import {
@@ -57,7 +58,11 @@ export function BetaEmailSettingsShell({ section, intelligenceTab }: Props) {
   const go = (id: BetaSettingsSection, intel?: BetaIntelligenceTab) => {
     void navigate({
       to: "/email/settings",
-      search: { section: id, intelligenceTab: intel ?? intelligenceTab, tab: "accounts" },
+      search: emailSettingsSearch({
+        section: id,
+        intelligenceTab: intel ?? intelligenceTab,
+        tab: "accounts",
+      }),
     })
   }
 

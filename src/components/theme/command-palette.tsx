@@ -12,6 +12,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command"
 import { useUiTheme } from "@/components/beta/ui-theme-provider"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { useThemeTokens } from "./theme-tokens-provider"
 type CommandEntry = {
   id: string
@@ -58,10 +59,10 @@ export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
   }, [open])
 
   const go = useCallback(
-    (id: string, to: string, search?: Record<string, string>) => {
+    (id: string, to: string, search?: Record<string, unknown>) => {
       pushRecent(id)
       onOpenChange(false)
-      void navigate({ to, search })
+      void navigate({ to, search } as { to: string; search?: Record<string, unknown> })
     },
     [navigate, onOpenChange],
   )
@@ -82,7 +83,13 @@ export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
       { id: "nav-deals", label: "Deals", section: "Springe zu", shortcut: "G L", run: () => go("nav-deals", "/deals") },
       { id: "nav-tasks", label: "Aufgaben", section: "Springe zu", run: () => go("nav-tasks", "/tasks") },
       { id: "nav-email", label: "E-Mail Postfach", section: "Springe zu", shortcut: "G M", run: () => go("nav-email", "/email") },
-      { id: "nav-email-settings", label: "E-Mail Einstellungen", section: "Springe zu", run: () => go("nav-email-settings", "/email/settings", { section: "mailboxes", tab: "accounts", intelligenceTab: "profiles" }) },
+      {
+        id: "nav-email-settings",
+        label: "E-Mail Einstellungen",
+        section: "Springe zu",
+        run: () =>
+          go("nav-email-settings", "/email/settings", emailSettingsSearch({ section: "mailboxes" })),
+      },
       { id: "nav-workflows", label: "E-Mail Workflows", section: "Springe zu", run: () => go("nav-workflows", "/email/workflows") },
       { id: "nav-calendar", label: "Kalender", section: "Springe zu", run: () => go("nav-calendar", "/calendar") },
       { id: "nav-settings", label: "Einstellungen", section: "Springe zu", run: () => go("nav-settings", "/settings") },
