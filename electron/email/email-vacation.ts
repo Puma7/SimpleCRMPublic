@@ -46,12 +46,13 @@ function markVacationSmtpFailed(accountId: number, sender: string): void {
 
 function wasVacationReplySentRecently(accountId: number, sender: string): boolean {
   ensureVacationDedupTable();
-  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const row = getDb()
     .prepare(
-      `SELECT 1 FROM ${DEDUP_TABLE} WHERE account_id = ? AND sender_email = ? AND sent_at >= ?`,
+      `SELECT 1 FROM ${DEDUP_TABLE}
+       WHERE account_id = ? AND sender_email = ?
+         AND sent_at >= datetime('now', '-1 day')`,
     )
-    .get(accountId, sender, dayAgo);
+    .get(accountId, sender);
   return Boolean(row);
 }
 
@@ -91,6 +92,17 @@ export async function maybeSendVacationAutoReply(
   if (!sender || sender === acc.email_address.toLowerCase()) return;
   if (wasVacationReplySentRecently(acc.id, sender)) return;
   if (wasVacationSmtpFailedRecently(acc.id, sender)) return;
+
+  const fresh = getEmailMessageById(messageId);
+  if (
+    !fresh ||
+    fresh.is_spam === 1 ||
+    fresh.archived === 1 ||
+    fresh.soft_deleted === 1 ||
+    fresh.folder_kind !== 'inbox'
+  ) {
+    return;
+  }
 
   const subject =
     (acc as { vacation_subject?: string | null }).vacation_subject?.trim() ||

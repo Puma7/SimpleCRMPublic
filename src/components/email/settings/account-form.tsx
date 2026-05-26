@@ -33,6 +33,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [vacationEnabled, setVacationEnabled] = useState(false)
   const [vacationSubject, setVacationSubject] = useState("")
   const [vacationBodyText, setVacationBodyText] = useState("")
+  const [requestReadReceipt, setRequestReadReceipt] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -56,6 +57,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setVacationEnabled((editAccount.vacation_enabled ?? 0) === 1)
     setVacationSubject(editAccount.vacation_subject ?? "")
     setVacationBodyText(editAccount.vacation_body_text ?? "")
+    setRequestReadReceipt((editAccount.request_read_receipt ?? 0) === 1)
   }, [editAccount])
 
   const handleTestImap = async () => {
@@ -189,6 +191,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           vacationEnabled,
           vacationSubject: vacationSubject.trim() || null,
           vacationBodyText: vacationBodyText.trim() || null,
+          requestReadReceipt,
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
@@ -383,6 +386,22 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
 
       {isEdit ? (
         <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+          <div className="flex items-start gap-3">
+            <Switch
+              id="acc-read-receipt"
+              checked={requestReadReceipt}
+              onCheckedChange={setRequestReadReceipt}
+            />
+            <div className="space-y-0.5">
+              <Label htmlFor="acc-read-receipt" className="cursor-pointer text-sm font-normal">
+                Lesebestätigung anfordern
+              </Label>
+              <p className="text-[11px] text-muted-foreground">
+                Fügt beim Senden den Header „Disposition-Notification-To“ hinzu (wenn der Empfänger
+                unterstützt).
+              </p>
+            </div>
+          </div>
           <div className="flex items-start gap-3">
             <Switch
               id="acc-vacation"

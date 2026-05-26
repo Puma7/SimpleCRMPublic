@@ -1,15 +1,13 @@
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
+import { serializeWebhookBodyForWorkflow } from '../../shared/webhook-body-serialize';
 import { getSyncInfo } from '../sqlite-service';
 import { listWorkflowsByTrigger } from './email-workflow-store';
 import { executeWorkflowForTrigger } from '../workflow/workflow-executor';
 
-const WEBHOOK_BODY_JSON_MAX = 64 * 1024;
-
 function webhookSecretMatches(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  const ah = createHash('sha256').update(provided, 'utf8').digest();
+  const bh = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(ah, bh);
 }
 
 export async function fireWebhookWorkflows(payload: {
@@ -20,10 +18,7 @@ export async function fireWebhookWorkflows(payload: {
   if (!expected || !webhookSecretMatches(payload.secret, expected)) {
     return { fired: 0, error: 'Ungültiges Webhook-Secret' };
   }
-  let bodyJson = JSON.stringify(payload.body ?? {});
-  if (bodyJson.length > WEBHOOK_BODY_JSON_MAX) {
-    bodyJson = bodyJson.slice(0, WEBHOOK_BODY_JSON_MAX);
-  }
+  const bodyJson = serializeWebhookBodyForWorkflow(payload.body ?? {});
   const workflows = listWorkflowsByTrigger('webhook.incoming').filter((w) => w.enabled);
   const counts = await Promise.all(
     workflows.map(async (wf) => {

@@ -31,6 +31,17 @@ import {
   snippetFromParsed,
 } from './email-parse-utils';
 import { canAdvanceImapSyncCursor } from './imap-sync-cursor';
+import {
+  clearImapUidFetchFailure,
+  IMAP_UID_MAX_FAILURES,
+  recordImapUidFetchFailure,
+  shouldSkipImapUidAfterFailures,
+} from './imap-uid-failure';
+import {
+  backupFolderLocalMetaBeforeUidValidityReset,
+  recordUidValidityResetNotice,
+  tryRestoreLocalMetaFromUidValidityBackup,
+} from './email-uidvalidity-reset';
 import { rfc822SourceToStorageB64 } from './mail-eml-build';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
@@ -87,12 +98,30 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
 
       const storedStr = folderRow ? storedUidValidityString(folderRow) : null;
       if (folderRow && uidValidityMismatch(storedStr, uidValidityStr)) {
-        // Keep local compose drafts (negative uid) — only drop synced server mail.
+        const toDrop = getDb()
+          .prepare(
+            `SELECT COUNT(*) AS c FROM ${EMAIL_MESSAGES_TABLE}
+             WHERE folder_id = ? AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+          )
+          .get(folderRow.id) as { c: number };
+        const backedUp = backupFolderLocalMetaBeforeUidValidityReset(folderRow.id);
         getDb()
           .prepare(
             `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ? AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
           )
           .run(folderRow.id);
+        recordUidValidityResetNotice({
+          accountId,
+          folderPath,
+          oldValidity: storedStr,
+          newValidity: uidValidityStr,
+          messageCount: toDrop?.c ?? 0,
+          backedUpCount: backedUp.length,
+        });
+        console.warn(
+          `[imap-sync] UIDVALIDITY changed account ${accountId} ${folderPath}: ` +
+            `${toDrop?.c ?? 0} messages re-indexed (${backedUp.length} metadata backups)`,
+        );
         lastUid = 0;
       }
 
@@ -117,12 +146,24 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
       }
 
       const sorted = [...uids].sort((a, b) => a - b);
+      const sortedSet = new Set(sorted);
       const toFetch = sorted;
       const upsertCtx = createImapUpsertContext(folderRow.id, toFetch);
       const newAfterSync: SyncNewMessageItem[] = [];
 
       let chainEnd = lastUid;
+      const skippedUids = new Set<number>();
       for (const uid of toFetch) {
+        if (shouldSkipImapUidAfterFailures(folderRow.id, uid)) {
+          skippedUids.add(uid);
+          console.warn(
+            `[imap-sync] UID ${uid} account ${accountId} skipped after ${IMAP_UID_MAX_FAILURES} failures`,
+          );
+          if (canAdvanceImapSyncCursor(chainEnd, uid, sortedSet, skippedUids)) {
+            chainEnd = uid;
+          }
+          continue;
+        }
         try {
         const msg = await client.fetchOne(
           String(uid),
@@ -173,6 +214,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           upsertCtx,
         );
         if (isNew && localMsgId > 0) {
+          tryRestoreLocalMetaFromUidValidityBackup(folderRow.id, localMsgId, messageId);
           newAfterSync.push({
             localMsgId,
             parsedAttachments: parsed.attachments,
@@ -185,14 +227,22 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           });
         }
         fetched += 1;
-        if (canAdvanceImapSyncCursor(chainEnd, uid, sorted)) {
+        clearImapUidFetchFailure(folderRow.id, uid);
+        if (canAdvanceImapSyncCursor(chainEnd, uid, sortedSet, skippedUids)) {
           chainEnd = uid;
         }
         } catch (perMsgErr) {
+          const fails = recordImapUidFetchFailure(folderRow.id, uid);
           console.warn(
-            `[imap-sync] UID ${uid} account ${accountId} skipped (will retry):`,
+            `[imap-sync] UID ${uid} account ${accountId} failed (${fails}/${IMAP_UID_MAX_FAILURES}):`,
             perMsgErr instanceof Error ? perMsgErr.message : perMsgErr,
           );
+          if (shouldSkipImapUidAfterFailures(folderRow.id, uid)) {
+            skippedUids.add(uid);
+            if (canAdvanceImapSyncCursor(chainEnd, uid, sortedSet, skippedUids)) {
+              chainEnd = uid;
+            }
+          }
         }
       }
 

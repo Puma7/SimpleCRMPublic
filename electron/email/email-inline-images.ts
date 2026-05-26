@@ -31,6 +31,36 @@ function extensionForMime(mime: string): string {
   return 'bin';
 }
 
+const INLINE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Delete stale files under simplecrm-inline temp (call on app boot). */
+export function sweepStaleInlineImageTempFiles(
+  maxAgeMs = INLINE_TEMP_MAX_AGE_MS,
+  logger?: Pick<typeof console, 'debug' | 'warn'>,
+): number {
+  const root = inlineTempRoot();
+  let removed = 0;
+  try {
+    if (!fs.existsSync(root)) return 0;
+    const cutoff = Date.now() - maxAgeMs;
+    for (const name of fs.readdirSync(root)) {
+      const full = path.join(root, name);
+      try {
+        const st = fs.statSync(full);
+        if (st.isFile() && st.mtimeMs < cutoff) {
+          fs.unlinkSync(full);
+          removed += 1;
+        }
+      } catch (e) {
+        logger?.debug?.('[email] inline temp sweep skip', full, e);
+      }
+    }
+  } catch (e) {
+    logger?.warn?.('[email] inline temp sweep failed', e);
+  }
+  return removed;
+}
+
 /** Remove temp files created for inline CID attachments (best-effort). */
 export function cleanupInlineImageTempFiles(paths: string[]): void {
   for (const p of paths) {

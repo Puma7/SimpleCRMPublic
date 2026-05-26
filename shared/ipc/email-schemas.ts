@@ -84,6 +84,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         vacationEnabled: z.boolean().optional(),
         vacationSubject: z.string().nullable().optional(),
         vacationBodyText: z.string().nullable().optional(),
+        requestReadReceipt: z.boolean().optional(),
       })
       .passthrough(),
     result: standardResult,
@@ -207,6 +208,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       webhookSecret: z.string().optional(),
       maxAttachmentMb: z.number().int().positive().optional(),
     }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ListUidValidityNotices, {
+    payload: voidPayload,
+    result: z.array(
+      z.object({
+        id: z.string(),
+        accountId: z.number(),
+        folderPath: z.string(),
+        oldValidity: z.string().nullable(),
+        newValidity: z.string().nullable(),
+        messageCount: z.number(),
+        backedUpCount: z.number(),
+        at: z.string(),
+      }),
+    ),
+  });
+  set(IPCChannels.Email.DismissUidValidityNotice, {
+    payload: z.object({ noticeId: z.string().min(1) }),
     result: standardResult,
   });
   set(IPCChannels.Email.ListMessagesByView, {

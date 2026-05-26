@@ -19,6 +19,17 @@ export type DelayedJobRow = {
 
 const PROCESSING = new Set<number>();
 
+/** Reset jobs stuck in `running` after a crash (call on app boot). */
+export function recoverStaleDelayedJobs(): void {
+  getDb()
+    .prepare(
+      `UPDATE ${WORKFLOW_DELAYED_JOBS_TABLE}
+       SET status = 'pending'
+       WHERE status = 'running'`,
+    )
+    .run();
+}
+
 export function scheduleDelayedJob(input: {
   workflowId: number;
   messageId: number | null;

@@ -12,4 +12,14 @@ describe('canAdvanceImapSyncCursor', () => {
   it('allows server uid gap when intermediate uid not in batch', () => {
     expect(canAdvanceImapSyncCursor(101, 105, [101, 105])).toBe(true);
   });
+
+  it('works with Set for batch membership', () => {
+    expect(canAdvanceImapSyncCursor(100, 103, new Set([101, 102, 103]))).toBe(false);
+    expect(canAdvanceImapSyncCursor(100, 103, new Set([101, 103]))).toBe(false);
+  });
+
+  it('allows advance past permanently skipped uids in batch', () => {
+    const skipped = new Set([102]);
+    expect(canAdvanceImapSyncCursor(101, 103, new Set([101, 102, 103]), skipped)).toBe(true);
+  });
 });
