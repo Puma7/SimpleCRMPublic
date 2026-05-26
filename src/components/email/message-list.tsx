@@ -30,6 +30,7 @@ import {
 import { useMailWorkspace } from "./workspace-context"
 import { setMailDragData } from "./mail-drag"
 import { MessageFilterChips } from "./message-filter-chips"
+import { MessageDoneFilterChips } from "./message-done-filter-chips"
 
 type Props = {
   messages: EmailMessage[]
@@ -78,6 +79,7 @@ export function MessageList({
     selectedMessage,
     selectedAccountId,
     messageListFilter,
+    messageDoneFilter,
     mailView,
     categoryFilterId,
     listSortMode,
@@ -107,7 +109,7 @@ export function MessageList({
 
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [mailView, selectedAccountId, categoryFilterId, messageListFilter])
+  }, [mailView, selectedAccountId, categoryFilterId, messageListFilter, messageDoneFilter])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -222,7 +224,12 @@ export function MessageList({
             disabled={bulkBusy}
           />
         </div>
-        {mailView === "inbox" ? <MessageFilterChips /> : null}
+        {mailView === "inbox" ? (
+          <div className="space-y-2">
+            <MessageDoneFilterChips />
+            <MessageFilterChips />
+          </div>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <Select
             value={listSortMode}
@@ -314,6 +321,7 @@ export function MessageList({
               const isDraft = m.uid < 0
               const blocked = !!m.outbound_hold
               const unread = !m.seen_local && m.uid >= 0
+              const open = !m.done_local && m.uid >= 0
               const active = selectedMessage?.id === m.id
               const canSelect = m.uid >= 0 || Boolean(m.pop3_uidl)
               const checked = selectedIds.has(m.id)
@@ -356,8 +364,19 @@ export function MessageList({
                         <div
                           className={cn(
                             "mt-1.5 h-2 w-2 shrink-0 rounded-full",
-                            unread ? "bg-primary" : "bg-transparent",
+                            unread
+                              ? "bg-primary"
+                              : open
+                                ? "bg-amber-500"
+                                : "bg-emerald-500/70",
                           )}
+                          title={
+                            unread
+                              ? "Ungelesen"
+                              : open
+                                ? "Offen (unerledigt)"
+                                : "Erledigt"
+                          }
                         />
                         <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
                           <span

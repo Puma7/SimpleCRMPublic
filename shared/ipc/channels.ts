@@ -213,6 +213,7 @@ const EmailChannels = literal({
   RunMailSecurityCheck: 'email:run-mail-security-check',
   TestRspamdConnection: 'email:test-rspamd-connection',
   SetMessageSeen: 'email:set-message-seen',
+  SetMessageDone: 'email:set-message-done',
   SetMessageSpam: 'email:set-message-spam',
   PickComposeAttachments: 'email:pick-compose-attachments',
   ListTeamMembers: 'email:list-team-members',

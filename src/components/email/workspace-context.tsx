@@ -14,6 +14,10 @@ import {
 import type { MailAccountScope } from "./account-scope"
 import type { MessageListDisplayMode, MessageListSortMode } from "@shared/email-list-options"
 import type { MessageListFilter } from "@shared/email-list-filters"
+import {
+  DEFAULT_MESSAGE_DONE_FILTER,
+  type MessageDoneFilter,
+} from "@shared/email-done-filter"
 import type { EmailMessage, MailView } from "./types"
 
 export type ComposeIntent =
@@ -24,7 +28,7 @@ export type ComposeIntent =
   | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 
-export type { MessageListFilter }
+export type { MessageListFilter, MessageDoneFilter }
 
 export type SettingsTab =
   | "accounts"
@@ -56,6 +60,9 @@ type MailWorkspaceState = {
   setSearchQuery: Dispatch<SetStateAction<string>>
   messageListFilter: MessageListFilter
   setMessageListFilter: Dispatch<SetStateAction<MessageListFilter>>
+  /** Posteingang Zero: offen / erledigt / alle (nur Posteingang). */
+  messageDoneFilter: MessageDoneFilter
+  setMessageDoneFilter: Dispatch<SetStateAction<MessageDoneFilter>>
   listSortMode: MessageListSortMode
   setListSortMode: Dispatch<SetStateAction<MessageListSortMode>>
   listDisplayMode: MessageListDisplayMode
@@ -95,6 +102,7 @@ const LS_KEYS = {
   mailView: "email:mailView",
   settingsTab: "email:settingsTab",
   settingsAccountId: "email:settingsAccountId",
+  messageDoneFilter: "email:messageDoneFilter",
 } as const
 
 function readLS<T>(key: string, parse: (raw: string) => T | null, fallback: T): T {
@@ -122,7 +130,17 @@ function writeLS(key: string, value: unknown): void {
   }
 }
 
-const VALID_MAIL_VIEWS: MailView[] = ["inbox", "sent", "archived", "drafts", "spam", "trash"]
+const VALID_MAIL_VIEWS: MailView[] = [
+  "inbox",
+  "sent",
+  "archived",
+  "drafts",
+  "spam",
+  "trash",
+  "snoozed",
+]
+const VALID_MESSAGE_DONE_FILTERS: MessageDoneFilter[] = ["all", "open", "done"]
+
 function normalizeSettingsTab(raw: string): SettingsTab | null {
   if (raw === "smtp" || raw === "oauth") return "accounts"
   if (VALID_SETTINGS_TAB_IDS.includes(raw as SettingsTab)) return raw as SettingsTab
@@ -168,6 +186,16 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
+  const [messageDoneFilter, setMessageDoneFilter] = useState<MessageDoneFilter>(() =>
+    readLS<MessageDoneFilter>(
+      LS_KEYS.messageDoneFilter,
+      (raw) =>
+        VALID_MESSAGE_DONE_FILTERS.includes(raw as MessageDoneFilter)
+          ? (raw as MessageDoneFilter)
+          : null,
+      DEFAULT_MESSAGE_DONE_FILTER,
+    ),
+  )
   const [listSortMode, setListSortMode] = useState<MessageListSortMode>("date_desc")
   const [listDisplayMode, setListDisplayMode] = useState<MessageListDisplayMode>("flat")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
@@ -208,6 +236,9 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writeLS(LS_KEYS.settingsAccountId, settingsAccountId)
   }, [settingsAccountId])
+  useEffect(() => {
+    writeLS(LS_KEYS.messageDoneFilter, messageDoneFilter)
+  }, [messageDoneFilter])
 
   const value = useMemo<MailWorkspaceState>(
     () => ({
@@ -225,6 +256,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSearchQuery,
       messageListFilter,
       setMessageListFilter,
+      messageDoneFilter,
+      setMessageDoneFilter,
       listSortMode,
       setListSortMode,
       listDisplayMode,
@@ -247,6 +280,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       selectedMessage,
       searchQuery,
       messageListFilter,
+      messageDoneFilter,
       listSortMode,
       listDisplayMode,
       composeIntent,

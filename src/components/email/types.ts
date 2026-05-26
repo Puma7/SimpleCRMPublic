@@ -60,6 +60,7 @@ export type EmailMessage = {
   body_text: string | null
   body_html: string | null
   seen_local: number
+  done_local?: number
   is_spam?: number
   archived?: number
   outbound_hold?: number

@@ -26,6 +26,7 @@ export function useEmailMessages() {
     setSelectedMessage,
     listSortMode,
     messageListFilter,
+    messageDoneFilter,
   } = useMailWorkspace()
   const [messages, setMessages] = useState<EmailMessage[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
@@ -69,6 +70,7 @@ export function useEmailMessages() {
       else setLoadingMessages(true)
       try {
         let list: EmailMessage[]
+        const doneFilter = view === "inbox" ? messageDoneFilter : undefined
         if (query.trim() && view !== "trash") {
           const res = await invokeIpc<{
             messages: EmailMessage[]
@@ -81,6 +83,7 @@ export function useEmailMessages() {
             offset,
             view,
             categoryId: view === "inbox" ? catId : null,
+            doneFilter,
           })
           list = res.messages
           if (res.searchMode === "like") {
@@ -101,6 +104,7 @@ export function useEmailMessages() {
             categoryId: view === "inbox" ? catId : null,
             sort,
             listFilter: listFilter === "all" ? undefined : listFilter,
+            doneFilter,
           })
           setHasMore(list.length >= PAGE_SIZE)
         }
@@ -132,7 +136,7 @@ export function useEmailMessages() {
         setLoadingMore(false)
       }
     },
-    [setSelectedMessage],
+    [setSelectedMessage, messageDoneFilter],
   )
 
   useEffect(() => {
@@ -156,6 +160,7 @@ export function useEmailMessages() {
     debouncedSearchQ,
     listSortMode,
     messageListFilter,
+    messageDoneFilter,
     loadMessages,
   ])
 
@@ -177,6 +182,7 @@ export function useEmailMessages() {
     debouncedSearchQ,
     listSortMode,
     messageListFilter,
+    messageDoneFilter,
     loadMessages,
   ])
 
@@ -201,6 +207,7 @@ export function useEmailMessages() {
       debouncedSearchQ,
       listSortMode,
       messageListFilter,
+      messageDoneFilter,
       loadMessages,
     ],
   )

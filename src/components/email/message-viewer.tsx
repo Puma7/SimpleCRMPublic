@@ -20,6 +20,8 @@ import {
   Reply,
   ReplyAll,
   RotateCcw,
+  CheckCircle2,
+  Circle,
   ShieldAlert,
   Trash2,
 } from "lucide-react"
@@ -108,6 +110,7 @@ export function MessageViewer(props: Props) {
     metadataPanelOpen,
     setMetadataPanelOpen,
     mailView,
+    messageDoneFilter,
     setComposeIntent,
   } = useMailWorkspace()
 
@@ -220,6 +223,22 @@ export function MessageViewer(props: Props) {
     toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
     await refreshCurrentMessage()
     await refreshList({ preserveSelection: true })
+  }
+
+  const handleToggleDone = async () => {
+    const done = !!selectedMessage.done_local
+    await invokeIpc(IPCChannels.Email.SetMessageDone, {
+      messageId: selectedMessage.id,
+      done: !done,
+    })
+    toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
+    const hideFromInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
+    await refreshList({ preserveSelection: !hideFromInbox })
+    if (hideFromInbox) {
+      setSelectedMessage(null)
+    } else {
+      await refreshCurrentMessage()
+    }
   }
 
   const handleToggleSpam = async () => {
@@ -349,6 +368,29 @@ export function MessageViewer(props: Props) {
                     {selectedMessage.seen_local ? "Ungelesen" : "Gelesen"}
                   </span>
                 </Button>
+                {mailView === "inbox" && selectedMessage.uid >= 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className={cn(
+                      "gap-1.5",
+                      selectedMessage.done_local
+                        ? "bg-emerald-500/12 text-emerald-900 hover:bg-emerald-500/20 dark:text-emerald-100"
+                        : "bg-amber-500/10 text-amber-950 hover:bg-amber-500/18 dark:text-amber-100",
+                    )}
+                    onClick={() => void handleToggleDone()}
+                  >
+                    {selectedMessage.done_local ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : (
+                      <Circle className="h-4 w-4" />
+                    )}
+                    <span className="hidden lg:inline">
+                      {selectedMessage.done_local ? "Wieder offen" : "Erledigt"}
+                    </span>
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
