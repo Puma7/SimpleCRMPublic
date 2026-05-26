@@ -68,6 +68,7 @@ import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
+import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -517,16 +518,21 @@ export function MessageViewer(props: Props) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto px-0 pt-1 text-xs text-muted-foreground"
+                      className="h-auto px-0 pt-1 text-xs text-primary"
                       onClick={() => {
-                        if (metadataPlacement === "external" && !metadataPanelOpen) {
+                        if (metadataPlacement === "inline" && !metadataPanelOpen) {
                           setMetadataPanelOpen(true)
                         }
+                        window.setTimeout(() => {
+                          if (!scrollToMetadataConversationSection()) {
+                            toast.info(
+                              "Verlauf im Detailpanel rechts — Abschnitt „Alle Mails mit …“.",
+                            )
+                          }
+                        }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
                       }}
                     >
-                      {metadataPlacement === "external"
-                        ? "Alle Mails mit dieser Adresse (Detailpanel) →"
-                        : "Verlauf mit dieser Adresse siehe Detailpanel rechts"}
+                      Alle Mails mit dieser Adresse anzeigen →
                     </Button>
                   ) : null}
                   {selectedMessage.ticket_code ? (
