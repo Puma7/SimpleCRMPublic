@@ -907,7 +907,6 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (email && email.includes('@')) {
           return listMessagesByCorrespondentEmail(payload.accountId, {
             email,
-            excludeMessageId: payload.messageId,
             limit: payload.limit,
           });
         }
