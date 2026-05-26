@@ -553,9 +553,11 @@ export function MessageViewer(props: Props) {
 
                 <MessageAiSuggestions
                   message={selectedMessage}
+                  messageTags={messageTags}
                   onDraftReply={(opts) =>
                     onReply(selectedMessage, opts?.initialReplyHtml)
                   }
+                  onTagsChanged={reloadTags}
                 />
 
                 <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
