@@ -342,6 +342,9 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
 
   const { ensureReplySuggestion } = await import('./email-reply-ai');
   ensureReplySuggestion(messageId);
+
+  const { maybeSendVacationAutoReply } = await import('./email-vacation');
+  await maybeSendVacationAutoReply(messageId);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {

@@ -476,6 +476,11 @@ function runMigrations() {
                 'imap_sync_seen_on_open',
                 `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_seen_on_open INTEGER NOT NULL DEFAULT 1`,
             );
+            addAcc('vacation_enabled', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN vacation_enabled INTEGER NOT NULL DEFAULT 0`);
+            addAcc('vacation_subject', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN vacation_subject TEXT`);
+            addAcc('vacation_body_text', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN vacation_body_text TEXT`);
+            addAcc('request_read_receipt', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN request_read_receipt INTEGER NOT NULL DEFAULT 0`);
+            addAcc('sync_spam_folder_path', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN sync_spam_folder_path TEXT`);
         }
 
         if (emailFolderExists) {
@@ -519,6 +524,8 @@ function runMigrations() {
                 { name: 'reply_suggestion_error', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_error TEXT` },
                 { name: 'reply_suggestion_updated_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_updated_at TEXT` },
                 { name: 'bcc_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN bcc_json TEXT` },
+                { name: 'snoozed_until', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN snoozed_until TEXT` },
+                { name: 'scheduled_send_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN scheduled_send_at TEXT` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {
@@ -1340,6 +1347,20 @@ export function createCustomer(customerData: any): any {
 
         // Commit the transaction
         db.prepare('COMMIT').run();
+
+        void import('./workflow/workflow-trigger-dispatch')
+          .then((m) =>
+            m.dispatchCustomerCreatedWorkflow({
+              customerId: newCustomerId,
+              name: String(dataToInsert.name ?? 'Kunde'),
+              email: dataToInsert.email ? String(dataToInsert.email) : null,
+            }),
+          )
+          .catch((e) => console.debug('[workflow] customer_created', e));
+
+        void import('./email/email-crm-store')
+          .then((m) => m.backfillCustomerLinksForMessages({ limit: 200 }))
+          .catch(() => undefined);
 
         // Return the newly created customer with custom fields
         return getCustomerById(newCustomerId);

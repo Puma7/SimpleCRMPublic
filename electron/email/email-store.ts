@@ -10,6 +10,8 @@ import {
   EMAIL_ACCOUNT_SIGNATURES_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
+import { SNOOZE_FILTER_SQL } from './email-message-features';
+import type { MessageListSortMode } from '../../shared/email-list-options';
 
 export type EmailAccountRow = {
   id: number;
@@ -490,10 +492,32 @@ export function listMessagesForFolder(
 
 export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
 
+function orderClauseForSort(sort?: MessageListSortMode): string {
+  if (sort === 'priority') {
+    return `ORDER BY
+      CASE
+        WHEN EXISTS (SELECT 1 FROM ${EMAIL_MESSAGE_TAGS_TABLE} t WHERE t.message_id = m.id AND t.tag = 'priority:hoch') THEN 0
+        WHEN EXISTS (SELECT 1 FROM ${EMAIL_MESSAGE_TAGS_TABLE} t WHERE t.message_id = m.id AND t.tag = 'priority:mittel') THEN 1
+        WHEN EXISTS (SELECT 1 FROM ${EMAIL_MESSAGE_TAGS_TABLE} t WHERE t.message_id = m.id AND t.tag = 'priority:niedrig') THEN 2
+        ELSE 3
+      END ASC,
+      datetime(COALESCE(m.date_received, m.created_at)) DESC`;
+  }
+  if (sort === 'date_asc') {
+    return `ORDER BY datetime(COALESCE(m.date_received, m.created_at)) ASC`;
+  }
+  return `ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC`;
+}
+
 export function listMessagesForAccountView(
   accountId: number,
   view: AccountMailView,
-  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    sort?: MessageListSortMode;
+  } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
   const offset = opts.offset ?? 0;
@@ -508,7 +532,7 @@ export function listMessagesForAccountView(
   if (view === 'trash') {
     sql += ` WHERE m.account_id = ? AND m.soft_deleted = 1`;
   } else {
-    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
@@ -535,7 +559,7 @@ export function listMessagesForAccountView(
     sql += ` AND ${nonDraftMail}`;
   }
 
-  sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+  sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
@@ -544,7 +568,12 @@ export function listMessagesForAccountView(
 /** Unified inbox: same view rules across every configured account. */
 export function listMessagesForAllAccountsView(
   view: AccountMailView,
-  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    sort?: MessageListSortMode;
+  } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
   const offset = opts.offset ?? 0;
@@ -559,7 +588,7 @@ export function listMessagesForAllAccountsView(
   if (view === 'trash') {
     sql += ` WHERE m.soft_deleted = 1`;
   } else {
-    sql += ` WHERE m.soft_deleted = 0`;
+    sql += ` WHERE m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
@@ -585,7 +614,7 @@ export function listMessagesForAllAccountsView(
     sql += ` AND ${nonDraftMail}`;
   }
 
-  sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+  sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
@@ -593,7 +622,12 @@ export function listMessagesForAllAccountsView(
 export function listMessagesForMailScope(
   accountScope: number | 'all',
   view: AccountMailView,
-  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    sort?: MessageListSortMode;
+  } = {},
 ): EmailMessageRow[] {
   if (accountScope === 'all') {
     return listMessagesForAllAccountsView(view, opts);

@@ -26,6 +26,7 @@ export async function testSmtpConnection(input: {
 export type SmtpAttachment = {
   filename: string;
   path: string;
+  cid?: string;
 };
 
 export async function sendSmtpForAccount(
@@ -42,6 +43,7 @@ export async function sendSmtpForAccount(
     messageId?: string;
     inReplyTo?: string;
     references?: string;
+    requestReadReceipt?: boolean;
   },
 ): Promise<void> {
   const acc = getEmailAccountById(accountId);
@@ -87,9 +89,13 @@ export async function sendSmtpForAccount(
     messageId: mail.messageId,
     inReplyTo: mail.inReplyTo,
     references: mail.references,
+    headers: mail.requestReadReceipt
+      ? { 'Disposition-Notification-To': mail.from }
+      : undefined,
     attachments: mail.attachments?.map((a) => ({
       filename: a.filename,
       path: a.path,
+      cid: a.cid,
     })),
   });
 }

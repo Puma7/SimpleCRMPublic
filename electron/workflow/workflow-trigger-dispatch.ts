@@ -8,6 +8,12 @@ import { buildStringContextFromMessage } from './context';
 
 export type CrmWorkflowEvent =
   | {
+      trigger: 'crm.customer_created';
+      customerId: number;
+      name: string;
+      email: string | null;
+    }
+  | {
       trigger: 'crm.deal_stage_changed';
       dealId: number;
       customerId: number;
@@ -47,6 +53,20 @@ function shouldFireOnce(key: string): boolean {
 }
 
 function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
+  if (event.trigger === 'crm.customer_created') {
+    return {
+      subject: `Neuer Kunde: ${event.name}`,
+      body_text: event.name,
+      snippet: event.email ?? '',
+      from_address: event.email ?? '',
+      to_address: '',
+      cc_address: '',
+      combined_text: `customer:${event.customerId} ${event.name} ${event.email ?? ''}`,
+      has_attachments: 'false',
+      attachment_names: '',
+      attachment_types: '',
+    };
+  }
   if (event.trigger === 'crm.deal_stage_changed') {
     const customer = getDb()
       .prepare(`SELECT name, email FROM ${CUSTOMERS_TABLE} WHERE id = ?`)
@@ -92,8 +112,29 @@ function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
   };
 }
 
+export async function dispatchCustomerCreatedWorkflow(input: {
+  customerId: number;
+  name: string;
+  email: string | null;
+}): Promise<void> {
+  await dispatchCrmWorkflowEvent({
+    trigger: 'crm.customer_created',
+    customerId: input.customerId,
+    name: input.name,
+    email: input.email,
+  });
+}
+
 export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise<void> {
-  const dedupKey = `${event.trigger}:${'dealId' in event ? event.dealId : 'taskId' in event ? event.taskId : event.eventId}`;
+  const dedupKey = `${event.trigger}:${
+    'customerId' in event && event.trigger === 'crm.customer_created'
+      ? event.customerId
+      : 'dealId' in event
+        ? event.dealId
+        : 'taskId' in event
+          ? event.taskId
+          : event.eventId
+  }`;
   if (!shouldFireOnce(dedupKey)) return;
 
   const workflows = listWorkflowsByTrigger(event.trigger);
@@ -101,7 +142,11 @@ export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise
 
   const strings = stringsForEvent(event);
   const variables: Record<string, string | number | boolean | null> = {};
-  if (event.trigger === 'crm.deal_stage_changed') {
+  if (event.trigger === 'crm.customer_created') {
+    variables['customer.id'] = event.customerId;
+    variables['customer.name'] = event.name;
+    if (event.email) variables['customer.email'] = event.email;
+  } else if (event.trigger === 'crm.deal_stage_changed') {
     variables['deal.id'] = event.dealId;
     variables['deal.stage'] = event.newStage;
     variables['deal.old_stage'] = event.oldStage;

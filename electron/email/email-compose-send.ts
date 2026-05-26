@@ -20,9 +20,14 @@ import {
   generateOutboundMessageId,
 } from './email-outbound-threading';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { extractInlineImagesFromHtml } from './email-inline-images';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
-const MAX_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+function maxComposeAttachmentBytes(): number {
+  const mb = parseInt(getSyncInfo('email_max_attachment_mb') || '25', 10);
+  const clamped = Number.isFinite(mb) ? Math.max(1, Math.min(mb, 100)) : 25;
+  return clamped * 1024 * 1024;
+}
 
 function smtpCommittedKey(draftMessageId: number): string {
   return `email_compose_smtp_ok:${draftMessageId}`;
@@ -250,10 +255,14 @@ export async function sendComposeDraft(input: {
       try {
         const st = fs.statSync(p);
         if (!st.isFile()) continue;
-        if (st.size > MAX_COMPOSE_ATTACHMENT_BYTES) {
-          return { ok: false, error: `Anhang zu groß (max. 25 MB): ${path.basename(p)}` };
-        }
-        smtpAttachments.push({ filename: path.basename(p), path: p });
+      const maxBytes = maxComposeAttachmentBytes();
+      if (st.size > maxBytes) {
+        return {
+          ok: false,
+          error: `Anhang zu groß (max. ${Math.round(maxBytes / 1024 / 1024)} MB): ${path.basename(p)}`,
+        };
+      }
+      smtpAttachments.push({ filename: path.basename(p), path: p });
       } catch {
         return { ok: false, error: `Anhang nicht lesbar: ${path.basename(p)}` };
       }
@@ -267,6 +276,20 @@ export async function sendComposeDraft(input: {
       ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
       : undefined;
 
+    let htmlOut = html || undefined;
+    const inlineAtt: { filename: string; path: string; cid: string }[] = [];
+    if (htmlOut) {
+      const extracted = extractInlineImagesFromHtml(htmlOut);
+      htmlOut = extracted.html;
+      inlineAtt.push(...extracted.attachments);
+    }
+    const allAttachments = [
+      ...smtpAttachments,
+      ...inlineAtt.map((a) => ({ filename: a.filename, path: a.path, cid: a.cid })),
+    ];
+    const requestReceipt =
+      (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+
     try {
       await sendSmtpForAccount(input.accountId, {
         from: acc.email_address,
@@ -275,11 +298,12 @@ export async function sendComposeDraft(input: {
         bcc: smtpBcc,
         subject: finalSubject,
         text: input.bodyText,
-        html: html || undefined,
-        attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
+        html: htmlOut,
+        attachments: allAttachments.length > 0 ? allAttachments : undefined,
         messageId: outboundMessageId,
         inReplyTo: threadHeaders.inReplyTo,
         references: threadHeaders.references,
+        requestReadReceipt: requestReceipt,
       });
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

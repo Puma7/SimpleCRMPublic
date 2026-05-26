@@ -21,7 +21,7 @@ const TOOLBAR = [
   [{ list: "ordered" }, { list: "bullet" }],
   [{ indent: "-1" }, { indent: "+1" }],
   ["blockquote", "code-block"],
-  ["link"],
+  ["link", "image"],
   [{ color: [] }, { background: [] }],
   [{ align: [] }],
   ["clean"],
@@ -57,7 +57,30 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
 
       const quill = new Quill(editorEl, {
         theme: "snow",
-        modules: { toolbar: TOOLBAR },
+        modules: {
+          toolbar: {
+            container: TOOLBAR,
+            handlers: {
+              image: function imageHandler(this: { quill: Quill }) {
+                const input = document.createElement("input")
+                input.setAttribute("type", "file")
+                input.setAttribute("accept", "image/*")
+                input.click()
+                input.onchange = () => {
+                  const file = input.files?.[0]
+                  if (!file) return
+                  const reader = new FileReader()
+                  reader.onload = () => {
+                    const url = reader.result as string
+                    const range = this.quill.getSelection(true)
+                    this.quill.insertEmbed(range?.index ?? 0, "image", url)
+                  }
+                  reader.readAsDataURL(file)
+                }
+              },
+            },
+          },
+        },
         placeholder: "Nachricht verfassen…",
       })
       quillRef.current = quill

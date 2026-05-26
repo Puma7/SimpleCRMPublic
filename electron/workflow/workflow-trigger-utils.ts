@@ -10,7 +10,9 @@ export function workflowDirectionForTrigger(trigger: WorkflowTriggerKind): Workf
   if (
     trigger === 'crm.deal_stage_changed' ||
     trigger === 'task.due' ||
-    trigger === 'calendar.event_start'
+    trigger === 'calendar.event_start' ||
+    trigger === 'crm.customer_created' ||
+    trigger === 'webhook.incoming'
   ) {
     return 'crm_event';
   }

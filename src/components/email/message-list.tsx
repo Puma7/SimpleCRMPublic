@@ -1,12 +1,21 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
+import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Loader2, Paperclip, Search } from "lucide-react"
 import { toast } from "sonner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import type { MessageListSortMode } from "@shared/email-list-options"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
@@ -30,6 +39,15 @@ type Props = {
   onOpen: (m: EmailMessage) => void | Promise<void>
   onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
   onListChanged?: () => void | Promise<void>
+  loadMore?: () => void
+  hasMore?: boolean
+  loadingMore?: boolean
+}
+
+function threadKey(m: EmailMessage): string {
+  const t = m.imap_thread_id?.trim() || m.ticket_code?.trim()
+  if (t) return `t:${t}`
+  return `m:${m.id}`
 }
 
 /** Compact date+time so the column stays readable when the list pane is narrow. */
@@ -51,10 +69,34 @@ export function MessageList({
   loading,
   onOpen,
   onListChanged,
+  loadMore,
+  hasMore,
+  loadingMore,
 }: Props) {
-  const { searchQuery, setSearchQuery, selectedMessage, selectedAccountId, messageListFilter } =
-    useMailWorkspace()
-  const visibleMessages = applyMessageListFilter(messages, messageListFilter)
+  const {
+    searchQuery,
+    setSearchQuery,
+    selectedMessage,
+    selectedAccountId,
+    messageListFilter,
+    listSortMode,
+    setListSortMode,
+    listDisplayMode,
+    setListDisplayMode,
+  } = useMailWorkspace()
+  const filtered = applyMessageListFilter(messages, messageListFilter)
+  const visibleMessages = useMemo(() => {
+    if (listDisplayMode !== "thread") return filtered
+    const seen = new Set<string>()
+    const out: EmailMessage[] = []
+    for (const m of filtered) {
+      const key = threadKey(m)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(m)
+    }
+    return out
+  }, [filtered, listDisplayMode])
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
@@ -132,6 +174,33 @@ export function MessageList({
           />
         </div>
         <MessageFilterChips />
+        <div className="flex flex-wrap gap-2">
+          <Select
+            value={listSortMode}
+            onValueChange={(v) => setListSortMode(v as MessageListSortMode)}
+          >
+            <SelectTrigger className="h-8 w-[130px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="date_desc">Neueste zuerst</SelectItem>
+              <SelectItem value="date_asc">Älteste zuerst</SelectItem>
+              <SelectItem value="priority">Priorität</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={listDisplayMode}
+            onValueChange={(v) => setListDisplayMode(v as MessageListDisplayMode)}
+          >
+            <SelectTrigger className="h-8 w-[120px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="flat">Flache Liste</SelectItem>
+              <SelectItem value="thread">Threads</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         {selectedIds.size > 0 ? (
           <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-1.5">
             <span className="text-xs text-muted-foreground">{selectedIds.size} ausgewählt</span>
@@ -276,6 +345,20 @@ export function MessageList({
             })}
           </ul>
         )}
+        {hasMore && !loading && !searchQuery.trim() ? (
+          <div className="border-t p-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full text-xs"
+              disabled={loadingMore}
+              onClick={() => loadMore?.()}
+            >
+              {loadingMore ? "Lädt…" : "Weitere laden"}
+            </Button>
+          </div>
+        ) : null}
       </ScrollArea>
     </section>
   )

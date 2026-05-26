@@ -12,6 +12,7 @@ import {
   type SetStateAction,
 } from "react"
 import type { MailAccountScope } from "./account-scope"
+import type { MessageListDisplayMode, MessageListSortMode } from "@shared/email-list-options"
 import type { EmailMessage, MailView } from "./types"
 
 export type ComposeIntent =
@@ -55,6 +56,10 @@ type MailWorkspaceState = {
   setSearchQuery: Dispatch<SetStateAction<string>>
   messageListFilter: MessageListFilter
   setMessageListFilter: Dispatch<SetStateAction<MessageListFilter>>
+  listSortMode: MessageListSortMode
+  setListSortMode: Dispatch<SetStateAction<MessageListSortMode>>
+  listDisplayMode: MessageListDisplayMode
+  setListDisplayMode: Dispatch<SetStateAction<MessageListDisplayMode>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
   settingsTab: SettingsTab
@@ -156,6 +161,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
+  const [listSortMode, setListSortMode] = useState<MessageListSortMode>("date_desc")
+  const [listDisplayMode, setListDisplayMode] = useState<MessageListDisplayMode>("flat")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
@@ -212,6 +219,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSearchQuery,
       messageListFilter,
       setMessageListFilter,
+      listSortMode,
+      setListSortMode,
+      listDisplayMode,
+      setListDisplayMode,
       composeIntent,
       setComposeIntent,
       settingsTab,
@@ -230,6 +241,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       selectedMessage,
       searchQuery,
       messageListFilter,
+      listSortMode,
+      listDisplayMode,
       composeIntent,
       settingsTab,
       settingsAccountId,

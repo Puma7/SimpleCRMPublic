@@ -74,8 +74,18 @@ import {
   moveAiPrompt,
   searchMessagesForAccount,
   searchMessagesForMailScope,
+  searchMessagesForAccountWithMeta,
+  backfillCustomerLinksForMessages,
   setMessageCustomerId,
 } from '../email/email-crm-store';
+import {
+  setMessageSnoozedUntil,
+  setDraftScheduledSendAt,
+  exportMessageAsEml,
+} from '../email/email-message-features';
+import { fireWebhookWorkflows } from '../email/email-webhook';
+import { clearEmailAccountSyncLock } from '../email/email-sync-mutex';
+import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
 import {
   ensureReplySuggestion,
@@ -652,12 +662,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           limit?: number;
           offset?: number;
           categoryId?: number | null;
+          sort?: import('../../shared/email-list-options').MessageListSortMode;
         },
       ) => {
         return listMessagesForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
           categoryId: payload.categoryId,
+          sort: payload.sort,
         });
       },
       { logger },
@@ -676,12 +688,118 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           view?: import('../email/email-store').AccountMailView;
         },
       ) => {
-        return searchMessagesForMailScope(
+        if (payload.accountId !== 'all') {
+          const { rows, searchMode } = searchMessagesForAccountWithMeta(
+            payload.accountId,
+            payload.query,
+            payload.limit ?? 80,
+            payload.view,
+          );
+          return { messages: rows, searchMode };
+        }
+        const rows = searchMessagesForMailScope(
           payload.accountId,
           payload.query,
           payload.limit ?? 80,
           payload.view,
         );
+        return { messages: rows, searchMode: 'like' as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SnoozeMessage,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; until: string | null }) => {
+        setMessageSnoozedUntil(payload.messageId, payload.until);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ScheduleDraftSend,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; sendAt: string | null }) => {
+        setDraftScheduledSendAt(payload.messageId, payload.sendAt);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ExportMessageEml,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const r = await exportMessageAsEml(messageId);
+        if (r.ok) return { success: true as const, path: r.path };
+        return { success: false as const, error: r.error };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BackfillCustomerLinks,
+      async (_event: IpcMainInvokeEvent, payload?: { accountId?: number; limit?: number }) => {
+        const count = backfillCustomerLinksForMessages(payload);
+        return { success: true as const, count };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.FireWebhookWorkflow,
+      async (_event: IpcMainInvokeEvent, payload: { secret: string; body?: Record<string, unknown> }) => {
+        const r = await fireWebhookWorkflows(payload);
+        if (r.error) return { success: false as const, error: r.error, fired: 0 };
+        return { success: true as const, fired: r.fired };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ClearAccountSyncLock,
+      async (_event: IpcMainInvokeEvent, accountId: number) => {
+        clearEmailAccountSyncLock(accountId);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async () => {
+      return {
+        webhookSecret: getSyncInfo('email_webhook_secret') ?? '',
+        maxAttachmentMb: getSyncInfo('email_max_attachment_mb') ?? '25',
+      };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetEmailMiscSettings,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { webhookSecret?: string; maxAttachmentMb?: number },
+      ) => {
+        if (payload.webhookSecret !== undefined) {
+          setSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
+        }
+        if (payload.maxAttachmentMb !== undefined) {
+          setSyncInfo('email_max_attachment_mb', String(payload.maxAttachmentMb));
+        }
+        return { success: true as const };
       },
       { logger },
     ),

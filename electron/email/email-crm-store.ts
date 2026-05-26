@@ -1,4 +1,6 @@
 import { MAX_EMAIL_CATEGORY_DEPTH } from '../../shared/email-constants';
+import { normalizeEmailAddress } from '../../shared/email-address-normalize';
+import { SNOOZE_FILTER_SQL } from './email-message-features';
 import { getDb } from '../sqlite-service';
 import {
   CUSTOMERS_TABLE,
@@ -351,29 +353,120 @@ export function deleteAiPrompt(id: number): void {
   getDb().prepare(`DELETE FROM ${EMAIL_AI_PROMPTS_TABLE} WHERE id = ?`).run(id);
 }
 
+function findCustomerIdByEmailAddress(email: string): number | null {
+  const norm = normalizeEmailAddress(email);
+  if (!norm) return null;
+  const rows = getDb()
+    .prepare(`SELECT id, email FROM ${CUSTOMERS_TABLE} WHERE email IS NOT NULL AND TRIM(email) != ''`)
+    .all() as { id: number; email: string }[];
+  for (const row of rows) {
+    if (normalizeEmailAddress(row.email) === norm) return row.id;
+  }
+  return null;
+}
+
 export function tryLinkMessageToCustomer(messageId: number): number | null {
   const msg = getDb()
-    .prepare(`SELECT from_json FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
-    .get(messageId) as { from_json: string | null } | undefined;
-  if (!msg?.from_json) return null;
+    .prepare(`SELECT from_json, customer_id FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
+    .get(messageId) as { from_json: string | null; customer_id: number | null } | undefined;
+  if (!msg?.from_json || msg.customer_id != null) return msg?.customer_id ?? null;
   let email = '';
   try {
     const p = JSON.parse(msg.from_json) as { value?: { address?: string }[] };
-    email = (p.value?.[0]?.address ?? '').trim().toLowerCase();
+    email = (p.value?.[0]?.address ?? '').trim();
   } catch {
     return null;
   }
   if (!email) return null;
-  const cust = getDb()
-    .prepare(
-      `SELECT id FROM ${CUSTOMERS_TABLE} WHERE LOWER(TRIM(email)) = ? LIMIT 1`,
-    )
-    .get(email) as { id: number } | undefined;
-  if (!cust) return null;
+  const custId = findCustomerIdByEmailAddress(email);
+  if (custId == null) return null;
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET customer_id = ? WHERE id = ?`)
-    .run(cust.id, messageId);
-  return cust.id;
+    .run(custId, messageId);
+  return custId;
+}
+
+/** Re-link inbox messages without customer_id (e.g. after new CRM contact). */
+export function backfillCustomerLinksForMessages(opts?: {
+  accountId?: number;
+  limit?: number;
+}): number {
+  const limit = Math.min(opts?.limit ?? 500, 5000);
+  let sql = `SELECT id FROM ${EMAIL_MESSAGES_TABLE}
+    WHERE customer_id IS NULL AND soft_deleted = 0 AND (uid >= 0 OR pop3_uidl IS NOT NULL)
+      AND ${SNOOZE_FILTER_SQL.replace(/m\./g, '')}`;
+  const params: number[] = [];
+  if (opts?.accountId != null) {
+    sql += ` AND account_id = ?`;
+    params.push(opts.accountId);
+  }
+  sql += ` ORDER BY id DESC LIMIT ?`;
+  params.push(limit);
+  const rows = getDb().prepare(sql).all(...params) as { id: number }[];
+  let linked = 0;
+  for (const r of rows) {
+    if (tryLinkMessageToCustomer(r.id) != null) linked += 1;
+  }
+  return linked;
+}
+
+export type MessageSearchMode = 'fts' | 'like' | 'regex';
+
+export function searchMessagesForAccountWithMeta(
+  accountId: number,
+  q: string,
+  limit = 100,
+  view?: import('./email-store').AccountMailView,
+): { rows: import('./email-store').EmailMessageRow[]; searchMode: MessageSearchMode } {
+  const trimmed = q.trim();
+  if (trimmed.startsWith('/') && trimmed.length > 2 && trimmed.lastIndexOf('/') > 0) {
+    const lastSlash = trimmed.lastIndexOf('/');
+    const pattern = trimmed.slice(1, lastSlash);
+    const flags = trimmed.slice(lastSlash + 1) || 'i';
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, flags.replace(/[^ims]/g, ''));
+    } catch {
+      return { rows: searchMessagesForAccount(accountId, trimmed, limit, view), searchMode: 'like' };
+    }
+    const all = searchMessagesForAccount(accountId, '', Math.min(limit * 3, 500), view);
+    const rows = all
+      .filter((m) => {
+        const hay = [m.subject, m.snippet, m.body_text].filter(Boolean).join('\n');
+        return re.test(hay);
+      })
+      .slice(0, limit);
+    return { rows, searchMode: 'regex' };
+  }
+  const fts = ftsMatchExpression(trimmed);
+  if (fts) {
+    const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
+    const ftsTable = getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
+    if (ftsTable) {
+      try {
+        const rows = getDb()
+          .prepare(
+            `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+             INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
+             WHERE m.account_id = ? AND ${viewSql} AND ${SNOOZE_FILTER_SQL}
+               AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+               AND fts MATCH ?
+             ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+             LIMIT ?`,
+          )
+          .all(accountId, fts, limit) as import('./email-store').EmailMessageRow[];
+        return { rows, searchMode: 'fts' };
+      } catch {
+        /* LIKE fallback */
+      }
+    }
+  }
+  return {
+    rows: searchMessagesForAccount(accountId, trimmed, limit, view),
+    searchMode: 'like',
+  };
 }
 
 export function setMessageCustomerId(messageId: number, customerId: number | null): void {

@@ -54,6 +54,9 @@ function MailShellInner() {
     refreshCurrentMessage,
     handleSync,
     moveMessageToView,
+    loadMore,
+    hasMore,
+    loadingMore,
   } = useEmailMessages()
   const refreshList = async (opts?: { preserveSelection?: boolean }) => {
     await refreshListBase(opts)
@@ -109,6 +112,9 @@ function MailShellInner() {
             onOpen={openMessage}
             onMoveMessageToView={moveMessageToView}
             onListChanged={refreshList}
+            loadMore={loadMore}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
           />
         </ResizablePanel>
         <ResizableHandle />

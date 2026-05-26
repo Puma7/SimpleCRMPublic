@@ -119,6 +119,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
+  const [scheduledSendAt, setScheduledSendAt] = useState("")
 
   useEffect(() => {
     if (!isOpen) {
@@ -798,6 +799,33 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           >
             {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Ausgang prüfen
+          </Button>
+          <Input
+            type="datetime-local"
+            className="h-9 w-[200px] text-xs"
+            value={scheduledSendAt}
+            onChange={(e) => setScheduledSendAt(e.target.value)}
+            title="Geplante Versendung"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!scheduledSendAt || draftId == null}
+            onClick={() => {
+              if (!draftId || !scheduledSendAt) return
+              void (async () => {
+                await saveDraft({ silent: true })
+                const iso = new Date(scheduledSendAt).toISOString()
+                await invokeIpc(IPCChannels.Email.ScheduleDraftSend, {
+                  messageId: draftId,
+                  sendAt: iso,
+                })
+                toast.success("Versand geplant — Entwurf bleibt gespeichert.")
+                closeDialog()
+              })()
+            }}
+          >
+            Später senden
           </Button>
           <Button
             type="button"

@@ -1,12 +1,17 @@
 "use client"
 
 import { useState } from "react"
+import DOMPurify from "dompurify"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import {
   Archive,
   Code2,
+  Download,
+  Eye,
   Forward,
+  Clock,
+  Printer,
   Mail,
   MailOpen,
   PanelRightClose,
@@ -107,6 +112,7 @@ export function MessageViewer(props: Props) {
   const [rawHeadersText, setRawHeadersText] = useState<string | null>(null)
   const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
+  const [htmlView, setHtmlView] = useState(false)
 
   const isOutboundHeld =
     selectedMessage != null &&
@@ -578,11 +584,97 @@ export function MessageViewer(props: Props) {
                   </div>
                 ) : null}
 
+                <div className="flex flex-wrap gap-2">
+                  {selectedMessage.body_html ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={htmlView ? "secondary" : "outline"}
+                      className="h-8 gap-1.5 text-xs"
+                      onClick={() => setHtmlView((v) => !v)}
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      {htmlView ? "Klartext" : "HTML anzeigen"}
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={() => window.print()}
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    Drucken
+                  </Button>
+                  {selectedMessage.uid >= 0 ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => {
+                          void invokeIpc<{ success: boolean; path?: string; error?: string }>(
+                            IPCChannels.Email.ExportMessageEml,
+                            selectedMessage.id,
+                          ).then((r) => {
+                            if (r.success && r.path) toast.success(`Gespeichert: ${r.path}`)
+                            else if (!r.success && r.error && r.error !== "Abgebrochen")
+                              toast.error(r.error)
+                          })
+                        }}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Als .eml
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => {
+                          const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+                          void invokeIpc(IPCChannels.Email.SnoozeMessage, {
+                            messageId: selectedMessage.id,
+                            until,
+                          }).then(() => {
+                            toast.success("24 h zurückgestellt")
+                            void refreshList()
+                            setSelectedMessage(null)
+                          })
+                        }}
+                      >
+                        <Clock className="h-3.5 w-3.5" />
+                        Snooze 24h
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+
+                {bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
+                    Diese Nachricht scheint verschlüsselt (PGP/S/MIME). Entschlüsselung ist in
+                    SimpleCRM nicht integriert.
+                  </p>
+                ) : null}
+
                 <Separator />
 
-                <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                  {bodyText}
-                </pre>
+                {htmlView && selectedMessage.body_html ? (
+                  <div
+                    className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3"
+                    dangerouslySetInnerHTML={{
+                      __html: DOMPurify.sanitize(selectedMessage.body_html, {
+                        USE_PROFILES: { html: true },
+                      }),
+                    }}
+                  />
+                ) : (
+                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                    {bodyText}
+                  </pre>
+                )}
               </div>
             </ScrollArea>
           </div>

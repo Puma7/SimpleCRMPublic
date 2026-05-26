@@ -106,6 +106,9 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
       void processDueDelayedJobs(logger).catch((e) =>
         logger.debug('[workflow] delayed jobs', e),
       );
+      void import('./email-scheduled-send')
+        .then((m) => m.processDueScheduledSends(logger))
+        .catch((e) => logger.debug('[email] scheduled send', e));
       void scanDueTasksAndFireWorkflows().catch((e) =>
         logger.debug('[workflow] task due scan', e),
       );

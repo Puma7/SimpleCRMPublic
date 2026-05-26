@@ -144,6 +144,64 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: recordArray,
   });
   set(IPCChannels.Email.GetMessage, { payload: positiveInt, result: nullableRecord });
+  set(IPCChannels.Email.SnoozeMessage, {
+    payload: z.object({
+      messageId: positiveInt,
+      until: z.string().nullable(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ScheduleDraftSend, {
+    payload: z.object({
+      messageId: positiveInt,
+      sendAt: z.string().nullable(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ExportMessageEml, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true), path: z.string() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.BackfillCustomerLinks, {
+    payload: z
+      .object({
+        accountId: positiveInt.optional(),
+        limit: z.number().int().positive().optional(),
+      })
+      .optional(),
+    result: z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
+  });
+  set(IPCChannels.Email.FireWebhookWorkflow, {
+    payload: z.object({
+      secret: z.string(),
+      body: z.record(z.string(), z.unknown()).optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), fired: z.number().int().nonnegative() }),
+      z.object({ success: z.literal(false), error: z.string(), fired: z.number().optional() }),
+    ]),
+  });
+  set(IPCChannels.Email.ClearAccountSyncLock, {
+    payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetEmailMiscSettings, {
+    payload: voidPayload,
+    result: z.object({
+      webhookSecret: z.string(),
+      maxAttachmentMb: z.string(),
+    }),
+  });
+  set(IPCChannels.Email.SetEmailMiscSettings, {
+    payload: z.object({
+      webhookSecret: z.string().optional(),
+      maxAttachmentMb: z.number().int().positive().optional(),
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.ListMessagesByView, {
     payload: z.object({
       accountId: mailAccountScopeSchema,
@@ -151,6 +209,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       limit: z.number().int().positive().optional(),
       offset: z.number().int().nonnegative().optional(),
       categoryId: z.number().int().positive().nullable().optional(),
+      sort: z.enum(['date_desc', 'date_asc', 'priority']).optional(),
     }),
     result: recordArray,
   });
@@ -161,7 +220,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       limit: z.number().int().positive().optional(),
       view: accountMailViewSchema.optional(),
     }),
-    result: recordArray,
+    result: z.object({
+      messages: recordArray,
+      searchMode: z.enum(['fts', 'like', 'regex']),
+    }),
   });
   set(IPCChannels.Email.ListConversationMessages, {
     payload: z.object({

@@ -8,6 +8,8 @@ export const WORKFLOW_TRIGGER_LABELS: Record<string, string> = {
   "crm.deal_stage_changed": "Deal-Phase geändert",
   "task.due": "Aufgabe fällig",
   "calendar.event_start": "Termin beginnt",
+  "webhook.incoming": "Webhook (eingehend)",
+  "crm.customer_created": "Kunde angelegt",
 }
 
 export function workflowTriggerLabel(kind: string | undefined): string {

@@ -193,6 +193,8 @@ function TriggerFields({ node, patch }: FieldProps) {
           <SelectItem value="crm.deal_stage_changed">Deal-Phase geändert</SelectItem>
           <SelectItem value="task.due">Aufgabe fällig</SelectItem>
           <SelectItem value="calendar.event_start">Termin beginnt</SelectItem>
+          <SelectItem value="webhook.incoming">Webhook (eingehend)</SelectItem>
+          <SelectItem value="crm.customer_created">Kunde angelegt</SelectItem>
         </SelectContent>
       </Select>
     </div>
