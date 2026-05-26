@@ -20,6 +20,8 @@ import {
   Reply,
   ReplyAll,
   RotateCcw,
+  CheckCircle2,
+  Circle,
   ShieldAlert,
   Trash2,
 } from "lucide-react"
@@ -67,7 +69,10 @@ import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
+import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
+import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
+import { ApplyWorkflowMenu } from "./apply-workflow-menu"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -108,6 +113,7 @@ export function MessageViewer(props: Props) {
     metadataPanelOpen,
     setMetadataPanelOpen,
     mailView,
+    messageDoneFilter,
     setComposeIntent,
   } = useMailWorkspace()
 
@@ -150,7 +156,7 @@ export function MessageViewer(props: Props) {
       until,
     })
     if (until) {
-      toast.success("Zurückgestellt")
+      toast.success(`Zurückgestellt bis ${formatSnoozeWakeLabel(until)}`)
     } else {
       toast.success("Wieder im Posteingang")
     }
@@ -222,6 +228,22 @@ export function MessageViewer(props: Props) {
     await refreshList({ preserveSelection: true })
   }
 
+  const handleToggleDone = async () => {
+    const done = !!selectedMessage.done_local
+    await invokeIpc(IPCChannels.Email.SetMessageDone, {
+      messageId: selectedMessage.id,
+      done: !done,
+    })
+    toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
+    const hideFromInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
+    await refreshList({ preserveSelection: !hideFromInbox })
+    if (hideFromInbox) {
+      setSelectedMessage(null)
+    } else {
+      await refreshCurrentMessage()
+    }
+  }
+
   const handleToggleSpam = async () => {
     const spam = !!selectedMessage.is_spam
     await invokeIpc(IPCChannels.Email.SetMessageSpam, {
@@ -286,6 +308,14 @@ export function MessageViewer(props: Props) {
                   <Trash2 className="h-4 w-4" />
                   Entwurf löschen
                 </Button>
+                <ApplyWorkflowMenu
+                  message={selectedMessage}
+                  onApplied={async () => {
+                    await refreshCurrentMessage()
+                    await refreshList({ preserveSelection: true })
+                    await reloadTags()
+                  }}
+                />
               </>
             ) : null}
             {inDraftsView && !inTrash && selectedMessage.uid >= 0 ? (
@@ -307,7 +337,7 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   onClick={() => onReply(selectedMessage)}
-                  className="gap-2"
+                  className="gap-2 bg-sky-500/12 text-sky-900 hover:bg-sky-500/20 dark:text-sky-100"
                 >
                   <Reply className="h-4 w-4" />
                   Antworten
@@ -317,7 +347,7 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   onClick={() => onReplyAll(selectedMessage)}
-                  className="gap-2"
+                  className="gap-2 bg-sky-500/8 text-sky-800 hover:bg-sky-500/16 dark:text-sky-200"
                 >
                   <ReplyAll className="h-4 w-4" />
                   Allen antworten
@@ -327,17 +357,25 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   onClick={() => onForward(selectedMessage)}
-                  className="gap-2"
+                  className="gap-2 bg-indigo-500/12 text-indigo-900 hover:bg-indigo-500/20 dark:text-indigo-100"
                 >
                   <Forward className="h-4 w-4" />
                   Weiterleiten
                 </Button>
+                <ApplyWorkflowMenu
+                  message={selectedMessage}
+                  onApplied={async () => {
+                    await refreshCurrentMessage()
+                    await refreshList({ preserveSelection: true })
+                    await reloadTags()
+                  }}
+                />
                 <div className="mx-1 h-6 w-px bg-border" />
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-slate-500/10 text-slate-800 hover:bg-slate-500/18 dark:text-slate-200"
                   onClick={() => void handleToggleSeen()}
                 >
                   {selectedMessage.seen_local ? (
@@ -349,11 +387,34 @@ export function MessageViewer(props: Props) {
                     {selectedMessage.seen_local ? "Ungelesen" : "Gelesen"}
                   </span>
                 </Button>
+                {mailView === "inbox" && selectedMessage.uid >= 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className={cn(
+                      "gap-1.5",
+                      selectedMessage.done_local
+                        ? "bg-emerald-500/12 text-emerald-900 hover:bg-emerald-500/20 dark:text-emerald-100"
+                        : "bg-amber-500/10 text-amber-950 hover:bg-amber-500/18 dark:text-amber-100",
+                    )}
+                    onClick={() => void handleToggleDone()}
+                  >
+                    {selectedMessage.done_local ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : (
+                      <Circle className="h-4 w-4" />
+                    )}
+                    <span className="hidden lg:inline">
+                      {selectedMessage.done_local ? "Wieder offen" : "Erledigt"}
+                    </span>
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-orange-500/12 text-orange-900 hover:bg-orange-500/20 dark:text-orange-100"
                   onClick={() => void handleToggleSpam()}
                 >
                   <ShieldAlert className="h-4 w-4" />
@@ -365,7 +426,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-amber-500/12 text-amber-900 hover:bg-amber-500/20 dark:text-amber-100"
                   onClick={() => void handleArchive()}
                 >
                   <Archive className="h-4 w-4" />
@@ -377,7 +438,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-violet-500/10 text-violet-900 hover:bg-violet-500/18 dark:text-violet-100"
                   onClick={() => {
                     if (!hasElectron()) return
                     setRawHeadersOpen(true)
@@ -407,7 +468,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-red-500/10 text-red-800 hover:bg-red-500/18 dark:text-red-200"
                   onClick={() => void handleSoftDelete()}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -446,7 +507,7 @@ export function MessageViewer(props: Props) {
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
             <ScrollArea className="flex-1">
-              <div className="mx-auto max-w-3xl space-y-4 p-6">
+              <div className="mx-auto w-full max-w-5xl space-y-4 px-5 py-6 sm:px-8">
                 <div className="space-y-1">
                   <h2
                     className={cn(
@@ -519,16 +580,21 @@ export function MessageViewer(props: Props) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto px-0 pt-1 text-xs text-muted-foreground"
+                      className="h-auto px-0 pt-1 text-xs text-primary"
                       onClick={() => {
-                        if (metadataPlacement === "external" && !metadataPanelOpen) {
+                        if (metadataPlacement === "inline" && !metadataPanelOpen) {
                           setMetadataPanelOpen(true)
                         }
+                        window.setTimeout(() => {
+                          if (!scrollToMetadataConversationSection()) {
+                            toast.info(
+                              "Verlauf im Detailpanel rechts — Abschnitt „Alle Mails mit …“.",
+                            )
+                          }
+                        }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
                       }}
                     >
-                      {metadataPlacement === "external"
-                        ? "Alle Mails mit dieser Adresse (Detailpanel) →"
-                        : "Verlauf mit dieser Adresse siehe Detailpanel rechts"}
+                      Alle Mails mit dieser Adresse anzeigen →
                     </Button>
                   ) : null}
                   {selectedMessage.ticket_code ? (

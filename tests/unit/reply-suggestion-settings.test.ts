@@ -11,6 +11,11 @@ jest.mock('../../electron/email/email-crm-store', () => ({
   getMessageCategoryId: (id: number) => mockGetMessageCategoryId(id),
 }));
 
+const mockGetEmailMessageById = jest.fn();
+jest.mock('../../electron/email/email-store', () => ({
+  getEmailMessageById: (id: number) => mockGetEmailMessageById(id),
+}));
+
 import {
   shouldRunReplySuggestionForTrigger,
   normalizeReplySuggestionSettings,
@@ -77,13 +82,39 @@ describe('reply suggestion settings (electron)', () => {
     );
   });
 
+  it('setReplySuggestionSettings persists per-account keys', () => {
+    setReplySuggestionSettings({ autoEnabled: false }, 7);
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('reply_suggestion_auto_enabled@7', '0');
+  });
+
+  it('getReplySuggestionSettings merges account overrides over global', () => {
+    mockGetSyncInfo.mockImplementation((key: string) => {
+      if (key === 'reply_suggestion_auto_enabled@3') return '0';
+      if (key === 'reply_suggestion_auto_enabled') return '1';
+      return null;
+    });
+    expect(getReplySuggestionSettings(3).autoEnabled).toBe(false);
+    expect(getReplySuggestionSettings().autoEnabled).toBe(true);
+  });
+
   it('shouldAutoEnsureReplySuggestion blocks when auto disabled', () => {
+    mockGetEmailMessageById.mockReturnValue({ account_id: 2 });
     mockGetSyncInfo.mockImplementation((key: string) => {
       if (key === 'reply_suggestion_auto_enabled') return '0';
       return null;
     });
     expect(shouldAutoEnsureReplySuggestion(1, 'open')).toBe(false);
     expect(shouldAutoEnsureReplySuggestion(1, 'inbound')).toBe(false);
+  });
+
+  it('shouldAutoEnsureReplySuggestion uses per-account settings', () => {
+    mockGetEmailMessageById.mockReturnValue({ account_id: 5 });
+    mockGetSyncInfo.mockImplementation((key: string) => {
+      if (key === 'reply_suggestion_auto_enabled@5') return '0';
+      if (key === 'reply_suggestion_auto_enabled') return '1';
+      return null;
+    });
+    expect(shouldAutoEnsureReplySuggestion(1, 'open')).toBe(false);
   });
 
   it('messageMatchesReplySuggestionCategories with only_listed', () => {

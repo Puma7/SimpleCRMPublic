@@ -120,7 +120,12 @@ function MailShellInner() {
           />
         </ResizablePanel>
         <ResizableHandle />
-        <ResizablePanel id={MAIL_PANE_IDS[2]} defaultSize="36%" minSize="22%">
+        <ResizablePanel
+          id={MAIL_PANE_IDS[2]}
+          defaultSize="42%"
+          minSize="28%"
+          className="min-w-0"
+        >
           <MessageViewer
             teamMembers={teamMembers}
             categories={categories}
@@ -142,9 +147,16 @@ function MailShellInner() {
           />
         </ResizablePanel>
         <ResizableHandle />
-        <ResizablePanel id={MAIL_PANE_IDS[3]} defaultSize="20%" minSize="14%" maxSize="28%">
+        <ResizablePanel
+          id={MAIL_PANE_IDS[3]}
+          defaultSize="18%"
+          minSize="12%"
+          maxSize="32%"
+          className="min-w-0"
+        >
           {selectedMessage ? (
             <MessageMetadataPanel
+              fillWidth
               teamMembers={teamMembers}
               categories={categories}
               messageTags={messageTags}
@@ -154,7 +166,7 @@ function MailShellInner() {
               refreshCurrentMessage={refreshCurrentMessage}
             />
           ) : (
-            <div className="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
+            <div className="flex h-full w-full min-w-0 flex-col items-center justify-center border-l bg-muted/10 p-4 text-center text-xs text-muted-foreground">
               Details zur Nachricht
             </div>
           )}

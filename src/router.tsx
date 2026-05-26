@@ -82,8 +82,9 @@ const emailSettingsRoute = createRoute({
     const tabParam = typeof search.tab === 'string' ? search.tab : legacySection
     const legacyTabMap: Record<string, (typeof SETTINGS_TAB_IDS)[number]> = {
       accounts: 'accounts',
-      smtp: 'smtp',
-      oauth: 'oauth',
+      smtp: 'accounts',
+      oauth: 'accounts',
+      oauthApps: 'oauthApps',
       ai: 'ai',
       knowledge: 'knowledge',
       'mail-security': 'mailSecurity',

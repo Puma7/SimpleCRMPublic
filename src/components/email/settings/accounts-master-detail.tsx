@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { AlertCircle, CheckCircle2, Plus } from "lucide-react"
+import { CheckCircle2, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -11,17 +11,17 @@ import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { AccountForm } from "./account-form"
 import { SmtpPanel } from "./smtp-panel"
-import { OAuthPanel } from "./oauth-panel"
-import { AiPanel } from "./ai-panel"
+import { OAuthAccountLinkPanel } from "./oauth-account-link-panel"
+import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
+import { AccountsShippingHint } from "./accounts-shipping-hint"
 
-type AccountTab = "imap" | "smtp" | "oauth" | "ki" | "sync"
+type AccountTab = "imap" | "smtp" | "oauth" | "ki"
 
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
   { id: "smtp", label: "SMTP" },
   { id: "oauth", label: "OAuth" },
   { id: "ki", label: "KI" },
-  { id: "sync", label: "Sync" },
 ]
 
 function accountInitials(a: EmailAccount): string {
@@ -31,7 +31,7 @@ function accountInitials(a: EmailAccount): string {
   return n.slice(0, 2).toUpperCase()
 }
 
-/** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI/Sync-Tabs (ehem. Beta v0.2). */
+/** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI pro Postfach. */
 export function AccountsMasterDetailSettings() {
   const { bumpAccountsRevision, setSettingsAccountId, accountsRevision } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
@@ -120,9 +120,12 @@ export function AccountsMasterDetailSettings() {
             })}
           </ul>
         </ScrollArea>
-        <p className="border-t p-3 text-[10px] leading-relaxed text-muted-foreground">
-          Passwörter liegen im OS-Schlüsselbund (Keytar), nicht in der Datenbank.
-        </p>
+        <div className="space-y-2 border-t p-3">
+          <AccountsShippingHint />
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            Passwörter liegen im OS-Schlüsselbund (Keytar), nicht in der Datenbank.
+          </p>
+        </div>
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -162,13 +165,16 @@ export function AccountsMasterDetailSettings() {
             <ScrollArea className="flex-1">
               <div className="p-4">
                 {creating ? (
-                  <AccountForm
-                    onCreated={() => {
-                      bumpAccountsRevision()
-                      void load()
-                      setCreating(false)
-                    }}
-                  />
+                  <div className="max-w-xl space-y-4">
+                    <AccountsShippingHint />
+                    <AccountForm
+                      onCreated={() => {
+                        bumpAccountsRevision()
+                        void load()
+                        setCreating(false)
+                      }}
+                    />
+                  </div>
                 ) : tab === "imap" ? (
                   <AccountForm
                     editAccount={editAccount}
@@ -178,27 +184,18 @@ export function AccountsMasterDetailSettings() {
                     }}
                     onCancelEdit={() => setEditAccount(null)}
                   />
-                ) : tab === "smtp" ? (
-                  <SmtpPanel />
-                ) : tab === "oauth" ? (
-                  <OAuthPanel />
-                ) : tab === "ki" ? (
+                ) : tab === "smtp" && selectedId != null ? (
+                  <SmtpPanel embeddedAccountId={selectedId} />
+                ) : tab === "oauth" && selectedId != null ? (
+                  <OAuthAccountLinkPanel
+                    accountId={selectedId}
+                    emailAddress={selected?.email_address}
+                  />
+                ) : tab === "ki" && selectedId != null ? (
                   <div className="max-w-3xl">
-                    <p className="mb-4 text-sm text-muted-foreground">
-                      KI-Profil für Composer und Workflows (kontoweit nutzbar über Standard-Profil
-                      und Prompt-Zuweisung).
-                    </p>
-                    <AiPanel />
+                    <ReplySuggestionSettingsSection accountId={selectedId} />
                   </div>
-                ) : (
-                  <div className="max-w-xl space-y-3 text-sm text-muted-foreground">
-                    <p className="flex items-center gap-2">
-                      <AlertCircle className="h-4 w-4 text-primary" />
-                      Sync-Optionen (IDLE, Intervall, initiale Tiefe) folgen in einer späteren
-                      Version — aktuell über Konto-Formular und Workflow-Einstellungen.
-                    </p>
-                  </div>
-                )}
+                ) : null}
               </div>
             </ScrollArea>
           </>

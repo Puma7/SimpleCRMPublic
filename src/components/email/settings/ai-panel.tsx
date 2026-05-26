@@ -186,6 +186,16 @@ export function AiPanel() {
 
   return (
     <div className="space-y-8">
+      <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <p className="font-medium text-foreground">Globale KI-Konfiguration</p>
+        <p className="mt-1">
+          Hier legen Sie <strong>Anbieter, Modelle und API-Keys</strong> fest. Automatische
+          Antwortvorschläge pro Postfach steuern Sie unter{" "}
+          <strong>Konten → KI</strong>; die globalen Voreinstellungen dafür unter{" "}
+          <strong>Antwortvorschläge (Standard)</strong> unten.
+        </p>
+      </div>
+
       <ReplySuggestionSettingsSection />
 
       <div>

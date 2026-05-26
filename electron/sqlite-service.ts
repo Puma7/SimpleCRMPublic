@@ -543,6 +543,7 @@ function runMigrations() {
                 { name: 'draft_attachment_paths_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN draft_attachment_paths_json TEXT` },
                 { name: 'post_process_done', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN post_process_done INTEGER NOT NULL DEFAULT 1` },
                 { name: 'reply_parent_message_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_parent_message_id INTEGER` },
+                { name: 'done_local', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN done_local INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {
