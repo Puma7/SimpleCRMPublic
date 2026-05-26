@@ -3,8 +3,11 @@ import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { listAiPrompts, type AiPromptRow } from './email-crm-store';
 import { resolvePromptProfileId } from './email-ai-profiles';
 import { runChatCompletion } from './email-openai';
+import { formatAiUserError } from './ai-error-format';
 import { getEmailMessageById, type EmailMessageRow } from './email-store';
 import { hasAnyAiProfileWithKey } from './email-ai-profiles';
+import type { ReplySuggestionAutoTrigger } from '../../shared/reply-suggestion-settings';
+import { shouldAutoEnsureReplySuggestion } from './reply-suggestion-settings';
 
 const REPLY_BODY_MAX = 12_000;
 const INFLIGHT = new Set<number>();
@@ -151,7 +154,12 @@ export function getReplySuggestion(messageId: number): ReplySuggestionRow {
     return { status: 'pending', text: null, error: null, updatedAt };
   }
   if (status === 'failed') {
-    return { status: 'failed', text: null, error: error ?? 'Generierung fehlgeschlagen', updatedAt };
+    return {
+      status: 'failed',
+      text: null,
+      error: formatAiUserError(error ?? 'Generierung fehlgeschlagen'),
+      updatedAt,
+    };
   }
   if (status === 'skipped') {
     return { status: 'skipped', text: null, error: error, updatedAt };
@@ -220,7 +228,7 @@ export async function generateReplyDraftText(
     if (!text) return { success: false, error: 'KI-Antwort leer' };
     return { success: true, text };
   } catch (e) {
-    return { success: false, error: e instanceof Error ? e.message : String(e) };
+    return { success: false, error: formatAiUserError(e) };
   }
 }
 
@@ -254,8 +262,15 @@ async function runSuggestionJob(messageId: number): Promise<void> {
 /** Queue background reply suggestion (serialized, rate-limited). */
 export function ensureReplySuggestion(
   messageId: number,
-  opts?: { force?: boolean; row?: EmailMessageRow },
+  opts?: {
+    force?: boolean;
+    row?: EmailMessageRow;
+    /** inbound = after sync/workflows; open = message opened in UI */
+    trigger?: ReplySuggestionAutoTrigger;
+  },
 ): void {
+  const trigger = opts?.trigger ?? 'inbound';
+  if (!opts?.force && !shouldAutoEnsureReplySuggestion(messageId, trigger)) return;
   const row = opts?.row ?? getEmailMessageById(messageId);
   if (!row || !canSuggestReplyForMessage(row)) return;
   const current = getReplySuggestion(messageId);

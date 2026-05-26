@@ -3,7 +3,8 @@ import { dialog } from 'electron';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getEmailMessageById } from './email-store';
-import { buildRfc822FromStored } from './mail-rfc822-build';
+import { listAttachmentsForMessage } from './email-message-attachments-store';
+import { buildEmlForMessage } from './mail-eml-build';
 
 export function setMessageSnoozedUntil(messageId: number, untilIso: string | null): void {
   getDb()
@@ -34,12 +35,9 @@ export function listDueScheduledDraftIds(limit = 30): number[] {
 export async function exportMessageAsEml(messageId: number): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
   const row = getEmailMessageById(messageId);
   if (!row) return { ok: false, error: 'Nachricht nicht gefunden' };
-  const buf = buildRfc822FromStored({
-    rawHeaders: row.raw_headers,
-    bodyText: row.body_text,
-    bodyHtml: row.body_html,
-  });
-  if (!buf?.length) {
+  const attachments = listAttachmentsForMessage(messageId);
+  const { eml, meta } = buildEmlForMessage(row, attachments);
+  if (!eml.trim()) {
     return { ok: false, error: 'Keine RFC822-Daten für diese Nachricht gespeichert' };
   }
   const subj = (row.subject ?? 'nachricht').replace(/[^\w.-]+/g, '_').slice(0, 60);
@@ -49,6 +47,10 @@ export async function exportMessageAsEml(messageId: number): Promise<{ ok: true;
     filters: [{ name: 'E-Mail', extensions: ['eml'] }],
   });
   if (canceled || !filePath) return { ok: false, error: 'Abgebrochen' };
+  const buf =
+    meta.source === 'original' && row.raw_rfc822_b64?.trim()
+      ? Buffer.from(row.raw_rfc822_b64, 'base64')
+      : Buffer.from(eml, 'utf8');
   fs.writeFileSync(filePath, buf);
   return { ok: true, path: filePath };
 }

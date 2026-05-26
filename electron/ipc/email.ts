@@ -93,6 +93,10 @@ import {
   generateAndStoreReplySuggestion,
   getReplySuggestion,
 } from '../email/email-reply-ai';
+import {
+  getReplySuggestionSettings,
+  setReplySuggestionSettings,
+} from '../email/reply-suggestion-settings';
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
 import {
   AI_PROVIDER_PRESETS,
@@ -1430,10 +1434,31 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.EnsureReplySuggestion,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; force?: boolean },
+        payload: { messageId: number; force?: boolean; trigger?: 'inbound' | 'open' },
       ) => {
-        ensureReplySuggestion(payload.messageId, { force: payload.force });
+        ensureReplySuggestion(payload.messageId, {
+          force: payload.force,
+          trigger: payload.trigger,
+        });
         return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetReplySuggestionSettings,
+      async () => getReplySuggestionSettings(),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetReplySuggestionSettings,
+      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof setReplySuggestionSettings>[0]) => {
+        return setReplySuggestionSettings(payload);
       },
       { logger },
     ),

@@ -182,6 +182,8 @@ const EmailChannels = literal({
   AiTransformText: 'email:ai-transform-text',
   GetReplySuggestion: 'email:get-reply-suggestion',
   EnsureReplySuggestion: 'email:ensure-reply-suggestion',
+  GetReplySuggestionSettings: 'email:get-reply-suggestion-settings',
+  SetReplySuggestionSettings: 'email:set-reply-suggestion-settings',
   GenerateReplyDraft: 'email:generate-reply-draft',
   GetAiSettings: 'email:get-ai-settings',
   SetAiSettings: 'email:set-ai-settings',

@@ -21,6 +21,27 @@ describe('buildRfc822FromStored', () => {
       buildRfc822FromStored({ rawHeaders: null, bodyText: 'x', bodyHtml: null }),
     ).toBeNull();
   });
+
+  it('prefers raw_rfc822_b64 over corrupt headers', () => {
+    const original = 'From: x@y.z\r\n\r\nBody';
+    const buf = buildRfc822FromStored({
+      rawRfc822B64: Buffer.from(original).toString('base64'),
+      rawHeaders: '[object Object]\n',
+      bodyText: 'ignored',
+      bodyHtml: null,
+    });
+    expect(buf!.toString('latin1')).toBe(original);
+  });
+
+  it('returns null for corrupt headers only', () => {
+    expect(
+      buildRfc822FromStored({
+        rawHeaders: '[object Object]\n',
+        bodyText: 'x',
+        bodyHtml: null,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('extractEnvelopeSender', () => {
