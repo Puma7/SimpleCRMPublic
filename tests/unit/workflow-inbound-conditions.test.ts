@@ -73,6 +73,7 @@ function neutralMessage(): EmailMessageRow {
     is_spam: 0,
     pop3_uidl: null,
     raw_headers: null,
+    raw_rfc822_b64: null,
     created_at: new Date().toISOString(),
   };
 }

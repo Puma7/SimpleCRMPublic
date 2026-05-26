@@ -37,6 +37,7 @@ export async function runMailSecurityPipeline(
 
   if (isMailauthEnabled()) {
     auth = await verifyMailAuthentication({
+      rawRfc822B64: row.raw_rfc822_b64,
       rawHeaders: row.raw_headers,
       bodyText: row.body_text,
       bodyHtml: row.body_html,
@@ -45,6 +46,7 @@ export async function runMailSecurityPipeline(
 
   if (isRspamdEnabled()) {
     rspamd = await checkMessageWithRspamd({
+      rawRfc822B64: row.raw_rfc822_b64,
       rawHeaders: row.raw_headers,
       bodyText: row.body_text,
       bodyHtml: row.body_html,

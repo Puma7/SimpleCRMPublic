@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import {
   Archive,
   Code2,
+  Copy,
   Download,
   Eye,
   Forward,
@@ -362,36 +363,23 @@ export function MessageViewer(props: Props) {
                     setRawHeadersText(null)
                     void invokeIpc<{
                       success: boolean
-                      rawHeaders?: string | null
-                      messageIdHeader?: string | null
-                      fromJson?: string | null
+                      rawEml?: string
+                      emlSource?: "original" | "reconstructed"
                       error?: string
                     }>(IPCChannels.Email.GetMessageRawHeaders, selectedMessage.id)
                       .then((r) => {
                         if (!r.success) {
-                          toast.error(r.error ?? "Header konnten nicht geladen werden.")
+                          toast.error(r.error ?? "Rohdaten konnten nicht geladen werden.")
                           return
                         }
-                        const parts: string[] = []
-                        const fromAddr = firstAddress(r.fromJson ?? selectedMessage.from_json)
-                        if (fromAddr) parts.push(`From (parsed): ${fromAddr}`)
-                        if (r.messageIdHeader) parts.push(`Message-ID: ${r.messageIdHeader}`)
-                        if (r.rawHeaders?.trim()) {
-                          parts.push("", "--- RFC822 Header ---", r.rawHeaders)
-                        } else {
-                          parts.push(
-                            "",
-                            "(Keine gespeicherten Roh-Header — nur bei Mails nach Update/Sync verfügbar. Absender oben aus From.)",
-                          )
-                        }
-                        setRawHeadersText(parts.join("\n"))
+                        setRawHeadersText(r.rawEml ?? "—")
                       })
-                      .catch(() => toast.error("Header konnten nicht geladen werden."))
+                      .catch(() => toast.error("Rohdaten konnten nicht geladen werden."))
                       .finally(() => setRawHeadersLoading(false))
                   }}
                 >
                   <Code2 className="h-4 w-4" />
-                  <span className="hidden lg:inline">Header</span>
+                  <span className="hidden lg:inline">Rohdaten</span>
                 </Button>
                 <Button
                   type="button"
@@ -724,18 +712,38 @@ export function MessageViewer(props: Props) {
         </div>
       </div>
       <Dialog open={rawHeadersOpen} onOpenChange={setRawHeadersOpen}>
-        <DialogContent className="max-h-[85vh] max-w-2xl flex flex-col gap-3">
+        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col gap-3">
           <DialogHeader>
-            <DialogTitle>E-Mail-Header / Rohdaten</DialogTitle>
+            <DialogTitle>E-Mail-Rohdaten (.eml)</DialogTitle>
             <DialogDescription>
-              RFC822-Header und Message-ID zur Prüfung von Absender und Technik (Support).
+              Vollständige Nachricht im RFC822-Format (wie eine .eml-Datei): Header, Body und — bei
+              Sync ab dieser Version — die Original-Rohmail. Anhänge sind eingebettet, wenn sie lokal
+              vorliegen; sonst siehe Hinweis am Ende.
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="max-h-[60vh] rounded border bg-muted/30 p-3">
+          <div className="flex shrink-0 justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!rawHeadersText || rawHeadersLoading}
+              onClick={() => {
+                if (!rawHeadersText) return
+                void navigator.clipboard.writeText(rawHeadersText).then(
+                  () => toast.success("In Zwischenablage kopiert."),
+                  () => toast.error("Kopieren fehlgeschlagen."),
+                )
+              }}
+            >
+              <Copy className="mr-1 h-3.5 w-3.5" />
+              Kopieren
+            </Button>
+          </div>
+          <ScrollArea className="max-h-[min(65vh,720px)] rounded border bg-muted/30 p-3">
             {rawHeadersLoading ? (
               <p className="text-sm text-muted-foreground">Lädt…</p>
             ) : (
-              <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
+              <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">
                 {rawHeadersText ?? "—"}
               </pre>
             )}

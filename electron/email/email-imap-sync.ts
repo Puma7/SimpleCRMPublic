@@ -31,6 +31,7 @@ import {
   snippetFromParsed,
 } from './email-parse-utils';
 import { canAdvanceImapSyncCursor } from './imap-sync-cursor';
+import { rfc822SourceToStorageB64 } from './mail-eml-build';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -131,7 +132,8 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         if (!msg || !msg.source) {
           throw new Error(`empty source for UID ${uid}`);
         }
-        const parsed = await simpleParser(msg.source);
+        const sourceBuf = Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(msg.source as Buffer);
+        const parsed = await simpleParser(sourceBuf);
         const messageId = parsed.messageId ?? null;
         const inReplyTo = parsed.inReplyTo ?? null;
         const refs = parsed.references
@@ -166,6 +168,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
             hasAttachments,
             attachmentsJson,
             rawHeaders: rawHeadersFromParsed(parsed),
+            rawRfc822B64: rfc822SourceToStorageB64(sourceBuf),
           },
           upsertCtx,
         );

@@ -298,6 +298,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.union([
       z.object({
         success: z.literal(true),
+        rawEml: z.string(),
+        emlSource: z.enum(['original', 'reconstructed']),
         rawHeaders: z.string().nullable(),
         messageIdHeader: z.string().nullable(),
         fromJson: z.string().nullable(),

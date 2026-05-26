@@ -520,6 +520,7 @@ function runMigrations() {
                 { name: 'assigned_to', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN assigned_to TEXT` },
                 { name: 'pop3_uidl', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pop3_uidl TEXT` },
                 { name: 'raw_headers', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_headers TEXT` },
+                { name: 'raw_rfc822_b64', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_rfc822_b64 TEXT` },
                 { name: 'is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN is_spam INTEGER NOT NULL DEFAULT 0` },
                 { name: 'auth_spf', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_spf TEXT` },
                 { name: 'auth_dkim', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_dkim TEXT` },

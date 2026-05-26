@@ -66,6 +66,7 @@ function aggregateDkim(dkim: DKIMVerifyResult | undefined): {
  * Verify SPF, DKIM, DMARC, ARC using mailauth on reconstructed RFC822 (headers + body).
  */
 export async function verifyMailAuthentication(input: {
+  rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;

@@ -1563,8 +1563,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, messageId: number) => {
         const row = getEmailMessageById(messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const { listAttachmentsForMessage } = await import('../email/email-message-attachments-store');
+        const { buildEmlForMessage, formatEmlDisplayAppendix } = await import('../email/mail-eml-build');
+        const attachments = listAttachmentsForMessage(messageId);
+        const { eml, meta } = buildEmlForMessage(row, attachments);
+        const rawEml = eml + formatEmlDisplayAppendix(row, meta);
         return {
           success: true as const,
+          rawEml,
+          emlSource: meta.source,
           rawHeaders: row.raw_headers ?? null,
           messageIdHeader: row.message_id ?? null,
           fromJson: row.from_json ?? null,
