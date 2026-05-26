@@ -114,6 +114,19 @@ export function MessageViewer(props: Props) {
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
 
+  const omittedAttachments = (() => {
+    const raw = selectedMessage?.attachments_json
+    if (!raw) return [] as { name: string; size: number; reason: string }[]
+    try {
+      const parsed = JSON.parse(raw) as {
+        omitted?: { name: string; size: number; reason: string }[]
+      }
+      return Array.isArray(parsed.omitted) ? parsed.omitted : []
+    } catch {
+      return []
+    }
+  })()
+
   const isOutboundHeld =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
@@ -498,7 +511,7 @@ export function MessageViewer(props: Props) {
                   ) : null}
                 </div>
 
-                {messageAttachments.length > 0 ? (
+                {messageAttachments.length > 0 || omittedAttachments.length > 0 ? (
                   <div className="space-y-1.5">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       Anhänge
@@ -578,6 +591,24 @@ export function MessageViewer(props: Props) {
                           >
                             Speichern…
                           </Button>
+                        </li>
+                      ))}
+                      {omittedAttachments.map((om, i) => (
+                        <li
+                          key={`omitted-${i}-${om.name}`}
+                          className="flex flex-wrap items-center gap-2 rounded border border-dashed border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                            {om.name}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {(om.size / 1024).toFixed(1)} KB
+                          </span>
+                          <span className="text-amber-700 dark:text-amber-400">
+                            {om.reason === "too_large"
+                              ? "Nicht gespeichert (zu groß)"
+                              : "Nicht gespeichert"}
+                          </span>
                         </li>
                       ))}
                     </ul>

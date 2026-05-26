@@ -30,6 +30,7 @@ async function startIdleForAccount(
 ): Promise<void> {
   pendingReconnectTimers.delete(acc.id);
   try {
+    // OAuth access tokens are refreshed on each connect (resolveImapAuth), including IDLE reconnects.
     const auth = await resolveImapAuth(acc);
     const client = new ImapFlow({
       host: acc.imap_host,
@@ -79,7 +80,7 @@ async function startIdleForAccount(
     idleClients.set(acc.id, client);
   } catch (e) {
     logger.debug(`[email] idle start skip account ${acc.id}`, e);
-    const delay = Math.min(60_000, 10_000 * Math.pow(2, Math.min(retryCount, 4)));
+    const delay = Math.min(60_000, 5_000 * Math.pow(2, Math.min(retryCount, 4)));
     const timer = setTimeout(() => {
       pendingReconnectTimers.delete(acc.id);
       if (!globalCron) return;

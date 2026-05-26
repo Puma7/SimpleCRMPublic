@@ -77,9 +77,30 @@ const emailSettingsRoute = createRoute({
   getParentRoute: () => emailLayoutRoute,
   path: '/settings',
   validateSearch: (search: Record<string, unknown>) => {
-    const tab = typeof search.tab === 'string' ? search.tab : undefined
+    const legacySection =
+      typeof search.section === 'string' ? search.section : undefined
+    const tabParam = typeof search.tab === 'string' ? search.tab : legacySection
+    const legacyTabMap: Record<string, (typeof SETTINGS_TAB_IDS)[number]> = {
+      accounts: 'accounts',
+      smtp: 'smtp',
+      oauth: 'oauth',
+      ai: 'ai',
+      knowledge: 'knowledge',
+      'mail-security': 'mailSecurity',
+      mailSecurity: 'mailSecurity',
+      automation: 'automation',
+      team: 'team',
+      canned: 'canned',
+      prompts: 'prompts',
+      export: 'export',
+      misc: 'misc',
+    }
+    const mapped =
+      tabParam && legacyTabMap[tabParam] ? legacyTabMap[tabParam] : tabParam
     const validTab =
-      tab && (SETTINGS_TAB_IDS as readonly string[]).includes(tab) ? tab : 'accounts'
+      mapped && (SETTINGS_TAB_IDS as readonly string[]).includes(mapped)
+        ? mapped
+        : 'accounts'
     return {
       tab: validTab as (typeof SETTINGS_TAB_IDS)[number],
     }

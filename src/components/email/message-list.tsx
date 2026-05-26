@@ -139,18 +139,31 @@ export function MessageList({
       try {
         const ids = [...selectedIds]
         if (action === "archive") {
-          const r = await invokeIpc<{ success: boolean; count: number }>(
-            IPCChannels.Email.BulkSetMessagesArchived,
-            { messageIds: ids, archived: true, accountId: bulkAccountId },
-          )
+          const r = await invokeIpc<
+            { success: true; count: number } | { success: false; error?: string }
+          >(IPCChannels.Email.BulkSetMessagesArchived, {
+            messageIds: ids,
+            archived: true,
+            accountId: bulkAccountId,
+          })
+          if (!r.success) {
+            toast.error(r.error ?? "Archivieren fehlgeschlagen")
+            return
+          }
           toast.success(
             r.count === 1 ? "1 Nachricht archiviert" : `${r.count} Nachrichten archiviert`,
           )
         } else {
-          const r = await invokeIpc<{ success: boolean; count: number }>(
-            IPCChannels.Email.BulkSoftDeleteMessages,
-            { messageIds: ids, accountId: bulkAccountId },
-          )
+          const r = await invokeIpc<
+            { success: true; count: number } | { success: false; error?: string }
+          >(IPCChannels.Email.BulkSoftDeleteMessages, {
+            messageIds: ids,
+            accountId: bulkAccountId,
+          })
+          if (!r.success) {
+            toast.error(r.error ?? "Löschen fehlgeschlagen")
+            return
+          }
           toast.success(
             r.count === 1
               ? "1 Nachricht in den Papierkorb verschoben"

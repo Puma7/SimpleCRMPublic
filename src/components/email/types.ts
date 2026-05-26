@@ -21,6 +21,9 @@ export type EmailAccount = {
   sent_folder_path?: string | null
   /** IMAP: mark \\Seen on server when opening a message locally (POP3: ignored). */
   imap_sync_seen_on_open?: number | null
+  vacation_enabled?: number
+  vacation_subject?: string | null
+  vacation_body_text?: string | null
   created_at: string
   updated_at: string
 }

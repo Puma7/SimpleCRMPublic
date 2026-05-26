@@ -24,4 +24,21 @@ describe('buildComposeRfc822', () => {
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it('encodes non-ASCII display names in From/To/Cc', () => {
+    const buf = buildComposeRfc822({
+      from: 'Müller GmbH <mueller@example.com>',
+      to: 'Käufer <buyer@example.com>',
+      cc: 'François <fr@example.com>',
+      subject: 'Test',
+      text: 'Body',
+    });
+    const raw = buf.toString('utf-8');
+    expect(raw).toMatch(/^From: =\?UTF-8\?B\?/m);
+    expect(raw).toMatch(/^To: =\?UTF-8\?B\?/m);
+    expect(raw).toMatch(/^Cc: =\?UTF-8\?B\?/m);
+    expect(raw).toContain('mueller@example.com');
+    expect(raw).toContain('buyer@example.com');
+    expect(raw).toContain('fr@example.com');
+  });
 });

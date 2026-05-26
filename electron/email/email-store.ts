@@ -38,6 +38,9 @@ export type EmailAccountRow = {
   oauth_refresh_keytar_key: string | null;
   sent_folder_path: string | null;
   imap_sync_seen_on_open: number;
+  vacation_enabled: number;
+  vacation_subject: string | null;
+  vacation_body_text: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -108,6 +111,8 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             COALESCE(protocol, 'imap') AS protocol, pop3_host, pop3_port, pop3_tls, oauth_provider, oauth_refresh_keytar_key,
             COALESCE(sent_folder_path, 'Sent') AS sent_folder_path,
             COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
+            COALESCE(vacation_enabled, 0) AS vacation_enabled,
+            vacation_subject, vacation_body_text,
             created_at, updated_at`;
 
 export function listEmailAccounts(): EmailAccountRow[] {
@@ -204,6 +209,9 @@ export function updateEmailAccountRecord(
     oauthRefreshKeytarKey: string | null;
     sentFolderPath: string | null;
     imapSyncSeenOnOpen: boolean;
+    vacationEnabled: boolean;
+    vacationSubject: string | null;
+    vacationBodyText: string | null;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -236,6 +244,18 @@ export function updateEmailAccountRecord(
   if (input.imapSyncSeenOnOpen !== undefined) {
     sets.push('imap_sync_seen_on_open = ?');
     vals.push(input.imapSyncSeenOnOpen ? 1 : 0);
+  }
+  if (input.vacationEnabled !== undefined) {
+    sets.push('vacation_enabled = ?');
+    vals.push(input.vacationEnabled ? 1 : 0);
+  }
+  if (input.vacationSubject !== undefined) {
+    sets.push('vacation_subject = ?');
+    vals.push(input.vacationSubject);
+  }
+  if (input.vacationBodyText !== undefined) {
+    sets.push('vacation_body_text = ?');
+    vals.push(input.vacationBodyText);
   }
 
   if (sets.length === 0) return;

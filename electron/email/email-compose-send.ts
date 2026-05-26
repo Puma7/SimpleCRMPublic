@@ -124,7 +124,9 @@ export async function sendComposeDraft(input: {
   bcc?: string;
   inReplyToMessageId?: number | null;
   attachmentPaths?: string[];
-}): Promise<{ ok: true; warning?: string } | { ok: false; error: string }> {
+}): Promise<
+  { ok: true; warning?: string; recoveredSentAppend?: boolean } | { ok: false; error: string }
+> {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
     return { ok: false, error: 'Ungültiger Entwurf' };
@@ -306,7 +308,10 @@ export async function sendComposeDraft(input: {
         references: threadHeaders.references,
         attachments: sentAppendAttachments,
       });
-      return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };
+      if (fin.sentAppendWarning) {
+        return { ok: true, warning: fin.sentAppendWarning };
+      }
+      return { ok: true, recoveredSentAppend: true };
     }
 
     const requestReceipt =

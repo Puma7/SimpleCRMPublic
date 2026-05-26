@@ -31,6 +31,7 @@ describe('MainNav', () => {
     expect(screen.getByText('Aufgaben')).toBeTruthy();
     expect(screen.getByText('Produkte')).toBeTruthy();
     expect(screen.getByText('Kalender')).toBeTruthy();
+    expect(screen.getByText('E-Mail')).toBeTruthy();
   });
 
   test('renders settings link', () => {
@@ -51,6 +52,7 @@ describe('MainNav', () => {
     expect(hrefs).toContain('/tasks');
     expect(hrefs).toContain('/products');
     expect(hrefs).toContain('/calendar');
+    expect(hrefs).toContain('/email');
     expect(hrefs).toContain('/settings');
   });
 

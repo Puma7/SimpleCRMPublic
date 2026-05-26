@@ -1,10 +1,18 @@
+const mockRun = jest.fn();
+
 jest.mock('../../electron/sqlite-service', () => ({
-  getDb: jest.fn(),
+  getDb: jest.fn(() => ({
+    prepare: jest.fn(() => ({ run: mockRun })),
+  })),
   getCustomerById: jest.fn(() => null),
 }));
 
 import type { EmailMessageRow } from '../../electron/email/email-store';
-import { canSuggestReplyForMessage } from '../../electron/email/email-reply-ai';
+import {
+  canSuggestReplyForMessage,
+  recoverStaleReplySuggestions,
+} from '../../electron/email/email-reply-ai';
+import { getDb } from '../../electron/sqlite-service';
 
 function baseRow(over: Partial<EmailMessageRow>): EmailMessageRow {
   return {
@@ -74,5 +82,12 @@ describe('canSuggestReplyForMessage guards', () => {
 
   it('allows normal inbound', () => {
     expect(canSuggestReplyForMessage(baseRow({}))).toBe(true);
+  });
+
+  it('recoverStaleReplySuggestions marks pending rows failed', () => {
+    mockRun.mockClear();
+    recoverStaleReplySuggestions();
+    expect(getDb).toHaveBeenCalled();
+    expect(mockRun).toHaveBeenCalled();
   });
 });

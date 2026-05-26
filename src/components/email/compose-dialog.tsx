@@ -470,7 +470,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       if (!saved) return
       const safeHtml = sanitizeComposeHtml(getEditorHtml())
       const plain = stripHtmlToText(safeHtml)
-      const r = await invokeIpc<{ success: boolean; error?: string; warning?: string }>(
+      const r = await invokeIpc<{
+        success: boolean
+        error?: string
+        warning?: string
+        recoveredSentAppend?: boolean
+      }>(
         IPCChannels.Email.SendCompose,
         {
           accountId: composeAccountId,
@@ -512,7 +517,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         }
         return
       }
-      if (r.warning) {
+      if (r.recoveredSentAppend) {
+        toast.success("Nachricht wurde nachträglich in „Gesendet“ übernommen.")
+      } else if (r.warning) {
         toast.warning(r.warning)
       } else {
         toast.success("E-Mail gesendet.")

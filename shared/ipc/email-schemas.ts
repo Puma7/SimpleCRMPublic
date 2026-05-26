@@ -81,6 +81,9 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         pop3Tls: z.boolean().nullable().optional(),
         sentFolderPath: z.string().nullable().optional(),
         imapSyncSeenOnOpen: z.boolean().optional(),
+        vacationEnabled: z.boolean().optional(),
+        vacationSubject: z.string().nullable().optional(),
+        vacationBodyText: z.string().nullable().optional(),
       })
       .passthrough(),
     result: standardResult,
@@ -458,7 +461,11 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       attachmentPaths: z.array(z.string()).optional(),
     }),
     result: z.union([
-      z.object({ success: z.literal(true), warning: z.string().optional() }),
+      z.object({
+        success: z.literal(true),
+        warning: z.string().optional(),
+        recoveredSentAppend: z.literal(true).optional(),
+      }),
       failResult,
     ]),
   });

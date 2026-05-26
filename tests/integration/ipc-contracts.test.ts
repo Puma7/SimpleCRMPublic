@@ -141,6 +141,30 @@ describe('IPC contracts', () => {
     expect(parsed.apiKey).toBe('sk-or-v1-test-secret');
   });
 
+  test('Email bulk IPC results accept failure union', () => {
+    expect(() =>
+      getResultSchema(IPCChannels.Email.BulkSoftDeleteMessages).parse({
+        success: false,
+        error: 'db locked',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Email.BulkSetMessagesArchived).parse({
+        success: false,
+        error: 'db locked',
+      }),
+    ).not.toThrow();
+  });
+
+  test('Email.SendCompose result accepts recoveredSentAppend', () => {
+    expect(() =>
+      getResultSchema(IPCChannels.Email.SendCompose).parse({
+        success: true,
+        recoveredSentAppend: true,
+      }),
+    ).not.toThrow();
+  });
+
   test('Email.AddKnowledgeChunk payload accepts title and content', () => {
     expect(() =>
       getPayloadSchema(IPCChannels.Email.AddKnowledgeChunk).parse({

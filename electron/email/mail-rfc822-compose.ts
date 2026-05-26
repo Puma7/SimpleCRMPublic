@@ -8,7 +8,7 @@ export type ComposeRfc822Attachment = {
   contentType?: string;
 };
 
-function encodeRfc2047(text: string): string {
+export function encodeRfc2047(text: string): string {
   if (/^[\x20-\x7E]*$/.test(text)) return text;
   const buf = Buffer.from(text, 'utf-8');
   const CHUNK = 45;
@@ -27,6 +27,40 @@ function encodeRfc2047(text: string): string {
     offset = end;
   }
   return parts.join('\r\n ');
+}
+
+/** Encode display names in mailbox lists (From/To/Cc) for non-ASCII Sent-folder append. */
+export function encodeMailboxListHeader(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  const parts: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i]!;
+    if (ch === '"') inQuotes = !inQuotes;
+    if (ch === ',' && !inQuotes) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts.map(encodeSingleMailbox).join(', ');
+}
+
+function encodeSingleMailbox(mailbox: string): string {
+  const m = mailbox.match(/^(?:"([^"]*)"|([^<]*?))\s*<([^>]+)>$/);
+  if (!m) return mailbox;
+  const rawName = (m[1] ?? m[2] ?? '').trim();
+  const email = m[3]!.trim();
+  if (!rawName) return `<${email}>`;
+  const encoded = encodeRfc2047(rawName);
+  if (encoded === rawName) {
+    return /[,;"]/.test(rawName) ? `"${rawName}" <${email}>` : `${rawName} <${email}>`;
+  }
+  return `${encoded} <${email}>`;
 }
 
 function guessContentType(filename: string, explicit?: string): string {
@@ -72,10 +106,10 @@ export function buildComposeRfc822(input: {
   attachments?: ComposeRfc822Attachment[];
 }): Buffer {
   const headerLines: string[] = [];
-  headerLines.push(`From: ${input.from}`);
-  headerLines.push(`To: ${input.to}`);
-  if (input.cc?.trim()) headerLines.push(`Cc: ${input.cc.trim()}`);
-  if (input.bcc?.trim()) headerLines.push(`Bcc: ${input.bcc.trim()}`);
+  headerLines.push(`From: ${encodeMailboxListHeader(input.from)}`);
+  headerLines.push(`To: ${encodeMailboxListHeader(input.to)}`);
+  if (input.cc?.trim()) headerLines.push(`Cc: ${encodeMailboxListHeader(input.cc.trim())}`);
+  if (input.bcc?.trim()) headerLines.push(`Bcc: ${encodeMailboxListHeader(input.bcc.trim())}`);
   headerLines.push(`Subject: ${encodeRfc2047(input.subject)}`);
   if (input.messageId) headerLines.push(`Message-ID: ${input.messageId}`);
   if (input.inReplyTo) headerLines.push(`In-Reply-To: ${input.inReplyTo}`);

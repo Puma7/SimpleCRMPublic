@@ -118,7 +118,7 @@ describe('sendComposeDraft', () => {
       bodyText: 'Body',
       to: 'a@b.de',
     });
-    expect(r).toEqual({ ok: true });
+    expect(r).toEqual({ ok: true, recoveredSentAppend: true });
     expect(mockSendSmtp).not.toHaveBeenCalled();
     expect(mockMarkSent).toHaveBeenCalled();
   });

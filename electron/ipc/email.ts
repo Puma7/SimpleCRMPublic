@@ -270,6 +270,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Tls?: boolean | null;
           sentFolderPath?: string | null;
           imapSyncSeenOnOpen?: boolean;
+          vacationEnabled?: boolean;
+          vacationSubject?: string | null;
+          vacationBodyText?: string | null;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -296,6 +299,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Tls: payload.pop3Tls === undefined ? undefined : Boolean(payload.pop3Tls),
           sentFolderPath: payload.sentFolderPath,
           imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
+          vacationEnabled: payload.vacationEnabled,
+          vacationSubject: payload.vacationSubject,
+          vacationBodyText: payload.vacationBodyText,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -866,9 +872,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       ) => {
         const r = await sendComposeDraft(payload);
         if (r.ok) {
-          return r.warning
-            ? ({ success: true as const, warning: r.warning })
-            : { success: true as const };
+          if (r.warning) {
+            return { success: true as const, warning: r.warning };
+          }
+          if (r.recoveredSentAppend) {
+            return { success: true as const, recoveredSentAppend: true as const };
+          }
+          return { success: true as const };
         }
         return { success: false as const, error: r.error };
       },
@@ -1435,8 +1445,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { messageIds: number[]; accountId?: number },
       ) => {
-        const count = bulkSoftDeleteMessages(payload.messageIds, payload.accountId);
-        return { success: true as const, count };
+        try {
+          const count = bulkSoftDeleteMessages(payload.messageIds, payload.accountId);
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
       },
       { logger },
     ),
@@ -1449,12 +1466,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { messageIds: number[]; archived: boolean; accountId?: number },
       ) => {
-        const count = bulkSetMessagesArchived(
-          payload.messageIds,
-          payload.archived,
-          payload.accountId,
-        );
-        return { success: true as const, count };
+        try {
+          const count = bulkSetMessagesArchived(
+            payload.messageIds,
+            payload.archived,
+            payload.accountId,
+          );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
       },
       { logger },
     ),
