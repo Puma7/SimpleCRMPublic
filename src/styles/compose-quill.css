@@ -42,8 +42,8 @@
 .compose-editor-resize {
   resize: vertical;
   overflow: auto;
-  min-height: 320px;
-  max-height: min(70vh, 720px);
+  min-height: 360px;
+  max-height: min(75vh, 800px);
 }
 
 .compose-quill.compose-editor-resize .ql-container {
