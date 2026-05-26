@@ -72,6 +72,7 @@ async function finalizeSentDraft(input: {
   messageId: string;
   inReplyTo?: string;
   references?: string;
+  attachments?: { filename: string; path: string; cid?: string }[];
 }): Promise<{ sentAppendWarning?: string }> {
   let sentAppendWarning: string | undefined;
   try {
@@ -87,6 +88,7 @@ async function finalizeSentDraft(input: {
       messageId: input.messageId,
       inReplyTo: input.inReplyTo,
       references: input.references,
+      attachments: input.attachments,
     });
   } catch (e) {
     sentAppendWarning =
@@ -232,24 +234,6 @@ export async function sendComposeDraft(input: {
         input.draftMessageId,
       );
 
-    if (isSmtpCommitted(input.draftMessageId)) {
-      const fin = await finalizeSentDraft({
-        accountId: input.accountId,
-        draftMessageId: input.draftMessageId,
-        from: acc.email_address,
-        to: input.to,
-        cc: input.cc,
-        bcc: input.bcc,
-        subject: finalSubject,
-        text: input.bodyText,
-        html: html || undefined,
-        messageId: outboundMessageId,
-        inReplyTo: threadHeaders.inReplyTo,
-        references: threadHeaders.references,
-      });
-      return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };
-    }
-
     const smtpAttachments: { filename: string; path: string }[] = [];
     for (const p of input.attachmentPaths ?? []) {
       try {
@@ -287,6 +271,31 @@ export async function sendComposeDraft(input: {
       ...smtpAttachments,
       ...inlineAtt.map((a) => ({ filename: a.filename, path: a.path, cid: a.cid })),
     ];
+    const sentAppendAttachments = allAttachments.map((a) => ({
+      filename: a.filename,
+      path: a.path,
+      cid: 'cid' in a ? a.cid : undefined,
+    }));
+
+    if (isSmtpCommitted(input.draftMessageId)) {
+      const fin = await finalizeSentDraft({
+        accountId: input.accountId,
+        draftMessageId: input.draftMessageId,
+        from: acc.email_address,
+        to: smtpTo,
+        cc: smtpCc,
+        bcc: smtpBcc,
+        subject: finalSubject,
+        text: input.bodyText,
+        html: htmlOut || undefined,
+        messageId: outboundMessageId,
+        inReplyTo: threadHeaders.inReplyTo,
+        references: threadHeaders.references,
+        attachments: sentAppendAttachments,
+      });
+      return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };
+    }
+
     const requestReceipt =
       (acc as { request_read_receipt?: number }).request_read_receipt === 1;
 
@@ -320,10 +329,11 @@ export async function sendComposeDraft(input: {
       bcc: smtpBcc,
       subject: finalSubject,
       text: input.bodyText,
-      html: html || undefined,
+      html: htmlOut || undefined,
       messageId: outboundMessageId,
       inReplyTo: threadHeaders.inReplyTo,
       references: threadHeaders.references,
+      attachments: sentAppendAttachments,
     });
 
     return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };

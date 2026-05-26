@@ -171,4 +171,43 @@ describe('IPC contracts', () => {
       getPayloadSchema(IPCChannels.Email.SendCompose).parse({ accountId: 1 })
     ).toThrow();
   });
+
+  test('Email.CompileWorkflowGraph accepts canvas graph document from UI', () => {
+    const graphDoc = {
+      version: 1 as const,
+      nodes: [
+        { id: 't1', type: 'trigger' as const, data: { kind: 'inbound' as const } },
+        {
+          id: 'a1',
+          type: 'action' as const,
+          data: { actionType: 'tag' as const, tag: 'Test' },
+        },
+      ],
+      edges: [{ id: 'e1', source: 't1', target: 'a1' }],
+    };
+    expect(() => getPayloadSchema(IPCChannels.Email.CompileWorkflowGraph).parse(graphDoc)).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Email.CompileWorkflowGraph).parse({
+        success: true,
+        definitionJson: '{}',
+        registryOnly: false,
+      }),
+    ).not.toThrow();
+  });
+
+  test('Email.OpenAttachmentPath supports risky confirmation flow', () => {
+    expect(() =>
+      getPayloadSchema(IPCChannels.Email.OpenAttachmentPath).parse({
+        attachmentId: 1,
+        confirmOpenRisky: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Email.OpenAttachmentPath).parse({
+        success: false,
+        needsConfirmation: true,
+        reason: 'risky_file_type',
+      }),
+    ).not.toThrow();
+  });
 });

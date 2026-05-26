@@ -52,6 +52,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     timeout: 90_000,
   });
 
+  try {
   let folderRow = getFolderByAccountAndPath(accountId, POP_FOLDER);
   if (!folderRow) {
     folderRow = upsertEmailFolder({ accountId, path: POP_FOLDER, lastUid: 0 });
@@ -145,8 +146,6 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     }
   }
 
-  await pop3.QUIT().catch(() => undefined);
-
   const uidlArr = [...known].sort();
   const uidlStr = JSON.stringify(uidlArr);
 
@@ -156,6 +155,9 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
   });
 
   return { fetched, folderId: folderRow.id };
+  } finally {
+    await pop3.QUIT().catch(() => undefined);
+  }
 }
 
 export function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> {

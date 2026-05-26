@@ -38,11 +38,14 @@ function configFromActionData(data: Record<string, unknown>): { type: string; co
   return { type: registryType, config };
 }
 
+const INBOUND_DIRECT_ALLOWED_REGISTRY = new Set(['email.sender_filter', 'ai.classify']);
+
 function requiresInboundConditionGate(node: WorkflowGraphNode): boolean {
   if (node.type === 'action') return true;
   if (node.type !== 'registry') return false;
   const reg = registryTypeOf(node);
   if (!reg) return true;
+  if (INBOUND_DIRECT_ALLOWED_REGISTRY.has(reg)) return false;
   return reg.startsWith('email.') || reg.startsWith('ai.');
 }
 
@@ -186,10 +189,7 @@ async function walkGraph(
     }
 
     if (node.type === 'condition' && gate) {
-      const data = node.data as Record<string, unknown>;
-      const cond = conditionFromNodeData(data);
-      const item: WorkflowConditionItem = data.negated ? { not: cond } : cond;
-      gate.conditionOk = matchConditionItem(item, ctx.strings);
+      gate.conditionOk = true;
     }
 
     const t0 = Date.now();
@@ -229,6 +229,14 @@ async function walkGraph(
         status: 'blocked',
         blocked: true,
         blockReason: result.blockReason ?? 'Workflow blockiert',
+      };
+    }
+    if (result.status === 'error') {
+      return {
+        log,
+        status: 'error',
+        blocked: false,
+        blockReason: result.message ?? null,
       };
     }
     if (result.stop) {

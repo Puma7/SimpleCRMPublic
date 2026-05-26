@@ -13,6 +13,7 @@ import {
 } from "react"
 import type { MailAccountScope } from "./account-scope"
 import type { MessageListDisplayMode, MessageListSortMode } from "@shared/email-list-options"
+import type { MessageListFilter } from "@shared/email-list-filters"
 import type { EmailMessage, MailView } from "./types"
 
 export type ComposeIntent =
@@ -23,7 +24,7 @@ export type ComposeIntent =
   | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 
-export type MessageListFilter = "all" | "unread" | "attachment" | "customer" | "workflow"
+export type { MessageListFilter }
 
 export type SettingsTab =
   | "accounts"

@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/select"
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import { buildReplyAllRecipients } from "@shared/email-reply-addresses"
+import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
 import {
   buildReplyComposeHtml,
   mergeComposeHtml,
@@ -183,6 +184,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 )
               : ""
           setBodyHtml(html)
+          setAttachmentPaths(parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json))
           return
         }
 
@@ -251,7 +253,20 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               ? sourceMsg?.id ?? null
               : null,
           )
-          setAttachmentPaths([])
+          let forwardPaths: string[] = []
+          if (isForward && sourceMsg) {
+            const atts = await invokeIpc<
+              { storage_path: string; filename_display: string }[]
+            >(IPCChannels.Email.ListMessageAttachments, sourceMsg.id)
+            forwardPaths = atts.map((a) => a.storage_path).filter(Boolean)
+          }
+          setAttachmentPaths(forwardPaths)
+          if (forwardPaths.length > 0) {
+            await invokeIpc(IPCChannels.Email.UpdateComposeDraft, {
+              messageId: res.id,
+              draftAttachmentPaths: forwardPaths,
+            })
+          }
           setTo(toAddr)
           setCc(ccAddr)
           setBcc("")
@@ -334,6 +349,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           to,
           cc: cc || undefined,
           bcc: bcc || undefined,
+          draftAttachmentPaths: attachmentPaths,
         })
         return true
       } catch (e) {
@@ -344,7 +360,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         return false
       }
     },
-    [draftId, subject, to, cc, bcc, bodyHtml, getEditorHtml],
+    [draftId, subject, to, cc, bcc, bodyHtml, attachmentPaths, getEditorHtml],
   )
 
   useEffect(() => {
@@ -356,7 +372,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     }
-  }, [isOpen, draftId, to, cc, bcc, subject, bodyHtml, saveDraft])
+  }, [isOpen, draftId, to, cc, bcc, subject, bodyHtml, attachmentPaths, saveDraft])
 
   const handleCheckOutbound = async () => {
     if (!hasElectron() || draftId == null) return

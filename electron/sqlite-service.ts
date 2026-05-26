@@ -315,12 +315,15 @@ function setupPragmas() {
  * runMigrations() so a fresh install ends up with a working full-text
  * search index, not just upgraded databases.
  */
-function setupEmailFtsIndex() {
+function ensureEmailFtsTriggers() {
     if (!db) return;
-    const ftsMaster = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
-    if (ftsMaster) return;
-    console.log('Creating email_messages FTS5 index...');
-    db.exec(createEmailMessagesFtsTable);
+    const triggers = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'email_messages_fts_%'")
+        .all() as { name: string }[];
+    const names = new Set(triggers.map((t) => t.name));
+    const need = !names.has('email_messages_fts_ai') || !names.has('email_messages_fts_ad') || !names.has('email_messages_fts_au');
+    if (!need) return;
+    console.log('Repairing email_messages FTS5 triggers...');
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
@@ -342,7 +345,17 @@ function setupEmailFtsIndex() {
         VALUES (new.id, new.subject, new.snippet, new.body_text);
       END;
     `);
-    db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+}
+
+function setupEmailFtsIndex() {
+    if (!db) return;
+    const ftsMaster = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
+    if (!ftsMaster) {
+        console.log('Creating email_messages FTS5 index...');
+        db.exec(createEmailMessagesFtsTable);
+        db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+    }
+    ensureEmailFtsTriggers();
 }
 
 /**
@@ -526,6 +539,7 @@ function runMigrations() {
                 { name: 'bcc_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN bcc_json TEXT` },
                 { name: 'snoozed_until', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN snoozed_until TEXT` },
                 { name: 'scheduled_send_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN scheduled_send_at TEXT` },
+                { name: 'draft_attachment_paths_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN draft_attachment_paths_json TEXT` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {

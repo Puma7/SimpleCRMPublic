@@ -412,8 +412,12 @@ initializeApp()
 // Quit when all windows are closed, except on macOS.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    // Before quitting, ensure services are closed if they need explicit closing
-    closeDatabase(); // Assuming this is synchronous or handles its own errors
+    try {
+      stopEmailBackgroundServices();
+    } catch (e) {
+      log.warn('[email] stop background on window-all-closed', e);
+    }
+    closeDatabase();
     if (typeof closeMssqlPool === 'function') {
       closeMssqlPool().catch(err => log.error('Error closing MSSQL pool:', err));
     }

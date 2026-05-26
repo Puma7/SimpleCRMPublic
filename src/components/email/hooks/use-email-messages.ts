@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import type { MessageListSortMode } from "@shared/email-list-options"
+import type { MessageListFilter } from "@shared/email-list-filters"
 import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { logError } from "../log"
@@ -24,6 +25,7 @@ export function useEmailMessages() {
     selectedMessage,
     setSelectedMessage,
     listSortMode,
+    messageListFilter,
   } = useMailWorkspace()
   const [messages, setMessages] = useState<EmailMessage[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
@@ -56,6 +58,7 @@ export function useEmailMessages() {
       catId: number | null,
       query: string,
       sort: MessageListSortMode,
+      listFilter: MessageListFilter,
       opts?: { preserveSelection?: boolean; append?: boolean },
     ) => {
       if (!hasElectron()) return
@@ -70,11 +73,14 @@ export function useEmailMessages() {
           const res = await invokeIpc<{
             messages: EmailMessage[]
             searchMode: "fts" | "like" | "regex"
+            hasMore?: boolean
           }>(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
-            limit: 150,
+            limit: PAGE_SIZE,
+            offset,
             view,
+            categoryId: view === "inbox" ? catId : null,
           })
           list = res.messages
           if (res.searchMode === "like") {
@@ -85,7 +91,7 @@ export function useEmailMessages() {
           } else if (res.searchMode === "regex") {
             toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
           }
-          setHasMore(false)
+          setHasMore(Boolean(res.hasMore))
         } else {
           list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.ListMessagesByView, {
             accountId: accountScope,
@@ -94,6 +100,7 @@ export function useEmailMessages() {
             offset,
             categoryId: view === "inbox" ? catId : null,
             sort,
+            listFilter: listFilter === "all" ? undefined : listFilter,
           })
           setHasMore(list.length >= PAGE_SIZE)
         }
@@ -137,20 +144,30 @@ export function useEmailMessages() {
         categoryFilterId,
         debouncedSearchQ,
         listSortMode,
+        messageListFilter,
       )
     } else {
       setMessages([])
     }
-  }, [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, listSortMode, loadMessages])
+  }, [
+    selectedAccountId,
+    mailView,
+    categoryFilterId,
+    debouncedSearchQ,
+    listSortMode,
+    messageListFilter,
+    loadMessages,
+  ])
 
   const loadMore = useCallback(() => {
-    if (!selectedAccountId || debouncedSearchQ.trim()) return
+    if (!selectedAccountId) return
     void loadMessages(
       selectedAccountId,
       mailView,
       categoryFilterId,
       debouncedSearchQ,
       listSortMode,
+      messageListFilter,
       { preserveSelection: true, append: true },
     )
   }, [
@@ -159,6 +176,7 @@ export function useEmailMessages() {
     categoryFilterId,
     debouncedSearchQ,
     listSortMode,
+    messageListFilter,
     loadMessages,
   ])
 
@@ -172,6 +190,7 @@ export function useEmailMessages() {
         categoryFilterId,
         debouncedSearchQ,
         listSortMode,
+        messageListFilter,
         opts,
       )
     },
@@ -181,6 +200,7 @@ export function useEmailMessages() {
       categoryFilterId,
       debouncedSearchQ,
       listSortMode,
+      messageListFilter,
       loadMessages,
     ],
   )

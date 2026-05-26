@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { IPCChannels, InvokeChannel } from './channels';
+import { messageListFilterSchema } from '../email-list-filters';
+import { compileWorkflowGraphPayloadSchema } from './workflow-graph-schema';
 
 type SchemaEntry = {
   payload: z.ZodTypeAny;
@@ -124,11 +126,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.TestSmtp, {
     payload: z.object({
+      accountId: positiveInt.optional(),
       host: nonEmptyString,
       port: z.number().int().positive(),
       secure: z.boolean(),
       user: nonEmptyString,
-      password: z.string(),
+      password: z.string().optional(),
+      smtpUseImapAuth: z.boolean().optional(),
     }),
     result: standardResult,
   });
@@ -210,6 +214,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       offset: z.number().int().nonnegative().optional(),
       categoryId: z.number().int().positive().nullable().optional(),
       sort: z.enum(['date_desc', 'date_asc', 'priority']).optional(),
+      listFilter: messageListFilterSchema.optional(),
     }),
     result: recordArray,
   });
@@ -218,11 +223,14 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       accountId: mailAccountScopeSchema,
       query: z.string(),
       limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
       view: accountMailViewSchema.optional(),
+      categoryId: z.number().int().positive().nullable().optional(),
     }),
     result: z.object({
       messages: recordArray,
       searchMode: z.enum(['fts', 'like', 'regex']),
+      hasMore: z.boolean().optional(),
     }),
   });
   set(IPCChannels.Email.ListConversationMessages, {
@@ -415,6 +423,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       to: z.string().optional(),
       cc: z.string().optional(),
       bcc: z.string().optional(),
+      draftAttachmentPaths: z.array(z.string()).optional(),
     }),
     result: standardResult,
   });
@@ -740,9 +749,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({ success: z.literal(true), processed: z.number().int() }),
   });
   set(IPCChannels.Email.CompileWorkflowGraph, {
-    payload: z.object({ graphJson: z.string() }),
+    payload: compileWorkflowGraphPayloadSchema,
     result: z.union([
-      z.object({ success: z.literal(true), definitionJson: z.string() }),
+      z.object({
+        success: z.literal(true),
+        definitionJson: z.string(),
+        registryOnly: z.boolean().optional(),
+      }),
       failResult,
     ]),
   });
@@ -887,8 +900,19 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.OpenAttachmentPath, {
-    payload: z.object({ attachmentId: positiveInt }),
-    result: standardResult,
+    payload: z.object({
+      attachmentId: positiveInt,
+      confirmOpenRisky: z.boolean().optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true) }),
+      z.object({ success: z.literal(false), error: z.string().optional() }),
+      z.object({
+        success: z.literal(false),
+        needsConfirmation: z.literal(true),
+        reason: z.literal('risky_file_type'),
+      }),
+    ]),
   });
 
   // --- Reporting & GDPR ---

@@ -30,7 +30,6 @@ import {
 import { useMailWorkspace } from "./workspace-context"
 import { setMailDragData } from "./mail-drag"
 import { MessageFilterChips } from "./message-filter-chips"
-import { applyMessageListFilter } from "./message-list-filters"
 
 type Props = {
   messages: EmailMessage[]
@@ -84,19 +83,18 @@ export function MessageList({
     listDisplayMode,
     setListDisplayMode,
   } = useMailWorkspace()
-  const filtered = applyMessageListFilter(messages, messageListFilter)
   const visibleMessages = useMemo(() => {
-    if (listDisplayMode !== "thread") return filtered
+    if (listDisplayMode !== "thread") return messages
     const seen = new Set<string>()
     const out: EmailMessage[] = []
-    for (const m of filtered) {
+    for (const m of messages) {
       const key = threadKey(m)
       if (seen.has(key)) continue
       seen.add(key)
       out.push(m)
     }
     return out
-  }, [filtered, listDisplayMode])
+  }, [messages, listDisplayMode])
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`

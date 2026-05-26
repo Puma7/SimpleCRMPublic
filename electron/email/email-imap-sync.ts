@@ -177,10 +177,9 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         maxProcessed = Math.max(maxProcessed, uid);
         } catch (perMsgErr) {
           console.warn(
-            `[imap-sync] UID ${uid} account ${accountId} skipped:`,
+            `[imap-sync] UID ${uid} account ${accountId} skipped (will retry):`,
             perMsgErr instanceof Error ? perMsgErr.message : perMsgErr,
           );
-          maxProcessed = Math.max(maxProcessed, uid);
         }
       }
 

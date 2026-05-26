@@ -12,6 +12,8 @@ import {
 import { deleteEmailPassword } from './email-keytar';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
 import type { MessageListSortMode } from '../../shared/email-list-options';
+import type { MessageListFilter } from '../../shared/email-list-filters';
+import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
 
 export type EmailAccountRow = {
   id: number;
@@ -97,6 +99,7 @@ export type EmailMessageRow = {
   rspamd_symbols: string | null;
   rspamd_error: string | null;
   security_checked_at: string | null;
+  draft_attachment_paths_json: string | null;
   created_at: string;
 };
 
@@ -380,6 +383,8 @@ export function deleteEmailTeamMember(id: string): void {
 export async function deleteEmailAccountRecord(id: number): Promise<void> {
   const row = getEmailAccountById(id);
   if (row) {
+    const { purgeAttachmentFilesForAccount } = await import('./email-message-attachments-store');
+    await purgeAttachmentFilesForAccount(id);
     await deleteEmailPassword(row.keytar_account_key);
     if (row.smtp_keytar_account_key) {
       await deleteEmailPassword(row.smtp_keytar_account_key).catch(() => undefined);
@@ -509,6 +514,27 @@ function orderClauseForSort(sort?: MessageListSortMode): string {
   return `ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC`;
 }
 
+function listFilterSql(filter?: MessageListFilter): string {
+  switch (filter) {
+    case 'unread':
+      return ' AND m.seen_local = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)';
+    case 'attachment':
+      return ' AND m.has_attachments = 1';
+    case 'customer':
+      return ' AND m.customer_id IS NOT NULL AND m.customer_id > 0';
+    case 'workflow':
+      return ' AND (m.outbound_hold = 1 OR (m.ticket_code IS NOT NULL AND m.ticket_code != \'\'))';
+    default:
+      return '';
+  }
+}
+
+export function ensureInboxFolderForAccount(accountId: number): EmailFolderRow {
+  const existing = getFolderByAccountAndPath(accountId, 'INBOX');
+  if (existing) return existing;
+  return upsertEmailFolder({ accountId, path: 'INBOX', lastUid: 0 });
+}
+
 export function listMessagesForAccountView(
   accountId: number,
   view: AccountMailView,
@@ -517,6 +543,7 @@ export function listMessagesForAccountView(
     offset?: number;
     categoryId?: number | null;
     sort?: MessageListSortMode;
+    listFilter?: MessageListFilter;
   } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
@@ -559,6 +586,7 @@ export function listMessagesForAccountView(
     sql += ` AND ${nonDraftMail}`;
   }
 
+  sql += listFilterSql(opts.listFilter);
   sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
@@ -573,6 +601,7 @@ export function listMessagesForAllAccountsView(
     offset?: number;
     categoryId?: number | null;
     sort?: MessageListSortMode;
+    listFilter?: MessageListFilter;
   } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
@@ -614,6 +643,7 @@ export function listMessagesForAllAccountsView(
     sql += ` AND ${nonDraftMail}`;
   }
 
+  sql += listFilterSql(opts.listFilter);
   sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
@@ -627,6 +657,7 @@ export function listMessagesForMailScope(
     offset?: number;
     categoryId?: number | null;
     sort?: MessageListSortMode;
+    listFilter?: MessageListFilter;
   } = {},
 ): EmailMessageRow[] {
   if (accountScope === 'all') {
@@ -982,11 +1013,9 @@ export function createComposeDraft(input: {
   subject?: string;
   bodyText?: string;
   toJson?: string | null;
+  draftAttachmentPaths?: string[];
 }): number {
-  const folder = getFolderByAccountAndPath(input.accountId, 'INBOX');
-  if (!folder) {
-    throw new Error('INBOX für dieses Konto nicht gefunden. Bitte zuerst synchronisieren.');
-  }
+  const folder = ensureInboxFolderForAccount(input.accountId);
   const minRow = getDb()
     .prepare(
       `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
@@ -1010,9 +1039,12 @@ export function createComposeDraft(input: {
     bodyHtml: null,
     seenLocal: true,
   });
+  const draftPathsJson = draftAttachmentPathsToJson(input.draftAttachmentPaths ?? []);
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'draft' WHERE id = ?`)
-    .run(id);
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'draft', draft_attachment_paths_json = ? WHERE id = ?`,
+    )
+    .run(draftPathsJson, id);
   return id;
 }
 
@@ -1200,6 +1232,7 @@ export function updateComposeDraft(
     toJson?: string | null;
     ccJson?: string | null;
     bccJson?: string | null;
+    draftAttachmentPaths?: string[];
   },
 ): void {
   const row = getEmailMessageById(messageId);
@@ -1217,6 +1250,10 @@ export function updateComposeDraft(
   if (input.toJson !== undefined) { sets.push('to_json = ?'); vals.push(input.toJson); }
   if (input.ccJson !== undefined) { sets.push('cc_json = ?'); vals.push(input.ccJson); }
   if (input.bccJson !== undefined) { sets.push('bcc_json = ?'); vals.push(input.bccJson); }
+  if (input.draftAttachmentPaths !== undefined) {
+    sets.push('draft_attachment_paths_json = ?');
+    vals.push(draftAttachmentPathsToJson(input.draftAttachmentPaths));
+  }
   vals.push(messageId);
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)

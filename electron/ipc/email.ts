@@ -74,6 +74,7 @@ import {
   moveAiPrompt,
   searchMessagesForAccount,
   searchMessagesForMailScope,
+  searchMessagesForMailScopeWithMeta,
   searchMessagesForAccountWithMeta,
   backfillCustomerLinksForMessages,
   setMessageCustomerId,
@@ -568,6 +569,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           to?: string;
           cc?: string;
           bcc?: string;
+          draftAttachmentPaths?: string[];
         },
       ) => {
         const toJson =
@@ -595,6 +597,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           toJson,
           ccJson,
           bccJson,
+          draftAttachmentPaths: payload.draftAttachmentPaths,
         });
         return { success: true as const };
       },
@@ -663,6 +666,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           offset?: number;
           categoryId?: number | null;
           sort?: import('../../shared/email-list-options').MessageListSortMode;
+          listFilter?: import('../../shared/email-list-filters').MessageListFilter;
         },
       ) => {
         return listMessagesForMailScope(payload.accountId, payload.view, {
@@ -670,6 +674,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           offset: payload.offset,
           categoryId: payload.categoryId,
           sort: payload.sort,
+          listFilter: payload.listFilter,
         });
       },
       { logger },
@@ -685,25 +690,35 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           accountId: number | 'all';
           query: string;
           limit?: number;
+          offset?: number;
           view?: import('../email/email-store').AccountMailView;
+          categoryId?: number | null;
         },
       ) => {
         if (payload.accountId !== 'all') {
-          const { rows, searchMode } = searchMessagesForAccountWithMeta(
+          const { rows, searchMode, hasMore } = searchMessagesForAccountWithMeta(
             payload.accountId,
             payload.query,
-            payload.limit ?? 80,
-            payload.view,
+            {
+              limit: payload.limit ?? 80,
+              offset: payload.offset ?? 0,
+              view: payload.view,
+              categoryId: payload.categoryId,
+            },
           );
-          return { messages: rows, searchMode };
+          return { messages: rows, searchMode, hasMore };
         }
-        const rows = searchMessagesForMailScope(
+        const { rows, hasMore } = searchMessagesForMailScopeWithMeta(
           payload.accountId,
           payload.query,
-          payload.limit ?? 80,
-          payload.view,
+          {
+            limit: payload.limit ?? 80,
+            offset: payload.offset ?? 0,
+            view: payload.view,
+            categoryId: payload.categoryId,
+          },
         );
-        return { messages: rows, searchMode: 'like' as const };
+        return { messages: rows, searchMode: 'like' as const, hasMore };
       },
       { logger },
     ),
@@ -864,14 +879,47 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.TestSmtp,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { host: string; port: number; secure: boolean; user: string; password: string },
+        payload: {
+          accountId?: number;
+          host: string;
+          port: number;
+          secure: boolean;
+          user: string;
+          password?: string;
+          smtpUseImapAuth?: boolean;
+        },
       ) => {
+        let pass = payload.password?.trim() ?? '';
+        let accessToken: string | undefined;
+        if (payload.accountId != null && payload.accountId > 0) {
+          const acc = getEmailAccountById(payload.accountId);
+          if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+          const useImap = payload.smtpUseImapAuth ?? Boolean(acc.smtp_use_imap_auth);
+          if (useImap) {
+            const { resolveImapAuth } = await import('../email/email-imap-auth');
+            const auth = await resolveImapAuth(acc);
+            if ('accessToken' in auth) {
+              accessToken = auth.accessToken;
+            } else {
+              pass = pass || auth.pass;
+            }
+          } else if (!pass && acc.smtp_keytar_account_key) {
+            pass = (await getEmailPassword(acc.smtp_keytar_account_key)) ?? '';
+          }
+          if (!pass && !accessToken) {
+            pass = (await getEmailPassword(acc.keytar_account_key)) ?? '';
+          }
+        }
+        if (!pass && !accessToken) {
+          return { success: false as const, error: 'Kein Passwort oder OAuth-Token verfügbar' };
+        }
         const r = await testSmtpConnection({
           host: payload.host,
           port: payload.port,
           secure: payload.secure,
           user: payload.user,
-          pass: payload.password,
+          pass: pass || undefined,
+          accessToken,
         });
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
@@ -1828,10 +1876,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.CompileWorkflowGraph,
-      async (_event: IpcMainInvokeEvent, graph: WorkflowGraphDocument) => {
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: WorkflowGraphDocument | { graphJson: string },
+      ) => {
+        const graph: WorkflowGraphDocument =
+          'graphJson' in payload && typeof payload.graphJson === 'string'
+            ? (JSON.parse(payload.graphJson) as WorkflowGraphDocument)
+            : payload;
         const def = compileGraphToDefinition(graph);
         const registryOnly = graph.nodes.some(
-          (n) => n.type === 'registry' || (n.type === 'action' && !('actionType' in (n.data as object))),
+          (n) =>
+            n.type === 'registry' ||
+            (n.type === 'action' && !('actionType' in (n.data as object))),
         );
         return {
           success: true as const,
