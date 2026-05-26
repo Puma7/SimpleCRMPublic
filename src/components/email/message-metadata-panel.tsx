@@ -469,6 +469,20 @@ export function MessageMetadataPanel({
                 Noch nicht geprüft (läuft normalerweise beim Sync).
               </p>
             )}
+            {security?.authSpf === "temperror" ||
+            security?.authDkim === "temperror" ||
+            security?.authDmarc === "temperror" ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                <strong>temperror</strong> = DNS-Abfrage für SPF/DKIM/DMARC ist fehlgeschlagen (kein
+                App-Bug). Netzwerk/VPN/DNS prüfen und erneut testen.
+              </p>
+            ) : null}
+            {security?.authArc === "fail" ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                <strong>ARC fail</strong> ist bei normaler Post ohne Weiterleitungskette häufig — oft
+                unkritisch.
+              </p>
+            ) : null}
             {security?.authError || security?.rspamdError ? (
               <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
                 {[security.authError, security.rspamdError].filter(Boolean).join(" · ")}

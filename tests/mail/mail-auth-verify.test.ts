@@ -5,6 +5,7 @@ jest.mock('mailauth', () => ({
 import { authenticate } from 'mailauth';
 import {
   isAuthFailure,
+  parseAuthenticationResultsAdvisory,
   verifyMailAuthentication,
 } from '../../electron/email/mail-auth-verify';
 
@@ -77,5 +78,29 @@ describe('mail-auth-verify', () => {
     expect(isAuthFailure('fail')).toBe(true);
     expect(isAuthFailure('permerror')).toBe(true);
     expect(isAuthFailure('pass')).toBe(false);
+  });
+
+  test('parseAuthenticationResultsAdvisory', () => {
+    const hdr =
+      'Authentication-Results: mx.google.com;\r\n spf=pass dkim=pass dmarc=pass';
+    expect(parseAuthenticationResultsAdvisory(hdr)).toContain('SPF=pass');
+    expect(parseAuthenticationResultsAdvisory('From: a@b.de')).toBeNull();
+  });
+
+  test('sets temperror hint when DNS checks fail', async () => {
+    (authenticate as jest.Mock).mockResolvedValue({
+      spf: { status: { result: 'temperror' } },
+      dkim: { results: [{ status: { result: 'temperror' }, signingDomain: 'x.com' }] },
+      dmarc: { status: { result: 'temperror' } },
+      arc: { status: { result: 'fail' } },
+    });
+    const r = await verifyMailAuthentication({
+      rawHeaders:
+        'Return-Path: <a@shop.com>\r\nAuthentication-Results: mx.google.com; spf=pass dkim=pass',
+      bodyText: 'hi',
+      bodyHtml: null,
+    });
+    expect(r.error).toMatch(/temperror/);
+    expect(r.error).toMatch(/SPF=pass/);
   });
 });
