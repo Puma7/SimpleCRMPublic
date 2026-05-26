@@ -42,7 +42,7 @@ export function resolveWorkflowGraph(workflow: EmailWorkflowRow): {
 
 function persistWorkflowGraph(workflowId: number, doc: WorkflowGraphDocument): void {
   getDb()
-    .prepare(`UPDATE ${EMAIL_WORKFLOWS_TABLE} SET graph_json = ?, execution_mode = 'graph', updated_at = ? WHERE id = ?`)
+    .prepare(`UPDATE ${EMAIL_WORKFLOWS_TABLE} SET graph_json = ?, updated_at = ? WHERE id = ?`)
     .run(JSON.stringify(doc), new Date().toISOString(), workflowId);
 }
 

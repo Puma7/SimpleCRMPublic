@@ -15,26 +15,30 @@ export async function fireWebhookWorkflows(payload: {
   const bodyJson = JSON.stringify(payload.body ?? {});
   for (const wf of workflows) {
     if (!wf.enabled) continue;
-    await executeWorkflowForTrigger({
-      workflow: wf,
-      trigger: 'webhook.incoming',
-      direction: 'crm_event',
-      message: null,
-      eventStrings: {
-        subject: 'Webhook',
-        body_text: bodyJson,
-        snippet: bodyJson.slice(0, 200),
-        combined_text: bodyJson,
-        from_address: '',
-        to_address: '',
-        cc_address: '',
-        has_attachments: 'false',
-        attachment_names: '',
-        attachment_types: '',
-      },
-      eventVariables: { webhook_body: bodyJson },
-    });
-    fired += 1;
+    try {
+      const result = await executeWorkflowForTrigger({
+        workflow: wf,
+        trigger: 'webhook.incoming',
+        direction: 'crm_event',
+        message: null,
+        eventStrings: {
+          subject: 'Webhook',
+          body_text: bodyJson,
+          snippet: bodyJson.slice(0, 200),
+          combined_text: bodyJson,
+          from_address: '',
+          to_address: '',
+          cc_address: '',
+          has_attachments: 'false',
+          attachment_names: '',
+          attachment_types: '',
+        },
+        eventVariables: { webhook_body: bodyJson },
+      });
+      if (result.status === 'ok' && !result.blocked) fired += 1;
+    } catch {
+      /* skip failed workflow */
+    }
   }
   return { fired };
 }

@@ -87,6 +87,11 @@ async function finalizeSentDraft(input: {
   attachments?: { filename: string; path: string; cid?: string }[];
 }): Promise<{ sentAppendWarning?: string }> {
   let sentAppendWarning: string | undefined;
+  const acc = getEmailAccountById(input.accountId);
+  if (acc && (acc.protocol || 'imap') !== 'imap') {
+    sentAppendWarning =
+      'E-Mail wurde versendet. POP3-Konten können keine Kopie per IMAP in „Gesendet“ ablegen.';
+  } else {
   try {
     await appendSentToImap({
       accountId: input.accountId,
@@ -107,6 +112,7 @@ async function finalizeSentDraft(input: {
       e instanceof Error
         ? `E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden: ${e.message}`
         : 'E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden.';
+  }
   }
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
@@ -187,6 +193,7 @@ export async function sendComposeDraft(input: {
       bcc: input.bcc,
       inReplyToMessageId: input.inReplyToMessageId,
       attachmentCount: input.attachmentPaths?.length ?? 0,
+      attachmentPaths: input.attachmentPaths,
     });
     if (!outbound.allowed) {
       return { ok: false, error: outbound.reason || 'Outbound blockiert' };

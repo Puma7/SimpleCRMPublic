@@ -77,6 +77,19 @@ describe('email-workflow-types', () => {
     ).toBe(true);
   });
 
+  it('reads stored/omitted attachment metadata shape', () => {
+    const attCtx = attachmentContextFromJson(
+      JSON.stringify({
+        stored: [{ name: 'a.pdf', size: 100 }],
+        omitted: [{ name: 'big.zip', size: 9_999_999, reason: 'too_large' }],
+      }),
+      1,
+    );
+    expect(attCtx.attachment_names).toContain('a.pdf');
+    expect(attCtx.attachment_names).toContain('big.zip');
+    expect(attCtx.has_attachments).toBe('true');
+  });
+
   it('matches has_attachments is_true', () => {
     const attCtx = attachmentContextFromJson(
       JSON.stringify([{ filename: 'a.pdf', contentType: 'application/pdf' }]),

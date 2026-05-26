@@ -1,4 +1,4 @@
-import { getDb } from '../sqlite-service';
+import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { CUSTOMERS_TABLE, DEALS_TABLE, TASKS_TABLE, CALENDAR_EVENTS_TABLE } from '../database-schema';
 import { listWorkflowsByTrigger } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
@@ -35,20 +35,25 @@ export type CrmWorkflowEvent =
       startDate: string;
     };
 
-const firedDedup = new Map<string, number>();
-const DEDUP_MS = 60_000;
-
-function shouldFireOnce(key: string): boolean {
-  const now = Date.now();
-  const last = firedDedup.get(key) ?? 0;
-  if (now - last < DEDUP_MS) return false;
-  firedDedup.set(key, now);
-  if (firedDedup.size > 5000) {
-    const cutoff = now - DEDUP_MS * 2;
-    for (const [k, t] of firedDedup) {
-      if (t < cutoff) firedDedup.delete(k);
-    }
+function workflowTriggerDedupKey(event: CrmWorkflowEvent): string {
+  switch (event.trigger) {
+    case 'crm.customer_created':
+      return `workflow_trigger_fired:crm.customer_created:${event.customerId}`;
+    case 'crm.deal_stage_changed':
+      return `workflow_trigger_fired:crm.deal_stage_changed:${event.dealId}:${event.newStage}`;
+    case 'task.due':
+      return `workflow_trigger_fired:task.due:${event.taskId}:${event.dueDate}`;
+    case 'calendar.event_start':
+      return `workflow_trigger_fired:calendar.event_start:${event.eventId}:${event.startDate}`;
+    default:
+      return `workflow_trigger_fired:${event.trigger}`;
   }
+}
+
+function shouldFireWorkflowTrigger(event: CrmWorkflowEvent): boolean {
+  const key = workflowTriggerDedupKey(event);
+  if (getSyncInfo(key) === '1') return false;
+  setSyncInfo(key, '1');
   return true;
 }
 
@@ -126,16 +131,7 @@ export async function dispatchCustomerCreatedWorkflow(input: {
 }
 
 export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise<void> {
-  const dedupKey = `${event.trigger}:${
-    'customerId' in event && event.trigger === 'crm.customer_created'
-      ? event.customerId
-      : 'dealId' in event
-        ? event.dealId
-        : 'taskId' in event
-          ? event.taskId
-          : event.eventId
-  }`;
-  if (!shouldFireOnce(dedupKey)) return;
+  if (!shouldFireWorkflowTrigger(event)) return;
 
   const workflows = listWorkflowsByTrigger(event.trigger);
   if (workflows.length === 0) return;

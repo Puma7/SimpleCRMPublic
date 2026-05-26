@@ -38,6 +38,7 @@ export type OutboundDraftPayload = {
   bcc?: string;
   inReplyToMessageId?: number | null;
   attachmentCount?: number;
+  attachmentPaths?: string[];
 };
 
 export function outboundPayloadFromMessage(
@@ -394,12 +395,10 @@ export async function evaluateOutboundWorkflows(
 }> {
   const dryRun = options?.dryRun === true;
   if (!payload.messageId || payload.messageId <= 0) {
-    if (dryRun) return { allowed: true, reason: null };
     return { allowed: false, reason: 'Kein gültiger Entwurf für die Ausgangsprüfung' };
   }
   const row = getEmailMessageById(payload.messageId);
   if (!row) {
-    if (dryRun) return { allowed: true, reason: null };
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 

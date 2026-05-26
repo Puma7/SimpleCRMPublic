@@ -70,7 +70,7 @@ export const WorkflowApiService = {
       trigger,
       direction,
       message,
-      dryRun: opts.dryRun !== false,
+      dryRun: opts.dryRun === true,
       initialVariables: opts.variables,
     });
 
@@ -81,7 +81,7 @@ export const WorkflowApiService = {
       blocked: result.blocked,
       blockReason: result.blockReason,
       log: result.log,
-      dryRun: opts.dryRun !== false,
+      dryRun: opts.dryRun === true,
     };
   },
 };

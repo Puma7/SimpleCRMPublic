@@ -60,7 +60,10 @@ export function registerLogicNodes(register: Reg): void {
         messageId: ctx.messageId,
         resumeNodeId,
         executeAt,
-        contextJson: JSON.stringify({ variables: ctx.variables }),
+        contextJson: JSON.stringify({
+          variables: ctx.variables,
+          inboundConditionOk: ctx.variables.__inbound_condition_ok === true,
+        }),
       });
       return { status: 'ok', stop: true, message: `delayed_until:${executeAt}` };
     },

@@ -100,6 +100,15 @@ type InboundBranchGate = {
   conditionOk: boolean;
 };
 
+function cloneWorkflowContext(ctx: WorkflowContext): WorkflowContext {
+  return {
+    ...ctx,
+    variables: { ...ctx.variables },
+    strings: { ...ctx.strings },
+    ai: { ...ctx.ai },
+  };
+}
+
 async function walkGraph(
   ctx: WorkflowContext,
   doc: WorkflowGraphDocument,
@@ -188,10 +197,6 @@ async function walkGraph(
       continue;
     }
 
-    if (node.type === 'condition' && gate) {
-      gate.conditionOk = true;
-    }
-
     const t0 = Date.now();
     let result: NodeExecuteResult;
     try {
@@ -250,6 +255,10 @@ async function walkGraph(
     let port: string = 'default';
     if (node.type === 'condition') {
       port = result.port === 'no' ? 'no' : 'yes';
+      if (gate && port === 'yes') {
+        gate.conditionOk = true;
+        ctx.variables.__inbound_condition_ok = true;
+      }
     } else if (regType === 'logic.switch') {
       port = String(result.port ?? 'default');
     } else if (regType === 'logic.threshold') {
@@ -319,8 +328,9 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
   let merged: GraphRunResult = { log, status: 'ok', blocked: false, blockReason: null };
   for (const edge of outs) {
     const branchLog = [...log, `branch:${edge.target}`];
+    const branchCtx = cloneWorkflowContext(ctx);
     const branchGate: InboundBranchGate = { conditionOk: false };
-    const r = await walkGraph(ctx, doc, edge.target, branchLog, undefined, undefined, branchGate);
+    const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, undefined, branchGate);
     merged.log.push(...r.log);
     if (r.blocked) return r;
     if (r.status === 'error') merged.status = 'error';
@@ -338,6 +348,11 @@ export async function runWorkflowGraphFromNode(
   }
   const ctx = buildCtx(input);
   const log: string[] = [`graph_resume:${input.startNodeId}`];
-  return walkGraph(ctx, doc, input.startNodeId, log);
+  const inboundOk =
+    input.initialVariables?.__inbound_condition_ok === true ||
+    input.initialVariables?.__inbound_condition_ok === 1;
+  const gate =
+    input.direction === 'inbound' ? { conditionOk: inboundOk } : undefined;
+  return walkGraph(ctx, doc, input.startNodeId, log, undefined, undefined, gate);
 }
 

@@ -25,6 +25,7 @@ import {
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
+import { canAdvanceImapSyncCursor } from './imap-sync-cursor';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -112,7 +113,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
       const sorted = [...uids].sort((a, b) => a - b);
       const toFetch = sorted;
 
-      let maxProcessed = lastUid;
+      let chainEnd = lastUid;
       for (const uid of toFetch) {
         try {
         const msg = await client.fetchOne(
@@ -121,7 +122,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           { uid: true },
         );
         if (!msg || !msg.source) {
-          continue;
+          throw new Error(`empty source for UID ${uid}`);
         }
         const parsed = await simpleParser(msg.source);
         const messageId = parsed.messageId ?? null;
@@ -174,7 +175,9 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           await runInboundWorkflowsForMessage(localMsgId);
         }
         fetched += 1;
-        maxProcessed = Math.max(maxProcessed, uid);
+        if (canAdvanceImapSyncCursor(chainEnd, uid, sorted)) {
+          chainEnd = uid;
+        }
         } catch (perMsgErr) {
           console.warn(
             `[imap-sync] UID ${uid} account ${accountId} skipped (will retry):`,
@@ -184,15 +187,13 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
       }
 
       if (toFetch.length > 0) {
-        lastUid = maxProcessed;
+        lastUid = chainEnd;
       } else if (sorted.length === 0 && lastUid === 0) {
         const refresh = await client.search({ all: true }, { uid: true });
         const all = refresh === false ? [] : refresh;
         if (all.length > 0) {
           lastUid = Math.max(...all);
         }
-      } else if (sorted.length > 0) {
-        lastUid = Math.max(lastUid, sorted[sorted.length - 1]!);
       }
 
       updateFolderSyncState(folderRow.id, {

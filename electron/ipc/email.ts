@@ -1734,6 +1734,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const ids = listMessageIdsForWorkflowBackfill(offset, pageSize);
         if (ids.length === 0) break;
         for (const id of ids) {
+          clearInboundWorkflowAppliedForMessage(id);
           await runInboundWorkflowsForMessage(id);
           processed += 1;
         }
@@ -1913,21 +1914,28 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: WorkflowGraphDocument | { graphJson: string },
       ) => {
-        const graph: WorkflowGraphDocument =
-          'graphJson' in payload && typeof payload.graphJson === 'string'
-            ? (JSON.parse(payload.graphJson) as WorkflowGraphDocument)
-            : payload;
-        const def = compileGraphToDefinition(graph);
-        const registryOnly = graph.nodes.some(
-          (n) =>
-            n.type === 'registry' ||
-            (n.type === 'action' && !('actionType' in (n.data as object))),
-        );
-        return {
-          success: true as const,
-          definitionJson: definitionToJson(def),
-          registryOnly,
-        };
+        try {
+          const graph: WorkflowGraphDocument =
+            'graphJson' in payload && typeof payload.graphJson === 'string'
+              ? (JSON.parse(payload.graphJson) as WorkflowGraphDocument)
+              : payload;
+          const def = compileGraphToDefinition(graph);
+          const registryOnly = graph.nodes.some(
+            (n) =>
+              n.type === 'registry' ||
+              (n.type === 'action' && !('actionType' in (n.data as object))),
+          );
+          return {
+            success: true as const,
+            definitionJson: definitionToJson(def),
+            registryOnly,
+          };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
       },
       { logger },
     ),

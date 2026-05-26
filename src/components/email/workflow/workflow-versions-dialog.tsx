@@ -61,7 +61,7 @@ export function WorkflowVersionsDialog({
   const restore = async (versionId: number) => {
     const r = await invokeIpc<{ success: boolean; error?: string }>(
       IPCChannels.Email.RestoreWorkflowVersion,
-      { versionId },
+      { versionId, ...(workflowId != null ? { workflowId } : {}) },
     )
     if (r.success) {
       toast.success("Version wiederhergestellt.")

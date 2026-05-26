@@ -382,7 +382,11 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     ]),
   });
   set(IPCChannels.Email.SetMessageSeen, {
-    payload: z.object({ messageId: positiveInt, seen: z.boolean() }),
+    payload: z.object({
+      messageId: positiveInt,
+      seen: z.boolean(),
+      syncToServer: z.boolean().optional(),
+    }),
     result: standardResult,
   });
   set(IPCChannels.Email.SetMessageSpam, {
@@ -907,7 +911,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.RestoreWorkflowVersion, {
-    payload: z.object({ workflowId: positiveInt, versionId: positiveInt }),
+    payload: z.object({
+      versionId: positiveInt,
+      workflowId: positiveInt.optional(),
+    }),
     result: standardResult,
   });
 
@@ -955,7 +962,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.BuildGoogleOAuthUrl, {
-    payload: z.object({ redirectUri: z.string().url() }),
+    payload: z.string().url(),
     result: z.union([
       z.object({ success: z.literal(true), url: z.string() }),
       failResult,
