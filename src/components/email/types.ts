@@ -50,6 +50,7 @@ export type EmailMessage = {
   from_json: string | null
   to_json?: string | null
   cc_json?: string | null
+  bcc_json?: string | null
   body_text: string | null
   body_html: string | null
   seen_local: number

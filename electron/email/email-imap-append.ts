@@ -34,6 +34,7 @@ function buildRfc822(input: {
   from: string;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   text?: string;
   html?: string;
@@ -45,6 +46,7 @@ function buildRfc822(input: {
   lines.push(`From: ${input.from}`);
   lines.push(`To: ${input.to}`);
   if (input.cc?.trim()) lines.push(`Cc: ${input.cc.trim()}`);
+  if (input.bcc?.trim()) lines.push(`Bcc: ${input.bcc.trim()}`);
   lines.push(`Subject: ${encodeRfc2047(input.subject)}`);
   if (input.messageId) lines.push(`Message-ID: ${input.messageId}`);
   if (input.inReplyTo) lines.push(`In-Reply-To: ${input.inReplyTo}`);
@@ -76,6 +78,7 @@ export async function appendSentToImap(input: {
   from: string;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   text?: string;
   html?: string;

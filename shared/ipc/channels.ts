@@ -144,6 +144,8 @@ const EmailChannels = literal({
   SearchMessages: 'email:search-messages',
   ListConversationMessages: 'email:list-conversation-messages',
   SendCompose: 'email:send-compose',
+  BulkSoftDeleteMessages: 'email:bulk-soft-delete-messages',
+  BulkSetMessagesArchived: 'email:bulk-set-messages-archived',
   TestSmtp: 'email:test-smtp',
   ListCategories: 'email:list-categories',
   CreateCategory: 'email:create-category',

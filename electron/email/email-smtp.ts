@@ -34,6 +34,7 @@ export async function sendSmtpForAccount(
     from: string;
     to: string;
     cc?: string;
+    bcc?: string;
     subject: string;
     text?: string;
     html?: string;
@@ -78,6 +79,7 @@ export async function sendSmtpForAccount(
     from: mail.from,
     to: mail.to,
     cc: mail.cc || undefined,
+    bcc: mail.bcc || undefined,
     subject: mail.subject,
     text: mail.text,
     html: mail.html,

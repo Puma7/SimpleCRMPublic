@@ -518,6 +518,7 @@ function runMigrations() {
                 { name: 'reply_suggestion_status', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_status TEXT` },
                 { name: 'reply_suggestion_error', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_error TEXT` },
                 { name: 'reply_suggestion_updated_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_suggestion_updated_at TEXT` },
+                { name: 'bcc_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN bcc_json TEXT` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {

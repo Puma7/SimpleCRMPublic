@@ -352,6 +352,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       bodyHtml: z.string().optional(),
       to: z.string().optional(),
       cc: z.string().optional(),
+      bcc: z.string().optional(),
     }),
     result: standardResult,
   });
@@ -380,10 +381,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       bodyHtml: z.string().nullable().optional(),
       to: nonEmptyString,
       cc: z.string().optional(),
+      bcc: z.string().optional(),
       inReplyToMessageId: z.number().int().positive().nullable().optional(),
       attachmentPaths: z.array(z.string()).optional(),
     }),
-    result: standardResult,
+    result: z.union([
+      z.object({ success: z.literal(true), warning: z.string().optional() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.BulkSoftDeleteMessages, {
+    payload: z.object({ messageIds: z.array(positiveInt).min(1).max(500) }),
+    result: z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
+  });
+  set(IPCChannels.Email.BulkSetMessagesArchived, {
+    payload: z.object({
+      messageIds: z.array(positiveInt).min(1).max(500),
+      archived: z.boolean(),
+    }),
+    result: z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
   });
   set(IPCChannels.Email.GetComposeSignature, {
     payload: z.object({ accountId: positiveInt }),

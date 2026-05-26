@@ -18,6 +18,7 @@ export type ComposeIntent =
   | { mode: "closed" }
   | { mode: "new" }
   | { mode: "reply"; message: EmailMessage; initialReplyHtml?: string }
+  | { mode: "reply-all"; message: EmailMessage; initialReplyHtml?: string }
   | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 

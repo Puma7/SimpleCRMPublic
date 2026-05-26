@@ -62,6 +62,7 @@ export type EmailMessageRow = {
   from_json: string | null;
   to_json: string | null;
   cc_json: string | null;
+  bcc_json: string | null;
   date_received: string | null;
   snippet: string | null;
   body_text: string | null;
@@ -868,6 +869,28 @@ export function insertOrUpdateEmailMessage(input: {
   return { id, isNew };
 }
 
+export function bulkSoftDeleteMessages(messageIds: number[]): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const r = getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE id IN (${placeholders}) AND uid >= 0`,
+    )
+    .run(...messageIds);
+  return r.changes;
+}
+
+export function bulkSetMessagesArchived(messageIds: number[], archived: boolean): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const r = getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id IN (${placeholders}) AND uid >= 0 AND soft_deleted = 0`,
+    )
+    .run(archived ? 1 : 0, ...messageIds);
+  return r.changes;
+}
+
 export function setMessageArchived(messageId: number, archived: boolean): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id = ?`)
@@ -1142,6 +1165,7 @@ export function updateComposeDraft(
     bodyHtml?: string | null;
     toJson?: string | null;
     ccJson?: string | null;
+    bccJson?: string | null;
   },
 ): void {
   const row = getEmailMessageById(messageId);
@@ -1158,6 +1182,7 @@ export function updateComposeDraft(
   if (input.bodyHtml !== undefined) { sets.push('body_html = ?'); vals.push(html); }
   if (input.toJson !== undefined) { sets.push('to_json = ?'); vals.push(input.toJson); }
   if (input.ccJson !== undefined) { sets.push('cc_json = ?'); vals.push(input.ccJson); }
+  if (input.bccJson !== undefined) { sets.push('bcc_json = ?'); vals.push(input.bccJson); }
   vals.push(messageId);
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)

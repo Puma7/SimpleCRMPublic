@@ -107,7 +107,9 @@ describe('sendComposeDraft', () => {
       body_html: null,
       message_id: '<committed@local>',
     });
-    mockGetSyncInfo.mockReturnValue('1');
+    mockGetSyncInfo.mockImplementation((key: string) =>
+      key === 'email_compose_smtp_ok:10' ? '1' : null,
+    );
     const r = await sendComposeDraft({
       accountId: 1,
       draftMessageId: 10,
@@ -118,5 +120,29 @@ describe('sendComposeDraft', () => {
     expect(r).toEqual({ ok: true });
     expect(mockSendSmtp).not.toHaveBeenCalled();
     expect(mockMarkSent).toHaveBeenCalled();
+  });
+
+  it('rejects parallel send while lock is held', async () => {
+    mockGetMessage.mockReturnValue({
+      id: 10,
+      uid: -1,
+      account_id: 1,
+      folder_kind: 'draft',
+      body_html: null,
+      message_id: null,
+    });
+    mockGetSyncInfo.mockImplementation((key: string) => {
+      if (key === 'email_compose_sending:10') return '1';
+      return null;
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Hi',
+      bodyText: 'Body',
+      to: 'a@b.de',
+    });
+    expect(r).toEqual({ ok: false, error: 'Versand läuft bereits für diesen Entwurf.' });
+    expect(mockSendSmtp).not.toHaveBeenCalled();
   });
 });

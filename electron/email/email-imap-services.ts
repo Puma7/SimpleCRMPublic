@@ -31,16 +31,19 @@ async function startIdleForAccount(
   pendingReconnectTimers.delete(acc.id);
   try {
     const auth = await resolveImapAuth(acc);
-    if ('accessToken' in auth) return;
     const client = new ImapFlow({
       host: acc.imap_host,
       port: acc.imap_port,
       secure: Boolean(acc.imap_tls),
-      auth: { user: auth.user, pass: auth.pass },
+      auth:
+        'accessToken' in auth
+          ? { user: auth.user, accessToken: auth.accessToken }
+          : { user: auth.user, pass: auth.pass },
       logger: false,
       connectionTimeout: 90_000,
       socketTimeout: 120_000,
     });
+    const connectedAt = Date.now();
     await client.connect();
     await client.mailboxOpen('INBOX');
     client.on('exists', () => {
@@ -58,13 +61,17 @@ async function startIdleForAccount(
     });
     client.on('close', () => {
       idleClients.delete(acc.id);
-      // Connection was successful, so reset backoff to 0 for next reconnect attempt.
-      const delay = 5_000;
-      logger.debug(`[email] idle closed for account ${acc.id}, reconnecting in ${delay}ms`);
+      const livedMs = Date.now() - connectedAt;
+      const nextRetry =
+        livedMs >= 30_000 ? 0 : Math.min(retryCount + 1, 4);
+      const delay = Math.min(60_000, 5_000 * Math.pow(2, nextRetry));
+      logger.debug(
+        `[email] idle closed for account ${acc.id} (lived ${livedMs}ms), reconnecting in ${delay}ms`,
+      );
       const timer = setTimeout(() => {
         pendingReconnectTimers.delete(acc.id);
         if (!globalCron) return;
-        void startIdleForAccount(acc, logger, 0);
+        void startIdleForAccount(acc, logger, nextRetry);
       }, delay);
       pendingReconnectTimers.set(acc.id, timer);
     });
@@ -146,7 +153,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
 
   const accounts = listEmailAccounts();
   for (const acc of accounts) {
-    if ((acc.protocol || 'imap') !== 'imap' || acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft') {
+    if ((acc.protocol || 'imap') !== 'imap') {
       continue;
     }
     void startIdleForAccount(acc, logger);

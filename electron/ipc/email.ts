@@ -25,6 +25,8 @@ import {
   listTagsForMessage,
   listConversationMessagesForScope,
   setMessageSoftDeleted,
+  bulkSoftDeleteMessages,
+  bulkSetMessagesArchived,
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
@@ -548,7 +550,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.UpdateComposeDraft,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; subject?: string; bodyText?: string; bodyHtml?: string; to?: string; cc?: string },
+        payload: {
+          messageId: number;
+          subject?: string;
+          bodyText?: string;
+          bodyHtml?: string;
+          to?: string;
+          cc?: string;
+          bcc?: string;
+        },
       ) => {
         const toJson =
           payload.to !== undefined
@@ -562,12 +572,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               ? recipientJsonFromField(payload.cc)
               : null
             : undefined;
+        const bccJson =
+          payload.bcc !== undefined
+            ? payload.bcc.trim()
+              ? recipientJsonFromField(payload.bcc)
+              : null
+            : undefined;
         updateComposeDraft(payload.messageId, {
           subject: payload.subject,
           bodyText: payload.bodyText,
           bodyHtml: payload.bodyHtml,
           toJson,
           ccJson,
+          bccJson,
         });
         return { success: true as const };
       },
@@ -707,12 +724,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bodyHtml?: string | null;
           to: string;
           cc?: string;
+          bcc?: string;
           inReplyToMessageId?: number | null;
           attachmentPaths?: string[];
         },
       ) => {
         const r = await sendComposeDraft(payload);
-        if (r.ok) return { success: true as const };
+        if (r.ok) {
+          return r.warning
+            ? ({ success: true as const, warning: r.warning })
+            : { success: true as const };
+        }
         return { success: false as const, error: r.error };
       },
       { logger },
@@ -1236,6 +1258,31 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       setMessageSoftDeleted(messageId, true);
       return { success: true as const };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSoftDeleteMessages,
+      async (_event: IpcMainInvokeEvent, payload: { messageIds: number[] }) => {
+        const count = bulkSoftDeleteMessages(payload.messageIds);
+        return { success: true as const, count };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSetMessagesArchived,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; archived: boolean },
+      ) => {
+        const count = bulkSetMessagesArchived(payload.messageIds, payload.archived);
+        return { success: true as const, count };
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

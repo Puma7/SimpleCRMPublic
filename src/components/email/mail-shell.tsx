@@ -108,6 +108,7 @@ function MailShellInner() {
             loading={loadingMessages}
             onOpen={openMessage}
             onMoveMessageToView={moveMessageToView}
+            onListChanged={refreshList}
           />
         </ResizablePanel>
         <ResizableHandle />
@@ -124,6 +125,9 @@ function MailShellInner() {
             refreshList={refreshList}
             onReply={(m, initialReplyHtml) =>
               setComposeIntent({ mode: "reply", message: m, initialReplyHtml })
+            }
+            onReplyAll={(m, initialReplyHtml) =>
+              setComposeIntent({ mode: "reply-all", message: m, initialReplyHtml })
             }
             onForward={(m) => setComposeIntent({ mode: "forward", message: m })}
             metadataPlacement="external"

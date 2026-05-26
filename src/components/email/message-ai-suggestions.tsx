@@ -138,11 +138,25 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
             Vorschlag übernehmen
           </Button>
         ) : null}
-        <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs" disabled>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5 text-xs"
+          disabled
+          title="Demnächst verfügbar"
+        >
           <FileBox className="h-3.5 w-3.5" />
           Deal anlegen
         </Button>
-        <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs" disabled>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5 text-xs"
+          disabled
+          title="Demnächst verfügbar"
+        >
           <CalendarPlus className="h-3.5 w-3.5" />
           Termin vorschlagen
         </Button>

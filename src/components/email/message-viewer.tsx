@@ -12,6 +12,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Reply,
+  ReplyAll,
   RotateCcw,
   ShieldAlert,
   Trash2,
@@ -71,6 +72,7 @@ type Props = {
   categories: CategoryRow[]
   reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage, initialReplyHtml?: string) => void
+  onReplyAll: (m: EmailMessage, initialReplyHtml?: string) => void
   onForward: (m: EmailMessage) => void
   /** Beta layout: Metadaten in eigener Spalte. */
   metadataPlacement?: "inline" | "external"
@@ -88,6 +90,7 @@ export function MessageViewer(props: Props) {
     refreshCurrentMessage,
     refreshList,
     onReply,
+    onReplyAll,
     onForward,
     metadataPlacement = "inline",
   } = props
@@ -266,6 +269,16 @@ export function MessageViewer(props: Props) {
                 >
                   <Reply className="h-4 w-4" />
                   Antworten
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onReplyAll(selectedMessage)}
+                  className="gap-2"
+                >
+                  <ReplyAll className="h-4 w-4" />
+                  Allen antworten
                 </Button>
                 <Button
                   type="button"
