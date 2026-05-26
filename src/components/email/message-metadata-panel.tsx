@@ -483,8 +483,17 @@ export function MessageMetadataPanel({
             security?.authDkim === "temperror" ||
             security?.authDmarc === "temperror" ? (
               <p className="mt-1 text-[10px] text-muted-foreground">
-                <strong>temperror</strong> = DNS-Abfrage für SPF/DKIM/DMARC ist fehlgeschlagen (kein
-                App-Bug). Netzwerk/VPN/DNS prüfen und erneut testen.
+                <strong>temperror</strong> = Live-DNS-Prüfung fehlgeschlagen. Netzwerk/VPN/DNS prüfen
+                und „Erneut prüfen“ — oder Authentication-Results des Servers in den Roh-Headern
+                prüfen.
+              </p>
+            ) : null}
+            {security?.authError?.includes(
+              "Werte aus Authentication-Results des empfangenden Servers",
+            ) ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                SPF/DKIM/DMARC stammen aus dem Authentication-Results-Header Ihres Mailservers (keine
+                Live-DNS-Prüfung in SimpleCRM).
               </p>
             ) : null}
             {security?.authArc === "fail" ? (
