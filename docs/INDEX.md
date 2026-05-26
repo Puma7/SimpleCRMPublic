@@ -22,6 +22,9 @@
 | [USER_GUIDE_EMAIL.md](USER_GUIDE_EMAIL.md) | End-user oriented |
 | [**EMAIL_PRODUCT_GUIDE.md**](EMAIL_PRODUCT_GUIDE.md) | **Product logic** — Konten, Kategorien, Aktionen, Team, KI |
 | [EMAIL_ROADMAP.md](EMAIL_ROADMAP.md) | Planned improvements from user feedback |
+| [**MAIL_BETA_PHASE3_PLAN.md**](MAIL_BETA_PHASE3_PLAN.md) | **Beta Phase 3** — Backup, Migrationen, Diagnose, Doku (Umsetzungsplan) |
+| [MAIL_TROUBLESHOOTING.md](MAIL_TROUBLESHOOTING.md) | Support-Matrix (Symptom → Aktion) |
+| [MAIL_SINGLE_USER_LIMITS.md](MAIL_SINGLE_USER_LIMITS.md) | Single-User / Sandbox-Grenzen |
 | [email-system-deep-review.md](email-system-deep-review.md) | Risks and review notes |
 | [WORKFLOW_SPAM_ROUTING.md](WORKFLOW_SPAM_ROUTING.md) | Spam pipeline design |
 | [OUTBOUND_EMAIL_WORKFLOW.md](OUTBOUND_EMAIL_WORKFLOW.md) | Outbound quality gate |

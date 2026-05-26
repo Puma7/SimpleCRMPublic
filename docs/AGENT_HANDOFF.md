@@ -14,7 +14,8 @@ If you are a **new AI agent** continuing this work:
 1. Read this file end-to-end.
 2. Skim [`LEARNINGS.md`](LEARNINGS.md) (do not repeat documented mistakes).
 3. For code changes: [`DEVELOPER_EMAIL.md`](DEVELOPER_EMAIL.md) + [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
-4. Run verification: `npm test` (expect **~543** tests), `npm run build:electron:main`, `npx eslint . --ext ts,tsx --max-warnings 0`.
+4. **Phase 3 Beta-Härtung (offen):** [`MAIL_BETA_PHASE3_PLAN.md`](MAIL_BETA_PHASE3_PLAN.md) — Backup-Restore-Wizard, Migration-Runner, Doku-Polish.
+5. Run verification: `npm test`, `npm run build:electron:main`, `npx eslint . --ext ts,tsx --max-warnings 0`.
 
 **Product language:** UI strings are **German** (Posteingang = inbox, Aufgaben = tasks).
 

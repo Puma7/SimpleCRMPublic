@@ -16,6 +16,7 @@ import {
   Wrench,
   Workflow,
   ShieldCheck,
+  Stethoscope,
 } from "lucide-react"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
@@ -30,6 +31,7 @@ import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
+import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -71,6 +73,7 @@ const TAB_DEFS: TabDef[] = [
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
+  { id: "diagnostics", label: "Diagnose", icon: Stethoscope, render: () => <DiagnosticsPanel /> },
   { id: "misc", label: "Sonstiges", icon: Wrench, render: () => <MiscPanel /> },
 ]
 
@@ -83,7 +86,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
   { label: "Team & Vorlagen", tabIds: ["team", "canned"] },
-  { label: "Datenschutz", tabIds: ["export"] },
+  { label: "Datenschutz & Support", tabIds: ["export", "diagnostics"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
 

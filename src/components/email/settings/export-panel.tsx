@@ -38,7 +38,8 @@ export function ExportPanel() {
         <h3 className="text-base font-semibold">Datenexport (DSGVO-Hilfe)</h3>
         <p className="text-sm text-muted-foreground">
           ZIP mit Metadaten (ohne Passwörter/Keytar-Einträge). Der Ordner „attachments" enthält gespeicherte Anhänge.
-          Kein vollständiges Rohmail-Archiv.
+          Kein vollständiges Rohmail-Archiv. Für ein technisches Vollbackup (SQLite + Anhänge) siehe Tab{" "}
+          <strong>Diagnose</strong>.
         </p>
       </div>
       <div className="flex flex-wrap gap-2">

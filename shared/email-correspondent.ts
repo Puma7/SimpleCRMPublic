@@ -1,3 +1,5 @@
+import { normalizeEmailAddress } from './email-address-normalize';
+
 /** Parse first mailbox from stored address JSON (`{ value: [{ address, name? }] }`). */
 export function firstAddressFromJson(json: string | null): string {
   if (!json) return '';
@@ -25,6 +27,7 @@ export function correspondentEmailForMessage(row: {
   } else {
     pick = from || to;
   }
-  const normalized = pick.trim().toLowerCase();
-  return normalized.includes('@') ? normalized : null;
+  const trimmed = pick.trim();
+  if (!trimmed.includes('@')) return null;
+  return normalizeEmailAddress(trimmed);
 }

@@ -74,6 +74,19 @@ export function clearStaleComposeSendingLocks(): void {
     .run();
 }
 
+/** After crash: SMTP succeeded but draft was not finalized to sent. */
+export function getComposeDraftRecoveryState(draftMessageId: number): {
+  smtpCommitted: boolean;
+  needsResendFinalize: boolean;
+} {
+  const draft = getEmailMessageById(draftMessageId);
+  const smtpCommitted = isSmtpCommitted(draftMessageId);
+  const needsResendFinalize = Boolean(
+    smtpCommitted && draft && draft.uid < 0 && draft.folder_kind === 'draft',
+  );
+  return { smtpCommitted, needsResendFinalize };
+}
+
 async function finalizeSentDraft(input: {
   accountId: number;
   draftMessageId: number;
@@ -136,7 +149,8 @@ export async function sendComposeDraft(input: {
   inReplyToMessageId?: number | null;
   attachmentPaths?: string[];
 }): Promise<
-  { ok: true; warning?: string; recoveredSentAppend?: boolean } | { ok: false; error: string }
+  | { ok: true; warning?: string; recoveredSentAppend?: boolean }
+  | { ok: false; error: string; workflowRunId?: number | null }
 > {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
@@ -202,7 +216,11 @@ export async function sendComposeDraft(input: {
       attachmentPaths: input.attachmentPaths,
     });
     if (!outbound.allowed) {
-      return { ok: false, error: outbound.reason || 'Outbound blockiert' };
+      return {
+        ok: false,
+        error: outbound.reason || 'Outbound blockiert',
+        workflowRunId: outbound.workflowRunId ?? null,
+      };
     }
 
     let ticketCode: string | null = null;
@@ -332,7 +350,6 @@ export async function sendComposeDraft(input: {
       return { ok: true, recoveredSentAppend: true };
     }
 
-    markSmtpCommitted(input.draftMessageId);
     try {
       await sendSmtpForAccount(input.accountId, {
         from: acc.email_address,
@@ -349,9 +366,9 @@ export async function sendComposeDraft(input: {
         requestReadReceipt: requestReceipt,
       });
     } catch (e) {
-      clearSmtpCommitted(input.draftMessageId);
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+    markSmtpCommitted(input.draftMessageId);
 
     const fin = await finalizeSentDraft({
       accountId: input.accountId,

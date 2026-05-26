@@ -41,6 +41,7 @@ export type SettingsTab =
   | "canned"
   | "prompts"
   | "export"
+  | "diagnostics"
   | "misc"
 
 type MailWorkspaceState = {
@@ -158,6 +159,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "canned",
   "prompts",
   "export",
+  "diagnostics",
   "misc",
 ]
 
@@ -239,6 +241,13 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writeLS(LS_KEYS.messageDoneFilter, messageDoneFilter)
   }, [messageDoneFilter])
+
+  // R-9: Erledigt-Filter gilt nur im Posteingang — beim View-Wechsel zurücksetzen.
+  useEffect(() => {
+    if (mailView !== "inbox" && messageDoneFilter !== DEFAULT_MESSAGE_DONE_FILTER) {
+      setMessageDoneFilter(DEFAULT_MESSAGE_DONE_FILTER)
+    }
+  }, [mailView, messageDoneFilter])
 
   const value = useMemo<MailWorkspaceState>(
     () => ({

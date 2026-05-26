@@ -25,6 +25,7 @@ import { listAiPrompts } from './email-crm-store';
 import { addressesFromRecipientJson } from './email-parse-utils';
 import { runChatCompletion } from './email-openai';
 import { sendWorkflowForwardCopy } from './email-forward-copy';
+import { getLatestWorkflowRunForMessage } from '../workflow/run-steps';
 
 export type OutboundDraftPayload = {
   messageId: number;
@@ -385,6 +386,7 @@ export async function evaluateOutboundWorkflows(
 ): Promise<{
   allowed: boolean;
   reason: string | null;
+  workflowRunId?: number | null;
 }> {
   const dryRun = options?.dryRun === true;
   const draftSideEffects = options?.sideEffects !== 'none';
@@ -421,7 +423,7 @@ export async function evaluateOutboundWorkflows(
           const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
         }
-        return { allowed: false, reason };
+        return { allowed: false, reason, workflowRunId: r.runId ?? null };
       }
       if (!dryRun && draftSideEffects) {
         const checkHold = getEmailMessageById(payload.messageId);
@@ -429,7 +431,11 @@ export async function evaluateOutboundWorkflows(
           const reason = checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
           const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
-          return { allowed: false, reason };
+          return {
+            allowed: false,
+            reason,
+            workflowRunId: getLatestWorkflowRunForMessage(payload.messageId)?.id ?? null,
+          };
         }
       }
       if (r.status === 'error') {
@@ -458,6 +464,7 @@ export async function evaluateOutboundWorkflows(
     return {
       allowed: false,
       reason: 'Ausgehender Workflow fehlgeschlagen; Versand aus Sicherheitsgründen blockiert.',
+      workflowRunId: getLatestWorkflowRunForMessage(payload.messageId)?.id ?? null,
     };
   }
 
@@ -467,10 +474,14 @@ export async function evaluateOutboundWorkflows(
       const reason = after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
       const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
       returnOutboundDraftToInbox(payload.messageId, reason, { payload });
-      return { allowed: false, reason };
+      return {
+        allowed: false,
+        reason,
+        workflowRunId: getLatestWorkflowRunForMessage(payload.messageId)?.id ?? null,
+      };
     }
   }
-  return { allowed: true, reason: null };
+  return { allowed: true, reason: null, workflowRunId: null };
 }
 
 export async function runScheduledWorkflowFire(workflowId: number): Promise<void> {

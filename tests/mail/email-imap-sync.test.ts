@@ -28,6 +28,10 @@ jest.mock('../../electron/email/email-store', () => ({
 jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: jest.fn().mockResolvedValue({ user: 'u', pass: 'p' }),
 }));
+jest.mock('../../electron/email/email-imap-auth-notice', () => ({
+  clearImapAuthNotice: jest.fn(),
+  maybeRecordImapAuthNotice: jest.fn(),
+}));
 jest.mock('../../electron/email/email-sync-mutex', () => ({
   withEmailAccountSyncLock: (_id: number, fn: () => Promise<unknown>) => fn(),
 }));

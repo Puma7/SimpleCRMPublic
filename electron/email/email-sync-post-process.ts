@@ -67,11 +67,14 @@ export async function processNewMessagesAfterSync(
   for (const item of merged) {
     try {
       await persistParsedAttachments(item.localMsgId, item.parsedAttachments);
+    } catch (e) {
+      console.warn(`[email] post-process attachments failed msg ${item.localMsgId}`, e);
+    }
+    try {
       assignJwzThreadAndTicket(item.localMsgId, accountId, item.threading);
       tryLinkMessageToCustomer(item.localMsgId, customerByEmail);
     } catch (e) {
-      console.warn(`[email] post-process prep failed msg ${item.localMsgId}`, e);
-      continue;
+      console.warn(`[email] post-process threading/crm failed msg ${item.localMsgId}`, e);
     }
   }
 

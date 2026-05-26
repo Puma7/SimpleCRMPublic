@@ -32,7 +32,9 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   disposers.push(
     registerIpcHandler(IPCChannels.Calendar.AddCalendarEvent, async (_event, eventData: any) => {
       try {
-        return createCalendarEvent(eventData);
+        const result = createCalendarEvent(eventData);
+        const id = Number(result.lastInsertRowid ?? 0);
+        return { ...result, success: true as const, id };
       } catch (error) {
         logger.error('IPC Error adding calendar event:', error);
         return { success: false, error: (error as Error).message };

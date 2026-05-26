@@ -1,15 +1,15 @@
-import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getEmailMessageById } from './email-store';
 import { sendComposeDraft } from './email-compose-send';
 import { listDueScheduledDraftIds, setDraftScheduledSendAt } from './email-message-features';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
+import {
+  clearScheduledSendDraftMeta,
+  markScheduledSendDraftFailed,
+  recordScheduledSendAttemptFailure,
+} from './email-scheduled-send-state';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
-
-function scheduledFailKey(draftId: number): string {
-  return `scheduled_send_failures:${draftId}`;
-}
 
 export async function processDueScheduledSends(
   logger: Pick<typeof console, 'warn' | 'debug'>,
@@ -43,27 +43,27 @@ export async function processDueScheduledSends(
       });
       if (r.ok) {
         setDraftScheduledSendAt(draftId, null);
-        setSyncInfo(scheduledFailKey(draftId), '0');
+        clearScheduledSendDraftMeta(draftId);
         sent += 1;
       } else {
-        const fails = parseInt(getSyncInfo(scheduledFailKey(draftId)) ?? '0', 10) + 1;
-        setSyncInfo(scheduledFailKey(draftId), String(fails));
+        const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
+        const fails = recordScheduledSendAttemptFailure(draftId, errMsg);
         logger.warn(
-          `[email] scheduled send ${draftId} (${fails}/${MAX_SCHEDULED_SEND_FAILURES}): ${'error' in r ? r.error : 'failed'}`,
+          `[email] scheduled send ${draftId} (${fails}/${MAX_SCHEDULED_SEND_FAILURES}): ${errMsg}`,
         );
         if (fails >= MAX_SCHEDULED_SEND_FAILURES) {
           setDraftScheduledSendAt(draftId, null);
-          setSyncInfo(scheduledFailKey(draftId), '0');
+          markScheduledSendDraftFailed(draftId, errMsg);
           logger.warn(`[email] scheduled send ${draftId}: giving up after ${fails} failures`);
         }
       }
     } catch (e) {
-      const fails = parseInt(getSyncInfo(scheduledFailKey(draftId)) ?? '0', 10) + 1;
-      setSyncInfo(scheduledFailKey(draftId), String(fails));
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const fails = recordScheduledSendAttemptFailure(draftId, errMsg);
       logger.warn(`[email] scheduled send ${draftId} threw:`, e);
       if (fails >= MAX_SCHEDULED_SEND_FAILURES) {
         setDraftScheduledSendAt(draftId, null);
-        setSyncInfo(scheduledFailKey(draftId), '0');
+        markScheduledSendDraftFailed(draftId, errMsg);
       }
     }
   }

@@ -168,6 +168,38 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: standardResult,
   });
+  set(IPCChannels.Email.GetScheduledSendDraftState, {
+    payload: positiveInt,
+    result: z.object({
+      success: z.literal(true),
+      failureCount: z.number().int().nonnegative(),
+      status: z.enum(['ok', 'pending', 'failed']),
+      lastError: z.string().nullable(),
+    }),
+  });
+  set(IPCChannels.Email.ClearScheduledSendDraftFailure, {
+    payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.RetryScheduledSendDraft, {
+    payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetComposeDraftRecoveryState, {
+    payload: positiveInt,
+    result: z.object({
+      success: z.literal(true),
+      smtpCommitted: z.boolean(),
+      needsResendFinalize: z.boolean(),
+    }),
+  });
+  set(IPCChannels.Email.TestVacationAutoReply, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true) }),
+      z.object({ success: z.literal(false), error: z.string() }),
+    ]),
+  });
   set(IPCChannels.Email.ExportMessageEml, {
     payload: positiveInt,
     result: z.union([
@@ -249,6 +281,43 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.DismissUidValidityNotice, {
     payload: z.object({ noticeId: z.string().min(1) }),
     result: standardResult,
+  });
+  set(IPCChannels.Email.ListImapAuthNotices, {
+    payload: voidPayload,
+    result: z.array(
+      z.object({
+        accountId: z.number(),
+        message: z.string(),
+        at: z.string(),
+      }),
+    ),
+  });
+  set(IPCChannels.Email.DismissImapAuthNotice, {
+    payload: z.object({ accountId: z.number().int().positive() }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
+    payload: z.object({ messageId: positiveInt }),
+    result: z
+      .object({
+        id: positiveInt,
+        workflow_id: positiveInt,
+        status: z.string(),
+        started_at: z.string().nullable(),
+        finished_at: z.string().nullable(),
+      })
+      .nullable(),
+  });
+  set(IPCChannels.Email.GetMailDiagnostics, {
+    payload: voidPayload,
+    result: z.object({}).passthrough(),
+  });
+  set(IPCChannels.Email.ExportLocalMailBackup, {
+    payload: voidPayload,
+    result: z.union([
+      z.object({ ok: z.literal(true), path: z.string() }),
+      z.object({ ok: z.literal(false), error: z.string() }),
+    ]),
   });
   set(IPCChannels.Email.ListMessagesByView, {
     payload: z.object({

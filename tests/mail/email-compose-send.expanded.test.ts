@@ -137,7 +137,7 @@ describe('email-compose-send expanded', () => {
       bodyText: 'B',
       to: 'a@b.de',
     });
-    expect(r).toEqual({ ok: false, error: 'hold' });
+    expect(r).toMatchObject({ ok: false, error: 'hold', workflowRunId: null });
   });
 
   test('sends successfully with reply parent and attachments', async () => {
@@ -215,7 +215,7 @@ describe('email-compose-send expanded', () => {
     expect(r).toMatchObject({ ok: true, warning: expect.stringContaining('POP3') });
   });
 
-  test('smtp failure clears commit flag', async () => {
+  test('smtp failure does not set commit flag', async () => {
     mockSendSmtp.mockRejectedValueOnce(new Error('smtp fail'));
     const r = await sendComposeDraft({
       accountId: 1,
@@ -225,7 +225,19 @@ describe('email-compose-send expanded', () => {
       to: 'a@b.de',
     });
     expect(r).toEqual({ ok: false, error: 'smtp fail' });
-    expect(mockSetSyncInfo).toHaveBeenCalledWith('email_compose_smtp_ok:10', '');
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('email_compose_smtp_ok:10', '1');
+  });
+
+  test('smtp success sets commit flag only after send', async () => {
+    await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+    });
+    expect(mockSendSmtp).toHaveBeenCalled();
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('email_compose_smtp_ok:10', '1');
   });
 
   test('missing account after validation', async () => {

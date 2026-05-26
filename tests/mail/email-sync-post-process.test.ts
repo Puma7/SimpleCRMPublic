@@ -88,7 +88,7 @@ describe('processNewMessagesAfterSync', () => {
     expect(mockRunInbound).toHaveBeenCalledTimes(2);
   });
 
-  test('continues when prep step fails', async () => {
+  test('continues when attachment step fails', async () => {
     mockPersist.mockRejectedValueOnce(new Error('disk'));
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     await processNewMessagesAfterSync(1, [
@@ -103,7 +103,24 @@ describe('processNewMessagesAfterSync', () => {
         threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null },
       },
     ]);
+    expect(mockThread).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  test('still runs attachments when threading fails', async () => {
+    mockThread.mockImplementationOnce(() => {
+      throw new Error('thread');
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await processNewMessagesAfterSync(1, [
+      {
+        localMsgId: 1,
+        parsedAttachments: [{ filename: 'a.txt' }],
+        threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null },
+      },
+    ]);
+    expect(mockPersist).toHaveBeenCalled();
     warn.mockRestore();
   });
 

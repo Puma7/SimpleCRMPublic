@@ -22,6 +22,7 @@ import {
   uidValidityAsOptionalNumber,
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
+import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
 import {
   addressJson,
@@ -62,7 +63,14 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
     throw new Error('Konto ist kein IMAP-Konto (POP3 separat synchronisieren)');
   }
 
-  const auth = await resolveImapAuth(account);
+  let auth: Awaited<ReturnType<typeof resolveImapAuth>>;
+  try {
+    auth = await resolveImapAuth(account);
+    clearImapAuthNotice(accountId);
+  } catch (e) {
+    maybeRecordImapAuthNotice(accountId, e);
+    throw e;
+  }
   const client = new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
@@ -247,7 +255,14 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         }
       }
 
-      await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+      try {
+        await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+      } catch (postErr) {
+        console.error(
+          `[imap-sync] post-process failed account ${accountId} folder ${folderRow.id}:`,
+          postErr instanceof Error ? postErr.message : postErr,
+        );
+      }
 
       if (toFetch.length > 0) {
         lastUid = chainEnd;

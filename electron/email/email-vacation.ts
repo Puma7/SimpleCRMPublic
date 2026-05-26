@@ -1,4 +1,4 @@
-import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { createActivityLog, getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { EMAIL_ACCOUNTS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getEmailAccountById, getEmailMessageById } from './email-store';
 import { sendSmtpForAccount } from './email-smtp';
@@ -121,7 +121,57 @@ export async function maybeSendVacationAutoReply(
       headers: { 'Auto-Submitted': 'auto-replied' },
     });
     markVacationReplySent(acc.id, sender);
-  } catch {
+    createActivityLog({
+      customer_id: row.customer_id ?? undefined,
+      activity_type: 'email_vacation_auto_reply',
+      title: 'Abwesenheitsantwort gesendet',
+      description: `Automatische Antwort an ${sender}`,
+      metadata: JSON.stringify({
+        accountId: acc.id,
+        inboundMessageId: messageId,
+        subject,
+      }),
+    });
+  } catch (e) {
     markVacationSmtpFailed(acc.id, sender);
+    createActivityLog({
+      customer_id: row.customer_id ?? undefined,
+      activity_type: 'email_vacation_auto_reply_failed',
+      title: 'Abwesenheitsantwort fehlgeschlagen',
+      description: e instanceof Error ? e.message : String(e),
+      metadata: JSON.stringify({ accountId: acc.id, inboundMessageId: messageId, sender }),
+    });
+  }
+}
+
+/** Send a one-off test auto-reply to the account's own address (settings UI). */
+export async function sendVacationTestReply(
+  accountId: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const acc = getEmailAccountById(accountId);
+  if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
+  const subject =
+    (acc as { vacation_subject?: string | null }).vacation_subject?.trim() ||
+    'Abwesenheit: Automatische Antwort';
+  const body =
+    (acc as { vacation_body_text?: string | null }).vacation_body_text?.trim() ||
+    'Vielen Dank für Ihre Nachricht. Ich bin derzeit nicht erreichbar und melde mich schnellstmöglich.';
+  try {
+    await sendSmtpForAccount(acc.id, {
+      from: acc.email_address,
+      to: acc.email_address,
+      subject: `[Test] ${subject}`,
+      text: `${body}\n\n— Test der Abwesenheitsantwort (SimpleCRM)`,
+      headers: { 'Auto-Submitted': 'auto-replied' },
+    });
+    createActivityLog({
+      activity_type: 'email_vacation_test',
+      title: 'Abwesenheitsantwort getestet',
+      description: `Testmail an ${acc.email_address}`,
+      metadata: JSON.stringify({ accountId: acc.id }),
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

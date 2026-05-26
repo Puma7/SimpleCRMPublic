@@ -49,6 +49,7 @@ import {
   plainTextToReplyHtml,
   splitComposeHtml,
 } from "@shared/compose-body"
+import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   applyCannedTemplate,
   firstAddress,
@@ -146,9 +147,54 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
+  const [scheduledSendFailed, setScheduledSendFailed] = useState<{
+    lastError: string
+  } | null>(null)
+  const [composeRecovery, setComposeRecovery] = useState<{
+    needsResendFinalize: boolean
+  } | null>(null)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
+  const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
+  const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   const { width: composeDialogWidth, startResize: startComposeWidthResize } =
     useComposeDialogSize()
+
+  useEffect(() => {
+    if (!draftId || !hasElectron()) {
+      setScheduledSendFailed(null)
+      setComposeRecovery(null)
+      return
+    }
+    void invokeIpc<{
+      success: true
+      failureCount: number
+      status: "ok" | "pending" | "failed"
+      lastError: string | null
+    }>(IPCChannels.Email.GetScheduledSendDraftState, draftId)
+      .then((r) => {
+        if (r.status === "failed") {
+          setScheduledSendFailed({
+            lastError: r.lastError ?? "Geplanter Versand fehlgeschlagen",
+          })
+        } else {
+          setScheduledSendFailed(null)
+        }
+      })
+      .catch(() => setScheduledSendFailed(null))
+    void invokeIpc<{
+      success: true
+      smtpCommitted: boolean
+      needsResendFinalize: boolean
+    }>(IPCChannels.Email.GetComposeDraftRecoveryState, draftId)
+      .then((r) => {
+        if (r.needsResendFinalize) {
+          setComposeRecovery({ needsResendFinalize: true })
+        } else {
+          setComposeRecovery(null)
+        }
+      })
+      .catch(() => setComposeRecovery(null))
+  }, [draftId])
 
   useEffect(() => {
     if (!isOpen) {
@@ -562,6 +608,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         error?: string
         warning?: string
         recoveredSentAppend?: boolean
+        workflowRunId?: number | null
       }>(
         IPCChannels.Email.SendCompose,
         {
@@ -580,10 +627,22 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       if (!r.success) {
         const blocked = (r.error ?? "").length > 0
         if (blocked) {
-          toast.warning(
+          const msg =
             r.error ??
-              "Versand blockiert — Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten).",
-          )
+            "Versand blockiert — Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten)."
+          if (r.workflowRunId) {
+            toast.warning(msg, {
+              action: {
+                label: "Workflow-Details",
+                onClick: () => {
+                  setWorkflowRunDetailId(r.workflowRunId!)
+                  setWorkflowRunDetailOpen(true)
+                },
+              },
+            })
+          } else {
+            toast.warning(msg)
+          }
           closeDialog()
           setMailView("inbox")
           await onSent()
@@ -668,6 +727,66 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               {draftBootstrapping
                 ? "Entwurf wird vorbereitet…"
                 : "Entwurf konnte nicht geladen werden. Dialog schließen und erneut „Verfassen“ wählen."}
+            </div>
+          ) : null}
+          {composeRecovery?.needsResendFinalize ? (
+            <div
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+              role="status"
+            >
+              <p className="font-medium">Versand unterbrochen</p>
+              <p className="mt-1 text-xs opacity-90">
+                Die Mail wurde per SMTP versendet, die lokale Finalisierung (Gesendet-Ordner) ist
+                ausstehend. „Senden“ erneut klicken — es wird kein zweites Mal an SMTP gesendet.
+              </p>
+            </div>
+          ) : null}
+          {scheduledSendFailed ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              <p className="font-medium">Geplanter Versand fehlgeschlagen</p>
+              <p className="mt-1 text-xs opacity-90">{scheduledSendFailed.lastError}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={draftId == null}
+                  onClick={() => {
+                    if (!draftId) return
+                    void invokeIpc(IPCChannels.Email.RetryScheduledSendDraft, draftId).then(
+                      () => {
+                        setScheduledSendFailed(null)
+                        toast.success("Versand erneut eingeplant (sofort).")
+                      },
+                    )
+                  }}
+                >
+                  Erneut versuchen
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  disabled={draftId == null}
+                  onClick={() => {
+                    if (!draftId) return
+                    void invokeIpc(
+                      IPCChannels.Email.ClearScheduledSendDraftFailure,
+                      draftId,
+                    ).then(() => {
+                      setScheduledSendFailed(null)
+                      toast.success("Fehlerstatus zurückgesetzt — Versand erneut planen oder jetzt senden.")
+                    })
+                  }}
+                >
+                  Fehler zurücksetzen
+                </Button>
+              </div>
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
@@ -984,6 +1103,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    <WorkflowRunDetailDialog
+      runId={workflowRunDetailId}
+      open={workflowRunDetailOpen}
+      onOpenChange={setWorkflowRunDetailOpen}
+    />
     </>
   )
 }

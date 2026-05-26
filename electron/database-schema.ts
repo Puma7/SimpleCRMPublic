@@ -346,6 +346,11 @@ export const createEmailMessagesFtsTable = `
     subject,
     snippet,
     body_text,
+    from_json,
+    to_json,
+    cc_json,
+    bcc_json,
+    ticket_code,
     content='${EMAIL_MESSAGES_TABLE}',
     content_rowid='id',
     tokenize = 'unicode61'

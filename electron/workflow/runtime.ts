@@ -9,6 +9,7 @@ import {
 import type { EmailWorkflowRow } from '../email/email-workflow-store';
 import { createWorkflowContext } from './context';
 import { ensureBuiltinWorkflowNodes, getWorkflowNode, LEGACY_ACTION_MAP } from './registry';
+import { inboundNodeRequiresConditionGate } from './inbound-gate';
 import { insertWorkflowRunStep } from './run-steps';
 import type { GraphRunResult, NodeExecuteResult, WorkflowContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
@@ -36,17 +37,6 @@ function configFromActionData(data: Record<string, unknown>): { type: string; co
   const config: Record<string, unknown> = { ...data };
   delete config.actionType;
   return { type: registryType, config };
-}
-
-const INBOUND_DIRECT_ALLOWED_REGISTRY = new Set(['email.sender_filter', 'ai.classify']);
-
-function requiresInboundConditionGate(node: WorkflowGraphNode): boolean {
-  if (node.type === 'action') return true;
-  if (node.type !== 'registry') return false;
-  const reg = registryTypeOf(node);
-  if (!reg) return true;
-  if (INBOUND_DIRECT_ALLOWED_REGISTRY.has(reg)) return false;
-  return reg.startsWith('email.') || reg.startsWith('ai.');
 }
 
 function registryTypeOf(node: WorkflowGraphNode): string | undefined {
@@ -138,7 +128,7 @@ async function walkGraph(
     if (
       gate &&
       ctx.direction === 'inbound' &&
-      requiresInboundConditionGate(node) &&
+      inboundNodeRequiresConditionGate(node) &&
       !gate.conditionOk
     ) {
       log.push(`skip:${node.id}:no_prior_condition`);

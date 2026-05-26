@@ -36,6 +36,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [requestReadReceipt, setRequestReadReceipt] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
+  const [testingVacation, setTestingVacation] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
@@ -439,6 +440,41 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
                   placeholder="Vielen Dank für Ihre Nachricht. Ich bin derzeit nicht erreichbar …"
                 />
               </div>
+              {isEdit && editAccount ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={testingVacation}
+                  onClick={() => {
+                    void (async () => {
+                      setTestingVacation(true)
+                      try {
+                        const r = await invokeIpc<{ success: boolean; error?: string }>(
+                          IPCChannels.Email.TestVacationAutoReply,
+                          editAccount.id,
+                        )
+                        if (r.success) {
+                          toast.success(
+                            `Testmail an ${editAccount.email_address} gesendet (siehe Aktivitätslog).`,
+                          )
+                        } else {
+                          toast.error(r.error ?? "Test fehlgeschlagen")
+                        }
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : String(e))
+                      } finally {
+                        setTestingVacation(false)
+                      }
+                    })()
+                  }}
+                >
+                  {testingVacation ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Abwesenheit testen
+                </Button>
+              ) : null}
             </>
           ) : null}
         </div>

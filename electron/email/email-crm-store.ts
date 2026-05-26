@@ -456,9 +456,24 @@ function categoryJoinSql(categoryId: number | null | undefined): { sql: string; 
 
 const LIKE_SEARCH_FIELDS = `(
          m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
-         OR m.to_json LIKE ? ESCAPE '\\' OR m.cc_json LIKE ? ESCAPE '\\' OR m.bcc_json LIKE ? ESCAPE '\\'
-         OR m.ticket_code LIKE ? ESCAPE '\\'
+         OR m.from_json LIKE ? ESCAPE '\\' OR m.to_json LIKE ? ESCAPE '\\' OR m.cc_json LIKE ? ESCAPE '\\'
+         OR m.bcc_json LIKE ? ESCAPE '\\' OR m.ticket_code LIKE ? ESCAPE '\\'
+         OR EXISTS (
+           SELECT 1 FROM ${CUSTOMERS_TABLE} c
+           WHERE c.id = m.customer_id
+             AND (
+               COALESCE(c.name, '') LIKE ? ESCAPE '\\'
+               OR COALESCE(c.firstName, '') LIKE ? ESCAPE '\\'
+               OR COALESCE(c.company, '') LIKE ? ESCAPE '\\'
+               OR COALESCE(c.email, '') LIKE ? ESCAPE '\\'
+             )
+         )
        )`;
+
+/** One search term per placeholder in LIKE_SEARCH_FIELDS (12). */
+function pushLikeSearchTerms(params: (string | number)[], term: string): void {
+  for (let i = 0; i < 12; i++) params.push(term);
+}
 
 export function searchMessagesForAccountWithMeta(
   accountId: number,
@@ -496,7 +511,16 @@ export function searchMessagesForAccountWithMeta(
     const rows = all
       .filter((m) => messageMatchesDoneFilter(m, opts.doneFilter, view))
       .filter((m) => {
-        const hay = [m.subject, m.snippet, m.body_text, m.to_json, m.cc_json, m.ticket_code]
+        const hay = [
+          m.subject,
+          m.snippet,
+          m.body_text,
+          m.from_json,
+          m.to_json,
+          m.cc_json,
+          m.bcc_json,
+          m.ticket_code,
+        ]
           .filter(Boolean)
           .join('\n');
         return re.test(hay);
@@ -666,7 +690,8 @@ export function searchMessagesForAllAccounts(
   const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   const params: (string | number)[] = [];
   if (cat.param != null) params.push(cat.param);
-  params.push(term, term, term, term, term, term, term, limit, offset);
+  pushLikeSearchTerms(params, term);
+  params.push(limit, offset);
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
@@ -724,7 +749,8 @@ export function searchMessagesForAccount(
   const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   const params: (string | number)[] = [accountId];
   if (cat.param != null) params.push(cat.param);
-  params.push(term, term, term, term, term, term, term, limit, offset);
+  pushLikeSearchTerms(params, term);
+  params.push(limit, offset);
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m

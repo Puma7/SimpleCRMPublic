@@ -1,11 +1,14 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useNavigate } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import { plainTextToReplyHtml } from "@shared/compose-body"
 import { Loader2, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { hasElectron, invokeIpc, type EmailMessage } from "./types"
 import { MessageMoreActionsMenu } from "./message-more-actions-menu"
 
@@ -24,12 +27,20 @@ type Props = {
 
 const POLL_MS = 2500
 
+function isMissingApiKeySkip(error: string | null): boolean {
+  if (!error) return false
+  const lower = error.toLowerCase()
+  return lower.includes("api-schlüssel") || lower.includes("api key") || lower.includes("apikey")
+}
+
 export function MessageAiSuggestions({
   message,
   messageTags = [],
   onDraftReply,
   onTagsChanged,
 }: Props) {
+  const navigate = useNavigate()
+  const activeMessageIdRef = useRef(message.id)
   const [suggestion, setSuggestion] = useState<SuggestionState>({
     status: "none",
     text: null,
@@ -37,19 +48,28 @@ export function MessageAiSuggestions({
   })
   const [generating, setGenerating] = useState(false)
 
+  useEffect(() => {
+    activeMessageIdRef.current = message.id
+    setSuggestion({ status: "none", text: null, error: null })
+    setGenerating(false)
+  }, [message.id])
+
   const loadSuggestion = useCallback(async () => {
     if (!hasElectron()) return
+    const requestId = message.id
     try {
       const row = await invokeIpc<SuggestionState & { updatedAt: string | null }>(
         IPCChannels.Email.GetReplySuggestion,
-        message.id,
+        requestId,
       )
+      if (activeMessageIdRef.current !== requestId) return
       setSuggestion({
         status: row.status,
         text: row.text,
         error: row.error,
       })
     } catch {
+      if (activeMessageIdRef.current !== requestId) return
       setSuggestion({ status: "none", text: null, error: null })
     }
   }, [message.id])
@@ -85,6 +105,7 @@ export function MessageAiSuggestions({
       onDraftReply?.()
       return
     }
+    const requestId = message.id
     setGenerating(true)
     void (async () => {
       try {
@@ -93,9 +114,10 @@ export function MessageAiSuggestions({
           text?: string
           error?: string
         }>(IPCChannels.Email.GenerateReplyDraft, {
-          messageId: message.id,
+          messageId: requestId,
           customerId: message.customer_id ?? null,
         })
+        if (activeMessageIdRef.current !== requestId) return
         if (r.success && r.text?.trim()) {
           openReplyWithText(r.text)
           await loadSuggestion()
@@ -104,10 +126,11 @@ export function MessageAiSuggestions({
           onDraftReply?.()
         }
       } catch (e) {
+        if (activeMessageIdRef.current !== requestId) return
         toast.error(e instanceof Error ? e.message : "KI-Fehler")
         onDraftReply?.()
       } finally {
-        setGenerating(false)
+        if (activeMessageIdRef.current === requestId) setGenerating(false)
       }
     })()
   }
@@ -115,11 +138,34 @@ export function MessageAiSuggestions({
   const preview =
     suggestion.text?.trim().replace(/\s+/g, " ").slice(0, 120) ?? null
 
+  const showApiKeyHint =
+    suggestion.status === "skipped" && isMissingApiKeySkip(suggestion.error)
+
   return (
     <div className="space-y-2">
       <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
         Vorschläge
       </p>
+      {showApiKeyHint ? (
+        <Alert className="py-2">
+          <AlertDescription className="text-xs">
+            KI-Antwortvorschläge sind aktiviert, aber es ist kein API-Schlüssel hinterlegt.{" "}
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto p-0 text-xs"
+              onClick={() =>
+                void navigate({
+                  to: "/email/settings",
+                  search: emailSettingsSearch({ tab: "ai" }),
+                })
+              }
+            >
+              E-Mail-Einstellungen öffnen
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
         <Button
           type="button"
