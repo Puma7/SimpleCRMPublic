@@ -222,7 +222,7 @@ export function MessageList({
             disabled={bulkBusy}
           />
         </div>
-        <MessageFilterChips />
+        {mailView === "inbox" ? <MessageFilterChips /> : null}
         <div className="flex flex-wrap gap-2">
           <Select
             value={listSortMode}
@@ -383,6 +383,11 @@ export function MessageList({
                           >
                             {m.subject?.trim() || "(Ohne Betreff)"}
                           </span>
+                          {mailView === "snoozed" && m.snoozed_until ? (
+                            <span className="col-span-2 truncate text-[10px] text-amber-700 dark:text-amber-300">
+                              Bis {formatListDateTime(m.snoozed_until)}
+                            </span>
+                          ) : null}
                           {showAccount ? (
                             <span className="col-span-2 truncate text-[10px] text-muted-foreground">
                               {accountLabel(m.account_id)}

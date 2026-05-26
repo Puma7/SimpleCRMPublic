@@ -154,6 +154,8 @@ const EmailChannels = literal({
   ClearAccountSyncLock: 'email:clear-account-sync-lock',
   GetEmailMiscSettings: 'email:get-misc-settings',
   SetEmailMiscSettings: 'email:set-misc-settings',
+  GetSnoozeSettings: 'email:get-snooze-settings',
+  SetSnoozeSettings: 'email:set-snooze-settings',
   ListUidValidityNotices: 'email:list-uidvalidity-notices',
   DismissUidValidityNotice: 'email:dismiss-uidvalidity-notice',
   TestSmtp: 'email:test-smtp',

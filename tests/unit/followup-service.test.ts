@@ -40,7 +40,14 @@ describe('followUpService', () => {
   test('getQueueCounts returns zero counts on error', async () => {
     mockInvoke.mockRejectedValue(new Error('fail'));
     const result = await followUpService.getQueueCounts();
-    expect(result).toEqual({ heute: 0, ueberfaellig: 0, dieseWoche: 0, stagnierend: 0, highValueRisk: 0 });
+    expect(result).toEqual({
+      heute: 0,
+      ueberfaellig: 0,
+      dieseWoche: 0,
+      zurueckgestellt: 0,
+      stagnierend: 0,
+      highValueRisk: 0,
+    });
   });
 
   test('snoozeTask invokes correct channel with payload', async () => {

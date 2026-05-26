@@ -143,6 +143,7 @@ export interface QueueCounts {
     heute: number;
     ueberfaellig: number;
     dieseWoche: number;
+    zurueckgestellt: number;
     stagnierend: number;
     highValueRisk: number;
 }

@@ -586,6 +586,8 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
       return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
     case 'drafts':
       return `m.soft_deleted = 0 AND m.folder_kind = 'draft'`;
+    case 'snoozed':
+      return `m.soft_deleted = 0 AND (m.snoozed_until IS NOT NULL AND m.snoozed_until > datetime('now'))`;
     case 'inbox':
       return `m.soft_deleted = 0 AND (
         (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0)

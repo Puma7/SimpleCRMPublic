@@ -65,4 +65,13 @@ export function messageLooksEncrypted(row: {
   return body.startsWith('-----BEGIN PGP MESSAGE-----');
 }
 
+/** Hide actively snoozed messages from normal mail views. */
 export const SNOOZE_FILTER_SQL = `(m.snoozed_until IS NULL OR m.snoozed_until <= datetime('now'))`;
+
+/** Only messages currently snoozed (for „Zurückgestellt“ view). */
+export const SNOOZE_ACTIVE_SQL = `(m.snoozed_until IS NOT NULL AND m.snoozed_until > datetime('now'))`;
+
+/** Same as SNOOZE_FILTER_SQL without table alias (folder count queries). */
+export const SNOOZE_FILTER_SQL_BARE = `(snoozed_until IS NULL OR snoozed_until <= datetime('now'))`;
+
+export const SNOOZE_ACTIVE_SQL_BARE = `(snoozed_until IS NOT NULL AND snoozed_until > datetime('now'))`;

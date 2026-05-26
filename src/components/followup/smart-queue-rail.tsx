@@ -1,4 +1,4 @@
-import { CalendarDays, AlertTriangle, CalendarRange, TrendingDown, DollarSign, Bookmark } from "lucide-react"
+import { CalendarDays, AlertTriangle, CalendarRange, TrendingDown, DollarSign, Bookmark, Clock } from "lucide-react"
 import { QueueItem } from "./queue-item"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -15,6 +15,7 @@ const presetQueues = [
   { id: 'heute', label: 'Heute', icon: <CalendarDays className="h-4 w-4" />, urgency: 'neutral' as const, countKey: 'heute' as const, tooltip: 'Aufgaben und Deals, die heute fällig sind.' },
   { id: 'ueberfaellig', label: 'Überfällig', icon: <AlertTriangle className="h-4 w-4" />, urgency: 'critical' as const, countKey: 'ueberfaellig' as const, tooltip: 'Aufgaben mit abgelaufenem Fälligkeitsdatum, die noch offen sind.' },
   { id: 'diese_woche', label: 'Diese Woche', icon: <CalendarRange className="h-4 w-4" />, urgency: 'neutral' as const, countKey: 'dieseWoche' as const, tooltip: 'Aufgaben und Deals, die bis Ende dieser Woche fällig sind.' },
+  { id: 'zurueckgestellt', label: 'Zurückgestellt', icon: <Clock className="h-4 w-4" />, urgency: 'neutral' as const, countKey: 'zurueckgestellt' as const, tooltip: 'Aufgaben, die vorübergehend zurückgestellt wurden.' },
   { id: 'stagnierende_deals', label: 'Stagnierende Deals', icon: <TrendingDown className="h-4 w-4" />, urgency: 'warning' as const, countKey: 'stagnierend' as const, tooltip: 'Deals ohne Aktivität seit mehr als 14 Tagen.' },
   { id: 'high_value_risk', label: 'High Value Risk', icon: <DollarSign className="h-4 w-4" />, urgency: 'warning' as const, countKey: 'highValueRisk' as const, tooltip: 'Hochwertige Deals mit überfälliger oder fehlender Aktion.' },
 ]

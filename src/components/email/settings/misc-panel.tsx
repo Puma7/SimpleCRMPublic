@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { logError } from "../log"
+import { SnoozeSettingsSection } from "./snooze-settings-section"
 
 type RecoveryPreview = {
   accountId: number
@@ -234,6 +235,8 @@ export function MiscPanel() {
           </>
         )}
       </div>
+
+      <SnoozeSettingsSection />
 
       <div className="space-y-3 rounded-lg border p-4">
         <h3 className="text-sm font-semibold">E-Mail-Erweiterungen</h3>

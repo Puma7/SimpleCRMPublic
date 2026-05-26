@@ -219,6 +219,7 @@ export function useEmailMessages() {
         }
         const labels: Record<MailView, string> = {
           inbox: "Posteingang",
+          snoozed: "Zurückgestellt",
           sent: "Gesendet",
           drafts: "Entwürfe",
           archived: "Archiv",

@@ -14,6 +14,7 @@ export type MailFolderCounts = {
   archived: number
   spam: number
   trash: number
+  snoozed: number
 }
 
 const EMPTY: MailFolderCounts = {
@@ -24,6 +25,7 @@ const EMPTY: MailFolderCounts = {
   archived: 0,
   spam: 0,
   trash: 0,
+  snoozed: 0,
 }
 
 export function useMailFolderCounts() {

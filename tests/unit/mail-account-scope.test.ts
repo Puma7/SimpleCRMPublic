@@ -47,6 +47,7 @@ jest.mock('../../electron/sqlite-service', () => {
     drafts: 0,
     archived: 0,
     spam: 0,
+    snoozed: 0,
   };
   const prepare = jest.fn((sql: string) => ({
     all: (..._args: unknown[]) => {
@@ -61,7 +62,7 @@ jest.mock('../../electron/sqlite-service', () => {
     get: () =>
       sql.includes('SUM(CASE')
         ? aggregateCounts
-        : { trash: 0, inbox: 1, inbox_unread: 0, sent: 0, drafts: 0, archived: 0, spam: 0 },
+        : { trash: 0, inbox: 1, inbox_unread: 0, sent: 0, drafts: 0, archived: 0, spam: 0, snoozed: 0 },
     run: jest.fn(),
   }));
   return {

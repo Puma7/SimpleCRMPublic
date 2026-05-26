@@ -1,4 +1,4 @@
-export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam" | "trash"
+export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam" | "trash" | "snoozed"
 
 export type EmailAccount = {
   id: number
@@ -74,6 +74,7 @@ export type EmailMessage = {
   draft_attachment_paths_json?: string | null
   reply_parent_message_id?: number | null
   raw_headers?: string | null
+  snoozed_until?: string | null
 }
 
 export type CategoryRow = {
