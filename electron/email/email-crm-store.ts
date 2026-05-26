@@ -1,6 +1,7 @@
 import { MAX_EMAIL_CATEGORY_DEPTH } from '../../shared/email-constants';
 import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
+import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import { getDb } from '../sqlite-service';
 import {
   CUSTOMERS_TABLE,
@@ -440,6 +441,7 @@ export type MessageSearchOpts = {
   offset?: number;
   view?: import('./email-store').AccountMailView;
   categoryId?: number | null;
+  doneFilter?: MessageDoneFilter;
 };
 
 function categoryJoinSql(categoryId: number | null | undefined): { sql: string; param?: number } {
@@ -489,8 +491,10 @@ export function searchMessagesForAccountWithMeta(
       limit: Math.min((limit + offset) * 3, 500),
       view,
       categoryId: opts.categoryId,
+      doneFilter: opts.doneFilter,
     });
     const rows = all
+      .filter((m) => messageMatchesDoneFilter(m, opts.doneFilter, view))
       .filter((m) => {
         const hay = [m.subject, m.snippet, m.body_text, m.to_json, m.cc_json, m.ticket_code]
           .filter(Boolean)
@@ -503,6 +507,7 @@ export function searchMessagesForAccountWithMeta(
   const fts = ftsMatchExpression(trimmed);
   if (fts) {
     const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
+    const doneSql = doneFilterSql(opts.doneFilter, view ?? 'inbox');
     const cat = categoryJoinSql(opts.categoryId);
     const ftsTable = getDb()
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
@@ -519,6 +524,7 @@ export function searchMessagesForAccountWithMeta(
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
              WHERE m.account_id = ? AND ${viewSql} AND ${SNOOZE_FILTER_SQL}
                AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+               ${doneSql}
                AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ? OFFSET ?`,
@@ -536,8 +542,20 @@ export function searchMessagesForAccountWithMeta(
     offset,
     view,
     categoryId: opts.categoryId,
+    doneFilter: opts.doneFilter,
   });
   return { rows: rows.slice(0, limit), searchMode: 'like', hasMore: rows.length > limit };
+}
+
+function messageMatchesDoneFilter(
+  m: { done_local?: number },
+  filter: MessageDoneFilter | undefined,
+  view?: import('./email-store').AccountMailView,
+): boolean {
+  if (view && view !== 'inbox') return true;
+  if (!filter || filter === 'all') return true;
+  const done = (m.done_local ?? 0) !== 0;
+  return filter === 'done' ? done : !done;
 }
 
 export function searchMessagesForMailScopeWithMeta(
@@ -616,6 +634,7 @@ export function searchMessagesForAllAccounts(
   const offset = opts.offset ?? 0;
   const view = opts.view;
   const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
+  const doneSql = doneFilterSql(opts.doneFilter, view ?? 'inbox');
   const cat = categoryJoinSql(opts.categoryId);
   const fts = ftsMatchExpression(q);
   if (fts) {
@@ -633,6 +652,7 @@ export function searchMessagesForAllAccounts(
              ${cat.sql}
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
              WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+             ${doneSql}
              AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ? OFFSET ?`,
@@ -652,6 +672,7 @@ export function searchMessagesForAllAccounts(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        ${cat.sql}
        WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+       ${doneSql}
        AND ${LIKE_SEARCH_FIELDS}
        ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
        LIMIT ? OFFSET ?`,
@@ -671,6 +692,7 @@ export function searchMessagesForAccount(
   const limit = resolved.limit ?? 100;
   const offset = resolved.offset ?? 0;
   const viewSql = resolved.view ? viewFilterClause(resolved.view) : 'm.soft_deleted = 0';
+  const doneSql = doneFilterSql(resolved.doneFilter, resolved.view ?? 'inbox');
   const cat = categoryJoinSql(resolved.categoryId);
   const fts = ftsMatchExpression(q);
   if (fts) {
@@ -688,6 +710,7 @@ export function searchMessagesForAccount(
              ${cat.sql}
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
              WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+             ${doneSql}
              AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ? OFFSET ?`,
@@ -707,6 +730,7 @@ export function searchMessagesForAccount(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        ${cat.sql}
        WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
+       ${doneSql}
        AND ${LIKE_SEARCH_FIELDS}
        ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
        LIMIT ? OFFSET ?`,

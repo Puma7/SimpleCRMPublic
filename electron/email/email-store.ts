@@ -18,6 +18,9 @@ import {
 } from './email-message-features';
 import type { MessageListSortMode } from '../../shared/email-list-options';
 import type { MessageListFilter } from '../../shared/email-list-filters';
+import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
+
+export { doneFilterSql };
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
 
 export type EmailAccountRow = {
@@ -81,6 +84,7 @@ export type EmailMessageRow = {
   body_text: string | null;
   body_html: string | null;
   seen_local: number;
+  done_local: number;
   archived: number;
   soft_deleted: number;
   outbound_hold: number;
@@ -588,6 +592,7 @@ export function listMessagesForAccountView(
     categoryId?: number | null;
     sort?: MessageListSortMode;
     listFilter?: MessageListFilter;
+    doneFilter?: MessageDoneFilter;
   } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
@@ -638,6 +643,7 @@ export function listMessagesForAccountView(
   }
 
   sql += listFilterSql(opts.listFilter);
+  sql += doneFilterSql(opts.doneFilter, view);
   sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
@@ -653,6 +659,7 @@ export function listMessagesForAllAccountsView(
     categoryId?: number | null;
     sort?: MessageListSortMode;
     listFilter?: MessageListFilter;
+    doneFilter?: MessageDoneFilter;
   } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
@@ -702,6 +709,7 @@ export function listMessagesForAllAccountsView(
   }
 
   sql += listFilterSql(opts.listFilter);
+  sql += doneFilterSql(opts.doneFilter, view);
   sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
@@ -716,6 +724,7 @@ export function listMessagesForMailScope(
     categoryId?: number | null;
     sort?: MessageListSortMode;
     listFilter?: MessageListFilter;
+    doneFilter?: MessageDoneFilter;
   } = {},
 ): EmailMessageRow[] {
   if (accountScope === 'all') {
@@ -744,12 +753,13 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0)
     OR ${outboundHeldInInbox}
   )`;
+  const inboxOpen = `${inboxBase} AND COALESCE(done_local, 0) = 0`;
   const row = getDb()
     .prepare(
       `SELECT
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
-        SUM(CASE WHEN ${inboxBase} THEN 1 ELSE 0 END) AS inbox,
-        SUM(CASE WHEN ${inboxBase} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
+        SUM(CASE WHEN ${inboxOpen} THEN 1 ELSE 0 END) AS inbox,
+        SUM(CASE WHEN ${inboxOpen} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
@@ -790,12 +800,13 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0)
     OR ${outboundHeldInInbox}
   )`;
+  const inboxOpen = `${inboxBase} AND COALESCE(done_local, 0) = 0`;
   const row = getDb()
     .prepare(
       `SELECT
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
-        SUM(CASE WHEN ${inboxBase} THEN 1 ELSE 0 END) AS inbox,
-        SUM(CASE WHEN ${inboxBase} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
+        SUM(CASE WHEN ${inboxOpen} THEN 1 ELSE 0 END) AS inbox,
+        SUM(CASE WHEN ${inboxOpen} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
@@ -1177,6 +1188,12 @@ export function setMessageSeenLocal(messageId: number, seen: boolean): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ? WHERE id = ?`)
     .run(seen ? 1 : 0, messageId);
+}
+
+export function setMessageDoneLocal(messageId: number, done: boolean): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET done_local = ? WHERE id = ?`)
+    .run(done ? 1 : 0, messageId);
 }
 
 export function setMessageSpam(messageId: number, spam: boolean): void {
