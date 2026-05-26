@@ -327,7 +327,7 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   onClick={() => onReply(selectedMessage)}
-                  className="gap-2"
+                  className="gap-2 bg-sky-500/12 text-sky-900 hover:bg-sky-500/20 dark:text-sky-100"
                 >
                   <Reply className="h-4 w-4" />
                   Antworten
@@ -337,7 +337,7 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   onClick={() => onReplyAll(selectedMessage)}
-                  className="gap-2"
+                  className="gap-2 bg-sky-500/8 text-sky-800 hover:bg-sky-500/16 dark:text-sky-200"
                 >
                   <ReplyAll className="h-4 w-4" />
                   Allen antworten
@@ -347,7 +347,7 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   onClick={() => onForward(selectedMessage)}
-                  className="gap-2"
+                  className="gap-2 bg-indigo-500/12 text-indigo-900 hover:bg-indigo-500/20 dark:text-indigo-100"
                 >
                   <Forward className="h-4 w-4" />
                   Weiterleiten
@@ -357,7 +357,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-slate-500/10 text-slate-800 hover:bg-slate-500/18 dark:text-slate-200"
                   onClick={() => void handleToggleSeen()}
                 >
                   {selectedMessage.seen_local ? (
@@ -396,7 +396,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-orange-500/12 text-orange-900 hover:bg-orange-500/20 dark:text-orange-100"
                   onClick={() => void handleToggleSpam()}
                 >
                   <ShieldAlert className="h-4 w-4" />
@@ -408,7 +408,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-amber-500/12 text-amber-900 hover:bg-amber-500/20 dark:text-amber-100"
                   onClick={() => void handleArchive()}
                 >
                   <Archive className="h-4 w-4" />
@@ -420,7 +420,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-violet-500/10 text-violet-900 hover:bg-violet-500/18 dark:text-violet-100"
                   onClick={() => {
                     if (!hasElectron()) return
                     setRawHeadersOpen(true)
@@ -450,7 +450,7 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5"
+                  className="gap-1.5 bg-red-500/10 text-red-800 hover:bg-red-500/18 dark:text-red-200"
                   onClick={() => void handleSoftDelete()}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -489,7 +489,7 @@ export function MessageViewer(props: Props) {
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
             <ScrollArea className="flex-1">
-              <div className="mx-auto max-w-3xl space-y-4 p-6">
+              <div className="mx-auto w-full max-w-5xl space-y-4 px-5 py-6 sm:px-8">
                 <div className="space-y-1">
                   <h2
                     className={cn(
