@@ -12,11 +12,11 @@ export function firstAddressFromJson(json: string | null): string {
 /** Counterparty e-mail for history (inbound: From, sent: To). */
 export function correspondentEmailForMessage(row: {
   from_json: string | null;
-  to_json: string | null;
+  to_json?: string | null;
   folder_kind?: string | null;
 }): string | null {
   const from = firstAddressFromJson(row.from_json);
-  const to = firstAddressFromJson(row.to_json);
+  const to = firstAddressFromJson(row.to_json ?? null);
   let pick = '';
   if (row.folder_kind === 'sent') {
     pick = to || from;
