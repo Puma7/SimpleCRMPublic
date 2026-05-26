@@ -81,4 +81,14 @@ describe('buildEmlForMessage', () => {
     expect(eml).toContain('Hello plain');
     expect(eml).toContain('<p>Hello html</p>');
   });
+
+  it('ignores corrupt raw_headers and synthesizes from row fields', () => {
+    const row = baseRow({
+      raw_headers: '[object Object]\n[object Object]\n',
+      raw_rfc822_b64: null,
+    });
+    const { eml } = buildEmlForMessage(row, []);
+    expect(eml).toMatch(/From: .+a@b\.com/);
+    expect(eml).not.toContain('[object Object]');
+  });
 });
