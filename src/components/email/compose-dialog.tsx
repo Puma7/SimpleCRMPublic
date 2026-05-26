@@ -20,6 +20,16 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -121,6 +131,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
 
   useEffect(() => {
     if (!isOpen) {
@@ -321,16 +332,55 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   }
 
   const requestClose = () => {
-    if (closingRef.current) return
-    // Don't interfere with an in-flight send — the send chain will
-    // close the dialog on completion.
-    if (sending) return
-    closingRef.current = true
-    void (async () => {
-      const ok = await saveDraft({ silent: true })
-      if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
+    if (closingRef.current || sending) return
+    if (!hasElectron() || draftId == null) {
       closeDialog()
-      void onSent()
+      return
+    }
+    setCloseConfirmOpen(true)
+  }
+
+  const handleCloseCancel = () => {
+    setCloseConfirmOpen(false)
+  }
+
+  const handleCloseSaveDraft = () => {
+    if (closingRef.current) return
+    closingRef.current = true
+    setCloseConfirmOpen(false)
+    void (async () => {
+      try {
+        const ok = await saveDraft({ silent: true })
+        if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
+        closeDialog()
+        void onSent()
+      } finally {
+        closingRef.current = false
+      }
+    })()
+  }
+
+  const handleCloseDiscard = () => {
+    if (closingRef.current) return
+    closingRef.current = true
+    setCloseConfirmOpen(false)
+    void (async () => {
+      try {
+        if (hasElectron() && draftId != null) {
+          const r = await invokeIpc<{ success: boolean; error?: string }>(
+            IPCChannels.Email.DeleteComposeDraft,
+            draftId,
+          )
+          if (!r.success) {
+            toast.error(r.error ?? "Entwurf konnte nicht gelöscht werden.")
+            return
+          }
+        }
+        closeDialog()
+        void onSent()
+      } finally {
+        closingRef.current = false
+      }
     })()
   }
 
@@ -537,6 +587,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   }
 
   return (
+    <>
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
@@ -864,5 +915,29 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         </div>
       </DialogContent>
     </Dialog>
+
+    <AlertDialog open={closeConfirmOpen} onOpenChange={setCloseConfirmOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Verfassen schließen?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Möchten Sie den Entwurf in „Entwürfe“ behalten oder verwerfen? Bei „Verwerfen“ wird der
+            Entwurf endgültig gelöscht.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+          <AlertDialogCancel type="button" onClick={handleCloseCancel}>
+            Abbrechen
+          </AlertDialogCancel>
+          <Button type="button" variant="outline" onClick={() => handleCloseDiscard()}>
+            Verwerfen
+          </Button>
+          <AlertDialogAction type="button" onClick={() => handleCloseSaveDraft()}>
+            Als Entwurf speichern
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
