@@ -714,9 +714,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       }}
     >
       <DialogContent
-        className="relative left-[50%] top-[4vh] flex h-[92vh] max-h-[92vh] min-h-0 translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw]"
+        className="fixed left-1/2 top-[4vh] z-50 flex h-[calc(100vh-8vh)] max-h-[calc(100vh-8vh)] min-h-0 w-full -translate-x-1/2 translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw] sm:rounded-lg"
         style={{ width: composeDialogWidth, maxWidth: "96vw" }}
       >
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
           role="separator"
           aria-orientation="vertical"
@@ -1119,6 +1120,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               </Button>
             </div>
           </div>
+        </div>
         </div>
       </DialogContent>
     </Dialog>
