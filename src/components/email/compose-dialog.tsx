@@ -688,7 +688,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       }}
     >
       <DialogContent
-        className="relative flex max-h-[92vh] flex-col gap-3 p-0 sm:max-w-[96vw]"
+        className="relative left-[50%] top-[4vh] flex max-h-[92vh] translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw]"
         style={{ width: composeDialogWidth, maxWidth: "96vw" }}
       >
         <div
@@ -717,7 +717,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 pb-2">
           {draftBootstrapping || (draftId == null && hasElectron()) ? (
             <div
               className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"

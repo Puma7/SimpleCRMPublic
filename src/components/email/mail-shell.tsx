@@ -56,6 +56,8 @@ function MailShellInner() {
     refreshCurrentMessage,
     handleSync,
     moveMessageToView,
+    assignMessageCategory,
+    snoozeMessageUntilTomorrow,
     loadMore,
     hasMore,
     loadingMore,
@@ -105,6 +107,8 @@ function MailShellInner() {
             countForCategory={countForCategory}
             onCategoriesChanged={reloadCategories}
             onMoveMessageToView={moveMessageToView}
+            onAssignMessageCategory={assignMessageCategory}
+            onSnoozeMessage={snoozeMessageUntilTomorrow}
           />
         </ResizablePanel>
         <ResizableHandle />

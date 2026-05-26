@@ -27,6 +27,8 @@ import {
   setMessageSoftDeleted,
   bulkSoftDeleteMessages,
   bulkSetMessagesArchived,
+  bulkSetMessageSpam,
+  bulkDeleteLocalComposeDrafts,
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
@@ -56,6 +58,7 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  reorderCategories,
   setMessageCategory,
   clearMessageCategory,
   getMessageCategoryId,
@@ -1192,6 +1195,27 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.ReorderCategories,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { updates: { id: number; parentId: number | null; sortOrder: number }[] },
+      ) => {
+        try {
+          reorderCategories(payload.updates);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Kategorien konnten nicht sortiert werden',
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.SetMessageCategory,
       async (
         _event: IpcMainInvokeEvent,
@@ -1689,6 +1713,49 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             payload.archived,
             payload.accountId,
           );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSetMessageSpam,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; spam: boolean; accountId?: number },
+      ) => {
+        try {
+          const count = bulkSetMessageSpam(
+            payload.messageIds,
+            payload.spam,
+            payload.accountId,
+          );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkDeleteComposeDrafts,
+      async (_event: IpcMainInvokeEvent, payload: { messageIds: number[] }) => {
+        try {
+          const count = bulkDeleteLocalComposeDrafts(payload.messageIds);
           return { success: true as const, count };
         } catch (e) {
           return {

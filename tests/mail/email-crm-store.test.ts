@@ -38,6 +38,7 @@ import {
   updateAiPrompt,
   updateCannedResponse,
   updateCategory,
+  reorderCategories,
   updateInternalNote,
 } from '../../electron/email/email-crm-store';
 
@@ -129,6 +130,17 @@ describe('email-crm-store', () => {
       expect(() => updateCategory(1, { parentId: 1 })).toThrow(/sich selbst/);
       updateCategory(1, {});
       expect(mock.db.prepare).toHaveBeenCalled();
+    });
+
+    test('reorderCategories batch updates parent and sort order', () => {
+      mock.addCategory({ id: 1, parent_id: null, name: 'A', sort_order: 0 });
+      mock.addCategory({ id: 2, parent_id: null, name: 'B', sort_order: 1 });
+      reorderCategories([
+        { id: 2, parentId: 1, sortOrder: 0 },
+        { id: 1, parentId: null, sortOrder: 0 },
+      ]);
+      expect(mock.categories.find((c) => c.id === 2)?.parent_id).toBe(1);
+      expect(mock.categories.find((c) => c.id === 2)?.sort_order).toBe(0);
     });
 
     test('deleteCategory requires no children', () => {

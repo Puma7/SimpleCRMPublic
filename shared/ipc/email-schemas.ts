@@ -617,6 +617,26 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.BulkSetMessageSpam, {
+    payload: z.object({
+      messageIds: z.array(positiveInt).min(1).max(500),
+      spam: z.boolean(),
+      accountId: positiveInt.optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.BulkDeleteComposeDrafts, {
+    payload: z.object({
+      messageIds: z.array(positiveInt).min(1).max(500),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
+      failResult,
+    ]),
+  });
   set(IPCChannels.Email.GetComposeSignature, {
     payload: z.object({ accountId: positiveInt }),
     result: z.object({ html: z.string().nullable() }),
@@ -657,6 +677,21 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.DeleteCategory, {
     payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ReorderCategories, {
+    payload: z.object({
+      updates: z
+        .array(
+          z.object({
+            id: positiveInt,
+            parentId: z.number().int().positive().nullable(),
+            sortOrder: z.number().int().nonnegative(),
+          }),
+        )
+        .min(1)
+        .max(500),
+    }),
     result: standardResult,
   });
   set(IPCChannels.Email.SetMessageCategory, {
