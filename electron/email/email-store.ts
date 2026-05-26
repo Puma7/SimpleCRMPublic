@@ -19,6 +19,7 @@ import {
 import type { MessageListSortMode } from '../../shared/email-list-options';
 import type { MessageListFilter } from '../../shared/email-list-filters';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
+import { clampEmailListLimit } from '../../shared/email-list-pagination';
 
 export { doneFilterSql };
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
@@ -595,7 +596,7 @@ export function listMessagesForAccountView(
     doneFilter?: MessageDoneFilter;
   } = {},
 ): EmailMessageRow[] {
-  const limit = opts.limit ?? 200;
+  const limit = clampEmailListLimit(opts.limit);
   const offset = opts.offset ?? 0;
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
   const params: (string | number)[] = [];
@@ -662,7 +663,7 @@ export function listMessagesForAllAccountsView(
     doneFilter?: MessageDoneFilter;
   } = {},
 ): EmailMessageRow[] {
-  const limit = opts.limit ?? 200;
+  const limit = clampEmailListLimit(opts.limit);
   const offset = opts.offset ?? 0;
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
   const params: (string | number)[] = [];

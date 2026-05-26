@@ -60,6 +60,9 @@ function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown
     exports: {},
   };
   sandbox.exports = sandbox.module.exports;
+  Object.freeze(sandbox.module);
+  Object.freeze(sandbox.module.exports);
+  Object.freeze(sandbox.exports);
   try {
     vm.runInNewContext(
       `${code}\n//# sourceURL=${modPath}`,

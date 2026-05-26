@@ -53,6 +53,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { correspondentEmailForMessage } from "@shared/email-correspondent"
+import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   firstAddress,
   formatFrom,
@@ -122,6 +123,8 @@ export function MessageViewer(props: Props) {
   const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
+  const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
+  const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
 
   const omittedAttachments = (() => {
     const raw = selectedMessage?.attachments_json
@@ -537,6 +540,34 @@ export function MessageViewer(props: Props) {
                         {selectedMessage.outbound_block_reason ||
                           "Die E-Mail entspricht nicht den Prüfkriterien. Bitte korrigieren und erneut senden."}
                       </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-2 h-7 text-xs"
+                        onClick={() => {
+                          void (async () => {
+                            if (!hasElectron()) return
+                            try {
+                              const run = await invokeIpc<{
+                                id: number
+                              } | null>(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
+                                messageId: selectedMessage.id,
+                              })
+                              if (run?.id) {
+                                setWorkflowRunDetailId(run.id)
+                                setWorkflowRunDetailOpen(true)
+                              } else {
+                                toast.info("Kein Workflow-Lauf für diese Nachricht gefunden.")
+                              }
+                            } catch {
+                              toast.error("Workflow-Details konnten nicht geladen werden.")
+                            }
+                          })()
+                        }}
+                      >
+                        Workflow-Details ansehen
+                      </Button>
                     </div>
                   ) : null}
                   {selectedMessage.archived ? (
@@ -872,6 +903,12 @@ export function MessageViewer(props: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <WorkflowRunDetailDialog
+        runId={workflowRunDetailId}
+        open={workflowRunDetailOpen}
+        onOpenChange={setWorkflowRunDetailOpen}
+      />
     </TooltipProvider>
   )
 }

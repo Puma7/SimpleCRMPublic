@@ -5,6 +5,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import type { MessageListSortMode } from "@shared/email-list-options"
 import type { MessageListFilter } from "@shared/email-list-filters"
+import { formatEmailSyncError } from "@shared/email-sync-error-hint"
 import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { logError } from "../log"
@@ -269,7 +270,12 @@ export function useEmailMessages() {
             if (opts?.onAfterSync) await opts.onAfterSync(accountId)
           } else {
             hadError = true
-            toast.error(result.error ?? `Sync fehlgeschlagen (Konto ${accountId}).`)
+            toast.error(
+              formatEmailSyncError(
+                result.error ?? `Sync fehlgeschlagen (Konto ${accountId}).`,
+                accountId,
+              ),
+            )
           }
         }
         if (!hadError) {

@@ -49,6 +49,7 @@ import {
   plainTextToReplyHtml,
   splitComposeHtml,
 } from "@shared/compose-body"
+import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   applyCannedTemplate,
   firstAddress,
@@ -147,6 +148,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
+  const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
+  const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   const { width: composeDialogWidth, startResize: startComposeWidthResize } =
     useComposeDialogSize()
 
@@ -562,6 +565,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         error?: string
         warning?: string
         recoveredSentAppend?: boolean
+        workflowRunId?: number | null
       }>(
         IPCChannels.Email.SendCompose,
         {
@@ -580,10 +584,22 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       if (!r.success) {
         const blocked = (r.error ?? "").length > 0
         if (blocked) {
-          toast.warning(
+          const msg =
             r.error ??
-              "Versand blockiert — Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten).",
-          )
+            "Versand blockiert — Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten)."
+          if (r.workflowRunId) {
+            toast.warning(msg, {
+              action: {
+                label: "Workflow-Details",
+                onClick: () => {
+                  setWorkflowRunDetailId(r.workflowRunId!)
+                  setWorkflowRunDetailOpen(true)
+                },
+              },
+            })
+          } else {
+            toast.warning(msg)
+          }
           closeDialog()
           setMailView("inbox")
           await onSent()
@@ -984,6 +1000,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    <WorkflowRunDetailDialog
+      runId={workflowRunDetailId}
+      open={workflowRunDetailOpen}
+      onOpenChange={setWorkflowRunDetailOpen}
+    />
     </>
   )
 }

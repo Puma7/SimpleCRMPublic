@@ -240,6 +240,13 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
     writeLS(LS_KEYS.messageDoneFilter, messageDoneFilter)
   }, [messageDoneFilter])
 
+  // R-9: Erledigt-Filter gilt nur im Posteingang — beim View-Wechsel zurücksetzen.
+  useEffect(() => {
+    if (mailView !== "inbox" && messageDoneFilter !== DEFAULT_MESSAGE_DONE_FILTER) {
+      setMessageDoneFilter(DEFAULT_MESSAGE_DONE_FILTER)
+    }
+  }, [mailView, messageDoneFilter])
+
   const value = useMemo<MailWorkspaceState>(
     () => ({
       selectedAccountScope,

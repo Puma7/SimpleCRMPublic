@@ -85,6 +85,33 @@ export function listWorkflowRunSteps(runId: number): {
   }[];
 }
 
+export function getLatestWorkflowRunForMessage(messageId: number): {
+  id: number;
+  workflow_id: number;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+} | null {
+  const row = getDb()
+    .prepare(
+      `SELECT id, workflow_id, status, started_at, finished_at
+       FROM ${EMAIL_WORKFLOW_RUNS_TABLE}
+       WHERE message_id = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get(messageId) as
+    | {
+        id: number;
+        workflow_id: number;
+        status: string;
+        started_at: string | null;
+        finished_at: string | null;
+      }
+    | undefined;
+  return row ?? null;
+}
+
 export function listRecentWorkflowRuns(workflowId: number, limit = 20): {
   id: number;
   workflow_id: number;

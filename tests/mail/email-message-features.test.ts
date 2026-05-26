@@ -87,4 +87,26 @@ describe('email-message-features', () => {
     (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: true });
     expect((await exportMessageAsEml(1)).ok).toBe(false);
   });
+
+  test('exportMessageAsEml uses raw_rfc822_b64 when reconstructed eml empty', async () => {
+    (getEmailMessageById as jest.Mock).mockReturnValue({
+      subject: 'Raw',
+      raw_headers: null,
+      body_text: null,
+      body_html: null,
+      raw_rfc822_b64: Buffer.from('Subject: Raw\r\n\r\nbody').toString('base64'),
+    });
+    (buildEmlForMessage as jest.Mock).mockReturnValue({
+      eml: '',
+      meta: { source: 'reconstructed', attachmentCount: 0 },
+    });
+    const out = path.join(os.tmpdir(), 'raw.eml');
+    (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: false, filePath: out });
+    const r = await exportMessageAsEml(11);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(fs.readFileSync(r.path, 'utf8')).toContain('body');
+      fs.unlinkSync(r.path);
+    }
+  });
 });

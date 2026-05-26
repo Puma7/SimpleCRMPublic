@@ -136,7 +136,8 @@ export async function sendComposeDraft(input: {
   inReplyToMessageId?: number | null;
   attachmentPaths?: string[];
 }): Promise<
-  { ok: true; warning?: string; recoveredSentAppend?: boolean } | { ok: false; error: string }
+  | { ok: true; warning?: string; recoveredSentAppend?: boolean }
+  | { ok: false; error: string; workflowRunId?: number | null }
 > {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
@@ -202,7 +203,11 @@ export async function sendComposeDraft(input: {
       attachmentPaths: input.attachmentPaths,
     });
     if (!outbound.allowed) {
-      return { ok: false, error: outbound.reason || 'Outbound blockiert' };
+      return {
+        ok: false,
+        error: outbound.reason || 'Outbound blockiert',
+        workflowRunId: outbound.workflowRunId ?? null,
+      };
     }
 
     let ticketCode: string | null = null;

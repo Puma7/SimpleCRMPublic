@@ -854,6 +854,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetLatestWorkflowRunForMessage,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const { getLatestWorkflowRunForMessage } = await import('../workflow/run-steps');
+        return getLatestWorkflowRunForMessage(payload.messageId);
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
     registerIpcHandler(IPCChannels.Email.ListImapAuthNotices, async () => {
       const { listImapAuthNotices } = await import('../email/email-imap-auth-notice');
       return listImapAuthNotices();
@@ -970,7 +981,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           }
           return { success: true as const };
         }
-        return { success: false as const, error: r.error };
+        return {
+          success: false as const,
+          error: r.error,
+          workflowRunId: 'workflowRunId' in r ? r.workflowRunId ?? null : null,
+        };
       },
       { logger },
     ),

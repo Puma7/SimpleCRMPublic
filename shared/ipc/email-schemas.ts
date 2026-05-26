@@ -264,6 +264,18 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({ accountId: z.number().int().positive() }),
     result: standardResult,
   });
+  set(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
+    payload: z.object({ messageId: positiveInt }),
+    result: z
+      .object({
+        id: positiveInt,
+        workflow_id: positiveInt,
+        status: z.string(),
+        started_at: z.string().nullable(),
+        finished_at: z.string().nullable(),
+      })
+      .nullable(),
+  });
   set(IPCChannels.Email.ListMessagesByView, {
     payload: z.object({
       accountId: mailAccountScopeSchema,

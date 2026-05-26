@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { hasElectron, invokeIpc, type EmailMessage } from "./types"
 import { workflowTriggerLabel } from "./workflow/trigger-labels"
+import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 
 type WorkflowRow = {
   id: number
@@ -33,6 +34,7 @@ type ExecuteResult = {
   status?: string
   blocked?: boolean
   blockReason?: string | null
+  runId?: number
   log?: string[]
   error?: string
 }
@@ -54,6 +56,8 @@ export function ApplyWorkflowMenu({
   const [workflows, setWorkflows] = useState<WorkflowRow[]>([])
   const [loadingList, setLoadingList] = useState(false)
   const [runningId, setRunningId] = useState<number | null>(null)
+  const [runDetailId, setRunDetailId] = useState<number | null>(null)
+  const [runDetailOpen, setRunDetailOpen] = useState(false)
 
   const loadWorkflows = useCallback(async () => {
     if (!hasElectron()) return
@@ -107,7 +111,20 @@ export function ApplyWorkflowMenu({
         return
       }
       if (r.blocked) {
-        toast.warning(r.blockReason ?? "Workflow blockiert")
+        const reason = r.blockReason ?? "Workflow blockiert"
+        if (r.runId) {
+          toast.warning(reason, {
+            action: {
+              label: "Details",
+              onClick: () => {
+                setRunDetailId(r.runId!)
+                setRunDetailOpen(true)
+              },
+            },
+          })
+        } else {
+          toast.warning(reason)
+        }
       } else {
         toast.success(
           `Workflow ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ") || "fertig"}`,
@@ -125,6 +142,7 @@ export function ApplyWorkflowMenu({
   if (!hasElectron()) return null
 
   return (
+    <>
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button type="button" size={size} variant={variant} className="gap-1.5">
@@ -177,5 +195,11 @@ export function ApplyWorkflowMenu({
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+      <WorkflowRunDetailDialog
+        runId={runDetailId}
+        open={runDetailOpen}
+        onOpenChange={setRunDetailOpen}
+      />
+    </>
   )
 }
