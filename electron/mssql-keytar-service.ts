@@ -536,12 +536,26 @@ export async function fetchJtlVersandarten() {
     }
 }
 
+const MAX_READONLY_MSSQL_CHARS = 8_000;
+const MSSQL_QUERY_TIMEOUT_MS = 30_000;
+
 export async function executeReadOnlyMssqlQuery(
   sqlQuery: string,
 ): Promise<{ success: boolean; rows?: unknown[]; rowCount?: number; error?: string }> {
+  if (sqlQuery.length > MAX_READONLY_MSSQL_CHARS) {
+    return {
+      success: false,
+      error: `SQL zu lang (max ${MAX_READONLY_MSSQL_CHARS} Zeichen)`,
+    };
+  }
   try {
     const pool = await getConnectionPool();
-    const result = await pool.request().query(sqlQuery);
+    const result = await Promise.race([
+      pool.request().query(sqlQuery),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`MSSQL Timeout nach ${MSSQL_QUERY_TIMEOUT_MS}ms`)), MSSQL_QUERY_TIMEOUT_MS);
+      }),
+    ]);
     const rows = (result.recordset ?? []) as unknown[];
     return { success: true, rows, rowCount: rows.length };
   } catch (error: unknown) {

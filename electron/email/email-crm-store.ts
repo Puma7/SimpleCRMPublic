@@ -471,6 +471,9 @@ export function searchMessagesForAccountWithMeta(
   const offset = opts.offset ?? 0;
   const view = opts.view;
   const trimmed = q.trim();
+  if (!trimmed) {
+    return { rows: [], searchMode: 'like', hasMore: false };
+  }
   if (trimmed.startsWith('/') && trimmed.length > 2 && trimmed.lastIndexOf('/') > 0) {
     const lastSlash = trimmed.lastIndexOf('/');
     const pattern = trimmed.slice(1, lastSlash);
@@ -606,6 +609,7 @@ export function searchMessagesForAllAccounts(
   q: string,
   opts: MessageSearchOpts = {},
 ): import('./email-store').EmailMessageRow[] {
+  if (!q.trim()) return [];
   const limit = opts.limit ?? 100;
   const offset = opts.offset ?? 0;
   const view = opts.view;
@@ -661,6 +665,7 @@ export function searchMessagesForAccount(
 ): import('./email-store').EmailMessageRow[] {
   const resolved: MessageSearchOpts =
     typeof opts === 'number' ? { limit: opts, view } : opts;
+  if (!q.trim()) return [];
   const limit = resolved.limit ?? 100;
   const offset = resolved.offset ?? 0;
   const viewSql = resolved.view ? viewFilterClause(resolved.view) : 'm.soft_deleted = 0';

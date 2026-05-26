@@ -1,4 +1,5 @@
 import { buildRfc822FromStored } from './mail-rfc822-build';
+import { normalizeRspamdBaseUrl } from '../../shared/rspamd-url';
 
 export type RspamdCheckResult = {
   score: number | null;
@@ -37,7 +38,17 @@ export async function checkMessageWithRspamd(input: {
     };
   }
 
-  const url = `${input.baseUrl.replace(/\/$/, '')}/checkv2`;
+  const normalized = normalizeRspamdBaseUrl(input.baseUrl);
+  if (!normalized.ok) {
+    return {
+      score: null,
+      action: null,
+      requiredScore: null,
+      symbols: [],
+      error: normalized.error,
+    };
+  }
+  const url = `${normalized.baseUrl}/checkv2`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs);
 
