@@ -111,6 +111,21 @@ function stopIdleForAccount(accountId: number): void {
   }
 }
 
+/** Snapshot for diagnostics / support (Phase 3). */
+export function getEmailBackgroundSyncSnapshot(): {
+  cronScheduled: boolean;
+  cronTickInFlight: boolean;
+  syncInFlightAccountIds: number[];
+  idleImapAccountIds: number[];
+} {
+  return {
+    cronScheduled: globalCron != null,
+    cronTickInFlight: globalCronTickInFlight,
+    syncInFlightAccountIds: [...syncInFlight],
+    idleImapAccountIds: [...idleClients.keys()],
+  };
+}
+
 export async function startEmailBackgroundServices(logger: Pick<typeof console, 'warn' | 'error' | 'debug'>): Promise<void> {
   stopEmailBackgroundServices();
 

@@ -865,6 +865,20 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetMailDiagnostics, async () => {
+      const { collectMailDiagnostics } = await import('../email/email-diagnostics');
+      return collectMailDiagnostics();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.ExportLocalMailBackup, async () => {
+      const { exportLocalMailBackup } = await import('../email/email-local-backup');
+      return exportLocalMailBackup();
+    }, { logger }),
+  );
+
+  disposers.push(
     registerIpcHandler(IPCChannels.Email.ListImapAuthNotices, async () => {
       const { listImapAuthNotices } = await import('../email/email-imap-auth-notice');
       return listImapAuthNotices();

@@ -41,6 +41,7 @@ export type SettingsTab =
   | "canned"
   | "prompts"
   | "export"
+  | "diagnostics"
   | "misc"
 
 type MailWorkspaceState = {
@@ -158,6 +159,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "canned",
   "prompts",
   "export",
+  "diagnostics",
   "misc",
 ]
 

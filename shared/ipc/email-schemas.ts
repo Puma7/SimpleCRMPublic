@@ -276,6 +276,17 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       })
       .nullable(),
   });
+  set(IPCChannels.Email.GetMailDiagnostics, {
+    payload: voidPayload,
+    result: z.object({}).passthrough(),
+  });
+  set(IPCChannels.Email.ExportLocalMailBackup, {
+    payload: voidPayload,
+    result: z.union([
+      z.object({ ok: z.literal(true), path: z.string() }),
+      z.object({ ok: z.literal(false), error: z.string() }),
+    ]),
+  });
   set(IPCChannels.Email.ListMessagesByView, {
     payload: z.object({
       accountId: mailAccountScopeSchema,

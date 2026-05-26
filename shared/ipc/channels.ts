@@ -161,6 +161,8 @@ const EmailChannels = literal({
   ListImapAuthNotices: 'email:list-imap-auth-notices',
   DismissImapAuthNotice: 'email:dismiss-imap-auth-notice',
   GetLatestWorkflowRunForMessage: 'email:get-latest-workflow-run-for-message',
+  GetMailDiagnostics: 'email:get-mail-diagnostics',
+  ExportLocalMailBackup: 'email:export-local-mail-backup',
   TestSmtp: 'email:test-smtp',
   ListCategories: 'email:list-categories',
   CreateCategory: 'email:create-category',
