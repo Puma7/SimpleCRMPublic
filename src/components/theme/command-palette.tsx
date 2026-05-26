@@ -11,9 +11,8 @@ import {
   CommandList,
   CommandShortcut,
 } from "@/components/ui/command"
-import { useUiTheme } from "@/components/beta/ui-theme-provider"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
-import { useThemeTokens } from "./theme-tokens-provider"
+
 type CommandEntry = {
   id: string
   label: string
@@ -26,7 +25,6 @@ type CommandEntry = {
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onOpenTweaks?: () => void
 }
 
 const RECENT_KEY = "simplecrm:commandRecent"
@@ -48,10 +46,8 @@ function pushRecent(id: string): void {
   window.localStorage.setItem(RECENT_KEY, JSON.stringify(next))
 }
 
-export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
+export function CommandPalette({ open, onOpenChange }: Props) {
   const navigate = useNavigate()
-  const { setTheme } = useUiTheme()
-  const { patchTokens } = useThemeTokens()
   const [recentIds, setRecentIds] = useState<string[]>([])
 
   useEffect(() => {
@@ -78,21 +74,66 @@ export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
 
   const entries = useMemo<CommandEntry[]>(
     () => [
-      { id: "nav-dashboard", label: "Dashboard", section: "Springe zu", shortcut: "G D", keywords: "start", run: () => go("nav-dashboard", "/") },
-      { id: "nav-customers", label: "Kunden", section: "Springe zu", shortcut: "G C", run: () => go("nav-customers", "/customers") },
-      { id: "nav-deals", label: "Deals", section: "Springe zu", shortcut: "G L", run: () => go("nav-deals", "/deals") },
-      { id: "nav-tasks", label: "Aufgaben", section: "Springe zu", run: () => go("nav-tasks", "/tasks") },
-      { id: "nav-email", label: "E-Mail Postfach", section: "Springe zu", shortcut: "G M", run: () => go("nav-email", "/email") },
+      {
+        id: "nav-dashboard",
+        label: "Dashboard",
+        section: "Springe zu",
+        shortcut: "G D",
+        keywords: "start",
+        run: () => go("nav-dashboard", "/"),
+      },
+      {
+        id: "nav-customers",
+        label: "Kunden",
+        section: "Springe zu",
+        shortcut: "G C",
+        run: () => go("nav-customers", "/customers"),
+      },
+      {
+        id: "nav-deals",
+        label: "Deals",
+        section: "Springe zu",
+        shortcut: "G L",
+        run: () => go("nav-deals", "/deals"),
+      },
+      {
+        id: "nav-tasks",
+        label: "Aufgaben",
+        section: "Springe zu",
+        run: () => go("nav-tasks", "/tasks"),
+      },
+      {
+        id: "nav-email",
+        label: "E-Mail Postfach",
+        section: "Springe zu",
+        shortcut: "G M",
+        run: () => go("nav-email", "/email"),
+      },
       {
         id: "nav-email-settings",
         label: "E-Mail Einstellungen",
         section: "Springe zu",
         run: () =>
-          go("nav-email-settings", "/email/settings", emailSettingsSearch({ section: "mailboxes" })),
+          go("nav-email-settings", "/email/settings", emailSettingsSearch({ tab: "accounts" })),
       },
-      { id: "nav-workflows", label: "E-Mail Workflows", section: "Springe zu", run: () => go("nav-workflows", "/email/workflows") },
-      { id: "nav-calendar", label: "Kalender", section: "Springe zu", run: () => go("nav-calendar", "/calendar") },
-      { id: "nav-settings", label: "Einstellungen", section: "Springe zu", run: () => go("nav-settings", "/settings") },
+      {
+        id: "nav-workflows",
+        label: "E-Mail Workflows",
+        section: "Springe zu",
+        run: () => go("nav-workflows", "/email/workflows"),
+      },
+      {
+        id: "nav-calendar",
+        label: "Kalender",
+        section: "Springe zu",
+        run: () => go("nav-calendar", "/calendar"),
+      },
+      {
+        id: "nav-settings",
+        label: "Einstellungen",
+        section: "Springe zu",
+        run: () => go("nav-settings", "/settings"),
+      },
       {
         id: "compose",
         label: "Neue E-Mail verfassen",
@@ -100,42 +141,12 @@ export function CommandPalette({ open, onOpenChange, onOpenTweaks }: Props) {
         shortcut: "C",
         run: () => go("compose", "/email"),
       },
-      {
-        id: "theme-beta",
-        label: "Oberfläche: Beta v0.2",
-        section: "Theme",
-        run: () => runAction("theme-beta", () => setTheme("beta")),
-      },
-      {
-        id: "theme-classic",
-        label: "Oberfläche: Klassisch",
-        section: "Theme",
-        run: () => runAction("theme-classic", () => setTheme("classic")),
-      },
-      {
-        id: "theme-dark",
-        label: "Farbmodus: Dunkel",
-        section: "Theme",
-        run: () => runAction("theme-dark", () => patchTokens({ colorMode: "dark" })),
-      },
-      {
-        id: "theme-light",
-        label: "Farbmodus: Hell",
-        section: "Theme",
-        run: () => runAction("theme-light", () => patchTokens({ colorMode: "light" })),
-      },
-      {
-        id: "open-tweaks",
-        label: "Design-Tweaks öffnen",
-        section: "Theme",
-        run: () => runAction("open-tweaks", () => onOpenTweaks?.()),
-      },
     ],
-    [go, runAction, setTheme, patchTokens, onOpenTweaks],
+    [go, runAction],
   )
 
   const recentEntries = entries.filter((e) => recentIds.includes(e.id))
-  const sections = ["Kürzlich", "Springe zu", "Aktion", "Theme"] as const
+  const sections = ["Kürzlich", "Springe zu", "Aktion"] as const
 
   return (
     <CommandDialog

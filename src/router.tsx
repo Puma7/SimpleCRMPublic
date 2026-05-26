@@ -29,10 +29,6 @@ import EmailSettingsPage from './app/email/settings/page'
 import EmailReportingPage from './app/email/reporting/page'
 import EmailSvelteLabPage from './app/email/svelte-lab/page'
 import { SETTINGS_TAB_IDS } from './components/email/settings-panels'
-import {
-  BETA_INTELLIGENCE_TAB_IDS,
-  BETA_SETTINGS_SECTION_IDS,
-} from './components/email/beta/beta-settings-sections'
 
 const svelteLabEnabled = import.meta.env.VITE_ENABLE_SVELTE_LAB === 'true'
 
@@ -84,21 +80,8 @@ const emailSettingsRoute = createRoute({
     const tab = typeof search.tab === 'string' ? search.tab : undefined
     const validTab =
       tab && (SETTINGS_TAB_IDS as readonly string[]).includes(tab) ? tab : 'accounts'
-    const sectionRaw = typeof search.section === 'string' ? search.section : undefined
-    const validSection =
-      sectionRaw && (BETA_SETTINGS_SECTION_IDS as readonly string[]).includes(sectionRaw)
-        ? sectionRaw
-        : 'overview'
-    const intelRaw =
-      typeof search.intelligenceTab === 'string' ? search.intelligenceTab : undefined
-    const validIntel =
-      intelRaw && (BETA_INTELLIGENCE_TAB_IDS as readonly string[]).includes(intelRaw)
-        ? intelRaw
-        : 'profiles'
     return {
       tab: validTab as (typeof SETTINGS_TAB_IDS)[number],
-      section: validSection as (typeof BETA_SETTINGS_SECTION_IDS)[number],
-      intelligenceTab: validIntel as (typeof BETA_INTELLIGENCE_TAB_IDS)[number],
     }
   },
   component: EmailSettingsPage,

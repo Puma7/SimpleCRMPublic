@@ -683,7 +683,7 @@ export function WorkflowShell() {
                   <Button type="button" size="sm" variant="link" className="h-8 px-0" asChild>
                     <Link
                       to="/email/settings"
-                      search={emailSettingsSearch({ tab: "mailSecurity", section: "advanced" })}
+                      search={emailSettingsSearch({ tab: "mailSecurity" })}
                     >
                       <ExternalLink className="mr-1 h-3.5 w-3.5" />
                       Automatisierung (IMAP/HTTP)

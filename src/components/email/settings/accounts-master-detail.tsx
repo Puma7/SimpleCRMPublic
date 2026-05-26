@@ -3,16 +3,16 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { AlertCircle, CheckCircle2, Plus, RefreshCw } from "lucide-react"
+import { AlertCircle, CheckCircle2, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
-import { AccountForm } from "../settings/account-form"
-import { SmtpPanel } from "../settings/smtp-panel"
-import { OAuthPanel } from "../settings/oauth-panel"
-import { AiPanel } from "../settings/ai-panel"
+import { AccountForm } from "./account-form"
+import { SmtpPanel } from "./smtp-panel"
+import { OAuthPanel } from "./oauth-panel"
+import { AiPanel } from "./ai-panel"
 
 type AccountTab = "imap" | "smtp" | "oauth" | "ki" | "sync"
 
@@ -31,7 +31,8 @@ function accountInitials(a: EmailAccount): string {
   return n.slice(0, 2).toUpperCase()
 }
 
-export function BetaAccountsSettings() {
+/** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI/Sync-Tabs (ehem. Beta v0.2). */
+export function AccountsMasterDetailSettings() {
   const { bumpAccountsRevision, setSettingsAccountId, accountsRevision } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -69,8 +70,8 @@ export function BetaAccountsSettings() {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex w-[280px] shrink-0 flex-col border-r border-border/60 bg-card/20">
-        <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-3">
+      <div className="flex w-[280px] shrink-0 flex-col border-r bg-muted/20">
+        <div className="flex items-center justify-between gap-2 border-b px-3 py-3">
           <p className="text-xs text-muted-foreground">
             <span className="font-semibold text-foreground">{accounts.length}</span> verbunden
           </p>
@@ -119,7 +120,7 @@ export function BetaAccountsSettings() {
             })}
           </ul>
         </ScrollArea>
-        <p className="border-t border-border/60 p-3 text-[10px] leading-relaxed text-muted-foreground">
+        <p className="border-t p-3 text-[10px] leading-relaxed text-muted-foreground">
           Passwörter liegen im OS-Schlüsselbund (Keytar), nicht in der Datenbank.
         </p>
       </div>
@@ -127,7 +128,7 @@ export function BetaAccountsSettings() {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {creating || selected ? (
           <>
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-4 py-3">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
               <div className="min-w-0">
                 <h2 className="truncate text-lg font-semibold">
                   {creating ? "Neues Postfach" : selected?.email_address}
@@ -138,15 +139,9 @@ export function BetaAccountsSettings() {
                   </p>
                 ) : null}
               </div>
-              {!creating && selected ? (
-                <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Jetzt syncen
-                </Button>
-              ) : null}
             </div>
             {!creating ? (
-              <div className="flex shrink-0 gap-1 border-b border-border/60 px-4">
+              <div className="flex shrink-0 gap-1 border-b px-4">
                 {TABS.map((t) => (
                   <button
                     key={t.id}

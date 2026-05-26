@@ -1,19 +1,18 @@
 "use client"
 
-import { useCallback } from "react"
+import { useCallback, useEffect } from "react"
 import { useDefaultLayout } from "react-resizable-panels"
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-
-const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer"] as const
 import { useMailWorkspace } from "./workspace-context"
 import { MailTopbar } from "./mail-topbar"
 import { MailSidebar } from "./mail-sidebar"
 import { MessageList } from "./message-list"
 import { MessageViewer } from "./message-viewer"
+import { MessageMetadataPanel } from "./message-metadata-panel"
 import { ComposeDialog } from "./compose-dialog"
 import { useEmailAccounts } from "./hooks/use-email-accounts"
 import { useEmailMessages } from "./hooks/use-email-messages"
@@ -22,12 +21,24 @@ import { useMessageMetadata } from "./hooks/use-message-metadata"
 import { useMailAuxData } from "./hooks/use-mail-aux-data"
 import { useMailFolderCounts } from "./hooks/use-mail-folder-counts"
 
+const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
+
 function MailShellInner() {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "email-panes",
     panelIds: [...MAIL_PANE_IDS],
   })
-  const { setComposeIntent, selectedAccountId } = useMailWorkspace()
+  const {
+    setComposeIntent,
+    selectedAccountId,
+    selectedMessage,
+    setMetadataPanelOpen,
+  } = useMailWorkspace()
+
+  useEffect(() => {
+    setMetadataPanelOpen(true)
+  }, [setMetadataPanelOpen])
+
   const { accounts, teamMembers, loadingAccounts } = useEmailAccounts()
   const { categories, countForCategory, loadCategories } = useEmailCategories()
   const reloadCategories = useCallback(async () => {
@@ -48,8 +59,6 @@ function MailShellInner() {
     await refreshListBase(opts)
     if (selectedAccountId != null) await reloadCounts(selectedAccountId)
   }
-
-  // Preserve old behaviour: after a sync the category counts must refresh as well.
   const handleSyncWithCategories = () =>
     void handleSync({
       onAfterSync: async (accountId) => {
@@ -74,60 +83,69 @@ function MailShellInner() {
         }
       />
 
-      <div className="flex min-h-0 flex-1">
-        <ResizablePanelGroup
-          direction="horizontal"
-          id="email-panes"
-          defaultLayout={defaultLayout}
-          onLayoutChanged={onLayoutChanged}
-        >
-          <ResizablePanel
-            id={MAIL_PANE_IDS[0]}
-            defaultSize="20%"
-            minSize="14%"
-            maxSize="30%"
-          >
-            <MailSidebar
-              accounts={accounts}
-              loadingAccounts={loadingAccounts}
-              categories={categories}
-              countForCategory={countForCategory}
-              onCategoriesChanged={reloadCategories}
-              onMoveMessageToView={moveMessageToView}
-            />
-          </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel
-            id={MAIL_PANE_IDS[1]}
-            defaultSize="30%"
-            minSize="22%"
-          >
-            <MessageList
-              messages={messages}
-              accounts={accounts}
-              loading={loadingMessages}
-              onOpen={openMessage}
-              onMoveMessageToView={moveMessageToView}
-            />
-          </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel id={MAIL_PANE_IDS[2]} defaultSize="50%">
-            <MessageViewer
+      <ResizablePanelGroup
+        direction="horizontal"
+        id="email-panes"
+        className="min-h-0 flex-1"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
+      >
+        <ResizablePanel id={MAIL_PANE_IDS[0]} defaultSize="18%" minSize="14%" maxSize="28%">
+          <MailSidebar
+            accounts={accounts}
+            loadingAccounts={loadingAccounts}
+            categories={categories}
+            countForCategory={countForCategory}
+            onCategoriesChanged={reloadCategories}
+            onMoveMessageToView={moveMessageToView}
+          />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id={MAIL_PANE_IDS[1]} defaultSize="26%" minSize="18%">
+          <MessageList
+            messages={messages}
+            accounts={accounts}
+            loading={loadingMessages}
+            onOpen={openMessage}
+            onMoveMessageToView={moveMessageToView}
+          />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id={MAIL_PANE_IDS[2]} defaultSize="36%" minSize="22%">
+          <MessageViewer
+            teamMembers={teamMembers}
+            categories={categories}
+            messageTags={messageTags}
+            internalNotes={internalNotes}
+            messageAttachments={messageAttachments}
+            reloadNotes={reloadNotes}
+            reloadTags={reloadTags}
+            refreshCurrentMessage={refreshCurrentMessage}
+            refreshList={refreshList}
+            onReply={(m) => setComposeIntent({ mode: "reply", message: m })}
+            onForward={(m) => setComposeIntent({ mode: "forward", message: m })}
+            metadataPlacement="external"
+          />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id={MAIL_PANE_IDS[3]} defaultSize="20%" minSize="14%" maxSize="28%">
+          {selectedMessage ? (
+            <MessageMetadataPanel
               teamMembers={teamMembers}
               categories={categories}
               messageTags={messageTags}
               internalNotes={internalNotes}
-              messageAttachments={messageAttachments}
               reloadNotes={reloadNotes}
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
-              refreshList={refreshList}
-              onReply={(m) => setComposeIntent({ mode: "reply", message: m })}
-              onForward={(m) => setComposeIntent({ mode: "forward", message: m })}
             />
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </div>
+          ) : (
+            <div className="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
+              Details zur Nachricht
+            </div>
+          )}
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       <ComposeDialog
         accounts={accounts}
