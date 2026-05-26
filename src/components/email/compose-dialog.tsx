@@ -714,7 +714,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       }}
     >
       <DialogContent
-        className="relative left-[50%] top-[4vh] flex max-h-[92vh] translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw]"
+        className="relative left-[50%] top-[4vh] flex h-[92vh] max-h-[92vh] min-h-0 translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw]"
         style={{ width: composeDialogWidth, maxWidth: "96vw" }}
       >
         <div
@@ -725,7 +725,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           className="absolute right-0 top-0 z-10 h-full w-2 cursor-ew-resize rounded-r-lg hover:bg-primary/10"
           onMouseDown={startComposeWidthResize}
         />
-        <DialogHeader className="border-b px-6 pt-6 pb-3">
+        <DialogHeader className="shrink-0 border-b px-6 pt-6 pb-3">
           <DialogTitle>
             {composeIntent.mode === "reply"
               ? "Antwort verfassen"
@@ -1007,12 +1007,33 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               onChange={setBodyHtml}
             />
           </div>
-          <p className="text-[10px] text-muted-foreground">
-            Dialog rechts am Rand und den Nachrichtenbereich unten ziehen, um Breite und Höhe
-            anzupassen. Änderungen werden automatisch im Entwurf gespeichert.
-          </p>
+        </div>
 
-          <div className="space-y-2">
+        <div className="flex shrink-0 flex-col gap-2 border-t bg-muted/30 px-6 py-3">
+          {attachmentPaths.length > 0 ? (
+            <ul className="max-h-24 space-y-1 overflow-y-auto">
+              {attachmentPaths.map((p) => (
+                <li
+                  key={p}
+                  className="flex items-center justify-between gap-2 rounded border bg-background/80 px-2 py-1 text-xs"
+                >
+                  <span className="truncate">{p.split(/[/\\]/).pop()}</span>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-6 w-6 shrink-0"
+                    onClick={() =>
+                      setAttachmentPaths((prev) => prev.filter((x) => x !== p))
+                    }
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
@@ -1032,93 +1053,72 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 <Paperclip className="h-4 w-4" />
                 Anhang hinzufügen
               </Button>
+              <p className="hidden text-[10px] text-muted-foreground sm:block">
+                Breite rechts · Höhe am Editor · Autosave im Entwurf
+              </p>
             </div>
-            {attachmentPaths.length > 0 ? (
-              <ul className="space-y-1">
-                {attachmentPaths.map((p) => (
-                  <li
-                    key={p}
-                    className="flex items-center justify-between gap-2 rounded border bg-muted/40 px-2 py-1 text-xs"
-                  >
-                    <span className="truncate">{p.split(/[/\\]/).pop()}</span>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-6 w-6 shrink-0"
-                      onClick={() =>
-                        setAttachmentPaths((prev) => prev.filter((x) => x !== p))
-                      }
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={requestClose}>
+                Schließen
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() =>
+                  void saveDraft().then((ok) => {
+                    if (ok) toast.success("Entwurf gespeichert")
+                  })
+                }
+              >
+                Entwurf speichern
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={checkingOutbound || sending || draftId == null}
+                onClick={() => void handleCheckOutbound()}
+              >
+                {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Ausgang prüfen
+              </Button>
+              <Input
+                type="datetime-local"
+                className="h-9 w-[200px] text-xs"
+                value={scheduledSendAt}
+                onChange={(e) => setScheduledSendAt(e.target.value)}
+                title="Geplante Versendung"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!scheduledSendAt || draftId == null}
+                onClick={() => {
+                  if (!draftId || !scheduledSendAt) return
+                  void (async () => {
+                    await saveDraft({ silent: true })
+                    const iso = new Date(scheduledSendAt).toISOString()
+                    await invokeIpc(IPCChannels.Email.ScheduleDraftSend, {
+                      messageId: draftId,
+                      sendAt: iso,
+                    })
+                    toast.success("Versand geplant — Entwurf bleibt gespeichert.")
+                    const contextId = getComposeContextMessageId(composeIntent, replyToId)
+                    void finishComposeClose(contextId)
+                  })()
+                }}
+              >
+                Später senden
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSend()}
+                disabled={sending || draftId == null || draftBootstrapping || composeAccountId == null}
+              >
+                {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Senden
+              </Button>
+            </div>
           </div>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t bg-muted/30 px-6 py-3">
-          <Button type="button" variant="ghost" onClick={requestClose}>
-            Schließen
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() =>
-              void saveDraft().then((ok) => {
-                if (ok) toast.success("Entwurf gespeichert")
-              })
-            }
-          >
-            Entwurf speichern
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={checkingOutbound || sending || draftId == null}
-            onClick={() => void handleCheckOutbound()}
-          >
-            {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Ausgang prüfen
-          </Button>
-          <Input
-            type="datetime-local"
-            className="h-9 w-[200px] text-xs"
-            value={scheduledSendAt}
-            onChange={(e) => setScheduledSendAt(e.target.value)}
-            title="Geplante Versendung"
-          />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!scheduledSendAt || draftId == null}
-            onClick={() => {
-              if (!draftId || !scheduledSendAt) return
-              void (async () => {
-                await saveDraft({ silent: true })
-                const iso = new Date(scheduledSendAt).toISOString()
-                await invokeIpc(IPCChannels.Email.ScheduleDraftSend, {
-                  messageId: draftId,
-                  sendAt: iso,
-                })
-                toast.success("Versand geplant — Entwurf bleibt gespeichert.")
-                const contextId = getComposeContextMessageId(composeIntent, replyToId)
-                void finishComposeClose(contextId)
-              })()
-            }}
-          >
-            Später senden
-          </Button>
-          <Button
-            type="button"
-            onClick={() => void handleSend()}
-            disabled={sending || draftId == null || draftBootstrapping || composeAccountId == null}
-          >
-            {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Senden
-          </Button>
         </div>
       </DialogContent>
     </Dialog>
