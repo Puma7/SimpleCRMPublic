@@ -412,6 +412,11 @@ baseSchemaMap.set(IPCChannels.Update.GetStatus, {
   result: z.any(),
 });
 
+baseSchemaMap.set(IPCChannels.Update.OpenExternalUrl, {
+  payload: z.object({ url: z.string().min(1) }),
+  result: z.object({ success: z.boolean() }),
+});
+
 // --- Follow-Up ---
 baseSchemaMap.set(IPCChannels.FollowUp.GetItems, {
   payload: z.any(),

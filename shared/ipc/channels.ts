@@ -8,6 +8,7 @@ const UpdateChannels = literal({
   CheckForUpdates: 'app:check-for-updates',
   InstallUpdate: 'app:install-update',
   GetStatus: 'app:get-update-status',
+  OpenExternalUrl: 'app:open-external-url',
 });
 
 // DB related invoke channels

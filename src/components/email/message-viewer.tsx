@@ -77,6 +77,7 @@ import { MessageAiSuggestions } from "./message-ai-suggestions"
 import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
 import { ApplyWorkflowMenu } from "./apply-workflow-menu"
+import { useExternalLinkConfirm } from "./external-link-confirm-dialog"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -129,6 +130,7 @@ export function MessageViewer(props: Props) {
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
+  const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
 
   useEffect(() => {
     setHtmlView(false)
@@ -829,7 +831,7 @@ export function MessageViewer(props: Props) {
                   <div className="space-y-2">
                     <p className="text-[10px] text-muted-foreground">
                       HTML-Ansicht: Skripte und Formulare sind blockiert. Externe Bilder nur nach
-                      explizitem Laden.
+                      explizitem Laden. Links öffnen nach Bestätigung im Standard-Browser.
                     </p>
                     {htmlHasRemoteImages && !loadRemoteImages ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -846,8 +848,10 @@ export function MessageViewer(props: Props) {
                       </div>
                     ) : null}
                     <div
-                      className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3"
+                      role="document"
+                      className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3 [&_a]:cursor-pointer [&_a]:break-all [&_a]:text-primary [&_a]:underline"
                       dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+                      onClick={handleBodyLinkClick}
                     />
                   </div>
                 ) : (
@@ -938,6 +942,8 @@ export function MessageViewer(props: Props) {
         open={workflowRunDetailOpen}
         onOpenChange={setWorkflowRunDetailOpen}
       />
+
+      {externalLinkDialog}
     </TooltipProvider>
   )
 }
