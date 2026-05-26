@@ -773,6 +773,39 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ScheduleDraftSend,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; sendAt: string | null }) => {
         setDraftScheduledSendAt(payload.messageId, payload.sendAt);
+        if (payload.sendAt) {
+          const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
+          clearScheduledSendDraftMeta(payload.messageId);
+        }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetScheduledSendDraftState,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const { getScheduledSendDraftState } = await import('../email/email-scheduled-send-state');
+        const s = getScheduledSendDraftState(messageId);
+        return {
+          success: true as const,
+          failureCount: s.failureCount,
+          status: s.status,
+          lastError: s.lastError,
+        };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ClearScheduledSendDraftFailure,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
+        clearScheduledSendDraftMeta(messageId);
         return { success: true as const };
       },
       { logger },

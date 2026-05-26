@@ -209,9 +209,10 @@ export async function testPop3Connection(account: EmailAccountRow, password: str
   });
   try {
     await pop3.UIDL();
-    await pop3.QUIT();
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    await pop3.QUIT().catch(() => undefined);
   }
 }

@@ -82,6 +82,8 @@ describe('email-scheduled-send', () => {
     mockGetSyncInfo.mockReturnValue('4');
     await processDueScheduledSends(logger);
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:12', '5');
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_status:12', 'failed');
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_last_error:12', 'smtp fail');
     expect(mockSetScheduled).toHaveBeenCalledWith(12, null);
   });
 

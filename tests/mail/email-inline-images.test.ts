@@ -32,6 +32,15 @@ describe('email-inline-images', () => {
     expect(r.html).toContain('data:image/png');
   });
 
+  test('handles huge data-url without stack overflow', () => {
+    const huge = 'A'.repeat(12_000_000);
+    const html = `<p>x</p><img alt="huge" src="data:image/png;base64,${huge}">`;
+    expect(() => extractInlineImagesFromHtml(html)).not.toThrow();
+    const r = extractInlineImagesFromHtml(html);
+    expect(r.attachments).toHaveLength(0);
+    expect(r.html).toContain('data:image/png;base64');
+  });
+
   test('sweepStaleInlineImageTempFiles removes old files', () => {
     const root = path.join(os.tmpdir(), 'simplecrm-test', 'simplecrm-inline');
     fs.mkdirSync(root, { recursive: true });

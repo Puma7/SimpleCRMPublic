@@ -168,6 +168,19 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: standardResult,
   });
+  set(IPCChannels.Email.GetScheduledSendDraftState, {
+    payload: positiveInt,
+    result: z.object({
+      success: z.literal(true),
+      failureCount: z.number().int().nonnegative(),
+      status: z.enum(['ok', 'pending', 'failed']),
+      lastError: z.string().nullable(),
+    }),
+  });
+  set(IPCChannels.Email.ClearScheduledSendDraftFailure, {
+    payload: positiveInt,
+    result: standardResult,
+  });
   set(IPCChannels.Email.ExportMessageEml, {
     payload: positiveInt,
     result: z.union([

@@ -136,6 +136,7 @@ export function initializeDatabase() {
             db.exec(createEmailMessageCategoriesTable);
             db.exec(createEmailInternalNotesTable);
             db.exec(createEmailCannedResponsesTable);
+            db.exec(createEmailAiProfilesTable);
             db.exec(createEmailAiPromptsTable);
             db.exec(createEmailTeamMembersTable);
             db.exec(createEmailAccountSignaturesTable);
@@ -148,6 +149,8 @@ export function initializeDatabase() {
             db.exec(createEmailWorkflowVersionsTable);
             setupEmailFtsIndex();
             indexes.forEach(index => db.exec(index));
+            // Same column/table ensure path as upgraded databases (Codex P0: fresh install parity).
+            runMigrations();
             // Seed initial sync info if needed
             setSyncInfo('lastSyncStatus', 'Never');
             setSyncInfo('lastSyncTimestamp', '');

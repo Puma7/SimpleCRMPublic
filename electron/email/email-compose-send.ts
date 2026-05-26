@@ -337,7 +337,6 @@ export async function sendComposeDraft(input: {
       return { ok: true, recoveredSentAppend: true };
     }
 
-    markSmtpCommitted(input.draftMessageId);
     try {
       await sendSmtpForAccount(input.accountId, {
         from: acc.email_address,
@@ -354,9 +353,9 @@ export async function sendComposeDraft(input: {
         requestReadReceipt: requestReceipt,
       });
     } catch (e) {
-      clearSmtpCommitted(input.draftMessageId);
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+    markSmtpCommitted(input.draftMessageId);
 
     const fin = await finalizeSentDraft({
       accountId: input.accountId,

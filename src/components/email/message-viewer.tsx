@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import DOMPurify from "dompurify"
+import { blockRemoteImagesInHtml } from "@shared/email-html-remote-images"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import {
@@ -123,8 +124,26 @@ export function MessageViewer(props: Props) {
   const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
+  const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
+
+  useEffect(() => {
+    setLoadRemoteImages(false)
+  }, [selectedMessage?.id])
+
+  const sanitizedHtml = useMemo(() => {
+    if (!selectedMessage?.body_html) return ""
+    const clean = DOMPurify.sanitize(selectedMessage.body_html, {
+      USE_PROFILES: { html: true },
+    })
+    return loadRemoteImages ? clean : blockRemoteImagesInHtml(clean)
+  }, [selectedMessage?.body_html, loadRemoteImages])
+
+  const htmlHasRemoteImages = useMemo(() => {
+    const raw = selectedMessage?.body_html ?? ""
+    return /src\s*=\s*["']https?:\/\//i.test(raw)
+  }, [selectedMessage?.body_html])
 
   const omittedAttachments = (() => {
     const raw = selectedMessage?.attachments_json
@@ -813,14 +832,26 @@ export function MessageViewer(props: Props) {
                 <Separator />
 
                 {htmlView && selectedMessage.body_html ? (
-                  <div
-                    className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3"
-                    dangerouslySetInnerHTML={{
-                      __html: DOMPurify.sanitize(selectedMessage.body_html, {
-                        USE_PROFILES: { html: true },
-                      }),
-                    }}
-                  />
+                  <div className="space-y-2">
+                    {htmlHasRemoteImages && !loadRemoteImages ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                        <span>Externe Bilder sind aus Datenschutzgründen blockiert.</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => setLoadRemoteImages(true)}
+                        >
+                          Externe Bilder laden
+                        </Button>
+                      </div>
+                    ) : null}
+                    <div
+                      className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3"
+                      dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+                    />
+                  </div>
                 ) : (
                   <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
                     {bodyText}

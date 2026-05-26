@@ -456,8 +456,8 @@ function categoryJoinSql(categoryId: number | null | undefined): { sql: string; 
 
 const LIKE_SEARCH_FIELDS = `(
          m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
-         OR m.to_json LIKE ? ESCAPE '\\' OR m.cc_json LIKE ? ESCAPE '\\' OR m.bcc_json LIKE ? ESCAPE '\\'
-         OR m.ticket_code LIKE ? ESCAPE '\\'
+         OR m.from_json LIKE ? ESCAPE '\\' OR m.to_json LIKE ? ESCAPE '\\' OR m.cc_json LIKE ? ESCAPE '\\'
+         OR m.bcc_json LIKE ? ESCAPE '\\' OR m.ticket_code LIKE ? ESCAPE '\\'
        )`;
 
 export function searchMessagesForAccountWithMeta(
@@ -496,7 +496,16 @@ export function searchMessagesForAccountWithMeta(
     const rows = all
       .filter((m) => messageMatchesDoneFilter(m, opts.doneFilter, view))
       .filter((m) => {
-        const hay = [m.subject, m.snippet, m.body_text, m.to_json, m.cc_json, m.ticket_code]
+        const hay = [
+          m.subject,
+          m.snippet,
+          m.body_text,
+          m.from_json,
+          m.to_json,
+          m.cc_json,
+          m.bcc_json,
+          m.ticket_code,
+        ]
           .filter(Boolean)
           .join('\n');
         return re.test(hay);
@@ -666,7 +675,7 @@ export function searchMessagesForAllAccounts(
   const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   const params: (string | number)[] = [];
   if (cat.param != null) params.push(cat.param);
-  params.push(term, term, term, term, term, term, term, limit, offset);
+  params.push(term, term, term, term, term, term, term, term, limit, offset);
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
@@ -724,7 +733,7 @@ export function searchMessagesForAccount(
   const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
   const params: (string | number)[] = [accountId];
   if (cat.param != null) params.push(cat.param);
-  params.push(term, term, term, term, term, term, term, limit, offset);
+  params.push(term, term, term, term, term, term, term, term, limit, offset);
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m

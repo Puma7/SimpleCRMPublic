@@ -147,11 +147,32 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
+  const [scheduledSendFailed, setScheduledSendFailed] = useState<{
+    lastError: string
+  } | null>(null)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   const { width: composeDialogWidth, startResize: startComposeWidthResize } =
     useComposeDialogSize()
+
+  useEffect(() => {
+    if (!draftId || !hasElectron()) {
+      setScheduledSendFailed(null)
+      return
+    }
+    void invokeIpc(IPCChannels.Email.GetScheduledSendDraftState, draftId)
+      .then((r) => {
+        if (r.success && r.status === "failed") {
+          setScheduledSendFailed({
+            lastError: r.lastError ?? "Geplanter Versand fehlgeschlagen",
+          })
+        } else {
+          setScheduledSendFailed(null)
+        }
+      })
+      .catch(() => setScheduledSendFailed(null))
+  }, [draftId])
 
   useEffect(() => {
     if (!isOpen) {
@@ -684,6 +705,36 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               {draftBootstrapping
                 ? "Entwurf wird vorbereitet…"
                 : "Entwurf konnte nicht geladen werden. Dialog schließen und erneut „Verfassen“ wählen."}
+            </div>
+          ) : null}
+          {scheduledSendFailed ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              <p className="font-medium">Geplanter Versand fehlgeschlagen</p>
+              <p className="mt-1 text-xs opacity-90">{scheduledSendFailed.lastError}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={draftId == null}
+                  onClick={() => {
+                    if (!draftId) return
+                    void invokeIpc(
+                      IPCChannels.Email.ClearScheduledSendDraftFailure,
+                      draftId,
+                    ).then(() => {
+                      setScheduledSendFailed(null)
+                      toast.success("Fehlerstatus zurückgesetzt — Versand erneut planen oder jetzt senden.")
+                    })
+                  }}
+                >
+                  Fehler zurücksetzen
+                </Button>
+              </div>
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">

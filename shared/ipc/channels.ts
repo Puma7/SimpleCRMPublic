@@ -148,6 +148,8 @@ const EmailChannels = literal({
   BulkSetMessagesArchived: 'email:bulk-set-messages-archived',
   SnoozeMessage: 'email:snooze-message',
   ScheduleDraftSend: 'email:schedule-draft-send',
+  GetScheduledSendDraftState: 'email:get-scheduled-send-draft-state',
+  ClearScheduledSendDraftFailure: 'email:clear-scheduled-send-draft-failure',
   ExportMessageEml: 'email:export-message-eml',
   BackfillCustomerLinks: 'email:backfill-customer-links',
   FireWebhookWorkflow: 'email:fire-webhook-workflow',
