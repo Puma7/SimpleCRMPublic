@@ -1090,9 +1090,6 @@ export function getCustomersForDropdown(): any[] {
 
 // Search customers with limit for autocomplete/combobox
 export function searchCustomers(query: string = '', limit: number = 20): any[] {
-    console.log(`🔍 [SQLite] searchCustomers() called with query: "${query}", limit: ${limit}`);
-    console.log(`🔍 [SQLite] SearchCustomers call stack:`, new Error().stack?.split('\n').slice(1, 6).join('\n'));
-    
     const startTime = Date.now();
     let sql = `
         SELECT id, name, firstName, company, customerNumber, email
@@ -1100,12 +1097,6 @@ export function searchCustomers(query: string = '', limit: number = 20): any[] {
     `;
     
     const params: any[] = [];
-    
-    if (query && query.trim() !== '') {
-        console.log(`🔍 [SQLite] Building search query with term: "${query}"`);
-    } else {
-        console.log(`🔍 [SQLite] No search query provided, will return first ${limit} customers`);
-    }
     
     if (query && query.trim() !== '') {
         sql += ` WHERE (

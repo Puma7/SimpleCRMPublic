@@ -41,8 +41,6 @@ export function CustomerCombobox({
   disabled = false,
   onCustomerSelect
 }: CustomerComboboxProps) {
-  console.log(`🔍 [CustomerCombobox] Component initialized with value: ${value}`);
-  
   const [open, setOpen] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
   const [customers, setCustomers] = React.useState<CustomerOption[]>([])
@@ -51,20 +49,13 @@ export function CustomerCombobox({
 
   // Load initial customers and search
   React.useEffect(() => {
-    console.log(`🔍 [CustomerCombobox] useEffect triggered for searchQuery: "${searchQuery}"`);
-    
     const searchCustomers = async () => {
-      console.log(`🔍 [CustomerCombobox] Starting customer search for: "${searchQuery}"`);
-      const startTime = Date.now();
-      
       setLoading(true)
       try {
-        console.log(`🔍 [CustomerCombobox] Calling db:search-customers with query: "${searchQuery}"`);
         const results = await window.electronAPI.invoke(
           IPCChannels.Db.SearchCustomers,
           searchQuery
         ) as CustomerOption[]
-        console.log(`🔍 [CustomerCombobox] Received ${results.length} customers in ${Date.now() - startTime}ms`);
         setCustomers(results)
       } catch (error) {
         console.error('🚨 [CustomerCombobox] Failed to search customers:', error)
@@ -75,12 +66,10 @@ export function CustomerCombobox({
 
     // Debounce search
     const timeoutId = setTimeout(() => {
-      console.log(`🔍 [CustomerCombobox] Debounce timeout reached, executing search...`);
       searchCustomers()
     }, searchQuery ? 300 : 0)
 
     return () => {
-      console.log(`🔍 [CustomerCombobox] Cleaning up timeout for: "${searchQuery}"`);
       clearTimeout(timeoutId)
     }
   }, [searchQuery])
@@ -88,18 +77,13 @@ export function CustomerCombobox({
   // Load selected customer details if value is provided
   React.useEffect(() => {
     if (value && !selectedCustomer) {
-      console.log(`🔍 [CustomerCombobox] Loading customer details for value: ${value}`);
-      
       const loadCustomer = async () => {
-        const startTime = Date.now();
         try {
-          console.log(`🔍 [CustomerCombobox] Calling db:get-customer for ID: ${value}`);
           const customer = await window.electronAPI.invoke(
             IPCChannels.Db.GetCustomer,
             value
           ) as any
-          console.log(`🔍 [CustomerCombobox] Received customer details in ${Date.now() - startTime}ms:`, customer ? customer.name : 'null');
-          
+
           if (customer) {
             const normalizedCustomer: CustomerOption = {
               id: customer.id,
