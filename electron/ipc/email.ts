@@ -375,6 +375,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             oauth_refresh_keytar_key: null,
             sent_folder_path: 'Sent',
             imap_sync_seen_on_open: 1,
+            vacation_enabled: 0,
+            vacation_subject: null,
+            vacation_body_text: null,
             created_at: '',
             updated_at: '',
           };
@@ -1915,10 +1918,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         payload: WorkflowGraphDocument | { graphJson: string },
       ) => {
         try {
-          const graph: WorkflowGraphDocument =
-            'graphJson' in payload && typeof payload.graphJson === 'string'
-              ? (JSON.parse(payload.graphJson) as WorkflowGraphDocument)
-              : payload;
+          let graph: WorkflowGraphDocument;
+          if ('graphJson' in payload && typeof payload.graphJson === 'string') {
+            graph = JSON.parse(payload.graphJson) as WorkflowGraphDocument;
+          } else {
+            graph = payload as WorkflowGraphDocument;
+          }
           const def = compileGraphToDefinition(graph);
           const registryOnly = graph.nodes.some(
             (n) =>

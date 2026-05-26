@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { dialog, BrowserWindow } from 'electron';
+import { dialog } from 'electron';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getEmailMessageById } from './email-store';
@@ -42,9 +42,8 @@ export async function exportMessageAsEml(messageId: number): Promise<{ ok: true;
   if (!buf?.length) {
     return { ok: false, error: 'Keine RFC822-Daten für diese Nachricht gespeichert' };
   }
-  const win = BrowserWindow.getFocusedWindow();
   const subj = (row.subject ?? 'nachricht').replace(/[^\w.-]+/g, '_').slice(0, 60);
-  const { canceled, filePath } = await dialog.showSaveDialog(win ?? undefined, {
+  const { canceled, filePath } = await dialog.showSaveDialog({
     title: 'E-Mail als .eml speichern',
     defaultPath: `${subj}.eml`,
     filters: [{ name: 'E-Mail', extensions: ['eml'] }],

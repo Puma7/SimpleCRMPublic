@@ -45,8 +45,10 @@ function workflowTriggerDedupKey(event: CrmWorkflowEvent): string {
       return `workflow_trigger_fired:task.due:${event.taskId}:${event.dueDate}`;
     case 'calendar.event_start':
       return `workflow_trigger_fired:calendar.event_start:${event.eventId}:${event.startDate}`;
-    default:
-      return `workflow_trigger_fired:${event.trigger}`;
+    default: {
+      const _exhaustive: never = event;
+      return `workflow_trigger_fired:${String(_exhaustive)}`;
+    }
   }
 }
 

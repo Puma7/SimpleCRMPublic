@@ -47,6 +47,8 @@ export type EmailMessage = {
   account_id: number
   folder_id: number
   uid: number
+  /** POP3: stable server UIDL when uid is synthetic. */
+  pop3_uidl?: string | null
   subject: string | null
   snippet: string | null
   date_received: string | null

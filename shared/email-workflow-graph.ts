@@ -9,8 +9,10 @@ export type WorkflowGraphTriggerKind =
   | 'schedule'
   | 'manual'
   | 'crm.deal_stage_changed'
+  | 'crm.customer_created'
   | 'task.due'
-  | 'calendar.event_start';
+  | 'calendar.event_start'
+  | 'webhook.incoming';
 
 export type GraphTriggerNodeData = {
   kind: WorkflowGraphTriggerKind;

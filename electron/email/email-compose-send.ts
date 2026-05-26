@@ -296,7 +296,7 @@ export async function sendComposeDraft(input: {
     const sentAppendAttachments = allAttachments.map((a) => ({
       filename: a.filename,
       path: a.path,
-      cid: 'cid' in a ? a.cid : undefined,
+      cid: 'cid' in a && typeof a.cid === 'string' ? a.cid : undefined,
     }));
 
     if (isSmtpCommitted(input.draftMessageId)) {
