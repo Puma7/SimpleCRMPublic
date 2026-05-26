@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
-import { resolveRunStepNodeLabel } from "@shared/workflow-ui-labels"
+import { resolveRegistryNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import {
   Dialog,
@@ -75,7 +75,7 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
               {steps.map((s) => (
                 <li key={s.id} className="rounded-md border bg-muted/30 px-3 py-2">
                   <div className="font-medium">
-                    {resolveRunStepNodeLabel(s.node_type, labelByType)}
+                    {resolveRegistryNodeLabel(s.node_type, labelByType)}
                     <span className="ml-2 text-muted-foreground">({s.status})</span>
                   </div>
                   {s.message ? (

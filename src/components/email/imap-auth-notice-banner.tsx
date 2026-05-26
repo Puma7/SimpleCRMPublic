@@ -6,6 +6,7 @@ import { AlertTriangle, X } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { hasElectron, invokeIpc } from "./types"
 
 type Notice = {
@@ -66,7 +67,12 @@ export function ImapAuthNoticeBanner() {
                 size="sm"
                 variant="outline"
                 className="h-7 text-xs"
-                onClick={() => void navigate({ to: "/email/settings" })}
+                onClick={() =>
+                  void navigate({
+                    to: "/email/settings",
+                    search: emailSettingsSearch({ tab: "accounts" }),
+                  })
+                }
               >
                 E-Mail-Einstellungen öffnen
               </Button>

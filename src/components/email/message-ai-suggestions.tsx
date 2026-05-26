@@ -8,6 +8,7 @@ import { Loader2, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { hasElectron, invokeIpc, type EmailMessage } from "./types"
 import { MessageMoreActionsMenu } from "./message-more-actions-menu"
 
@@ -153,7 +154,12 @@ export function MessageAiSuggestions({
               type="button"
               variant="link"
               className="h-auto p-0 text-xs"
-              onClick={() => void navigate({ to: "/email/settings" })}
+              onClick={() =>
+                void navigate({
+                  to: "/email/settings",
+                  search: emailSettingsSearch({ tab: "ai" }),
+                })
+              }
             >
               E-Mail-Einstellungen öffnen
             </Button>

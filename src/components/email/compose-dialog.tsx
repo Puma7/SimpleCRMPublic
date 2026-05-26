@@ -165,9 +165,14 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       setComposeRecovery(null)
       return
     }
-    void invokeIpc(IPCChannels.Email.GetScheduledSendDraftState, draftId)
+    void invokeIpc<{
+      success: true
+      failureCount: number
+      status: "ok" | "pending" | "failed"
+      lastError: string | null
+    }>(IPCChannels.Email.GetScheduledSendDraftState, draftId)
       .then((r) => {
-        if (r.success && r.status === "failed") {
+        if (r.status === "failed") {
           setScheduledSendFailed({
             lastError: r.lastError ?? "Geplanter Versand fehlgeschlagen",
           })
@@ -176,9 +181,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         }
       })
       .catch(() => setScheduledSendFailed(null))
-    void invokeIpc(IPCChannels.Email.GetComposeDraftRecoveryState, draftId)
+    void invokeIpc<{
+      success: true
+      smtpCommitted: boolean
+      needsResendFinalize: boolean
+    }>(IPCChannels.Email.GetComposeDraftRecoveryState, draftId)
       .then((r) => {
-        if (r.success && r.needsResendFinalize) {
+        if (r.needsResendFinalize) {
           setComposeRecovery({ needsResendFinalize: true })
         } else {
           setComposeRecovery(null)
