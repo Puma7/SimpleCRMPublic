@@ -69,6 +69,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
+import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
 
 type Props = {
@@ -153,7 +154,7 @@ export function MessageViewer(props: Props) {
       until,
     })
     if (until) {
-      toast.success("Zurückgestellt")
+      toast.success(`Zurückgestellt bis ${formatSnoozeWakeLabel(until)}`)
     } else {
       toast.success("Wieder im Posteingang")
     }

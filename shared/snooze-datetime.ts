@@ -59,6 +59,61 @@ export function computeSnoozeUntil(
 
 const WEEKDAY_LABELS = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
 
+/** `datetime-local` value (YYYY-MM-DDTHH:mm) for a future wake time. */
+export function defaultCustomSnoozeLocalValue(
+  now: Date = new Date(),
+  minutesAhead = 60,
+): string {
+  const d = new Date(now.getTime() + minutesAhead * 60 * 1000);
+  return toDatetimeLocalValue(d);
+}
+
+/** Minimum allowed `datetime-local` value (now, minute precision). */
+export function minCustomSnoozeLocalValue(now: Date = new Date()): string {
+  return toDatetimeLocalValue(now);
+}
+
+function toDatetimeLocalValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Parse browser `datetime-local` input to ISO UTC for storage. */
+export function parseLocalDatetimeInput(value: string): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const d = new Date(trimmed);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+export function validateSnoozeUntil(
+  iso: string,
+  now: Date = new Date(),
+): { ok: true } | { ok: false; message: string } {
+  const wake = new Date(iso);
+  if (Number.isNaN(wake.getTime())) {
+    return { ok: false, message: 'Ungültiges Datum.' };
+  }
+  if (wake.getTime() <= now.getTime() + 30_000) {
+    return { ok: false, message: 'Der Zeitpunkt muss in der Zukunft liegen.' };
+  }
+  return { ok: true };
+}
+
+export function formatSnoozeWakeLabel(iso: string, locale = 'de-DE'): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(locale, {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function formatSnoozePresetLabel(
   preset: SnoozePresetId,
   settings: SnoozeSettings = DEFAULT_SNOOZE_SETTINGS,
