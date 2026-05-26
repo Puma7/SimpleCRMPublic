@@ -50,6 +50,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { correspondentEmailForMessage } from "@shared/email-correspondent"
 import {
   firstAddress,
   formatFrom,
@@ -479,9 +480,9 @@ export function MessageViewer(props: Props) {
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <div className="min-w-0 space-y-0.5">
                       <p className="font-medium">{formatFrom(selectedMessage.from_json)}</p>
-                      {firstAddress(selectedMessage.from_json) ? (
+                      {correspondentEmailForMessage(selectedMessage) ? (
                         <p className="font-mono text-xs text-primary break-all">
-                          {firstAddress(selectedMessage.from_json)}
+                          {correspondentEmailForMessage(selectedMessage)}
                         </p>
                       ) : null}
                     </div>
@@ -491,6 +492,22 @@ export function MessageViewer(props: Props) {
                       </p>
                     ) : null}
                   </div>
+                  {correspondentEmailForMessage(selectedMessage) ? (
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="h-auto px-0 pt-1 text-xs text-muted-foreground"
+                      onClick={() => {
+                        if (metadataPlacement === "external" && !metadataPanelOpen) {
+                          setMetadataPanelOpen(true)
+                        }
+                      }}
+                    >
+                      {metadataPlacement === "external"
+                        ? "Alle Mails mit dieser Adresse (Detailpanel) →"
+                        : "Verlauf mit dieser Adresse siehe Detailpanel rechts"}
+                    </Button>
+                  ) : null}
                   {selectedMessage.ticket_code ? (
                     <p className="pt-1 text-xs text-muted-foreground">
                       Ticket:{" "}

@@ -43,6 +43,7 @@ import {
   saveAccountSignature,
   type EmailAccountRow,
 } from '../email/email-store';
+import { listMessagesByCorrespondentEmail } from '../email/email-correspondent';
 import {
   previewInboxArchiveRecovery,
   restoreInboxMessagesFromArchiveSafe,
@@ -874,9 +875,18 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           messageId: number;
           ticketCode?: string | null;
           customerId?: number | null;
+          correspondentEmail?: string | null;
           limit?: number;
         },
       ) => {
+        const email = payload.correspondentEmail?.trim().toLowerCase();
+        if (email && email.includes('@')) {
+          return listMessagesByCorrespondentEmail(payload.accountId, {
+            email,
+            excludeMessageId: payload.messageId,
+            limit: payload.limit,
+          });
+        }
         return listConversationMessagesForScope(payload.accountId, {
           excludeMessageId: payload.messageId,
           ticketCode: payload.ticketCode,
