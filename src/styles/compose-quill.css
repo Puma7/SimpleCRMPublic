@@ -47,12 +47,12 @@
   color: hsl(var(--popover-foreground));
 }
 
-/* User-resizable compose body (vertical). */
+/* User-resizable compose body (vertical). Cap height so footer stays visible in the dialog. */
 .compose-editor-resize {
   resize: vertical;
   overflow: auto;
-  min-height: 200px;
-  max-height: min(42vh, 480px);
+  min-height: 160px;
+  max-height: min(36vh, 420px);
 }
 
 .compose-quill.compose-editor-resize .ql-container {
