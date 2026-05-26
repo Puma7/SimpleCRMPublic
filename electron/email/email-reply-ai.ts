@@ -270,8 +270,8 @@ export function ensureReplySuggestion(
   },
 ): void {
   const trigger = opts?.trigger ?? 'inbound';
-  if (!opts?.force && !shouldAutoEnsureReplySuggestion(messageId, trigger)) return;
   const row = opts?.row ?? getEmailMessageById(messageId);
+  if (!opts?.force && !shouldAutoEnsureReplySuggestion(messageId, trigger, row)) return;
   if (!row || !canSuggestReplyForMessage(row)) return;
   const current = getReplySuggestion(messageId);
   if (!opts?.force && current.status === 'ready') return;

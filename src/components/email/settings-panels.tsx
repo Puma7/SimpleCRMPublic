@@ -10,7 +10,6 @@ import {
   BrainCircuit,
   Download,
   KeyRound,
-  Send,
   Sparkles,
   Type,
   Users,
@@ -21,8 +20,7 @@ import {
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
 import { AccountsMasterDetailSettings } from "./settings/accounts-master-detail"
-import { SmtpPanel } from "./settings/smtp-panel"
-import { OAuthPanel } from "./settings/oauth-panel"
+import { OAuthAppsPanel } from "./settings/oauth-apps-panel"
 import { AiPanel } from "./settings/ai-panel"
 import { TeamPanel } from "./settings/team-panel"
 import { CannedPanel } from "./settings/canned-panel"
@@ -49,8 +47,12 @@ const TAB_DEFS: TabDef[] = [
     fullBleed: true,
     render: () => <AccountsMasterDetailSettings />,
   },
-  { id: "smtp", label: "SMTP", icon: Send, render: () => <SmtpPanel /> },
-  { id: "oauth", label: "OAuth", icon: KeyRound, render: () => <OAuthPanel /> },
+  {
+    id: "oauthApps",
+    label: "OAuth-Apps",
+    icon: KeyRound,
+    render: () => <OAuthAppsPanel />,
+  },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
   { id: "knowledge", label: "Wissensbasis", icon: BookOpen, render: () => <KnowledgePanel /> },
   {
@@ -75,7 +77,7 @@ const TAB_DEFS: TabDef[] = [
 export const SETTINGS_TAB_IDS = TAB_DEFS.map((t) => t.id)
 
 export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
-  { label: "Konten & Versand", tabIds: ["accounts", "smtp", "oauth"] },
+  { label: "Konten & Versand", tabIds: ["accounts", "oauthApps"] },
   {
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],

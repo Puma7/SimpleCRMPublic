@@ -19,11 +19,17 @@ import { hasElectron, invokeIpc } from "../types"
 
 type CategoryRow = { id: number; name: string }
 
-export function ReplySuggestionSettingsSection() {
+type Props = {
+  /** Fehlt = globale Standardwerte für alle Postfächer. */
+  accountId?: number
+}
+
+export function ReplySuggestionSettingsSection({ accountId }: Props) {
   const [settings, setSettings] = useState<ReplySuggestionSettings | null>(null)
   const [categories, setCategories] = useState<CategoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const perAccount = accountId != null
 
   const load = useCallback(async () => {
     if (!hasElectron()) {
@@ -33,7 +39,9 @@ export function ReplySuggestionSettingsSection() {
     setLoading(true)
     try {
       const [s, cats] = await Promise.all([
-        invokeIpc<ReplySuggestionSettings>(IPCChannels.Email.GetReplySuggestionSettings),
+        invokeIpc<ReplySuggestionSettings>(IPCChannels.Email.GetReplySuggestionSettings, {
+          accountId,
+        }),
         invokeIpc<CategoryRow[]>(IPCChannels.Email.ListCategories),
       ])
       setSettings(s)
@@ -44,7 +52,7 @@ export function ReplySuggestionSettingsSection() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [accountId])
 
   useEffect(() => {
     void load()
@@ -70,10 +78,14 @@ export function ReplySuggestionSettingsSection() {
     try {
       const saved = await invokeIpc<ReplySuggestionSettings>(
         IPCChannels.Email.SetReplySuggestionSettings,
-        settings,
+        { ...settings, accountId },
       )
       setSettings(saved)
-      toast.success("Antwortvorschläge-Einstellungen gespeichert.")
+      toast.success(
+        perAccount
+          ? "Konto-Einstellungen für Antwortvorschläge gespeichert."
+          : "Globale Antwortvorschläge-Einstellungen gespeichert.",
+      )
     } catch (e) {
       console.error(e)
       toast.error("Speichern fehlgeschlagen.")
@@ -101,10 +113,20 @@ export function ReplySuggestionSettingsSection() {
       <div>
         <h3 className="text-base font-semibold">KI-Antwortvorschläge</h3>
         <p className="text-sm text-muted-foreground">
-          Steuert, wann im Hintergrund KI-Antworttexte erzeugt werden. Jede Generierung verursacht
-          API-Kosten. Bereits fertige Vorschläge werden beim erneuten Öffnen nicht neu erzeugt —
-          es wird nur nachgeladen, was in der Datenbank steht. Manuelles „Antwort entwerfen“ im
-          Lesefenster funktioniert unabhängig davon.
+          {perAccount ? (
+            <>
+              Gilt nur für dieses Postfach und überschreibt die globalen Standardwerte unter{" "}
+              <strong>KI &amp; Automation → KI</strong>, sobald Sie hier speichern. API-Profile und
+              Modelle legen Sie global fest.
+            </>
+          ) : (
+            <>
+              Globale Standardwerte für alle Postfächer. Pro Posteingang können Sie unter{" "}
+              <strong>Konten → KI</strong> abweichende Auslöser und Kategorie-Filter setzen.
+            </>
+          )}{" "}
+          Jede Hintergrund-Generierung verursacht API-Kosten. Manuelles „Antwort entwerfen“ im
+          Lesefenster bleibt unabhängig.
         </p>
       </div>
 
@@ -153,8 +175,7 @@ export function ReplySuggestionSettingsSection() {
             <span className="font-medium">Beim Öffnen im Posteingang</span>
             <span className="mt-0.5 block text-xs text-muted-foreground">
               Startet nur, wenn noch kein fertiger Vorschlag existiert (Status „bereit“ wird
-              übersprungen). Deaktivieren spart Kosten, wenn Sie ohnehin nur nach Sync vorschlagen
-              wollen.
+              übersprungen).
             </span>
           </span>
         </label>
@@ -181,10 +202,6 @@ export function ReplySuggestionSettingsSection() {
             <SelectItem value="only_listed">Nur ausgewählte Kategorien</SelectItem>
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">
-          Nützlich mit Workflows, die Mails in Kategorien verschieben: Vorschläge nur für
-          z. B. „Support“ oder „Vertrieb“.
-        </p>
         {settings.categoryMode === "only_listed" ? (
           <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
             {categories.length === 0 ? (
@@ -206,26 +223,12 @@ export function ReplySuggestionSettingsSection() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Unabhängig von diesen Optionen werden keine Vorschläge für Spam, Entwürfe, automatische
-        Absender (noreply, Abwesenheit) oder sehr kurze Texte erzeugt.
+        Unabhängig davon werden keine Vorschläge für Spam, Entwürfe, automatische Absender oder sehr
+        kurze Texte erzeugt.
       </p>
 
-      <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground space-y-1">
-        <p className="font-medium text-foreground">Workflows</p>
-        <p>
-          Im Workflow-Editor steht der Knoten{" "}
-          <span className="font-mono text-foreground">Antwortvorschlag erzeugen</span> (
-          <span className="font-mono">ai.reply_suggestion</span>) — er läuft gezielt nach
-          Kategorie-Sortierung oder anderen Schritten, unabhängig vom Master-Schalter oben.
-        </p>
-        <p>
-          Für automatische Vorschläge nur nach Workflow-Kategorien reicht der Kategorie-Filter
-          („Nur ausgewählte Kategorien“) zusammen mit „Nach Eingang“ — ohne extra Knoten.
-        </p>
-      </div>
-
       <Button type="button" disabled={loading || saving} onClick={() => void save()}>
-        {saving ? "Speichern…" : "Antwortvorschläge speichern"}
+        {saving ? "Speichern…" : perAccount ? "Konto-Einstellungen speichern" : "Globale Einstellungen speichern"}
       </Button>
     </section>
   )

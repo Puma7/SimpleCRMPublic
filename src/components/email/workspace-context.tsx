@@ -28,8 +28,7 @@ export type { MessageListFilter }
 
 export type SettingsTab =
   | "accounts"
-  | "smtp"
-  | "oauth"
+  | "oauthApps"
   | "ai"
   | "knowledge"
   | "mailSecurity"
@@ -124,10 +123,15 @@ function writeLS(key: string, value: unknown): void {
 }
 
 const VALID_MAIL_VIEWS: MailView[] = ["inbox", "sent", "archived", "drafts", "spam", "trash"]
-const VALID_SETTINGS_TABS: SettingsTab[] = [
+function normalizeSettingsTab(raw: string): SettingsTab | null {
+  if (raw === "smtp" || raw === "oauth") return "accounts"
+  if (VALID_SETTINGS_TAB_IDS.includes(raw as SettingsTab)) return raw as SettingsTab
+  return null
+}
+
+const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "accounts",
-  "smtp",
-  "oauth",
+  "oauthApps",
   "ai",
   "knowledge",
   "mailSecurity",
@@ -138,6 +142,8 @@ const VALID_SETTINGS_TABS: SettingsTab[] = [
   "export",
   "misc",
 ]
+
+const VALID_SETTINGS_TABS = VALID_SETTINGS_TAB_IDS
 
 export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedAccountScope, setSelectedAccountScope] = useState<MailAccountScope | null>(() =>
@@ -168,8 +174,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
       LS_KEYS.settingsTab,
-      (raw) =>
-        VALID_SETTINGS_TABS.includes(raw as SettingsTab) ? (raw as SettingsTab) : null,
+      (raw) => normalizeSettingsTab(raw),
       "accounts",
     ),
   )
