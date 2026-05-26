@@ -24,8 +24,8 @@ function uniquePreserveOrder(addrs: string[]): string[] {
 export function buildReplyAllRecipients(
   message: {
     from_json: string | null | undefined;
-    to_json: string | null | undefined;
-    cc_json: string | null | undefined;
+    to_json?: string | null;
+    cc_json?: string | null;
   },
   ownEmails: string[],
 ): { to: string; cc: string } {
