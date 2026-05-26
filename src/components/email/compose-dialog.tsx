@@ -78,12 +78,27 @@ function customerOptFromDbRow(row: Record<string, unknown>): CustomerOpt {
 }
 import { logError } from "./log"
 import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
+import { useComposeDialogSize } from "./use-compose-dialog-size"
 
 type Props = {
   accounts: EmailAccount[]
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
-  onSent: () => void | Promise<void>
+  onSent: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
+}
+
+function getComposeContextMessageId(
+  intent: ComposeIntent,
+  replyToId: number | null,
+): number | null {
+  if (
+    intent.mode === "reply" ||
+    intent.mode === "reply-all" ||
+    intent.mode === "forward"
+  ) {
+    return intent.message.id
+  }
+  return replyToId
 }
 
 function sanitizeComposeHtml(html: string): string {
@@ -132,6 +147,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
+  const { width: composeDialogWidth, startResize: startComposeWidthResize } =
+    useComposeDialogSize()
 
   useEffect(() => {
     if (!isOpen) {
@@ -331,10 +348,27 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     closingRef.current = false
   }
 
+  const finishComposeClose = async (contextMessageId: number | null) => {
+    closeDialog()
+    await onSent(contextMessageId != null ? { preserveSelection: true } : undefined)
+    if (contextMessageId != null && hasElectron()) {
+      try {
+        const full = await invokeIpc<EmailMessage | null>(
+          IPCChannels.Email.GetMessage,
+          contextMessageId,
+        )
+        if (full) setSelectedMessage(full)
+      } catch (e) {
+        logError("compose-dialog: restore context message", e)
+      }
+    }
+  }
+
   const requestClose = () => {
     if (closingRef.current || sending) return
     if (!hasElectron() || draftId == null) {
-      closeDialog()
+      const contextId = getComposeContextMessageId(composeIntent, replyToId)
+      void finishComposeClose(contextId)
       return
     }
     setCloseConfirmOpen(true)
@@ -348,12 +382,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     if (closingRef.current) return
     closingRef.current = true
     setCloseConfirmOpen(false)
+    const contextId = getComposeContextMessageId(composeIntent, replyToId)
     void (async () => {
       try {
         const ok = await saveDraft({ silent: true })
         if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
-        closeDialog()
-        void onSent()
+        await finishComposeClose(contextId)
       } finally {
         closingRef.current = false
       }
@@ -364,6 +398,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     if (closingRef.current) return
     closingRef.current = true
     setCloseConfirmOpen(false)
+    const contextId = getComposeContextMessageId(composeIntent, replyToId)
     void (async () => {
       try {
         if (hasElectron() && draftId != null) {
@@ -376,8 +411,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             return
           }
         }
-        closeDialog()
-        void onSent()
+        await finishComposeClose(contextId)
       } finally {
         closingRef.current = false
       }
@@ -577,8 +611,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       } else {
         toast.success("E-Mail gesendet.")
       }
-      await onSent()
-      closeDialog()
+      const contextId = getComposeContextMessageId(composeIntent, replyToId)
+      await finishComposeClose(contextId)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Versand fehlgeschlagen.")
     } finally {
@@ -594,7 +628,18 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         if (!open) requestClose()
       }}
     >
-      <DialogContent className="flex max-h-[92vh] max-w-4xl flex-col gap-3 p-0">
+      <DialogContent
+        className="relative flex max-h-[92vh] flex-col gap-3 p-0 sm:max-w-[96vw]"
+        style={{ width: composeDialogWidth, maxWidth: "96vw" }}
+      >
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Dialogbreite anpassen"
+          title="Breite ziehen"
+          className="absolute right-0 top-0 z-10 h-full w-2 cursor-ew-resize rounded-r-lg hover:bg-primary/10"
+          onMouseDown={startComposeWidthResize}
+        />
         <DialogHeader className="border-b px-6 pt-6 pb-3">
           <DialogTitle>
             {composeIntent.mode === "reply"
@@ -802,8 +847,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             />
           </div>
           <p className="text-[10px] text-muted-foreground">
-            Nachrichtenbereich unten am Rand ziehen, um die Höhe anzupassen. Änderungen werden
-            automatisch im Entwurf gespeichert.
+            Dialog rechts am Rand und den Nachrichtenbereich unten ziehen, um Breite und Höhe
+            anzupassen. Änderungen werden automatisch im Entwurf gespeichert.
           </p>
 
           <div className="space-y-2">
@@ -898,7 +943,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   sendAt: iso,
                 })
                 toast.success("Versand geplant — Entwurf bleibt gespeichert.")
-                closeDialog()
+                const contextId = getComposeContextMessageId(composeIntent, replyToId)
+                void finishComposeClose(contextId)
               })()
             }}
           >
