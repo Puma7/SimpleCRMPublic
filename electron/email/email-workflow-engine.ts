@@ -15,8 +15,6 @@ import {
   markWorkflowAppliedToMessage,
   insertWorkflowRun,
 } from './email-workflow-store';
-import { getDb } from '../sqlite-service';
-import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../database-schema';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
 import {
   attachmentContextFromJson,
@@ -26,7 +24,7 @@ import {
 import { listAiPrompts } from './email-crm-store';
 import { addressesFromRecipientJson } from './email-parse-utils';
 import { runChatCompletion } from './email-openai';
-import { sendSmtpForAccount } from './email-smtp';
+import { sendWorkflowForwardCopy } from './email-forward-copy';
 
 export type OutboundDraftPayload = {
   messageId: number;
@@ -137,21 +135,6 @@ async function executeInboundStep(
       log.push('link_customer');
       return true;
     case 'forward_copy': {
-      const acc = getEmailAccountById(row.account_id);
-      if (!acc) {
-        log.push('forward_copy:skip_no_account');
-        return true;
-      }
-      const dest = step.to.trim().toLowerCase();
-      const dup = getDb()
-        .prepare(
-          `SELECT 1 FROM ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} WHERE message_id = ? AND workflow_id = ? AND dest = ?`,
-        )
-        .get(messageId, workflowId, dest) as { 1: number } | undefined;
-      if (dup) {
-        log.push('forward_copy:skip_duplicate');
-        return true;
-      }
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [
         row.body_text ?? row.snippet ?? '',
@@ -159,21 +142,19 @@ async function executeInboundStep(
         '---',
         `Original von: ${buildInboundContext(row).from_address}`,
       ].join('\n');
-      try {
-        await sendSmtpForAccount(row.account_id, {
-          from: acc.email_address,
-          to: step.to,
-          subject: subj,
-          text: body.slice(0, 500_000),
-        });
-        getDb()
-          .prepare(
-            `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
-          )
-          .run(messageId, workflowId, dest);
+      const sent = await sendWorkflowForwardCopy({
+        accountId: row.account_id,
+        sourceMessageId: messageId,
+        workflowId,
+        to: step.to,
+        subject: subj,
+        bodyText: body,
+        originalFromLine: buildInboundContext(row).from_address,
+      });
+      if (sent.ok) {
         log.push(`forward_copy:${step.to}`);
-      } catch (e) {
-        log.push(`forward_copy_error:${e instanceof Error ? e.message : String(e)}`);
+      } else {
+        log.push(`forward_copy_blocked:${sent.reason}`);
       }
       return true;
     }
@@ -398,12 +379,13 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
 
 export async function evaluateOutboundWorkflows(
   payload: OutboundDraftPayload,
-  options?: { dryRun?: boolean },
+  options?: { dryRun?: boolean; sideEffects?: 'draft' | 'none' },
 ): Promise<{
   allowed: boolean;
   reason: string | null;
 }> {
   const dryRun = options?.dryRun === true;
+  const draftSideEffects = options?.sideEffects !== 'none';
   if (!payload.messageId || payload.messageId <= 0) {
     return { allowed: false, reason: 'Kein gültiger Entwurf für die Ausgangsprüfung' };
   }
@@ -412,7 +394,7 @@ export async function evaluateOutboundWorkflows(
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 
-  if (!dryRun) {
+  if (!dryRun && draftSideEffects) {
     setOutboundHold(payload.messageId, false, null);
   }
 
@@ -433,13 +415,13 @@ export async function evaluateOutboundWorkflows(
         const reason =
           r.blockReason ||
           'Ausgehende Nachricht durch Workflow zurückgestellt. Bitte Text prüfen.';
-        if (!dryRun) {
+        if (!dryRun && draftSideEffects) {
           const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
         }
         return { allowed: false, reason };
       }
-      if (!dryRun) {
+      if (!dryRun && draftSideEffects) {
         const checkHold = getEmailMessageById(payload.messageId);
         if (checkHold?.outbound_hold) {
           const reason = checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
@@ -466,7 +448,7 @@ export async function evaluateOutboundWorkflows(
 
   if (parseOrEngineError) {
     const reason = `Workflow-Fehler: ${parseOrEngineError}`;
-    if (!dryRun) {
+    if (!dryRun && draftSideEffects) {
       setOutboundHold(payload.messageId, true, reason);
       const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
       returnOutboundDraftToInbox(payload.messageId, reason, { payload });
@@ -477,7 +459,7 @@ export async function evaluateOutboundWorkflows(
     };
   }
 
-  if (!dryRun) {
+  if (!dryRun && draftSideEffects) {
     const after = getEmailMessageById(payload.messageId);
     if (after?.outbound_hold) {
       const reason = after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';

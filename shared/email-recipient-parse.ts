@@ -1,6 +1,8 @@
+import { normalizeEmailAddress } from './email-address-normalize';
+
 /**
  * Parse To/Cc fields: supports "a@b.de", "Name <a@b.de>", comma/semicolon lists.
- * Returns lowercased address strings for comparison; empty entries dropped.
+ * Returns normalized address strings for comparison; empty entries dropped.
  */
 const ADDR_CORE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i
 
@@ -13,7 +15,7 @@ export function extractEmailAddressesFromRecipientField(raw: string): string[] {
     const m = t.match(/^(.+)<([^>]+)>$/)
     const candidate = (m ? m[2] : t).trim()
     if (ADDR_CORE.test(candidate)) {
-      out.push(candidate.toLowerCase())
+      out.push(normalizeEmailAddress(candidate))
     }
   }
   return out

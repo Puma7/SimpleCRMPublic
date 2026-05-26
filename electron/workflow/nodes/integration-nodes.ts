@@ -1,25 +1,12 @@
 import { getSyncInfo } from '../../sqlite-service';
+import { isHttpMethodAllowed } from '../../../shared/workflow-http-allowlist';
+import { assertWorkflowHttpUrlAllowed } from '../http-request-guard';
 import type { RegisteredWorkflowNode } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
 const HTTP_ALLOWLIST_KEY = 'workflow_http_allowlist';
-
-function hostAllowed(url: string): boolean {
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  const raw = getSyncInfo(HTTP_ALLOWLIST_KEY) || '';
-  const allowed = raw
-    .split(/[,;\s]+/)
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
-  if (allowed.length === 0) return false;
-  return allowed.some((a) => host === a || host.endsWith(`.${a}`));
-}
+const MAX_MSSQL_QUERY_CHARS = 8_000;
 
 export function registerIntegrationNodes(register: Reg): void {
   register({
@@ -55,14 +42,19 @@ export function registerIntegrationNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const url = String(config.url ?? '');
       if (!url) return { status: 'skipped' };
-      if (!hostAllowed(url)) {
-        return {
-          status: 'error',
-          message: 'Host nicht in Allowlist (Einstellungen workflow_http_allowlist)',
-        };
+      const allowlistRaw = getSyncInfo(HTTP_ALLOWLIST_KEY) || '';
+      const urlCheck = await assertWorkflowHttpUrlAllowed(url, allowlistRaw);
+      if (!urlCheck.ok) {
+        return { status: 'error', message: urlCheck.message };
       }
       if (ctx.dryRun) return { status: 'ok', message: `dry-run ${url}` };
       const method = String(config.method ?? 'GET').toUpperCase();
+      if (!isHttpMethodAllowed(method)) {
+        return {
+          status: 'error',
+          message: `HTTP-Methode ${method} nicht erlaubt (nur GET, POST)`,
+        };
+      }
       const res = await fetch(url, {
         method,
         body: method === 'GET' ? undefined : String(config.body ?? ''),
@@ -85,6 +77,12 @@ export function registerIntegrationNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const sqlText = String(config.sql ?? '').trim();
       if (!sqlText) return { status: 'skipped' };
+      if (sqlText.length > MAX_MSSQL_QUERY_CHARS) {
+        return {
+          status: 'error',
+          message: `SQL zu lang (max ${MAX_MSSQL_QUERY_CHARS} Zeichen)`,
+        };
+      }
       const upper = sqlText.toUpperCase();
       if (
         /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE)\b/.test(upper)

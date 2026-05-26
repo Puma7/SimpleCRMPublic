@@ -9,10 +9,8 @@ import {
 } from '../../email/email-store';
 import { evaluateSenderFilter } from '../sender-filter';
 import { assignCategoryPathToMessage } from '../../email/email-crm-store';
-import { sendSmtpForAccount } from '../../email/email-smtp';
+import { sendWorkflowForwardCopy } from '../../email/email-forward-copy';
 import { syncSeenFlagToServer } from '../../email/email-imap-flags';
-import { getDb } from '../../sqlite-service';
-import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../../database-schema';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
@@ -110,28 +108,20 @@ export function registerEmailNodes(register: Reg): void {
       const to = String(config.to ?? '').trim();
       if (!to) return { status: 'skipped' };
       if (ctx.dryRun) return { status: 'ok', message: `dry-run forward ${to}` };
-      const acc = getEmailAccountById(row.account_id);
-      if (!acc) return { status: 'error', message: 'Konto fehlt' };
-      const dest = to.toLowerCase();
-      const dup = getDb()
-        .prepare(
-          `SELECT 1 FROM ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} WHERE message_id = ? AND workflow_id = ? AND dest = ?`,
-        )
-        .get(messageId, ctx.workflowId, dest);
-      if (dup) return { status: 'ok', message: 'duplicate_skip' };
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');
-      await sendSmtpForAccount(row.account_id, {
-        from: acc.email_address,
+      const sent = await sendWorkflowForwardCopy({
+        accountId: row.account_id,
+        sourceMessageId: messageId,
+        workflowId: ctx.workflowId,
         to,
         subject: subj,
-        text: body.slice(0, 500_000),
+        bodyText: body,
+        originalFromLine: ctx.strings.from_address,
       });
-      getDb()
-        .prepare(
-          `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
-        )
-        .run(messageId, ctx.workflowId, dest);
+      if (!sent.ok) {
+        return { status: 'error', message: sent.reason };
+      }
       return { status: 'ok' };
     },
   });

@@ -41,6 +41,8 @@ export function registerCodeNodes(register: Reg): void {
     label: 'JavaScript',
     category: 'code',
     canvasType: 'registry',
+    description:
+      'Keine echte Sandbox: nur vertrauenswürdigen Code ausführen. Node-vm kann Prozesszugriff ermöglichen.',
     defaultConfig: {
       code: '// Setze result = { myVar: "wert" }\nresult = { ok: true };',
     },
@@ -69,6 +71,8 @@ export function registerCodeNodes(register: Reg): void {
     label: 'Python (Subprozess)',
     category: 'code',
     canvasType: 'registry',
+    description:
+      'Führt python3 mit eingeschränkter Umgebung aus. Voller OS-Zugriff des App-Benutzers — nur eigenen Code verwenden.',
     defaultConfig: { code: 'print("ok")' },
     execute: async (ctx, config) => {
       const code = String(config.code ?? '');
@@ -78,7 +82,14 @@ export function registerCodeNodes(register: Reg): void {
       const r = spawnSync('python3', ['-c', code], {
         encoding: 'utf8',
         timeout: CODE_TIMEOUT_MS,
-        env: { ...process.env, WORKFLOW_CTX: JSON.stringify(ctx.strings) },
+        env: {
+          WORKFLOW_CTX: JSON.stringify(ctx.strings),
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          LANG: 'C.UTF-8',
+          LC_ALL: 'C.UTF-8',
+          HOME: process.env.HOME ?? '',
+          TMPDIR: process.env.TMPDIR ?? '/tmp',
+        },
       });
       if (r.error || r.status !== 0) {
         return { status: 'error', message: r.stderr || r.error?.message || 'Python fehlgeschlagen' };

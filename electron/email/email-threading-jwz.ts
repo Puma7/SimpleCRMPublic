@@ -16,13 +16,18 @@ function parseReferences(refs: string | null): string[] {
     .filter((x): x is string => Boolean(x));
 }
 
+const MAX_THREAD_REF_IDS = 64;
+
 function collectRelatedIds(messageId: string | null, inReplyTo: string | null, refs: string | null): string[] {
   const s = new Set<string>();
   const m = normId(messageId);
   if (m) s.add(m);
   const ir = normId(inReplyTo);
   if (ir) s.add(ir);
-  for (const r of parseReferences(refs)) s.add(r);
+  for (const r of parseReferences(refs)) {
+    if (s.size >= MAX_THREAD_REF_IDS) break;
+    s.add(r);
+  }
   return [...s];
 }
 
