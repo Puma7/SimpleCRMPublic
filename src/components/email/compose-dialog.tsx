@@ -12,7 +12,7 @@ import {
   recipientFieldFromJson,
   validateRecipientField,
 } from "@shared/email-recipient-parse"
-import { Loader2, Paperclip, X } from "lucide-react"
+import { CircleHelp, Loader2, Paperclip, X } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -41,6 +41,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-reply-addresses"
 import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
@@ -706,6 +712,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   }
 
   return (
+    <TooltipProvider delayDuration={200}>
     <>
     <Dialog
       open={isOpen}
@@ -722,7 +729,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           role="separator"
           aria-orientation="vertical"
           aria-label="Dialogbreite anpassen"
-          title="Breite ziehen"
+          title="Dialogbreite: am rechten Rand nach links oder rechts ziehen"
           className="absolute right-0 top-0 z-10 h-full w-2 cursor-ew-resize rounded-r-lg hover:bg-primary/10"
           onMouseDown={startComposeWidthResize}
         />
@@ -739,8 +746,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                     : "Neue Nachricht"}
           </DialogTitle>
           <DialogDescription>
-            Textbausteine und „KI auf Text“ (Prompt aus Einstellungen → E-Mail → KI-Prompts) bearbeiten
-            den Nachrichtentext. Zum Senden wird zuerst ein lokaler Entwurf angelegt.
+            Beim Öffnen wird automatisch ein Entwurf angelegt und alle paar Sekunden gespeichert.
+            Empfänger und Betreff oben, Ihren Text im großen Feld darunter.
           </DialogDescription>
           {isReplyCompose && replyToId != null ? (
             <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-left text-sm">
@@ -760,7 +767,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           ) : null}
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 pb-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-2 pt-1">
           {draftBootstrapping || (draftId == null && hasElectron()) ? (
             <div
               className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
@@ -832,7 +839,34 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               </div>
             </div>
           ) : null}
-          <div className="flex flex-wrap gap-2">
+          <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-3">
+            <p className="text-xs font-medium text-foreground">Text-Hilfen</p>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Einfügen oder umformulieren oberhalb des Zitats — das Original bleibt darunter
+              unverändert.
+            </p>
+            <div className="flex flex-wrap items-end gap-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1">
+                <Label htmlFor="compose-canned" className="text-xs text-muted-foreground">
+                  Textbaustein
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="rounded-sm text-muted-foreground hover:text-foreground"
+                      aria-label="Hilfe Textbaustein"
+                    >
+                      <CircleHelp className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-xs">
+                    Fertigen Text aus Einstellungen → E-Mail → Textbausteine einfügen. Platzhalter
+                    wie Kundenname werden ersetzt, wenn ein Kunde verknüpft ist.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
             <Select
               disabled={draftId == null || draftBootstrapping}
               onValueChange={(id) => {
@@ -863,8 +897,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 })()
               }}
             >
-              <SelectTrigger className="h-8 w-[180px] text-xs">
-                <SelectValue placeholder="Textbaustein" />
+              <SelectTrigger id="compose-canned" className="h-8 w-[200px] text-xs">
+                <SelectValue placeholder="Baustein wählen…" />
               </SelectTrigger>
               <SelectContent>
                 {cannedList.map((c) => (
@@ -874,6 +908,28 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 ))}
               </SelectContent>
             </Select>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1">
+                <Label htmlFor="compose-ai" className="text-xs text-muted-foreground">
+                  KI auf Text
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="rounded-sm text-muted-foreground hover:text-foreground"
+                      aria-label="Hilfe KI auf Text"
+                    >
+                      <CircleHelp className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-xs">
+                    Formuliert nur Ihren Antworttext (oberhalb des Zitats) mit einem Prompt aus
+                    Einstellungen → E-Mail → KI-Prompts. Zuerst kurz tippen, dann Prompt wählen.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
             <Select
               key={aiPromptSelectKey}
               disabled={draftId == null || draftBootstrapping || aiPrompts.length === 0}
@@ -921,10 +977,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 })()
               }}
             >
-              <SelectTrigger className="h-8 w-[200px] text-xs">
+              <SelectTrigger id="compose-ai" className="h-8 w-[220px] text-xs">
                 <SelectValue
                   placeholder={
-                    aiPrompts.length === 0 ? "Keine KI-Prompts" : "KI auf Text…"
+                    aiPrompts.length === 0 ? "Keine KI-Prompts" : "Prompt wählen…"
                   }
                 />
               </SelectTrigger>
@@ -938,8 +994,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   ))}
               </SelectContent>
             </Select>
+            </div>
+            </div>
           </div>
 
+          <div className="shrink-0 space-y-3">
           {accounts.length > 1 && composeIntent.mode === "new" && composeAccountId != null ? (
             <div className="grid grid-cols-[60px_1fr] items-center gap-x-3">
               <Label className="justify-self-end text-xs text-muted-foreground">Von</Label>
@@ -1000,8 +1059,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               className="h-9"
             />
           </div>
+          </div>
 
-          <div className="compose-quill compose-editor-resize rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted">
+          <div
+            className="compose-quill compose-editor-fill min-h-0 flex-1 rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
+            title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
+          >
             <ComposeQuillEditor
               ref={editorRef}
               value={bodyHtml}
@@ -1054,9 +1117,6 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 <Paperclip className="h-4 w-4" />
                 Anhang hinzufügen
               </Button>
-              <p className="hidden text-[10px] text-muted-foreground sm:block">
-                Breite rechts · Höhe am Editor · Autosave im Entwurf
-              </p>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button type="button" variant="ghost" onClick={requestClose}>
@@ -1154,5 +1214,6 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       onOpenChange={setWorkflowRunDetailOpen}
     />
     </>
+    </TooltipProvider>
   )
 }
