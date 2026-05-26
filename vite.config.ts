@@ -10,6 +10,8 @@ const electronConditions = ['node', 'import', 'module', 'default']
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  /** Separate cache when dev server runs beside `vite build --watch` (electron:dev). */
+  cacheDir: process.env.VITE_DEV_CACHE === '1' ? 'node_modules/.vite-dev' : 'node_modules/.vite',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -84,7 +86,16 @@ export default defineConfig({
   },
   clearScreen: false,
   optimizeDeps: {
-    include: ['@supabase/postgrest-js', '@xyflow/react', '@xyflow/system'],
+    include: [
+      '@supabase/postgrest-js',
+      '@xyflow/react',
+      '@xyflow/system',
+      '@monaco-editor/react',
+      'monaco-editor',
+    ],
     exclude: ['electron'],
+  },
+  worker: {
+    format: 'es',
   },
 })

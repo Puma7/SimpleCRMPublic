@@ -11,13 +11,20 @@ import { Switch } from "@/components/ui/switch"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
-export function SmtpPanel() {
+type SmtpPanelProps = {
+  /** Wenn gesetzt: festes Konto, kein Konto-Dropdown (Konten-Detail). */
+  embeddedAccountId?: number | null
+}
+
+export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const {
-    settingsAccountId: accId,
+    settingsAccountId: workspaceAccId,
     setSettingsAccountId: setAccId,
     accountsRevision,
     bumpAccountsRevision,
   } = useMailWorkspace()
+  const embedded = embeddedAccountId != null
+  const accId = embedded ? embeddedAccountId : workspaceAccId
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [smtpHost, setSmtpHost] = useState("")
   const [smtpPort, setSmtpPort] = useState("587")
@@ -122,21 +129,23 @@ export function SmtpPanel() {
         </p>
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Konto</Label>
-        <select
-          className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-          value={accId ?? ""}
-          onChange={(e) => setAccId(e.target.value ? parseInt(e.target.value, 10) : null)}
-        >
-          <option value="">— wählen —</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.display_name} ({a.email_address})
-            </option>
-          ))}
-        </select>
-      </div>
+      {!embedded ? (
+        <div className="space-y-1.5">
+          <Label>Konto</Label>
+          <select
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            value={accId ?? ""}
+            onChange={(e) => setAccId(e.target.value ? parseInt(e.target.value, 10) : null)}
+          >
+            <option value="">— wählen —</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.display_name} ({a.email_address})
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       {accId != null ? (
         <>
