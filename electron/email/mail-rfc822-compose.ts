@@ -63,6 +63,16 @@ function encodeSingleMailbox(mailbox: string): string {
   return `${encoded} <${email}>`;
 }
 
+/** RFC 2231 / 5987 style filename for non-ASCII attachment names. */
+function contentDispositionFilenameParam(filename: string): string {
+  if (/^[\x20-\x7E]*$/.test(filename)) {
+    return `filename="${filename}"`;
+  }
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, '_') || 'attachment';
+  const encoded = encodeURIComponent(filename);
+  return `filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
+
 function guessContentType(filename: string, explicit?: string): string {
   if (explicit?.trim()) return explicit.trim();
   const ext = path.extname(filename).toLowerCase();
@@ -166,13 +176,16 @@ export function buildComposeRfc822(input: {
     const filename = att.filename || path.basename(att.path);
     const ctype = guessContentType(filename, att.contentType);
     headerLines.push(`--${mixedBoundary}`);
-    headerLines.push(`Content-Type: ${ctype}; name="${filename}"`);
+    const nameParam = /^[\x20-\x7E]*$/.test(filename)
+      ? `name="${filename}"`
+      : `name*=UTF-8''${encodeURIComponent(filename)}`;
+    headerLines.push(`Content-Type: ${ctype}; ${nameParam}`);
     headerLines.push('Content-Transfer-Encoding: base64');
     if (att.cid) {
-      headerLines.push(`Content-Disposition: inline; filename="${filename}"`);
+      headerLines.push(`Content-Disposition: inline; ${contentDispositionFilenameParam(filename)}`);
       headerLines.push(`Content-ID: <${att.cid}>`);
     } else {
-      headerLines.push(`Content-Disposition: attachment; filename="${filename}"`);
+      headerLines.push(`Content-Disposition: attachment; ${contentDispositionFilenameParam(filename)}`);
     }
     headerLines.push('');
     headerLines.push(encodeBase64Lines(buf));

@@ -41,4 +41,24 @@ describe('buildComposeRfc822', () => {
     expect(raw).toContain('buyer@example.com');
     expect(raw).toContain('fr@example.com');
   });
+
+  it('encodes non-ASCII attachment filenames (RFC 2231)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfc822-fn-'));
+    const attPath = path.join(dir, 'rechnung.pdf');
+    fs.writeFileSync(attPath, 'pdf');
+
+    const buf = buildComposeRfc822({
+      from: 'me@example.com',
+      to: 'you@example.com',
+      subject: 'Anhang',
+      text: 'Body',
+      attachments: [{ filename: 'Rechnung März.pdf', path: attPath }],
+    });
+
+    const raw = buf.toString('utf-8');
+    expect(raw).toContain('filename*=UTF-8');
+    expect(raw).toContain('name*=UTF-8');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });

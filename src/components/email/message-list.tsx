@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Loader2, Paperclip, Search } from "lucide-react"
@@ -103,10 +103,29 @@ export function MessageList({
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setSelectedIds(new Set())
   }, [mailView, selectedAccountId, categoryFilterId, messageListFilter])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && selectedIds.size > 0 && !bulkBusy) {
+        setSelectedIds(new Set())
+        return
+      }
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (!target) return
+      const tag = target.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return
+      e.preventDefault()
+      searchInputRef.current?.focus()
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [selectedIds.size, bulkBusy])
 
   const selectableIds = visibleMessages
     .filter((m) => m.uid >= 0 || Boolean(m.pop3_uidl))
@@ -150,6 +169,10 @@ export function MessageList({
             toast.error(r.error ?? "Archivieren fehlgeschlagen")
             return
           }
+          if (r.count === 0) {
+            toast.message("Keine Nachrichten archiviert (bereits archiviert oder nicht in dieser Ansicht).")
+            return
+          }
           toast.success(
             r.count === 1 ? "1 Nachricht archiviert" : `${r.count} Nachrichten archiviert`,
           )
@@ -162,6 +185,10 @@ export function MessageList({
           })
           if (!r.success) {
             toast.error(r.error ?? "Löschen fehlgeschlagen")
+            return
+          }
+          if (r.count === 0) {
+            toast.message("Keine Nachrichten verschoben (bereits im Papierkorb oder nicht in dieser Ansicht).")
             return
           }
           toast.success(
@@ -187,10 +214,12 @@ export function MessageList({
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
+            ref={searchInputRef}
             className="h-9 pl-8"
-            placeholder="Nachrichten durchsuchen… (/ demnächst)"
+            placeholder="Nachrichten durchsuchen… (/)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            disabled={bulkBusy}
           />
         </div>
         <MessageFilterChips />
@@ -311,13 +340,17 @@ export function MessageList({
                     )}
                     <button
                       type="button"
-                      draggable={m.uid >= 0}
+                      draggable={m.uid >= 0 && !bulkBusy}
+                      disabled={bulkBusy}
                       onDragStart={(e) => {
-                        if (m.uid < 0) return
+                        if (m.uid < 0 || bulkBusy) return
                         setMailDragData(e.dataTransfer, m.id)
                       }}
-                      onClick={() => void onOpen(m)}
-                      className="min-w-0 flex-1 px-2 py-2.5 text-left"
+                      onClick={() => {
+                        if (bulkBusy) return
+                        void onOpen(m)
+                      }}
+                      className="min-w-0 flex-1 px-2 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <div className="flex items-start gap-2">
                         <div

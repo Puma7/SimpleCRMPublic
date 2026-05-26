@@ -18,7 +18,7 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Klartext-Standard | stabil | |
 | HTML-Ansicht (opt-in, DOMPurify) | stabil | Umschaltbar in der Lesevorschau |
 | Riskante Anhänge (Warnung + Bestätigung) | stabil | IPC `confirmOpenRisky` |
-| Große ausgelassene Anhänge | teilweise | Metadaten `omitted` in `attachments_json` |
+| Große ausgelassene Anhänge | stabil | Metadaten `omitted` in `attachments_json`, Anzeige im Viewer |
 
 ## Antworten & Versand
 
@@ -58,4 +58,4 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Vollständiger IMAP Multi-Folder-Sync | geplant |
 | PGP-Entschlüsselung | geplant |
 | Open/Click-Tracking | geplant |
-| Abwesenheits-UI pro Konto | teilweise (Backend vorhanden) |
+| Abwesenheitsantwort pro Konto | stabil | Einstellungen → Konten bearbeiten |
