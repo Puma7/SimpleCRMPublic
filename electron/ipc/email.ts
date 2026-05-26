@@ -273,6 +273,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           vacationEnabled?: boolean;
           vacationSubject?: string | null;
           vacationBodyText?: string | null;
+          requestReadReceipt?: boolean;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -302,6 +303,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           vacationEnabled: payload.vacationEnabled,
           vacationSubject: payload.vacationSubject,
           vacationBodyText: payload.vacationBodyText,
+          requestReadReceipt: payload.requestReadReceipt,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -378,6 +380,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             vacation_enabled: 0,
             vacation_subject: null,
             vacation_body_text: null,
+            request_read_receipt: 0,
             created_at: '',
             updated_at: '',
           };

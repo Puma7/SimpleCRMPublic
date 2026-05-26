@@ -24,6 +24,7 @@ export type EmailAccount = {
   vacation_enabled?: number
   vacation_subject?: string | null
   vacation_body_text?: string | null
+  request_read_receipt?: number
   created_at: string
   updated_at: string
 }

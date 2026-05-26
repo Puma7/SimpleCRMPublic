@@ -104,10 +104,12 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   try {
     const { recoverStaleReplySuggestions } = await import('./email-reply-ai');
     const { clearStaleComposeSendingLocks } = await import('./email-compose-send');
+    const { recoverStaleDelayedJobs } = await import('../workflow/delayed-jobs');
     const { ensureVacationDedupTable } = await import('./email-vacation');
     ensureVacationDedupTable();
     recoverStaleReplySuggestions();
     clearStaleComposeSendingLocks();
+    recoverStaleDelayedJobs();
   } catch (e) {
     logger.warn('[email] startup recovery', e);
   }

@@ -92,6 +92,17 @@ export async function maybeSendVacationAutoReply(
   if (wasVacationReplySentRecently(acc.id, sender)) return;
   if (wasVacationSmtpFailedRecently(acc.id, sender)) return;
 
+  const fresh = getEmailMessageById(messageId);
+  if (
+    !fresh ||
+    fresh.is_spam === 1 ||
+    fresh.archived === 1 ||
+    fresh.soft_deleted === 1 ||
+    fresh.folder_kind !== 'inbox'
+  ) {
+    return;
+  }
+
   const subject =
     (acc as { vacation_subject?: string | null }).vacation_subject?.trim() ||
     'Abwesenheit: Automatische Antwort';

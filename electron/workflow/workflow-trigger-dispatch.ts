@@ -6,6 +6,11 @@ import { executeWorkflowForTrigger } from './workflow-executor';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 import { buildStringContextFromMessage } from './context';
 
+/** Prevent duplicate fires from overlapping cron ticks (not permanent). */
+const SCAN_TRIGGER_DEDUP_MS = 90_000;
+/** Debounce rapid duplicate deal-stage dispatches (double-save). */
+const DEAL_STAGE_DEBOUNCE_MS = 5_000;
+
 export type CrmWorkflowEvent =
   | {
       trigger: 'crm.customer_created';
@@ -40,7 +45,7 @@ function workflowTriggerDedupKey(event: CrmWorkflowEvent): string {
     case 'crm.customer_created':
       return `workflow_trigger_fired:crm.customer_created:${event.customerId}`;
     case 'crm.deal_stage_changed':
-      return `workflow_trigger_fired:crm.deal_stage_changed:${event.dealId}:${event.newStage}`;
+      return `workflow_trigger_fired:crm.deal_stage_changed:${event.dealId}:${event.oldStage}:${event.newStage}`;
     case 'task.due':
       return `workflow_trigger_fired:task.due:${event.taskId}:${event.dueDate}`;
     case 'calendar.event_start':
@@ -52,10 +57,33 @@ function workflowTriggerDedupKey(event: CrmWorkflowEvent): string {
   }
 }
 
+function dedupStillActive(raw: string | null, ttlMs: number): boolean {
+  if (!raw) return false;
+  const t = Number(raw);
+  if (!Number.isNaN(t) && t > 1_000_000_000_000) {
+    return Date.now() - t < ttlMs;
+  }
+  return raw === '1';
+}
+
 function shouldFireWorkflowTrigger(event: CrmWorkflowEvent): boolean {
   const key = workflowTriggerDedupKey(event);
-  if (getSyncInfo(key) === '1') return false;
-  setSyncInfo(key, '1');
+  const raw = getSyncInfo(key);
+
+  if (event.trigger === 'crm.customer_created') {
+    if (raw === '1') return false;
+    setSyncInfo(key, '1');
+    return true;
+  }
+
+  if (event.trigger === 'crm.deal_stage_changed') {
+    if (dedupStillActive(raw, DEAL_STAGE_DEBOUNCE_MS)) return false;
+    setSyncInfo(key, String(Date.now()));
+    return true;
+  }
+
+  if (dedupStillActive(raw, SCAN_TRIGGER_DEDUP_MS)) return false;
+  setSyncInfo(key, String(Date.now()));
   return true;
 }
 
@@ -78,14 +106,16 @@ function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
     const customer = getDb()
       .prepare(`SELECT name, email FROM ${CUSTOMERS_TABLE} WHERE id = ?`)
       .get(event.customerId) as { name?: string; email?: string } | undefined;
+    const name = customer?.name ?? '';
+    const email = customer?.email ?? '';
     return {
-      subject: `Deal-Phase: ${event.newStage}`,
-      body_text: `Deal #${event.dealId}: ${event.oldStage} → ${event.newStage}`,
-      snippet: `Kunde: ${customer?.name ?? ''}`,
-      from_address: customer?.email ?? '',
+      subject: `Deal-Stufe: ${event.newStage}`,
+      body_text: `${event.oldStage} → ${event.newStage}`,
+      snippet: name,
+      from_address: email,
       to_address: '',
       cc_address: '',
-      combined_text: `deal:${event.dealId} stage:${event.newStage} customer:${customer?.name ?? ''}`,
+      combined_text: `deal:${event.dealId} stage:${event.newStage} customer:${event.customerId} ${name}`,
       has_attachments: 'false',
       attachment_names: '',
       attachment_types: '',
@@ -99,20 +129,25 @@ function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
       from_address: '',
       to_address: '',
       cc_address: '',
-      combined_text: `task:${event.taskId} ${event.title} due:${event.dueDate}`,
+      combined_text: `task:${event.taskId} due:${event.dueDate}`,
       has_attachments: 'false',
       attachment_names: '',
       attachment_types: '',
     };
   }
+  const customer = event.customerId
+    ? (getDb()
+        .prepare(`SELECT name, email FROM ${CUSTOMERS_TABLE} WHERE id = ?`)
+        .get(event.customerId) as { name?: string; email?: string } | undefined)
+    : undefined;
   return {
     subject: `Termin: ${event.title}`,
     body_text: event.title,
     snippet: event.startDate,
-    from_address: '',
+    from_address: customer?.email ?? '',
     to_address: '',
     cc_address: '',
-    combined_text: `event:${event.eventId} ${event.title} start:${event.startDate}`,
+    combined_text: `event:${event.eventId} start:${event.startDate}`,
     has_attachments: 'false',
     attachment_names: '',
     attachment_types: '',

@@ -41,6 +41,7 @@ export type EmailAccountRow = {
   vacation_enabled: number;
   vacation_subject: string | null;
   vacation_body_text: string | null;
+  request_read_receipt: number;
   created_at: string;
   updated_at: string;
 };
@@ -115,6 +116,7 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
             COALESCE(vacation_enabled, 0) AS vacation_enabled,
             vacation_subject, vacation_body_text,
+            COALESCE(request_read_receipt, 0) AS request_read_receipt,
             created_at, updated_at`;
 
 export function listEmailAccounts(): EmailAccountRow[] {
@@ -214,6 +216,7 @@ export function updateEmailAccountRecord(
     vacationEnabled: boolean;
     vacationSubject: string | null;
     vacationBodyText: string | null;
+    requestReadReceipt: boolean;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -258,6 +261,10 @@ export function updateEmailAccountRecord(
   if (input.vacationBodyText !== undefined) {
     sets.push('vacation_body_text = ?');
     vals.push(input.vacationBodyText);
+  }
+  if (input.requestReadReceipt !== undefined) {
+    sets.push('request_read_receipt = ?');
+    vals.push(input.requestReadReceipt ? 1 : 0);
   }
 
   if (sets.length === 0) return;

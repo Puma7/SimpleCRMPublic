@@ -84,6 +84,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         vacationEnabled: z.boolean().optional(),
         vacationSubject: z.string().nullable().optional(),
         vacationBodyText: z.string().nullable().optional(),
+        requestReadReceipt: z.boolean().optional(),
       })
       .passthrough(),
     result: standardResult,
