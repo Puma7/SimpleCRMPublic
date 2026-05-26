@@ -200,6 +200,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
             fromJson: addressJson(parsed.from),
             toJson: addressJson(parsed.to),
             ccJson: addressJson(parsed.cc),
+            bccJson: addressJson((parsed as { bcc?: typeof parsed.to }).bcc),
             dateReceived: formatDate(parsed.date),
             snippet,
             bodyText: textBody,
@@ -246,7 +247,7 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         }
       }
 
-      await processNewMessagesAfterSync(accountId, newAfterSync);
+      await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
 
       if (toFetch.length > 0) {
         lastUid = chainEnd;

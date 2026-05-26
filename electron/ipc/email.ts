@@ -402,7 +402,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
         if ((acc.protocol || 'imap') === 'pop3') {
           const result = await syncInboxPop3(accountId);
-          return { success: true as const, fetched: result.fetched, folderId: result.folderId, lastUid: 0 };
+          return {
+            success: true as const,
+            fetched: result.fetched,
+            folderId: result.folderId,
+            lastUid: result.lastUid,
+          };
         }
         const result = await syncInboxImap(accountId);
         return { success: true as const, ...result };
@@ -584,6 +589,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           cc?: string;
           bcc?: string;
           draftAttachmentPaths?: string[];
+          replyParentMessageId?: number | null;
         },
       ) => {
         const toJson =
@@ -612,6 +618,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           ccJson,
           bccJson,
           draftAttachmentPaths: payload.draftAttachmentPaths,
+          replyParentMessageId: payload.replyParentMessageId,
         });
         return { success: true as const };
       },

@@ -6,6 +6,7 @@ const Pop3Command = requireCjs('node-pop3') as typeof import('node-pop3').defaul
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
 import { getEmailPassword } from './email-keytar';
+import { resolveImapAuth } from './email-imap-auth';
 import {
   getEmailAccountById,
   getFolderByAccountAndPath,
@@ -35,7 +36,7 @@ const POP_FOLDER = 'INBOX';
 
 type UidlEntry = [string, string];
 
-export type Pop3SyncResult = { fetched: number; folderId: number };
+export type Pop3SyncResult = { fetched: number; folderId: number; lastUid: number };
 
 async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult> {
   const account = getEmailAccountById(accountId);
@@ -44,7 +45,13 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     throw new Error('Konto ist kein POP3-Konto');
   }
 
-  const password = await getEmailPassword(account.keytar_account_key);
+  let password: string;
+  try {
+    const auth = await resolveImapAuth(account);
+    password = 'accessToken' in auth ? auth.accessToken : auth.pass;
+  } catch {
+    password = (await getEmailPassword(account.keytar_account_key)) ?? '';
+  }
   if (!password) throw new Error('Kein gespeichertes Passwort für dieses Konto');
 
   const host = (account.pop3_host || account.imap_host).trim();
@@ -118,6 +125,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
         fromJson: addressJson(parsed.from),
         toJson: addressJson(parsed.to),
         ccJson: addressJson(parsed.cc),
+        bccJson: addressJson((parsed as { bcc?: typeof parsed.to }).bcc),
         dateReceived: formatDate(parsed.date),
         snippet,
         bodyText: textBody,
@@ -142,7 +150,6 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
           subject: parsed.subject ?? null,
         },
       });
-      known.add(uidl);
     }
 
     maxNum = Math.max(maxNum, num);
@@ -155,7 +162,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     }
   }
 
-  await processNewMessagesAfterSync(accountId, newAfterSync);
+  await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
 
   const uidlStr = serializePop3ServerUidls(serverUidls);
 
@@ -164,7 +171,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     pop3UidlStr: uidlStr,
   });
 
-  return { fetched, folderId: folderRow.id };
+  return { fetched, folderId: folderRow.id, lastUid: maxNum };
   } finally {
     await pop3.QUIT().catch(() => undefined);
   }

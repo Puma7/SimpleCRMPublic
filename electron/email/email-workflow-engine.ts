@@ -333,6 +333,8 @@ export async function runInboundWorkflowsForMessage(
   const security = await runMailSecurityPipeline(messageId, row);
   if (security.preWorkflow.skippedWorkflows) return;
 
+  const freshRow = getEmailMessageById(messageId) ?? row;
+
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
   const applied = opts?.appliedWorkflowIds;
@@ -344,7 +346,7 @@ export async function runInboundWorkflowsForMessage(
         workflow: wf,
         trigger: 'inbound',
         direction: 'inbound',
-        message: row,
+        message: freshRow,
       });
       if (r.status === 'ok') markApplied = true;
     } catch (e) {
@@ -360,10 +362,10 @@ export async function runInboundWorkflowsForMessage(
   }
 
   const { ensureReplySuggestion } = await import('./email-reply-ai');
-  ensureReplySuggestion(messageId, { row });
+  ensureReplySuggestion(messageId, { row: freshRow });
 
   const { maybeSendVacationAutoReply } = await import('./email-vacation');
-  await maybeSendVacationAutoReply(messageId, row);
+  await maybeSendVacationAutoReply(messageId, freshRow);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {

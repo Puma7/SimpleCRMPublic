@@ -160,7 +160,6 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       try {
         if (composeIntent.mode === "draft") {
           setDraftId(composeIntent.messageId)
-          setReplyToId(null)
           const existing = await invokeIpc<EmailMessage | null>(
             IPCChannels.Email.GetMessage,
             composeIntent.messageId,
@@ -172,6 +171,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           }
           initialisedDraftKeyRef.current = draftInitKey
           setComposeAccountId(existing.account_id)
+          setReplyToId(
+            (existing as EmailMessage & { reply_parent_message_id?: number | null })
+              .reply_parent_message_id ?? null,
+          )
           setTo(recipientFieldFromJson(existing.to_json))
           setCc(recipientFieldFromJson(existing.cc_json))
           setBcc(recipientFieldFromJson(existing.bcc_json))
@@ -247,11 +250,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         if (res.success && res.id != null) {
           initialisedDraftKeyRef.current = draftInitKey
           setDraftId(res.id)
-          setReplyToId(
+          const replyParentId =
             composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
               ? sourceMsg?.id ?? null
-              : null,
-          )
+              : null
+          setReplyToId(replyParentId)
           let forwardPaths: string[] = []
           if (isForward && sourceMsg) {
             const atts = await invokeIpc<
@@ -260,12 +263,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             forwardPaths = atts.map((a) => a.storage_path).filter(Boolean)
           }
           setAttachmentPaths(forwardPaths)
-          if (forwardPaths.length > 0) {
-            await invokeIpc(IPCChannels.Email.UpdateComposeDraft, {
-              messageId: res.id,
-              draftAttachmentPaths: forwardPaths,
-            })
-          }
+          await invokeIpc(IPCChannels.Email.UpdateComposeDraft, {
+            messageId: res.id,
+            ...(forwardPaths.length > 0 ? { draftAttachmentPaths: forwardPaths } : {}),
+            ...(replyParentId != null ? { replyParentMessageId: replyParentId } : {}),
+          })
           setTo(toAddr)
           setCc(ccAddr)
           setBcc("")
@@ -349,6 +351,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           cc: cc || undefined,
           bcc: bcc || undefined,
           draftAttachmentPaths: attachmentPaths,
+          replyParentMessageId: replyToId,
         })
         return true
       } catch (e) {

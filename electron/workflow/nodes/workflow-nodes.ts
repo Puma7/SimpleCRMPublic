@@ -2,6 +2,7 @@ import { getWorkflowById } from '../../email/email-workflow-store';
 import { executeWorkflowForTrigger } from '../workflow-executor';
 import type { RegisteredWorkflowNode } from '../types';
 import type { WorkflowTriggerKind } from '../../../shared/workflow-types';
+import { workflowDirectionForTrigger } from '../workflow-trigger-utils';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -24,7 +25,7 @@ export function registerWorkflowMetaNodes(register: Reg): void {
       const r = await executeWorkflowForTrigger({
         workflow: sub,
         trigger: trig,
-        direction: trig === 'outbound' ? 'outbound' : 'inbound',
+        direction: workflowDirectionForTrigger(trig),
         message: ctx.message,
         outbound: ctx.outbound,
         dryRun: false,

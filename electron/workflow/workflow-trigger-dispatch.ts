@@ -71,9 +71,7 @@ function shouldFireWorkflowTrigger(event: CrmWorkflowEvent): boolean {
   const raw = getSyncInfo(key);
 
   if (event.trigger === 'crm.customer_created') {
-    if (raw === '1') return false;
-    setSyncInfo(key, '1');
-    return true;
+    return raw !== '1';
   }
 
   if (event.trigger === 'crm.deal_stage_changed') {
@@ -82,9 +80,17 @@ function shouldFireWorkflowTrigger(event: CrmWorkflowEvent): boolean {
     return true;
   }
 
+  if (event.trigger === 'task.due' || event.trigger === 'calendar.event_start') {
+    return raw !== '1';
+  }
+
   if (dedupStillActive(raw, SCAN_TRIGGER_DEDUP_MS)) return false;
   setSyncInfo(key, String(Date.now()));
   return true;
+}
+
+function markWorkflowTriggerFired(event: CrmWorkflowEvent): void {
+  setSyncInfo(workflowTriggerDedupKey(event), '1');
 }
 
 function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
@@ -194,9 +200,10 @@ export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise
     if (event.customerId != null) variables['customer.id'] = event.customerId;
   }
 
+  let firedOk = false;
   for (const wf of workflows) {
     try {
-      await executeWorkflowForTrigger({
+      const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: event.trigger as WorkflowTriggerKind,
         direction: 'crm_event',
@@ -205,10 +212,12 @@ export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise
         eventStrings: strings,
         eventVariables: variables,
       });
+      if (r.status === 'ok') firedOk = true;
     } catch (e) {
       console.warn(`[workflow] CRM trigger ${event.trigger} wf ${wf.id}`, e);
     }
   }
+  if (firedOk) markWorkflowTriggerFired(event);
 }
 
 export async function fireDealStageChangedWorkflows(

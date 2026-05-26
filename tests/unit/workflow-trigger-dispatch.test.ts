@@ -10,7 +10,7 @@ jest.mock('../../electron/sqlite-service', () => ({
 }));
 
 jest.mock('../../electron/email/email-workflow-store', () => ({
-  listWorkflowsByTrigger: jest.fn(() => []),
+  listWorkflowsByTrigger: jest.fn(() => [{ id: 1, enabled: 1 }]),
 }));
 
 jest.mock('../../electron/workflow/workflow-executor', () => ({
@@ -70,6 +70,11 @@ describe('workflow-trigger-dispatch dedup', () => {
   });
 
   test('customer_created sets permanent flag on first fire', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({ status: 'ok' });
+
     await dispatchCustomerCreatedWorkflow({
       customerId: 7,
       name: 'A',
@@ -82,7 +87,12 @@ describe('workflow-trigger-dispatch dedup', () => {
     );
   });
 
-  test('task.due scan uses TTL timestamp, not permanent', async () => {
+  test('task.due uses permanent dedup after successful fire', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({ status: 'ok' });
+
     await dispatchCrmWorkflowEvent({
       trigger: 'task.due',
       taskId: 3,
@@ -91,7 +101,9 @@ describe('workflow-trigger-dispatch dedup', () => {
       dueDate: '2026-05-24',
     });
 
-    const [, value] = mockSetSyncInfo.mock.calls[0] as [string, string];
-    expect(Number(value)).toBeGreaterThan(1_000_000_000_000);
+    expect(mockSetSyncInfo).toHaveBeenCalledWith(
+      'workflow_trigger_fired:task.due:3:2026-05-24',
+      '1',
+    );
   });
 });

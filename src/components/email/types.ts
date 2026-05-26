@@ -72,6 +72,7 @@ export type EmailMessage = {
   imap_thread_id?: string | null
   attachments_json?: string | null
   draft_attachment_paths_json?: string | null
+  reply_parent_message_id?: number | null
   raw_headers?: string | null
 }
 

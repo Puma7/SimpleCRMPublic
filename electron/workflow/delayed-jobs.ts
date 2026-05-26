@@ -4,6 +4,7 @@ import { getWorkflowById } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
 import { parseGraphDocument } from './runtime';
 import { executeWorkflowForTrigger } from './workflow-executor';
+import { workflowDirectionForTrigger } from './workflow-trigger-utils';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 
 export type DelayedJobRow = {
@@ -66,6 +67,15 @@ export function listDueDelayedJobs(limit = 20): DelayedJobRow[] {
     .all(now, limit) as DelayedJobRow[];
 }
 
+function tryClaimDelayedJob(id: number): boolean {
+  const r = getDb()
+    .prepare(
+      `UPDATE ${WORKFLOW_DELAYED_JOBS_TABLE} SET status = 'running' WHERE id = ? AND status = 'pending'`,
+    )
+    .run(id);
+  return r.changes === 1;
+}
+
 function markJob(id: number, status: 'running' | 'done' | 'failed' | 'cancelled', note?: string): void {
   if (note) {
     console.warn(`[workflow] delayed job ${id} ${status}: ${note}`);
@@ -82,9 +92,9 @@ export async function processDueDelayedJobs(
   let processed = 0;
   for (const job of due) {
     if (PROCESSING.has(job.id)) continue;
+    if (!tryClaimDelayedJob(job.id)) continue;
     PROCESSING.add(job.id);
     try {
-      markJob(job.id, 'running');
       const wf = getWorkflowById(job.workflow_id);
       if (!wf?.enabled) {
         markJob(job.id, 'cancelled', 'workflow_disabled');
@@ -108,13 +118,18 @@ export async function processDueDelayedJobs(
       const message = job.message_id != null ? getEmailMessageById(job.message_id) ?? null : null;
       let variables: Record<string, string | number | boolean | null> = {};
       let inboundConditionOk = false;
+      let eventStrings: Record<string, string> | undefined;
       if (job.context_json) {
         try {
           const parsed = JSON.parse(job.context_json) as {
             variables?: Record<string, unknown>;
             inboundConditionOk?: boolean;
+            eventStrings?: Record<string, string>;
           };
           if (parsed.inboundConditionOk) inboundConditionOk = true;
+          if (parsed.eventStrings && typeof parsed.eventStrings === 'object') {
+            eventStrings = parsed.eventStrings;
+          }
           if (parsed.variables && typeof parsed.variables === 'object') {
             for (const [k, v] of Object.entries(parsed.variables)) {
               if (
@@ -135,16 +150,7 @@ export async function processDueDelayedJobs(
         variables.__inbound_condition_ok = true;
       }
       const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
-      const direction =
-        trigger === 'outbound'
-          ? 'outbound'
-          : trigger === 'draft_created'
-            ? 'draft_created'
-            : trigger === 'schedule'
-              ? 'schedule'
-              : trigger.startsWith('crm.') || trigger === 'task.due' || trigger === 'calendar.event_start'
-                ? 'crm_event'
-                : 'inbound';
+      const direction = workflowDirectionForTrigger(trigger);
 
       const result = await executeWorkflowForTrigger({
         workflow: wf,
@@ -153,10 +159,15 @@ export async function processDueDelayedJobs(
         message,
         startNodeId: resumeId,
         initialVariables: variables,
+        eventStrings,
         dryRun: false,
       });
-      if (result.status === 'error') {
-        markJob(job.id, 'failed', result.log.join(';').slice(0, 500));
+      if (result.status === 'error' || result.status === 'blocked') {
+        markJob(
+          job.id,
+          result.status === 'blocked' ? 'cancelled' : 'failed',
+          result.log.join(';').slice(0, 500),
+        );
       } else {
         markJob(job.id, 'done');
       }

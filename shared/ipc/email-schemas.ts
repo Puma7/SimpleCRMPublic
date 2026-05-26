@@ -453,6 +453,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       cc: z.string().optional(),
       bcc: z.string().optional(),
       draftAttachmentPaths: z.array(z.string()).optional(),
+      replyParentMessageId: z.number().int().positive().nullable().optional(),
     }),
     result: standardResult,
   });

@@ -1,4 +1,8 @@
-import { getEmailMessageById } from './email-store';
+import {
+  getEmailMessageById,
+  listMessagesPendingPostProcess,
+  markMessagePostProcessDone,
+} from './email-store';
 
 type ParsedAttachmentPart = {
   filename?: string;
@@ -30,8 +34,28 @@ export type SyncNewMessageItem = {
 export async function processNewMessagesAfterSync(
   accountId: number,
   items: SyncNewMessageItem[],
+  folderId?: number,
 ): Promise<void> {
-  if (items.length === 0) return;
+  const merged = [...items];
+  if (folderId != null) {
+    const pending = listMessagesPendingPostProcess(folderId);
+    const seen = new Set(merged.map((i) => i.localMsgId));
+    for (const p of pending) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      merged.push({
+        localMsgId: p.id,
+        parsedAttachments: undefined,
+        threading: {
+          messageIdHeader: p.message_id,
+          inReplyTo: p.in_reply_to,
+          referencesHeader: p.references_header,
+          subject: p.subject,
+        },
+      });
+    }
+  }
+  if (merged.length === 0) return;
 
   const { persistParsedAttachments } = await import('./email-message-attachments-store');
   const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
@@ -40,20 +64,30 @@ export async function processNewMessagesAfterSync(
   const customerByEmail = buildCustomerEmailMap();
   const inboundWorkflows = listWorkflowsByTrigger('inbound');
 
-  for (const item of items) {
-    await persistParsedAttachments(item.localMsgId, item.parsedAttachments);
-    assignJwzThreadAndTicket(item.localMsgId, accountId, item.threading);
-    tryLinkMessageToCustomer(item.localMsgId, customerByEmail);
+  for (const item of merged) {
+    try {
+      await persistParsedAttachments(item.localMsgId, item.parsedAttachments);
+      assignJwzThreadAndTicket(item.localMsgId, accountId, item.threading);
+      tryLinkMessageToCustomer(item.localMsgId, customerByEmail);
+    } catch (e) {
+      console.warn(`[email] post-process prep failed msg ${item.localMsgId}`, e);
+      continue;
+    }
   }
 
-  for (const item of items) {
-    const row = getEmailMessageById(item.localMsgId);
-    if (!row) continue;
-    const appliedWorkflowIds = loadAppliedWorkflowIdsForMessage(item.localMsgId);
-    await runInboundWorkflowsForMessage(item.localMsgId, {
-      row,
-      inboundWorkflows,
-      appliedWorkflowIds,
-    });
+  for (const item of merged) {
+    try {
+      const row = getEmailMessageById(item.localMsgId);
+      if (!row) continue;
+      const appliedWorkflowIds = loadAppliedWorkflowIdsForMessage(item.localMsgId);
+      await runInboundWorkflowsForMessage(item.localMsgId, {
+        row,
+        inboundWorkflows,
+        appliedWorkflowIds,
+      });
+      markMessagePostProcessDone(item.localMsgId);
+    } catch (e) {
+      console.warn(`[email] post-process workflows failed msg ${item.localMsgId}`, e);
+    }
   }
 }

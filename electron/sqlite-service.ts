@@ -541,6 +541,8 @@ function runMigrations() {
                 { name: 'snoozed_until', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN snoozed_until TEXT` },
                 { name: 'scheduled_send_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN scheduled_send_at TEXT` },
                 { name: 'draft_attachment_paths_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN draft_attachment_paths_json TEXT` },
+                { name: 'post_process_done', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN post_process_done INTEGER NOT NULL DEFAULT 1` },
+                { name: 'reply_parent_message_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_parent_message_id INTEGER` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {

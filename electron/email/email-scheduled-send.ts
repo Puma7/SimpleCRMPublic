@@ -3,6 +3,7 @@ import { getEmailMessageById } from './email-store';
 import { sendComposeDraft } from './email-compose-send';
 import { listDueScheduledDraftIds, setDraftScheduledSendAt } from './email-message-features';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
+import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
 
@@ -25,6 +26,9 @@ export async function processDueScheduledSends(
         setDraftScheduledSendAt(draftId, null);
         continue;
       }
+      const attachmentPaths = parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json);
+      const replyParent = (draft as { reply_parent_message_id?: number | null })
+        .reply_parent_message_id;
       const r = await sendComposeDraft({
         accountId: draft.account_id,
         draftMessageId: draftId,
@@ -34,6 +38,8 @@ export async function processDueScheduledSends(
         to,
         cc: recipientFieldFromJson(draft.cc_json) || undefined,
         bcc: recipientFieldFromJson(draft.bcc_json) || undefined,
+        attachmentPaths: attachmentPaths.length > 0 ? attachmentPaths : undefined,
+        inReplyToMessageId: replyParent ?? undefined,
       });
       if (r.ok) {
         setDraftScheduledSendAt(draftId, null);

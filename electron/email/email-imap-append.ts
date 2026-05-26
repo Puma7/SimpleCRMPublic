@@ -18,6 +18,7 @@ export async function appendSentToImap(input: {
   inReplyTo?: string;
   references?: string;
   attachments?: ComposeRfc822Attachment[];
+  requestReadReceipt?: boolean;
 }): Promise<void> {
   const acc = getEmailAccountById(input.accountId);
   if (!acc || (acc.protocol || 'imap') !== 'imap') return;
