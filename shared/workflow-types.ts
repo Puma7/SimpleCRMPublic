@@ -10,7 +10,9 @@ export type WorkflowTriggerKind =
   | 'manual'
   | 'crm.deal_stage_changed'
   | 'task.due'
-  | 'calendar.event_start';
+  | 'calendar.event_start'
+  | 'webhook.incoming'
+  | 'crm.customer_created';
 
 export type WorkflowNodeCategory =
   | 'trigger'
@@ -52,3 +54,6 @@ export type WorkflowTemplateDto = {
   trigger: WorkflowTriggerKind;
   graph: import('./email-workflow-graph').WorkflowGraphDocument;
 };
+
+/** Minimum minutes between workflow cron fires (UI + server). */
+export const WORKFLOW_CRON_MIN_INTERVAL_MINUTES = 15;

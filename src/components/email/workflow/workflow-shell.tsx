@@ -5,6 +5,7 @@ import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { WorkflowGraphDocument } from "@shared/email-workflow-graph"
 import { toast } from "sonner"
+import { validateWorkflowCronExpr } from "@shared/cron-validate"
 import {
   ChevronDown,
   Code2,
@@ -269,6 +270,15 @@ export function WorkflowShell() {
           label: "Vor Speichern",
         })
       }
+      const cronTrim = editCron.trim()
+      if (cronTrim && trig === "schedule") {
+        const cronErr = validateWorkflowCronExpr(cronTrim)
+        if (cronErr) {
+          toast.error(cronErr)
+          setSaving(false)
+          return
+        }
+      }
       await invokeIpc(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
@@ -276,7 +286,7 @@ export function WorkflowShell() {
         priority: parseInt(editPriority, 10) || 100,
         definitionJson: compiled.definitionJson ?? EMPTY_DEF,
         graphJson: JSON.stringify(graphDoc),
-        cronExpr: editCron.trim() || null,
+        cronExpr: cronTrim || null,
         scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
         enabled: editEnabled,
       })
@@ -683,7 +693,7 @@ export function WorkflowShell() {
                   <Button type="button" size="sm" variant="link" className="h-8 px-0" asChild>
                     <Link
                       to="/email/settings"
-                      search={emailSettingsSearch({ tab: "mailSecurity", section: "advanced" })}
+                      search={emailSettingsSearch({ tab: "mailSecurity" })}
                     >
                       <ExternalLink className="mr-1 h-3.5 w-3.5" />
                       Automatisierung (IMAP/HTTP)

@@ -1,26 +1,18 @@
+import path from 'path';
 import type { EmailMessageRow } from '../email/email-store';
 import { getCustomerById } from '../sqlite-service';
 import type { OutboundDraftPayload } from '../email/email-workflow-engine';
+import { addressesFromRecipientJson } from '../email/email-parse-utils';
 import { attachmentContextFromJson } from '../email/email-workflow-types';
 import { securityVariablesFromRow } from '../email/mail-security-store';
 import type { WorkflowContext, WorkflowStringContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 
-function extractAddressList(json: string | null): string {
-  if (!json) return '';
-  try {
-    const parsed = JSON.parse(json) as { value?: { address?: string }[] };
-    return parsed?.value?.map((v) => v.address ?? '').filter(Boolean).join(', ') ?? '';
-  } catch {
-    return '';
-  }
-}
-
 /** Metadata-only context for GDPR-conscious KI nodes (no body_text). */
 export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
-  const fromAddr = extractAddressList(row.from_json);
-  const toAddr = extractAddressList(row.to_json);
-  const ccAddr = extractAddressList(row.cc_json);
+  const fromAddr = addressesFromRecipientJson(row.from_json);
+  const toAddr = addressesFromRecipientJson(row.to_json);
+  const ccAddr = addressesFromRecipientJson(row.cc_json);
   const sub = row.subject ?? '';
   const snip = row.snippet ?? '';
   const att = attachmentContextFromJson(row.attachments_json, row.has_attachments);
@@ -38,9 +30,9 @@ export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowS
 }
 
 export function buildStringContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
-  const fromAddr = extractAddressList(row.from_json);
-  const toAddr = extractAddressList(row.to_json);
-  const ccAddr = extractAddressList(row.cc_json);
+  const fromAddr = addressesFromRecipientJson(row.from_json);
+  const toAddr = addressesFromRecipientJson(row.to_json);
+  const ccAddr = addressesFromRecipientJson(row.cc_json);
   const sub = row.subject ?? '';
   const body = row.body_text ?? '';
   const snip = row.snippet ?? '';
@@ -60,6 +52,8 @@ export function buildStringContextFromMessage(row: EmailMessageRow): WorkflowStr
 export function buildStringContextFromOutbound(payload: OutboundDraftPayload): WorkflowStringContext {
   const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const attCount = payload.attachmentCount ?? 0;
+  const attNames =
+    payload.attachmentPaths?.map((p) => path.basename(p)).filter(Boolean).join('\n') ?? '';
   return {
     subject: payload.subject,
     body_text: payload.bodyText,
@@ -73,10 +67,11 @@ export function buildStringContextFromOutbound(payload: OutboundDraftPayload): W
       htmlPlain,
       payload.to,
       payload.cc ?? '',
+      attNames,
       `attachment_count:${attCount}`,
     ].join('\n'),
     has_attachments: attCount > 0 ? 'true' : 'false',
-    attachment_names: '',
+    attachment_names: attNames,
     attachment_types: '',
   };
 }

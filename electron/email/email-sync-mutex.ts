@@ -4,6 +4,11 @@
  */
 const tails = new Map<number, Promise<unknown>>();
 
+/** Drop queued sync chain for an account (e.g. stuck sync). In-flight run still finishes. */
+export function clearEmailAccountSyncLock(accountId: number): void {
+  tails.delete(accountId);
+}
+
 export function withEmailAccountSyncLock<T>(accountId: number, fn: () => Promise<T>): Promise<T> {
   const prev = tails.get(accountId) ?? Promise.resolve();
   const run = prev.then(() => fn());

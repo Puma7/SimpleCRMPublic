@@ -234,6 +234,95 @@ export function MiscPanel() {
           </>
         )}
       </div>
+
+      <div className="space-y-3 rounded-lg border p-4">
+        <h3 className="text-sm font-semibold">E-Mail-Erweiterungen</h3>
+        <MiscAdvancedSettings />
+      </div>
+    </div>
+  )
+}
+
+function MiscAdvancedSettings() {
+  const [webhookSecret, setWebhookSecret] = useState("")
+  const [maxMb, setMaxMb] = useState("25")
+  const [testSecret, setTestSecret] = useState("")
+
+  useEffect(() => {
+    if (!hasElectron()) return
+    void invokeIpc<{ webhookSecret: string; maxAttachmentMb: string }>(
+      IPCChannels.Email.GetEmailMiscSettings,
+    ).then((s) => {
+      setWebhookSecret(s.webhookSecret ?? "")
+      setMaxMb(s.maxAttachmentMb ?? "25")
+    })
+  }, [])
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="space-y-1.5">
+        <Label>Webhook-Secret (Workflow-Trigger webhook.incoming)</Label>
+        <Input value={webhookSecret} onChange={(e) => setWebhookSecret(e.target.value)} />
+      </div>
+      <div className="space-y-1.5">
+        <Label>Max. Anhang-Größe (MB)</Label>
+        <Input
+          type="number"
+          min={1}
+          max={100}
+          value={maxMb}
+          onChange={(e) => setMaxMb(e.target.value)}
+        />
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => {
+          void invokeIpc(IPCChannels.Email.SetEmailMiscSettings, {
+            webhookSecret,
+            maxAttachmentMb: parseInt(maxMb, 10) || 25,
+          }).then(() => toast.success("Gespeichert"))
+        }}
+      >
+        Erweiterte Einstellungen speichern
+      </Button>
+      <div className="flex flex-wrap gap-2 border-t pt-3">
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            void invokeIpc<{ success: boolean; count: number }>(
+              IPCChannels.Email.BackfillCustomerLinks,
+              { limit: 500 },
+            ).then((r) => toast.success(`${r.count} Verknüpfungen gesetzt`))
+          }}
+        >
+          Kunden-Links nachziehen
+        </Button>
+        <Input
+          className="h-8 w-[140px] text-xs"
+          placeholder="Test-Secret"
+          value={testSecret}
+          onChange={(e) => setTestSecret(e.target.value)}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            void invokeIpc<{ success: boolean; fired: number; error?: string }>(
+              IPCChannels.Email.FireWebhookWorkflow,
+              { secret: testSecret, body: { test: true } },
+            ).then((r) => {
+              if (r.success) toast.success(`${r.fired} Workflow(s) ausgelöst`)
+              else toast.error(r.error ?? "Webhook fehlgeschlagen")
+            })
+          }}
+        >
+          Webhook testen
+        </Button>
+      </div>
     </div>
   )
 }

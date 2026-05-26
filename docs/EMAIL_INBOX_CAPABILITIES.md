@@ -1,52 +1,61 @@
 # E-Mail-Postfach — Funktionsübersicht (Stand Prüfung)
 
-## Postfach & Aktionen (ohne echtes Löschen)
+Legende: **stabil** · **teilweise** · **geplant**
+
+## Postfach & Aktionen
 
 | Funktion | Status | Hinweis |
 |----------|--------|---------|
-| Posteingang, Gesendet, Archiv, Entwürfe, Spam, Papierkorb | ✅ | Papierkorb = `soft_deleted` (ausblenden, Daten bleiben) |
-| Archivieren | ✅ | Für Aufsicht / Finanzarchiv |
-| Spam markieren | ✅ | Kein Server-Delete |
-| Ablehnen (als Workflow-Begriff) | ⚠️ | Entspricht **Spam** oder **Papierkorb** (ausblenden) |
-| Zurückstellen / Snooze | ❌ | Nur bei **Aufgaben**, nicht bei E-Mails |
-| Shop-/Mitarbeiter-„Ordner“ | ⚠️ | Über **Kategorien** + Workflows (`set_category`, `assign`) |
-
-## Priorität
-
-| Funktion | Status |
-|----------|--------|
-| Workflow `email.set_priority` | ✅ Tags `priority:hoch` / `priority:normal` / `priority:niedrig` |
-| Listen-Sortierung nach Priorität | ❌ (noch Datum) — Tags sichtbar in Details |
+| Posteingang, Gesendet, Archiv, Entwürfe, Spam, Papierkorb | stabil | Papierkorb = `soft_deleted` |
+| Archivieren / Spam / Massenaktionen | stabil | Checkboxen + Bulk-IPC |
+| Snooze (E-Mail) | stabil | `snoozed_until` |
+| Shop-„Ordner“ | teilweise | Kategorien + Workflows |
 
 ## Lesen & Datenschutz
 
+| Funktion | Status | Hinweis |
+|----------|--------|---------|
+| Klartext-Standard | stabil | |
+| HTML-Ansicht (opt-in, DOMPurify) | stabil | Umschaltbar in der Lesevorschau |
+| Riskante Anhänge (Warnung + Bestätigung) | stabil | IPC `confirmOpenRisky` |
+| Große ausgelassene Anhänge | stabil | Metadaten `omitted` in `attachments_json`, Anzeige im Viewer |
+
+## Antworten & Versand
+
+| Funktion | Status | Hinweis |
+|----------|--------|---------|
+| Bcc, Reply-All | stabil | |
+| Forward mit Originalanhängen | stabil | Standard: Anhänge übernommen, abwählbar |
+| Entwurf vor erstem Sync | stabil | Lokaler INBOX-Ordner wird angelegt |
+| Entwurf-Anhänge persistieren | stabil | `draft_attachment_paths_json` |
+| SMTP + IMAP Sent-Append mit Anhängen | stabil | Gemeinsamer RFC822-Builder |
+| OAuth SMTP (Google/Microsoft) | stabil | XOAUTH2 über IMAP-Credentials |
+| Geplanter Versand | stabil | `scheduled_send_at` |
+
+## Suche & Listen
+
+| Funktion | Status | Hinweis |
+|----------|--------|---------|
+| Pagination / Load-more (Liste) | stabil | Serverseitig |
+| Suche mit Load-more + Kategorie | stabil | FTS/LIKE/Regex, Offset |
+| Filter (ungelesen, Anhang, Kunde, Workflow) | stabil | Serverseitig in `ListMessagesByView` |
+| Prioritäts-Sortierung | stabil | Tags + Sort `priority` |
+| Thread-Listenmodus | stabil | |
+
+## Workflows
+
+| Funktion | Status | Hinweis |
+|----------|--------|---------|
+| Graph-Editor speichern | stabil | IPC `CompileWorkflowGraph` = Canvas-Dokument |
+| Outbound blockiert bei Graph-Fehler | stabil | |
+| Inbound: `sender_filter` / `ai.classify` direkt am Trigger | stabil | |
+| Webhook / CRM-Trigger | teilweise | Vorhanden, Feintuning laufend |
+
+## Noch geplant / begrenzt
+
 | Funktion | Status |
 |----------|--------|
-| Anzeige nur als **Klartext** (kein HTML-Render) | ✅ Keine Tracking-Pixel, kein JS |
-| Anhänge öffnen | ✅ Mit Warnung bei riskanten Endungen |
-| Compose HTML (WYSIWYG) + Plain | ✅ ReactQuill + DOMPurify beim Senden |
-
-## Antworten & Threading
-
-| Funktion | Status |
-|----------|--------|
-| Ticket `[SCR-…]` im Betreff | ✅ |
-| Inbound `Message-ID` / References | ✅ |
-| Outbound `Message-ID` / In-Reply-To / References | ✅ (seit Fix) |
-| Konversationsliste (Ticket/Kunde) | ✅ Details-Panel, max. 20 Mails |
-| Vollständiger Thread-View in der Liste | ❌ |
-
-## Versand
-
-| Funktion | Status |
-|----------|--------|
-| SMTP-Versand | ✅ Nach Outbound-Workflow-Prüfung |
-| UTF-8 / internationale Zeichen | ✅ RFC2047 Betreff, utf-8 Bodies |
-| IMAP Sent-Append | ✅ Best-effort |
-
-## Export
-
-| Funktion | Status |
-|----------|--------|
-| GDPR-ZIP (komprimiert) | ✅ Einstellungen → Export |
-| Vollständiges RFC822-Archiv | ❌ |
+| Vollständiger IMAP Multi-Folder-Sync | geplant |
+| PGP-Entschlüsselung | geplant |
+| Open/Click-Tracking | geplant |
+| Abwesenheitsantwort pro Konto | stabil | Einstellungen → Konten bearbeiten |

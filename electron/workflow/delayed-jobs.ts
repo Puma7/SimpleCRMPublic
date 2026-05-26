@@ -84,6 +84,11 @@ export async function processDueDelayedJobs(
         markJob(job.id, 'failed', 'missing_resume_node');
         continue;
       }
+      const mode = wf.execution_mode ?? 'graph';
+      if (mode === 'compiled') {
+        markJob(job.id, 'failed', 'delay_requires_graph_mode');
+        continue;
+      }
       const doc = parseGraphDocument(wf.graph_json);
       if (!doc) {
         markJob(job.id, 'failed', 'missing_graph');
@@ -91,9 +96,14 @@ export async function processDueDelayedJobs(
       }
       const message = job.message_id != null ? getEmailMessageById(job.message_id) ?? null : null;
       let variables: Record<string, string | number | boolean | null> = {};
+      let inboundConditionOk = false;
       if (job.context_json) {
         try {
-          const parsed = JSON.parse(job.context_json) as { variables?: Record<string, unknown> };
+          const parsed = JSON.parse(job.context_json) as {
+            variables?: Record<string, unknown>;
+            inboundConditionOk?: boolean;
+          };
+          if (parsed.inboundConditionOk) inboundConditionOk = true;
           if (parsed.variables && typeof parsed.variables === 'object') {
             for (const [k, v] of Object.entries(parsed.variables)) {
               if (
@@ -109,6 +119,9 @@ export async function processDueDelayedJobs(
         } catch {
           /* ignore corrupt context */
         }
+      }
+      if (inboundConditionOk) {
+        variables.__inbound_condition_ok = true;
       }
       const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
       const direction =

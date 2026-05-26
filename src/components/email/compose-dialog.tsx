@@ -31,6 +31,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
+import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-reply-addresses"
+import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
+import {
+  buildReplyComposeHtml,
+  mergeComposeHtml,
+  plainTextToReplyHtml,
+  splitComposeHtml,
+} from "@shared/compose-body"
 import {
   applyCannedTemplate,
   firstAddress,
@@ -88,6 +96,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [replyToId, setReplyToId] = useState<number | null>(null)
   const [to, setTo] = useState("")
   const [cc, setCc] = useState("")
+  const [bcc, setBcc] = useState("")
   const [subject, setSubject] = useState("")
   const [bodyHtml, setBodyHtml] = useState("")
   const [sending, setSending] = useState(false)
@@ -111,6 +120,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
+  const [scheduledSendAt, setScheduledSendAt] = useState("")
 
   useEffect(() => {
     if (!isOpen) {
@@ -119,7 +129,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       return
     }
     let messageAccountId: number | undefined
-    if (composeIntent.mode === "reply" || composeIntent.mode === "forward") {
+    if (
+      composeIntent.mode === "reply" ||
+      composeIntent.mode === "reply-all" ||
+      composeIntent.mode === "forward"
+    ) {
       messageAccountId = composeIntent.message.account_id
     }
     const resolvedAccountId = resolveComposeAccountId(selectedAccountId, {
@@ -160,6 +174,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           setComposeAccountId(existing.account_id)
           setTo(recipientFieldFromJson(existing.to_json))
           setCc(recipientFieldFromJson(existing.cc_json))
+          setBcc(recipientFieldFromJson(existing.bcc_json))
           setSubject(existing.subject ?? "")
           const html = existing.body_html
             ? sanitizeComposeHtml(existing.body_html)
@@ -169,16 +184,28 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 )
               : ""
           setBodyHtml(html)
+          setAttachmentPaths(parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json))
           return
         }
 
         const sourceMsg: EmailMessage | null =
-          composeIntent.mode === "reply" || composeIntent.mode === "forward"
+          composeIntent.mode === "reply" ||
+          composeIntent.mode === "reply-all" ||
+          composeIntent.mode === "forward"
             ? composeIntent.message
             : null
         const isForward = composeIntent.mode === "forward"
-        const toAddr =
-          composeIntent.mode === "reply" ? firstAddress(sourceMsg?.from_json ?? null) : ""
+        const isReplyAll = composeIntent.mode === "reply-all"
+        const ownEmails = accounts.map((a) => a.email_address).filter(Boolean)
+        let toAddr = ""
+        let ccAddr = ""
+        if (isReplyAll && sourceMsg) {
+          const all = buildReplyAllRecipients(sourceMsg, ownEmails)
+          toAddr = all.to
+          ccAddr = all.cc
+        } else if (composeIntent.mode === "reply" && sourceMsg) {
+          toAddr = primaryReplyRecipient(sourceMsg)
+        }
         const subj = sourceMsg?.subject
           ? isForward
             ? sourceMsg.subject.toLowerCase().startsWith("fwd:")
@@ -220,19 +247,47 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         if (res.success && res.id != null) {
           initialisedDraftKeyRef.current = draftInitKey
           setDraftId(res.id)
-          setReplyToId(composeIntent.mode === "reply" ? sourceMsg?.id ?? null : null)
-          setAttachmentPaths([])
-          setTo(toAddr)
-          setCc("")
-          setSubject(subj)
-          const bodyPart = quoted
-            ? sanitizeComposeHtml(`<p>${quoted.replace(/\n/g, "<br/>")}</p>`)
-            : ""
-          setBodyHtml(
-            bodyPart && sigHtml
-              ? `${bodyPart}<br/><br/>${sigHtml}`
-              : bodyPart || sigHtml,
+          setReplyToId(
+            composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
+              ? sourceMsg?.id ?? null
+              : null,
           )
+          let forwardPaths: string[] = []
+          if (isForward && sourceMsg) {
+            const atts = await invokeIpc<
+              { storage_path: string; filename_display: string }[]
+            >(IPCChannels.Email.ListMessageAttachments, sourceMsg.id)
+            forwardPaths = atts.map((a) => a.storage_path).filter(Boolean)
+          }
+          setAttachmentPaths(forwardPaths)
+          if (forwardPaths.length > 0) {
+            await invokeIpc(IPCChannels.Email.UpdateComposeDraft, {
+              messageId: res.id,
+              draftAttachmentPaths: forwardPaths,
+            })
+          }
+          setTo(toAddr)
+          setCc(ccAddr)
+          setBcc("")
+          setSubject(subj)
+          const initialReplyHtml =
+            (composeIntent.mode === "reply" || composeIntent.mode === "reply-all") &&
+            composeIntent.initialReplyHtml
+              ? composeIntent.initialReplyHtml
+              : composeIntent.mode === "reply" ||
+                  composeIntent.mode === "reply-all" ||
+                  composeIntent.mode === "forward"
+                ? "<p><br></p>"
+                : ""
+          const composed = buildReplyComposeHtml({
+            replyHtml: initialReplyHtml
+              ? sanitizeComposeHtml(initialReplyHtml)
+              : "",
+            quotedPlain: quoted,
+            signatureHtml:
+              sigHtml && composeIntent.mode !== "forward" ? sigHtml : undefined,
+          })
+          setBodyHtml(composed || sigHtml || "")
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -256,6 +311,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     setReplyToId(null)
     setTo("")
     setCc("")
+    setBcc("")
     setSubject("")
     setBodyHtml("")
     setAttachmentPaths([])
@@ -291,6 +347,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           bodyHtml: safeHtml || undefined,
           to,
           cc: cc || undefined,
+          bcc: bcc || undefined,
+          draftAttachmentPaths: attachmentPaths,
         })
         return true
       } catch (e) {
@@ -301,7 +359,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         return false
       }
     },
-    [draftId, subject, to, cc, bodyHtml, getEditorHtml],
+    [draftId, subject, to, cc, bcc, bodyHtml, attachmentPaths, getEditorHtml],
   )
 
   useEffect(() => {
@@ -313,7 +371,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     }
-  }, [isOpen, draftId, to, cc, subject, bodyHtml, saveDraft])
+  }, [isOpen, draftId, to, cc, bcc, subject, bodyHtml, attachmentPaths, saveDraft])
 
   const handleCheckOutbound = async () => {
     if (!hasElectron() || draftId == null) return
@@ -363,6 +421,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           bodyHtml: safeHtml || undefined,
           to,
           cc: cc || undefined,
+          bcc: bcc || undefined,
           attachmentCount: attachmentPaths.length,
         },
       )
@@ -398,13 +457,25 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         return
       }
     }
+    if (bcc.trim()) {
+      const bccCheck = validateRecipientField(bcc, "Bcc")
+      if (!bccCheck.ok) {
+        toast.error(bccCheck.error)
+        return
+      }
+    }
     setSending(true)
     try {
       const saved = await saveDraft()
       if (!saved) return
       const safeHtml = sanitizeComposeHtml(getEditorHtml())
       const plain = stripHtmlToText(safeHtml)
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = await invokeIpc<{
+        success: boolean
+        error?: string
+        warning?: string
+        recoveredSentAppend?: boolean
+      }>(
         IPCChannels.Email.SendCompose,
         {
           accountId: composeAccountId,
@@ -414,6 +485,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           bodyHtml: safeHtml || null,
           to,
           cc: cc || undefined,
+          bcc: bcc || undefined,
           inReplyToMessageId: replyToId,
           attachmentPaths: attachmentPaths.length > 0 ? attachmentPaths : undefined,
         },
@@ -445,7 +517,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         }
         return
       }
-      toast.success("E-Mail gesendet.")
+      if (r.recoveredSentAppend) {
+        toast.success("Nachricht wurde nachträglich in „Gesendet“ übernommen.")
+      } else if (r.warning) {
+        toast.warning(r.warning)
+      } else {
+        toast.success("E-Mail gesendet.")
+      }
       await onSent()
       closeDialog()
     } catch (e) {
@@ -467,9 +545,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           <DialogTitle>
             {composeIntent.mode === "reply"
               ? "Antwort verfassen"
-              : composeIntent.mode === "forward"
-                ? "Weiterleiten"
-                : "Neue Nachricht"}
+              : composeIntent.mode === "reply-all"
+                ? "Allen antworten"
+                : composeIntent.mode === "forward"
+                  ? "Weiterleiten"
+                  : composeIntent.mode === "draft"
+                    ? "Entwurf bearbeiten"
+                    : "Neue Nachricht"}
           </DialogTitle>
           <DialogDescription>
             Textbausteine und „KI auf Text“ (Prompt aus Einstellungen → E-Mail → KI-Prompts) bearbeiten
@@ -513,7 +595,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const frag = sanitizeComposeHtml(
                     `<p>${block.replace(/\n/g, "<br/>")}</p>`,
                   )
-                  setBodyHtml((prev) => `${prev}${frag}`)
+                  setBodyHtml((prev) => {
+                    const { editableHtml, quotedHtml } = splitComposeHtml(prev)
+                    return mergeComposeHtml(`${editableHtml}${frag}`, quotedHtml)
+                  })
                 })()
               }}
             >
@@ -536,9 +621,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const pid = parseInt(id, 10)
                   if (!Number.isFinite(pid)) return
                   const rawHtml = getEditorHtml()
-                  const src = stripHtmlToText(rawHtml)
+                  const { editableHtml, quotedHtml } = splitComposeHtml(rawHtml)
+                  const src = stripHtmlToText(editableHtml)
                   if (!src.trim()) {
-                    toast.error("Bitte zuerst Nachrichtentext eingeben, dann einen KI-Prompt wählen.")
+                    toast.error(
+                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben, dann einen KI-Prompt wählen.",
+                    )
                     setAiPromptSelectKey((k) => k + 1)
                     return
                   }
@@ -553,12 +641,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       customerId: selectedMessage?.customer_id ?? null,
                     })
                     if (r.success && r.text?.trim()) {
-                      setBodyHtml(
-                        sanitizeComposeHtml(
-                          `<p>${r.text.replace(/\n/g, "<br/>")}</p>`,
-                        ),
+                      const transformed = sanitizeComposeHtml(
+                        plainTextToReplyHtml(r.text),
                       )
-                      toast.success("Text durch KI ersetzt")
+                      setBodyHtml(mergeComposeHtml(transformed, quotedHtml))
+                      toast.success("KI-Text eingefügt (Zitat unverändert)")
                     } else {
                       toast.error(
                         r.error ??
@@ -581,11 +668,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 />
               </SelectTrigger>
               <SelectContent>
-                {aiPrompts.map((p) => (
-                  <SelectItem key={p.id} value={String(p.id)}>
-                    {p.label}
-                  </SelectItem>
-                ))}
+                {aiPrompts
+                  .filter((p) => p.target !== "reply")
+                  .map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </div>
@@ -635,6 +724,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               onChange={(e) => setCc(e.target.value)}
               className="h-9"
               placeholder="optional"
+            />
+            <Label className="justify-self-end text-xs text-muted-foreground">Bcc</Label>
+            <Input
+              value={bcc}
+              onChange={(e) => setBcc(e.target.value)}
+              className="h-9"
+              placeholder="Blindkopie, optional"
             />
             <Label className="justify-self-end text-xs text-muted-foreground">Betreff</Label>
             <Input
@@ -726,6 +822,33 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           >
             {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Ausgang prüfen
+          </Button>
+          <Input
+            type="datetime-local"
+            className="h-9 w-[200px] text-xs"
+            value={scheduledSendAt}
+            onChange={(e) => setScheduledSendAt(e.target.value)}
+            title="Geplante Versendung"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!scheduledSendAt || draftId == null}
+            onClick={() => {
+              if (!draftId || !scheduledSendAt) return
+              void (async () => {
+                await saveDraft({ silent: true })
+                const iso = new Date(scheduledSendAt).toISOString()
+                await invokeIpc(IPCChannels.Email.ScheduleDraftSend, {
+                  messageId: draftId,
+                  sendAt: iso,
+                })
+                toast.success("Versand geplant — Entwurf bleibt gespeichert.")
+                closeDialog()
+              })()
+            }}
+          >
+            Später senden
           </Button>
           <Button
             type="button"

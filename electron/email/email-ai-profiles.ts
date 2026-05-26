@@ -126,6 +126,16 @@ export async function profileHasApiKey(profileId: number): Promise<boolean> {
   return Boolean(key?.trim());
 }
 
+/** True when at least one profile (or legacy key) can call the chat API. */
+export async function hasAnyAiProfileWithKey(): Promise<boolean> {
+  await ensureDefaultAiProfiles();
+  for (const p of listProfilesRaw()) {
+    if (await profileHasApiKey(p.id)) return true;
+  }
+  const legacy = await getEmailAiApiKey();
+  return Boolean(legacy?.trim());
+}
+
 export function createAiProfile(input: {
   label: string;
   provider: AiProviderPreset;

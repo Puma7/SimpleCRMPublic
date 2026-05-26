@@ -25,6 +25,8 @@ import {
   listTagsForMessage,
   listConversationMessagesForScope,
   setMessageSoftDeleted,
+  bulkSoftDeleteMessages,
+  bulkSetMessagesArchived,
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
@@ -72,9 +74,25 @@ import {
   moveAiPrompt,
   searchMessagesForAccount,
   searchMessagesForMailScope,
+  searchMessagesForMailScopeWithMeta,
+  searchMessagesForAccountWithMeta,
+  backfillCustomerLinksForMessages,
   setMessageCustomerId,
 } from '../email/email-crm-store';
+import {
+  setMessageSnoozedUntil,
+  setDraftScheduledSendAt,
+  exportMessageAsEml,
+} from '../email/email-message-features';
+import { fireWebhookWorkflows } from '../email/email-webhook';
+import { clearEmailAccountSyncLock } from '../email/email-sync-mutex';
+import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
+import {
+  ensureReplySuggestion,
+  generateAndStoreReplySuggestion,
+  getReplySuggestion,
+} from '../email/email-reply-ai';
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
 import {
   AI_PROVIDER_PRESETS,
@@ -252,6 +270,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Tls?: boolean | null;
           sentFolderPath?: string | null;
           imapSyncSeenOnOpen?: boolean;
+          vacationEnabled?: boolean;
+          vacationSubject?: string | null;
+          vacationBodyText?: string | null;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -278,6 +299,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Tls: payload.pop3Tls === undefined ? undefined : Boolean(payload.pop3Tls),
           sentFolderPath: payload.sentFolderPath,
           imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
+          vacationEnabled: payload.vacationEnabled,
+          vacationSubject: payload.vacationSubject,
+          vacationBodyText: payload.vacationBodyText,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -351,6 +375,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             oauth_refresh_keytar_key: null,
             sent_folder_path: 'Sent',
             imap_sync_seen_on_open: 1,
+            vacation_enabled: 0,
+            vacation_subject: null,
+            vacation_body_text: null,
             created_at: '',
             updated_at: '',
           };
@@ -496,6 +523,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bodyHtml?: string;
           to: string;
           cc?: string;
+          bcc?: string;
           attachmentCount?: number;
         },
       ) => {
@@ -507,6 +535,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             bodyHtml: payload.bodyHtml,
             to: payload.to,
             cc: payload.cc,
+            bcc: payload.bcc,
             attachmentCount: payload.attachmentCount ?? 0,
           },
           { dryRun: true },
@@ -543,7 +572,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.UpdateComposeDraft,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; subject?: string; bodyText?: string; bodyHtml?: string; to?: string; cc?: string },
+        payload: {
+          messageId: number;
+          subject?: string;
+          bodyText?: string;
+          bodyHtml?: string;
+          to?: string;
+          cc?: string;
+          bcc?: string;
+          draftAttachmentPaths?: string[];
+        },
       ) => {
         const toJson =
           payload.to !== undefined
@@ -557,12 +595,20 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               ? recipientJsonFromField(payload.cc)
               : null
             : undefined;
+        const bccJson =
+          payload.bcc !== undefined
+            ? payload.bcc.trim()
+              ? recipientJsonFromField(payload.bcc)
+              : null
+            : undefined;
         updateComposeDraft(payload.messageId, {
           subject: payload.subject,
           bodyText: payload.bodyText,
           bodyHtml: payload.bodyHtml,
           toJson,
           ccJson,
+          bccJson,
+          draftAttachmentPaths: payload.draftAttachmentPaths,
         });
         return { success: true as const };
       },
@@ -630,12 +676,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           limit?: number;
           offset?: number;
           categoryId?: number | null;
+          sort?: import('../../shared/email-list-options').MessageListSortMode;
+          listFilter?: import('../../shared/email-list-filters').MessageListFilter;
         },
       ) => {
         return listMessagesForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
           categoryId: payload.categoryId,
+          sort: payload.sort,
+          listFilter: payload.listFilter,
         });
       },
       { logger },
@@ -651,15 +701,131 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           accountId: number | 'all';
           query: string;
           limit?: number;
+          offset?: number;
           view?: import('../email/email-store').AccountMailView;
+          categoryId?: number | null;
         },
       ) => {
-        return searchMessagesForMailScope(
+        if (payload.accountId !== 'all') {
+          const { rows, searchMode, hasMore } = searchMessagesForAccountWithMeta(
+            payload.accountId,
+            payload.query,
+            {
+              limit: payload.limit ?? 80,
+              offset: payload.offset ?? 0,
+              view: payload.view,
+              categoryId: payload.categoryId,
+            },
+          );
+          return { messages: rows, searchMode, hasMore };
+        }
+        const { rows, hasMore } = searchMessagesForMailScopeWithMeta(
           payload.accountId,
           payload.query,
-          payload.limit ?? 80,
-          payload.view,
+          {
+            limit: payload.limit ?? 80,
+            offset: payload.offset ?? 0,
+            view: payload.view,
+            categoryId: payload.categoryId,
+          },
         );
+        return { messages: rows, searchMode: 'like' as const, hasMore };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SnoozeMessage,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; until: string | null }) => {
+        setMessageSnoozedUntil(payload.messageId, payload.until);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ScheduleDraftSend,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; sendAt: string | null }) => {
+        setDraftScheduledSendAt(payload.messageId, payload.sendAt);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ExportMessageEml,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const r = await exportMessageAsEml(messageId);
+        if (r.ok) return { success: true as const, path: r.path };
+        return { success: false as const, error: r.error };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BackfillCustomerLinks,
+      async (_event: IpcMainInvokeEvent, payload?: { accountId?: number; limit?: number }) => {
+        const count = backfillCustomerLinksForMessages(payload);
+        return { success: true as const, count };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.FireWebhookWorkflow,
+      async (_event: IpcMainInvokeEvent, payload: { secret: string; body?: Record<string, unknown> }) => {
+        const r = await fireWebhookWorkflows(payload);
+        if (r.error) return { success: false as const, error: r.error, fired: 0 };
+        return { success: true as const, fired: r.fired };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ClearAccountSyncLock,
+      async (_event: IpcMainInvokeEvent, accountId: number) => {
+        clearEmailAccountSyncLock(accountId);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async () => {
+      return {
+        webhookSecret: getSyncInfo('email_webhook_secret') ?? '',
+        maxAttachmentMb: getSyncInfo('email_max_attachment_mb') ?? '25',
+      };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetEmailMiscSettings,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { webhookSecret?: string; maxAttachmentMb?: number },
+      ) => {
+        if (payload.webhookSecret !== undefined) {
+          setSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
+        }
+        if (payload.maxAttachmentMb !== undefined) {
+          setSyncInfo('email_max_attachment_mb', String(payload.maxAttachmentMb));
+        }
+        return { success: true as const };
       },
       { logger },
     ),
@@ -702,12 +868,21 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bodyHtml?: string | null;
           to: string;
           cc?: string;
+          bcc?: string;
           inReplyToMessageId?: number | null;
           attachmentPaths?: string[];
         },
       ) => {
         const r = await sendComposeDraft(payload);
-        if (r.ok) return { success: true as const };
+        if (r.ok) {
+          if (r.warning) {
+            return { success: true as const, warning: r.warning };
+          }
+          if (r.recoveredSentAppend) {
+            return { success: true as const, recoveredSentAppend: true as const };
+          }
+          return { success: true as const };
+        }
         return { success: false as const, error: r.error };
       },
       { logger },
@@ -719,14 +894,47 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.TestSmtp,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { host: string; port: number; secure: boolean; user: string; password: string },
+        payload: {
+          accountId?: number;
+          host: string;
+          port: number;
+          secure: boolean;
+          user: string;
+          password?: string;
+          smtpUseImapAuth?: boolean;
+        },
       ) => {
+        let pass = payload.password?.trim() ?? '';
+        let accessToken: string | undefined;
+        if (payload.accountId != null && payload.accountId > 0) {
+          const acc = getEmailAccountById(payload.accountId);
+          if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
+          const useImap = payload.smtpUseImapAuth ?? Boolean(acc.smtp_use_imap_auth);
+          if (useImap) {
+            const { resolveImapAuth } = await import('../email/email-imap-auth');
+            const auth = await resolveImapAuth(acc);
+            if ('accessToken' in auth) {
+              accessToken = auth.accessToken;
+            } else {
+              pass = pass || auth.pass;
+            }
+          } else if (!pass && acc.smtp_keytar_account_key) {
+            pass = (await getEmailPassword(acc.smtp_keytar_account_key)) ?? '';
+          }
+          if (!pass && !accessToken) {
+            pass = (await getEmailPassword(acc.keytar_account_key)) ?? '';
+          }
+        }
+        if (!pass && !accessToken) {
+          return { success: false as const, error: 'Kein Passwort oder OAuth-Token verfügbar' };
+        }
         const r = await testSmtpConnection({
           host: payload.host,
           port: payload.port,
           secure: payload.secure,
           user: payload.user,
-          pass: payload.password,
+          pass: pass || undefined,
+          accessToken,
         });
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
@@ -1182,6 +1390,42 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.GetReplySuggestion,
+      async (_event: IpcMainInvokeEvent, messageId: number) => getReplySuggestion(messageId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.EnsureReplySuggestion,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; force?: boolean },
+      ) => {
+        ensureReplySuggestion(payload.messageId, { force: payload.force });
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GenerateReplyDraft,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; promptId?: number; customerId?: number | null },
+      ) => generateAndStoreReplySuggestion(payload.messageId, {
+        promptId: payload.promptId,
+        customerId: payload.customerId,
+      }),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.LinkCustomer,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; customerId: number | null }) => {
         setMessageCustomerId(payload.messageId, payload.customerId);
@@ -1195,6 +1439,52 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       setMessageSoftDeleted(messageId, true);
       return { success: true as const };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSoftDeleteMessages,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; accountId?: number },
+      ) => {
+        try {
+          const count = bulkSoftDeleteMessages(payload.messageIds, payload.accountId);
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSetMessagesArchived,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; archived: boolean; accountId?: number },
+      ) => {
+        try {
+          const count = bulkSetMessagesArchived(
+            payload.messageIds,
+            payload.archived,
+            payload.accountId,
+          );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
   );
 
   disposers.push(
@@ -1454,6 +1744,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const ids = listMessageIdsForWorkflowBackfill(offset, pageSize);
         if (ids.length === 0) break;
         for (const id of ids) {
+          clearInboundWorkflowAppliedForMessage(id);
           await runInboundWorkflowsForMessage(id);
           processed += 1;
         }
@@ -1629,16 +1920,34 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.CompileWorkflowGraph,
-      async (_event: IpcMainInvokeEvent, graph: WorkflowGraphDocument) => {
-        const def = compileGraphToDefinition(graph);
-        const registryOnly = graph.nodes.some(
-          (n) => n.type === 'registry' || (n.type === 'action' && !('actionType' in (n.data as object))),
-        );
-        return {
-          success: true as const,
-          definitionJson: definitionToJson(def),
-          registryOnly,
-        };
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: WorkflowGraphDocument | { graphJson: string },
+      ) => {
+        try {
+          let graph: WorkflowGraphDocument;
+          if ('graphJson' in payload && typeof payload.graphJson === 'string') {
+            graph = JSON.parse(payload.graphJson) as WorkflowGraphDocument;
+          } else {
+            graph = payload as WorkflowGraphDocument;
+          }
+          const def = compileGraphToDefinition(graph);
+          const registryOnly = graph.nodes.some(
+            (n) =>
+              n.type === 'registry' ||
+              (n.type === 'action' && !('actionType' in (n.data as object))),
+          );
+          return {
+            success: true as const,
+            definitionJson: definitionToJson(def),
+            registryOnly,
+          };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
       },
       { logger },
     ),

@@ -12,18 +12,19 @@ import {
   type SetStateAction,
 } from "react"
 import type { MailAccountScope } from "./account-scope"
+import type { MessageListDisplayMode, MessageListSortMode } from "@shared/email-list-options"
+import type { MessageListFilter } from "@shared/email-list-filters"
 import type { EmailMessage, MailView } from "./types"
-import type { EmailUiMode } from "@/lib/email-ui-mode"
-import { UI_THEME_CHANGED, readUiTheme, setUiTheme } from "@/lib/ui-theme"
 
 export type ComposeIntent =
   | { mode: "closed" }
   | { mode: "new" }
-  | { mode: "reply"; message: EmailMessage }
+  | { mode: "reply"; message: EmailMessage; initialReplyHtml?: string }
+  | { mode: "reply-all"; message: EmailMessage; initialReplyHtml?: string }
   | { mode: "forward"; message: EmailMessage }
   | { mode: "draft"; messageId: number }
 
-export type MessageListFilter = "all" | "unread" | "attachment" | "customer" | "workflow"
+export type { MessageListFilter }
 
 export type SettingsTab =
   | "accounts"
@@ -56,6 +57,10 @@ type MailWorkspaceState = {
   setSearchQuery: Dispatch<SetStateAction<string>>
   messageListFilter: MessageListFilter
   setMessageListFilter: Dispatch<SetStateAction<MessageListFilter>>
+  listSortMode: MessageListSortMode
+  setListSortMode: Dispatch<SetStateAction<MessageListSortMode>>
+  listDisplayMode: MessageListDisplayMode
+  setListDisplayMode: Dispatch<SetStateAction<MessageListDisplayMode>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
   settingsTab: SettingsTab
@@ -78,9 +83,6 @@ type MailWorkspaceState = {
    */
   accountsRevision: number
   bumpAccountsRevision: () => void
-  /** Classic sidebar tabs vs. beta hub (Einstellungen); persisted in localStorage. */
-  emailUiMode: EmailUiMode
-  setEmailUiMode: (mode: EmailUiMode) => void
 }
 
 const MailWorkspaceContext = createContext<MailWorkspaceState | null>(null)
@@ -160,6 +162,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
+  const [listSortMode, setListSortMode] = useState<MessageListSortMode>("date_desc")
+  const [listDisplayMode, setListDisplayMode] = useState<MessageListDisplayMode>("flat")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
@@ -181,26 +185,6 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   )
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
-  const [emailUiMode, setEmailUiModeState] = useState<EmailUiMode>(() => readUiTheme())
-
-  const setEmailUiMode = useCallback((mode: EmailUiMode) => {
-    setEmailUiModeState(mode)
-    setUiTheme(mode)
-  }, [])
-
-  useEffect(() => {
-    const sync = () => setEmailUiModeState(readUiTheme())
-    window.addEventListener(UI_THEME_CHANGED, sync)
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== "simplecrm:uiTheme" && e.key !== "email:uiMode") return
-      sync()
-    }
-    window.addEventListener("storage", onStorage)
-    return () => {
-      window.removeEventListener(UI_THEME_CHANGED, sync)
-      window.removeEventListener("storage", onStorage)
-    }
-  }, [])
 
   const bumpAccountsRevision = useCallback(() => {
     setAccountsRevision((v) => v + 1)
@@ -236,6 +220,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSearchQuery,
       messageListFilter,
       setMessageListFilter,
+      listSortMode,
+      setListSortMode,
+      listDisplayMode,
+      setListDisplayMode,
       composeIntent,
       setComposeIntent,
       settingsTab,
@@ -246,8 +234,6 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setMetadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
-      emailUiMode,
-      setEmailUiMode,
     }),
     [
       selectedAccountScope,
@@ -256,14 +242,14 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       selectedMessage,
       searchQuery,
       messageListFilter,
+      listSortMode,
+      listDisplayMode,
       composeIntent,
       settingsTab,
       settingsAccountId,
       metadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
-      emailUiMode,
-      setEmailUiMode,
     ],
   )
 

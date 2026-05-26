@@ -29,10 +29,6 @@ import EmailSettingsPage from './app/email/settings/page'
 import EmailReportingPage from './app/email/reporting/page'
 import EmailSvelteLabPage from './app/email/svelte-lab/page'
 import { SETTINGS_TAB_IDS } from './components/email/settings-panels'
-import {
-  BETA_INTELLIGENCE_TAB_IDS,
-  BETA_SETTINGS_SECTION_IDS,
-} from './components/email/beta/beta-settings-sections'
 
 const svelteLabEnabled = import.meta.env.VITE_ENABLE_SVELTE_LAB === 'true'
 
@@ -81,24 +77,32 @@ const emailSettingsRoute = createRoute({
   getParentRoute: () => emailLayoutRoute,
   path: '/settings',
   validateSearch: (search: Record<string, unknown>) => {
-    const tab = typeof search.tab === 'string' ? search.tab : undefined
+    const legacySection =
+      typeof search.section === 'string' ? search.section : undefined
+    const tabParam = typeof search.tab === 'string' ? search.tab : legacySection
+    const legacyTabMap: Record<string, (typeof SETTINGS_TAB_IDS)[number]> = {
+      accounts: 'accounts',
+      smtp: 'smtp',
+      oauth: 'oauth',
+      ai: 'ai',
+      knowledge: 'knowledge',
+      'mail-security': 'mailSecurity',
+      mailSecurity: 'mailSecurity',
+      automation: 'automation',
+      team: 'team',
+      canned: 'canned',
+      prompts: 'prompts',
+      export: 'export',
+      misc: 'misc',
+    }
+    const mapped =
+      tabParam && legacyTabMap[tabParam] ? legacyTabMap[tabParam] : tabParam
     const validTab =
-      tab && (SETTINGS_TAB_IDS as readonly string[]).includes(tab) ? tab : 'accounts'
-    const sectionRaw = typeof search.section === 'string' ? search.section : undefined
-    const validSection =
-      sectionRaw && (BETA_SETTINGS_SECTION_IDS as readonly string[]).includes(sectionRaw)
-        ? sectionRaw
-        : 'overview'
-    const intelRaw =
-      typeof search.intelligenceTab === 'string' ? search.intelligenceTab : undefined
-    const validIntel =
-      intelRaw && (BETA_INTELLIGENCE_TAB_IDS as readonly string[]).includes(intelRaw)
-        ? intelRaw
-        : 'profiles'
+      mapped && (SETTINGS_TAB_IDS as readonly string[]).includes(mapped)
+        ? mapped
+        : 'accounts'
     return {
       tab: validTab as (typeof SETTINGS_TAB_IDS)[number],
-      section: validSection as (typeof BETA_SETTINGS_SECTION_IDS)[number],
-      intelligenceTab: validIntel as (typeof BETA_INTELLIGENCE_TAB_IDS)[number],
     }
   },
   component: EmailSettingsPage,

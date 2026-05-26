@@ -88,8 +88,8 @@ export function SmtpPanel() {
     const user = smtpImapAuth
       ? accounts.find((x) => x.id === accId)?.imap_username || ""
       : smtpUser
-    if (!smtpPass) {
-      toast.error("Bitte SMTP-Passwort zum Testen eingeben.")
+    if (!smtpPass && !smtpImapAuth && accId == null) {
+      toast.error("Bitte SMTP-Passwort zum Testen eingeben oder Konto wählen.")
       return
     }
     setTesting(true)
@@ -97,11 +97,13 @@ export function SmtpPanel() {
       const r = await invokeIpc<{ success: boolean; error?: string }>(
         IPCChannels.Email.TestSmtp,
         {
+          ...(accId != null ? { accountId: accId } : {}),
           host: smtpHost.trim(),
           port: parseInt(smtpPort, 10) || 587,
           secure: smtpTls && (parseInt(smtpPort, 10) || 587) === 465,
           user,
-          password: smtpPass,
+          password: smtpPass || undefined,
+          smtpUseImapAuth: smtpImapAuth,
         },
       )
       if (r.success) toast.success("SMTP OK")

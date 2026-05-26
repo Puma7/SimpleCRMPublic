@@ -3,10 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
+import type { MessageListSortMode } from "@shared/email-list-options"
+import type { MessageListFilter } from "@shared/email-list-filters"
 import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
+
+const PAGE_SIZE = 100
 
 type HandleSyncOptions = {
   onAfterSync?: (accountId: number) => void | Promise<void>
@@ -20,13 +24,18 @@ export function useEmailMessages() {
     searchQuery,
     selectedMessage,
     setSelectedMessage,
+    listSortMode,
+    messageListFilter,
   } = useMailWorkspace()
   const [messages, setMessages] = useState<EmailMessage[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
+  const offsetRef = useRef(0)
 
   useEffect(() => {
     selectedMessageIdRef.current = selectedMessage?.id ?? null
@@ -48,37 +57,71 @@ export function useEmailMessages() {
       view: MailView,
       catId: number | null,
       query: string,
-      opts?: { preserveSelection?: boolean },
+      sort: MessageListSortMode,
+      listFilter: MessageListFilter,
+      opts?: { preserveSelection?: boolean; append?: boolean },
     ) => {
       if (!hasElectron()) return
+      const append = opts?.append ?? false
+      const offset = append ? offsetRef.current : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
-      setLoadingMessages(true)
+      if (append) setLoadingMore(true)
+      else setLoadingMessages(true)
       try {
         let list: EmailMessage[]
         if (query.trim() && view !== "trash") {
-          list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.SearchMessages, {
+          const res = await invokeIpc<{
+            messages: EmailMessage[]
+            searchMode: "fts" | "like" | "regex"
+            hasMore?: boolean
+          }>(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
-            limit: 150,
+            limit: PAGE_SIZE,
+            offset,
             view,
+            categoryId: view === "inbox" ? catId : null,
           })
+          list = res.messages
+          if (res.searchMode === "like") {
+            toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
+              id: "search-like-fallback",
+              duration: 4000,
+            })
+          } else if (res.searchMode === "regex") {
+            toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
+          }
+          setHasMore(Boolean(res.hasMore))
         } else {
           list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.ListMessagesByView, {
             accountId: accountScope,
             view,
-            limit: 250,
+            limit: PAGE_SIZE,
+            offset,
             categoryId: view === "inbox" ? catId : null,
+            sort,
+            listFilter: listFilter === "all" ? undefined : listFilter,
           })
+          setHasMore(list.length >= PAGE_SIZE)
         }
-        setMessages(list)
-        if (keepId != null) {
+        if (append) {
+          setMessages((prev) => {
+            const ids = new Set(prev.map((m) => m.id))
+            return [...prev, ...list.filter((m) => !ids.has(m.id))]
+          })
+          offsetRef.current = offset + list.length
+        } else {
+          setMessages(list)
+          offsetRef.current = list.length
+        }
+        if (keepId != null && !append) {
           const still = list.find((m) => m.id === keepId)
           if (still) {
             setSelectedMessage((prev) =>
               prev?.id === keepId ? { ...prev, ...still } : still,
             )
           }
-        } else {
+        } else if (!append && keepId == null) {
           setSelectedMessage(null)
         }
       } catch (e) {
@@ -86,73 +129,80 @@ export function useEmailMessages() {
         toast.error("Nachrichten konnten nicht geladen werden.")
       } finally {
         setLoadingMessages(false)
+        setLoadingMore(false)
       }
     },
     [setSelectedMessage],
   )
 
   useEffect(() => {
+    offsetRef.current = 0
     if (selectedAccountId != null) {
-      void loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
+      void loadMessages(
+        selectedAccountId,
+        mailView,
+        categoryFilterId,
+        debouncedSearchQ,
+        listSortMode,
+        messageListFilter,
+      )
     } else {
       setMessages([])
     }
-  }, [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages])
+  }, [
+    selectedAccountId,
+    mailView,
+    categoryFilterId,
+    debouncedSearchQ,
+    listSortMode,
+    messageListFilter,
+    loadMessages,
+  ])
 
-  const openMessage = useCallback(
-    async (m: EmailMessage) => {
-      if (!hasElectron()) {
-        setSelectedMessage(m)
-        return
-      }
-      try {
-        const full = await invokeIpc<EmailMessage | null>(IPCChannels.Email.GetMessage, m.id)
-        const msg = full ?? m
-        setSelectedMessage(msg)
-        if (m.uid >= 0 && !m.seen_local) {
-          await invokeIpc(IPCChannels.Email.SetMessageSeen, {
-            messageId: m.id,
-            seen: true,
-          })
-          setSelectedMessage({ ...msg, seen_local: 1 })
-          setMessages((prev) =>
-            prev.map((row) => (row.id === m.id ? { ...row, seen_local: 1 } : row)),
-          )
-        }
-      } catch (e) {
-        logError("use-email-messages: open message", e)
-        setSelectedMessage(m)
-      }
-    },
-    [setSelectedMessage],
-  )
-
-  const refreshCurrentMessage = useCallback(async () => {
-    if (!selectedMessage || !hasElectron()) return
-    try {
-      const full = await invokeIpc<EmailMessage | null>(
-        IPCChannels.Email.GetMessage,
-        selectedMessage.id,
-      )
-      setSelectedMessage(full ?? selectedMessage)
-    } catch (e) {
-      logError("use-email-messages: refresh current", e)
-    }
-  }, [selectedMessage, setSelectedMessage])
+  const loadMore = useCallback(() => {
+    if (!selectedAccountId) return
+    void loadMessages(
+      selectedAccountId,
+      mailView,
+      categoryFilterId,
+      debouncedSearchQ,
+      listSortMode,
+      messageListFilter,
+      { preserveSelection: true, append: true },
+    )
+  }, [
+    selectedAccountId,
+    mailView,
+    categoryFilterId,
+    debouncedSearchQ,
+    listSortMode,
+    messageListFilter,
+    loadMessages,
+  ])
 
   const refreshList = useCallback(
     async (opts?: { preserveSelection?: boolean }) => {
-      if (selectedAccountId != null) {
-        await loadMessages(
-          selectedAccountId,
-          mailView,
-          categoryFilterId,
-          debouncedSearchQ,
-          opts,
-        )
-      }
+      offsetRef.current = 0
+      if (selectedAccountId == null) return
+      await loadMessages(
+        selectedAccountId,
+        mailView,
+        categoryFilterId,
+        debouncedSearchQ,
+        listSortMode,
+        messageListFilter,
+        opts,
+      )
     },
-    [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages],
+    [
+      selectedAccountId,
+      mailView,
+      categoryFilterId,
+      debouncedSearchQ,
+      listSortMode,
+      messageListFilter,
+      loadMessages,
+    ],
   )
 
   const moveMessageToView = useCallback(
@@ -219,24 +269,63 @@ export function useEmailMessages() {
             `Synchronisation abgeschlossen (${totalFetched} neue/aktualisierte Nachrichten).`,
           )
         }
-        await loadMessages(selectedAccountId, mailView, categoryFilterId, debouncedSearchQ)
+        await refreshList({ preserveSelection: true })
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Sync fehlgeschlagen.")
       } finally {
         setSyncing(false)
       }
     },
-    [selectedAccountId, mailView, categoryFilterId, debouncedSearchQ, loadMessages],
+    [selectedAccountId, refreshList],
   )
+
+  const openMessage = useCallback(
+    async (m: EmailMessage) => {
+      if (!hasElectron()) {
+        setSelectedMessage(m)
+        return
+      }
+      try {
+        const full = await invokeIpc<EmailMessage | null>(IPCChannels.Email.GetMessage, m.id)
+        setSelectedMessage(full ?? m)
+        if (!m.seen_local && m.uid >= 0) {
+          await invokeIpc(IPCChannels.Email.SetMessageSeen, { messageId: m.id, seen: true })
+          setMessages((prev) =>
+            prev.map((row) => (row.id === m.id ? { ...row, seen_local: 1 } : row)),
+          )
+        }
+      } catch (e) {
+        logError("use-email-messages: open message", e)
+        setSelectedMessage(m)
+      }
+    },
+    [setSelectedMessage],
+  )
+
+  const refreshCurrentMessage = useCallback(async () => {
+    if (!selectedMessage || !hasElectron()) return
+    try {
+      const full = await invokeIpc<EmailMessage | null>(
+        IPCChannels.Email.GetMessage,
+        selectedMessage.id,
+      )
+      setSelectedMessage(full ?? selectedMessage)
+    } catch (e) {
+      logError("use-email-messages: refresh current", e)
+    }
+  }, [selectedMessage, setSelectedMessage])
 
   return {
     messages,
     loadingMessages,
+    loadingMore,
+    hasMore,
+    loadMore,
     syncing,
-    openMessage,
-    refreshList,
-    refreshCurrentMessage,
     handleSync,
+    refreshList,
+    openMessage,
+    refreshCurrentMessage,
     moveMessageToView,
   }
 }

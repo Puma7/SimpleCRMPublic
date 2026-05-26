@@ -1,30 +1,30 @@
 "use client"
 
 import { useEffect } from "react"
-import { useSearch } from "@tanstack/react-router"
+import { useNavigate, useSearch } from "@tanstack/react-router"
 import { SettingsPanelsPage } from "@/components/email/settings-panels"
-import { BetaEmailSettingsShell } from "@/components/email/beta/beta-email-settings-shell"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { useMailWorkspace, type SettingsTab } from "@/components/email/workspace-context"
-import { useUiTheme } from "@/components/beta/ui-theme-provider"
-import type { BetaIntelligenceTab, BetaSettingsSection } from "@/components/email/beta/beta-settings-sections"
 
 export default function EmailSettingsPage() {
-  const { tab, section, intelligenceTab } = useSearch({ from: "/email/settings" })
+  const { tab } = useSearch({ from: "/email/settings" })
+  const navigate = useNavigate()
   const { setSettingsTab } = useMailWorkspace()
-  const { theme } = useUiTheme()
 
   useEffect(() => {
     setSettingsTab(tab as SettingsTab)
   }, [tab, setSettingsTab])
 
-  if (theme === "beta") {
-    return (
-      <BetaEmailSettingsShell
-        section={(section ?? "mailboxes") as BetaSettingsSection}
-        intelligenceTab={(intelligenceTab ?? "profiles") as BetaIntelligenceTab}
-      />
-    )
-  }
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    if (!params.has("section")) return
+    void navigate({
+      to: "/email/settings",
+      search: emailSettingsSearch({ tab: tab as SettingsTab }),
+      replace: true,
+    })
+  }, [tab, navigate])
 
   return <SettingsPanelsPage />
 }

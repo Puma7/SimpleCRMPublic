@@ -24,6 +24,7 @@ Diese Datei fasst die ursprünglichen Plan-Phasen mit dem **aktuellen Implementi
 | Team-Zuweisung | ✅ |
 | HTML-Composer (React Quill) | ✅ |
 | Anhänge: Metadaten + Speicherung auf Disk (≤25 MB/Stück) + Öffnen/Speichern | ✅ |
+| Abwesenheitsantwort pro Konto (Auto-Reply, 24h-Dedup) | ✅ UI unter Konten bearbeiten |
 
 ## Phase 3 – Workflows & Automatisierung
 

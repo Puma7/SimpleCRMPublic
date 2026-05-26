@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { hasElectron, invokeIpc, type EmailAccount } from "../types"
 
@@ -29,6 +30,9 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [pop3Port, setPop3Port] = useState("995")
   const [pop3Tls, setPop3Tls] = useState(true)
   const [imapSyncSeenOnOpen, setImapSyncSeenOnOpen] = useState(true)
+  const [vacationEnabled, setVacationEnabled] = useState(false)
+  const [vacationSubject, setVacationSubject] = useState("")
+  const [vacationBodyText, setVacationBodyText] = useState("")
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -49,6 +53,9 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setPop3Port(String(editAccount.pop3_port ?? 995))
     setPop3Tls(editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls))
     setImapSyncSeenOnOpen(editAccount.imap_sync_seen_on_open !== 0)
+    setVacationEnabled((editAccount.vacation_enabled ?? 0) === 1)
+    setVacationSubject(editAccount.vacation_subject ?? "")
+    setVacationBodyText(editAccount.vacation_body_text ?? "")
   }, [editAccount])
 
   const handleTestImap = async () => {
@@ -179,6 +186,9 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
           imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
+          vacationEnabled,
+          vacationSubject: vacationSubject.trim() || null,
+          vacationBodyText: vacationBodyText.trim() || null,
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
@@ -370,6 +380,50 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           />
         </div>
       </div>
+
+      {isEdit ? (
+        <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+          <div className="flex items-start gap-3">
+            <Switch
+              id="acc-vacation"
+              checked={vacationEnabled}
+              onCheckedChange={setVacationEnabled}
+            />
+            <div className="space-y-0.5">
+              <Label htmlFor="acc-vacation" className="cursor-pointer text-sm font-normal">
+                Abwesenheitsantwort (automatisch)
+              </Label>
+              <p className="text-[11px] text-muted-foreground">
+                Sendet pro Absender höchstens einmal in 24 Stunden eine automatische Antwort
+                auf eingehende Mails (keine Antworten an Mailer-Daemon oder Auto-Mails).
+              </p>
+            </div>
+          </div>
+          {vacationEnabled ? (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="acc-vacation-subject">Betreff</Label>
+                <Input
+                  id="acc-vacation-subject"
+                  value={vacationSubject}
+                  onChange={(e) => setVacationSubject(e.target.value)}
+                  placeholder="Abwesenheit: Automatische Antwort"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="acc-vacation-body">Nachrichtentext</Label>
+                <Textarea
+                  id="acc-vacation-body"
+                  rows={4}
+                  value={vacationBodyText}
+                  onChange={(e) => setVacationBodyText(e.target.value)}
+                  placeholder="Vielen Dank für Ihre Nachricht. Ich bin derzeit nicht erreichbar …"
+                />
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2 pt-1">
         {protocol === "imap" ? (

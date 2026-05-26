@@ -30,19 +30,23 @@ async function startIdleForAccount(
 ): Promise<void> {
   pendingReconnectTimers.delete(acc.id);
   try {
+    // OAuth access tokens are refreshed on each connect (resolveImapAuth), including IDLE reconnects.
     const auth = await resolveImapAuth(acc);
-    if ('accessToken' in auth) return;
     const client = new ImapFlow({
       host: acc.imap_host,
       port: acc.imap_port,
       secure: Boolean(acc.imap_tls),
-      auth: { user: auth.user, pass: auth.pass },
+      auth:
+        'accessToken' in auth
+          ? { user: auth.user, accessToken: auth.accessToken }
+          : { user: auth.user, pass: auth.pass },
       logger: false,
       connectionTimeout: 90_000,
       socketTimeout: 120_000,
     });
     await client.connect();
     await client.mailboxOpen('INBOX');
+    const connectedAt = Date.now();
     client.on('exists', () => {
       if (syncInFlight.has(acc.id)) return;
       const now = Date.now();
@@ -58,13 +62,17 @@ async function startIdleForAccount(
     });
     client.on('close', () => {
       idleClients.delete(acc.id);
-      // Connection was successful, so reset backoff to 0 for next reconnect attempt.
-      const delay = 5_000;
-      logger.debug(`[email] idle closed for account ${acc.id}, reconnecting in ${delay}ms`);
+      const livedMs = Date.now() - connectedAt;
+      const nextRetry =
+        livedMs >= 30_000 ? 0 : Math.min(retryCount + 1, 4);
+      const delay = Math.min(60_000, 5_000 * Math.pow(2, nextRetry));
+      logger.debug(
+        `[email] idle closed for account ${acc.id} (lived ${livedMs}ms), reconnecting in ${delay}ms`,
+      );
       const timer = setTimeout(() => {
         pendingReconnectTimers.delete(acc.id);
         if (!globalCron) return;
-        void startIdleForAccount(acc, logger, 0);
+        void startIdleForAccount(acc, logger, nextRetry);
       }, delay);
       pendingReconnectTimers.set(acc.id, timer);
     });
@@ -72,7 +80,7 @@ async function startIdleForAccount(
     idleClients.set(acc.id, client);
   } catch (e) {
     logger.debug(`[email] idle start skip account ${acc.id}`, e);
-    const delay = Math.min(60_000, 10_000 * Math.pow(2, Math.min(retryCount, 4)));
+    const delay = Math.min(60_000, 5_000 * Math.pow(2, Math.min(retryCount, 4)));
     const timer = setTimeout(() => {
       pendingReconnectTimers.delete(acc.id);
       if (!globalCron) return;
@@ -93,12 +101,26 @@ function stopIdleForAccount(accountId: number): void {
 export async function startEmailBackgroundServices(logger: Pick<typeof console, 'warn' | 'error' | 'debug'>): Promise<void> {
   stopEmailBackgroundServices();
 
+  try {
+    const { recoverStaleReplySuggestions } = await import('./email-reply-ai');
+    const { clearStaleComposeSendingLocks } = await import('./email-compose-send');
+    const { ensureVacationDedupTable } = await import('./email-vacation');
+    ensureVacationDedupTable();
+    recoverStaleReplySuggestions();
+    clearStaleComposeSendingLocks();
+  } catch (e) {
+    logger.warn('[email] startup recovery', e);
+  }
+
   globalCron = cron.schedule(
     '*/2 * * * *',
     () => {
       void processDueDelayedJobs(logger).catch((e) =>
         logger.debug('[workflow] delayed jobs', e),
       );
+      void import('./email-scheduled-send')
+        .then((m) => m.processDueScheduledSends(logger))
+        .catch((e) => logger.debug('[email] scheduled send', e));
       void scanDueTasksAndFireWorkflows().catch((e) =>
         logger.debug('[workflow] task due scan', e),
       );
@@ -146,7 +168,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
 
   const accounts = listEmailAccounts();
   for (const acc of accounts) {
-    if ((acc.protocol || 'imap') !== 'imap' || acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft') {
+    if ((acc.protocol || 'imap') !== 'imap') {
       continue;
     }
     void startIdleForAccount(acc, logger);

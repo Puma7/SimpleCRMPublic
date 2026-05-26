@@ -262,14 +262,27 @@ export function attachmentContextFromJson(attachmentsJson: string | null, hasAtt
   let types: string[] = [];
   if (attachmentsJson) {
     try {
-      const meta = JSON.parse(attachmentsJson) as {
-        filename?: string | null;
-        contentType?: string | null;
-      }[];
-      if (Array.isArray(meta)) {
-        for (const a of meta) {
-          if (a.filename) names.push(a.filename);
+      const parsed = JSON.parse(attachmentsJson) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const a of parsed) {
+          if (a && typeof a === 'object') {
+            const row = a as { filename?: string | null; contentType?: string | null };
+            if (row.filename) names.push(row.filename);
+            if (row.contentType) types.push(row.contentType);
+          }
+        }
+      } else if (parsed && typeof parsed === 'object') {
+        const doc = parsed as {
+          stored?: { name?: string; filename?: string; contentType?: string | null }[];
+          omitted?: { name: string }[];
+        };
+        for (const a of doc.stored ?? []) {
+          const n = a.name ?? a.filename;
+          if (n) names.push(n);
           if (a.contentType) types.push(a.contentType);
+        }
+        for (const o of doc.omitted ?? []) {
+          if (o.name) names.push(o.name);
         }
       }
     } catch {

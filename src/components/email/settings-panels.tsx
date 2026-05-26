@@ -20,7 +20,7 @@ import {
 } from "lucide-react"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
-import { AccountsPanel } from "./settings/accounts-panel"
+import { AccountsMasterDetailSettings } from "./settings/accounts-master-detail"
 import { SmtpPanel } from "./settings/smtp-panel"
 import { OAuthPanel } from "./settings/oauth-panel"
 import { AiPanel } from "./settings/ai-panel"
@@ -32,17 +32,23 @@ import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
-import { EmailUiModeToggle } from "./beta/email-ui-mode-toggle"
 
 type TabDef = {
   id: SettingsTab
   label: string
   icon: typeof AtSign
   render: () => ReactElement
+  fullBleed?: boolean
 }
 
 const TAB_DEFS: TabDef[] = [
-  { id: "accounts", label: "Konten", icon: AtSign, render: () => <AccountsPanel /> },
+  {
+    id: "accounts",
+    label: "Konten",
+    icon: AtSign,
+    fullBleed: true,
+    render: () => <AccountsMasterDetailSettings />,
+  },
   { id: "smtp", label: "SMTP", icon: Send, render: () => <SmtpPanel /> },
   { id: "oauth", label: "OAuth", icon: KeyRound, render: () => <OAuthPanel /> },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
@@ -149,6 +155,7 @@ function SettingsNav({ current, onSelect }: NavProps) {
 export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
   const navigate = useNavigate()
+  const active = TAB_DEFS.find((t) => t.id === settingsTab) ?? TAB_DEFS[0]!
 
   const selectTab = (tab: SettingsTab) => {
     setSettingsTab(tab)
@@ -157,15 +164,18 @@ export function SettingsPanelsPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-      <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4">
+      <header className="flex h-12 shrink-0 items-center border-b px-4">
         <h1 className="text-lg font-semibold tracking-tight">Einstellungen</h1>
-        <EmailUiModeToggle />
       </header>
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SettingsNav current={settingsTab} onSelect={selectTab} />
-        <ScrollArea className="flex-1">
-          <SettingsPanels current={settingsTab} />
-        </ScrollArea>
+        {active.fullBleed ? (
+          active.render()
+        ) : (
+          <ScrollArea className="flex-1">
+            <SettingsPanels current={settingsTab} />
+          </ScrollArea>
+        )}
       </div>
     </div>
   )

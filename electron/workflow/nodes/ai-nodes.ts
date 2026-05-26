@@ -71,6 +71,15 @@ export function registerAiNodes(register: Reg): void {
           if (!ctx.dryRun && id != null) setOutboundHold(id, true, 'KI-Fehler');
           return { status: 'error', blocked: true, blockReason: 'KI-Fehler' };
         }
+        if (ctx.direction === 'inbound' && ctx.messageId != null) {
+          if (!ctx.dryRun) addMessageTag(ctx.messageId, 'ki-review-block');
+          return {
+            status: 'error',
+            blocked: true,
+            blockReason: 'KI-Fehler',
+            message: e instanceof Error ? e.message : String(e),
+          };
+        }
         return { status: 'error', message: e instanceof Error ? e.message : String(e) };
       }
     },

@@ -21,6 +21,9 @@ export type EmailAccount = {
   sent_folder_path?: string | null
   /** IMAP: mark \\Seen on server when opening a message locally (POP3: ignored). */
   imap_sync_seen_on_open?: number | null
+  vacation_enabled?: number
+  vacation_subject?: string | null
+  vacation_body_text?: string | null
   created_at: string
   updated_at: string
 }
@@ -44,12 +47,15 @@ export type EmailMessage = {
   account_id: number
   folder_id: number
   uid: number
+  /** POP3: stable server UIDL when uid is synthetic. */
+  pop3_uidl?: string | null
   subject: string | null
   snippet: string | null
   date_received: string | null
   from_json: string | null
   to_json?: string | null
   cc_json?: string | null
+  bcc_json?: string | null
   body_text: string | null
   body_html: string | null
   seen_local: number
@@ -64,6 +70,8 @@ export type EmailMessage = {
   has_attachments?: number
   imap_thread_id?: string | null
   attachments_json?: string | null
+  draft_attachment_paths_json?: string | null
+  raw_headers?: string | null
 }
 
 export type CategoryRow = {

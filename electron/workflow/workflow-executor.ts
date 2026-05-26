@@ -112,7 +112,7 @@ export async function executeWorkflowNow(
 
   const trigger = (wf.trigger as WorkflowTriggerKind) || 'manual';
   const direction = workflowDirectionForTrigger(trigger);
-  const dryRun = options.dryRun !== false;
+  const dryRun = options.dryRun === true;
 
   let message: EmailMessageRow | null = null;
   if (options.messageId != null) {

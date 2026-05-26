@@ -64,20 +64,30 @@ export async function persistParsedAttachments(
   if (!attachments?.length) return;
 
   const db = getDb();
-  const existingCount = (
-    db.prepare(`SELECT COUNT(*) as c FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE message_id = ?`).get(messageId) as {
-      c: number;
-    }
-  ).c;
-  if (existingCount > 0) return;
+  const existingRows = db
+    .prepare(
+      `SELECT id, storage_path FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE message_id = ?`,
+    )
+    .all(messageId) as { id: number; storage_path: string }[];
+  const missingOnDisk = existingRows.some((r) => !fs.existsSync(r.storage_path));
+  if (existingRows.length > 0 && !missingOnDisk) return;
 
   const prepared: PreparedPart[] = [];
+  const omitted: { name: string; size: number; reason: string }[] = [];
   const seenSha = new Set<string>();
   let idx = 0;
   for (const a of attachments) {
     const buf = a.content;
     if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) continue;
-    if (buf.length > MAX_ATTACHMENT_BYTES) continue;
+    if (buf.length > MAX_ATTACHMENT_BYTES) {
+      omitted.push({
+        name: safeFilename(a.filename || `file-${idx}`),
+        size: buf.length,
+        reason: 'too_large',
+      });
+      idx += 1;
+      continue;
+    }
     const hash = sha256Hex(buf);
     if (seenSha.has(hash)) continue;
     seenSha.add(hash);
@@ -90,11 +100,23 @@ export async function persistParsedAttachments(
     idx += 1;
   }
 
+  const metaJson =
+    omitted.length > 0
+      ? JSON.stringify({
+          stored: prepared.map((p) => ({ name: p.displayName, size: p.buf.length })),
+          omitted,
+        })
+      : null;
+
   if (prepared.length === 0) {
     const row = db.prepare(`SELECT has_attachments, attachments_json FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).get(messageId) as
       | { has_attachments: number; attachments_json: string | null }
       | undefined;
-    if (row?.has_attachments === 1) {
+    if (omitted.length > 0) {
+      db.prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 1, attachments_json = ? WHERE id = ?`,
+      ).run(metaJson, messageId);
+    } else if (row?.has_attachments === 1) {
       db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 0 WHERE id = ?`).run(messageId);
     }
     return;
@@ -142,15 +164,46 @@ export async function persistParsedAttachments(
       }
     }
 
-    const row = db.prepare(`SELECT has_attachments, attachments_json FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).get(messageId) as
-      | { has_attachments: number; attachments_json: string | null }
-      | undefined;
-    if (row?.has_attachments === 1 && !storedAny) {
-      db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 0 WHERE id = ?`).run(messageId);
+    if (storedAny || omitted.length > 0) {
+      db.prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 1, attachments_json = COALESCE(?, attachments_json) WHERE id = ?`,
+      ).run(metaJson, messageId);
+    } else {
+      const row = db.prepare(`SELECT has_attachments FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).get(messageId) as
+        | { has_attachments: number }
+        | undefined;
+      if (row?.has_attachments === 1) {
+        db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 0 WHERE id = ?`).run(messageId);
+      }
     }
   });
 
   transaction();
+}
+
+/** Remove on-disk attachment files for all messages of an account (before account DELETE CASCADE). */
+export async function purgeAttachmentFilesForAccount(accountId: number): Promise<void> {
+  const rows = getDb()
+    .prepare(
+      `SELECT a.storage_path FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} a
+       INNER JOIN ${EMAIL_MESSAGES_TABLE} m ON m.id = a.message_id
+       WHERE m.account_id = ?`,
+    )
+    .all(accountId) as { storage_path: string }[];
+  const dirs = new Set<string>();
+  for (const r of rows) {
+    if (r.storage_path) {
+      dirs.add(path.dirname(r.storage_path));
+      await fs.promises.unlink(r.storage_path).catch(() => undefined);
+    }
+  }
+  const accountDir = path.join(attachmentsRoot(), String(accountId));
+  await fs.promises.rm(accountDir, { recursive: true, force: true }).catch(() => undefined);
+  for (const d of dirs) {
+    if (d.startsWith(attachmentsRoot())) {
+      await fs.promises.rm(d, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
 }
 
 /** Root used for GDPR ZIP (directory must exist before archiver.directory). */

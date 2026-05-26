@@ -10,6 +10,10 @@ import {
   EMAIL_ACCOUNT_SIGNATURES_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
+import { SNOOZE_FILTER_SQL } from './email-message-features';
+import type { MessageListSortMode } from '../../shared/email-list-options';
+import type { MessageListFilter } from '../../shared/email-list-filters';
+import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
 
 export type EmailAccountRow = {
   id: number;
@@ -34,6 +38,9 @@ export type EmailAccountRow = {
   oauth_refresh_keytar_key: string | null;
   sent_folder_path: string | null;
   imap_sync_seen_on_open: number;
+  vacation_enabled: number;
+  vacation_subject: string | null;
+  vacation_body_text: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -62,6 +69,7 @@ export type EmailMessageRow = {
   from_json: string | null;
   to_json: string | null;
   cc_json: string | null;
+  bcc_json: string | null;
   date_received: string | null;
   snippet: string | null;
   body_text: string | null;
@@ -96,6 +104,7 @@ export type EmailMessageRow = {
   rspamd_symbols: string | null;
   rspamd_error: string | null;
   security_checked_at: string | null;
+  draft_attachment_paths_json: string | null;
   created_at: string;
 };
 
@@ -104,6 +113,8 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             COALESCE(protocol, 'imap') AS protocol, pop3_host, pop3_port, pop3_tls, oauth_provider, oauth_refresh_keytar_key,
             COALESCE(sent_folder_path, 'Sent') AS sent_folder_path,
             COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
+            COALESCE(vacation_enabled, 0) AS vacation_enabled,
+            vacation_subject, vacation_body_text,
             created_at, updated_at`;
 
 export function listEmailAccounts(): EmailAccountRow[] {
@@ -200,6 +211,9 @@ export function updateEmailAccountRecord(
     oauthRefreshKeytarKey: string | null;
     sentFolderPath: string | null;
     imapSyncSeenOnOpen: boolean;
+    vacationEnabled: boolean;
+    vacationSubject: string | null;
+    vacationBodyText: string | null;
   }>,
 ): void {
   const existing = getEmailAccountById(id);
@@ -232,6 +246,18 @@ export function updateEmailAccountRecord(
   if (input.imapSyncSeenOnOpen !== undefined) {
     sets.push('imap_sync_seen_on_open = ?');
     vals.push(input.imapSyncSeenOnOpen ? 1 : 0);
+  }
+  if (input.vacationEnabled !== undefined) {
+    sets.push('vacation_enabled = ?');
+    vals.push(input.vacationEnabled ? 1 : 0);
+  }
+  if (input.vacationSubject !== undefined) {
+    sets.push('vacation_subject = ?');
+    vals.push(input.vacationSubject);
+  }
+  if (input.vacationBodyText !== undefined) {
+    sets.push('vacation_body_text = ?');
+    vals.push(input.vacationBodyText);
   }
 
   if (sets.length === 0) return;
@@ -379,6 +405,8 @@ export function deleteEmailTeamMember(id: string): void {
 export async function deleteEmailAccountRecord(id: number): Promise<void> {
   const row = getEmailAccountById(id);
   if (row) {
+    const { purgeAttachmentFilesForAccount } = await import('./email-message-attachments-store');
+    await purgeAttachmentFilesForAccount(id);
     await deleteEmailPassword(row.keytar_account_key);
     if (row.smtp_keytar_account_key) {
       await deleteEmailPassword(row.smtp_keytar_account_key).catch(() => undefined);
@@ -491,10 +519,54 @@ export function listMessagesForFolder(
 
 export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
 
+function orderClauseForSort(sort?: MessageListSortMode): string {
+  if (sort === 'priority') {
+    return `ORDER BY
+      CASE
+        WHEN EXISTS (SELECT 1 FROM ${EMAIL_MESSAGE_TAGS_TABLE} t WHERE t.message_id = m.id AND t.tag = 'priority:hoch') THEN 0
+        WHEN EXISTS (SELECT 1 FROM ${EMAIL_MESSAGE_TAGS_TABLE} t WHERE t.message_id = m.id AND t.tag = 'priority:mittel') THEN 1
+        WHEN EXISTS (SELECT 1 FROM ${EMAIL_MESSAGE_TAGS_TABLE} t WHERE t.message_id = m.id AND t.tag = 'priority:niedrig') THEN 2
+        ELSE 3
+      END ASC,
+      datetime(COALESCE(m.date_received, m.created_at)) DESC`;
+  }
+  if (sort === 'date_asc') {
+    return `ORDER BY datetime(COALESCE(m.date_received, m.created_at)) ASC`;
+  }
+  return `ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC`;
+}
+
+function listFilterSql(filter?: MessageListFilter): string {
+  switch (filter) {
+    case 'unread':
+      return ' AND m.seen_local = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)';
+    case 'attachment':
+      return ' AND m.has_attachments = 1';
+    case 'customer':
+      return ' AND m.customer_id IS NOT NULL AND m.customer_id > 0';
+    case 'workflow':
+      return ' AND (m.outbound_hold = 1 OR (m.ticket_code IS NOT NULL AND m.ticket_code != \'\'))';
+    default:
+      return '';
+  }
+}
+
+export function ensureInboxFolderForAccount(accountId: number): EmailFolderRow {
+  const existing = getFolderByAccountAndPath(accountId, 'INBOX');
+  if (existing) return existing;
+  return upsertEmailFolder({ accountId, path: 'INBOX', lastUid: 0 });
+}
+
 export function listMessagesForAccountView(
   accountId: number,
   view: AccountMailView,
-  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    sort?: MessageListSortMode;
+    listFilter?: MessageListFilter;
+  } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
   const offset = opts.offset ?? 0;
@@ -509,7 +581,7 @@ export function listMessagesForAccountView(
   if (view === 'trash') {
     sql += ` WHERE m.account_id = ? AND m.soft_deleted = 1`;
   } else {
-    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0`;
+    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
@@ -536,7 +608,8 @@ export function listMessagesForAccountView(
     sql += ` AND ${nonDraftMail}`;
   }
 
-  sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+  sql += listFilterSql(opts.listFilter);
+  sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
@@ -545,7 +618,13 @@ export function listMessagesForAccountView(
 /** Unified inbox: same view rules across every configured account. */
 export function listMessagesForAllAccountsView(
   view: AccountMailView,
-  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    sort?: MessageListSortMode;
+    listFilter?: MessageListFilter;
+  } = {},
 ): EmailMessageRow[] {
   const limit = opts.limit ?? 200;
   const offset = opts.offset ?? 0;
@@ -560,7 +639,7 @@ export function listMessagesForAllAccountsView(
   if (view === 'trash') {
     sql += ` WHERE m.soft_deleted = 1`;
   } else {
-    sql += ` WHERE m.soft_deleted = 0`;
+    sql += ` WHERE m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
@@ -586,7 +665,8 @@ export function listMessagesForAllAccountsView(
     sql += ` AND ${nonDraftMail}`;
   }
 
-  sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+  sql += listFilterSql(opts.listFilter);
+  sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
   return getDb().prepare(sql).all(...params) as EmailMessageRow[];
 }
@@ -594,7 +674,13 @@ export function listMessagesForAllAccountsView(
 export function listMessagesForMailScope(
   accountScope: number | 'all',
   view: AccountMailView,
-  opts: { limit?: number; offset?: number; categoryId?: number | null } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    sort?: MessageListSortMode;
+    listFilter?: MessageListFilter;
+  } = {},
 ): EmailMessageRow[] {
   if (accountScope === 'all') {
     return listMessagesForAllAccountsView(view, opts);
@@ -726,6 +812,71 @@ export function listMessageIdsForWorkflowBackfill(offset: number, limit: number)
   return rows.map((r) => r.id);
 }
 
+const IN_QUERY_CHUNK = 400;
+
+/** POP3: all UIDLs already stored for a folder (one query per sync). */
+export function loadPop3UidlsForFolder(folderId: number): Set<string> {
+  const rows = getDb()
+    .prepare(
+      `SELECT pop3_uidl FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE folder_id = ? AND pop3_uidl IS NOT NULL AND TRIM(pop3_uidl) != ''`,
+    )
+    .all(folderId) as { pop3_uidl: string }[];
+  return new Set(rows.map((r) => r.pop3_uidl));
+}
+
+/** POP3: map UIDL → local message id (one query per sync). */
+export function loadPop3UidlToIdMap(folderId: number): Map<string, number> {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, pop3_uidl FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE folder_id = ? AND pop3_uidl IS NOT NULL AND TRIM(pop3_uidl) != ''`,
+    )
+    .all(folderId) as { id: number; pop3_uidl: string }[];
+  return new Map(rows.map((r) => [r.pop3_uidl, r.id]));
+}
+
+/** IMAP: existing server UIDs in folder for a batch of candidates. */
+export function loadImapUidToIdMap(folderId: number, uids: number[]): Map<number, number> {
+  const map = new Map<number, number>();
+  if (uids.length === 0) return map;
+  const db = getDb();
+  for (let i = 0; i < uids.length; i += IN_QUERY_CHUNK) {
+    const chunk = uids.slice(i, i + IN_QUERY_CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT uid, id FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ? AND uid IN (${placeholders})`,
+      )
+      .all(folderId, ...chunk) as { uid: number; id: number }[];
+    for (const r of rows) map.set(r.uid, r.id);
+  }
+  return map;
+}
+
+/** Mutable context reused across messages in one sync run (avoids per-message SELECT/MIN). */
+export type MessageUpsertContext = {
+  pop3UidlToId?: Map<string, number>;
+  nextPop3Uid?: number;
+  imapUidToId?: Map<number, number>;
+};
+
+export function createPop3UpsertContext(folderId: number, accountId: number): MessageUpsertContext {
+  const row = getDb()
+    .prepare(
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+    )
+    .get(accountId, folderId) as { m: number | null };
+  return {
+    pop3UidlToId: loadPop3UidlToIdMap(folderId),
+    nextPop3Uid: row.m != null ? row.m - 1 : -1,
+  };
+}
+
+export function createImapUpsertContext(folderId: number, uids: number[]): MessageUpsertContext {
+  return { imapUidToId: loadImapUidToIdMap(folderId, uids) };
+}
+
 export function insertOrUpdateEmailMessage(input: {
   accountId: number;
   folderId: number;
@@ -749,7 +900,7 @@ export function insertOrUpdateEmailMessage(input: {
   pop3Uidl?: string | null;
   rawHeaders?: string | null;
   rawRfc822B64?: string | null;
-}): { id: number; isNew: boolean } {
+}, ctx?: MessageUpsertContext): { id: number; isNew: boolean } {
   const hasAtt = input.hasAttachments ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
   const imapTid = input.imapThreadId ?? null;
@@ -759,11 +910,16 @@ export function insertOrUpdateEmailMessage(input: {
 
   let existingByUidl: { id: number } | undefined;
   if (pop3Uidl) {
-    existingByUidl = db
-      .prepare(
-        `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND pop3_uidl = ?`,
-      )
-      .get(input.accountId, input.folderId, pop3Uidl) as { id: number } | undefined;
+    const cachedId = ctx?.pop3UidlToId?.get(pop3Uidl);
+    if (cachedId != null) {
+      existingByUidl = { id: cachedId };
+    } else {
+      existingByUidl = db
+        .prepare(
+          `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND pop3_uidl = ?`,
+        )
+        .get(input.accountId, input.folderId, pop3Uidl) as { id: number } | undefined;
+    }
     if (existingByUidl) {
       const byUidl = existingByUidl;
       db.prepare(
@@ -810,12 +966,24 @@ export function insertOrUpdateEmailMessage(input: {
     }
   }
 
-  const uidForRow =
-    pop3Uidl && !existingByUidl ? allocatePop3NegativeUid(input.accountId, input.folderId) : input.uid;
+  let uidForRow = input.uid;
+  if (pop3Uidl && !existingByUidl) {
+    if (ctx?.nextPop3Uid != null) {
+      uidForRow = ctx.nextPop3Uid;
+      ctx.nextPop3Uid -= 1;
+    } else {
+      uidForRow = allocatePop3NegativeUid(input.accountId, input.folderId);
+    }
+  }
 
-  const existing = db
-    .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
-    .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
+  const cachedImapId =
+    !pop3Uidl && ctx?.imapUidToId != null ? ctx.imapUidToId.get(uidForRow) : undefined;
+  const existing =
+    cachedImapId != null
+      ? { id: cachedImapId }
+      : (db
+          .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
+          .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined);
   const isNew = !existing;
 
   const stmt = db.prepare(
@@ -868,11 +1036,53 @@ export function insertOrUpdateEmailMessage(input: {
     input.rawHeaders ?? null,
     input.rawRfc822B64 ?? null,
   );
-  const row = db
-    .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
-    .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
-  const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
+  let id = existing?.id ?? 0;
+  if (!id) {
+    const row = db
+      .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
+      .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
+    id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
+  }
+  if (pop3Uidl && ctx?.pop3UidlToId && id > 0) {
+    ctx.pop3UidlToId.set(pop3Uidl, id);
+  }
+  if (!pop3Uidl && ctx?.imapUidToId && id > 0) {
+    ctx.imapUidToId.set(uidForRow, id);
+  }
   return { id, isNew };
+}
+
+export function bulkSoftDeleteMessages(messageIds: number[], accountId?: number): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const sql =
+    accountId != null
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE id IN (${placeholders}) AND ${syncable}`;
+  const params = accountId != null ? [accountId, ...messageIds] : messageIds;
+  const r = getDb().prepare(sql).run(...params);
+  return r.changes;
+}
+
+export function bulkSetMessagesArchived(
+  messageIds: number[],
+  archived: boolean,
+  accountId?: number,
+): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const sql =
+    accountId != null
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`;
+  const params =
+    accountId != null
+      ? [archived ? 1 : 0, accountId, ...messageIds]
+      : [archived ? 1 : 0, ...messageIds];
+  const r = getDb().prepare(sql).run(...params);
+  return r.changes;
 }
 
 export function setMessageArchived(messageId: number, archived: boolean): void {
@@ -932,11 +1142,9 @@ export function createComposeDraft(input: {
   subject?: string;
   bodyText?: string;
   toJson?: string | null;
+  draftAttachmentPaths?: string[];
 }): number {
-  const folder = getFolderByAccountAndPath(input.accountId, 'INBOX');
-  if (!folder) {
-    throw new Error('INBOX für dieses Konto nicht gefunden. Bitte zuerst synchronisieren.');
-  }
+  const folder = ensureInboxFolderForAccount(input.accountId);
   const minRow = getDb()
     .prepare(
       `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
@@ -960,9 +1168,12 @@ export function createComposeDraft(input: {
     bodyHtml: null,
     seenLocal: true,
   });
+  const draftPathsJson = draftAttachmentPathsToJson(input.draftAttachmentPaths ?? []);
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'draft' WHERE id = ?`)
-    .run(id);
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'draft', draft_attachment_paths_json = ? WHERE id = ?`,
+    )
+    .run(draftPathsJson, id);
   return id;
 }
 
@@ -1149,6 +1360,8 @@ export function updateComposeDraft(
     bodyHtml?: string | null;
     toJson?: string | null;
     ccJson?: string | null;
+    bccJson?: string | null;
+    draftAttachmentPaths?: string[];
   },
 ): void {
   const row = getEmailMessageById(messageId);
@@ -1165,6 +1378,11 @@ export function updateComposeDraft(
   if (input.bodyHtml !== undefined) { sets.push('body_html = ?'); vals.push(html); }
   if (input.toJson !== undefined) { sets.push('to_json = ?'); vals.push(input.toJson); }
   if (input.ccJson !== undefined) { sets.push('cc_json = ?'); vals.push(input.ccJson); }
+  if (input.bccJson !== undefined) { sets.push('bcc_json = ?'); vals.push(input.bccJson); }
+  if (input.draftAttachmentPaths !== undefined) {
+    sets.push('draft_attachment_paths_json = ?');
+    vals.push(draftAttachmentPathsToJson(input.draftAttachmentPaths));
+  }
   vals.push(messageId);
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)

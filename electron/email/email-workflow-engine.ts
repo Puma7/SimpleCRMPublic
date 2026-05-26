@@ -35,8 +35,10 @@ export type OutboundDraftPayload = {
   bodyHtml?: string;
   to: string;
   cc?: string;
+  bcc?: string;
   inReplyToMessageId?: number | null;
   attachmentCount?: number;
+  attachmentPaths?: string[];
 };
 
 export function outboundPayloadFromMessage(
@@ -83,7 +85,14 @@ function buildInboundContext(row: EmailMessageRow) {
 
 function buildOutboundContext(payload: OutboundDraftPayload) {
   const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  const combined = [payload.subject, payload.bodyText, htmlPlain, payload.to, payload.cc ?? ''].join('\n');
+  const combined = [
+    payload.subject,
+    payload.bodyText,
+    htmlPlain,
+    payload.to,
+    payload.cc ?? '',
+    payload.bcc ?? '',
+  ].join('\n');
   return {
     subject: payload.subject,
     body_text: payload.bodyText,
@@ -306,19 +315,29 @@ async function runRulesOutbound(
   return { blocked: false, log };
 }
 
-export async function runInboundWorkflowsForMessage(messageId: number): Promise<void> {
-  const row = getEmailMessageById(messageId);
+export type InboundWorkflowRunOpts = {
+  row?: import('./email-store').EmailMessageRow;
+  inboundWorkflows?: ReturnType<typeof listWorkflowsByTrigger>;
+  appliedWorkflowIds?: Set<number>;
+};
+
+export async function runInboundWorkflowsForMessage(
+  messageId: number,
+  opts?: InboundWorkflowRunOpts,
+): Promise<void> {
+  const row = opts?.row ?? getEmailMessageById(messageId);
   if (!row) return;
   if (row.uid < 0 && !row.pop3_uidl) return;
 
   const { runMailSecurityPipeline } = await import('./mail-security-pipeline');
-  const security = await runMailSecurityPipeline(messageId);
+  const security = await runMailSecurityPipeline(messageId, row);
   if (security.preWorkflow.skippedWorkflows) return;
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = listWorkflowsByTrigger('inbound');
+  const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
+  const applied = opts?.appliedWorkflowIds;
   for (const wf of workflows) {
-    if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    if (applied ? applied.has(wf.id) : wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
     let markApplied = false;
     try {
       const r = await executeWorkflowForTrigger({
@@ -339,6 +358,12 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
     }
     if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
+
+  const { ensureReplySuggestion } = await import('./email-reply-ai');
+  ensureReplySuggestion(messageId, { row });
+
+  const { maybeSendVacationAutoReply } = await import('./email-vacation');
+  await maybeSendVacationAutoReply(messageId, row);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {
@@ -380,12 +405,10 @@ export async function evaluateOutboundWorkflows(
 }> {
   const dryRun = options?.dryRun === true;
   if (!payload.messageId || payload.messageId <= 0) {
-    if (dryRun) return { allowed: true, reason: null };
     return { allowed: false, reason: 'Kein gültiger Entwurf für die Ausgangsprüfung' };
   }
   const row = getEmailMessageById(payload.messageId);
   if (!row) {
-    if (dryRun) return { allowed: true, reason: null };
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 

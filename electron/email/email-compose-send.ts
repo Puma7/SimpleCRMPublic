@@ -19,13 +19,26 @@ import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
 } from './email-outbound-threading';
+import { SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
+import {
+  cleanupInlineImageTempFiles,
+  extractInlineImagesFromHtml,
+} from './email-inline-images';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
-const MAX_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+function maxComposeAttachmentBytes(): number {
+  const mb = parseInt(getSyncInfo('email_max_attachment_mb') || '25', 10);
+  const clamped = Number.isFinite(mb) ? Math.max(1, Math.min(mb, 100)) : 25;
+  return clamped * 1024 * 1024;
+}
 
 function smtpCommittedKey(draftMessageId: number): string {
   return `email_compose_smtp_ok:${draftMessageId}`;
+}
+
+function sendingInProgressKey(draftMessageId: number): string {
+  return `email_compose_sending:${draftMessageId}`;
 }
 
 function isSmtpCommitted(draftMessageId: number): boolean {
@@ -40,19 +53,48 @@ function clearSmtpCommitted(draftMessageId: number): void {
   setSyncInfo(smtpCommittedKey(draftMessageId), '');
 }
 
+function tryAcquireSendingLock(draftMessageId: number): boolean {
+  const key = sendingInProgressKey(draftMessageId);
+  const r = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO ${SYNC_INFO_TABLE} (key, value, lastUpdated) VALUES (?, '1', datetime('now'))`,
+    )
+    .run(key);
+  return r.changes === 1;
+}
+
+function releaseSendingLock(draftMessageId: number): void {
+  getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`).run(sendingInProgressKey(draftMessageId));
+}
+
+/** Clear compose send locks left after crash (call on app/DB init). */
+export function clearStaleComposeSendingLocks(): void {
+  getDb()
+    .prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key LIKE 'email_compose_sending:%'`)
+    .run();
+}
+
 async function finalizeSentDraft(input: {
   accountId: number;
   draftMessageId: number;
   from: string;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   text: string;
   html?: string;
   messageId: string;
   inReplyTo?: string;
   references?: string;
-}): Promise<void> {
+  attachments?: { filename: string; path: string; cid?: string }[];
+}): Promise<{ sentAppendWarning?: string }> {
+  let sentAppendWarning: string | undefined;
+  const acc = getEmailAccountById(input.accountId);
+  if (acc && (acc.protocol || 'imap') !== 'imap') {
+    sentAppendWarning =
+      'E-Mail wurde versendet. POP3-Konten können keine Kopie per IMAP in „Gesendet“ ablegen.';
+  } else {
   try {
     await appendSentToImap({
       accountId: input.accountId,
@@ -65,12 +107,19 @@ async function finalizeSentDraft(input: {
       messageId: input.messageId,
       inReplyTo: input.inReplyTo,
       references: input.references,
+      attachments: input.attachments,
+      includeBccInHeaders: false,
     });
-  } catch {
-    /* Sent-Ordner optional */
+  } catch (e) {
+    sentAppendWarning =
+      e instanceof Error
+        ? `E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden: ${e.message}`
+        : 'E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden.';
+  }
   }
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
+  return { sentAppendWarning };
 }
 
 export async function sendComposeDraft(input: {
@@ -81,9 +130,12 @@ export async function sendComposeDraft(input: {
   bodyHtml?: string | null;
   to: string;
   cc?: string;
+  bcc?: string;
   inReplyToMessageId?: number | null;
   attachmentPaths?: string[];
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<
+  { ok: true; warning?: string; recoveredSentAppend?: boolean } | { ok: false; error: string }
+> {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
     return { ok: false, error: 'Ungültiger Entwurf' };
@@ -105,161 +157,218 @@ export async function sendComposeDraft(input: {
       return { ok: false, error: ccCheck.error };
     }
   }
-
-  const html = input.bodyHtml ?? draft.body_html ?? undefined;
-  const toJson = recipientJsonFromField(input.to);
-  const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
-
-  updateComposeDraft(input.draftMessageId, {
-    subject: input.subject,
-    bodyText: input.bodyText,
-    bodyHtml: html ?? null,
-    toJson,
-    ccJson,
-  });
-
-  const { clearOutboundHoldForResend } = await import('./email-outbound-review');
-  clearOutboundHoldForResend(input.draftMessageId);
-
-  const outbound = await evaluateOutboundWorkflows({
-    messageId: input.draftMessageId,
-    subject: input.subject,
-    bodyText: input.bodyText,
-    bodyHtml: html ?? undefined,
-    to: input.to,
-    cc: input.cc,
-    inReplyToMessageId: input.inReplyToMessageId,
-    attachmentCount: input.attachmentPaths?.length ?? 0,
-  });
-  if (!outbound.allowed) {
-    return { ok: false, error: outbound.reason || 'Outbound blockiert' };
-  }
-
-  let ticketCode: string | null = null;
-  let threadId: string | null = null;
-  let parentForThreading: ReturnType<typeof getEmailMessageById> | null = null;
-  if (input.inReplyToMessageId) {
-    parentForThreading = getEmailMessageById(input.inReplyToMessageId);
-    if (parentForThreading?.ticket_code) {
-      ticketCode = parentForThreading.ticket_code;
-      threadId = parentForThreading.thread_id;
+  if (input.bcc?.trim()) {
+    const bccCheck = validateRecipientField(input.bcc, 'Bcc');
+    if (!bccCheck.ok) {
+      return { ok: false, error: bccCheck.error };
     }
   }
-  if (!ticketCode) {
-    const fromSubj = extractTicketFromSubject(input.subject);
-    if (fromSubj) {
-      ticketCode = fromSubj;
-    } else {
-      ticketCode = generateTicketCode();
+
+  if (!tryAcquireSendingLock(input.draftMessageId)) {
+    return { ok: false, error: 'Versand läuft bereits für diesen Entwurf.' };
+  }
+
+  const inlineTempPaths: string[] = [];
+  try {
+    const html = input.bodyHtml ?? draft.body_html ?? undefined;
+    const toJson = recipientJsonFromField(input.to);
+    const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
+    const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
+
+    updateComposeDraft(input.draftMessageId, {
+      subject: input.subject,
+      bodyText: input.bodyText,
+      bodyHtml: html ?? null,
+      toJson,
+      ccJson,
+      bccJson,
+    });
+
+    const { clearOutboundHoldForResend } = await import('./email-outbound-review');
+    clearOutboundHoldForResend(input.draftMessageId);
+
+    const outbound = await evaluateOutboundWorkflows({
+      messageId: input.draftMessageId,
+      subject: input.subject,
+      bodyText: input.bodyText,
+      bodyHtml: html ?? undefined,
+      to: input.to,
+      cc: input.cc,
+      bcc: input.bcc,
+      inReplyToMessageId: input.inReplyToMessageId,
+      attachmentCount: input.attachmentPaths?.length ?? 0,
+      attachmentPaths: input.attachmentPaths,
+    });
+    if (!outbound.allowed) {
+      return { ok: false, error: outbound.reason || 'Outbound blockiert' };
     }
-  }
-  if (!threadId && ticketCode) {
-    threadId = getOrCreateThreadForTicket(ticketCode);
-  }
 
-  const finalSubject = ensureTicketInSubject(input.subject.trim() || '(Ohne Betreff)', ticketCode);
+    let ticketCode: string | null = null;
+    let threadId: string | null = null;
+    let parentForThreading: ReturnType<typeof getEmailMessageById> | null = null;
+    if (input.inReplyToMessageId) {
+      parentForThreading = getEmailMessageById(input.inReplyToMessageId);
+      if (parentForThreading?.ticket_code) {
+        ticketCode = parentForThreading.ticket_code;
+        threadId = parentForThreading.thread_id;
+      }
+    }
+    if (!ticketCode) {
+      const fromSubj = extractTicketFromSubject(input.subject);
+      if (fromSubj) {
+        ticketCode = fromSubj;
+      } else {
+        ticketCode = generateTicketCode();
+      }
+    }
+    if (!threadId && ticketCode) {
+      threadId = getOrCreateThreadForTicket(ticketCode);
+    }
 
-  const acc = getEmailAccountById(input.accountId);
-  if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
+    const finalSubject = ensureTicketInSubject(input.subject.trim() || '(Ohne Betreff)', ticketCode);
 
-  const threadHeaders = buildOutboundThreadingHeaders(
-    parentForThreading
-      ? {
-          message_id: parentForThreading.message_id,
-          references_header: parentForThreading.references_header,
-        }
-      : null,
-  );
+    const acc = getEmailAccountById(input.accountId);
+    if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
-  const outboundMessageId =
-    draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
-
-  const refsHeader = threadHeaders.references ?? null;
-  const inReplyHeader = threadHeaders.inReplyTo ?? null;
-  getDb()
-    .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET subject = ?, body_text = ?, body_html = COALESCE(?, body_html), ticket_code = ?, thread_id = ?, message_id = ?, in_reply_to = ?, references_header = ? WHERE id = ?`,
-    )
-    .run(
-      finalSubject,
-      input.bodyText,
-      html ?? null,
-      ticketCode,
-      threadId,
-      outboundMessageId,
-      inReplyHeader,
-      refsHeader,
-      input.draftMessageId,
+    const threadHeaders = buildOutboundThreadingHeaders(
+      parentForThreading
+        ? {
+            message_id: parentForThreading.message_id,
+            references_header: parentForThreading.references_header,
+          }
+        : null,
     );
 
-  if (isSmtpCommitted(input.draftMessageId)) {
-    await finalizeSentDraft({
+    const outboundMessageId =
+      draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
+
+    const refsHeader = threadHeaders.references ?? null;
+    const inReplyHeader = threadHeaders.inReplyTo ?? null;
+    getDb()
+      .prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE} SET subject = ?, body_text = ?, body_html = COALESCE(?, body_html), ticket_code = ?, thread_id = ?, message_id = ?, in_reply_to = ?, references_header = ? WHERE id = ?`,
+      )
+      .run(
+        finalSubject,
+        input.bodyText,
+        html ?? null,
+        ticketCode,
+        threadId,
+        outboundMessageId,
+        inReplyHeader,
+        refsHeader,
+        input.draftMessageId,
+      );
+
+    const smtpAttachments: { filename: string; path: string }[] = [];
+    for (const p of input.attachmentPaths ?? []) {
+      try {
+        const st = fs.statSync(p);
+        if (!st.isFile()) continue;
+      const maxBytes = maxComposeAttachmentBytes();
+      if (st.size > maxBytes) {
+        return {
+          ok: false,
+          error: `Anhang zu groß (max. ${Math.round(maxBytes / 1024 / 1024)} MB): ${path.basename(p)}`,
+        };
+      }
+      smtpAttachments.push({ filename: path.basename(p), path: p });
+      } catch {
+        return { ok: false, error: `Anhang nicht lesbar: ${path.basename(p)}` };
+      }
+    }
+
+    const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
+    const smtpCc = input.cc?.trim()
+      ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+      : undefined;
+    const smtpBcc = input.bcc?.trim()
+      ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
+      : undefined;
+
+    let htmlOut = html || undefined;
+    const inlineAtt: { filename: string; path: string; cid: string }[] = [];
+    if (htmlOut) {
+      const extracted = extractInlineImagesFromHtml(htmlOut);
+      htmlOut = extracted.html;
+      inlineAtt.push(...extracted.attachments);
+      inlineTempPaths.push(...extracted.attachments.map((a) => a.path));
+    }
+    const allAttachments = [
+      ...smtpAttachments,
+      ...inlineAtt.map((a) => ({ filename: a.filename, path: a.path, cid: a.cid })),
+    ];
+    const sentAppendAttachments = allAttachments.map((a) => ({
+      filename: a.filename,
+      path: a.path,
+      cid: 'cid' in a && typeof a.cid === 'string' ? a.cid : undefined,
+    }));
+
+    if (isSmtpCommitted(input.draftMessageId)) {
+      const fin = await finalizeSentDraft({
+        accountId: input.accountId,
+        draftMessageId: input.draftMessageId,
+        from: acc.email_address,
+        to: smtpTo,
+        cc: smtpCc,
+        bcc: smtpBcc,
+        subject: finalSubject,
+        text: input.bodyText,
+        html: htmlOut || undefined,
+        messageId: outboundMessageId,
+        inReplyTo: threadHeaders.inReplyTo,
+        references: threadHeaders.references,
+        attachments: sentAppendAttachments,
+      });
+      if (fin.sentAppendWarning) {
+        return { ok: true, warning: fin.sentAppendWarning };
+      }
+      return { ok: true, recoveredSentAppend: true };
+    }
+
+    const requestReceipt =
+      (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+
+    try {
+      await sendSmtpForAccount(input.accountId, {
+        from: acc.email_address,
+        to: smtpTo,
+        cc: smtpCc,
+        bcc: smtpBcc,
+        subject: finalSubject,
+        text: input.bodyText,
+        html: htmlOut,
+        attachments: allAttachments.length > 0 ? allAttachments : undefined,
+        messageId: outboundMessageId,
+        inReplyTo: threadHeaders.inReplyTo,
+        references: threadHeaders.references,
+        requestReadReceipt: requestReceipt,
+      });
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+
+    markSmtpCommitted(input.draftMessageId);
+
+    const fin = await finalizeSentDraft({
       accountId: input.accountId,
       draftMessageId: input.draftMessageId,
       from: acc.email_address,
-      to: input.to,
-      cc: input.cc,
-      subject: finalSubject,
-      text: input.bodyText,
-      html: html || undefined,
-      messageId: outboundMessageId,
-      inReplyTo: threadHeaders.inReplyTo,
-      references: threadHeaders.references,
-    });
-    return { ok: true };
-  }
-
-  const smtpAttachments: { filename: string; path: string }[] = [];
-  for (const p of input.attachmentPaths ?? []) {
-    try {
-      const st = fs.statSync(p);
-      if (!st.isFile()) continue;
-      if (st.size > MAX_COMPOSE_ATTACHMENT_BYTES) {
-        return { ok: false, error: `Anhang zu groß (max. 25 MB): ${path.basename(p)}` };
-      }
-      smtpAttachments.push({ filename: path.basename(p), path: p });
-    } catch {
-      return { ok: false, error: `Anhang nicht lesbar: ${path.basename(p)}` };
-    }
-  }
-
-  const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
-  const smtpCc = input.cc?.trim()
-    ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
-    : undefined;
-
-  try {
-    await sendSmtpForAccount(input.accountId, {
-      from: acc.email_address,
       to: smtpTo,
       cc: smtpCc,
+      bcc: smtpBcc,
       subject: finalSubject,
       text: input.bodyText,
-      html: html || undefined,
-      attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
+      html: htmlOut || undefined,
       messageId: outboundMessageId,
       inReplyTo: threadHeaders.inReplyTo,
       references: threadHeaders.references,
+      attachments: sentAppendAttachments,
     });
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+
+    return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };
+  } finally {
+    cleanupInlineImageTempFiles(inlineTempPaths);
+    releaseSendingLock(input.draftMessageId);
   }
-
-  markSmtpCommitted(input.draftMessageId);
-
-  await finalizeSentDraft({
-    accountId: input.accountId,
-    draftMessageId: input.draftMessageId,
-    from: acc.email_address,
-    to: smtpTo,
-    cc: smtpCc,
-    subject: finalSubject,
-    text: input.bodyText,
-    html: html || undefined,
-    messageId: outboundMessageId,
-    inReplyTo: threadHeaders.inReplyTo,
-    references: threadHeaders.references,
-  });
-
-  return { ok: true };
 }

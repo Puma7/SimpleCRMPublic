@@ -1,4 +1,4 @@
-import { getDb } from '../sqlite-service';
+import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { CUSTOMERS_TABLE, DEALS_TABLE, TASKS_TABLE, CALENDAR_EVENTS_TABLE } from '../database-schema';
 import { listWorkflowsByTrigger } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
@@ -7,6 +7,12 @@ import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 import { buildStringContextFromMessage } from './context';
 
 export type CrmWorkflowEvent =
+  | {
+      trigger: 'crm.customer_created';
+      customerId: number;
+      name: string;
+      email: string | null;
+    }
   | {
       trigger: 'crm.deal_stage_changed';
       dealId: number;
@@ -29,24 +35,45 @@ export type CrmWorkflowEvent =
       startDate: string;
     };
 
-const firedDedup = new Map<string, number>();
-const DEDUP_MS = 60_000;
-
-function shouldFireOnce(key: string): boolean {
-  const now = Date.now();
-  const last = firedDedup.get(key) ?? 0;
-  if (now - last < DEDUP_MS) return false;
-  firedDedup.set(key, now);
-  if (firedDedup.size > 5000) {
-    const cutoff = now - DEDUP_MS * 2;
-    for (const [k, t] of firedDedup) {
-      if (t < cutoff) firedDedup.delete(k);
+function workflowTriggerDedupKey(event: CrmWorkflowEvent): string {
+  switch (event.trigger) {
+    case 'crm.customer_created':
+      return `workflow_trigger_fired:crm.customer_created:${event.customerId}`;
+    case 'crm.deal_stage_changed':
+      return `workflow_trigger_fired:crm.deal_stage_changed:${event.dealId}:${event.newStage}`;
+    case 'task.due':
+      return `workflow_trigger_fired:task.due:${event.taskId}:${event.dueDate}`;
+    case 'calendar.event_start':
+      return `workflow_trigger_fired:calendar.event_start:${event.eventId}:${event.startDate}`;
+    default: {
+      const _exhaustive: never = event;
+      return `workflow_trigger_fired:${String(_exhaustive)}`;
     }
   }
+}
+
+function shouldFireWorkflowTrigger(event: CrmWorkflowEvent): boolean {
+  const key = workflowTriggerDedupKey(event);
+  if (getSyncInfo(key) === '1') return false;
+  setSyncInfo(key, '1');
   return true;
 }
 
 function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
+  if (event.trigger === 'crm.customer_created') {
+    return {
+      subject: `Neuer Kunde: ${event.name}`,
+      body_text: event.name,
+      snippet: event.email ?? '',
+      from_address: event.email ?? '',
+      to_address: '',
+      cc_address: '',
+      combined_text: `customer:${event.customerId} ${event.name} ${event.email ?? ''}`,
+      has_attachments: 'false',
+      attachment_names: '',
+      attachment_types: '',
+    };
+  }
   if (event.trigger === 'crm.deal_stage_changed') {
     const customer = getDb()
       .prepare(`SELECT name, email FROM ${CUSTOMERS_TABLE} WHERE id = ?`)
@@ -92,16 +119,32 @@ function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {
   };
 }
 
+export async function dispatchCustomerCreatedWorkflow(input: {
+  customerId: number;
+  name: string;
+  email: string | null;
+}): Promise<void> {
+  await dispatchCrmWorkflowEvent({
+    trigger: 'crm.customer_created',
+    customerId: input.customerId,
+    name: input.name,
+    email: input.email,
+  });
+}
+
 export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise<void> {
-  const dedupKey = `${event.trigger}:${'dealId' in event ? event.dealId : 'taskId' in event ? event.taskId : event.eventId}`;
-  if (!shouldFireOnce(dedupKey)) return;
+  if (!shouldFireWorkflowTrigger(event)) return;
 
   const workflows = listWorkflowsByTrigger(event.trigger);
   if (workflows.length === 0) return;
 
   const strings = stringsForEvent(event);
   const variables: Record<string, string | number | boolean | null> = {};
-  if (event.trigger === 'crm.deal_stage_changed') {
+  if (event.trigger === 'crm.customer_created') {
+    variables['customer.id'] = event.customerId;
+    variables['customer.name'] = event.name;
+    if (event.email) variables['customer.email'] = event.email;
+  } else if (event.trigger === 'crm.deal_stage_changed') {
     variables['deal.id'] = event.dealId;
     variables['deal.stage'] = event.newStage;
     variables['deal.old_stage'] = event.oldStage;
