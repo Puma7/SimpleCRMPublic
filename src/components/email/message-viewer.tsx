@@ -59,6 +59,7 @@ import {
 import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
+import { MessageAiSuggestions } from "./message-ai-suggestions"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -72,6 +73,8 @@ type Props = {
   reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage) => void
   onForward: (m: EmailMessage) => void
+  /** Beta layout: Metadaten in eigener Spalte. */
+  metadataPlacement?: "inline" | "external"
 }
 
 export function MessageViewer(props: Props) {
@@ -87,6 +90,7 @@ export function MessageViewer(props: Props) {
     refreshList,
     onReply,
     onForward,
+    metadataPlacement = "inline",
   } = props
   const {
     selectedMessage,
@@ -359,27 +363,29 @@ export function MessageViewer(props: Props) {
             ) : null}
           </div>
 
-          <div className="flex items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => setMetadataPanelOpen(!metadataPanelOpen)}
-                >
-                  {metadataPanelOpen ? (
-                    <PanelRightClose className="h-4 w-4" />
-                  ) : (
-                    <PanelRightOpen className="h-4 w-4" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {metadataPanelOpen ? "Details ausblenden" : "Details einblenden"}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+          {metadataPlacement === "inline" ? (
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setMetadataPanelOpen(!metadataPanelOpen)}
+                  >
+                    {metadataPanelOpen ? (
+                      <PanelRightClose className="h-4 w-4" />
+                    ) : (
+                      <PanelRightOpen className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {metadataPanelOpen ? "Details ausblenden" : "Details einblenden"}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          ) : null}
         </div>
 
         {/* Body + metadata split */}
@@ -429,6 +435,11 @@ export function MessageViewer(props: Props) {
                     </span>
                   ) : null}
                 </div>
+
+                <MessageAiSuggestions
+                  message={selectedMessage}
+                  onDraftReply={() => onReply(selectedMessage)}
+                />
 
                 <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -549,7 +560,7 @@ export function MessageViewer(props: Props) {
             </ScrollArea>
           </div>
 
-          {metadataPanelOpen ? (
+          {metadataPlacement === "inline" && metadataPanelOpen ? (
             <MessageMetadataPanel
               teamMembers={teamMembers}
               categories={categories}

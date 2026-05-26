@@ -1,0 +1,127 @@
+/**
+ * OKLCH token engine — active when applyThemeTokens() sets data-tokens-applied.
+ */
+html[data-tokens-applied] {
+  @theme {
+    --color-background: var(--crm-background);
+    --color-foreground: var(--crm-foreground);
+    --color-card: var(--crm-card);
+    --color-card-foreground: var(--crm-card-foreground);
+    --color-popover: var(--crm-card);
+    --color-popover-foreground: var(--crm-card-foreground);
+    --color-primary: var(--crm-primary);
+    --color-primary-foreground: var(--crm-primary-foreground);
+    --color-secondary: var(--crm-muted);
+    --color-secondary-foreground: var(--crm-foreground);
+    --color-muted: var(--crm-muted);
+    --color-muted-foreground: var(--crm-muted-foreground);
+    --color-accent: var(--crm-accent);
+    --color-accent-foreground: var(--crm-foreground);
+    --color-destructive: var(--crm-destructive);
+    --color-destructive-foreground: var(--crm-foreground);
+    --color-border: var(--crm-border);
+    --color-input: var(--crm-border);
+    --color-ring: var(--crm-ring);
+    --color-sidebar: var(--crm-sidebar);
+    --color-sidebar-foreground: var(--crm-sidebar-foreground);
+    --color-sidebar-primary: var(--crm-primary);
+    --color-sidebar-primary-foreground: var(--crm-primary-foreground);
+    --color-sidebar-accent: var(--crm-sidebar-accent);
+    --color-sidebar-accent-foreground: var(--crm-foreground);
+    --color-sidebar-border: var(--crm-sidebar-border);
+    --color-sidebar-ring: var(--crm-ring);
+  }
+
+  --background: var(--crm-background);
+  --foreground: var(--crm-foreground);
+  --card: var(--crm-card);
+  --card-foreground: var(--crm-card-foreground);
+  --popover: var(--crm-card);
+  --popover-foreground: var(--crm-card-foreground);
+  --primary: var(--crm-primary);
+  --primary-foreground: var(--crm-primary-foreground);
+  --secondary: var(--crm-muted);
+  --secondary-foreground: var(--crm-foreground);
+  --muted: var(--crm-muted);
+  --muted-foreground: var(--crm-muted-foreground);
+  --accent: var(--crm-accent);
+  --accent-foreground: var(--crm-foreground);
+  --destructive: var(--crm-destructive);
+  --destructive-foreground: var(--crm-foreground);
+  --border: var(--crm-border);
+  --input: var(--crm-border);
+  --ring: var(--crm-ring);
+  --sidebar-background: var(--crm-sidebar);
+  --sidebar-foreground: var(--crm-sidebar-foreground);
+  --sidebar-primary: var(--crm-primary);
+  --sidebar-primary-foreground: var(--crm-primary-foreground);
+  --sidebar-accent: var(--crm-sidebar-accent);
+  --sidebar-accent-foreground: var(--crm-foreground);
+  --sidebar-border: var(--crm-sidebar-border);
+  --sidebar-ring: var(--crm-ring);
+
+  font-family: var(--font-sans-active, system-ui, sans-serif);
+}
+
+html[data-tokens-applied] body {
+  font-family: inherit;
+}
+
+html[data-density="compact"] {
+  --spacing-unit: calc(0.25rem * var(--density-scale, 0.88));
+}
+
+html[data-density="comfort"] {
+  --spacing-unit: calc(0.25rem * var(--density-scale, 1));
+}
+
+html[data-density="cozy"] {
+  --spacing-unit: calc(0.25rem * var(--density-scale, 1.12));
+}
+
+.font-display-serif {
+  font-family: var(--font-display-serif, Georgia, serif);
+}
+
+.font-label-mono {
+  font-family: var(--font-label-mono, ui-monospace, monospace);
+}
+
+.beta-nav-active {
+  position: relative;
+}
+
+.beta-nav-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: var(--crm-primary, hsl(var(--primary)));
+  box-shadow: var(--crm-glow-accent, none);
+}
+
+.crm-glow-button {
+  box-shadow: var(--crm-glow-accent, none);
+}
+
+.crm-panel-shadow {
+  box-shadow: var(--crm-shadow-md);
+}
+
+.command-palette-glow {
+  box-shadow: var(--crm-shadow-md), 0 0 0 1px color-mix(in oklch, var(--crm-primary) 35%, transparent);
+}
+
+/* cmdk contrast guard when shell/light tokens interact with .dark variants */
+html[data-tokens-applied] [cmdk-root],
+html[data-tokens-applied] [cmdk-dialog] {
+  color: var(--crm-foreground);
+}
+
+html[data-tokens-applied] [cmdk-item][data-selected="true"] {
+  background: color-mix(in oklch, var(--crm-primary) 18%, var(--crm-card));
+  color: var(--crm-foreground);
+}

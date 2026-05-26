@@ -13,6 +13,10 @@ jest.mock('@/lib/utils', () => ({
   cn: (...classes: any[]) => classes.filter(Boolean).join(' '),
 }));
 
+jest.mock('@/components/beta/ui-theme-toggle', () => ({
+  UiThemeToggle: () => <div data-testid="ui-theme-toggle" />,
+}));
+
 import { MainNav } from '@/components/main-nav';
 
 describe('MainNav', () => {

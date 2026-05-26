@@ -1,0 +1,60 @@
+/**
+ * SimpleCRM v0.2 beta — dunkles Prototyp-Theme (Claude Design).
+ * Aktiv mit [data-ui-theme="beta"] auf <html>.
+ */
+/** Fallback HSL palette when OKLCH tokens are not applied yet. */
+[data-ui-theme="beta"]:not([data-tokens-applied]) {
+  color-scheme: dark;
+
+  --background: 224 28% 7%;
+  --foreground: 210 25% 96%;
+
+  --card: 224 22% 10%;
+  --card-foreground: 210 25% 96%;
+
+  --popover: 224 22% 11%;
+  --popover-foreground: 210 25% 96%;
+
+  --primary: 217 91% 60%;
+  --primary-foreground: 224 28% 7%;
+
+  --secondary: 224 18% 14%;
+  --secondary-foreground: 210 20% 90%;
+
+  --muted: 224 16% 13%;
+  --muted-foreground: 215 14% 58%;
+
+  --accent: 224 18% 16%;
+  --accent-foreground: 210 25% 96%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 210 40% 98%;
+
+  --border: 224 14% 18%;
+  --input: 224 14% 18%;
+  --ring: 217 91% 60%;
+
+  --radius: 0.5rem;
+
+  --sidebar-background: 224 30% 5%;
+  --sidebar-foreground: 215 14% 70%;
+  --sidebar-primary: 217 91% 60%;
+  --sidebar-primary-foreground: 224 28% 7%;
+  --sidebar-accent: 224 20% 12%;
+  --sidebar-accent-foreground: 210 25% 96%;
+  --sidebar-border: 224 14% 14%;
+  --sidebar-ring: 217 91% 60%;
+
+  --beta-surface-elevated: 224 20% 11%;
+  --beta-surface-hover: 224 18% 14%;
+}
+
+[data-ui-theme="beta"] .beta-panel {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: var(--radius);
+}
+
+[data-ui-theme="beta"] .beta-accent-bar {
+  background: linear-gradient(90deg, hsl(217 91% 60% / 0.15), transparent);
+}

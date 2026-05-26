@@ -11,7 +11,11 @@ Unter **E-Mail** in der Hauptnavigation gibt es eine **Unterleiste** mit vier Be
 | **Posteingang & Nachrichten** | **Postfach** (`/email`) |
 | **Workflows automatisieren** | **Workflows** |
 | **Zahlen & Übersicht** | **Auswertung** |
-| **Konten, SMTP, KI, Team, Export** | **Einstellungen** (gruppierte Tabs) |
+| **Konten, SMTP, KI, Team, Export** | **Einstellungen** (gruppierte Tabs oder **Beta**-Hub) |
+
+### Beta-Oberfläche (optional)
+
+In der E-Mail-Unterleiste können Sie **Klassisch** / **Beta** wählen (wird gespeichert). Die **Beta** betrifft vor allem **Einstellungen**: Übersicht mit Statuskarten, dann Bereiche Postfächer → Versand & Anmeldung → KI & Wissen → Automatisierung → Team → Datenschutz. Postfach und Workflows bleiben gleich; alle Funktionen sind dieselben wie in der klassischen Ansicht.
 
 ## Konto anlegen
 

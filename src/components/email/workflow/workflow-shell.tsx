@@ -19,6 +19,7 @@ import {
   Workflow,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -680,7 +681,10 @@ export function WorkflowShell() {
                     Inbound-Backfill
                   </Button>
                   <Button type="button" size="sm" variant="link" className="h-8 px-0" asChild>
-                    <Link to="/email/settings" search={{ tab: "mailSecurity" }}>
+                    <Link
+                      to="/email/settings"
+                      search={emailSettingsSearch({ tab: "mailSecurity", section: "advanced" })}
+                    >
                       <ExternalLink className="mr-1 h-3.5 w-3.5" />
                       Automatisierung (IMAP/HTTP)
                     </Link>

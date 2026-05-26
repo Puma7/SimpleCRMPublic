@@ -82,6 +82,7 @@ import {
   createAiProfile,
   deleteAiProfile,
   ensureDefaultAiProfiles,
+  getAiProfileById,
   listAiProfiles,
   profileHasApiKey,
   resolvePromptProfileId,
@@ -1054,8 +1055,20 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           });
         }
         if (payload.apiKey?.trim()) {
-          const row = listAiProfiles().find((p) => p.id === profileId);
-          if (row) await saveAiProfileApiKey(row.keytar_account, payload.apiKey.trim());
+          const row = getAiProfileById(profileId) ?? listAiProfiles().find((p) => p.id === profileId);
+          if (!row) {
+            return { success: false as const, error: 'KI-Profil nicht gefunden (API-Key nicht gespeichert)' };
+          }
+          try {
+            await saveAiProfileApiKey(row.keytar_account, payload.apiKey.trim());
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            logger.error('[IPC] SaveAiProfile keytar failed:', e);
+            return {
+              success: false as const,
+              error: `API-Key konnte nicht im Schlüsselbund gespeichert werden: ${msg}`,
+            };
+          }
         }
         return { success: true as const, id: profileId };
       },

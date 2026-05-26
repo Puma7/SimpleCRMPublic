@@ -8,6 +8,8 @@ import { isAllAccountsScope } from "./account-scope"
 import { formatFrom, type EmailAccount, type EmailMessage, type MailView } from "./types"
 import { useMailWorkspace } from "./workspace-context"
 import { setMailDragData } from "./mail-drag"
+import { MessageFilterChips } from "./message-filter-chips"
+import { applyMessageListFilter } from "./message-list-filters"
 
 type Props = {
   messages: EmailMessage[]
@@ -31,24 +33,26 @@ function formatListDateTime(iso: string | null): string {
 }
 
 export function MessageList({ messages, accounts, loading, onOpen }: Props) {
-  const { searchQuery, setSearchQuery, selectedMessage, selectedAccountId } =
+  const { searchQuery, setSearchQuery, selectedMessage, selectedAccountId, messageListFilter } =
     useMailWorkspace()
+  const visibleMessages = applyMessageListFilter(messages, messageListFilter)
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
 
   return (
     <section className="flex h-full min-h-0 flex-col border-r">
-      <div className="shrink-0 border-b bg-background p-3">
+      <div className="shrink-0 space-y-2 border-b bg-background p-3">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             className="h-9 pl-8"
-            placeholder="Nachrichten durchsuchen…"
+            placeholder="Nachrichten durchsuchen… (/ demnächst)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+        <MessageFilterChips />
       </div>
 
       <ScrollArea className="flex-1">
@@ -57,11 +61,13 @@ export function MessageList({ messages, accounts, loading, onOpen }: Props) {
             <Loader2 className="h-4 w-4 animate-spin" />
             Lädt…
           </p>
-        ) : messages.length === 0 ? (
+        ) : visibleMessages.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">Keine Nachrichten.</p>
         ) : (
           <ul className="divide-y">
-            {messages.map((m) => {
+            {visibleMessages.map((m) => {
+              const isDraft = m.uid < 0
+              const blocked = !!m.outbound_hold
               const unread = !m.seen_local && m.uid >= 0
               const active = selectedMessage?.id === m.id
               return (
@@ -132,6 +138,17 @@ export function MessageList({ messages, accounts, loading, onOpen }: Props) {
                             <span className="rounded bg-primary/10 px-1 text-[9px] font-medium text-primary">
                               {m.ticket_code}
                             </span>
+                          ) : null}
+                          {isDraft ? (
+                            <span className="rounded bg-muted px-1 text-[9px] font-medium">Entwurf</span>
+                          ) : null}
+                          {blocked ? (
+                            <span className="rounded bg-destructive/15 px-1 text-[9px] font-medium text-destructive">
+                              Versand blockiert
+                            </span>
+                          ) : null}
+                          {m.customer_id ? (
+                            <span className="rounded bg-accent/20 px-1 text-[9px] font-medium">Kunde</span>
                           ) : null}
                           {m.archived ? (
                             <span className="rounded bg-amber-500/10 px-1 text-[9px] font-medium text-amber-700 dark:text-amber-400">
