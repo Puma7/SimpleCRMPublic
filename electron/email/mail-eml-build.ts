@@ -1,6 +1,10 @@
 import fs from 'fs';
 import { randomBytes } from 'crypto';
-import { addressesFromRecipientJson, normalizeAddressJson } from './email-parse-utils';
+import {
+  addressesFromRecipientJson,
+  isCorruptRawHeaders,
+  normalizeAddressJson,
+} from './email-parse-utils';
 import type { EmailAttachmentRow } from './email-message-attachments-store';
 import type { EmailMessageRow } from './email-store';
 
@@ -158,7 +162,11 @@ function buildReconstructedEml(row: EmailMessageRow, attachments: EmailAttachmen
     attachments,
   });
 
-  let headerBlock = row.raw_headers?.trim() ? stripContentTypeFromHeaders(row.raw_headers) : synthesizeHeaders(row);
+  const storedHeaders =
+    row.raw_headers?.trim() && !isCorruptRawHeaders(row.raw_headers) ? row.raw_headers : null;
+  let headerBlock = storedHeaders
+    ? stripContentTypeFromHeaders(storedHeaders)
+    : synthesizeHeaders(row);
   headerBlock = crlf(headerBlock).replace(/\r\n+$/, '');
   const extra = bodyHdrs.map((h) => crlf(h)).join('\r\n');
   const allHeaders = extra ? `${headerBlock}\r\n${extra}` : headerBlock;
@@ -186,9 +194,10 @@ export function buildEmlForMessage(
   let note: string | undefined;
   if (attachments.length > 0 && missingOnDisk > 0) {
     note = `${missingOnDisk} Anhang/Anhänge nicht auf Platte — in der Rekonstruktion fehlend.`;
-  } else if (!row.raw_headers?.trim()) {
-    note =
-      'Keine Original-Rohmail gespeichert (ältere Syncs). Header/Body aus Datenbank rekonstruiert.';
+  } else if (!row.raw_headers?.trim() || isCorruptRawHeaders(row.raw_headers)) {
+    note = isCorruptRawHeaders(row.raw_headers)
+      ? 'Gespeicherte Header waren ungültig — rekonstruiert aus Absender, Betreff und Body.'
+      : 'Keine Original-Rohmail gespeichert (ältere Syncs). Header/Body aus Datenbank rekonstruiert.';
   } else {
     note =
       'Keine vollständige Original-Rohmail — rekonstruiert aus gespeicherten Headern, Body und Anhängen.';

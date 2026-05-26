@@ -1,3 +1,5 @@
+import { isCorruptRawHeaders } from './email-parse-utils';
+
 /** Build a minimal RFC822 buffer from stored headers + body for mailauth / Rspamd. */
 
 export function buildRfc822FromStored(input: {
@@ -10,7 +12,10 @@ export function buildRfc822FromStored(input: {
     return Buffer.from(input.rawRfc822B64, 'base64');
   }
 
-  const raw = input.rawHeaders?.trim();
+  const raw =
+    input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders)
+      ? input.rawHeaders.trim()
+      : null;
   if (!raw) return null;
 
   const headers = raw.replace(/\r?\n/g, '\r\n').replace(/\r\n+$/, '');
