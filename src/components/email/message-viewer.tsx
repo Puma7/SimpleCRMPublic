@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react"
 import DOMPurify from "dompurify"
-import { blockRemoteImagesInHtml } from "@shared/email-html-remote-images"
+import {
+  blockRemoteImagesInHtml,
+  htmlHasRemoteResources,
+} from "@shared/email-html-remote-images"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import {
@@ -140,10 +143,10 @@ export function MessageViewer(props: Props) {
     return loadRemoteImages ? clean : blockRemoteImagesInHtml(clean)
   }, [selectedMessage?.body_html, loadRemoteImages])
 
-  const htmlHasRemoteImages = useMemo(() => {
-    const raw = selectedMessage?.body_html ?? ""
-    return /src\s*=\s*["']https?:\/\//i.test(raw)
-  }, [selectedMessage?.body_html])
+  const htmlHasRemoteImages = useMemo(
+    () => htmlHasRemoteResources(selectedMessage?.body_html ?? ""),
+    [selectedMessage?.body_html],
+  )
 
   const omittedAttachments = (() => {
     const raw = selectedMessage?.attachments_json

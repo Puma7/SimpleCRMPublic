@@ -148,6 +148,7 @@ export function initializeDatabase() {
             db.exec(createWorkflowDelayedJobsTable);
             db.exec(createEmailWorkflowVersionsTable);
             setupEmailFtsIndex();
+            migrateEmailFtsSearchV2();
             indexes.forEach(index => db.exec(index));
             // Same column/table ensure path as upgraded databases (Codex P0: fresh install parity).
             runMigrations();
@@ -332,8 +333,8 @@ function ensureEmailFtsTriggers() {
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
     db.exec(`
       CREATE TRIGGER email_messages_fts_ai AFTER INSERT ON ${EMAIL_MESSAGES_TABLE} BEGIN
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
-        VALUES (new.id, new.subject, new.snippet, new.body_text);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code)
+        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code);
       END;
     `);
     db.exec(`
@@ -344,10 +345,37 @@ function ensureEmailFtsTriggers() {
     db.exec(`
       CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
         INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text)
-        VALUES (new.id, new.subject, new.snippet, new.body_text);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code)
+        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code);
       END;
     `);
+}
+
+/** Rebuild FTS when recipient/ticket columns were added (Codex P1 search). */
+function migrateEmailFtsSearchV2(): void {
+    if (!db) return;
+    if (getSyncInfo('email_fts_search_version') === '2') return;
+    const ftsMaster = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
+    if (!ftsMaster) {
+        setSyncInfo('email_fts_search_version', '2');
+        return;
+    }
+    const cols = db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_FTS_TABLE})`).all() as { name: string }[];
+    if (cols.some((c) => c.name === 'from_json')) {
+        setSyncInfo('email_fts_search_version', '2');
+        return;
+    }
+    console.log('Migrating email_messages FTS to v2 (recipients + ticket)...');
+    db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
+    db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
+    db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
+    db.exec(`DROP TABLE IF EXISTS ${EMAIL_MESSAGES_FTS_TABLE}`);
+    db.exec(createEmailMessagesFtsTable);
+    db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+    ensureEmailFtsTriggers();
+    setSyncInfo('email_fts_search_version', '2');
 }
 
 function setupEmailFtsIndex() {
@@ -681,6 +709,7 @@ function runMigrations() {
         }
 
         setupEmailFtsIndex();
+        migrateEmailFtsSearchV2();
 
         // Migration: Add snoozed_until column to tasks table if it doesn't exist
         const taskColsForSnooze = db.prepare(`PRAGMA table_info(${TASKS_TABLE})`).all();

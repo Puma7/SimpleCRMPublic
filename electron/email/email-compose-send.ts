@@ -74,6 +74,19 @@ export function clearStaleComposeSendingLocks(): void {
     .run();
 }
 
+/** After crash: SMTP succeeded but draft was not finalized to sent. */
+export function getComposeDraftRecoveryState(draftMessageId: number): {
+  smtpCommitted: boolean;
+  needsResendFinalize: boolean;
+} {
+  const draft = getEmailMessageById(draftMessageId);
+  const smtpCommitted = isSmtpCommitted(draftMessageId);
+  const needsResendFinalize = Boolean(
+    smtpCommitted && draft && draft.uid < 0 && draft.folder_kind === 'draft',
+  );
+  return { smtpCommitted, needsResendFinalize };
+}
+
 async function finalizeSentDraft(input: {
   accountId: number;
   draftMessageId: number;

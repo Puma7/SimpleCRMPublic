@@ -23,6 +23,7 @@ jest.mock('../../electron/sqlite-service', () => ({
   }),
   getSyncInfo: jest.fn(() => null),
   setSyncInfo: jest.fn(),
+  createActivityLog: jest.fn(() => ({ success: true, id: 1 })),
 }));
 
 import { maybeSendVacationAutoReply } from '../../electron/email/email-vacation';

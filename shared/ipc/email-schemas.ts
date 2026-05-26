@@ -181,6 +181,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: positiveInt,
     result: standardResult,
   });
+  set(IPCChannels.Email.RetryScheduledSendDraft, {
+    payload: positiveInt,
+    result: standardResult,
+  });
+  set(IPCChannels.Email.GetComposeDraftRecoveryState, {
+    payload: positiveInt,
+    result: z.object({
+      success: z.literal(true),
+      smtpCommitted: z.boolean(),
+      needsResendFinalize: z.boolean(),
+    }),
+  });
+  set(IPCChannels.Email.TestVacationAutoReply, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true) }),
+      z.object({ success: z.literal(false), error: z.string() }),
+    ]),
+  });
   set(IPCChannels.Email.ExportMessageEml, {
     payload: positiveInt,
     result: z.union([

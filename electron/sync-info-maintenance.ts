@@ -32,8 +32,17 @@ function tryRemoveStaleKey(db: ReturnType<typeof getDb>, key: string): boolean {
     return false;
   }
 
-  if (key.startsWith('scheduled_send_failures:')) {
-    const id = parseInt(key.slice('scheduled_send_failures:'.length), 10);
+  if (
+    key.startsWith('scheduled_send_failures:') ||
+    key.startsWith('scheduled_send_status:') ||
+    key.startsWith('scheduled_send_last_error:')
+  ) {
+    const prefix = key.startsWith('scheduled_send_failures:')
+      ? 'scheduled_send_failures:'
+      : key.startsWith('scheduled_send_status:')
+        ? 'scheduled_send_status:'
+        : 'scheduled_send_last_error:';
+    const id = parseInt(key.slice(prefix.length), 10);
     if (Number.isNaN(id)) return deleteKey(key);
     const draft = db
       .prepare(
@@ -42,7 +51,7 @@ function tryRemoveStaleKey(db: ReturnType<typeof getDb>, key: string): boolean {
       .get(id);
     if (!draft) return deleteKey(key);
     const val = getSyncInfo(key);
-    if (val === '0') return deleteKey(key);
+    if (val === '0' || val === '') return deleteKey(key);
     return false;
   }
 

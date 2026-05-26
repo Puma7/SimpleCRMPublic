@@ -814,6 +814,45 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.RetryScheduledSendDraft,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
+        const { setDraftScheduledSendAt } = await import('../email/email-message-features');
+        clearScheduledSendDraftMeta(messageId);
+        setDraftScheduledSendAt(messageId, new Date().toISOString());
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetComposeDraftRecoveryState,
+      async (_event: IpcMainInvokeEvent, draftMessageId: number) => {
+        const { getComposeDraftRecoveryState } = await import('../email/email-compose-send');
+        const s = getComposeDraftRecoveryState(draftMessageId);
+        return { success: true as const, ...s };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.TestVacationAutoReply,
+      async (_event: IpcMainInvokeEvent, accountId: number) => {
+        const { sendVacationTestReply } = await import('../email/email-vacation');
+        const r = await sendVacationTestReply(accountId);
+        if (r.ok) return { success: true as const };
+        return { success: false as const, error: r.error };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.ExportMessageEml,
       async (_event: IpcMainInvokeEvent, messageId: number) => {
         const r = await exportMessageAsEml(messageId);

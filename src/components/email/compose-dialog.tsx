@@ -150,6 +150,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [scheduledSendFailed, setScheduledSendFailed] = useState<{
     lastError: string
   } | null>(null)
+  const [composeRecovery, setComposeRecovery] = useState<{
+    needsResendFinalize: boolean
+  } | null>(null)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
@@ -159,6 +162,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   useEffect(() => {
     if (!draftId || !hasElectron()) {
       setScheduledSendFailed(null)
+      setComposeRecovery(null)
       return
     }
     void invokeIpc(IPCChannels.Email.GetScheduledSendDraftState, draftId)
@@ -172,6 +176,15 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         }
       })
       .catch(() => setScheduledSendFailed(null))
+    void invokeIpc(IPCChannels.Email.GetComposeDraftRecoveryState, draftId)
+      .then((r) => {
+        if (r.success && r.needsResendFinalize) {
+          setComposeRecovery({ needsResendFinalize: true })
+        } else {
+          setComposeRecovery(null)
+        }
+      })
+      .catch(() => setComposeRecovery(null))
   }, [draftId])
 
   useEffect(() => {
@@ -707,6 +720,18 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 : "Entwurf konnte nicht geladen werden. Dialog schließen und erneut „Verfassen“ wählen."}
             </div>
           ) : null}
+          {composeRecovery?.needsResendFinalize ? (
+            <div
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+              role="status"
+            >
+              <p className="font-medium">Versand unterbrochen</p>
+              <p className="mt-1 text-xs opacity-90">
+                Die Mail wurde per SMTP versendet, die lokale Finalisierung (Gesendet-Ordner) ist
+                ausstehend. „Senden“ erneut klicken — es wird kein zweites Mal an SMTP gesendet.
+              </p>
+            </div>
+          ) : null}
           {scheduledSendFailed ? (
             <div
               className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
@@ -719,6 +744,24 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   type="button"
                   size="sm"
                   variant="outline"
+                  className="h-7 text-xs"
+                  disabled={draftId == null}
+                  onClick={() => {
+                    if (!draftId) return
+                    void invokeIpc(IPCChannels.Email.RetryScheduledSendDraft, draftId).then(
+                      () => {
+                        setScheduledSendFailed(null)
+                        toast.success("Versand erneut eingeplant (sofort).")
+                      },
+                    )
+                  }}
+                >
+                  Erneut versuchen
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
                   className="h-7 text-xs"
                   disabled={draftId == null}
                   onClick={() => {
