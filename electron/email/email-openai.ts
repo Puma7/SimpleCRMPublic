@@ -1,5 +1,6 @@
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getResolvedAiRuntime } from './email-ai-profiles';
+import { formatAiUserError } from './ai-error-format';
 
 const KEY_BASE = 'email_ai_base_url';
 const KEY_MODEL = 'email_ai_model';
@@ -32,32 +33,36 @@ export async function runChatCompletion(
   }
   const { baseUrl, model } = runtime;
   const url = `${baseUrl}/chat/completions`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
-      ],
-      temperature: 0.3,
-    }),
-    signal: AbortSignal.timeout(90_000),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`KI-Anfrage fehlgeschlagen: ${res.status} ${t.slice(0, 200)}`);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        temperature: 0.3,
+      }),
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`KI-Anfrage fehlgeschlagen: ${res.status} ${t.slice(0, 200)}`);
+    }
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error('Leere KI-Antwort');
+    return text;
+  } catch (e) {
+    throw new Error(formatAiUserError(e));
   }
-  const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error('Leere KI-Antwort');
-  return text;
 }
 
 export async function runEmbedding(text: string, profileId?: number | null): Promise<number[] | null> {
