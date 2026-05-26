@@ -554,6 +554,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       bcc: z.string().optional(),
       draftAttachmentPaths: z.array(z.string()).optional(),
       replyParentMessageId: z.number().int().positive().nullable().optional(),
+      markReplyParentDone: z.boolean().optional(),
     }),
     result: standardResult,
   });
@@ -586,6 +587,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       bcc: z.string().optional(),
       inReplyToMessageId: z.number().int().positive().nullable().optional(),
       attachmentPaths: z.array(z.string()).optional(),
+      markReplyParentDone: z.boolean().optional(),
     }),
     result: z.union([
       z.object({

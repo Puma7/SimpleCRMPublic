@@ -600,6 +600,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bcc?: string;
           draftAttachmentPaths?: string[];
           replyParentMessageId?: number | null;
+          markReplyParentDone?: boolean;
         },
       ) => {
         const toJson =
@@ -630,6 +631,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           draftAttachmentPaths: payload.draftAttachmentPaths,
           replyParentMessageId: payload.replyParentMessageId,
         });
+        if (payload.markReplyParentDone !== undefined) {
+          const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done');
+          setComposeMarkReplyParentDone(payload.messageId, payload.markReplyParentDone);
+        }
         return { success: true as const };
       },
       { logger },
@@ -1058,6 +1063,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bcc?: string;
           inReplyToMessageId?: number | null;
           attachmentPaths?: string[];
+          markReplyParentDone?: boolean;
         },
       ) => {
         const r = await sendComposeDraft(payload);

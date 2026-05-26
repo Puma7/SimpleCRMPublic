@@ -9,8 +9,13 @@ import {
   getEmailAccountById,
   getEmailMessageById,
   markDraftAsSent,
+  setMessageDoneLocal,
   updateComposeDraft,
 } from './email-store';
+import {
+  getComposeMarkReplyParentDone,
+  setComposeMarkReplyParentDone,
+} from './compose-reply-done';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { sendSmtpForAccount } from './email-smtp';
 import { appendSentToImap } from './email-imap-append';
@@ -137,6 +142,21 @@ async function finalizeSentDraft(input: {
   return { sentAppendWarning };
 }
 
+function maybeMarkReplyParentDone(
+  inReplyToMessageId: number | null | undefined,
+  draftMessageId: number,
+  markReplyParentDone: boolean | undefined,
+): void {
+  if (!inReplyToMessageId) return;
+  const shouldMark =
+    markReplyParentDone !== undefined
+      ? markReplyParentDone
+      : getComposeMarkReplyParentDone(draftMessageId);
+  if (shouldMark) {
+    setMessageDoneLocal(inReplyToMessageId, true);
+  }
+}
+
 export async function sendComposeDraft(input: {
   accountId: number;
   draftMessageId: number;
@@ -148,6 +168,8 @@ export async function sendComposeDraft(input: {
   bcc?: string;
   inReplyToMessageId?: number | null;
   attachmentPaths?: string[];
+  /** When replying: mark original message done (default true). */
+  markReplyParentDone?: boolean;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
   | { ok: false; error: string; workflowRunId?: number | null }
@@ -327,6 +349,10 @@ export async function sendComposeDraft(input: {
     const requestReceipt =
       (acc as { request_read_receipt?: number }).request_read_receipt === 1;
 
+    if (input.markReplyParentDone !== undefined) {
+      setComposeMarkReplyParentDone(input.draftMessageId, input.markReplyParentDone);
+    }
+
     if (isSmtpCommitted(input.draftMessageId)) {
       const fin = await finalizeSentDraft({
         accountId: input.accountId,
@@ -344,6 +370,11 @@ export async function sendComposeDraft(input: {
         attachments: sentAppendAttachments,
         requestReadReceipt: requestReceipt,
       });
+      maybeMarkReplyParentDone(
+        input.inReplyToMessageId,
+        input.draftMessageId,
+        input.markReplyParentDone,
+      );
       if (fin.sentAppendWarning) {
         return { ok: true, warning: fin.sentAppendWarning };
       }
@@ -387,6 +418,11 @@ export async function sendComposeDraft(input: {
       requestReadReceipt: requestReceipt,
     });
 
+    maybeMarkReplyParentDone(
+      input.inReplyToMessageId,
+      input.draftMessageId,
+      input.markReplyParentDone,
+    );
     return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };
   } finally {
     cleanupInlineImageTempFiles(inlineTempPaths);

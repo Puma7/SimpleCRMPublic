@@ -3,6 +3,7 @@ import { sendComposeDraft } from '../../electron/email/email-compose-send';
 const mockGetMessage = jest.fn();
 const mockUpdateDraft = jest.fn();
 const mockMarkSent = jest.fn();
+const mockSetMessageDone = jest.fn();
 const mockGetAccount = jest.fn();
 const mockSendSmtp = jest.fn();
 const mockEvaluateOutbound = jest.fn();
@@ -14,6 +15,7 @@ jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...args: unknown[]) => mockGetMessage(...args),
   updateComposeDraft: (...args: unknown[]) => mockUpdateDraft(...args),
   markDraftAsSent: (...args: unknown[]) => mockMarkSent(...args),
+  setMessageDoneLocal: (...args: unknown[]) => mockSetMessageDone(...args),
   getEmailAccountById: (...args: unknown[]) => mockGetAccount(...args),
 }));
 
@@ -121,6 +123,75 @@ describe('sendComposeDraft', () => {
     expect(r).toEqual({ ok: true, recoveredSentAppend: true });
     expect(mockSendSmtp).not.toHaveBeenCalled();
     expect(mockMarkSent).toHaveBeenCalled();
+  });
+
+  it('marks reply parent as done after successful send by default', async () => {
+    mockGetMessage.mockImplementation((id: number) => {
+      if (id === 5) {
+        return {
+          id: 5,
+          uid: 100,
+          account_id: 1,
+          ticket_code: 'T-1',
+          thread_id: 'th',
+          message_id: '<parent@x>',
+          references_header: null,
+        };
+      }
+      return {
+        id: 10,
+        uid: -1,
+        account_id: 1,
+        folder_kind: 'draft',
+        body_html: null,
+        message_id: null,
+      };
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Re: Hi',
+      bodyText: 'Body',
+      to: 'a@b.de',
+      inReplyToMessageId: 5,
+    });
+    expect(r).toEqual({ ok: true });
+    expect(mockSetMessageDone).toHaveBeenCalledWith(5, true);
+  });
+
+  it('does not mark reply parent done when opted out', async () => {
+    mockGetMessage.mockImplementation((id: number) => {
+      if (id === 5) {
+        return {
+          id: 5,
+          uid: 100,
+          account_id: 1,
+          ticket_code: 'T-1',
+          thread_id: 'th',
+          message_id: '<parent@x>',
+          references_header: null,
+        };
+      }
+      return {
+        id: 10,
+        uid: -1,
+        account_id: 1,
+        folder_kind: 'draft',
+        body_html: null,
+        message_id: null,
+      };
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Re: Hi',
+      bodyText: 'Body',
+      to: 'a@b.de',
+      inReplyToMessageId: 5,
+      markReplyParentDone: false,
+    });
+    expect(r).toEqual({ ok: true });
+    expect(mockSetMessageDone).not.toHaveBeenCalled();
   });
 
   it('rejects parallel send while lock is held', async () => {
