@@ -211,7 +211,8 @@ export function MessageMetadataPanel({
               </Button>
             </div>
             <p className="text-[10px] text-muted-foreground">
-              Für Workflow-Tests (Dry-Run) im Bereich Workflows → Erweitert.
+              Workflow manuell starten: Toolbar „Workflow“ oder Workflows → Erweitert (Dry-Run mit
+              ID).
             </p>
           </div>
 
