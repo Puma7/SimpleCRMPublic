@@ -262,6 +262,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       messageId: positiveInt,
       ticketCode: z.string().nullable().optional(),
       customerId: z.number().int().positive().nullable().optional(),
+      correspondentEmail: z.string().nullable().optional(),
       limit: z.number().int().positive().optional(),
     }),
     result: recordArray,

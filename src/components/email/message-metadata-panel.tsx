@@ -25,6 +25,7 @@ import {
   type InternalNote,
   type TeamMember,
 } from "./types"
+import { correspondentEmailForMessage } from "@shared/email-correspondent"
 import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
@@ -59,7 +60,7 @@ export function MessageMetadataPanel({
   reloadTags,
   refreshCurrentMessage,
 }: Props) {
-  const { selectedMessage, selectedAccountId } = useMailWorkspace()
+  const { selectedMessage, selectedAccountId, setSelectedMessage } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
   const [editingNoteBody, setEditingNoteBody] = useState("")
@@ -132,21 +133,29 @@ export function MessageMetadataPanel({
       .finally(() => setSecurityLoading(false))
   }, [selectedMessage?.id])
 
+  const correspondentEmail = selectedMessage
+    ? correspondentEmailForMessage(selectedMessage)
+    : null
+
   useEffect(() => {
     if (!selectedMessage || selectedAccountId == null) {
       setConversation([])
       return
     }
-    if (!selectedMessage.ticket_code && !selectedMessage.customer_id) {
+    const hasTicketOrCustomer =
+      Boolean(selectedMessage.ticket_code?.trim()) ||
+      (selectedMessage.customer_id != null && selectedMessage.customer_id > 0)
+    if (!correspondentEmail && !hasTicketOrCustomer) {
       setConversation([])
       return
     }
     void invokeIpc<EmailMessage[]>(IPCChannels.Email.ListConversationMessages, {
       accountId: selectedAccountId,
       messageId: selectedMessage.id,
-      ticketCode: selectedMessage.ticket_code,
-      customerId: selectedMessage.customer_id,
-      limit: 20,
+      correspondentEmail: correspondentEmail ?? undefined,
+      ticketCode: correspondentEmail ? undefined : selectedMessage.ticket_code,
+      customerId: correspondentEmail ? undefined : selectedMessage.customer_id,
+      limit: 50,
     })
       .then(setConversation)
       .catch(() => setConversation([]))
@@ -154,6 +163,7 @@ export function MessageMetadataPanel({
     selectedMessage?.id,
     selectedMessage?.ticket_code,
     selectedMessage?.customer_id,
+    correspondentEmail,
     selectedAccountId,
   ])
 
@@ -478,21 +488,50 @@ export function MessageMetadataPanel({
 
           {conversation.length > 0 ? (
             <div className="space-y-1.5">
-              <Label className="text-xs">Kommunikation (Ticket/Kunde)</Label>
-              <ul className="max-h-40 space-y-1 overflow-y-auto rounded border bg-background p-2 text-xs">
-                {conversation.map((m) => (
-                  <li key={m.id} className="border-b border-border/50 pb-1 last:border-0">
-                    <p className="font-medium line-clamp-1">{m.subject || "(Ohne Betreff)"}</p>
-                    <p className="text-[10px] text-muted-foreground">
-                      {m.date_received
-                        ? new Date(m.date_received).toLocaleString("de-DE")
-                        : "—"}
-                      {m.ticket_code ? ` · ${m.ticket_code}` : ""}
-                    </p>
-                  </li>
-                ))}
+              <Label className="text-xs">
+                {correspondentEmail
+                  ? `Alle Mails mit ${correspondentEmail}`
+                  : "Kommunikation (Ticket/Kunde)"}
+              </Label>
+              <p className="text-[10px] text-muted-foreground">
+                {correspondentEmail
+                  ? "Posteingang, Gesendet, Archiv — unabhängig vom CRM-Kunden."
+                  : "Weitere Nachrichten zum Ticket oder verknüpften Kunden."}
+              </p>
+              <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded border bg-background p-1 text-xs">
+                {conversation.map((m) => {
+                  const active = m.id === selectedMessage.id
+                  return (
+                    <li key={m.id}>
+                      <button
+                        type="button"
+                        disabled={active}
+                        className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
+                          active
+                            ? "bg-primary/10 text-primary"
+                            : "hover:bg-muted"
+                        }`}
+                        onClick={() => {
+                          if (!active) setSelectedMessage(m)
+                        }}
+                      >
+                        <p className="font-medium line-clamp-1">{m.subject || "(Ohne Betreff)"}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {m.date_received
+                            ? new Date(m.date_received).toLocaleString("de-DE")
+                            : "—"}
+                          {m.ticket_code ? ` · ${m.ticket_code}` : ""}
+                        </p>
+                      </button>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
+          ) : correspondentEmail ? (
+            <p className="text-xs text-muted-foreground">
+              Keine weiteren Nachrichten mit {correspondentEmail} in diesem Konto.
+            </p>
           ) : null}
 
           {selectedMessage.imap_thread_id ? (
