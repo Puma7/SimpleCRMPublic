@@ -29,7 +29,7 @@ import { parseOutboundReviewResponse } from '../../email/email-outbound-review-p
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
 import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
 import { searchKnowledgeChunks } from '../knowledge-base';
-import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
+import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -332,6 +332,84 @@ export function registerAiNodes(register: Reg): void {
         variables['draft.id'] = id;
       }
       return { status: 'ok', variables };
+    },
+  });
+
+  register({
+    type: 'ai.reply_suggestion',
+    label: 'Antwortvorschlag erzeugen',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Erzeugt einen KI-Antwortvorschlag für die aktuelle Nachricht. Unabhängig von den globalen Einstellungen unter KI → Antwortvorschläge (z. B. nach Kategorie-Sortierung im Workflow).',
+    defaultConfig: { promptId: 0, skipIfReady: true },
+    execute: async (ctx, config): Promise<NodeExecuteResult> => {
+      if (ctx.direction !== 'inbound') {
+        return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
+      }
+      const messageId = ctx.messageId;
+      if (messageId == null) return { status: 'error', message: 'Keine Nachricht' };
+
+      const row = ctx.message ?? getEmailMessageById(messageId);
+      if (!row) return { status: 'error', message: 'Nachricht nicht gefunden' };
+
+      const { canSuggestReplyForMessage, getReplySuggestion, generateAndStoreReplySuggestion } =
+        await import('../../email/email-reply-ai');
+
+      if (!canSuggestReplyForMessage(row)) {
+        return { status: 'skipped', message: 'Für diese Nachricht nicht anwendbar' };
+      }
+
+      const skipIfReady = config.skipIfReady !== false;
+      if (skipIfReady) {
+        const current = getReplySuggestion(messageId);
+        if (current.status === 'ready' && current.text?.trim()) {
+          const variables: Record<string, string | number | boolean | null> = {
+            'reply_suggestion.status': 'ready',
+            'reply_suggestion.text': current.text,
+          };
+          return {
+            status: 'ok',
+            message: 'Vorschlag bereits vorhanden',
+            variables,
+          };
+        }
+      }
+
+      if (ctx.dryRun) {
+        const variables: Record<string, string | number | boolean | null> = {
+          'reply_suggestion.status': 'ready',
+          'reply_suggestion.text': '(Dry-Run)',
+        };
+        return {
+          status: 'ok',
+          message: 'dry-run reply_suggestion',
+          variables,
+        };
+      }
+
+      const promptId = Number(config.promptId ?? 0);
+      const result = await generateAndStoreReplySuggestion(messageId, {
+        promptId: promptId > 0 ? promptId : undefined,
+        customerId: row.customer_id ?? undefined,
+      });
+
+      if (result.success) {
+        const variables: Record<string, string | number | boolean | null> = {
+          'reply_suggestion.status': 'ready',
+          'reply_suggestion.text': result.text,
+        };
+        return { status: 'ok', variables };
+      }
+      const variables: Record<string, string | number | boolean | null> = {
+        'reply_suggestion.status': 'failed',
+        'reply_suggestion.error': result.error,
+      };
+      return {
+        status: 'error',
+        message: result.error,
+        variables,
+      };
     },
   });
 

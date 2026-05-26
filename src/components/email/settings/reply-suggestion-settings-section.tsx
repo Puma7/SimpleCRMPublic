@@ -210,6 +210,20 @@ export function ReplySuggestionSettingsSection() {
         Absender (noreply, Abwesenheit) oder sehr kurze Texte erzeugt.
       </p>
 
+      <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground space-y-1">
+        <p className="font-medium text-foreground">Workflows</p>
+        <p>
+          Im Workflow-Editor steht der Knoten{" "}
+          <span className="font-mono text-foreground">Antwortvorschlag erzeugen</span> (
+          <span className="font-mono">ai.reply_suggestion</span>) — er läuft gezielt nach
+          Kategorie-Sortierung oder anderen Schritten, unabhängig vom Master-Schalter oben.
+        </p>
+        <p>
+          Für automatische Vorschläge nur nach Workflow-Kategorien reicht der Kategorie-Filter
+          („Nur ausgewählte Kategorien“) zusammen mit „Nach Eingang“ — ohne extra Knoten.
+        </p>
+      </div>
+
       <Button type="button" disabled={loading || saving} onClick={() => void save()}>
         {saving ? "Speichern…" : "Antwortvorschläge speichern"}
       </Button>
