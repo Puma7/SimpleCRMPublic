@@ -333,6 +333,8 @@ export async function runInboundWorkflowsForMessage(
   const security = await runMailSecurityPipeline(messageId, row);
   if (security.preWorkflow.skippedWorkflows) return;
 
+  const freshRow = getEmailMessageById(messageId) ?? row;
+
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
   const applied = opts?.appliedWorkflowIds;
@@ -344,7 +346,7 @@ export async function runInboundWorkflowsForMessage(
         workflow: wf,
         trigger: 'inbound',
         direction: 'inbound',
-        message: row,
+        message: freshRow,
       });
       if (r.status === 'ok') markApplied = true;
     } catch (e) {
@@ -360,10 +362,10 @@ export async function runInboundWorkflowsForMessage(
   }
 
   const { ensureReplySuggestion } = await import('./email-reply-ai');
-  ensureReplySuggestion(messageId, { row });
+  ensureReplySuggestion(messageId, { row: freshRow });
 
   const { maybeSendVacationAutoReply } = await import('./email-vacation');
-  await maybeSendVacationAutoReply(messageId, row);
+  await maybeSendVacationAutoReply(messageId, freshRow);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {
@@ -517,35 +519,25 @@ export async function runScheduledWorkflowFire(workflowId: number): Promise<void
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const trigger = (wf.trigger === 'schedule' ? 'schedule' : wf.trigger) as import('../../shared/workflow-types').WorkflowTriggerKind;
-  try {
-    await executeWorkflowForTrigger({
-      workflow: wf,
-      trigger,
-      direction: 'schedule',
-      message: null,
-      initialVariables: {
-        'schedule.sync_log': syncLog.join('; ') || 'ok',
-      },
-      eventStrings: {
-        subject: '',
-        body_text: '',
-        snippet: syncLog.join('\n'),
-        from_address: '',
-        to_address: '',
-        cc_address: '',
-        combined_text: syncLog.join('\n'),
-        has_attachments: 'false',
-        attachment_names: '',
-        attachment_types: '',
-      },
-    });
-  } catch (e) {
-    insertWorkflowRun({
-      workflowId,
-      messageId: null,
-      direction: 'schedule',
-      status: 'error',
-      logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`, ...syncLog]),
-    });
-  }
+  await executeWorkflowForTrigger({
+    workflow: wf,
+    trigger,
+    direction: 'schedule',
+    message: null,
+    initialVariables: {
+      'schedule.sync_log': syncLog.join('; ') || 'ok',
+    },
+    eventStrings: {
+      subject: '',
+      body_text: '',
+      snippet: syncLog.join('\n'),
+      from_address: '',
+      to_address: '',
+      cc_address: '',
+      combined_text: syncLog.join('\n'),
+      has_attachments: 'false',
+      attachment_names: '',
+      attachment_types: '',
+    },
+  });
 }

@@ -106,6 +106,8 @@ export type EmailMessageRow = {
   rspamd_error: string | null;
   security_checked_at: string | null;
   draft_attachment_paths_json: string | null;
+  post_process_done: number;
+  reply_parent_message_id: number | null;
   created_at: string;
 };
 
@@ -800,14 +802,17 @@ export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   return stmt.get(id) as EmailMessageRow | undefined;
 }
 
-/** Negative UID for POP3 rows only — never collides with IMAP uid >= 0 or draft negatives in same folder. */
+/** POP3 synthetic UIDs stay at or below this (drafts use uid > POP3_UID_CEILING). */
+export const POP3_UID_CEILING = -1_000_000;
+
 export function allocatePop3NegativeUid(accountId: number, folderId: number): number {
   const row = getDb()
     .prepare(
-      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND folder_id = ? AND uid <= ?`,
     )
-    .get(accountId, folderId) as { m: number | null };
-  return row.m != null ? row.m - 1 : -1;
+    .get(accountId, folderId, POP3_UID_CEILING) as { m: number | null };
+  return row.m != null ? row.m - 1 : POP3_UID_CEILING;
 }
 
 export function listMessageIdsForWorkflowBackfill(offset: number, limit: number): number[] {
@@ -826,10 +831,40 @@ export function loadPop3UidlsForFolder(folderId: number): Set<string> {
   const rows = getDb()
     .prepare(
       `SELECT pop3_uidl FROM ${EMAIL_MESSAGES_TABLE}
-       WHERE folder_id = ? AND pop3_uidl IS NOT NULL AND TRIM(pop3_uidl) != ''`,
+       WHERE folder_id = ? AND pop3_uidl IS NOT NULL AND TRIM(pop3_uidl) != ''
+         AND COALESCE(post_process_done, 1) = 1`,
     )
     .all(folderId) as { pop3_uidl: string }[];
   return new Set(rows.map((r) => r.pop3_uidl));
+}
+
+export function listMessagesPendingPostProcess(folderId: number): {
+  id: number;
+  message_id: string | null;
+  in_reply_to: string | null;
+  references_header: string | null;
+  subject: string | null;
+}[] {
+  return getDb()
+    .prepare(
+      `SELECT id, message_id, in_reply_to, references_header, subject
+       FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE folder_id = ? AND COALESCE(post_process_done, 0) = 0
+         AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+    )
+    .all(folderId) as {
+    id: number;
+    message_id: string | null;
+    in_reply_to: string | null;
+    references_header: string | null;
+    subject: string | null;
+  }[];
+}
+
+export function markMessagePostProcessDone(messageId: number): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET post_process_done = 1 WHERE id = ?`)
+    .run(messageId);
 }
 
 /** POP3: map UIDL → local message id (one query per sync). */
@@ -871,12 +906,13 @@ export type MessageUpsertContext = {
 export function createPop3UpsertContext(folderId: number, accountId: number): MessageUpsertContext {
   const row = getDb()
     .prepare(
-      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND folder_id = ? AND uid <= ?`,
     )
-    .get(accountId, folderId) as { m: number | null };
+    .get(accountId, folderId, POP3_UID_CEILING) as { m: number | null };
   return {
     pop3UidlToId: loadPop3UidlToIdMap(folderId),
-    nextPop3Uid: row.m != null ? row.m - 1 : -1,
+    nextPop3Uid: row.m != null ? row.m - 1 : POP3_UID_CEILING,
   };
 }
 
@@ -895,6 +931,7 @@ export function insertOrUpdateEmailMessage(input: {
   fromJson: string | null;
   toJson: string | null;
   ccJson: string | null;
+  bccJson?: string | null;
   dateReceived: string | null;
   snippet: string | null;
   bodyText: string | null;
@@ -996,10 +1033,10 @@ export function insertOrUpdateEmailMessage(input: {
   const stmt = db.prepare(
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
       account_id, folder_id, uid, message_id, in_reply_to, references_header,
-      subject, from_json, to_json, cc_json, date_received, snippet, body_text, body_html, seen_local,
+      subject, from_json, to_json, cc_json, bcc_json, date_received, snippet, body_text, body_html, seen_local,
       imap_thread_id, has_attachments, attachments_json, pop3_uidl, raw_headers, raw_rfc822_b64,
-      thread_id, ticket_code, customer_id, folder_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox')
+      thread_id, ticket_code, customer_id, folder_kind, post_process_done
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox', 0)
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -1008,6 +1045,7 @@ export function insertOrUpdateEmailMessage(input: {
       from_json = excluded.from_json,
       to_json = excluded.to_json,
       cc_json = excluded.cc_json,
+      bcc_json = COALESCE(excluded.bcc_json, ${EMAIL_MESSAGES_TABLE}.bcc_json),
       date_received = excluded.date_received,
       snippet = excluded.snippet,
       body_text = excluded.body_text,
@@ -1031,6 +1069,7 @@ export function insertOrUpdateEmailMessage(input: {
     input.fromJson,
     input.toJson,
     input.ccJson,
+    input.bccJson ?? null,
     input.dateReceived,
     input.snippet,
     input.bodyText,
@@ -1154,9 +1193,10 @@ export function createComposeDraft(input: {
   const folder = ensureInboxFolderForAccount(input.accountId);
   const minRow = getDb()
     .prepare(
-      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND folder_id = ? AND uid < 0 AND uid > ?`,
     )
-    .get(input.accountId, folder.id) as { m: number | null };
+    .get(input.accountId, folder.id, POP3_UID_CEILING) as { m: number | null };
   const uid = minRow.m != null ? minRow.m - 1 : -1;
   const { id } = insertOrUpdateEmailMessage({
     accountId: input.accountId,
@@ -1354,7 +1394,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
 export function markDraftAsSent(draftMessageId: number): void {
   getDb()
     .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0 WHERE id = ?`,
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0, scheduled_send_at = NULL WHERE id = ?`,
     )
     .run(draftMessageId);
 }
@@ -1369,6 +1409,7 @@ export function updateComposeDraft(
     ccJson?: string | null;
     bccJson?: string | null;
     draftAttachmentPaths?: string[];
+    replyParentMessageId?: number | null;
   },
 ): void {
   const row = getEmailMessageById(messageId);
@@ -1389,6 +1430,10 @@ export function updateComposeDraft(
   if (input.draftAttachmentPaths !== undefined) {
     sets.push('draft_attachment_paths_json = ?');
     vals.push(draftAttachmentPathsToJson(input.draftAttachmentPaths));
+  }
+  if (input.replyParentMessageId !== undefined) {
+    sets.push('reply_parent_message_id = ?');
+    vals.push(input.replyParentMessageId);
   }
   vals.push(messageId);
   getDb()

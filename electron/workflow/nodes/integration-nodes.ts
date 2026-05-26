@@ -67,6 +67,7 @@ export function registerIntegrationNodes(register: Reg): void {
         method,
         body: method === 'GET' ? undefined : String(config.body ?? ''),
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(30_000),
       });
       const text = await res.text();
       return {

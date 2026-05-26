@@ -114,6 +114,7 @@ export function buildComposeRfc822(input: {
   inReplyTo?: string;
   references?: string;
   attachments?: ComposeRfc822Attachment[];
+  requestReadReceipt?: boolean;
 }): Buffer {
   const headerLines: string[] = [];
   headerLines.push(`From: ${encodeMailboxListHeader(input.from)}`);
@@ -124,6 +125,9 @@ export function buildComposeRfc822(input: {
   if (input.messageId) headerLines.push(`Message-ID: ${input.messageId}`);
   if (input.inReplyTo) headerLines.push(`In-Reply-To: ${input.inReplyTo}`);
   if (input.references) headerLines.push(`References: ${input.references}`);
+  if (input.requestReadReceipt) {
+    headerLines.push(`Disposition-Notification-To: ${encodeMailboxListHeader(input.from)}`);
+  }
   headerLines.push('MIME-Version: 1.0');
   headerLines.push(`Date: ${new Date().toUTCString()}`);
 
@@ -134,6 +138,8 @@ export function buildComposeRfc822(input: {
       return false;
     }
   });
+  const inlineAttachments = fileAttachments.filter((a) => a.cid);
+  const regularAttachments = fileAttachments.filter((a) => !a.cid);
 
   const bodyParts: string[] = [];
   const altBoundary = `alt_${Math.random().toString(36).slice(2)}`;
@@ -161,8 +167,50 @@ export function buildComposeRfc822(input: {
     ? [`Content-Type: multipart/alternative; boundary="${altBoundary}"`, '', ...bodyParts]
     : bodyParts;
 
-  if (fileAttachments.length === 0) {
+  const appendAttachmentPart = (lines: string[], boundary: string, att: ComposeRfc822Attachment) => {
+    const buf = fs.readFileSync(att.path);
+    const filename = att.filename || path.basename(att.path);
+    const ctype = guessContentType(filename, att.contentType);
+    lines.push(`--${boundary}`);
+    const nameParam = /^[\x20-\x7E]*$/.test(filename)
+      ? `name="${filename}"`
+      : `name*=UTF-8''${encodeURIComponent(filename)}`;
+    lines.push(`Content-Type: ${ctype}; ${nameParam}`);
+    lines.push('Content-Transfer-Encoding: base64');
+    if (att.cid) {
+      lines.push(`Content-Disposition: inline; ${contentDispositionFilenameParam(filename)}`);
+      lines.push(`Content-ID: <${att.cid}>`);
+    } else {
+      lines.push(`Content-Disposition: attachment; ${contentDispositionFilenameParam(filename)}`);
+    }
+    lines.push('');
+    lines.push(encodeBase64Lines(buf));
+  };
+
+  if (inlineAttachments.length === 0 && regularAttachments.length === 0) {
     headerLines.push(...bodyCore);
+    return Buffer.from(headerLines.join('\r\n'), 'utf-8');
+  }
+
+  let bodyPayload: string[];
+  if (inlineAttachments.length > 0) {
+    const relBoundary = `rel_${Math.random().toString(36).slice(2)}`;
+    bodyPayload = [
+      `Content-Type: multipart/related; boundary="${relBoundary}"`,
+      '',
+      `--${relBoundary}`,
+      ...bodyCore,
+    ];
+    for (const att of inlineAttachments) {
+      appendAttachmentPart(bodyPayload, relBoundary, att);
+    }
+    bodyPayload.push(`--${relBoundary}--`);
+  } else {
+    bodyPayload = bodyCore;
+  }
+
+  if (regularAttachments.length === 0) {
+    headerLines.push(...bodyPayload);
     return Buffer.from(headerLines.join('\r\n'), 'utf-8');
   }
 
@@ -170,25 +218,9 @@ export function buildComposeRfc822(input: {
   headerLines.push(`Content-Type: multipart/mixed; boundary="${mixedBoundary}"`);
   headerLines.push('');
   headerLines.push(`--${mixedBoundary}`);
-  headerLines.push(...bodyCore);
-  for (const att of fileAttachments) {
-    const buf = fs.readFileSync(att.path);
-    const filename = att.filename || path.basename(att.path);
-    const ctype = guessContentType(filename, att.contentType);
-    headerLines.push(`--${mixedBoundary}`);
-    const nameParam = /^[\x20-\x7E]*$/.test(filename)
-      ? `name="${filename}"`
-      : `name*=UTF-8''${encodeURIComponent(filename)}`;
-    headerLines.push(`Content-Type: ${ctype}; ${nameParam}`);
-    headerLines.push('Content-Transfer-Encoding: base64');
-    if (att.cid) {
-      headerLines.push(`Content-Disposition: inline; ${contentDispositionFilenameParam(filename)}`);
-      headerLines.push(`Content-ID: <${att.cid}>`);
-    } else {
-      headerLines.push(`Content-Disposition: attachment; ${contentDispositionFilenameParam(filename)}`);
-    }
-    headerLines.push('');
-    headerLines.push(encodeBase64Lines(buf));
+  headerLines.push(...bodyPayload);
+  for (const att of regularAttachments) {
+    appendAttachmentPart(headerLines, mixedBoundary, att);
   }
   headerLines.push(`--${mixedBoundary}--`);
 

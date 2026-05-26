@@ -15,6 +15,7 @@ import {
 let idleClients: Map<number, ImapFlow> = new Map();
 let globalCron: ScheduledTask | null = null;
 const workflowCrons: Map<number, ScheduledTask> = new Map();
+const workflowCronInFlight = new Set<number>();
 
 /** Avoid stacking global cron ticks when sync is still running. */
 const syncInFlight = new Set<number>();
@@ -166,22 +167,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
   );
 
-  for (const wf of listWorkflowsWithCron()) {
-    const expr = (wf.cron_expr ?? '').trim();
-    if (!expr || !cron.validate(expr)) continue;
-    const task = cron.schedule(
-      expr,
-      () => {
-        try {
-          void runScheduledWorkflowFire(wf.id).catch((e) => logger.warn(`[email] workflow cron ${wf.id}`, e));
-        } catch (e) {
-          logger.warn(`[email] workflow cron ${wf.id}`, e);
-        }
-      },
-      { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
-    );
-    workflowCrons.set(wf.id, task);
-  }
+  scheduleWorkflowCrons(logger);
 
   const accounts = listEmailAccounts();
   for (const acc of accounts) {
@@ -201,6 +187,7 @@ export function stopEmailBackgroundServices(): void {
     t.stop();
   }
   workflowCrons.clear();
+  workflowCronInFlight.clear();
   for (const id of [...idleClients.keys()]) {
     stopIdleForAccount(id);
   }
@@ -212,25 +199,33 @@ export function stopEmailBackgroundServices(): void {
 }
 
 /** Reload only per-workflow cron jobs (e.g. after saving workflows in UI). */
+function scheduleWorkflowCrons(logger: Pick<typeof console, 'warn' | 'debug'>): void {
+  for (const wf of listWorkflowsWithCron()) {
+    const expr = (wf.cron_expr ?? '').trim();
+    if (!expr || !cron.validate(expr)) continue;
+    const wfId = wf.id;
+    const task = cron.schedule(
+      expr,
+      () => {
+        if (workflowCronInFlight.has(wfId)) return;
+        workflowCronInFlight.add(wfId);
+        void runScheduledWorkflowFire(wfId)
+          .catch((e) => logger.warn(`[email] workflow cron ${wfId}`, e))
+          .finally(() => {
+            workflowCronInFlight.delete(wfId);
+          });
+      },
+      { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
+    );
+    workflowCrons.set(wfId, task);
+  }
+}
+
 export function restartEmailWorkflowCrons(logger: Pick<typeof console, 'warn' | 'debug'>): void {
   for (const t of workflowCrons.values()) {
     t.stop();
   }
   workflowCrons.clear();
-  for (const wf of listWorkflowsWithCron()) {
-    const expr = (wf.cron_expr ?? '').trim();
-    if (!expr || !cron.validate(expr)) continue;
-    const task = cron.schedule(
-      expr,
-      () => {
-        try {
-          void runScheduledWorkflowFire(wf.id).catch((e) => logger.warn(`[email] workflow cron ${wf.id}`, e));
-        } catch (e) {
-          logger.warn(`[email] workflow cron ${wf.id}`, e);
-        }
-      },
-      { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
-    );
-    workflowCrons.set(wf.id, task);
-  }
+  workflowCronInFlight.clear();
+  scheduleWorkflowCrons(logger);
 }

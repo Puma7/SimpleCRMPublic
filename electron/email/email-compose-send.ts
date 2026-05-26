@@ -88,6 +88,7 @@ async function finalizeSentDraft(input: {
   inReplyTo?: string;
   references?: string;
   attachments?: { filename: string; path: string; cid?: string }[];
+  requestReadReceipt?: boolean;
 }): Promise<{ sentAppendWarning?: string }> {
   let sentAppendWarning: string | undefined;
   const acc = getEmailAccountById(input.accountId);
@@ -109,6 +110,7 @@ async function finalizeSentDraft(input: {
       references: input.references,
       attachments: input.attachments,
       includeBccInHeaders: false,
+      requestReadReceipt: input.requestReadReceipt,
     });
   } catch (e) {
     sentAppendWarning =
@@ -304,6 +306,9 @@ export async function sendComposeDraft(input: {
       cid: 'cid' in a && typeof a.cid === 'string' ? a.cid : undefined,
     }));
 
+    const requestReceipt =
+      (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+
     if (isSmtpCommitted(input.draftMessageId)) {
       const fin = await finalizeSentDraft({
         accountId: input.accountId,
@@ -319,6 +324,7 @@ export async function sendComposeDraft(input: {
         inReplyTo: threadHeaders.inReplyTo,
         references: threadHeaders.references,
         attachments: sentAppendAttachments,
+        requestReadReceipt: requestReceipt,
       });
       if (fin.sentAppendWarning) {
         return { ok: true, warning: fin.sentAppendWarning };
@@ -326,9 +332,7 @@ export async function sendComposeDraft(input: {
       return { ok: true, recoveredSentAppend: true };
     }
 
-    const requestReceipt =
-      (acc as { request_read_receipt?: number }).request_read_receipt === 1;
-
+    markSmtpCommitted(input.draftMessageId);
     try {
       await sendSmtpForAccount(input.accountId, {
         from: acc.email_address,
@@ -345,10 +349,9 @@ export async function sendComposeDraft(input: {
         requestReadReceipt: requestReceipt,
       });
     } catch (e) {
+      clearSmtpCommitted(input.draftMessageId);
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
-
-    markSmtpCommitted(input.draftMessageId);
 
     const fin = await finalizeSentDraft({
       accountId: input.accountId,
@@ -364,6 +367,7 @@ export async function sendComposeDraft(input: {
       inReplyTo: threadHeaders.inReplyTo,
       references: threadHeaders.references,
       attachments: sentAppendAttachments,
+      requestReadReceipt: requestReceipt,
     });
 
     return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };

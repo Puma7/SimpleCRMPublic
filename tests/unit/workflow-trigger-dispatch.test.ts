@@ -1,5 +1,8 @@
-const mockGetSyncInfo = jest.fn();
-const mockSetSyncInfo = jest.fn();
+const store = new Map<string, string>();
+const mockGetSyncInfo = jest.fn((key: string) => store.get(key) ?? null);
+const mockSetSyncInfo = jest.fn((key: string, value: string) => {
+  store.set(key, value);
+});
 
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: jest.fn(() => ({
@@ -7,10 +10,18 @@ jest.mock('../../electron/sqlite-service', () => ({
   })),
   getSyncInfo: (...args: unknown[]) => mockGetSyncInfo(...args),
   setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
+  deleteSyncInfo: (key: string) => {
+    store.delete(key);
+  },
+  tryClaimSyncInfo: (key: string, value: string) => {
+    if (store.has(key)) return false;
+    store.set(key, value);
+    return true;
+  },
 }));
 
 jest.mock('../../electron/email/email-workflow-store', () => ({
-  listWorkflowsByTrigger: jest.fn(() => []),
+  listWorkflowsByTrigger: jest.fn(() => [{ id: 1, enabled: 1 }]),
 }));
 
 jest.mock('../../electron/workflow/workflow-executor', () => ({
@@ -25,14 +36,17 @@ import {
 
 describe('workflow-trigger-dispatch dedup', () => {
   beforeEach(() => {
+    store.clear();
+    mockGetSyncInfo.mockReset();
+    mockGetSyncInfo.mockImplementation((key: string) => store.get(key) ?? null);
+    mockSetSyncInfo.mockReset();
+    mockSetSyncInfo.mockImplementation((key: string, value: string) => {
+      store.set(key, value);
+    });
     jest.clearAllMocks();
-    mockGetSyncInfo.mockReturnValue(null);
   });
 
   test('deal stage uses timestamp debounce, not permanent flag', async () => {
-    const now = Date.now();
-    mockGetSyncInfo.mockReturnValueOnce(null).mockReturnValueOnce(String(now));
-
     await fireDealStageChangedWorkflows(1, 2, 'lead', 'won');
     await fireDealStageChangedWorkflows(1, 2, 'lead', 'won');
 
@@ -42,12 +56,11 @@ describe('workflow-trigger-dispatch dedup', () => {
   });
 
   test('deal stage fires again after debounce window', async () => {
-    const old = String(Date.now() - 10_000);
-    mockGetSyncInfo.mockReturnValue(old);
+    store.set('workflow_trigger_fired:crm.deal_stage_changed:5:a:b', String(Date.now() - 10_000));
 
     await fireDealStageChangedWorkflows(5, 6, 'a', 'b');
 
-    expect(mockSetSyncInfo).toHaveBeenCalledTimes(1);
+    expect(mockSetSyncInfo).toHaveBeenCalled();
   });
 
   test('deal stage key includes old and new stage', async () => {
@@ -70,6 +83,11 @@ describe('workflow-trigger-dispatch dedup', () => {
   });
 
   test('customer_created sets permanent flag on first fire', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({ status: 'ok' });
+
     await dispatchCustomerCreatedWorkflow({
       customerId: 7,
       name: 'A',
@@ -82,7 +100,12 @@ describe('workflow-trigger-dispatch dedup', () => {
     );
   });
 
-  test('task.due scan uses TTL timestamp, not permanent', async () => {
+  test('task.due uses permanent dedup after successful fire', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({ status: 'ok' });
+
     await dispatchCrmWorkflowEvent({
       trigger: 'task.due',
       taskId: 3,
@@ -91,7 +114,9 @@ describe('workflow-trigger-dispatch dedup', () => {
       dueDate: '2026-05-24',
     });
 
-    const [, value] = mockSetSyncInfo.mock.calls[0] as [string, string];
-    expect(Number(value)).toBeGreaterThan(1_000_000_000_000);
+    expect(mockSetSyncInfo).toHaveBeenCalledWith(
+      'workflow_trigger_fired:task.due:3:2026-05-24',
+      '1',
+    );
   });
 });

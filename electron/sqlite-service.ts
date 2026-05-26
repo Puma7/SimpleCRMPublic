@@ -541,6 +541,8 @@ function runMigrations() {
                 { name: 'snoozed_until', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN snoozed_until TEXT` },
                 { name: 'scheduled_send_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN scheduled_send_at TEXT` },
                 { name: 'draft_attachment_paths_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN draft_attachment_paths_json TEXT` },
+                { name: 'post_process_done', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN post_process_done INTEGER NOT NULL DEFAULT 1` },
+                { name: 'reply_parent_message_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_parent_message_id INTEGER` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {
@@ -1023,6 +1025,16 @@ export function setSyncInfo(key: string, value: string): void {
 
 export function deleteSyncInfo(key: string): void {
     getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`).run(key);
+}
+
+/** Atomically claim a sync_info key (returns false if key already exists). */
+export function tryClaimSyncInfo(key: string, value: string): boolean {
+    const r = getDb()
+        .prepare(
+            `INSERT OR IGNORE INTO ${SYNC_INFO_TABLE} (key, value, lastUpdated) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+        )
+        .run(key, value);
+    return r.changes === 1;
 }
 
 // Define interfaces for custom field types
