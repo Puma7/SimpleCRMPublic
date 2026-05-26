@@ -20,6 +20,7 @@ import { useEmailCategories } from "./hooks/use-email-categories"
 import { useMessageMetadata } from "./hooks/use-message-metadata"
 import { useMailAuxData } from "./hooks/use-mail-aux-data"
 import { useMailFolderCounts } from "./hooks/use-mail-folder-counts"
+import { UidValidityNoticeBanner } from "./uid-validity-notice-banner"
 
 const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
 
@@ -75,6 +76,7 @@ function MailShellInner() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+      <UidValidityNoticeBanner />
       <MailTopbar
         onCompose={() => setComposeIntent({ mode: "new" })}
         onSync={handleSyncWithCategories}

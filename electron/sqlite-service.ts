@@ -1021,6 +1021,10 @@ export function setSyncInfo(key: string, value: string): void {
     stmt.run(key, value);
 }
 
+export function deleteSyncInfo(key: string): void {
+    getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`).run(key);
+}
+
 // Define interfaces for custom field types
 interface CustomFieldDefinition {
     id: number;

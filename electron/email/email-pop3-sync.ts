@@ -81,6 +81,9 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     const num = parseInt(numStr, 10);
     if (!uidl || Number.isNaN(num)) continue;
     if (known.has(uidl)) {
+      console.warn(
+        `[pop3-sync] UIDL ${uidl} already known for account ${accountId} — skipping message #${num} (server may reuse UIDLs)`,
+      );
       maxNum = Math.max(maxNum, num);
       continue;
     }

@@ -105,11 +105,13 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     const { recoverStaleReplySuggestions } = await import('./email-reply-ai');
     const { clearStaleComposeSendingLocks } = await import('./email-compose-send');
     const { recoverStaleDelayedJobs } = await import('../workflow/delayed-jobs');
+    const { sweepStaleInlineImageTempFiles } = await import('./email-inline-images');
     const { ensureVacationDedupTable } = await import('./email-vacation');
     ensureVacationDedupTable();
     recoverStaleReplySuggestions();
     clearStaleComposeSendingLocks();
     recoverStaleDelayedJobs();
+    sweepStaleInlineImageTempFiles(undefined, logger);
   } catch (e) {
     logger.warn('[email] startup recovery', e);
   }
@@ -117,36 +119,49 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   globalCron = cron.schedule(
     '*/2 * * * *',
     () => {
-      void processDueDelayedJobs(logger).catch((e) =>
-        logger.debug('[workflow] delayed jobs', e),
-      );
-      void import('./email-scheduled-send')
-        .then((m) => m.processDueScheduledSends(logger))
-        .catch((e) => logger.debug('[email] scheduled send', e));
-      void scanDueTasksAndFireWorkflows().catch((e) =>
-        logger.debug('[workflow] task due scan', e),
-      );
-      void scanUpcomingCalendarEventsAndFireWorkflows().catch((e) =>
-        logger.debug('[workflow] calendar scan', e),
-      );
-      const now = Date.now();
-      const accounts = listEmailAccounts();
-      for (const acc of accounts) {
-        if (syncInFlight.has(acc.id)) continue;
-        const last = lastScheduledSyncAt.get(acc.id) ?? 0;
-        if (now - last < MIN_SYNC_GAP_MS) continue;
-        syncInFlight.add(acc.id);
-        lastScheduledSyncAt.set(acc.id, now);
-        const run =
-          (acc.protocol || 'imap') === 'pop3'
-            ? syncInboxPop3(acc.id)
-            : syncInboxImap(acc.id);
-        void run
-          .catch((e) => logger.debug(`[email] sync ${acc.id}`, e))
-          .finally(() => {
+      void (async () => {
+        try {
+          await processDueDelayedJobs(logger);
+        } catch (e) {
+          logger.debug('[workflow] delayed jobs', e);
+        }
+        try {
+          const { processDueScheduledSends } = await import('./email-scheduled-send');
+          await processDueScheduledSends(logger);
+        } catch (e) {
+          logger.debug('[email] scheduled send', e);
+        }
+        try {
+          await scanDueTasksAndFireWorkflows();
+        } catch (e) {
+          logger.debug('[workflow] task due scan', e);
+        }
+        try {
+          await scanUpcomingCalendarEventsAndFireWorkflows();
+        } catch (e) {
+          logger.debug('[workflow] calendar scan', e);
+        }
+        const now = Date.now();
+        const accounts = listEmailAccounts();
+        for (const acc of accounts) {
+          if (syncInFlight.has(acc.id)) continue;
+          const last = lastScheduledSyncAt.get(acc.id) ?? 0;
+          if (now - last < MIN_SYNC_GAP_MS) continue;
+          syncInFlight.add(acc.id);
+          lastScheduledSyncAt.set(acc.id, now);
+          try {
+            if ((acc.protocol || 'imap') === 'pop3') {
+              await syncInboxPop3(acc.id);
+            } else {
+              await syncInboxImap(acc.id);
+            }
+          } catch (e) {
+            logger.debug(`[email] sync ${acc.id}`, e);
+          } finally {
             syncInFlight.delete(acc.id);
-          });
-      }
+          }
+        }
+      })();
     },
     { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
   );

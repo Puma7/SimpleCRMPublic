@@ -210,6 +210,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: standardResult,
   });
+  set(IPCChannels.Email.ListUidValidityNotices, {
+    payload: voidPayload,
+    result: z.array(
+      z.object({
+        id: z.string(),
+        accountId: z.number(),
+        folderPath: z.string(),
+        oldValidity: z.string().nullable(),
+        newValidity: z.string().nullable(),
+        messageCount: z.number(),
+        backedUpCount: z.number(),
+        at: z.string(),
+      }),
+    ),
+  });
+  set(IPCChannels.Email.DismissUidValidityNotice, {
+    payload: z.object({ noticeId: z.string().min(1) }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.ListMessagesByView, {
     payload: z.object({
       accountId: mailAccountScopeSchema,

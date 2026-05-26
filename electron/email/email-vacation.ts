@@ -46,12 +46,13 @@ function markVacationSmtpFailed(accountId: number, sender: string): void {
 
 function wasVacationReplySentRecently(accountId: number, sender: string): boolean {
   ensureVacationDedupTable();
-  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const row = getDb()
     .prepare(
-      `SELECT 1 FROM ${DEDUP_TABLE} WHERE account_id = ? AND sender_email = ? AND sent_at >= ?`,
+      `SELECT 1 FROM ${DEDUP_TABLE}
+       WHERE account_id = ? AND sender_email = ?
+         AND sent_at >= datetime('now', '-1 day')`,
     )
-    .get(accountId, sender, dayAgo);
+    .get(accountId, sender);
   return Boolean(row);
 }
 

@@ -816,6 +816,25 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListUidValidityNotices, async () => {
+      const { listUidValidityResetNotices } = await import('../email/email-uidvalidity-reset');
+      return listUidValidityResetNotices();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.DismissUidValidityNotice,
+      async (_event: IpcMainInvokeEvent, payload: { noticeId: string }) => {
+        const { dismissUidValidityResetNotice } = await import('../email/email-uidvalidity-reset');
+        dismissUidValidityResetNotice(payload.noticeId);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SetEmailMiscSettings,
       async (
