@@ -712,8 +712,8 @@ export function MessageViewer(props: Props) {
         </div>
       </div>
       <Dialog open={rawHeadersOpen} onOpenChange={setRawHeadersOpen}>
-        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col gap-3">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col gap-3 overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>E-Mail-Rohdaten (.eml)</DialogTitle>
             <DialogDescription>
               Vollständige Nachricht im RFC822-Format (wie eine .eml-Datei): Header, Body und — bei
@@ -739,7 +739,7 @@ export function MessageViewer(props: Props) {
               Kopieren
             </Button>
           </div>
-          <ScrollArea className="max-h-[min(65vh,720px)] rounded border bg-muted/30 p-3">
+          <div className="h-[min(65vh,720px)] shrink-0 overflow-y-auto overflow-x-auto rounded-md border bg-muted/30 p-3">
             {rawHeadersLoading ? (
               <p className="text-sm text-muted-foreground">Lädt…</p>
             ) : (
@@ -747,7 +747,7 @@ export function MessageViewer(props: Props) {
                 {rawHeadersText ?? "—"}
               </pre>
             )}
-          </ScrollArea>
+          </div>
         </DialogContent>
       </Dialog>
 
