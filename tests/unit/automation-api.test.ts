@@ -67,6 +67,10 @@ jest.mock('../../electron/services/workflow-api-service', () => ({
   },
 }));
 
+jest.mock('../../electron/email/email-webhook', () => ({
+  fireWebhookWorkflows: jest.fn(async () => ({ fired: 1 })),
+}));
+
 import { resetRateLimits, checkRateLimit } from '../../electron/automation/rate-limit';
 import { hasScopes } from '../../electron/automation/auth';
 import { handleAutomationRequest } from '../../electron/automation/handlers';
@@ -194,6 +198,27 @@ describe('automation handlers', () => {
     const r = await done;
     expect(r.status).toBe(403);
     expect(JSON.parse(r.body).error.code).toBe('forbidden');
+  });
+
+  test('POST /webhooks/incoming fires workflows with secret', async () => {
+    const { fireWebhookWorkflows } = await import('../../electron/email/email-webhook');
+    const key = 'scrm_test_key_12345678901234567890123456789012';
+    const { req, res, done } = mockReqRes({
+      method: 'POST',
+      url: '/api/v1/webhooks/incoming',
+      headers: {
+        authorization: `Bearer ${key}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ secret: 'hook-secret', body: { event: 'test' } }),
+    });
+    await handleAutomationRequest(req, res);
+    const r = await done;
+    expect(r.status).toBe(200);
+    expect(fireWebhookWorkflows).toHaveBeenCalledWith({
+      secret: 'hook-secret',
+      body: { event: 'test' },
+    });
   });
 
   test('returns 429 when rate limit exceeded', async () => {

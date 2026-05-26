@@ -17,6 +17,9 @@ let globalCron: ScheduledTask | null = null;
 const workflowCrons: Map<number, ScheduledTask> = new Map();
 const workflowCronInFlight = new Set<number>();
 
+/** Avoid stacking global 2-min cron ticks when a previous tick is still running. */
+let globalCronTickInFlight = false;
+
 /** Avoid stacking global cron ticks when sync is still running. */
 const syncInFlight = new Set<number>();
 const lastScheduledSyncAt = new Map<number, number>();
@@ -113,6 +116,11 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     clearStaleComposeSendingLocks();
     recoverStaleDelayedJobs();
     sweepStaleInlineImageTempFiles(undefined, logger);
+    const { sweepStaleSyncInfoKeys } = await import('../sync-info-maintenance');
+    const swept = sweepStaleSyncInfoKeys();
+    if (swept.removed > 0) {
+      logger.debug(`[sync_info] boot sweep removed ${swept.removed} stale keys`);
+    }
   } catch (e) {
     logger.warn('[email] startup recovery', e);
   }
@@ -120,6 +128,8 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   globalCron = cron.schedule(
     '*/2 * * * *',
     () => {
+      if (globalCronTickInFlight) return;
+      globalCronTickInFlight = true;
       void (async () => {
         try {
           await processDueDelayedJobs(logger);
@@ -162,7 +172,9 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
             syncInFlight.delete(acc.id);
           }
         }
-      })();
+      })().finally(() => {
+        globalCronTickInFlight = false;
+      });
     },
     { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
   );
@@ -179,6 +191,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
 }
 
 export function stopEmailBackgroundServices(): void {
+  globalCronTickInFlight = false;
   if (globalCron) {
     globalCron.stop();
     globalCron = null;

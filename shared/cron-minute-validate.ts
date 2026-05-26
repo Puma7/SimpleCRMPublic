@@ -18,6 +18,49 @@ export function minuteSpacingForToken(token: string): number {
   return 1;
 }
 
+/** All minute-of-hour values implied by one cron minute token (0–59). */
+export function expandCronMinutesFromToken(token: string): number[] {
+  const t = token.trim();
+  const starEvery = t.match(/^\*\/(\d+)$/);
+  if (starEvery) {
+    const n = parseInt(starEvery[1]!, 10);
+    if (Number.isNaN(n) || n < 1) return [];
+    const out: number[] = [];
+    for (let m = 0; m < 60; m += n) out.push(m);
+    return out;
+  }
+  const range = t.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
+  if (range) {
+    const start = parseInt(range[1]!, 10);
+    const end = parseInt(range[2]!, 10);
+    const step = range[3] ? parseInt(range[3], 10) : 1;
+    if (Number.isNaN(start) || Number.isNaN(end) || Number.isNaN(step) || step < 1) return [];
+    const out: number[] = [];
+    for (let m = start; m <= end; m += step) out.push(m);
+    return out;
+  }
+  if (/^\d+$/.test(t)) {
+    const m = parseInt(t, 10);
+    return Number.isNaN(m) || m < 0 || m > 59 ? [] : [m];
+  }
+  return [];
+}
+
+function validateCombinedMinuteSpacing(minutes: number[], minInterval: number): string | null {
+  const sorted = [...new Set(minutes)].sort((a, b) => a - b);
+  if (sorted.length <= 1) return null;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i]! - sorted[i - 1]! < minInterval) {
+      return `Minuten-Kombination zu dicht — mindestens ${minInterval} Minuten Abstand`;
+    }
+  }
+  const wrapGap = sorted[0]! + 60 - sorted[sorted.length - 1]!;
+  if (wrapGap < minInterval) {
+    return `Minuten-Kombination zu dicht — mindestens ${minInterval} Minuten Abstand`;
+  }
+  return null;
+}
+
 /** Validate the minute field of a cron expression (5- or 6-field). */
 export function validateCronMinuteField(minute: string): string | null {
   const minInterval = WORKFLOW_CRON_MIN_INTERVAL_MINUTES;
@@ -70,6 +113,13 @@ export function validateCronMinuteField(minute: string): string | null {
       return `Minuten-Liste zu dicht — mindestens ${minInterval} Minuten Abstand`;
     }
   }
+
+  const combinedMinutes: number[] = [];
+  for (const token of tokens) {
+    combinedMinutes.push(...expandCronMinutesFromToken(token));
+  }
+  const combinedErr = validateCombinedMinuteSpacing(combinedMinutes, minInterval);
+  if (combinedErr) return combinedErr;
 
   return null;
 }

@@ -51,7 +51,12 @@ describe('sendWorkflowForwardCopy', () => {
       expect.objectContaining({ messageId: 9, to: 'dest@example.com' }),
       { sideEffects: 'none' },
     );
-    expect(mockSend).toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        headers: { 'Auto-Submitted': 'auto-forwarded' },
+      }),
+    );
     expect(mockDbRun).toHaveBeenCalled();
   });
 
