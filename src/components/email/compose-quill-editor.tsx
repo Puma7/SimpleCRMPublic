@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react"
 import Quill from "quill"
 import "quill/dist/quill.snow.css"
 import "@/styles/compose-quill.css"
+import { cn } from "@/lib/utils"
 
 export type ComposeQuillEditorHandle = {
   /** Latest HTML from the editor DOM (avoids stale React state on save/close). */
@@ -13,6 +14,8 @@ export type ComposeQuillEditorHandle = {
 type Props = {
   value: string
   onChange: (html: string) => void
+  /** Host div classes (e.g. flex-1 for fill-height compose layout). */
+  className?: string
 }
 
 const TOOLBAR = [
@@ -29,7 +32,7 @@ const TOOLBAR = [
 
 /** React 19–compatible Quill host (react-quill still calls removed findDOMNode). */
 export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
-  function ComposeQuillEditor({ value, onChange }, ref) {
+  function ComposeQuillEditor({ value, onChange, className }, ref) {
     const containerRef = useRef<HTMLDivElement>(null)
     const quillRef = useRef<Quill | null>(null)
     const onChangeRef = useRef(onChange)
@@ -118,6 +121,11 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       syncingExternalRef.current = false
     }, [value])
 
-    return <div ref={containerRef} className="min-h-[280px]" />
+    return (
+      <div
+        ref={containerRef}
+        className={cn("flex min-h-[12rem] flex-1 flex-col", className)}
+      />
+    )
   },
 )
