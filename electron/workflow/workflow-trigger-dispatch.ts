@@ -1,4 +1,4 @@
-import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { deleteSyncInfo, getDb, getSyncInfo, setSyncInfo, tryClaimSyncInfo } from '../sqlite-service';
 import { CUSTOMERS_TABLE, DEALS_TABLE, TASKS_TABLE, CALENDAR_EVENTS_TABLE } from '../database-schema';
 import { listWorkflowsByTrigger } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
@@ -66,27 +66,36 @@ function dedupStillActive(raw: string | null, ttlMs: number): boolean {
   return raw === '1';
 }
 
-function shouldFireWorkflowTrigger(event: CrmWorkflowEvent): boolean {
+function claimWorkflowTrigger(event: CrmWorkflowEvent): boolean {
   const key = workflowTriggerDedupKey(event);
-  const raw = getSyncInfo(key);
-
-  if (event.trigger === 'crm.customer_created') {
-    return raw !== '1';
-  }
 
   if (event.trigger === 'crm.deal_stage_changed') {
+    const raw = getSyncInfo(key);
     if (dedupStillActive(raw, DEAL_STAGE_DEBOUNCE_MS)) return false;
     setSyncInfo(key, String(Date.now()));
     return true;
   }
 
-  if (event.trigger === 'task.due' || event.trigger === 'calendar.event_start') {
-    return raw !== '1';
+  if (
+    event.trigger === 'crm.customer_created' ||
+    event.trigger === 'task.due' ||
+    event.trigger === 'calendar.event_start'
+  ) {
+    if (getSyncInfo(key) === '1') return false;
+    return tryClaimSyncInfo(key, 'pending');
   }
 
+  const raw = getSyncInfo(key);
   if (dedupStillActive(raw, SCAN_TRIGGER_DEDUP_MS)) return false;
-  setSyncInfo(key, String(Date.now()));
-  return true;
+  return tryClaimSyncInfo(key, String(Date.now()));
+}
+
+function releaseWorkflowTriggerClaim(event: CrmWorkflowEvent): void {
+  const key = workflowTriggerDedupKey(event);
+  const raw = getSyncInfo(key);
+  if (raw === 'pending') {
+    deleteSyncInfo(key);
+  }
 }
 
 function markWorkflowTriggerFired(event: CrmWorkflowEvent): void {
@@ -174,10 +183,13 @@ export async function dispatchCustomerCreatedWorkflow(input: {
 }
 
 export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise<void> {
-  if (!shouldFireWorkflowTrigger(event)) return;
+  if (!claimWorkflowTrigger(event)) return;
 
   const workflows = listWorkflowsByTrigger(event.trigger);
-  if (workflows.length === 0) return;
+  if (workflows.length === 0) {
+    releaseWorkflowTriggerClaim(event);
+    return;
+  }
 
   const strings = stringsForEvent(event);
   const variables: Record<string, string | number | boolean | null> = {};
@@ -217,7 +229,11 @@ export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise
       console.warn(`[workflow] CRM trigger ${event.trigger} wf ${wf.id}`, e);
     }
   }
-  if (firedOk) markWorkflowTriggerFired(event);
+  if (firedOk) {
+    markWorkflowTriggerFired(event);
+  } else {
+    releaseWorkflowTriggerClaim(event);
+  }
 }
 
 export async function fireDealStageChangedWorkflows(

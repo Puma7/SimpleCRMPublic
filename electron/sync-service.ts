@@ -18,6 +18,7 @@ import {
     upsertJtlZahlungsart, // Added
     upsertJtlVersandart // Added
 } from './sqlite-service';
+import { CUSTOMERS_TABLE } from './database-schema';
 import { MssqlCustomerData, MssqlProductData } from './types'; // Assuming types for JTL data
 
 let isSyncing = false;
@@ -230,13 +231,37 @@ export async function runSync(mainWindow: BrowserWindow | null, options?: { incr
         `);
 
         // Process customers in chunks to prevent UI freezing
+        const customerExistsStmt = db.prepare(
+            `SELECT id FROM ${CUSTOMERS_TABLE} WHERE jtl_kKunde = ?`,
+        );
+        const customerAfterUpsertStmt = db.prepare(
+            `SELECT id, name, email FROM ${CUSTOMERS_TABLE} WHERE jtl_kKunde = ?`,
+        );
         const customerChunkProcessor = db.transaction((customers: any[]) => {
             const transactionStartTime = performance.now();
             for (const jtlCustomer of customers) {
                 try {
+                    const kKunde = jtlCustomer?.kKunde;
+                    const existed = kKunde != null ? customerExistsStmt.get(kKunde) : { id: 1 };
                     const sqliteCustomer = mapJtlCustomerToSqlite(jtlCustomer);
                     customerUpsertStmt.run(sqliteCustomer);
                     customersSynced++;
+                    if (!existed && kKunde != null) {
+                        const row = customerAfterUpsertStmt.get(kKunde) as
+                            | { id: number; name: string; email: string | null }
+                            | undefined;
+                        if (row?.id) {
+                            void import('./workflow/workflow-trigger-dispatch')
+                                .then((m) =>
+                                    m.dispatchCustomerCreatedWorkflow({
+                                        customerId: row.id,
+                                        name: String(row.name ?? 'Kunde'),
+                                        email: row.email ? String(row.email) : null,
+                                    }),
+                                )
+                                .catch((e) => console.debug('[workflow] jtl customer_created', e));
+                        }
+                    }
                 } catch (mapError) {
                     console.error(`[Sync DB Error] Error mapping/upserting customer kKunde ${jtlCustomer?.kKunde}:`, mapError);
                 }

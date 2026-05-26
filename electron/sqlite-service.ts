@@ -1027,6 +1027,16 @@ export function deleteSyncInfo(key: string): void {
     getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`).run(key);
 }
 
+/** Atomically claim a sync_info key (returns false if key already exists). */
+export function tryClaimSyncInfo(key: string, value: string): boolean {
+    const r = getDb()
+        .prepare(
+            `INSERT OR IGNORE INTO ${SYNC_INFO_TABLE} (key, value, lastUpdated) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+        )
+        .run(key, value);
+    return r.changes === 1;
+}
+
 // Define interfaces for custom field types
 interface CustomFieldDefinition {
     id: number;

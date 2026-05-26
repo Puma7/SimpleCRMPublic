@@ -519,35 +519,25 @@ export async function runScheduledWorkflowFire(workflowId: number): Promise<void
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const trigger = (wf.trigger === 'schedule' ? 'schedule' : wf.trigger) as import('../../shared/workflow-types').WorkflowTriggerKind;
-  try {
-    await executeWorkflowForTrigger({
-      workflow: wf,
-      trigger,
-      direction: 'schedule',
-      message: null,
-      initialVariables: {
-        'schedule.sync_log': syncLog.join('; ') || 'ok',
-      },
-      eventStrings: {
-        subject: '',
-        body_text: '',
-        snippet: syncLog.join('\n'),
-        from_address: '',
-        to_address: '',
-        cc_address: '',
-        combined_text: syncLog.join('\n'),
-        has_attachments: 'false',
-        attachment_names: '',
-        attachment_types: '',
-      },
-    });
-  } catch (e) {
-    insertWorkflowRun({
-      workflowId,
-      messageId: null,
-      direction: 'schedule',
-      status: 'error',
-      logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`, ...syncLog]),
-    });
-  }
+  await executeWorkflowForTrigger({
+    workflow: wf,
+    trigger,
+    direction: 'schedule',
+    message: null,
+    initialVariables: {
+      'schedule.sync_log': syncLog.join('; ') || 'ok',
+    },
+    eventStrings: {
+      subject: '',
+      body_text: '',
+      snippet: syncLog.join('\n'),
+      from_address: '',
+      to_address: '',
+      cc_address: '',
+      combined_text: syncLog.join('\n'),
+      has_attachments: 'false',
+      attachment_names: '',
+      attachment_types: '',
+    },
+  });
 }

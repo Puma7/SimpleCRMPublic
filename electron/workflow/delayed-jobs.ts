@@ -1,4 +1,4 @@
-import { getDb } from '../sqlite-service';
+import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { WORKFLOW_DELAYED_JOBS_TABLE } from '../database-schema';
 import { getWorkflowById } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
@@ -19,6 +19,13 @@ export type DelayedJobRow = {
 };
 
 const PROCESSING = new Set<number>();
+const MAX_DELAYED_JOB_RETRIES = 3;
+const NON_RETRYABLE_FAILURES = [
+  'workflow_disabled',
+  'missing_resume_node',
+  'delay_requires_graph_mode',
+  'missing_graph',
+];
 
 /** Reset jobs stuck in `running` after a crash (call on app boot). */
 export function recoverStaleDelayedJobs(): void {
@@ -38,6 +45,19 @@ export function scheduleDelayedJob(input: {
   executeAt: string;
   contextJson: string;
 }): number {
+  const existing = getDb()
+    .prepare(
+      `SELECT id FROM ${WORKFLOW_DELAYED_JOBS_TABLE}
+       WHERE workflow_id = ? AND resume_node_id = ?
+         AND ((message_id IS NULL AND ? IS NULL) OR message_id = ?)
+         AND status IN ('pending', 'running')
+       LIMIT 1`,
+    )
+    .get(input.workflowId, input.resumeNodeId, input.messageId, input.messageId) as
+    | { id: number }
+    | undefined;
+  if (existing) return existing.id;
+
   const r = getDb()
     .prepare(
       `INSERT INTO ${WORKFLOW_DELAYED_JOBS_TABLE}
@@ -76,6 +96,10 @@ function tryClaimDelayedJob(id: number): boolean {
   return r.changes === 1;
 }
 
+function delayedJobRetryKey(id: number): string {
+  return `delayed_job_retry:${id}`;
+}
+
 function markJob(id: number, status: 'running' | 'done' | 'failed' | 'cancelled', note?: string): void {
   if (note) {
     console.warn(`[workflow] delayed job ${id} ${status}: ${note}`);
@@ -83,6 +107,30 @@ function markJob(id: number, status: 'running' | 'done' | 'failed' | 'cancelled'
   getDb()
     .prepare(`UPDATE ${WORKFLOW_DELAYED_JOBS_TABLE} SET status = ? WHERE id = ?`)
     .run(status, id);
+}
+
+function maybeRequeueFailedJob(id: number, note?: string): void {
+  if (note && NON_RETRYABLE_FAILURES.some((f) => note.includes(f))) {
+    markJob(id, 'failed', note);
+    return;
+  }
+  const key = delayedJobRetryKey(id);
+  const tries = parseInt(getSyncInfo(key) ?? '0', 10) + 1;
+  if (tries >= MAX_DELAYED_JOB_RETRIES) {
+    markJob(id, 'failed', note);
+    setSyncInfo(key, '0');
+    return;
+  }
+  setSyncInfo(key, String(tries));
+  const retryAt = new Date(Date.now() + tries * 5 * 60_000).toISOString();
+  getDb()
+    .prepare(
+      `UPDATE ${WORKFLOW_DELAYED_JOBS_TABLE}
+       SET status = 'pending', execute_at = ?
+       WHERE id = ?`,
+    )
+    .run(retryAt, id);
+  console.warn(`[workflow] delayed job ${id} requeued (${tries}/${MAX_DELAYED_JOB_RETRIES})`);
 }
 
 export async function processDueDelayedJobs(
@@ -162,19 +210,18 @@ export async function processDueDelayedJobs(
         eventStrings,
         dryRun: false,
       });
-      if (result.status === 'error' || result.status === 'blocked') {
-        markJob(
-          job.id,
-          result.status === 'blocked' ? 'cancelled' : 'failed',
-          result.log.join(';').slice(0, 500),
-        );
+      if (result.status === 'blocked') {
+        markJob(job.id, 'cancelled', result.log.join(';').slice(0, 500));
+      } else if (result.status === 'error') {
+        maybeRequeueFailedJob(job.id, result.log.join(';').slice(0, 500));
       } else {
         markJob(job.id, 'done');
+        setSyncInfo(delayedJobRetryKey(job.id), '0');
       }
       processed += 1;
     } catch (e) {
       logger.warn('[workflow] delayed job failed', job.id, e);
-      markJob(job.id, 'failed', e instanceof Error ? e.message : String(e));
+      maybeRequeueFailedJob(job.id, e instanceof Error ? e.message : String(e));
     } finally {
       PROCESSING.delete(job.id);
     }

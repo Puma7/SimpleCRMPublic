@@ -85,6 +85,9 @@ export function extractInlineImagesFromHtml(html: string): {
   out = out.replace(re, (_full, before, mime, b64, after) => {
     const estimatedBytes = Math.floor((b64.length * 3) / 4);
     if (estimatedBytes > MAX_INLINE_IMAGE_BYTES) {
+      console.warn(
+        `[email] inline image skipped (>${MAX_INLINE_IMAGE_BYTES} bytes estimated): ${mime}`,
+      );
       return _full;
     }
     const cid = `inline-${randomUUID()}@simplecrm`;
