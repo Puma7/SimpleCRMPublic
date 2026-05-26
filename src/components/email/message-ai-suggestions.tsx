@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { plainTextToReplyHtml } from "@shared/compose-body"
-import { CalendarPlus, FileBox, Loader2, Sparkles, Tag } from "lucide-react"
+import { Loader2, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { hasElectron, invokeIpc, type EmailMessage } from "./types"
+import { MessageMoreActionsMenu } from "./message-more-actions-menu"
 
 type SuggestionState = {
   status: "none" | "pending" | "ready" | "failed" | "skipped"
@@ -16,13 +17,19 @@ type SuggestionState = {
 
 type Props = {
   message: EmailMessage
+  messageTags?: string[]
   onDraftReply?: (opts?: { initialReplyHtml?: string }) => void
-  onTagAdvertising?: () => void
+  onTagsChanged?: () => void | Promise<void>
 }
 
 const POLL_MS = 2500
 
-export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }: Props) {
+export function MessageAiSuggestions({
+  message,
+  messageTags = [],
+  onDraftReply,
+  onTagsChanged,
+}: Props) {
   const [suggestion, setSuggestion] = useState<SuggestionState>({
     status: "none",
     text: null,
@@ -113,7 +120,7 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
       <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
         Vorschläge
       </p>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
           size="sm"
@@ -141,38 +148,11 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
             Vorschlag übernehmen
           </Button>
         ) : null}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 text-xs"
-          disabled
-          title="Demnächst verfügbar"
-        >
-          <FileBox className="h-3.5 w-3.5" />
-          Deal anlegen
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 text-xs"
-          disabled
-          title="Demnächst verfügbar"
-        >
-          <CalendarPlus className="h-3.5 w-3.5" />
-          Termin vorschlagen
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 text-xs"
-          onClick={onTagAdvertising}
-        >
-          <Tag className="h-3.5 w-3.5" />
-          Als Werbung taggen
-        </Button>
+        <MessageMoreActionsMenu
+          message={message}
+          messageTags={messageTags}
+          onTagsChanged={onTagsChanged}
+        />
       </div>
       {suggestion.status === "pending" ? (
         <p className="text-[10px] text-muted-foreground">KI erstellt Antwortvorschlag…</p>
