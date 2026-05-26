@@ -7,6 +7,7 @@ import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
 import { getEmailPassword } from './email-keytar';
 import { resolveImapAuth } from './email-imap-auth';
+import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
 import {
   getEmailAccountById,
   getFolderByAccountAndPath,
@@ -49,8 +50,14 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
   try {
     const auth = await resolveImapAuth(account);
     password = 'accessToken' in auth ? auth.accessToken : auth.pass;
-  } catch {
+    clearImapAuthNotice(accountId);
+  } catch (authErr) {
     password = (await getEmailPassword(account.keytar_account_key)) ?? '';
+    if (!password) {
+      maybeRecordImapAuthNotice(accountId, authErr);
+      throw authErr;
+    }
+    clearImapAuthNotice(accountId);
   }
   if (!password) throw new Error('Kein gespeichertes Passwort für dieses Konto');
 
@@ -162,7 +169,14 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     }
   }
 
-  await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+  try {
+    await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+  } catch (postErr) {
+    console.error(
+      `[pop3-sync] post-process failed account ${accountId} folder ${folderRow.id}:`,
+      postErr instanceof Error ? postErr.message : postErr,
+    );
+  }
 
   const uidlStr = serializePop3ServerUidls(serverUidls);
 

@@ -250,6 +250,20 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({ noticeId: z.string().min(1) }),
     result: standardResult,
   });
+  set(IPCChannels.Email.ListImapAuthNotices, {
+    payload: voidPayload,
+    result: z.array(
+      z.object({
+        accountId: z.number(),
+        message: z.string(),
+        at: z.string(),
+      }),
+    ),
+  });
+  set(IPCChannels.Email.DismissImapAuthNotice, {
+    payload: z.object({ accountId: z.number().int().positive() }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.ListMessagesByView, {
     payload: z.object({
       accountId: mailAccountScopeSchema,

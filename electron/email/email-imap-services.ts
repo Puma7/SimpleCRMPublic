@@ -2,6 +2,7 @@ import cron, { type ScheduledTask } from 'node-cron';
 import { ImapFlow } from 'imapflow';
 import { listEmailAccounts } from './email-store';
 import { resolveImapAuth } from './email-imap-auth';
+import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
 import { syncInboxImap } from './email-imap-sync';
 import { syncInboxPop3 } from './email-pop3-sync';
 import { runScheduledWorkflowFire } from './email-workflow-engine';
@@ -35,7 +36,14 @@ async function startIdleForAccount(
   pendingReconnectTimers.delete(acc.id);
   try {
     // OAuth access tokens are refreshed on each connect (resolveImapAuth), including IDLE reconnects.
-    const auth = await resolveImapAuth(acc);
+    let auth: Awaited<ReturnType<typeof resolveImapAuth>>;
+    try {
+      auth = await resolveImapAuth(acc);
+      clearImapAuthNotice(acc.id);
+    } catch (e) {
+      maybeRecordImapAuthNotice(acc.id, e);
+      throw e;
+    }
     const client = new ImapFlow({
       host: acc.imap_host,
       port: acc.imap_port,
@@ -83,6 +91,7 @@ async function startIdleForAccount(
     void client.idle().catch(() => undefined);
     idleClients.set(acc.id, client);
   } catch (e) {
+    maybeRecordImapAuthNotice(acc.id, e);
     logger.debug(`[email] idle start skip account ${acc.id}`, e);
     const delay = Math.min(60_000, 5_000 * Math.pow(2, Math.min(retryCount, 4)));
     const timer = setTimeout(() => {

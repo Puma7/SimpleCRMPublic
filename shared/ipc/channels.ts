@@ -158,6 +158,8 @@ const EmailChannels = literal({
   SetSnoozeSettings: 'email:set-snooze-settings',
   ListUidValidityNotices: 'email:list-uidvalidity-notices',
   DismissUidValidityNotice: 'email:dismiss-uidvalidity-notice',
+  ListImapAuthNotices: 'email:list-imap-auth-notices',
+  DismissImapAuthNotice: 'email:dismiss-imap-auth-notice',
   TestSmtp: 'email:test-smtp',
   ListCategories: 'email:list-categories',
   CreateCategory: 'email:create-category',

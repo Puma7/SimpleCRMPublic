@@ -854,6 +854,25 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(IPCChannels.Email.ListImapAuthNotices, async () => {
+      const { listImapAuthNotices } = await import('../email/email-imap-auth-notice');
+      return listImapAuthNotices();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.DismissImapAuthNotice,
+      async (_event: IpcMainInvokeEvent, payload: { accountId: number }) => {
+        const { dismissImapAuthNotice } = await import('../email/email-imap-auth-notice');
+        dismissImapAuthNotice(payload.accountId);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SetEmailMiscSettings,
       async (
@@ -903,8 +922,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           limit?: number;
         },
       ) => {
-        const email = payload.correspondentEmail?.trim().toLowerCase();
-        if (email && email.includes('@')) {
+        const { normalizeEmailAddress } = await import('../../shared/email-address-normalize');
+        const raw = payload.correspondentEmail?.trim() ?? '';
+        const email = raw.includes('@') ? normalizeEmailAddress(raw) : '';
+        if (email) {
           return listMessagesByCorrespondentEmail(payload.accountId, {
             email,
             limit: payload.limit,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import { correspondentEmailForMessage } from "@shared/email-correspondent"
@@ -28,16 +28,20 @@ import { hasElectron, invokeIpc, type EmailMessage } from "./types"
 
 const ADVERTISING_TAG = "Werbung"
 
+function safeMailText(value: string | null | undefined, maxLen: number): string {
+  return (value ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, maxLen)
+}
+
 function defaultDealName(message: EmailMessage): string {
-  const subject = message.subject?.trim()
-  if (subject) return subject.slice(0, 120)
+  const subject = safeMailText(message.subject, 120)
+  if (subject) return subject
   const mail = correspondentEmailForMessage(message)
   return mail ? `Anfrage ${mail}` : "Neuer Deal aus E-Mail"
 }
 
 function defaultTaskTitle(message: EmailMessage): string {
-  const subject = message.subject?.trim()
-  if (subject) return `Termin: ${subject.slice(0, 80)}`
+  const subject = safeMailText(message.subject, 80)
+  if (subject) return `Termin: ${subject}`
   const mail = correspondentEmailForMessage(message)
   return mail ? `Termin mit ${mail}` : "Termin vereinbaren"
 }
@@ -56,11 +60,25 @@ type Props = {
 
 export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: Props) {
   const navigate = useNavigate()
+  const [menuOpen, setMenuOpen] = useState(false)
   const [dealOpen, setDealOpen] = useState(false)
   const [dealName, setDealName] = useState(() => defaultDealName(message))
+  const [dealContext, setDealContext] = useState<{ messageId: number; customerId: number } | null>(
+    null,
+  )
   const [savingDeal, setSavingDeal] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
 
+  useEffect(() => {
+    setMenuOpen(false)
+    setDealOpen(false)
+    setDealContext(null)
+    setDealName(defaultDealName(message))
+    setBusy(null)
+    setSavingDeal(false)
+  }, [message.id])
+
+  const actionBusy = busy != null || savingDeal
   const hasCustomer = message.customer_id != null && message.customer_id > 0
   const hasAdvertisingTag = messageTags.some(
     (t) => t.toLowerCase() === ADVERTISING_TAG.toLowerCase(),
@@ -68,12 +86,15 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
 
   const tagAdvertising = async () => {
     if (!hasElectron() || hasAdvertisingTag) return
+    const messageId = message.id
+    setMenuOpen(false)
     setBusy("tag")
     try {
       await invokeIpc(IPCChannels.Email.AddMessageTag, {
-        messageId: message.id,
+        messageId,
         tag: ADVERTISING_TAG,
       })
+      if (messageId !== message.id) return
       toast.success("Als Werbung getaggt.")
       await onTagsChanged?.()
     } catch (e) {
@@ -88,24 +109,31 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
       toast.info("Bitte zuerst einen Kunden im Detailpanel rechts verknüpfen.")
       return
     }
+    setMenuOpen(false)
+    setDealContext({ messageId: message.id, customerId: message.customer_id! })
     setDealName(defaultDealName(message))
     setDealOpen(true)
   }
 
   const createDeal = async () => {
-    if (!hasElectron() || !hasCustomer || !dealName.trim()) return
+    if (!hasElectron() || !dealName.trim()) return
+    if (!dealContext || dealContext.messageId !== message.id) {
+      toast.error("Mail gewechselt — bitte „Deal anlegen“ erneut öffnen.")
+      return
+    }
     setSavingDeal(true)
     try {
       const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
         IPCChannels.Deals.Create,
         {
           name: dealName.trim(),
-          customer_id: message.customer_id,
+          customer_id: dealContext.customerId,
           value: 0,
           value_calculation_method: "static",
           stage: "Interessent",
         },
       )
+      if (dealContext.messageId !== message.id) return
       if (r.success && r.id) {
         toast.success("Deal angelegt.")
         setDealOpen(false)
@@ -122,20 +150,31 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
 
   const suggestAppointment = async () => {
     if (!hasElectron()) return
+    const appointmentContext = {
+      messageId: message.id,
+      customerId:
+        message.customer_id != null && message.customer_id > 0 ? message.customer_id : null,
+      taskTitle: defaultTaskTitle(message),
+      subjectLine: safeMailText(message.subject, 200),
+    }
+    setMenuOpen(false)
     setBusy("termin")
     try {
-      if (hasCustomer) {
+      if (appointmentContext.customerId != null) {
         const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
           IPCChannels.Tasks.Create,
           {
-            customer_id: message.customer_id,
-            title: defaultTaskTitle(message),
-            description: `Aus E-Mail #${message.id}${message.subject ? `: ${message.subject}` : ""}`,
+            customer_id: appointmentContext.customerId,
+            title: appointmentContext.taskTitle,
+            description: `Aus E-Mail #${appointmentContext.messageId}${
+              appointmentContext.subjectLine ? `: ${appointmentContext.subjectLine}` : ""
+            }`,
             due_date: dueDateInDays(3),
             priority: "Medium",
             completed: false,
           },
         )
+        if (appointmentContext.messageId !== message.id) return
         if (r.success) {
           toast.success("Aufgabe für Termin angelegt (Fällig in 3 Tagen).")
           void navigate({ to: "/tasks" })
@@ -145,10 +184,38 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
         return
       }
 
-      const date =
-        message.date_received?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
-      toast.info("Kunde verknüpfen für CRM-Aufgabe — Kalender wird geöffnet.")
-      void navigate({ to: "/calendar", search: { date } })
+      const start = new Date()
+      start.setDate(start.getDate() + 3)
+      start.setHours(14, 0, 0, 0)
+      const end = new Date(start)
+      end.setHours(15, 0, 0, 0)
+      const cal = await invokeIpc<{
+        success?: boolean
+        id?: number
+        lastInsertRowid?: number | bigint
+        error?: string
+      }>(IPCChannels.Calendar.AddCalendarEvent, {
+        title: appointmentContext.taskTitle,
+        description: `Aus E-Mail #${appointmentContext.messageId} (ohne Kundenverknüpfung)`,
+        start_date: start.toISOString(),
+        end_date: end.toISOString(),
+        all_day: false,
+        color_code: "#3174ad",
+        event_type: "email",
+        recurrence_rule: null,
+      })
+      if (appointmentContext.messageId !== message.id) return
+      if (cal.success === false) {
+        toast.error(cal.error ?? "Kalendertermin konnte nicht angelegt werden.")
+        return
+      }
+      const eventId = Number(cal.lastInsertRowid ?? cal.id ?? 0)
+      if (eventId > 0) {
+        toast.success("Kalendertermin angelegt (in 3 Tagen, 14–15 Uhr).")
+        void navigate({ to: "/calendar", search: { date: start.toISOString().slice(0, 10) } })
+      } else {
+        toast.error(cal.error ?? "Kalendertermin konnte nicht angelegt werden.")
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Termin-Aktion fehlgeschlagen.")
     } finally {
@@ -160,14 +227,14 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger asChild>
           <Button
             type="button"
             size="sm"
             variant="outline"
             className="h-8 gap-1 text-xs"
-            disabled={busy != null}
+            disabled={actionBusy}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
             Weitere
@@ -176,21 +243,21 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-56">
           <DropdownMenuItem
-            disabled={hasAdvertisingTag || busy != null}
+            disabled={hasAdvertisingTag || actionBusy}
             onClick={() => void tagAdvertising()}
           >
             <Tag className="mr-2 h-4 w-4" />
             {hasAdvertisingTag ? "Bereits als Werbung getaggt" : "Als Werbung taggen"}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={busy != null} onClick={openDealDialog}>
+          <DropdownMenuItem disabled={actionBusy} onClick={openDealDialog}>
             <FileBox className="mr-2 h-4 w-4" />
             Deal anlegen
             {!hasCustomer ? (
               <span className="ml-auto text-[10px] text-muted-foreground">Kunde nötig</span>
             ) : null}
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={busy != null} onClick={() => void suggestAppointment()}>
+          <DropdownMenuItem disabled={actionBusy} onClick={() => void suggestAppointment()}>
             <CalendarPlus className="mr-2 h-4 w-4" />
             Termin vorschlagen
           </DropdownMenuItem>

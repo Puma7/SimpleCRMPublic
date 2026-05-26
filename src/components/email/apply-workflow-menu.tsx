@@ -73,7 +73,10 @@ export function ApplyWorkflowMenu({
   }, [open, loadWorkflows])
 
   const applicable = useMemo(
-    () => filterWorkflowsForMessage(workflows, message),
+    () =>
+      filterWorkflowsForMessage(workflows, message).filter(
+        (w) => w.trigger !== 'outbound' && w.trigger !== 'draft_created',
+      ),
     [workflows, message],
   )
 

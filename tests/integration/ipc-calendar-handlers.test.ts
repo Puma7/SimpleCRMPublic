@@ -55,11 +55,11 @@ describe('registerCalendarHandlers', () => {
 
   describe('Calendar.AddCalendarEvent', () => {
     test('creates event and returns result', async () => {
-      const created = { id: 10, title: 'New event' };
+      const created = { lastInsertRowid: 10, changes: 1 };
       sqliteMocks.createCalendarEvent.mockReturnValue(created);
       const handler = handlers.get(IPCChannels.Calendar.AddCalendarEvent);
       const result = await handler({}, { title: 'New event', start: '2026-04-01' });
-      expect(result).toEqual(created);
+      expect(result).toEqual({ ...created, success: true, id: 10 });
     });
 
     test('returns error object on service throw', async () => {
