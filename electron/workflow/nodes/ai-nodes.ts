@@ -29,7 +29,7 @@ import { parseOutboundReviewResponse } from '../../email/email-outbound-review-p
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
 import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
 import { searchKnowledgeChunks } from '../knowledge-base';
-import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
+import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -343,7 +343,7 @@ export function registerAiNodes(register: Reg): void {
     description:
       'Erzeugt einen KI-Antwortvorschlag für die aktuelle Nachricht. Unabhängig von den globalen Einstellungen unter KI → Antwortvorschläge (z. B. nach Kategorie-Sortierung im Workflow).',
     defaultConfig: { promptId: 0, skipIfReady: true },
-    execute: async (ctx, config) => {
+    execute: async (ctx, config): Promise<NodeExecuteResult> => {
       if (ctx.direction !== 'inbound') {
         return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
       }
@@ -364,25 +364,27 @@ export function registerAiNodes(register: Reg): void {
       if (skipIfReady) {
         const current = getReplySuggestion(messageId);
         if (current.status === 'ready' && current.text?.trim()) {
+          const variables: Record<string, string | number | boolean | null> = {
+            'reply_suggestion.status': 'ready',
+            'reply_suggestion.text': current.text,
+          };
           return {
             status: 'ok',
             message: 'Vorschlag bereits vorhanden',
-            variables: {
-              'reply_suggestion.status': 'ready',
-              'reply_suggestion.text': current.text,
-            },
+            variables,
           };
         }
       }
 
       if (ctx.dryRun) {
+        const variables: Record<string, string | number | boolean | null> = {
+          'reply_suggestion.status': 'ready',
+          'reply_suggestion.text': '(Dry-Run)',
+        };
         return {
           status: 'ok',
           message: 'dry-run reply_suggestion',
-          variables: {
-            'reply_suggestion.status': 'ready',
-            'reply_suggestion.text': '(Dry-Run)',
-          },
+          variables,
         };
       }
 
@@ -393,21 +395,20 @@ export function registerAiNodes(register: Reg): void {
       });
 
       if (result.success) {
-        return {
-          status: 'ok',
-          variables: {
-            'reply_suggestion.status': 'ready',
-            'reply_suggestion.text': result.text,
-          },
+        const variables: Record<string, string | number | boolean | null> = {
+          'reply_suggestion.status': 'ready',
+          'reply_suggestion.text': result.text,
         };
+        return { status: 'ok', variables };
       }
+      const variables: Record<string, string | number | boolean | null> = {
+        'reply_suggestion.status': 'failed',
+        'reply_suggestion.error': result.error,
+      };
       return {
         status: 'error',
         message: result.error,
-        variables: {
-          'reply_suggestion.status': 'failed',
-          'reply_suggestion.error': result.error,
-        },
+        variables,
       };
     },
   });
