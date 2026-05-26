@@ -20,6 +20,7 @@ const ALLOWED_VIEWS: AccountMailView[] = [
   'drafts',
   'spam',
   'trash',
+  'snoozed',
   'all',
 ];
 

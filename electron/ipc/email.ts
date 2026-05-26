@@ -87,6 +87,7 @@ import {
 import { fireWebhookWorkflows } from '../email/email-webhook';
 import { clearEmailAccountSyncLock } from '../email/email-sync-mutex';
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { getSnoozeSettings, setSnoozeSettings } from '../snooze-settings';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
 import {
   ensureReplySuggestion,
@@ -854,6 +855,23 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (payload.maxAttachmentMb !== undefined) {
           setSyncInfo('email_max_attachment_mb', String(payload.maxAttachmentMb));
         }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.GetSnoozeSettings, async () => getSnoozeSettings(), {
+      logger,
+    }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetSnoozeSettings,
+      async (_event, payload) => {
+        setSnoozeSettings(payload);
         return { success: true as const };
       },
       { logger },

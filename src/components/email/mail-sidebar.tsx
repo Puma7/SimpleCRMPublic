@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useState } from "react"
-import { Archive, FileEdit, FolderCog, Inbox, Send, ShieldAlert, Tag, Trash2 } from "lucide-react"
+import { Archive, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, Tag, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -39,6 +39,7 @@ const FOLDERS: {
   unreadKey?: keyof MailFolderCounts
 }[] = [
   { id: "inbox", label: "Posteingang", icon: Inbox, countKey: "inbox", unreadKey: "inboxUnread" },
+  { id: "snoozed", label: "Zurückgestellt", icon: Clock, countKey: "snoozed" },
   { id: "sent", label: "Gesendet", icon: Send, countKey: "sent" },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },

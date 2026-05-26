@@ -24,6 +24,7 @@ const accountMailViewSchema = z.enum([
   'drafts',
   'spam',
   'trash',
+  'snoozed',
   'all',
 ]);
 
@@ -210,6 +211,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: standardResult,
   });
+
+  const snoozeSettingsShape = z.object({
+    eveningHour: z.number().int().min(0).max(23),
+    eveningMinute: z.number().int().min(0).max(59),
+    morningHour: z.number().int().min(0).max(23),
+    morningMinute: z.number().int().min(0).max(59),
+    nextWeekWeekday: z.number().int().min(0).max(6),
+    nextWeekHour: z.number().int().min(0).max(23),
+    nextWeekMinute: z.number().int().min(0).max(59),
+  });
+  set(IPCChannels.Email.GetSnoozeSettings, {
+    payload: voidPayload,
+    result: snoozeSettingsShape,
+  });
+  set(IPCChannels.Email.SetSnoozeSettings, {
+    payload: snoozeSettingsShape,
+    result: standardResult,
+  });
+
   set(IPCChannels.Email.ListUidValidityNotices, {
     payload: voidPayload,
     result: z.array(

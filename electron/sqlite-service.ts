@@ -2645,6 +2645,7 @@ export function getFollowUpQueueCounts(): {
     heute: number;
     ueberfaellig: number;
     dieseWoche: number;
+    zurueckgestellt: number;
     stagnierend: number;
     highValueRisk: number;
 } {
@@ -2668,6 +2669,8 @@ export function getFollowUpQueueCounts(): {
                 AND due_date IS NOT NULL AND due_date != ''
                 AND substr(due_date, 1, 10) >= ? AND substr(due_date, 1, 10) <= ?
                 AND (snoozed_until IS NULL OR snoozed_until <= ?)) as dieseWoche,
+            (SELECT COUNT(*) FROM ${TASKS_TABLE} WHERE completed = 0
+                AND snoozed_until IS NOT NULL AND snoozed_until > ?) as zurueckgestellt,
             (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE
                 stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
                 AND last_modified < ?) as stagnierend,
@@ -2684,6 +2687,7 @@ export function getFollowUpQueueCounts(): {
         today, nowISO,
         today, nowISO,
         today, weekFromNow, nowISO,
+        nowISO,
         fourteenDaysAgo,
         weekFromNow, sevenDaysAgo
     ) as any;
@@ -2692,6 +2696,7 @@ export function getFollowUpQueueCounts(): {
         heute: row.heute ?? 0,
         ueberfaellig: row.ueberfaellig ?? 0,
         dieseWoche: row.dieseWoche ?? 0,
+        zurueckgestellt: row.zurueckgestellt ?? 0,
         stagnierend: row.stagnierend ?? 0,
         highValueRisk: row.highValueRisk ?? 0,
     };
@@ -2798,6 +2803,9 @@ export function getFollowUpItems(
             params.push(today, weekFromNow);
             sql += ` AND (t.snoozed_until IS NULL OR t.snoozed_until <= ?)`;
             params.push(nowISO);
+        } else if (queue === 'zurueckgestellt') {
+            sql += ` AND t.snoozed_until IS NOT NULL AND t.snoozed_until > ?`;
+            params.push(nowISO);
         }
 
         // Additional filters
@@ -2812,7 +2820,11 @@ export function getFollowUpItems(
             params.push(term, term, term);
         }
 
-        sql += ` GROUP BY t.id ORDER BY priority_score DESC LIMIT ? OFFSET ?`;
+        if (queue === 'zurueckgestellt') {
+            sql += ` GROUP BY t.id ORDER BY datetime(t.snoozed_until) ASC LIMIT ? OFFSET ?`;
+        } else {
+            sql += ` GROUP BY t.id ORDER BY priority_score DESC LIMIT ? OFFSET ?`;
+        }
         params.push(limit, offset);
     }
 
@@ -2834,6 +2846,15 @@ function getQueueReason(queue: string, item: any): string {
         return daysOverdue > 1 ? `${daysOverdue} Tage überfällig` : '1 Tag überfällig';
     }
     if (queue === 'diese_woche') return 'Diese Woche fällig';
+    if (queue === 'zurueckgestellt') {
+        if (item.snoozed_until) {
+            const wake = new Date(item.snoozed_until);
+            if (!Number.isNaN(wake.getTime())) {
+                return `Zurückgestellt bis ${wake.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}`;
+            }
+        }
+        return 'Zurückgestellt';
+    }
     if (queue === 'stagnierende_deals') {
         const daysSince = item.snoozed_until
             ? Math.floor((Date.now() - new Date(item.snoozed_until).getTime()) / (1000 * 60 * 60 * 24))

@@ -66,6 +66,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
+import { SnoozePopover } from "@/components/snooze/snooze-popover"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -139,6 +140,26 @@ export function MessageViewer(props: Props) {
 
   const inTrash = mailView === "trash"
   const inDraftsView = mailView === "drafts"
+  const inSnoozed = mailView === "snoozed"
+
+  const handleSnoozeMessage = async (until: string | null) => {
+    if (!selectedMessage) return
+    await invokeIpc(IPCChannels.Email.SnoozeMessage, {
+      messageId: selectedMessage.id,
+      until,
+    })
+    if (until) {
+      toast.success("Zurückgestellt")
+    } else {
+      toast.success("Wieder im Posteingang")
+    }
+    await refreshList({ preserveSelection: until != null && inSnoozed })
+    if (!until || !inSnoozed) {
+      setSelectedMessage(null)
+    } else {
+      await refreshCurrentMessage()
+    }
+  }
 
   if (!selectedMessage) {
     return (
@@ -647,26 +668,21 @@ export function MessageViewer(props: Props) {
                         <Download className="h-3.5 w-3.5" />
                         Als .eml
                       </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-8 gap-1.5 text-xs"
-                        onClick={() => {
-                          const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-                          void invokeIpc(IPCChannels.Email.SnoozeMessage, {
-                            messageId: selectedMessage.id,
-                            until,
-                          }).then(() => {
-                            toast.success("24 h zurückgestellt")
-                            void refreshList()
-                            setSelectedMessage(null)
-                          })
-                        }}
+                      <SnoozePopover
+                        showUnsnooze={inSnoozed}
+                        onUnsnooze={() => void handleSnoozeMessage(null)}
+                        onSnooze={(until) => void handleSnoozeMessage(until)}
                       >
-                        <Clock className="h-3.5 w-3.5" />
-                        Snooze 24h
-                      </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1.5 text-xs"
+                        >
+                          <Clock className="h-3.5 w-3.5" />
+                          {inSnoozed ? "Snooze ändern" : "Zurückstellen"}
+                        </Button>
+                      </SnoozePopover>
                     </>
                   ) : null}
                 </div>

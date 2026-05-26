@@ -75,7 +75,14 @@ describe('registerFollowUpHandlers', () => {
 
   // GetQueueCounts
   test('GetQueueCounts returns counts from sqlite', async () => {
-    const counts = { heute: 3, ueberfaellig: 1, dieseWoche: 5, stagnierend: 2, highValueRisk: 0 };
+    const counts = {
+      heute: 3,
+      ueberfaellig: 1,
+      dieseWoche: 5,
+      zurueckgestellt: 2,
+      stagnierend: 2,
+      highValueRisk: 0,
+    };
     sqliteMocks.getFollowUpQueueCounts.mockReturnValue(counts);
     const handler = handlers.get(IPCChannels.FollowUp.GetQueueCounts);
     const result = await handler({});

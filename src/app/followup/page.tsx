@@ -16,7 +16,14 @@ import { Keyboard } from "lucide-react"
 export default function FollowUpPage() {
   // State
   const [activeQueue, setActiveQueue] = useState('heute')
-  const [queueCounts, setQueueCounts] = useState<QueueCounts>({ heute: 0, ueberfaellig: 0, dieseWoche: 0, stagnierend: 0, highValueRisk: 0 })
+  const [queueCounts, setQueueCounts] = useState<QueueCounts>({
+    heute: 0,
+    ueberfaellig: 0,
+    dieseWoche: 0,
+    zurueckgestellt: 0,
+    stagnierend: 0,
+    highValueRisk: 0,
+  })
   const [items, setItems] = useState<FollowUpItem[]>([])
   const [selectedItem, setSelectedItem] = useState<FollowUpItem | null>(null)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set())

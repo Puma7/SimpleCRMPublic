@@ -10,7 +10,12 @@ import {
   EMAIL_ACCOUNT_SIGNATURES_TABLE,
 } from '../database-schema';
 import { deleteEmailPassword } from './email-keytar';
-import { SNOOZE_FILTER_SQL } from './email-message-features';
+import {
+  SNOOZE_ACTIVE_SQL,
+  SNOOZE_ACTIVE_SQL_BARE,
+  SNOOZE_FILTER_SQL,
+  SNOOZE_FILTER_SQL_BARE,
+} from './email-message-features';
 import type { MessageListSortMode } from '../../shared/email-list-options';
 import type { MessageListFilter } from '../../shared/email-list-filters';
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
@@ -526,7 +531,15 @@ export function listMessagesForFolder(
   return stmt.all(folderId, limit, offset) as EmailMessageRow[];
 }
 
-export type AccountMailView = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
+export type AccountMailView =
+  | 'inbox'
+  | 'sent'
+  | 'archived'
+  | 'drafts'
+  | 'spam'
+  | 'trash'
+  | 'snoozed'
+  | 'all';
 
 function orderClauseForSort(sort?: MessageListSortMode): string {
   if (sort === 'priority') {
@@ -582,13 +595,15 @@ export function listMessagesForAccountView(
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
   const params: (string | number)[] = [];
 
-  if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash') {
+  if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash' && view !== 'snoozed') {
     sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
     params.push(opts.categoryId);
   }
 
   if (view === 'trash') {
     sql += ` WHERE m.account_id = ? AND m.soft_deleted = 1`;
+  } else if (view === 'snoozed') {
+    sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL}`;
   } else {
     sql += ` WHERE m.account_id = ? AND m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
@@ -597,6 +612,11 @@ export function listMessagesForAccountView(
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
   if (view === 'trash') {
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+  }
+  if (view === 'snoozed') {
+    sql += ` ORDER BY datetime(m.snoozed_until) ASC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
   }
@@ -640,13 +660,15 @@ export function listMessagesForAllAccountsView(
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
   const params: (string | number)[] = [];
 
-  if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash') {
+  if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash' && view !== 'snoozed') {
     sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
     params.push(opts.categoryId);
   }
 
   if (view === 'trash') {
     sql += ` WHERE m.soft_deleted = 1`;
+  } else if (view === 'snoozed') {
+    sql += ` WHERE m.soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL}`;
   } else {
     sql += ` WHERE m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
@@ -654,6 +676,11 @@ export function listMessagesForAllAccountsView(
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
   if (view === 'trash') {
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+  }
+  if (view === 'snoozed') {
+    sql += ` ORDER BY datetime(m.snoozed_until) ASC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
   }
@@ -705,13 +732,15 @@ export type MailFolderCounts = {
   archived: number;
   spam: number;
   trash: number;
+  snoozed: number;
 };
 
 /** Per-folder message totals for sidebar badges (current account). */
 export function getMailFolderCountsForAccount(accountId: number): MailFolderCounts {
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
-  const inboxBase = `soft_deleted = 0 AND (
+  const notSnoozed = SNOOZE_FILTER_SQL_BARE;
+  const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0)
     OR ${outboundHeldInInbox}
   )`;
@@ -721,10 +750,11 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
         SUM(CASE WHEN ${inboxBase} THEN 1 ELSE 0 END) AS inbox,
         SUM(CASE WHEN ${inboxBase} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
-        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
-        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
-        SUM(CASE WHEN soft_deleted = 0 AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam,
+        SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
       WHERE account_id = ?`,
     )
@@ -736,6 +766,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     drafts: number | null;
     archived: number | null;
     spam: number | null;
+    snoozed: number | null;
   };
 
   return {
@@ -746,6 +777,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     archived: Number(row?.archived) || 0,
     spam: Number(row?.spam) || 0,
     trash: Number(row?.trash) || 0,
+    snoozed: Number(row?.snoozed) || 0,
   };
 }
 
@@ -753,7 +785,8 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
 export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
-  const inboxBase = `soft_deleted = 0 AND (
+  const notSnoozed = SNOOZE_FILTER_SQL_BARE;
+  const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0)
     OR ${outboundHeldInInbox}
   )`;
@@ -763,10 +796,11 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
         SUM(CASE WHEN ${inboxBase} THEN 1 ELSE 0 END) AS inbox,
         SUM(CASE WHEN ${inboxBase} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
-        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
-        SUM(CASE WHEN soft_deleted = 0 AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
-        SUM(CASE WHEN soft_deleted = 0 AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam,
+        SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}`,
     )
     .get() as {
@@ -777,6 +811,7 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
     drafts: number | null;
     archived: number | null;
     spam: number | null;
+    snoozed: number | null;
   };
 
   return {
@@ -787,6 +822,7 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
     archived: Number(row?.archived) || 0,
     spam: Number(row?.spam) || 0,
     trash: Number(row?.trash) || 0,
+    snoozed: Number(row?.snoozed) || 0,
   };
 }
 
