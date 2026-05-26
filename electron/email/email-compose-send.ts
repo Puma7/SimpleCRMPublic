@@ -19,6 +19,7 @@ import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
 } from './email-outbound-threading';
+import { SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { extractInlineImagesFromHtml } from './email-inline-images';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
@@ -50,13 +51,24 @@ function clearSmtpCommitted(draftMessageId: number): void {
 }
 
 function tryAcquireSendingLock(draftMessageId: number): boolean {
-  if (getSyncInfo(sendingInProgressKey(draftMessageId)) === '1') return false;
-  setSyncInfo(sendingInProgressKey(draftMessageId), '1');
-  return true;
+  const key = sendingInProgressKey(draftMessageId);
+  const r = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO ${SYNC_INFO_TABLE} (key, value, lastUpdated) VALUES (?, '1', datetime('now'))`,
+    )
+    .run(key);
+  return r.changes === 1;
 }
 
 function releaseSendingLock(draftMessageId: number): void {
-  setSyncInfo(sendingInProgressKey(draftMessageId), '');
+  getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`).run(sendingInProgressKey(draftMessageId));
+}
+
+/** Clear compose send locks left after crash (call on app/DB init). */
+export function clearStaleComposeSendingLocks(): void {
+  getDb()
+    .prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key LIKE 'email_compose_sending:%'`)
+    .run();
 }
 
 async function finalizeSentDraft(input: {
@@ -81,7 +93,6 @@ async function finalizeSentDraft(input: {
       from: input.from,
       to: input.to,
       cc: input.cc,
-      bcc: input.bcc,
       subject: input.subject,
       text: input.text,
       html: input.html,
@@ -89,6 +100,7 @@ async function finalizeSentDraft(input: {
       inReplyTo: input.inReplyTo,
       references: input.references,
       attachments: input.attachments,
+      includeBccInHeaders: false,
     });
   } catch (e) {
     sentAppendWarning =
@@ -170,6 +182,7 @@ export async function sendComposeDraft(input: {
       bodyHtml: html ?? undefined,
       to: input.to,
       cc: input.cc,
+      bcc: input.bcc,
       inReplyToMessageId: input.inReplyToMessageId,
       attachmentCount: input.attachmentPaths?.length ?? 0,
     });

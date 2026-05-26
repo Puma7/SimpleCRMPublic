@@ -66,6 +66,7 @@ export type EmailMessage = {
   imap_thread_id?: string | null
   attachments_json?: string | null
   draft_attachment_paths_json?: string | null
+  raw_headers?: string | null
 }
 
 export type CategoryRow = {

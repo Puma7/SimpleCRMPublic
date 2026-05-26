@@ -9,6 +9,11 @@ import { hasAnyAiProfileWithKey } from './email-ai-profiles';
 const REPLY_BODY_MAX = 12_000;
 const INFLIGHT = new Set<number>();
 const QUEUED = new Set<number>();
+const PENDING_STALE_MS = 15 * 60 * 1000;
+const SUGGESTION_MIN_GAP_MS = 2500;
+
+let suggestionChain: Promise<void> = Promise.resolve();
+let lastSuggestionFinishedAt = 0;
 
 const DEFAULT_REPLY_USER_TEMPLATE = `Schreibe eine professionelle Antwort auf Deutsch auf die folgende E-Mail.
 Antworte nur mit dem Antworttext (Begrüßung und Grußformel), ohne Betreffzeile und ohne das Original zitieren.
@@ -56,20 +61,41 @@ function interpolateReplyTemplate(
 ): string {
   const body = messageBodyForReply(row);
   let user = template
-    .replace(/\{\{subject\}\}/g, row.subject ?? '')
-    .replace(/\{\{from\}\}/g, extractFromAddress(row.from_json))
-    .replace(/\{\{body\}\}/g, body)
-    .replace(/\{\{text\}\}/g, body);
+    .replace(/\{\{subject\}\}/g, () => row.subject ?? '')
+    .replace(/\{\{from\}\}/g, () => extractFromAddress(row.from_json))
+    .replace(/\{\{body\}\}/g, () => body)
+    .replace(/\{\{text\}\}/g, () => body);
   if (customerId) {
     const cust = getCustomerById(customerId);
     if (cust) {
       user = user
-        .replace(/\{\{customer\.name\}\}/g, cust.name ?? '')
-        .replace(/\{\{customer\.firstName\}\}/g, cust.firstName ?? '')
-        .replace(/\{\{customer\.email\}\}/g, cust.email ?? '');
+        .replace(/\{\{customer\.name\}\}/g, () => cust.name ?? '')
+        .replace(/\{\{customer\.firstName\}\}/g, () => cust.firstName ?? '')
+        .replace(/\{\{customer\.email\}\}/g, () => cust.email ?? '');
     }
   }
   return user;
+}
+
+function isAutomatedInbound(row: EmailMessageRow): boolean {
+  const from = extractFromAddress(row.from_json).toLowerCase();
+  if (
+    /mailer-daemon|mail-daemon|postmaster|noreply|no-reply|donotreply|do-not-reply/.test(from)
+  ) {
+    return true;
+  }
+  const subj = (row.subject ?? '').toLowerCase();
+  if (
+    subj.includes('out of office') ||
+    subj.includes('abwesenheit') ||
+    subj.includes('automatische antwort')
+  ) {
+    return true;
+  }
+  const hdr = (row.raw_headers ?? '').toLowerCase();
+  if (/auto-submitted:\s*auto/.test(hdr)) return true;
+  if (/precedence:\s*(bulk|list|junk)/.test(hdr)) return true;
+  return false;
 }
 
 export function canSuggestReplyForMessage(row: EmailMessageRow): boolean {
@@ -77,8 +103,29 @@ export function canSuggestReplyForMessage(row: EmailMessageRow): boolean {
   if (row.is_spam) return false;
   if (row.folder_kind !== 'inbox') return false;
   if (row.uid < 0 && !row.pop3_uidl) return false;
+  if (isAutomatedInbound(row)) return false;
   const body = messageBodyForReply(row);
   return body.length >= 8;
+}
+
+function isPendingStale(updatedAt: string | null): boolean {
+  if (!updatedAt) return true;
+  const t = new Date(updatedAt).getTime();
+  if (Number.isNaN(t)) return true;
+  return Date.now() - t > PENDING_STALE_MS;
+}
+
+/** Reset stuck reply suggestions after crash (call on DB init). */
+export function recoverStaleReplySuggestions(): void {
+  getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET reply_suggestion_status = 'failed',
+           reply_suggestion_error = 'Generierung unterbrochen (Neustart)',
+           reply_suggestion_updated_at = datetime('now')
+       WHERE reply_suggestion_status = 'pending'`,
+    )
+    .run();
 }
 
 export function getReplySuggestion(messageId: number): ReplySuggestionRow {
@@ -95,7 +142,7 @@ export function getReplySuggestion(messageId: number): ReplySuggestionRow {
   if (status === 'ready' && text?.trim()) {
     return { status: 'ready', text: text.trim(), error: null, updatedAt };
   }
-  if (status === 'pending') {
+  if (status === 'pending' && !isPendingStale(updatedAt)) {
     return { status: 'pending', text: null, error: null, updatedAt };
   }
   if (status === 'failed') {
@@ -147,12 +194,15 @@ export async function generateReplyDraftText(
     return { success: false, error: 'Kein KI-API-Schlüssel konfiguriert' };
   }
 
+  const customerId =
+    opts?.customerId !== undefined ? opts.customerId : row.customer_id;
+
   const prompts = listAiPrompts();
   const prompt =
     (opts?.promptId != null ? prompts.find((p) => p.id === opts.promptId) : undefined) ??
     findReplyPrompt();
   const template = prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE;
-  const user = interpolateReplyTemplate(template, row, opts?.customerId ?? row.customer_id);
+  const user = interpolateReplyTemplate(template, row, customerId);
 
   try {
     const profileId = prompt ? resolvePromptProfileId(prompt) : null;
@@ -192,18 +242,32 @@ async function runSuggestionJob(messageId: number): Promise<void> {
   } finally {
     INFLIGHT.delete(messageId);
     QUEUED.delete(messageId);
+    lastSuggestionFinishedAt = Date.now();
   }
 }
 
-/** Queue background reply suggestion if missing or stale. */
+/** Queue background reply suggestion (serialized, rate-limited). */
 export function ensureReplySuggestion(messageId: number, opts?: { force?: boolean }): void {
   const row = getEmailMessageById(messageId);
   if (!row || !canSuggestReplyForMessage(row)) return;
   const current = getReplySuggestion(messageId);
-  if (!opts?.force && (current.status === 'ready' || current.status === 'pending')) return;
+  if (!opts?.force && current.status === 'ready') return;
+  if (
+    !opts?.force &&
+    current.status === 'pending' &&
+    !isPendingStale(current.updatedAt)
+  ) {
+    return;
+  }
   if (QUEUED.has(messageId) || INFLIGHT.has(messageId)) return;
   QUEUED.add(messageId);
-  void runSuggestionJob(messageId);
+  suggestionChain = suggestionChain
+    .then(async () => {
+      const wait = Math.max(0, SUGGESTION_MIN_GAP_MS - (Date.now() - lastSuggestionFinishedAt));
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      await runSuggestionJob(messageId);
+    })
+    .catch(() => undefined);
 }
 
 export async function generateAndStoreReplySuggestion(

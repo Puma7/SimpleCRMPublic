@@ -514,6 +514,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bodyHtml?: string;
           to: string;
           cc?: string;
+          bcc?: string;
           attachmentCount?: number;
         },
       ) => {
@@ -525,6 +526,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             bodyHtml: payload.bodyHtml,
             to: payload.to,
             cc: payload.cc,
+            bcc: payload.bcc,
             attachmentCount: payload.attachmentCount ?? 0,
           },
           { dryRun: true },
@@ -1429,8 +1431,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.BulkSoftDeleteMessages,
-      async (_event: IpcMainInvokeEvent, payload: { messageIds: number[] }) => {
-        const count = bulkSoftDeleteMessages(payload.messageIds);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; accountId?: number },
+      ) => {
+        const count = bulkSoftDeleteMessages(payload.messageIds, payload.accountId);
         return { success: true as const, count };
       },
       { logger },
@@ -1442,9 +1447,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.BulkSetMessagesArchived,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageIds: number[]; archived: boolean },
+        payload: { messageIds: number[]; archived: boolean; accountId?: number },
       ) => {
-        const count = bulkSetMessagesArchived(payload.messageIds, payload.archived);
+        const count = bulkSetMessagesArchived(
+          payload.messageIds,
+          payload.archived,
+          payload.accountId,
+        );
         return { success: true as const, count };
       },
       { logger },

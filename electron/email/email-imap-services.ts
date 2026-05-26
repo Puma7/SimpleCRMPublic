@@ -43,9 +43,9 @@ async function startIdleForAccount(
       connectionTimeout: 90_000,
       socketTimeout: 120_000,
     });
-    const connectedAt = Date.now();
     await client.connect();
     await client.mailboxOpen('INBOX');
+    const connectedAt = Date.now();
     client.on('exists', () => {
       if (syncInFlight.has(acc.id)) return;
       const now = Date.now();
@@ -99,6 +99,15 @@ function stopIdleForAccount(accountId: number): void {
 
 export async function startEmailBackgroundServices(logger: Pick<typeof console, 'warn' | 'error' | 'debug'>): Promise<void> {
   stopEmailBackgroundServices();
+
+  try {
+    const { recoverStaleReplySuggestions } = await import('./email-reply-ai');
+    const { clearStaleComposeSendingLocks } = await import('./email-compose-send');
+    recoverStaleReplySuggestions();
+    clearStaleComposeSendingLocks();
+  } catch (e) {
+    logger.warn('[email] startup recovery', e);
+  }
 
   globalCron = cron.schedule(
     '*/2 * * * *',

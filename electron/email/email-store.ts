@@ -934,25 +934,36 @@ export function insertOrUpdateEmailMessage(input: {
   return { id, isNew };
 }
 
-export function bulkSoftDeleteMessages(messageIds: number[]): number {
+export function bulkSoftDeleteMessages(messageIds: number[], accountId?: number): number {
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
-  const r = getDb()
-    .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE id IN (${placeholders}) AND uid >= 0`,
-    )
-    .run(...messageIds);
+  const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const sql =
+    accountId != null
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE id IN (${placeholders}) AND ${syncable}`;
+  const params = accountId != null ? [accountId, ...messageIds] : messageIds;
+  const r = getDb().prepare(sql).run(...params);
   return r.changes;
 }
 
-export function bulkSetMessagesArchived(messageIds: number[], archived: boolean): number {
+export function bulkSetMessagesArchived(
+  messageIds: number[],
+  archived: boolean,
+  accountId?: number,
+): number {
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
-  const r = getDb()
-    .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id IN (${placeholders}) AND uid >= 0 AND soft_deleted = 0`,
-    )
-    .run(archived ? 1 : 0, ...messageIds);
+  const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const sql =
+    accountId != null
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`;
+  const params =
+    accountId != null
+      ? [archived ? 1 : 0, accountId, ...messageIds]
+      : [archived ? 1 : 0, ...messageIds];
+  const r = getDb().prepare(sql).run(...params);
   return r.changes;
 }
 

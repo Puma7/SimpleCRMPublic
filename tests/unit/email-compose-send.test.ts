@@ -54,6 +54,7 @@ describe('sendComposeDraft', () => {
     jest.clearAllMocks();
     mockEvaluateOutbound.mockResolvedValue({ allowed: true, reason: null });
     mockGetSyncInfo.mockReturnValue(null);
+    mockDbRun.mockReturnValue({ changes: 1 });
     mockGetAccount.mockReturnValue({ id: 1, email_address: 'me@shop.test' });
     mockSendSmtp.mockResolvedValue(undefined);
   });
@@ -131,10 +132,7 @@ describe('sendComposeDraft', () => {
       body_html: null,
       message_id: null,
     });
-    mockGetSyncInfo.mockImplementation((key: string) => {
-      if (key === 'email_compose_sending:10') return '1';
-      return null;
-    });
+    mockDbRun.mockReturnValue({ changes: 0 });
     const r = await sendComposeDraft({
       accountId: 1,
       draftMessageId: 10,

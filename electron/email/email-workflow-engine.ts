@@ -35,6 +35,7 @@ export type OutboundDraftPayload = {
   bodyHtml?: string;
   to: string;
   cc?: string;
+  bcc?: string;
   inReplyToMessageId?: number | null;
   attachmentCount?: number;
 };
@@ -83,7 +84,14 @@ function buildInboundContext(row: EmailMessageRow) {
 
 function buildOutboundContext(payload: OutboundDraftPayload) {
   const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  const combined = [payload.subject, payload.bodyText, htmlPlain, payload.to, payload.cc ?? ''].join('\n');
+  const combined = [
+    payload.subject,
+    payload.bodyText,
+    htmlPlain,
+    payload.to,
+    payload.cc ?? '',
+    payload.bcc ?? '',
+  ].join('\n');
   return {
     subject: payload.subject,
     body_text: payload.bodyText,

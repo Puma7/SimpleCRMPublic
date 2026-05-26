@@ -9,6 +9,8 @@ export async function appendSentToImap(input: {
   to: string;
   cc?: string;
   bcc?: string;
+  /** When false, Bcc is omitted from the RFC822 stored on the server (privacy on shared mailboxes). */
+  includeBccInHeaders?: boolean;
   subject: string;
   text?: string;
   html?: string;
@@ -35,7 +37,10 @@ export async function appendSentToImap(input: {
     socketTimeout: 120_000,
   });
 
-  const source = buildComposeRfc822(input);
+  const source = buildComposeRfc822({
+    ...input,
+    bcc: input.includeBccInHeaders === false ? undefined : input.bcc,
+  });
   try {
     await client.connect();
     let appendMailbox = folder;

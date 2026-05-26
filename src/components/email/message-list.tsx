@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Loader2, Paperclip, Search } from "lucide-react"
@@ -78,6 +78,8 @@ export function MessageList({
     selectedMessage,
     selectedAccountId,
     messageListFilter,
+    mailView,
+    categoryFilterId,
     listSortMode,
     setListSortMode,
     listDisplayMode,
@@ -102,7 +104,14 @@ export function MessageList({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
 
-  const selectableIds = visibleMessages.filter((m) => m.uid >= 0).map((m) => m.id)
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [mailView, selectedAccountId, categoryFilterId, messageListFilter])
+
+  const selectableIds = visibleMessages
+    .filter((m) => m.uid >= 0 || Boolean(m.pop3_uidl))
+    .map((m) => m.id)
+  const bulkAccountId = isAllAccountsScope(selectedAccountId) ? undefined : selectedAccountId
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
 
@@ -132,7 +141,7 @@ export function MessageList({
         if (action === "archive") {
           const r = await invokeIpc<{ success: boolean; count: number }>(
             IPCChannels.Email.BulkSetMessagesArchived,
-            { messageIds: ids, archived: true },
+            { messageIds: ids, archived: true, accountId: bulkAccountId },
           )
           toast.success(
             r.count === 1 ? "1 Nachricht archiviert" : `${r.count} Nachrichten archiviert`,
@@ -140,7 +149,7 @@ export function MessageList({
         } else {
           const r = await invokeIpc<{ success: boolean; count: number }>(
             IPCChannels.Email.BulkSoftDeleteMessages,
-            { messageIds: ids },
+            { messageIds: ids, accountId: bulkAccountId },
           )
           toast.success(
             r.count === 1
@@ -156,7 +165,7 @@ export function MessageList({
         setBulkBusy(false)
       }
     },
-    [selectedIds, onListChanged],
+    [selectedIds, bulkAccountId, onListChanged],
   )
 
   return (
@@ -250,6 +259,7 @@ export function MessageList({
               <li className="flex items-center gap-2 border-b bg-muted/20 px-3 py-1.5">
                 <Checkbox
                   checked={allSelected}
+                  disabled={bulkBusy}
                   onCheckedChange={() => toggleAll()}
                   aria-label="Alle auswählen"
                 />
@@ -263,7 +273,7 @@ export function MessageList({
               const blocked = !!m.outbound_hold
               const unread = !m.seen_local && m.uid >= 0
               const active = selectedMessage?.id === m.id
-              const canSelect = m.uid >= 0
+              const canSelect = m.uid >= 0 || Boolean(m.pop3_uidl)
               const checked = selectedIds.has(m.id)
               return (
                 <li key={m.id}>
@@ -277,6 +287,7 @@ export function MessageList({
                       <div className="flex shrink-0 items-center py-3 pl-2">
                         <Checkbox
                           checked={checked}
+                          disabled={bulkBusy}
                           onCheckedChange={(v) => toggleOne(m.id, v === true)}
                           aria-label={`Nachricht ${m.id} auswählen`}
                           onClick={(e) => e.stopPropagation()}

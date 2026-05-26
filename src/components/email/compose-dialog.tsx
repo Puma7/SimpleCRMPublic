@@ -31,7 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
-import { buildReplyAllRecipients } from "@shared/email-reply-addresses"
+import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-reply-addresses"
 import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
 import {
   buildReplyComposeHtml,
@@ -196,16 +196,15 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             : null
         const isForward = composeIntent.mode === "forward"
         const isReplyAll = composeIntent.mode === "reply-all"
-        const accountEmail =
-          accounts.find((a) => a.id === accountIdAtOpen)?.email_address ?? ""
+        const ownEmails = accounts.map((a) => a.email_address).filter(Boolean)
         let toAddr = ""
         let ccAddr = ""
         if (isReplyAll && sourceMsg) {
-          const all = buildReplyAllRecipients(sourceMsg, accountEmail ? [accountEmail] : [])
+          const all = buildReplyAllRecipients(sourceMsg, ownEmails)
           toAddr = all.to
           ccAddr = all.cc
-        } else if (composeIntent.mode === "reply") {
-          toAddr = firstAddress(sourceMsg?.from_json ?? null)
+        } else if (composeIntent.mode === "reply" && sourceMsg) {
+          toAddr = primaryReplyRecipient(sourceMsg)
         }
         const subj = sourceMsg?.subject
           ? isForward
@@ -422,6 +421,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           bodyHtml: safeHtml || undefined,
           to,
           cc: cc || undefined,
+          bcc: bcc || undefined,
           attachmentCount: attachmentPaths.length,
         },
       )
