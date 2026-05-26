@@ -26,7 +26,14 @@ export const followUpService = {
       ) as QueueCounts;
     } catch (error) {
       console.error('Failed to fetch queue counts:', error);
-      return { heute: 0, ueberfaellig: 0, dieseWoche: 0, stagnierend: 0, highValueRisk: 0 };
+      return {
+        heute: 0,
+        ueberfaellig: 0,
+        dieseWoche: 0,
+        zurueckgestellt: 0,
+        stagnierend: 0,
+        highValueRisk: 0,
+      };
     }
   },
 

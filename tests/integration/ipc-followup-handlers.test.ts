@@ -93,7 +93,14 @@ describe('registerFollowUpHandlers', () => {
     sqliteMocks.getFollowUpQueueCounts.mockImplementation(() => { throw new Error('db fail'); });
     const handler = handlers.get(IPCChannels.FollowUp.GetQueueCounts);
     const result = await handler({});
-    expect(result).toEqual({ heute: 0, ueberfaellig: 0, dieseWoche: 0, stagnierend: 0, highValueRisk: 0 });
+    expect(result).toEqual({
+      heute: 0,
+      ueberfaellig: 0,
+      dieseWoche: 0,
+      zurueckgestellt: 0,
+      stagnierend: 0,
+      highValueRisk: 0,
+    });
     expect(mockLogger.error).toHaveBeenCalled();
   });
 

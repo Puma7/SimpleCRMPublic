@@ -39,7 +39,14 @@ export function registerFollowUpHandlers(options: FollowUpHandlersOptions) {
         return getFollowUpQueueCounts();
       } catch (error) {
         logger.error('IPC Error getting queue counts:', error);
-        return { heute: 0, ueberfaellig: 0, dieseWoche: 0, stagnierend: 0, highValueRisk: 0 };
+        return {
+          heute: 0,
+          ueberfaellig: 0,
+          dieseWoche: 0,
+          zurueckgestellt: 0,
+          stagnierend: 0,
+          highValueRisk: 0,
+        };
       }
     }, { logger })
   );
