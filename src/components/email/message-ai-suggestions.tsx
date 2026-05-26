@@ -113,12 +113,12 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
       <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
         Vorschläge
       </p>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
         <Button
           type="button"
           size="sm"
           variant="secondary"
-          className="h-8 gap-1.5 text-xs crm-glow-button"
+          className="h-8 shrink-0 gap-1.5 px-2.5 text-xs crm-glow-button"
           disabled={generating}
           onClick={handleDraftReply}
         >
@@ -134,7 +134,7 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
             type="button"
             size="sm"
             variant="outline"
-            className="h-8 max-w-[min(100%,280px)] truncate text-xs"
+            className="h-8 max-w-[min(100%,240px)] shrink-0 truncate px-2.5 text-xs"
             title={suggestion.text ?? undefined}
             onClick={() => openReplyWithText(suggestion.text!)}
           >
@@ -145,7 +145,7 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 gap-1.5 text-xs"
+          className="h-8 shrink-0 gap-1.5 px-2.5 text-xs"
           disabled
           title="Demnächst verfügbar"
         >
@@ -156,7 +156,7 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 gap-1.5 text-xs"
+          className="h-8 shrink-0 gap-1.5 px-2.5 text-xs"
           disabled
           title="Demnächst verfügbar"
         >
@@ -167,7 +167,7 @@ export function MessageAiSuggestions({ message, onDraftReply, onTagAdvertising }
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 gap-1.5 text-xs"
+          className="h-8 shrink-0 gap-1.5 px-2.5 text-xs"
           onClick={onTagAdvertising}
         >
           <Tag className="h-3.5 w-3.5" />

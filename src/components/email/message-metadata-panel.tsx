@@ -26,6 +26,7 @@ import {
   type TeamMember,
 } from "./types"
 import { correspondentEmailForMessage } from "@shared/email-correspondent"
+import { cn } from "@/lib/utils"
 import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
@@ -36,6 +37,8 @@ type Props = {
   reloadNotes: () => void | Promise<void>
   reloadTags: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
+  /** Fills resizable column (Postfach); default fixed w-72 for inline viewer split. */
+  fillWidth?: boolean
 }
 
 function categoryPathLabel(categories: CategoryRow[], id: number): string {
@@ -59,6 +62,7 @@ export function MessageMetadataPanel({
   reloadNotes,
   reloadTags,
   refreshCurrentMessage,
+  fillWidth = false,
 }: Props) {
   const { selectedMessage, selectedAccountId, setSelectedMessage } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
@@ -172,7 +176,12 @@ export function MessageMetadataPanel({
   const assignedMember = teamMembers.find((t) => t.id === selectedMessage.assigned_to)
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l bg-muted/10">
+    <aside
+      className={cn(
+        "flex h-full min-h-0 min-w-0 flex-col border-l bg-muted/10",
+        fillWidth ? "w-full" : "w-72 shrink-0",
+      )}
+    >
       <div className="shrink-0 border-b px-4 py-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Details
