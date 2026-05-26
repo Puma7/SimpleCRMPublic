@@ -11,13 +11,16 @@ jest.mock('electron', () => ({
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: jest.fn(),
 }));
-jest.mock('../../electron/email/mail-rfc822-build', () => ({
-  buildRfc822FromStored: jest.fn(),
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  listAttachmentsForMessage: jest.fn(() => []),
+}));
+jest.mock('../../electron/email/mail-eml-build', () => ({
+  buildEmlForMessage: jest.fn(),
 }));
 
 import { dialog } from 'electron';
 import { getEmailMessageById } from '../../electron/email/email-store';
-import { buildRfc822FromStored } from '../../electron/email/mail-rfc822-build';
+import { buildEmlForMessage } from '../../electron/email/mail-eml-build';
 import {
   exportMessageAsEml,
   listDueScheduledDraftIds,
@@ -54,7 +57,10 @@ describe('email-message-features', () => {
       body_text: 'body',
       body_html: null,
     });
-    (buildRfc822FromStored as jest.Mock).mockReturnValue(Buffer.from('raw'));
+    (buildEmlForMessage as jest.Mock).mockReturnValue({
+      eml: 'raw eml content',
+      meta: { source: 'reconstructed', attachmentCount: 0 },
+    });
     const out = path.join(os.tmpdir(), 'out.eml');
     (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: false, filePath: out });
     const r = await exportMessageAsEml(9);
@@ -69,9 +75,15 @@ describe('email-message-features', () => {
     (getEmailMessageById as jest.Mock).mockReturnValue(undefined);
     expect((await exportMessageAsEml(1)).ok).toBe(false);
     (getEmailMessageById as jest.Mock).mockReturnValue({ subject: 'x', raw_headers: null, body_text: null, body_html: null });
-    (buildRfc822FromStored as jest.Mock).mockReturnValue(Buffer.alloc(0));
+    (buildEmlForMessage as jest.Mock).mockReturnValue({
+      eml: '   ',
+      meta: { source: 'reconstructed', attachmentCount: 0 },
+    });
     expect((await exportMessageAsEml(1)).ok).toBe(false);
-    (buildRfc822FromStored as jest.Mock).mockReturnValue(Buffer.from('x'));
+    (buildEmlForMessage as jest.Mock).mockReturnValue({
+      eml: 'x',
+      meta: { source: 'reconstructed', attachmentCount: 0 },
+    });
     (dialog.showSaveDialog as jest.Mock).mockResolvedValue({ canceled: true });
     expect((await exportMessageAsEml(1)).ok).toBe(false);
   });

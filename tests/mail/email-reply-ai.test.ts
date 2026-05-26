@@ -7,6 +7,7 @@ const mockResolveProfile = jest.fn();
 const mockRunChat = jest.fn();
 const mockGetCustomer = jest.fn();
 const mockDbRun = jest.fn();
+const mockGetSyncInfo = jest.fn(() => null);
 
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...args: unknown[]) => mockGetMessage(...args),
@@ -24,6 +25,7 @@ jest.mock('../../electron/email/email-openai', () => ({
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({ prepare: () => ({ run: (...args: unknown[]) => mockDbRun(...args) }) }),
   getCustomerById: (...args: unknown[]) => mockGetCustomer(...args),
+  getSyncInfo: (...args: unknown[]) => mockGetSyncInfo(...args),
 }));
 
 import {
@@ -84,6 +86,7 @@ describe('email-reply-ai', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useRealTimers();
+    mockGetSyncInfo.mockReturnValue(null);
     mockHasKey.mockResolvedValue(true);
     mockRunChat.mockResolvedValue('Guten Tag,\n\nAntwort.\n\nGrüße');
     mockListPrompts.mockReturnValue([
