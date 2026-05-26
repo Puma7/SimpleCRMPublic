@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { IPCChannels, InvokeChannel } from './channels';
 import { messageListFilterSchema } from '../email-list-filters';
+import { messageDoneFilterSchema } from '../email-done-filter';
 import { compileWorkflowGraphPayloadSchema } from './workflow-graph-schema';
 
 type SchemaEntry = {
@@ -258,8 +259,16 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       categoryId: z.number().int().positive().nullable().optional(),
       sort: z.enum(['date_desc', 'date_asc', 'priority']).optional(),
       listFilter: messageListFilterSchema.optional(),
+      doneFilter: messageDoneFilterSchema.optional(),
     }),
     result: recordArray,
+  });
+  set(IPCChannels.Email.SetMessageDone, {
+    payload: z.object({
+      messageId: positiveInt,
+      done: z.boolean(),
+    }),
+    result: standardResult,
   });
   set(IPCChannels.Email.SearchMessages, {
     payload: z.object({
@@ -269,6 +278,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       offset: z.number().int().nonnegative().optional(),
       view: accountMailViewSchema.optional(),
       categoryId: z.number().int().positive().nullable().optional(),
+      doneFilter: messageDoneFilterSchema.optional(),
     }),
     result: z.object({
       messages: recordArray,
@@ -685,12 +695,18 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     categoryMode: z.enum(['any', 'only_listed']),
     categoryIds: z.array(positiveInt),
   });
+  const replySuggestionSettingsQuerySchema = z
+    .object({ accountId: positiveInt.optional() })
+    .optional();
+  const replySuggestionSettingsSetSchema = replySuggestionSettingsSchema
+    .partial()
+    .extend({ accountId: positiveInt.optional() });
   set(IPCChannels.Email.GetReplySuggestionSettings, {
-    payload: voidPayload,
+    payload: replySuggestionSettingsQuerySchema,
     result: replySuggestionSettingsSchema,
   });
   set(IPCChannels.Email.SetReplySuggestionSettings, {
-    payload: replySuggestionSettingsSchema.partial(),
+    payload: replySuggestionSettingsSetSchema,
     result: replySuggestionSettingsSchema,
   });
   set(IPCChannels.Email.GenerateReplyDraft, {

@@ -26,8 +26,9 @@ import {
   type TeamMember,
 } from "./types"
 import { correspondentEmailForMessage } from "@shared/email-correspondent"
-import { isAllAccountsScope } from "./account-scope"
+import { cn } from "@/lib/utils"
 import { METADATA_CONVERSATION_SECTION_ID } from "@/lib/scroll-metadata-conversation"
+import { isAllAccountsScope } from "./account-scope"
 import { useMailWorkspace } from "./workspace-context"
 
 type Props = {
@@ -38,6 +39,8 @@ type Props = {
   reloadNotes: () => void | Promise<void>
   reloadTags: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
+  /** Fills resizable column (Postfach); default fixed w-72 for inline viewer split. */
+  fillWidth?: boolean
 }
 
 function categoryPathLabel(categories: CategoryRow[], id: number): string {
@@ -61,6 +64,7 @@ export function MessageMetadataPanel({
   reloadNotes,
   reloadTags,
   refreshCurrentMessage,
+  fillWidth = false,
 }: Props) {
   const { selectedMessage, selectedAccountId, setSelectedMessage } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
@@ -180,7 +184,12 @@ export function MessageMetadataPanel({
   const assignedMember = teamMembers.find((t) => t.id === selectedMessage.assigned_to)
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l bg-muted/10">
+    <aside
+      className={cn(
+        "flex h-full min-h-0 min-w-0 flex-col border-l bg-muted/10",
+        fillWidth ? "w-full" : "w-72 shrink-0",
+      )}
+    >
       <div className="shrink-0 border-b px-4 py-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Details
@@ -210,7 +219,8 @@ export function MessageMetadataPanel({
               </Button>
             </div>
             <p className="text-[10px] text-muted-foreground">
-              Für Workflow-Tests (Dry-Run) im Bereich Workflows → Erweitert.
+              Workflow manuell starten: Toolbar „Workflow“ oder Workflows → Erweitert (Dry-Run mit
+              ID).
             </p>
           </div>
 
@@ -491,8 +501,17 @@ export function MessageMetadataPanel({
             security?.authDkim === "temperror" ||
             security?.authDmarc === "temperror" ? (
               <p className="mt-1 text-[10px] text-muted-foreground">
-                <strong>temperror</strong> = DNS-Abfrage für SPF/DKIM/DMARC ist fehlgeschlagen (kein
-                App-Bug). Netzwerk/VPN/DNS prüfen und erneut testen.
+                <strong>temperror</strong> = Live-DNS-Prüfung fehlgeschlagen. Netzwerk/VPN/DNS prüfen
+                und „Erneut prüfen“ — oder Authentication-Results des Servers in den Roh-Headern
+                prüfen.
+              </p>
+            ) : null}
+            {security?.authError?.includes(
+              "Werte aus Authentication-Results des empfangenden Servers",
+            ) ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                SPF/DKIM/DMARC stammen aus dem Authentication-Results-Header Ihres Mailservers (keine
+                Live-DNS-Prüfung in SimpleCRM).
               </p>
             ) : null}
             {security?.authArc === "fail" ? (

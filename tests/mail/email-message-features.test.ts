@@ -38,7 +38,7 @@ describe('email-message-features', () => {
     setMessageSnoozedUntil(1, '2026-01-01T00:00:00.000Z');
     setDraftScheduledSendAt(2, null);
     expect(listDueScheduledDraftIds(5)).toEqual([3]);
-    expect(SNOOZE_FILTER_SQL).toContain('snoozed_until');
+    expect(SNOOZE_FILTER_SQL).toContain('datetime(m.snoozed_until)');
   });
 
   test('messageLooksEncrypted detects pgp and headers', () => {

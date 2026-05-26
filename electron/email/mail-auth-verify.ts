@@ -1,5 +1,6 @@
 import dns from 'dns';
 import { authenticate, type AuthStatus, type DKIMVerifyResult } from 'mailauth';
+import { isCorruptRawHeaders } from './email-parse-utils';
 import { buildRfc822FromStored, extractEnvelopeSender } from './mail-rfc822-build';
 
 let dnsResultOrderPatched = false;
@@ -66,9 +67,9 @@ function extractAuthenticationResultsBlocks(rawHeaders: string): string[] {
   const blocks: string[] = [];
   let current: string | null = null;
   for (const line of lines) {
-    if (/^Authentication-Results:/i.test(line)) {
+    if (/^(?:ARC-)?Authentication-Results:/i.test(line)) {
       if (current) blocks.push(current.trim());
-      current = line.replace(/^Authentication-Results:\s*/i, '');
+      current = line.replace(/^(?:ARC-)?Authentication-Results:\s*/i, '');
     } else if (current != null && /^[ \t]/.test(line)) {
       current += ` ${line.trim()}`;
     } else {
@@ -80,26 +81,82 @@ function extractAuthenticationResultsBlocks(rawHeaders: string): string[] {
   return blocks;
 }
 
-export function parseAuthenticationResultsAdvisory(rawHeaders: string | null): string | null {
+/** Header block from stored RFC822 (preferred when raw_headers omit Authentication-Results). */
+export function extractHeaderSectionFromStored(input: {
+  rawRfc822B64?: string | null;
+  rawHeaders: string | null;
+}): string | null {
+  if (input.rawRfc822B64?.trim()) {
+    try {
+      const str = Buffer.from(input.rawRfc822B64, 'base64').toString('utf8');
+      const sep = str.search(/\r?\n\r?\n/);
+      if (sep >= 0) return str.slice(0, sep);
+    } catch {
+      /* invalid base64 */
+    }
+  }
+  if (input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders)) {
+    return input.rawHeaders;
+  }
+  return null;
+}
+
+/** Use whichever stored header source contains parseable Authentication-Results. */
+export function resolveHeaderTextForMailAuth(input: {
+  rawRfc822B64?: string | null;
+  rawHeaders: string | null;
+}): string | null {
+  const fromStored =
+    input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders)
+      ? input.rawHeaders
+      : null;
+  if (fromStored && parseAuthenticationResultsLabels(fromStored)) {
+    return fromStored;
+  }
+  const fromRfc822 = extractHeaderSectionFromStored(input);
+  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822)) {
+    return fromRfc822;
+  }
+  return fromRfc822 ?? fromStored;
+}
+
+export type ParsedAuthenticationResults = Partial<
+  Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>
+>;
+
+function liveCheckUnreliable(label: AuthResultLabel): boolean {
+  return label === 'temperror' || label === 'unknown';
+}
+
+/** Parse receiving MTA Authentication-Results into SPF/DKIM/DMARC/ARC labels. */
+export function parseAuthenticationResultsLabels(
+  rawHeaders: string | null,
+): ParsedAuthenticationResults | null {
   if (!rawHeaders?.trim()) return null;
   const blocks = extractAuthenticationResultsBlocks(rawHeaders);
   if (!blocks.length) return null;
-  const body = blocks[blocks.length - 1];
-  const parts: string[] = [];
-  for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
-    const m = body.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
-    if (m?.[1]) parts.push(`${key.toUpperCase()}=${m[1].toLowerCase()}`);
+  const out: ParsedAuthenticationResults = {};
+  for (const body of blocks) {
+    for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
+      const m = body.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
+      if (!m?.[1]) continue;
+      const label = normalizeResult(m[1]);
+      const prev = out[key];
+      if (!prev || (liveCheckUnreliable(prev) && !liveCheckUnreliable(label))) {
+        out[key] = label;
+      }
+    }
   }
-  return parts.length > 0 ? parts.join(', ') : null;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function buildTemperrorHint(
   labels: AuthResultLabel[],
-  rawHeaders: string | null,
+  headerText: string | null,
 ): string | undefined {
-  const temperrors = labels.filter((l) => l === 'temperror' || l === 'unknown').length;
+  const temperrors = labels.filter((l) => liveCheckUnreliable(l)).length;
   if (temperrors < 2) return undefined;
-  const advisory = parseAuthenticationResultsAdvisory(rawHeaders);
+  const advisory = parseAuthenticationResultsAdvisory(headerText);
   const base =
     'Live-DNS-Prüfung (mailauth) vorübergehend fehlgeschlagen (temperror). ' +
     'Internet, VPN/Firewall und DNS prüfen (z. B. Pi-hole, Firmen-DNS).';
@@ -107,6 +164,80 @@ function buildTemperrorHint(
     return `${base} Empfangsserver (Authentication-Results): ${advisory}.`;
   }
   return base;
+}
+
+export function parseAuthenticationResultsAdvisory(rawHeaders: string | null): string | null {
+  const parsed = parseAuthenticationResultsLabels(rawHeaders);
+  if (!parsed) return null;
+  const parts: string[] = [];
+  for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
+    const v = parsed[key];
+    if (v) parts.push(`${key.toUpperCase()}=${v}`);
+  }
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
+function applyHeaderAuthFallback(
+  live: MailAuthVerification,
+  headerText: string | null,
+): MailAuthVerification {
+  const header = parseAuthenticationResultsLabels(headerText);
+  if (!header) {
+    const temperrors = [live.spf, live.dkim, live.dmarc].filter(liveCheckUnreliable).length;
+    if (temperrors >= 2) {
+      const hint = buildTemperrorHint([live.spf, live.dkim, live.dmarc], headerText);
+      return {
+        ...live,
+        error:
+          live.error ??
+          hint ??
+          'Live-DNS-Prüfung (mailauth) fehlgeschlagen (temperror). ' +
+            'Kein Authentication-Results-Header zum Ausweichen. DNS/VPN/Firewall prüfen.',
+      };
+    }
+    return live;
+  }
+
+  const merged: MailAuthVerification = { ...live, dkimDomains: [...live.dkimDomains] };
+  let usedFallback = false;
+
+  for (const key of ['spf', 'dkim', 'dmarc'] as const) {
+    const headerLabel = header[key];
+    if (
+      headerLabel &&
+      !liveCheckUnreliable(headerLabel) &&
+      liveCheckUnreliable(live[key])
+    ) {
+      merged[key] = headerLabel;
+      usedFallback = true;
+    }
+  }
+
+  // Direct mail without forwarding: live ARC often "fail", header often omits ARC.
+  if (live.arc === 'fail' && (!header.arc || header.arc === 'none')) {
+    merged.arc = 'none';
+    usedFallback = true;
+  } else if (
+    header.arc &&
+    !liveCheckUnreliable(header.arc) &&
+    (live.arc === 'fail' || liveCheckUnreliable(live.arc))
+  ) {
+    merged.arc = header.arc;
+    usedFallback = true;
+  }
+
+  if (usedFallback) {
+    const advisory = parseAuthenticationResultsAdvisory(headerText);
+    merged.error =
+      'Live-DNS-Prüfung nicht verfügbar — Werte aus Authentication-Results des empfangenden Servers' +
+      (advisory ? ` (${advisory}).` : '.') +
+      ' Für vollständige Live-Prüfung DNS/VPN prüfen.';
+  } else {
+    const hint = buildTemperrorHint([merged.spf, merged.dkim, merged.dmarc], headerText);
+    if (hint) merged.error = live.error ?? hint;
+  }
+
+  return merged;
 }
 
 function aggregateDkim(dkim: DKIMVerifyResult | undefined): {
@@ -146,9 +277,11 @@ export async function verifyMailAuthentication(input: {
     };
   }
 
+  const headerText = resolveHeaderTextForMailAuth(input);
+
   try {
     ensureDnsPrefersIpv4();
-    const sender = extractEnvelopeSender(input.rawHeaders);
+    const sender = extractEnvelopeSender(headerText ?? input.rawHeaders);
     const result = await authenticate(message, {
       trustReceived: true,
       sender,
@@ -163,24 +296,28 @@ export async function verifyMailAuthentication(input: {
         : 'none';
     const arc =
       result.arc && typeof result.arc === 'object' ? statusLabel(result.arc.status) : 'none';
-    const error = buildTemperrorHint([spf, dkimAgg.label, dmarc], input.rawHeaders);
-    return {
-      spf,
-      dkim: dkimAgg.label,
-      dmarc,
-      arc,
-      dkimDomains: dkimAgg.domains,
-      error,
-    };
+    return applyHeaderAuthFallback(
+      {
+        spf,
+        dkim: dkimAgg.label,
+        dmarc,
+        arc,
+        dkimDomains: dkimAgg.domains,
+      },
+      headerText,
+    );
   } catch (e) {
-    return {
-      spf: 'unknown',
-      dkim: 'unknown',
-      dmarc: 'unknown',
-      arc: 'unknown',
-      dkimDomains: [],
-      error: e instanceof Error ? e.message : String(e),
-    };
+    return applyHeaderAuthFallback(
+      {
+        spf: 'unknown',
+        dkim: 'unknown',
+        dmarc: 'unknown',
+        arc: 'unknown',
+        dkimDomains: [],
+        error: e instanceof Error ? e.message : String(e),
+      },
+      headerText,
+    );
   }
 }
 

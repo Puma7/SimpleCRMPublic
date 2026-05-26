@@ -30,6 +30,7 @@ import {
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
+  setMessageDoneLocal,
   setMessageSpam,
   setMessageAssignedTo,
   addMessageTag,
@@ -694,6 +695,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           categoryId?: number | null;
           sort?: import('../../shared/email-list-options').MessageListSortMode;
           listFilter?: import('../../shared/email-list-filters').MessageListFilter;
+          doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
         },
       ) => {
         return listMessagesForMailScope(payload.accountId, payload.view, {
@@ -702,6 +704,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           categoryId: payload.categoryId,
           sort: payload.sort,
           listFilter: payload.listFilter,
+          doneFilter: payload.doneFilter,
         });
       },
       { logger },
@@ -720,6 +723,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           offset?: number;
           view?: import('../email/email-store').AccountMailView;
           categoryId?: number | null;
+          doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
         },
       ) => {
         if (payload.accountId !== 'all') {
@@ -731,6 +735,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               offset: payload.offset ?? 0,
               view: payload.view,
               categoryId: payload.categoryId,
+              doneFilter: payload.doneFilter,
             },
           );
           return { messages: rows, searchMode, hasMore };
@@ -743,6 +748,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             offset: payload.offset ?? 0,
             view: payload.view,
             categoryId: payload.categoryId,
+            doneFilter: payload.doneFilter,
           },
         );
         return { messages: rows, searchMode: 'like' as const, hasMore };
@@ -1476,7 +1482,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.GetReplySuggestionSettings,
-      async () => getReplySuggestionSettings(),
+      async (_event: IpcMainInvokeEvent, payload?: { accountId?: number }) =>
+        getReplySuggestionSettings(payload?.accountId),
       { logger },
     ),
   );
@@ -1484,8 +1491,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SetReplySuggestionSettings,
-      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof setReplySuggestionSettings>[0]) => {
-        return setReplySuggestionSettings(payload);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: Parameters<typeof setReplySuggestionSettings>[0] & { accountId?: number },
+      ) => {
+        const { accountId, ...partial } = payload;
+        return setReplySuggestionSettings(partial, accountId);
       },
       { logger },
     ),
@@ -1782,6 +1793,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             logger.warn('IMAP seen sync failed', e);
           }
         }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageDone,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; done: boolean },
+      ) => {
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        setMessageDoneLocal(payload.messageId, payload.done);
         return { success: true as const };
       },
       { logger },
