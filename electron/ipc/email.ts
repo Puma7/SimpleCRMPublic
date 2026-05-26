@@ -1483,7 +1483,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.GetReplySuggestionSettings,
-      async () => getReplySuggestionSettings(),
+      async (_event: IpcMainInvokeEvent, payload?: { accountId?: number }) =>
+        getReplySuggestionSettings(payload?.accountId),
       { logger },
     ),
   );
@@ -1491,8 +1492,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SetReplySuggestionSettings,
-      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof setReplySuggestionSettings>[0]) => {
-        return setReplySuggestionSettings(payload);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: Parameters<typeof setReplySuggestionSettings>[0] & { accountId?: number },
+      ) => {
+        const { accountId, ...partial } = payload;
+        return setReplySuggestionSettings(partial, accountId);
       },
       { logger },
     ),
