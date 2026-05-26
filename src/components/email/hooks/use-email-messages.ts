@@ -329,6 +329,53 @@ export function useEmailMessages() {
     }
   }, [selectedMessage, setSelectedMessage])
 
+  const assignMessageCategory = useCallback(
+    async (messageId: number, categoryId: number) => {
+      if (!hasElectron()) return false
+      try {
+        await invokeIpc(IPCChannels.Email.SetMessageCategory, {
+          messageId,
+          categoryId,
+        })
+        toast.success("Kategorie zugewiesen")
+        if (selectedMessage?.id === messageId) {
+          await refreshCurrentMessage()
+        }
+        await refreshList({ preserveSelection: true })
+        return true
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Kategorie konnte nicht zugewiesen werden")
+        return false
+      }
+    },
+    [refreshList, refreshCurrentMessage, selectedMessage?.id],
+  )
+
+  const snoozeMessageUntilTomorrow = useCallback(
+    async (messageId: number) => {
+      if (!hasElectron()) return false
+      const until = new Date()
+      until.setDate(until.getDate() + 1)
+      until.setHours(8, 0, 0, 0)
+      try {
+        await invokeIpc(IPCChannels.Email.SnoozeMessage, {
+          messageId,
+          until: until.toISOString(),
+        })
+        toast.success("Nachricht zurückgestellt (morgen 8:00)")
+        if (selectedMessage?.id === messageId && mailView !== "snoozed") {
+          setSelectedMessage(null)
+        }
+        await refreshList({ preserveSelection: mailView === "snoozed" })
+        return true
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Zurückstellen fehlgeschlagen")
+        return false
+      }
+    },
+    [mailView, refreshList, selectedMessage?.id, setSelectedMessage],
+  )
+
   return {
     messages,
     loadingMessages,
@@ -341,5 +388,7 @@ export function useEmailMessages() {
     openMessage,
     refreshCurrentMessage,
     moveMessageToView,
+    assignMessageCategory,
+    snoozeMessageUntilTomorrow,
   }
 }

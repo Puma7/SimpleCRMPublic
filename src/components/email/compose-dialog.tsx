@@ -31,6 +31,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -156,8 +157,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
+  /** When replying: keep original in inbox as open (do not set done on send). */
+  const [keepReplyOpenInInbox, setKeepReplyOpenInInbox] = useState(false)
   const { width: composeDialogWidth, startResize: startComposeWidthResize } =
     useComposeDialogSize()
+
+  const isReplyCompose =
+    composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
 
   useEffect(() => {
     if (!draftId || !hasElectron()) {
@@ -200,7 +206,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     if (!isOpen) {
       initialisedDraftKeyRef.current = null
       setDraftBootstrapping(false)
+      setKeepReplyOpenInInbox(false)
       return
+    }
+    if (composeIntent.mode === "reply" || composeIntent.mode === "reply-all") {
+      setKeepReplyOpenInInbox(false)
     }
     let messageAccountId: number | undefined
     if (
@@ -482,6 +492,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           bcc: bcc || undefined,
           draftAttachmentPaths: attachmentPaths,
           replyParentMessageId: replyToId,
+          markReplyParentDone:
+            isReplyCompose && replyToId != null ? !keepReplyOpenInInbox : undefined,
         })
         return true
       } catch (e) {
@@ -492,7 +504,19 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         return false
       }
     },
-    [draftId, subject, to, cc, bcc, bodyHtml, attachmentPaths, getEditorHtml],
+    [
+      draftId,
+      subject,
+      to,
+      cc,
+      bcc,
+      bodyHtml,
+      attachmentPaths,
+      getEditorHtml,
+      isReplyCompose,
+      keepReplyOpenInInbox,
+      replyToId,
+    ],
   )
 
   useEffect(() => {
@@ -622,6 +646,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           bcc: bcc || undefined,
           inReplyToMessageId: replyToId,
           attachmentPaths: attachmentPaths.length > 0 ? attachmentPaths : undefined,
+          markReplyParentDone:
+            isReplyCompose && replyToId != null ? !keepReplyOpenInInbox : undefined,
         },
       )
       if (!r.success) {
@@ -688,7 +714,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       }}
     >
       <DialogContent
-        className="relative flex max-h-[92vh] flex-col gap-3 p-0 sm:max-w-[96vw]"
+        className="relative left-[50%] top-[4vh] flex max-h-[92vh] translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw]"
         style={{ width: composeDialogWidth, maxWidth: "96vw" }}
       >
         <div
@@ -715,9 +741,25 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             Textbausteine und „KI auf Text“ (Prompt aus Einstellungen → E-Mail → KI-Prompts) bearbeiten
             den Nachrichtentext. Zum Senden wird zuerst ein lokaler Entwurf angelegt.
           </DialogDescription>
+          {isReplyCompose && replyToId != null ? (
+            <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-left text-sm">
+              <Checkbox
+                className="mt-0.5"
+                checked={keepReplyOpenInInbox}
+                onCheckedChange={(v) => setKeepReplyOpenInInbox(v === true)}
+              />
+              <span>
+                <span className="font-medium">Im Posteingang offen lassen</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Standard: Ursprungsnachricht wird nach dem Senden als erledigt markiert. Aktivieren,
+                  wenn Sie sie als Erinnerung offen behalten möchten.
+                </span>
+              </span>
+            </label>
+          ) : null}
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 pb-2">
           {draftBootstrapping || (draftId == null && hasElectron()) ? (
             <div
               className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"

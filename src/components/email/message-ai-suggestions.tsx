@@ -213,11 +213,6 @@ export function MessageAiSuggestions({
       {suggestion.status === "failed" && suggestion.error ? (
         <p className="text-[10px] text-destructive">{suggestion.error}</p>
       ) : null}
-      {message.ticket_code ? (
-        <p className="font-label-mono text-[10px] text-muted-foreground">
-          Kontext: {message.ticket_code}
-        </p>
-      ) : null}
     </div>
   )
 }

@@ -27,6 +27,8 @@ import {
   setMessageSoftDeleted,
   bulkSoftDeleteMessages,
   bulkSetMessagesArchived,
+  bulkSetMessageSpam,
+  bulkDeleteLocalComposeDrafts,
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
@@ -56,6 +58,7 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  reorderCategories,
   setMessageCategory,
   clearMessageCategory,
   getMessageCategoryId,
@@ -597,6 +600,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bcc?: string;
           draftAttachmentPaths?: string[];
           replyParentMessageId?: number | null;
+          markReplyParentDone?: boolean;
         },
       ) => {
         const toJson =
@@ -627,6 +631,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           draftAttachmentPaths: payload.draftAttachmentPaths,
           replyParentMessageId: payload.replyParentMessageId,
         });
+        if (payload.markReplyParentDone !== undefined) {
+          const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done');
+          setComposeMarkReplyParentDone(payload.messageId, payload.markReplyParentDone);
+        }
         return { success: true as const };
       },
       { logger },
@@ -1055,6 +1063,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           bcc?: string;
           inReplyToMessageId?: number | null;
           attachmentPaths?: string[];
+          markReplyParentDone?: boolean;
         },
       ) => {
         const r = await sendComposeDraft(payload);
@@ -1188,6 +1197,27 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         };
       }
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ReorderCategories,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { updates: { id: number; parentId: number | null; sortOrder: number }[] },
+      ) => {
+        try {
+          reorderCategories(payload.updates);
+          return { success: true as const };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : 'Kategorien konnten nicht sortiert werden',
+          };
+        }
+      },
+      { logger },
+    ),
   );
 
   disposers.push(
@@ -1689,6 +1719,49 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             payload.archived,
             payload.accountId,
           );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSetMessageSpam,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; spam: boolean; accountId?: number },
+      ) => {
+        try {
+          const count = bulkSetMessageSpam(
+            payload.messageIds,
+            payload.spam,
+            payload.accountId,
+          );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkDeleteComposeDrafts,
+      async (_event: IpcMainInvokeEvent, payload: { messageIds: number[] }) => {
+        try {
+          const count = bulkDeleteLocalComposeDrafts(payload.messageIds);
           return { success: true as const, count };
         } catch (e) {
           return {

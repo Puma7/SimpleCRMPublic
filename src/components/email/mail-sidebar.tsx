@@ -27,9 +27,11 @@ type Props = {
   countForCategory: (id: number) => number
   onCategoriesChanged: () => void | Promise<void>
   onMoveMessageToView: (messageId: number, view: MailView) => Promise<boolean>
+  onAssignMessageCategory: (messageId: number, categoryId: number) => Promise<boolean>
+  onSnoozeMessage: (messageId: number) => Promise<boolean>
 }
 
-const DROPPABLE_VIEWS: MailView[] = ["inbox", "archived", "spam", "trash"]
+const DROPPABLE_FOLDER_VIEWS: MailView[] = ["inbox", "archived", "spam", "trash", "snoozed"]
 
 const FOLDERS: {
   id: MailView
@@ -54,9 +56,12 @@ export function MailSidebar({
   countForCategory,
   onCategoriesChanged,
   onMoveMessageToView,
+  onAssignMessageCategory,
+  onSnoozeMessage,
 }: Props) {
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
-  const [dropTarget, setDropTarget] = useState<MailView | null>(null)
+  const [dropTarget, setDropTarget] = useState<MailView | "category" | null>(null)
+  const [dropCategoryId, setDropCategoryId] = useState<number | null>(null)
   const {
     selectedAccountId,
     setSelectedAccountId,
@@ -87,12 +92,31 @@ export function MailSidebar({
               className={cn(
                 "flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-muted",
                 categoryFilterId === n.id && "bg-muted font-medium",
+                dropCategoryId === n.id && "ring-2 ring-primary ring-offset-1",
               )}
               style={{ paddingLeft: 8 + depth * 12 }}
               onClick={() => {
                 setCategoryFilterId(n.id)
                 setMailView("inbox")
                 setSearchQuery("")
+              }}
+              onDragOver={(e) => {
+                if (!readMailDragData(e.dataTransfer)) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = "copy"
+                setDropCategoryId(n.id)
+                setDropTarget("category")
+              }}
+              onDragLeave={() => {
+                setDropCategoryId((id) => (id === n.id ? null : id))
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                setDropCategoryId(null)
+                setDropTarget(null)
+                const payload = readMailDragData(e.dataTransfer)
+                if (!payload) return
+                void onAssignMessageCategory(payload.messageId, n.id)
               }}
             >
               <span className="flex items-center gap-2 truncate">
@@ -159,7 +183,7 @@ export function MailSidebar({
             const total = countKey ? counts[countKey] : 0
             const unread = unreadKey ? counts[unreadKey] : 0
             const badge = unread > 0 ? unread : total > 0 ? total : null
-            const canDrop = DROPPABLE_VIEWS.includes(id)
+            const canDrop = DROPPABLE_FOLDER_VIEWS.includes(id)
             return (
               <button
                 key={id}
@@ -176,10 +200,15 @@ export function MailSidebar({
                         e.preventDefault()
                         e.dataTransfer.dropEffect = "move"
                         setDropTarget(id)
+                        setDropCategoryId(null)
                       }
                     : undefined
                 }
-                onDragLeave={canDrop ? () => setDropTarget((t) => (t === id ? null : t)) : undefined}
+                onDragLeave={
+                  canDrop
+                    ? () => setDropTarget((t) => (t === id ? null : t))
+                    : undefined
+                }
                 onDrop={
                   canDrop
                     ? (e) => {
@@ -187,7 +216,11 @@ export function MailSidebar({
                         setDropTarget(null)
                         const payload = readMailDragData(e.dataTransfer)
                         if (!payload) return
-                        void onMoveMessageToView(payload.messageId, id)
+                        if (id === "snoozed") {
+                          void onSnoozeMessage(payload.messageId)
+                        } else {
+                          void onMoveMessageToView(payload.messageId, id)
+                        }
                       }
                     : undefined
                 }

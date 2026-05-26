@@ -17,6 +17,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { cn } from "@/lib/utils"
 import { hasElectron, invokeIpc, type EmailMessage } from "./types"
 import { workflowTriggerLabel } from "./workflow/trigger-labels"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
@@ -44,6 +45,7 @@ type Props = {
   onApplied?: () => void | Promise<void>
   variant?: "ghost" | "outline"
   size?: "sm" | "default"
+  className?: string
 }
 
 export function ApplyWorkflowMenu({
@@ -51,6 +53,7 @@ export function ApplyWorkflowMenu({
   onApplied,
   variant = "ghost",
   size = "sm",
+  className,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [workflows, setWorkflows] = useState<WorkflowRow[]>([])
@@ -145,7 +148,15 @@ export function ApplyWorkflowMenu({
     <>
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <Button type="button" size={size} variant={variant} className="gap-1.5">
+        <Button
+          type="button"
+          size={size}
+          variant={variant}
+          className={cn(
+            "gap-1.5 bg-fuchsia-500/12 text-fuchsia-950 hover:bg-fuchsia-500/20 dark:text-fuchsia-100",
+            className,
+          )}
+        >
           {runningId != null ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (

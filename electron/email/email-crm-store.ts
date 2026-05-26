@@ -75,9 +75,15 @@ export function listCategories(): EmailCategoryRow[] {
 }
 
 export function createCategory(name: string, parentId: number | null = null): number {
+  const maxRow = getDb()
+    .prepare(
+      `SELECT COALESCE(MAX(sort_order), -1) AS m FROM ${EMAIL_CATEGORIES_TABLE}
+       WHERE parent_id IS ? OR (parent_id IS NULL AND ? IS NULL)`,
+    )
+    .get(parentId, parentId) as { m: number };
   const r = getDb()
     .prepare(`INSERT INTO ${EMAIL_CATEGORIES_TABLE} (parent_id, name, sort_order) VALUES (?, ?, ?)`)
-    .run(parentId, name.trim(), 0);
+    .run(parentId, name.trim(), (maxRow?.m ?? -1) + 1);
   return Number(r.lastInsertRowid);
 }
 
@@ -236,6 +242,86 @@ export function deleteCategory(categoryId: number): void {
     .get(categoryId) as { id: number } | undefined;
   if (child) throw new Error('Unterkategorien zuerst löschen');
   getDb().prepare(`DELETE FROM ${EMAIL_CATEGORIES_TABLE} WHERE id = ?`).run(categoryId);
+}
+
+function categoryParentDepth(parentId: number | null, parentById: Map<number, number | null>): number {
+  let depth = 0;
+  let current = parentId;
+  while (current != null) {
+    depth += 1;
+    if (depth >= MAX_EMAIL_CATEGORY_DEPTH) return depth;
+    current = parentById.get(current) ?? null;
+  }
+  return depth;
+}
+
+function categorySubtreeHeight(
+  categoryId: number,
+  childrenByParent: Map<number | null, number[]>,
+): number {
+  const kids = childrenByParent.get(categoryId) ?? [];
+  if (kids.length === 0) return 0;
+  return 1 + Math.max(...kids.map((id) => categorySubtreeHeight(id, childrenByParent)));
+}
+
+/** Batch-update category parent and sibling order (from drag-and-drop UI). */
+export function reorderCategories(
+  updates: { id: number; parentId: number | null; sortOrder: number }[],
+): void {
+  if (updates.length === 0) return;
+  const existing = listCategories();
+  const known = new Set(existing.map((c) => c.id));
+  const parentById = new Map<number, number | null>();
+  for (const row of existing) parentById.set(row.id, row.parent_id);
+  for (const u of updates) {
+    if (!known.has(u.id)) throw new Error('Kategorie nicht gefunden');
+    if (u.parentId === u.id) throw new Error('Kategorie kann nicht sich selbst übergeordnet sein');
+    if (u.parentId != null && !known.has(u.parentId)) {
+      throw new Error('Übergeordnete Kategorie nicht gefunden');
+    }
+    parentById.set(u.id, u.parentId);
+  }
+
+  const childrenByParent = new Map<number | null, number[]>();
+  for (const u of updates) {
+    const pid = u.parentId;
+    const list = childrenByParent.get(pid) ?? [];
+    list.push(u.id);
+    childrenByParent.set(pid, list);
+  }
+
+  for (const u of updates) {
+    const depth = categoryParentDepth(u.parentId, parentById);
+    if (depth >= MAX_EMAIL_CATEGORY_DEPTH) {
+      throw new Error(
+        `Kategorien dürfen höchstens ${MAX_EMAIL_CATEGORY_DEPTH} Ebenen tief sein`,
+      );
+    }
+    const subtree = categorySubtreeHeight(u.id, childrenByParent);
+    if (depth + subtree >= MAX_EMAIL_CATEGORY_DEPTH) {
+      throw new Error(
+        `Verschieben würde die maximale Tiefe von ${MAX_EMAIL_CATEGORY_DEPTH} Ebenen überschreiten`,
+      );
+    }
+  }
+
+  const visiting = new Set<number>();
+  const visit = (id: number): void => {
+    if (visiting.has(id)) throw new Error('Ungültige Kategorie-Hierarchie (Zyklus)');
+    visiting.add(id);
+    const parent = parentById.get(id) ?? null;
+    if (parent != null) visit(parent);
+    visiting.delete(id);
+  };
+  for (const u of updates) visit(u.id);
+
+  const d = getDb();
+  const apply = d.transaction(() => {
+    for (const u of updates) {
+      updateCategory(u.id, { parentId: u.parentId, sortOrder: u.sortOrder });
+    }
+  });
+  apply();
 }
 
 export type CannedRow = { id: number; title: string; body: string; sort_order: number };

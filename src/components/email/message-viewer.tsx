@@ -56,11 +56,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { correspondentEmailForMessage } from "@shared/email-correspondent"
+import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
+import { MessageAddressesBlock } from "./message-addresses-block"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   firstAddress,
-  formatFrom,
   hasElectron,
   invokeIpc,
   stripHtmlToText,
@@ -76,7 +76,6 @@ import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
 import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
-import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
 import { ApplyWorkflowMenu } from "./apply-workflow-menu"
 
 type Props = {
@@ -132,6 +131,7 @@ export function MessageViewer(props: Props) {
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
 
   useEffect(() => {
+    setHtmlView(false)
     setLoadRemoteImages(false)
   }, [selectedMessage?.id])
 
@@ -139,6 +139,17 @@ export function MessageViewer(props: Props) {
     if (!selectedMessage?.body_html) return ""
     const clean = DOMPurify.sanitize(selectedMessage.body_html, {
       USE_PROFILES: { html: true },
+      FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "link"],
+      FORBID_ATTR: [
+        "onerror",
+        "onload",
+        "onclick",
+        "onmouseover",
+        "onfocus",
+        "onblur",
+        "onchange",
+        "onsubmit",
+      ],
     })
     return loadRemoteImages ? clean : blockRemoteImagesInHtml(clean)
   }, [selectedMessage?.body_html, loadRemoteImages])
@@ -439,18 +450,6 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="gap-1.5 bg-orange-500/12 text-orange-900 hover:bg-orange-500/20 dark:text-orange-100"
-                  onClick={() => void handleToggleSpam()}
-                >
-                  <ShieldAlert className="h-4 w-4" />
-                  <span className="hidden lg:inline">
-                    {selectedMessage.is_spam ? "Kein Spam" : "Spam"}
-                  </span>
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
                   className="gap-1.5 bg-amber-500/12 text-amber-900 hover:bg-amber-500/20 dark:text-amber-100"
                   onClick={() => void handleArchive()}
                 >
@@ -489,22 +488,38 @@ export function MessageViewer(props: Props) {
                   <Code2 className="h-4 w-4" />
                   <span className="hidden lg:inline">Rohdaten</span>
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="gap-1.5 bg-red-500/10 text-red-800 hover:bg-red-500/18 dark:text-red-200"
-                  onClick={() => void handleSoftDelete()}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  <span className="hidden lg:inline">Papierkorb</span>
-                </Button>
               </>
             ) : null}
           </div>
 
-          {metadataPlacement === "inline" ? (
-            <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
+            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView && !isDraft ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="gap-1.5 bg-orange-500/12 text-orange-900 hover:bg-orange-500/20 dark:text-orange-100"
+                onClick={() => void handleToggleSpam()}
+              >
+                <ShieldAlert className="h-4 w-4" />
+                <span className="hidden lg:inline">
+                  {selectedMessage.is_spam ? "Kein Spam" : "Spam"}
+                </span>
+              </Button>
+            ) : null}
+            {selectedMessage.uid >= 0 && !inTrash && !isDraft ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="gap-1.5 bg-red-500/10 text-red-800 hover:bg-red-500/18 dark:text-red-200"
+                onClick={() => void handleSoftDelete()}
+              >
+                <Trash2 className="h-4 w-4" />
+                <span className="hidden lg:inline">Papierkorb</span>
+              </Button>
+            ) : null}
+            {metadataPlacement === "inline" ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -524,8 +539,8 @@ export function MessageViewer(props: Props) {
                   {metadataPanelOpen ? "Details ausblenden" : "Details einblenden"}
                 </TooltipContent>
               </Tooltip>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
 
         {/* Body + metadata split */}
@@ -613,50 +628,21 @@ export function MessageViewer(props: Props) {
                   onTagsChanged={reloadTags}
                 />
 
-                <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <div className="min-w-0 space-y-0.5">
-                      <p className="font-medium">{formatFrom(selectedMessage.from_json)}</p>
-                      {correspondentEmailForMessage(selectedMessage) ? (
-                        <p className="font-mono text-xs text-primary break-all">
-                          {correspondentEmailForMessage(selectedMessage)}
-                        </p>
-                      ) : null}
-                    </div>
-                    {selectedMessage.date_received ? (
-                      <p className="text-xs text-muted-foreground shrink-0">
-                        {new Date(selectedMessage.date_received).toLocaleString("de-DE")}
-                      </p>
-                    ) : null}
-                  </div>
-                  {correspondentEmailForMessage(selectedMessage) ? (
-                    <Button
-                      type="button"
-                      variant="link"
-                      className="h-auto px-0 pt-1 text-xs text-primary"
-                      onClick={() => {
-                        if (metadataPlacement === "inline" && !metadataPanelOpen) {
-                          setMetadataPanelOpen(true)
-                        }
-                        window.setTimeout(() => {
-                          if (!scrollToMetadataConversationSection()) {
-                            toast.info(
-                              "Verlauf im Detailpanel rechts — Abschnitt „Alle Mails mit …“.",
-                            )
-                          }
-                        }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
-                      }}
-                    >
-                      Alle Mails mit dieser Adresse anzeigen →
-                    </Button>
-                  ) : null}
-                  {selectedMessage.ticket_code ? (
-                    <p className="pt-1 text-xs text-muted-foreground">
-                      Ticket:{" "}
-                      <span className="font-mono">{selectedMessage.ticket_code}</span>
-                    </p>
-                  ) : null}
-                </div>
+                <MessageAddressesBlock
+                  message={selectedMessage}
+                  onShowCorrespondentHistory={() => {
+                    if (metadataPlacement === "inline" && !metadataPanelOpen) {
+                      setMetadataPanelOpen(true)
+                    }
+                    window.setTimeout(() => {
+                      if (!scrollToMetadataConversationSection()) {
+                        toast.info(
+                          "Verlauf im Detailpanel rechts — Abschnitt „Alle Mails mit …“.",
+                        )
+                      }
+                    }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
+                  }}
+                />
 
                 {messageAttachments.length > 0 || omittedAttachments.length > 0 ? (
                   <div className="space-y-1.5">
@@ -769,7 +755,12 @@ export function MessageViewer(props: Props) {
                       size="sm"
                       variant={htmlView ? "secondary" : "outline"}
                       className="h-8 gap-1.5 text-xs"
-                      onClick={() => setHtmlView((v) => !v)}
+                      onClick={() => {
+                        setHtmlView((v) => {
+                          if (v) setLoadRemoteImages(false)
+                          return !v
+                        })
+                      }}
                     >
                       <Eye className="h-3.5 w-3.5" />
                       {htmlView ? "Klartext" : "HTML anzeigen"}
@@ -836,6 +827,10 @@ export function MessageViewer(props: Props) {
 
                 {htmlView && selectedMessage.body_html ? (
                   <div className="space-y-2">
+                    <p className="text-[10px] text-muted-foreground">
+                      HTML-Ansicht: Skripte und Formulare sind blockiert. Externe Bilder nur nach
+                      explizitem Laden.
+                    </p>
                     {htmlHasRemoteImages && !loadRemoteImages ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                         <span>Externe Bilder sind aus Datenschutzgründen blockiert.</span>

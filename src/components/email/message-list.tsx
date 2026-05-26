@@ -129,9 +129,12 @@ export function MessageList({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [selectedIds.size, bulkBusy])
 
-  const selectableIds = visibleMessages
-    .filter((m) => m.uid >= 0 || Boolean(m.pop3_uidl))
-    .map((m) => m.id)
+  const isMessageSelectable = (m: EmailMessage) =>
+    mailView === "drafts"
+      ? m.uid < 0 && m.folder_kind === "draft"
+      : m.uid >= 0 || Boolean(m.pop3_uidl)
+
+  const selectableIds = visibleMessages.filter(isMessageSelectable).map((m) => m.id)
   const bulkAccountId = isAllAccountsScope(selectedAccountId) ? undefined : selectedAccountId
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
@@ -153,30 +156,88 @@ export function MessageList({
     }
   }, [allSelected, selectableIds])
 
+  type BulkAction =
+    | "archive"
+    | "unarchive"
+    | "delete"
+    | "not-spam"
+    | "restore"
+    | "delete-drafts"
+    | "unsnooze"
+
   const runBulk = useCallback(
-    async (action: "archive" | "delete") => {
+    async (action: BulkAction) => {
       if (!hasElectron() || selectedIds.size === 0) return
       setBulkBusy(true)
       try {
         const ids = [...selectedIds]
-        if (action === "archive") {
+        if (action === "delete-drafts") {
+          const r = await invokeIpc<
+            { success: true; count: number } | { success: false; error?: string }
+          >(IPCChannels.Email.BulkDeleteComposeDrafts, { messageIds: ids })
+          if (!r.success) {
+            toast.error(r.error ?? "Entwürfe konnten nicht gelöscht werden")
+            return
+          }
+          toast.success(
+            r.count === 1 ? "1 Entwurf gelöscht" : `${r.count} Entwürfe gelöscht`,
+          )
+        } else if (action === "restore") {
+          let restored = 0
+          for (const id of ids) {
+            const r = await invokeIpc<{ success: boolean }>(
+              IPCChannels.Email.RestoreMessage,
+              id,
+            )
+            if (r.success) restored += 1
+          }
+          toast.success(
+            restored === 1
+              ? "1 Nachricht wiederhergestellt"
+              : `${restored} Nachrichten wiederhergestellt`,
+          )
+        } else if (action === "unsnooze") {
+          for (const id of ids) {
+            await invokeIpc(IPCChannels.Email.SnoozeMessage, { messageId: id, until: null })
+          }
+          toast.success(
+            ids.length === 1 ? "1 Nachricht wieder im Posteingang" : `${ids.length} Nachrichten wieder im Posteingang`,
+          )
+        } else if (action === "archive" || action === "unarchive") {
           const r = await invokeIpc<
             { success: true; count: number } | { success: false; error?: string }
           >(IPCChannels.Email.BulkSetMessagesArchived, {
             messageIds: ids,
-            archived: true,
+            archived: action === "archive",
             accountId: bulkAccountId,
           })
           if (!r.success) {
             toast.error(r.error ?? "Archivieren fehlgeschlagen")
             return
           }
-          if (r.count === 0) {
-            toast.message("Keine Nachrichten archiviert (bereits archiviert oder nicht in dieser Ansicht).")
+          toast.success(
+            r.count === 1
+              ? action === "archive"
+                ? "1 Nachricht archiviert"
+                : "1 Nachricht aus dem Archiv geholt"
+              : action === "archive"
+                ? `${r.count} Nachrichten archiviert`
+                : `${r.count} Nachrichten aus dem Archiv geholt`,
+          )
+        } else if (action === "not-spam") {
+          const r = await invokeIpc<
+            { success: true; count: number } | { success: false; error?: string }
+          >(IPCChannels.Email.BulkSetMessageSpam, {
+            messageIds: ids,
+            spam: false,
+            accountId: bulkAccountId,
+          })
+          if (!r.success) {
+            toast.error(r.error ?? "Aktion fehlgeschlagen")
             return
           }
           toast.success(
-            r.count === 1 ? "1 Nachricht archiviert" : `${r.count} Nachrichten archiviert`,
+            r.count === 1 ? "1 Nachricht als kein Spam markiert" : `${r.count} Nachrichten als kein Spam markiert`,
           )
         } else {
           const r = await invokeIpc<
@@ -187,10 +248,6 @@ export function MessageList({
           })
           if (!r.success) {
             toast.error(r.error ?? "Löschen fehlgeschlagen")
-            return
-          }
-          if (r.count === 0) {
-            toast.message("Keine Nachrichten verschoben (bereits im Papierkorb oder nicht in dieser Ansicht).")
             return
           }
           toast.success(
@@ -210,6 +267,34 @@ export function MessageList({
     [selectedIds, bulkAccountId, onListChanged],
   )
 
+  const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =
+    mailView === "drafts"
+      ? [{ action: "delete-drafts", label: "Entwürfe löschen", variant: "outline" }]
+      : mailView === "spam"
+        ? [
+            { action: "not-spam", label: "Kein Spam", variant: "secondary" },
+            { action: "delete", label: "Papierkorb", variant: "outline" },
+          ]
+        : mailView === "trash"
+          ? [
+              { action: "restore", label: "Wiederherstellen", variant: "secondary" },
+              { action: "delete", label: "Papierkorb", variant: "outline" },
+            ]
+          : mailView === "archived"
+            ? [
+                { action: "unarchive", label: "Aus Archiv", variant: "secondary" },
+                { action: "delete", label: "Papierkorb", variant: "outline" },
+              ]
+            : mailView === "snoozed"
+              ? [
+                  { action: "unsnooze", label: "Wieder aktiv", variant: "secondary" },
+                  { action: "delete", label: "Papierkorb", variant: "outline" },
+                ]
+              : [
+                  { action: "archive", label: "Archivieren", variant: "secondary" },
+                  { action: "delete", label: "Papierkorb", variant: "outline" },
+                ]
+
   return (
     <section className="flex h-full min-h-0 flex-col border-r">
       <div className="shrink-0 space-y-2 border-b bg-background p-3">
@@ -224,12 +309,10 @@ export function MessageList({
             disabled={bulkBusy}
           />
         </div>
-        {mailView === "inbox" ? (
-          <div className="space-y-2">
-            <MessageDoneFilterChips />
-            <MessageFilterChips />
-          </div>
-        ) : null}
+        <div className="space-y-2">
+          {mailView === "inbox" ? <MessageDoneFilterChips /> : null}
+          <MessageFilterChips />
+        </div>
         <div className="flex flex-wrap gap-2">
           <Select
             value={listSortMode}
@@ -260,26 +343,19 @@ export function MessageList({
         {selectedIds.size > 0 ? (
           <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-1.5">
             <span className="text-xs text-muted-foreground">{selectedIds.size} ausgewählt</span>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="h-7 text-xs"
-              disabled={bulkBusy}
-              onClick={() => void runBulk("archive")}
-            >
-              Archivieren
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              disabled={bulkBusy}
-              onClick={() => void runBulk("delete")}
-            >
-              Papierkorb
-            </Button>
+            {bulkButtons.map(({ action, label, variant }) => (
+              <Button
+                key={action}
+                type="button"
+                size="sm"
+                variant={variant ?? "outline"}
+                className="h-7 text-xs"
+                disabled={bulkBusy}
+                onClick={() => void runBulk(action)}
+              >
+                {label}
+              </Button>
+            ))}
             <Button
               type="button"
               size="sm"
@@ -323,7 +399,7 @@ export function MessageList({
               const unread = !m.seen_local && m.uid >= 0
               const open = !m.done_local && m.uid >= 0
               const active = selectedMessage?.id === m.id
-              const canSelect = m.uid >= 0 || Boolean(m.pop3_uidl)
+              const canSelect = isMessageSelectable(m)
               const checked = selectedIds.has(m.id)
               return (
                 <li key={m.id}>

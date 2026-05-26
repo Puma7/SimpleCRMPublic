@@ -1179,6 +1179,35 @@ export function bulkSetMessagesArchived(
   return r.changes;
 }
 
+export function bulkSetMessageSpam(
+  messageIds: number[],
+  spam: boolean,
+  accountId?: number,
+): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const sql =
+    accountId != null
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, soft_deleted = 0, archived = 0 WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, soft_deleted = 0, archived = 0 WHERE id IN (${placeholders}) AND ${syncable}`;
+  const params =
+    accountId != null ? [spam ? 1 : 0, accountId, ...messageIds] : [spam ? 1 : 0, ...messageIds];
+  const r = getDb().prepare(sql).run(...params);
+  return r.changes;
+}
+
+export function bulkDeleteLocalComposeDrafts(messageIds: number[]): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const r = getDb()
+    .prepare(
+      `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${placeholders}) AND uid < 0`,
+    )
+    .run(...messageIds);
+  return r.changes;
+}
+
 export function setMessageArchived(messageId: number, archived: boolean): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id = ?`)
