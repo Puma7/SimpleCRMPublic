@@ -42,6 +42,25 @@ describe('buildComposeRfc822', () => {
     expect(raw).toContain('fr@example.com');
   });
 
+  it('includes Bcc header only when bcc is provided (Sent append omits bcc)', () => {
+    const withBcc = buildComposeRfc822({
+      from: 'me@example.com',
+      to: 'you@example.com',
+      bcc: 'hidden@example.com',
+      subject: 'Test',
+      text: 'Body',
+    }).toString('utf-8');
+    expect(withBcc).toContain('Bcc:');
+
+    const withoutBcc = buildComposeRfc822({
+      from: 'me@example.com',
+      to: 'you@example.com',
+      subject: 'Test',
+      text: 'Body',
+    }).toString('utf-8');
+    expect(withoutBcc).not.toContain('Bcc:');
+  });
+
   it('encodes non-ASCII attachment filenames (RFC 2231)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfc822-fn-'));
     const attPath = path.join(dir, 'rechnung.pdf');

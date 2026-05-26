@@ -72,6 +72,8 @@ export async function sendSmtpForAccount(
     inReplyTo?: string;
     references?: string;
     requestReadReceipt?: boolean;
+    /** Extra RFC5322 headers (merged with built-in headers). */
+    headers?: Record<string, string>;
   },
 ): Promise<void> {
   const acc = getEmailAccountById(accountId);
@@ -105,9 +107,10 @@ export async function sendSmtpForAccount(
     messageId: mail.messageId,
     inReplyTo: mail.inReplyTo,
     references: mail.references,
-    headers: mail.requestReadReceipt
-      ? { 'Disposition-Notification-To': mail.from }
-      : undefined,
+    headers: {
+      ...(mail.headers ?? {}),
+      ...(mail.requestReadReceipt ? { 'Disposition-Notification-To': mail.from } : {}),
+    },
     attachments: mail.attachments?.map((a) => ({
       filename: a.filename,
       path: a.path,

@@ -11,7 +11,6 @@ export async function processDueScheduledSends(
   for (const draftId of ids) {
     const draft = getEmailMessageById(draftId);
     if (!draft || draft.uid >= 0) continue;
-    setDraftScheduledSendAt(draftId, null);
     const to = recipientFieldFromJson(draft.to_json);
     if (!to.trim()) {
       logger.warn(`[email] scheduled send ${draftId}: no recipient`);
@@ -27,8 +26,12 @@ export async function processDueScheduledSends(
       cc: recipientFieldFromJson(draft.cc_json) || undefined,
       bcc: recipientFieldFromJson(draft.bcc_json) || undefined,
     });
-    if (r.ok) sent += 1;
-    else logger.warn(`[email] scheduled send ${draftId}: ${'error' in r ? r.error : 'failed'}`);
+    if (r.ok) {
+      setDraftScheduledSendAt(draftId, null);
+      sent += 1;
+    } else {
+      logger.warn(`[email] scheduled send ${draftId}: ${'error' in r ? r.error : 'failed'}`);
+    }
   }
   return sent;
 }

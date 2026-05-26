@@ -21,7 +21,10 @@ import {
 } from './email-outbound-threading';
 import { SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
-import { extractInlineImagesFromHtml } from './email-inline-images';
+import {
+  cleanupInlineImageTempFiles,
+  extractInlineImagesFromHtml,
+} from './email-inline-images';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
 function maxComposeAttachmentBytes(): number {
@@ -165,6 +168,7 @@ export async function sendComposeDraft(input: {
     return { ok: false, error: 'Versand läuft bereits für diesen Entwurf.' };
   }
 
+  const inlineTempPaths: string[] = [];
   try {
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
     const toJson = recipientJsonFromField(input.to);
@@ -288,6 +292,7 @@ export async function sendComposeDraft(input: {
       const extracted = extractInlineImagesFromHtml(htmlOut);
       htmlOut = extracted.html;
       inlineAtt.push(...extracted.attachments);
+      inlineTempPaths.push(...extracted.attachments.map((a) => a.path));
     }
     const allAttachments = [
       ...smtpAttachments,
@@ -363,6 +368,7 @@ export async function sendComposeDraft(input: {
 
     return fin.sentAppendWarning ? { ok: true, warning: fin.sentAppendWarning } : { ok: true };
   } finally {
+    cleanupInlineImageTempFiles(inlineTempPaths);
     releaseSendingLock(input.draftMessageId);
   }
 }

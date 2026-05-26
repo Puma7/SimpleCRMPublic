@@ -104,6 +104,8 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   try {
     const { recoverStaleReplySuggestions } = await import('./email-reply-ai');
     const { clearStaleComposeSendingLocks } = await import('./email-compose-send');
+    const { ensureVacationDedupTable } = await import('./email-vacation');
+    ensureVacationDedupTable();
     recoverStaleReplySuggestions();
     clearStaleComposeSendingLocks();
   } catch (e) {

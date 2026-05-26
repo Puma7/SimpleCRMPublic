@@ -17,7 +17,7 @@ export function setDraftScheduledSendAt(messageId: number, atIso: string | null)
     .run(atIso, messageId);
 }
 
-export function listDueScheduledDraftIds(limit = 10): number[] {
+export function listDueScheduledDraftIds(limit = 30): number[] {
   const now = new Date().toISOString();
   const rows = getDb()
     .prepare(

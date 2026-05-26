@@ -117,15 +117,20 @@ function isPendingStale(updatedAt: string | null): boolean {
 
 /** Reset stuck reply suggestions after crash (call on DB init). */
 export function recoverStaleReplySuggestions(): void {
+  const cutoff = new Date(Date.now() - PENDING_STALE_MS).toISOString();
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
        SET reply_suggestion_status = 'failed',
            reply_suggestion_error = 'Generierung unterbrochen (Neustart)',
            reply_suggestion_updated_at = datetime('now')
-       WHERE reply_suggestion_status = 'pending'`,
+       WHERE reply_suggestion_status = 'pending'
+         AND (
+           reply_suggestion_updated_at IS NULL
+           OR reply_suggestion_updated_at < ?
+         )`,
     )
-    .run();
+    .run(cutoff);
 }
 
 export function getReplySuggestion(messageId: number): ReplySuggestionRow {
