@@ -1,4 +1,6 @@
+import { shell } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
+import { parseExternalMailLink } from '../../shared/email-external-url';
 import { registerIpcHandler } from './register';
 import {
   checkForUpdates,
@@ -62,6 +64,21 @@ export function registerUpdateHandlers(options: UpdateHandlersOptions) {
             error: (error as Error).message || 'Failed to install update',
           };
         }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Update.OpenExternalUrl,
+      async (_event, payload: { url: string }) => {
+        const parsed = parseExternalMailLink(payload.url);
+        if (!parsed.ok) {
+          throw new Error('Ungültige oder nicht erlaubte Adresse');
+        }
+        await shell.openExternal(parsed.url);
+        return { success: true };
       },
       { logger },
     ),
