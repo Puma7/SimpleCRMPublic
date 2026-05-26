@@ -82,6 +82,71 @@ export function snippetFromParsed(textBody: string | null, htmlBody: string | nu
   return null;
 }
 
+/** True when stored headers were broken by object stringification (legacy sync bug). */
+export function isCorruptRawHeaders(raw: string | null | undefined): boolean {
+  if (!raw?.trim()) return false;
+  return /\[object Object\]/i.test(raw);
+}
+
+/** Format a single mailparser header value as RFC822 header field text. */
+export function formatMailparserHeaderValue(val: unknown): string {
+  if (val == null) return '';
+  if (typeof val === 'string') return val;
+  if (val instanceof Date) return val.toUTCString();
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (Array.isArray(val)) {
+    return val
+      .map((v) => formatMailparserHeaderValue(v))
+      .filter((s) => s.length > 0)
+      .join(', ');
+  }
+  if (typeof val === 'object') {
+    const o = val as Record<string, unknown>;
+    if (typeof o.text === 'string' && o.text.trim()) return o.text.trim();
+    if (typeof o.html === 'string' && o.html.trim()) {
+      return o.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    if (Array.isArray(o.value)) {
+      const parts = o.value
+        .map((entry) => {
+          if (entry && typeof entry === 'object' && 'address' in entry) {
+            const addr = String((entry as { address?: string }).address ?? '').trim();
+            if (!addr) return '';
+            const name = (entry as { name?: string }).name?.trim();
+            if (name) {
+              const escaped = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+              return `"${escaped}" <${addr}>`;
+            }
+            return addr;
+          }
+          return formatMailparserHeaderValue(entry);
+        })
+        .filter((s) => s.length > 0);
+      return parts.join(', ');
+    }
+    if (typeof o.value === 'string') {
+      const base = o.value.trim();
+      const params = o.params;
+      if (params && typeof params === 'object' && !Array.isArray(params)) {
+        const paramBits = Object.entries(params as Record<string, unknown>)
+          .map(([k, v]) => {
+            const pv = formatMailparserHeaderValue(v);
+            if (!pv) return '';
+            return /^[\w.-]+$/.test(pv) ? `${k}=${pv}` : `${k}="${pv.replace(/"/g, '\\"')}"`;
+          })
+          .filter(Boolean);
+        return paramBits.length ? `${base}; ${paramBits.join('; ')}` : base;
+      }
+      return base;
+    }
+  }
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return '';
+  }
+}
+
 /** Serialize RFC822 headers from mailparser for support/debug display. */
 export function rawHeadersFromParsed(parsed: {
   headerLines?: string[];
@@ -103,9 +168,13 @@ export function rawHeadersFromParsed(parsed: {
     for (const key of keys) {
       const val = headers.get!(key);
       if (Array.isArray(val)) {
-        for (const v of val) lines.push(`${key}: ${String(v)}`);
-      } else if (val != null) {
-        lines.push(`${key}: ${String(val)}`);
+        for (const v of val) {
+          const text = formatMailparserHeaderValue(v);
+          if (text) lines.push(`${key}: ${text}`);
+        }
+      } else {
+        const text = formatMailparserHeaderValue(val);
+        if (text) lines.push(`${key}: ${text}`);
       }
     }
   }
