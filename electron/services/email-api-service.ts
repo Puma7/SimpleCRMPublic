@@ -12,6 +12,7 @@ import {
   setMessageAssignedTo,
 } from '../email/email-store';
 import { setMessageCustomerId } from '../email/email-crm-store';
+import { coercePositiveInt } from '../automation/http-response';
 
 const ALLOWED_VIEWS: AccountMailView[] = [
   'inbox',
@@ -130,11 +131,15 @@ export const EmailApiService = {
         setMessageSpam(messageId, false);
         return { success: true };
       case 'link_customer': {
-        const customerId = payload.customerId;
-        if (customerId !== null && (typeof customerId !== 'number' || customerId < 1)) {
-          return { success: false, error: 'customerId muss positive Zahl oder null sein' };
+        if (payload.customerId === null) {
+          setMessageCustomerId(messageId, null);
+          return { success: true };
         }
-        setMessageCustomerId(messageId, customerId as number | null);
+        const customerId = coercePositiveInt(payload.customerId);
+        if (customerId == null) {
+          return { success: false, error: 'customerId muss positive Ganzzahl oder null sein' };
+        }
+        setMessageCustomerId(messageId, customerId);
         return { success: true };
       }
       case 'assign': {

@@ -8,6 +8,9 @@ import electron from 'vite-plugin-electron'
 const sharedAlias = { '@shared': path.resolve(__dirname, './shared') }
 const electronConditions = ['node', 'import', 'module', 'default']
 
+/** Nodemon starts Electron (`electron:dev:main`); disable vite-plugin-electron auto-spawn. */
+const electronOnstartNoop = () => {}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   /** Separate cache when dev server runs beside `vite build --watch` (electron:dev). */
@@ -26,6 +29,7 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.js',
+        onstart: electronOnstartNoop,
         vite: {
           resolve: { alias: sharedAlias, conditions: electronConditions },
           build: {
@@ -54,6 +58,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/preload.ts',
+        onstart: electronOnstartNoop,
         vite: {
           resolve: { alias: sharedAlias, conditions: electronConditions },
           build: {

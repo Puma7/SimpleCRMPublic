@@ -14,6 +14,15 @@
 
 .compose-quill .ql-editor {
   color: hsl(var(--foreground));
+  caret-color: hsl(var(--foreground));
+}
+
+/* Quill may set inline colors from pasted HTML — keep body text readable in all themes. */
+.compose-quill .ql-editor,
+.compose-quill .ql-editor p,
+.compose-quill .ql-editor span,
+.compose-quill .ql-editor li {
+  color: hsl(var(--foreground)) !important;
 }
 
 .compose-quill .ql-editor.ql-blank::before {

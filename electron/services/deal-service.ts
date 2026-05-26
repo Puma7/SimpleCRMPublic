@@ -6,6 +6,7 @@ import {
   updateDealStage,
   deleteDeal,
 } from '../sqlite-service';
+import { coercePositiveInt } from '../automation/http-response';
 
 export const DealService = {
   list(opts: { limit?: number; offset?: number; customerId?: number } = {}) {
@@ -19,10 +20,11 @@ export const DealService = {
   },
 
   create(data: Record<string, unknown>) {
-    if (data.customer_id == null || !data.name || typeof data.name !== 'string') {
-      return { success: false as const, error: 'customer_id und name sind erforderlich' };
+    const customerId = coercePositiveInt(data.customer_id);
+    if (customerId == null || !data.name || typeof data.name !== 'string' || !data.name.trim()) {
+      return { success: false as const, error: 'customer_id (positive Ganzzahl) und name sind erforderlich' };
     }
-    return createDeal(data);
+    return createDeal({ ...data, customer_id: customerId, name: data.name.trim() });
   },
 
   update(id: number, data: Record<string, unknown>) {

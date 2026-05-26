@@ -75,10 +75,18 @@ export function AutomationPanel() {
 
   const generateKey = async () => {
     if (!hasElectron()) return
-    const res = await invokeIpc<{ success: boolean; key?: string }>(
+    if (apiScopes.length === 0) {
+      toast.error("Mindestens einen Scope auswählen.")
+      return
+    }
+    const res = await invokeIpc<{ success: boolean; key?: string; error?: string }>(
       IPCChannels.Automation.GenerateApiKey,
       { scopes: apiScopes },
     )
+    if (!res.success) {
+      toast.error(res.error ?? "API-Key konnte nicht erzeugt werden.")
+      return
+    }
     if (res.key) {
       setGeneratedKey(res.key)
       toast.success("Neuer API-Key erzeugt — jetzt kopieren.")

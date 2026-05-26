@@ -1,6 +1,7 @@
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import {
   AUTOMATION_DEFAULT_PORT,
+  AUTOMATION_SCOPES,
   type AutomationApiSettings,
   type AutomationScope,
 } from '../../shared/automation-api';
@@ -62,8 +63,20 @@ export function setAutomationApiSettings(input: {
   }
 }
 
+const ALLOWED_SCOPE_SET = new Set<string>(AUTOMATION_SCOPES);
+
+function filterScopes(scopes: AutomationScope[] | undefined): AutomationScope[] {
+  if (!scopes?.length) return [];
+  return scopes.filter((s): s is AutomationScope => ALLOWED_SCOPE_SET.has(s));
+}
+
+/** Default all scopes when omitted (legacy). */
 export function parseScopesInput(scopes: AutomationScope[] | undefined): AutomationScope[] {
-  if (!scopes?.length) return ['read', 'write', 'email', 'workflows'];
-  const allowed = new Set<string>(['read', 'write', 'email', 'workflows']);
-  return scopes.filter((s) => allowed.has(s));
+  const filtered = filterScopes(scopes);
+  return filtered.length > 0 ? filtered : [...AUTOMATION_SCOPES];
+}
+
+/** Key generation: require at least one explicit scope. */
+export function parseScopesForKeyGeneration(scopes: AutomationScope[] | undefined): AutomationScope[] {
+  return filterScopes(scopes);
 }
