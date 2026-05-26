@@ -1,4 +1,5 @@
 import {
+  expandCronMinutesFromToken,
   minuteSpacingForToken,
   validateCronMinuteField,
 } from '../../shared/cron-minute-validate';
@@ -23,6 +24,12 @@ describe('validateCronMinuteField', () => {
     expect(minuteSpacingForToken('*/15')).toBe(15);
     expect(minuteSpacingForToken('1-59/2')).toBe(2);
     expect(minuteSpacingForToken('30')).toBe(60);
+  });
+
+  it('rejects */30 combined with explicit minute 10 (gap 10 < 15)', () => {
+    expect(expandCronMinutesFromToken('*/30')).toEqual([0, 30]);
+    expect(expandCronMinutesFromToken('10')).toEqual([10]);
+    expect(validateCronMinuteField('*/30,10')).toMatch(/Kombination zu dicht/i);
   });
 });
 

@@ -387,6 +387,27 @@ async function dispatch(ctx: RouteContext, res: ServerResponse, apiScopes: Autom
   }
 
   const wfExecMatch = /^\/workflows\/(\d+)\/execute$/.exec(path);
+  if (path === '/webhooks/incoming' && method === 'POST') {
+    if (!needScope(res, ['workflows'], apiScopes)) return;
+    const b = body as {
+      secret?: string;
+      body?: Record<string, unknown>;
+      payload?: Record<string, unknown>;
+    };
+    const secret = String(b.secret ?? '').trim();
+    if (!secret) {
+      sendError(res, 400, 'missing_secret', 'Webhook-Secret fehlt (Feld secret)');
+      return;
+    }
+    const { fireWebhookWorkflows } = await import('../email/email-webhook');
+    const result = await fireWebhookWorkflows({
+      secret,
+      body: (b.body ?? b.payload ?? {}) as Record<string, unknown>,
+    });
+    sendJson(res, 200, { data: result });
+    return;
+  }
+
   if (wfExecMatch && method === 'POST') {
     if (!needScope(res, ['workflows'], apiScopes)) return;
     const id = parsePositiveInt(wfExecMatch[1])!;

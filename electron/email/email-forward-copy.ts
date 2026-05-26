@@ -50,6 +50,7 @@ export async function sendWorkflowForwardCopy(
       to,
       subject: input.subject,
       text: input.bodyText.slice(0, 500_000),
+      headers: { 'Auto-Submitted': 'auto-forwarded' },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

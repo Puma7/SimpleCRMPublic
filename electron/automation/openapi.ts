@@ -50,6 +50,11 @@ export function getOpenApiSpec(): Record<string, unknown> {
       '/workflows/{id}': { get: { summary: 'Get workflow' } },
       '/workflows/{id}/runs': { get: { summary: 'Recent workflow runs' } },
       '/workflows/{id}/execute': { post: { summary: 'Execute workflow (dryRun default true)' } },
+      '/webhooks/incoming': {
+        post: {
+          summary: 'Trigger webhook.incoming workflows (requires workflows scope + secret)',
+        },
+      },
     },
   };
 }
