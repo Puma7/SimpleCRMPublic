@@ -68,6 +68,7 @@ import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
+import { ApplyWorkflowMenu } from "./apply-workflow-menu"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -286,6 +287,14 @@ export function MessageViewer(props: Props) {
                   <Trash2 className="h-4 w-4" />
                   Entwurf löschen
                 </Button>
+                <ApplyWorkflowMenu
+                  message={selectedMessage}
+                  onApplied={async () => {
+                    await refreshCurrentMessage()
+                    await refreshList({ preserveSelection: true })
+                    await reloadTags()
+                  }}
+                />
               </>
             ) : null}
             {inDraftsView && !inTrash && selectedMessage.uid >= 0 ? (
@@ -332,6 +341,14 @@ export function MessageViewer(props: Props) {
                   <Forward className="h-4 w-4" />
                   Weiterleiten
                 </Button>
+                <ApplyWorkflowMenu
+                  message={selectedMessage}
+                  onApplied={async () => {
+                    await refreshCurrentMessage()
+                    await refreshList({ preserveSelection: true })
+                    await reloadTags()
+                  }}
+                />
                 <div className="mx-1 h-6 w-px bg-border" />
                 <Button
                   type="button"
