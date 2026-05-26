@@ -336,6 +336,83 @@ export function registerAiNodes(register: Reg): void {
   });
 
   register({
+    type: 'ai.reply_suggestion',
+    label: 'Antwortvorschlag erzeugen',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Erzeugt einen KI-Antwortvorschlag für die aktuelle Nachricht. Unabhängig von den globalen Einstellungen unter KI → Antwortvorschläge (z. B. nach Kategorie-Sortierung im Workflow).',
+    defaultConfig: { promptId: 0, skipIfReady: true },
+    execute: async (ctx, config) => {
+      if (ctx.direction !== 'inbound') {
+        return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
+      }
+      const messageId = ctx.messageId;
+      if (messageId == null) return { status: 'error', message: 'Keine Nachricht' };
+
+      const row = ctx.message ?? getEmailMessageById(messageId);
+      if (!row) return { status: 'error', message: 'Nachricht nicht gefunden' };
+
+      const { canSuggestReplyForMessage, getReplySuggestion, generateAndStoreReplySuggestion } =
+        await import('../../email/email-reply-ai');
+
+      if (!canSuggestReplyForMessage(row)) {
+        return { status: 'skipped', message: 'Für diese Nachricht nicht anwendbar' };
+      }
+
+      const skipIfReady = config.skipIfReady !== false;
+      if (skipIfReady) {
+        const current = getReplySuggestion(messageId);
+        if (current.status === 'ready' && current.text?.trim()) {
+          return {
+            status: 'ok',
+            message: 'Vorschlag bereits vorhanden',
+            variables: {
+              'reply_suggestion.status': 'ready',
+              'reply_suggestion.text': current.text,
+            },
+          };
+        }
+      }
+
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          message: 'dry-run reply_suggestion',
+          variables: {
+            'reply_suggestion.status': 'ready',
+            'reply_suggestion.text': '(Dry-Run)',
+          },
+        };
+      }
+
+      const promptId = Number(config.promptId ?? 0);
+      const result = await generateAndStoreReplySuggestion(messageId, {
+        promptId: promptId > 0 ? promptId : undefined,
+        customerId: row.customer_id ?? undefined,
+      });
+
+      if (result.success) {
+        return {
+          status: 'ok',
+          variables: {
+            'reply_suggestion.status': 'ready',
+            'reply_suggestion.text': result.text,
+          },
+        };
+      }
+      return {
+        status: 'error',
+        message: result.error,
+        variables: {
+          'reply_suggestion.status': 'failed',
+          'reply_suggestion.error': result.error,
+        },
+      };
+    },
+  });
+
+  register({
     type: 'ai.agent_tool',
     label: 'KI-Agent-Tool',
     category: 'ai',
