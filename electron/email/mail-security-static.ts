@@ -1,4 +1,4 @@
-import { getEmailMessageById, setMessageSpam } from './email-store';
+import { getEmailMessageById, setMessageSpam, type EmailMessageRow } from './email-store';
 import { getMailSecuritySettings } from './mail-security-settings';
 import { classifySenderForMessage } from '../workflow/sender-filter';
 import { addMessageTag } from './email-store';
@@ -7,11 +7,14 @@ import { isAuthFailure, type AuthResultLabel } from './mail-auth-verify';
 /**
  * Pre-workflow rules: global sender blacklist + optional auto-spam on auth/Rspamd failures.
  */
-export function applyPreWorkflowMailSecurity(messageId: number): {
+export function applyPreWorkflowMailSecurity(
+  messageId: number,
+  preloadedRow?: EmailMessageRow,
+): {
   skippedWorkflows: boolean;
   tags: string[];
 } {
-  const row = getEmailMessageById(messageId);
+  const row = preloadedRow ?? getEmailMessageById(messageId);
   if (!row) return { skippedWorkflows: false, tags: [] };
 
   const settings = getMailSecuritySettings();

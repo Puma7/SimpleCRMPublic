@@ -315,19 +315,29 @@ async function runRulesOutbound(
   return { blocked: false, log };
 }
 
-export async function runInboundWorkflowsForMessage(messageId: number): Promise<void> {
-  const row = getEmailMessageById(messageId);
+export type InboundWorkflowRunOpts = {
+  row?: import('./email-store').EmailMessageRow;
+  inboundWorkflows?: ReturnType<typeof listWorkflowsByTrigger>;
+  appliedWorkflowIds?: Set<number>;
+};
+
+export async function runInboundWorkflowsForMessage(
+  messageId: number,
+  opts?: InboundWorkflowRunOpts,
+): Promise<void> {
+  const row = opts?.row ?? getEmailMessageById(messageId);
   if (!row) return;
   if (row.uid < 0 && !row.pop3_uidl) return;
 
   const { runMailSecurityPipeline } = await import('./mail-security-pipeline');
-  const security = await runMailSecurityPipeline(messageId);
+  const security = await runMailSecurityPipeline(messageId, row);
   if (security.preWorkflow.skippedWorkflows) return;
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = listWorkflowsByTrigger('inbound');
+  const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
+  const applied = opts?.appliedWorkflowIds;
   for (const wf of workflows) {
-    if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
+    if (applied ? applied.has(wf.id) : wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
     let markApplied = false;
     try {
       const r = await executeWorkflowForTrigger({
@@ -350,10 +360,10 @@ export async function runInboundWorkflowsForMessage(messageId: number): Promise<
   }
 
   const { ensureReplySuggestion } = await import('./email-reply-ai');
-  ensureReplySuggestion(messageId);
+  ensureReplySuggestion(messageId, { row });
 
   const { maybeSendVacationAutoReply } = await import('./email-vacation');
-  await maybeSendVacationAutoReply(messageId);
+  await maybeSendVacationAutoReply(messageId, row);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {

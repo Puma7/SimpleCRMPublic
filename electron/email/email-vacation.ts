@@ -45,9 +45,12 @@ function markVacationReplySent(accountId: number, sender: string): void {
 }
 
 /** Best-effort vacation auto-reply for inbound mail (anti-loop aware). */
-export async function maybeSendVacationAutoReply(messageId: number): Promise<void> {
-  const row = getEmailMessageById(messageId);
-  if (!row || row.uid < 0) return;
+export async function maybeSendVacationAutoReply(
+  messageId: number,
+  preloadedRow?: import('./email-store').EmailMessageRow,
+): Promise<void> {
+  const row = preloadedRow ?? getEmailMessageById(messageId);
+  if (!row || (row.uid < 0 && !row.pop3_uidl)) return;
   const acc = getEmailAccountById(row.account_id);
   if (!acc) return;
   const enabled = (acc as { vacation_enabled?: number }).vacation_enabled === 1;

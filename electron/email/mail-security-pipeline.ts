@@ -1,4 +1,4 @@
-import { getEmailMessageById } from './email-store';
+import { getEmailMessageById, type EmailMessageRow } from './email-store';
 import { verifyMailAuthentication } from './mail-auth-verify';
 import { checkMessageWithRspamd } from './rspamd-client';
 import {
@@ -18,8 +18,11 @@ export type MailSecurityPipelineResult = {
 /**
  * Run mailauth + optional Rspamd, persist results, apply static pre-workflow rules.
  */
-export async function runMailSecurityPipeline(messageId: number): Promise<MailSecurityPipelineResult> {
-  const row = getEmailMessageById(messageId);
+export async function runMailSecurityPipeline(
+  messageId: number,
+  preloadedRow?: EmailMessageRow,
+): Promise<MailSecurityPipelineResult> {
+  const row = preloadedRow ?? getEmailMessageById(messageId);
   if (!row) {
     return {
       authChecked: false,
@@ -54,7 +57,8 @@ export async function runMailSecurityPipeline(messageId: number): Promise<MailSe
     saveMessageSecurity(messageId, auth, rspamd);
   }
 
-  const preWorkflow = applyPreWorkflowMailSecurity(messageId);
+  const rowForPre = auth || rspamd ? getEmailMessageById(messageId) : row;
+  const preWorkflow = applyPreWorkflowMailSecurity(messageId, rowForPre ?? undefined);
 
   return {
     authChecked: auth != null,

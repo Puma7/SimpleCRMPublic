@@ -8,8 +8,13 @@ import {
   upsertEmailFolder,
   updateFolderSyncState,
   insertOrUpdateEmailMessage,
+  createImapUpsertContext,
   type EmailAccountRow,
 } from './email-store';
+import {
+  processNewMessagesAfterSync,
+  type SyncNewMessageItem,
+} from './email-sync-post-process';
 import {
   serverUidValidityToString,
   storedUidValidityString,
@@ -112,6 +117,8 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
 
       const sorted = [...uids].sort((a, b) => a - b);
       const toFetch = sorted;
+      const upsertCtx = createImapUpsertContext(folderRow.id, toFetch);
+      const newAfterSync: SyncNewMessageItem[] = [];
 
       let chainEnd = lastUid;
       for (const uid of toFetch) {
@@ -138,41 +145,41 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
         const imapThreadId = msg.threadId != null ? String(msg.threadId) : null;
 
-        const { id: localMsgId, isNew } = insertOrUpdateEmailMessage({
-          accountId,
-          folderId: folderRow.id,
-          uid,
-          messageId,
-          inReplyTo,
-          referencesHeader: refs,
-          subject: parsed.subject ?? null,
-          fromJson: addressJson(parsed.from),
-          toJson: addressJson(parsed.to),
-          ccJson: addressJson(parsed.cc),
-          dateReceived: formatDate(parsed.date),
-          snippet,
-          bodyText: textBody,
-          bodyHtml: htmlBody,
-          seenLocal: Boolean(msg.flags?.has('\\Seen')),
-          imapThreadId,
-          hasAttachments,
-          attachmentsJson,
-          rawHeaders: rawHeadersFromParsed(parsed),
-        });
-        if (isNew && localMsgId > 0) {
-          const { persistParsedAttachments } = await import('./email-message-attachments-store');
-          await persistParsedAttachments(localMsgId, parsed.attachments);
-          const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
-          assignJwzThreadAndTicket(localMsgId, accountId, {
-            messageIdHeader: messageId,
+        const { id: localMsgId, isNew } = insertOrUpdateEmailMessage(
+          {
+            accountId,
+            folderId: folderRow.id,
+            uid,
+            messageId,
             inReplyTo,
             referencesHeader: refs,
             subject: parsed.subject ?? null,
+            fromJson: addressJson(parsed.from),
+            toJson: addressJson(parsed.to),
+            ccJson: addressJson(parsed.cc),
+            dateReceived: formatDate(parsed.date),
+            snippet,
+            bodyText: textBody,
+            bodyHtml: htmlBody,
+            seenLocal: Boolean(msg.flags?.has('\\Seen')),
+            imapThreadId,
+            hasAttachments,
+            attachmentsJson,
+            rawHeaders: rawHeadersFromParsed(parsed),
+          },
+          upsertCtx,
+        );
+        if (isNew && localMsgId > 0) {
+          newAfterSync.push({
+            localMsgId,
+            parsedAttachments: parsed.attachments,
+            threading: {
+              messageIdHeader: messageId,
+              inReplyTo,
+              referencesHeader: refs,
+              subject: parsed.subject ?? null,
+            },
           });
-          const { tryLinkMessageToCustomer } = await import('./email-crm-store');
-          tryLinkMessageToCustomer(localMsgId);
-          const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
-          await runInboundWorkflowsForMessage(localMsgId);
         }
         fetched += 1;
         if (canAdvanceImapSyncCursor(chainEnd, uid, sorted)) {
@@ -185,6 +192,8 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
           );
         }
       }
+
+      await processNewMessagesAfterSync(accountId, newAfterSync);
 
       if (toFetch.length > 0) {
         lastUid = chainEnd;

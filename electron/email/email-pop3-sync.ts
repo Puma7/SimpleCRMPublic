@@ -12,8 +12,15 @@ import {
   upsertEmailFolder,
   updateFolderSyncState,
   insertOrUpdateEmailMessage,
+  loadPop3UidlsForFolder,
+  createPop3UpsertContext,
   type EmailAccountRow,
 } from './email-store';
+import { serializePop3ServerUidls } from './pop3-uidl-cache';
+import {
+  processNewMessagesAfterSync,
+  type SyncNewMessageItem,
+} from './email-sync-post-process';
 import { withEmailAccountSyncLock } from './email-sync-mutex';
 import {
   addressJson,
@@ -58,23 +65,18 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     folderRow = upsertEmailFolder({ accountId, path: POP_FOLDER, lastUid: 0 });
   }
 
-  let known = new Set<string>();
-  try {
-    const prev = folderRow.pop3_uidl_str;
-    if (prev) {
-      const parsed = JSON.parse(prev) as string[];
-      if (Array.isArray(parsed)) known = new Set(parsed);
-    }
-  } catch {
-    known = new Set();
-  }
+  const known = loadPop3UidlsForFolder(folderRow.id);
+  const upsertCtx = createPop3UpsertContext(folderRow.id, accountId);
+  const newAfterSync: SyncNewMessageItem[] = [];
 
   const uidlRaw = (await pop3.UIDL()) as unknown;
   const list: UidlEntry[] = Array.isArray(uidlRaw) ? (uidlRaw as UidlEntry[]) : [];
+  const serverUidls: string[] = [];
   let fetched = 0;
   let maxNum = folderRow.last_uid;
 
   for (const [numStr, uidl] of list) {
+    if (uidl) serverUidls.push(uidl);
     const num = parseInt(numStr, 10);
     if (!uidl || Number.isNaN(num)) continue;
     if (known.has(uidl)) {
@@ -97,45 +99,45 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     const snippet = snippetFromParsed(textBody, htmlBody);
     const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
 
-    const { id: localMsgId, isNew } = insertOrUpdateEmailMessage({
-      accountId,
-      folderId: folderRow.id,
-      uid: 0,
-      pop3Uidl: uidl,
-      messageId,
-      inReplyTo,
-      referencesHeader: refs,
-      subject: parsed.subject ?? null,
-      fromJson: addressJson(parsed.from),
-      toJson: addressJson(parsed.to),
-      ccJson: addressJson(parsed.cc),
-      dateReceived: formatDate(parsed.date),
-      snippet,
-      bodyText: textBody,
-      bodyHtml: htmlBody,
-      seenLocal: false,
-      hasAttachments,
-      attachmentsJson,
-      rawHeaders: rawHeadersFromParsed(parsed),
-    });
-
-    if (isNew && localMsgId > 0) {
-      const { persistParsedAttachments } = await import('./email-message-attachments-store');
-      await persistParsedAttachments(localMsgId, parsed.attachments);
-      const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
-      assignJwzThreadAndTicket(localMsgId, accountId, {
-        messageIdHeader: messageId,
+    const { id: localMsgId, isNew } = insertOrUpdateEmailMessage(
+      {
+        accountId,
+        folderId: folderRow.id,
+        uid: 0,
+        pop3Uidl: uidl,
+        messageId,
         inReplyTo,
         referencesHeader: refs,
         subject: parsed.subject ?? null,
+        fromJson: addressJson(parsed.from),
+        toJson: addressJson(parsed.to),
+        ccJson: addressJson(parsed.cc),
+        dateReceived: formatDate(parsed.date),
+        snippet,
+        bodyText: textBody,
+        bodyHtml: htmlBody,
+        seenLocal: false,
+        hasAttachments,
+        attachmentsJson,
+        rawHeaders: rawHeadersFromParsed(parsed),
+      },
+      upsertCtx,
+    );
+
+    if (isNew && localMsgId > 0) {
+      newAfterSync.push({
+        localMsgId,
+        parsedAttachments: parsed.attachments,
+        threading: {
+          messageIdHeader: messageId,
+          inReplyTo,
+          referencesHeader: refs,
+          subject: parsed.subject ?? null,
+        },
       });
-      const { tryLinkMessageToCustomer } = await import('./email-crm-store');
-      tryLinkMessageToCustomer(localMsgId);
-      const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
-      await runInboundWorkflowsForMessage(localMsgId);
+      known.add(uidl);
     }
 
-    known.add(uidl);
     maxNum = Math.max(maxNum, num);
     fetched += 1;
     } catch (perMsgErr) {
@@ -146,8 +148,9 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
     }
   }
 
-  const uidlArr = [...known].sort();
-  const uidlStr = JSON.stringify(uidlArr);
+  await processNewMessagesAfterSync(accountId, newAfterSync);
+
+  const uidlStr = serializePop3ServerUidls(serverUidls);
 
   updateFolderSyncState(folderRow.id, {
     lastUid: maxNum,

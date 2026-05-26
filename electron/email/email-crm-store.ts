@@ -353,9 +353,15 @@ export function deleteAiPrompt(id: number): void {
   getDb().prepare(`DELETE FROM ${EMAIL_AI_PROMPTS_TABLE} WHERE id = ?`).run(id);
 }
 
-function findCustomerIdByEmailAddress(email: string): number | null {
+function findCustomerIdByEmailAddress(
+  email: string,
+  customerByEmail?: Map<string, number>,
+): number | null {
   const norm = normalizeEmailAddress(email);
   if (!norm) return null;
+  if (customerByEmail) {
+    return customerByEmail.get(norm) ?? null;
+  }
   const rows = getDb()
     .prepare(`SELECT id, email FROM ${CUSTOMERS_TABLE} WHERE email IS NOT NULL AND TRIM(email) != ''`)
     .all() as { id: number; email: string }[];
@@ -365,7 +371,23 @@ function findCustomerIdByEmailAddress(email: string): number | null {
   return null;
 }
 
-export function tryLinkMessageToCustomer(messageId: number): number | null {
+/** Normalized email → customer id (one query per sync / backfill batch). */
+export function buildCustomerEmailMap(): Map<string, number> {
+  const rows = getDb()
+    .prepare(`SELECT id, email FROM ${CUSTOMERS_TABLE} WHERE email IS NOT NULL AND TRIM(email) != ''`)
+    .all() as { id: number; email: string }[];
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const norm = normalizeEmailAddress(row.email);
+    if (norm && !map.has(norm)) map.set(norm, row.id);
+  }
+  return map;
+}
+
+export function tryLinkMessageToCustomer(
+  messageId: number,
+  customerByEmail?: Map<string, number>,
+): number | null {
   const msg = getDb()
     .prepare(`SELECT from_json, customer_id FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
     .get(messageId) as { from_json: string | null; customer_id: number | null } | undefined;
@@ -378,7 +400,7 @@ export function tryLinkMessageToCustomer(messageId: number): number | null {
     return null;
   }
   if (!email) return null;
-  const custId = findCustomerIdByEmailAddress(email);
+  const custId = findCustomerIdByEmailAddress(email, customerByEmail);
   if (custId == null) return null;
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET customer_id = ? WHERE id = ?`)
@@ -403,9 +425,10 @@ export function backfillCustomerLinksForMessages(opts?: {
   sql += ` ORDER BY id DESC LIMIT ?`;
   params.push(limit);
   const rows = getDb().prepare(sql).all(...params) as { id: number }[];
+  const customerByEmail = buildCustomerEmailMap();
   let linked = 0;
   for (const r of rows) {
-    if (tryLinkMessageToCustomer(r.id) != null) linked += 1;
+    if (tryLinkMessageToCustomer(r.id, customerByEmail) != null) linked += 1;
   }
   return linked;
 }

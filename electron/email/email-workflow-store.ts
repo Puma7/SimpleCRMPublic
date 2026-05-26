@@ -225,6 +225,16 @@ export function wasWorkflowAppliedToMessage(messageId: number, workflowId: numbe
   return Boolean(row);
 }
 
+/** One query per message — use in sync batches instead of per-workflow lookups. */
+export function loadAppliedWorkflowIdsForMessage(messageId: number): Set<number> {
+  const rows = getDb()
+    .prepare(
+      `SELECT workflow_id FROM ${EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE} WHERE message_id = ?`,
+    )
+    .all(messageId) as { workflow_id: number }[];
+  return new Set(rows.map((r) => r.workflow_id));
+}
+
 export function markWorkflowAppliedToMessage(messageId: number, workflowId: number): void {
   getDb()
     .prepare(

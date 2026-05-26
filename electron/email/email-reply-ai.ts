@@ -247,8 +247,11 @@ async function runSuggestionJob(messageId: number): Promise<void> {
 }
 
 /** Queue background reply suggestion (serialized, rate-limited). */
-export function ensureReplySuggestion(messageId: number, opts?: { force?: boolean }): void {
-  const row = getEmailMessageById(messageId);
+export function ensureReplySuggestion(
+  messageId: number,
+  opts?: { force?: boolean; row?: EmailMessageRow },
+): void {
+  const row = opts?.row ?? getEmailMessageById(messageId);
   if (!row || !canSuggestReplyForMessage(row)) return;
   const current = getReplySuggestion(messageId);
   if (!opts?.force && current.status === 'ready') return;

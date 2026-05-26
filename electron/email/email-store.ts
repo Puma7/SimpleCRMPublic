@@ -810,6 +810,71 @@ export function listMessageIdsForWorkflowBackfill(offset: number, limit: number)
   return rows.map((r) => r.id);
 }
 
+const IN_QUERY_CHUNK = 400;
+
+/** POP3: all UIDLs already stored for a folder (one query per sync). */
+export function loadPop3UidlsForFolder(folderId: number): Set<string> {
+  const rows = getDb()
+    .prepare(
+      `SELECT pop3_uidl FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE folder_id = ? AND pop3_uidl IS NOT NULL AND TRIM(pop3_uidl) != ''`,
+    )
+    .all(folderId) as { pop3_uidl: string }[];
+  return new Set(rows.map((r) => r.pop3_uidl));
+}
+
+/** POP3: map UIDL → local message id (one query per sync). */
+export function loadPop3UidlToIdMap(folderId: number): Map<string, number> {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, pop3_uidl FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE folder_id = ? AND pop3_uidl IS NOT NULL AND TRIM(pop3_uidl) != ''`,
+    )
+    .all(folderId) as { id: number; pop3_uidl: string }[];
+  return new Map(rows.map((r) => [r.pop3_uidl, r.id]));
+}
+
+/** IMAP: existing server UIDs in folder for a batch of candidates. */
+export function loadImapUidToIdMap(folderId: number, uids: number[]): Map<number, number> {
+  const map = new Map<number, number>();
+  if (uids.length === 0) return map;
+  const db = getDb();
+  for (let i = 0; i < uids.length; i += IN_QUERY_CHUNK) {
+    const chunk = uids.slice(i, i + IN_QUERY_CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT uid, id FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ? AND uid IN (${placeholders})`,
+      )
+      .all(folderId, ...chunk) as { uid: number; id: number }[];
+    for (const r of rows) map.set(r.uid, r.id);
+  }
+  return map;
+}
+
+/** Mutable context reused across messages in one sync run (avoids per-message SELECT/MIN). */
+export type MessageUpsertContext = {
+  pop3UidlToId?: Map<string, number>;
+  nextPop3Uid?: number;
+  imapUidToId?: Map<number, number>;
+};
+
+export function createPop3UpsertContext(folderId: number, accountId: number): MessageUpsertContext {
+  const row = getDb()
+    .prepare(
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid < 0`,
+    )
+    .get(accountId, folderId) as { m: number | null };
+  return {
+    pop3UidlToId: loadPop3UidlToIdMap(folderId),
+    nextPop3Uid: row.m != null ? row.m - 1 : -1,
+  };
+}
+
+export function createImapUpsertContext(folderId: number, uids: number[]): MessageUpsertContext {
+  return { imapUidToId: loadImapUidToIdMap(folderId, uids) };
+}
+
 export function insertOrUpdateEmailMessage(input: {
   accountId: number;
   folderId: number;
@@ -832,7 +897,7 @@ export function insertOrUpdateEmailMessage(input: {
   /** POP3: stable server UIDL — row is keyed by this, not by volatile message number. */
   pop3Uidl?: string | null;
   rawHeaders?: string | null;
-}): { id: number; isNew: boolean } {
+}, ctx?: MessageUpsertContext): { id: number; isNew: boolean } {
   const hasAtt = input.hasAttachments ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
   const imapTid = input.imapThreadId ?? null;
@@ -842,11 +907,16 @@ export function insertOrUpdateEmailMessage(input: {
 
   let existingByUidl: { id: number } | undefined;
   if (pop3Uidl) {
-    existingByUidl = db
-      .prepare(
-        `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND pop3_uidl = ?`,
-      )
-      .get(input.accountId, input.folderId, pop3Uidl) as { id: number } | undefined;
+    const cachedId = ctx?.pop3UidlToId?.get(pop3Uidl);
+    if (cachedId != null) {
+      existingByUidl = { id: cachedId };
+    } else {
+      existingByUidl = db
+        .prepare(
+          `SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND pop3_uidl = ?`,
+        )
+        .get(input.accountId, input.folderId, pop3Uidl) as { id: number } | undefined;
+    }
     if (existingByUidl) {
       const byUidl = existingByUidl;
       db.prepare(
@@ -891,12 +961,24 @@ export function insertOrUpdateEmailMessage(input: {
     }
   }
 
-  const uidForRow =
-    pop3Uidl && !existingByUidl ? allocatePop3NegativeUid(input.accountId, input.folderId) : input.uid;
+  let uidForRow = input.uid;
+  if (pop3Uidl && !existingByUidl) {
+    if (ctx?.nextPop3Uid != null) {
+      uidForRow = ctx.nextPop3Uid;
+      ctx.nextPop3Uid -= 1;
+    } else {
+      uidForRow = allocatePop3NegativeUid(input.accountId, input.folderId);
+    }
+  }
 
-  const existing = db
-    .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
-    .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
+  const cachedImapId =
+    !pop3Uidl && ctx?.imapUidToId != null ? ctx.imapUidToId.get(uidForRow) : undefined;
+  const existing =
+    cachedImapId != null
+      ? { id: cachedImapId }
+      : (db
+          .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
+          .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined);
   const isNew = !existing;
 
   const stmt = db.prepare(
@@ -947,10 +1029,19 @@ export function insertOrUpdateEmailMessage(input: {
     pop3Uidl,
     input.rawHeaders ?? null,
   );
-  const row = db
-    .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
-    .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
-  const id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
+  let id = existing?.id ?? 0;
+  if (!id) {
+    const row = db
+      .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
+      .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined;
+    id = row?.id ?? (result.lastInsertRowid ? Number(result.lastInsertRowid) : 0);
+  }
+  if (pop3Uidl && ctx?.pop3UidlToId && id > 0) {
+    ctx.pop3UidlToId.set(pop3Uidl, id);
+  }
+  if (!pop3Uidl && ctx?.imapUidToId && id > 0) {
+    ctx.imapUidToId.set(uidForRow, id);
+  }
   return { id, isNew };
 }
 
