@@ -45,6 +45,23 @@ describe('mail-auth-verify', () => {
     expect(r.dkimDomains).toContain('example.com');
   });
 
+  test('aggregate dkim fail-only and missing results', async () => {
+    (authenticate as jest.Mock).mockResolvedValueOnce({
+      spf: 'none',
+      dkim: { results: [{ status: { result: 'permerror' }, signingDomain: 'bad.com' }] },
+      dmarc: null,
+      arc: null,
+    });
+    expect((await verifyMailAuthentication({ rawHeaders: 'From: a@b.de', bodyText: 'x', bodyHtml: null })).dkim).toBe(
+      'fail',
+    );
+
+    (authenticate as jest.Mock).mockResolvedValueOnce({ spf: null, dkim: undefined, dmarc: null, arc: null });
+    const none = await verifyMailAuthentication({ rawHeaders: 'From: a@b.de', bodyText: 'x', bodyHtml: null });
+    expect(none.dkim).toBe('none');
+    expect(none.spf).toBe('none');
+  });
+
   test('handles authenticate errors', async () => {
     (authenticate as jest.Mock).mockRejectedValue(new Error('dns fail'));
     const r = await verifyMailAuthentication({
