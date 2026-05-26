@@ -107,6 +107,9 @@ export function MailSecurityPanel() {
           Nutzt Header + Body aus der lokalen DB. Ergebnisse: Workflow-Variablen{" "}
           <code className="text-xs">auth.spf</code>, <code className="text-xs">auth.dkim</code>,{" "}
           <code className="text-xs">auth.dmarc</code>, <code className="text-xs">auth.arc</code>.
+          Bei <strong>temperror</strong> konnte mailauth die Absender-Domains per DNS nicht prüfen
+          (Internet/VPN/Firewall/DNS) — die Prüfung läuft trotzdem, liefert dann aber kein verlässliches
+          pass/fail.
         </p>
       </div>
 

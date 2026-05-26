@@ -1,5 +1,19 @@
+import dns from 'dns';
 import { authenticate, type AuthStatus, type DKIMVerifyResult } from 'mailauth';
 import { buildRfc822FromStored, extractEnvelopeSender } from './mail-rfc822-build';
+
+let dnsResultOrderPatched = false;
+
+/** Broken IPv6 DNS on some networks causes mailauth temperror for SPF/DKIM/DMARC. */
+function ensureDnsPrefersIpv4(): void {
+  if (dnsResultOrderPatched) return;
+  try {
+    dns.setDefaultResultOrder('ipv4first');
+    dnsResultOrderPatched = true;
+  } catch {
+    /* Node without setDefaultResultOrder */
+  }
+}
 
 export type AuthResultLabel =
   | 'pass'
@@ -46,6 +60,55 @@ function statusLabel(st: AuthStatus | undefined): AuthResultLabel {
   return normalizeResult(st?.result);
 }
 
+/** Best-effort parse of the receiving MTA's Authentication-Results (advisory only). */
+function extractAuthenticationResultsBlocks(rawHeaders: string): string[] {
+  const lines = rawHeaders.replace(/\r\n/g, '\n').split('\n');
+  const blocks: string[] = [];
+  let current: string | null = null;
+  for (const line of lines) {
+    if (/^Authentication-Results:/i.test(line)) {
+      if (current) blocks.push(current.trim());
+      current = line.replace(/^Authentication-Results:\s*/i, '');
+    } else if (current != null && /^[ \t]/.test(line)) {
+      current += ` ${line.trim()}`;
+    } else {
+      if (current) blocks.push(current.trim());
+      current = null;
+    }
+  }
+  if (current) blocks.push(current.trim());
+  return blocks;
+}
+
+export function parseAuthenticationResultsAdvisory(rawHeaders: string | null): string | null {
+  if (!rawHeaders?.trim()) return null;
+  const blocks = extractAuthenticationResultsBlocks(rawHeaders);
+  if (!blocks.length) return null;
+  const body = blocks[blocks.length - 1];
+  const parts: string[] = [];
+  for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
+    const m = body.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
+    if (m?.[1]) parts.push(`${key.toUpperCase()}=${m[1].toLowerCase()}`);
+  }
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
+function buildTemperrorHint(
+  labels: AuthResultLabel[],
+  rawHeaders: string | null,
+): string | undefined {
+  const temperrors = labels.filter((l) => l === 'temperror' || l === 'unknown').length;
+  if (temperrors < 2) return undefined;
+  const advisory = parseAuthenticationResultsAdvisory(rawHeaders);
+  const base =
+    'Live-DNS-Prüfung (mailauth) vorübergehend fehlgeschlagen (temperror). ' +
+    'Internet, VPN/Firewall und DNS prüfen (z. B. Pi-hole, Firmen-DNS).';
+  if (advisory) {
+    return `${base} Empfangsserver (Authentication-Results): ${advisory}.`;
+  }
+  return base;
+}
+
 function aggregateDkim(dkim: DKIMVerifyResult | undefined): {
   label: AuthResultLabel;
   domains: string[];
@@ -84,6 +147,7 @@ export async function verifyMailAuthentication(input: {
   }
 
   try {
+    ensureDnsPrefersIpv4();
     const sender = extractEnvelopeSender(input.rawHeaders);
     const result = await authenticate(message, {
       trustReceived: true,
@@ -99,12 +163,14 @@ export async function verifyMailAuthentication(input: {
         : 'none';
     const arc =
       result.arc && typeof result.arc === 'object' ? statusLabel(result.arc.status) : 'none';
+    const error = buildTemperrorHint([spf, dkimAgg.label, dmarc], input.rawHeaders);
     return {
       spf,
       dkim: dkimAgg.label,
       dmarc,
       arc,
       dkimDomains: dkimAgg.domains,
+      error,
     };
   } catch (e) {
     return {
