@@ -30,6 +30,7 @@ import {
   cleanupInlineImageTempFiles,
   extractInlineImagesFromHtml,
 } from './email-inline-images';
+import { persistLocalComposeAttachments } from './email-message-attachments-store';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
 function maxComposeAttachmentBytes(): number {
@@ -114,28 +115,34 @@ async function finalizeSentDraft(input: {
     sentAppendWarning =
       'E-Mail wurde versendet. POP3-Konten können keine Kopie per IMAP in „Gesendet“ ablegen.';
   } else {
-  try {
-    await appendSentToImap({
-      accountId: input.accountId,
-      from: input.from,
-      to: input.to,
-      cc: input.cc,
-      subject: input.subject,
-      text: input.text,
-      html: input.html,
-      messageId: input.messageId,
-      inReplyTo: input.inReplyTo,
-      references: input.references,
-      attachments: input.attachments,
-      includeBccInHeaders: false,
-      requestReadReceipt: input.requestReadReceipt,
-    });
-  } catch (e) {
-    sentAppendWarning =
-      e instanceof Error
-        ? `E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden: ${e.message}`
-        : 'E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden.';
+    try {
+      await appendSentToImap({
+        accountId: input.accountId,
+        from: input.from,
+        to: input.to,
+        cc: input.cc,
+        subject: input.subject,
+        text: input.text,
+        html: input.html,
+        messageId: input.messageId,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+        attachments: input.attachments,
+        includeBccInHeaders: false,
+        requestReadReceipt: input.requestReadReceipt,
+      });
+    } catch (e) {
+      console.warn('[email-compose] sent IMAP append failed:', e);
+      sentAppendWarning =
+        e instanceof Error
+          ? `E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden: ${e.message}`
+          : 'E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden.';
+    }
   }
+  try {
+    persistLocalComposeAttachments(input.draftMessageId, input.attachments);
+  } catch (e) {
+    console.warn('[email-compose] local sent attachment persistence failed:', e);
   }
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);

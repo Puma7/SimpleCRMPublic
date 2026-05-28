@@ -31,6 +31,10 @@ jest.mock('../../electron/email/email-imap-append', () => ({
   appendSentToImap: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  persistLocalComposeAttachments: jest.fn(),
+}));
+
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({
     prepare: () => ({ run: (...args: unknown[]) => mockDbRun(...args) }),

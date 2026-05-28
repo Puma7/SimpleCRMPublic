@@ -6,6 +6,7 @@ export function createImapFlowMock() {
     connect: jest.fn().mockResolvedValue(undefined),
     logout: jest.fn().mockResolvedValue(undefined),
     getMailboxLock: jest.fn().mockResolvedValue(lock),
+    list: jest.fn().mockResolvedValue([]),
     mailboxOpen: jest.fn().mockResolvedValue(undefined),
     append: jest.fn().mockResolvedValue(undefined),
     status: jest.fn().mockResolvedValue({ uidValidity: 1, uidNext: 10, messages: 0 }),

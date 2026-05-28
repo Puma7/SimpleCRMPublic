@@ -10,6 +10,9 @@ jest.mock('../../electron/sqlite-service', () => ({
     prepare: () => ({ run: jest.fn(), get: jest.fn() }),
   }),
 }));
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  persistLocalComposeAttachments: jest.fn(),
+}));
 
 import { getComposeDraftRecoveryState } from '../../electron/email/email-compose-send';
 

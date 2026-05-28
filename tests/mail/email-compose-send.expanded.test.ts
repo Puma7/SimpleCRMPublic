@@ -7,6 +7,7 @@ const mockGetMessage = jest.fn();
 const mockUpdateDraft = jest.fn();
 const mockMarkSent = jest.fn();
 const mockGetAccount = jest.fn();
+const mockSetMessageDoneLocal = jest.fn();
 const mockSendSmtp = jest.fn();
 const mockEvaluateOutbound = jest.fn();
 const mockAppendSent = jest.fn();
@@ -15,12 +16,14 @@ const mockSetSyncInfo = jest.fn();
 const mockDbRun = jest.fn();
 const mockClearHold = jest.fn();
 const mockExtractInline = jest.fn();
+const mockPersistLocalComposeAttachments = jest.fn();
 
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...args: unknown[]) => mockGetMessage(...args),
   updateComposeDraft: (...args: unknown[]) => mockUpdateDraft(...args),
   markDraftAsSent: (...args: unknown[]) => mockMarkSent(...args),
   getEmailAccountById: (...args: unknown[]) => mockGetAccount(...args),
+  setMessageDoneLocal: (...args: unknown[]) => mockSetMessageDoneLocal(...args),
 }));
 
 jest.mock('../../electron/email/email-workflow-engine', () => ({
@@ -42,6 +45,10 @@ jest.mock('../../electron/email/email-outbound-review', () => ({
 jest.mock('../../electron/email/email-inline-images', () => ({
   extractInlineImagesFromHtml: (...args: unknown[]) => mockExtractInline(...args),
   cleanupInlineImageTempFiles: jest.fn(),
+}));
+
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  persistLocalComposeAttachments: (...args: unknown[]) => mockPersistLocalComposeAttachments(...args),
 }));
 
 jest.mock('../../electron/sqlite-service', () => ({
@@ -86,6 +93,7 @@ describe('email-compose-send expanded', () => {
     mockSendSmtp.mockResolvedValue(undefined);
     mockAppendSent.mockResolvedValue(undefined);
     mockExtractInline.mockReturnValue({ html: '<p>Hi</p>', attachments: [] });
+    mockPersistLocalComposeAttachments.mockReturnValue(undefined);
     mockGetMessage.mockImplementation((id: number) =>
       id === 99
         ? { id: 99, ticket_code: 'T-P', thread_id: 'th', message_id: '<p@x>', references_header: '<p@x>' }
@@ -158,6 +166,10 @@ describe('email-compose-send expanded', () => {
     });
     expect(r).toEqual({ ok: true });
     expect(mockSendSmtp).toHaveBeenCalled();
+    expect(mockPersistLocalComposeAttachments).toHaveBeenCalledWith(
+      10,
+      expect.arrayContaining([expect.objectContaining({ filename: 'doc.txt', path: file })]),
+    );
     expect(mockClearHold).toHaveBeenCalled();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
