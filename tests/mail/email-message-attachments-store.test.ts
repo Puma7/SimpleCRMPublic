@@ -15,6 +15,7 @@ import {
   getAttachmentById,
   getAttachmentsRootForExport,
   listAttachmentsForMessage,
+  persistLocalComposeAttachments,
   persistParsedAttachments,
   purgeAttachmentFilesForAccount,
 } from '../../electron/email/email-message-attachments-store';
@@ -53,6 +54,17 @@ describe('email-message-attachments-store', () => {
       { filename: 'huge.bin', content: Buffer.alloc(26 * 1024 * 1024) },
     ]);
     expect(stmt.run).toHaveBeenCalled();
+  });
+
+  test('persistLocalComposeAttachments stores sent compose files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-att-'));
+    const fp = path.join(dir, 'angebot.xlsx');
+    fs.writeFileSync(fp, 'spreadsheet');
+    persistLocalComposeAttachments(12, [{ filename: 'angebot.xlsx', path: fp }]);
+    const storedDir = path.join(userData, 'email-attachments', '12');
+    expect(fs.existsSync(path.join(storedDir, 'angebot.xlsx'))).toBe(true);
+    expect(stmt.run).toHaveBeenCalled();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   test('persistParsedAttachments skips when existing on disk', async () => {
