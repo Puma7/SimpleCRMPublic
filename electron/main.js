@@ -12,6 +12,31 @@ const {
 // Configure electron-log
 log.transports.file.resolvePath = () => path.join(app.getPath('userData'), 'logs/main.log');
 log.catchErrors(); // Catch unhandled errors
+const disableConsoleTransportOnBrokenPipe = (stream) => {
+  stream?.on?.('error', (error) => {
+    if (error?.code === 'EPIPE') {
+      log.transports.console.level = false;
+    }
+  });
+};
+disableConsoleTransportOnBrokenPipe(process.stdout);
+disableConsoleTransportOnBrokenPipe(process.stderr);
+const originalConsoleWriteFn = log.transports.console.writeFn;
+log.transports.console.writeFn = (...args) => {
+  try {
+    return originalConsoleWriteFn(...args);
+  } catch (error) {
+    const isBrokenPipe =
+      error?.code === 'EPIPE' ||
+      error?.cause?.code === 'EPIPE' ||
+      /EPIPE|broken pipe|errored state/i.test(String(error?.message));
+    if (isBrokenPipe) {
+      log.transports.console.level = false;
+      return undefined;
+    }
+    throw error;
+  }
+};
 Object.assign(console, log.functions); // Override console functions
 
 const isDevelopment = process.env.NODE_ENV === 'development';
