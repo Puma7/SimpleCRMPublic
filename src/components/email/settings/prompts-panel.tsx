@@ -266,7 +266,7 @@ export function PromptsPanel() {
       : -1
 
   return (
-    <div className="flex h-[min(720px,calc(100vh-12rem))] min-h-[420px] flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-6">
       <div className="shrink-0">
         <h3 className="flex items-center gap-2 text-base font-semibold">
           <Sparkles className="h-4 w-4" />

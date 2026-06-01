@@ -58,13 +58,31 @@ function MailShellInner() {
     moveMessageToView,
     assignMessageCategory,
     snoozeMessageUntilTomorrow,
+    advanceSelectionAfterMessageRemoved,
     loadMore,
     hasMore,
     loadingMore,
   } = useEmailMessages()
-  const refreshList = async (opts?: { preserveSelection?: boolean }) => {
+  const refreshList = async (opts?: {
+    preserveSelection?: boolean
+    selectMessageId?: number | null
+    advanceFromRemovedId?: number
+  }) => {
     await refreshListBase(opts)
     if (selectedAccountId != null) await reloadCounts(selectedAccountId)
+  }
+  const handleListChanged = async (opts?: {
+    advanceFromMessageId?: number
+    selectMessageId?: number | null
+  }) => {
+    if (opts?.selectMessageId !== undefined) {
+      await refreshList({ selectMessageId: opts.selectMessageId })
+    } else if (opts?.advanceFromMessageId != null) {
+      await advanceSelectionAfterMessageRemoved(opts.advanceFromMessageId)
+      if (selectedAccountId != null) await reloadCounts(selectedAccountId)
+    } else {
+      await refreshList()
+    }
   }
   const handleSyncWithCategories = () =>
     void handleSync({
@@ -119,7 +137,7 @@ function MailShellInner() {
             loading={loadingMessages}
             onOpen={openMessage}
             onMoveMessageToView={moveMessageToView}
-            onListChanged={refreshList}
+            onListChanged={handleListChanged}
             loadMore={loadMore}
             hasMore={hasMore}
             loadingMore={loadingMore}
@@ -142,6 +160,7 @@ function MailShellInner() {
             reloadTags={reloadTags}
             refreshCurrentMessage={refreshCurrentMessage}
             refreshList={refreshList}
+            advanceSelectionAfterMessageRemoved={advanceSelectionAfterMessageRemoved}
             onReply={(m, initialReplyHtml) =>
               setComposeIntent({ mode: "reply", message: m, initialReplyHtml })
             }

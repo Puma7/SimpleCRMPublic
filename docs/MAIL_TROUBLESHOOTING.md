@@ -15,6 +15,16 @@ Kurzreferenz für Support und Entwickler. Technische Details: [`DEVELOPER_EMAIL.
 
 ---
 
+## Posteingang & Listen
+
+| Symptom | Ursache | Aktion |
+|---------|---------|--------|
+| Zahl neben Posteingang „stimmt nicht“ | Früher Ungelesen bevorzugt; jetzt nur **unerledigt** | Erledigte Mails (`done_local`) zählen nicht; Filter „Unerledigt“ in der Liste |
+| Kategorie-Zahl zu hoch | Erledigte in Kategorie | Nach Update: nur offene, nicht zurückgestellte Inbox-Mails |
+| Nach Erledigen leerer Detailbereich | Keine Nachfolger-Mail in der Liste | Normal bei letzter Mail; sonst sollte automatisch die nächste Zeile gewählt werden |
+
+---
+
 ## Versand & Entwürfe
 
 | Symptom | Ursache | Aktion |

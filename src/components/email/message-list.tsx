@@ -31,6 +31,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { setMailDragData } from "./mail-drag"
 import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
+import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 
 type Props = {
   messages: EmailMessage[]
@@ -38,7 +39,10 @@ type Props = {
   loading: boolean
   onOpen: (m: EmailMessage) => void | Promise<void>
   onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
-  onListChanged?: () => void | Promise<void>
+  onListChanged?: (opts?: {
+    advanceFromMessageId?: number
+    selectMessageId?: number | null
+  }) => void | Promise<void>
   loadMore?: () => void
   hasMore?: boolean
   loadingMore?: boolean
@@ -256,15 +260,29 @@ export function MessageList({
               : `${r.count} Nachrichten in den Papierkorb verschoben`,
           )
         }
+        const advanceActions: BulkAction[] = [
+          "archive",
+          "delete",
+          "delete-drafts",
+          "unsnooze",
+          "not-spam",
+          "restore",
+          "unarchive",
+        ]
+        const advanceTargetId = pickBulkAdvanceTargetId(visibleMessages, selectedIds)
         setSelectedIds(new Set())
-        await onListChanged?.()
+        if (advanceActions.includes(action)) {
+          await onListChanged?.({ selectMessageId: advanceTargetId })
+        } else {
+          await onListChanged?.()
+        }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Massenaktion fehlgeschlagen")
       } finally {
         setBulkBusy(false)
       }
     },
-    [selectedIds, bulkAccountId, onListChanged],
+    [selectedIds, bulkAccountId, onListChanged, visibleMessages],
   )
 
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =

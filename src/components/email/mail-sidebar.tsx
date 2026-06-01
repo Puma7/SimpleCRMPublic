@@ -38,9 +38,8 @@ const FOLDERS: {
   label: string
   icon: typeof Inbox
   countKey: keyof MailFolderCounts
-  unreadKey?: keyof MailFolderCounts
 }[] = [
-  { id: "inbox", label: "Posteingang", icon: Inbox, countKey: "inbox", unreadKey: "inboxUnread" },
+  { id: "inbox", label: "Posteingang", icon: Inbox, countKey: "inbox" },
   { id: "snoozed", label: "Zurückgestellt", icon: Clock, countKey: "snoozed" },
   { id: "sent", label: "Gesendet", icon: Send, countKey: "sent" },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
@@ -123,9 +122,11 @@ export function MailSidebar({
                 <Tag className="h-3 w-3 shrink-0 text-muted-foreground" />
                 {n.name}
               </span>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
-                {countForCategory(n.id)}
-              </span>
+              {countForCategory(n.id) > 0 ? (
+                <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                  {countForCategory(n.id) > 99 ? "99+" : countForCategory(n.id)}
+                </span>
+              ) : null}
             </button>,
             ...render(childrenOf(n.id), depth + 1),
           ])
@@ -179,10 +180,9 @@ export function MailSidebar({
 
       <ScrollArea className="flex-1">
         <div className="space-y-0.5 p-2">
-          {FOLDERS.map(({ id, label, icon: Icon, countKey, unreadKey }) => {
+          {FOLDERS.map(({ id, label, icon: Icon, countKey }) => {
             const total = countKey ? counts[countKey] : 0
-            const unread = unreadKey ? counts[unreadKey] : 0
-            const badge = unread > 0 ? unread : total > 0 ? total : null
+            const badge = total > 0 ? total : null
             const canDrop = DROPPABLE_FOLDER_VIEWS.includes(id)
             return (
               <button
@@ -234,12 +234,7 @@ export function MailSidebar({
                 <span className="min-w-0 flex-1 truncate">{label}</span>
                 {badge != null ? (
                   <span
-                    className={cn(
-                      "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums",
-                      unread > 0
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground",
-                    )}
+                    className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground"
                   >
                     {badge > 99 ? "99+" : badge}
                   </span>

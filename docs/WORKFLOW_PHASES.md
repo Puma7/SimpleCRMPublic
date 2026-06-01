@@ -46,6 +46,20 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | Canvas-Ports für `email.sender_filter` / `logic.threshold` | ✅ |
 | Zusätzliche Vorlagen (Schedule, Manual, CRM-Deal, Newsletter-Archiv) | ✅ |
 
+## Smoke-Check 2026-06-01
+
+Automatisierte Stichprobe (CI-äquivalent, lokal):
+
+| Trigger | Tests | Ergebnis |
+|---------|--------|----------|
+| Inbound | `email-workflow-engine.core`, `workflow-inbound-conditions` | OK |
+| Outbound | `email-workflow-engine.core`, `email-compose-send` | OK |
+| Schedule | `workflow-scheduled-fire`, `email-workflow-engine.core` | OK |
+
+Manuell empfohlen: Vorlage pro Trigger aktivieren → Lauf-Historie; „Jetzt ausführen“ bei Schedule; Compose „Ausgang prüfen“ (Dry-Run).
+
+Offen (unverändert): `webhook.incoming` nicht vollständig angebunden.
+
 ## Bekannte Grenzen (nach P7)
 
 - Embeddings nur wenn OpenAI-Key konfiguriert; sonst Keyword-RAG.
