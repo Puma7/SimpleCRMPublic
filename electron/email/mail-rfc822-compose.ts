@@ -101,6 +101,28 @@ function encodeBase64Lines(buf: Buffer): string {
   return lines.join('\r\n');
 }
 
+/** Rough upper bound for RFC822 size (base64 overhead on attachments + headers). */
+export function estimateComposeRfc822Bytes(input: {
+  text?: string;
+  html?: string;
+  attachments?: ComposeRfc822Attachment[];
+}): number {
+  let bytes = 12_000;
+  bytes += Buffer.byteLength(input.text ?? '', 'utf8');
+  bytes += Buffer.byteLength(input.html ?? '', 'utf8');
+  for (const att of input.attachments ?? []) {
+    try {
+      const st = fs.statSync(att.path);
+      if (st.isFile()) {
+        bytes += Math.ceil((st.size * 4) / 3) + 600;
+      }
+    } catch {
+      /* unreadable path — SMTP layer should have rejected earlier */
+    }
+  }
+  return bytes;
+}
+
 /** Build a complete RFC822 message buffer for Sent-folder append (matches SMTP parts). */
 export function buildComposeRfc822(input: {
   from: string;

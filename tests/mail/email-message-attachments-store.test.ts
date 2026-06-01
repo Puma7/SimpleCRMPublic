@@ -60,11 +60,18 @@ describe('email-message-attachments-store', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-att-'));
     const fp = path.join(dir, 'angebot.xlsx');
     fs.writeFileSync(fp, 'spreadsheet');
-    persistLocalComposeAttachments(12, [{ filename: 'angebot.xlsx', path: fp }]);
+    const r = persistLocalComposeAttachments(12, [{ filename: 'angebot.xlsx', path: fp }]);
+    expect(r).toEqual({ expectedCount: 1, storedCount: 1, failures: [] });
     const storedDir = path.join(userData, 'email-attachments', '12');
     expect(fs.existsSync(path.join(storedDir, 'angebot.xlsx'))).toBe(true);
     expect(stmt.run).toHaveBeenCalled();
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('persistLocalComposeAttachments throws when attachment cannot be read', () => {
+    expect(() =>
+      persistLocalComposeAttachments(12, [{ filename: 'missing.pdf', path: '/no/such/file.pdf' }]),
+    ).toThrow(/Nur 0 von 1 Anhängen lokal gespeichert/);
   });
 
   test('persistParsedAttachments skips when existing on disk', async () => {
