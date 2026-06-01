@@ -71,10 +71,14 @@ function MailShellInner() {
     await refreshListBase(opts)
     if (selectedAccountId != null) await reloadCounts(selectedAccountId)
   }
-  const handleListChanged = async (opts?: { advanceFromMessageId?: number }) => {
-    if (opts?.advanceFromMessageId != null) {
+  const handleListChanged = async (opts?: {
+    advanceFromMessageId?: number
+    selectMessageId?: number | null
+  }) => {
+    if (opts?.selectMessageId !== undefined) {
+      await refreshList({ selectMessageId: opts.selectMessageId })
+    } else if (opts?.advanceFromMessageId != null) {
       await advanceSelectionAfterMessageRemoved(opts.advanceFromMessageId)
-      if (selectedAccountId != null) await reloadCounts(selectedAccountId)
     } else {
       await refreshList()
     }

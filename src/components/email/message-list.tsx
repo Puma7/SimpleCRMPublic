@@ -31,7 +31,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { setMailDragData } from "./mail-drag"
 import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
-import { pickBulkAdvanceAnchorId } from "./select-adjacent-message"
+import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 
 type Props = {
   messages: EmailMessage[]
@@ -39,7 +39,10 @@ type Props = {
   loading: boolean
   onOpen: (m: EmailMessage) => void | Promise<void>
   onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
-  onListChanged?: (opts?: { advanceFromMessageId?: number }) => void | Promise<void>
+  onListChanged?: (opts?: {
+    advanceFromMessageId?: number
+    selectMessageId?: number | null
+  }) => void | Promise<void>
   loadMore?: () => void
   hasMore?: boolean
   loadingMore?: boolean
@@ -259,19 +262,21 @@ export function MessageList({
         }
         const advanceActions: BulkAction[] = [
           "archive",
+          "unarchive",
+          "restore",
           "delete",
           "delete-drafts",
           "unsnooze",
           "not-spam",
         ]
-        const anchor = pickBulkAdvanceAnchorId(
+        const advanceTarget = pickBulkAdvanceTargetId(
           visibleMessages,
           selectedIds,
           selectedMessage?.id ?? null,
         )
         setSelectedIds(new Set())
-        if (anchor != null && advanceActions.includes(action)) {
-          await onListChanged?.({ advanceFromMessageId: anchor })
+        if (advanceActions.includes(action)) {
+          await onListChanged?.({ selectMessageId: advanceTarget })
         } else {
           await onListChanged?.()
         }
