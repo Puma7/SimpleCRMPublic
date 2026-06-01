@@ -8,7 +8,7 @@ import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 
 export function useEmailCategories() {
-  const { selectedAccountId } = useMailWorkspace()
+  const { selectedAccountId, mailMetricsRevision } = useMailWorkspace()
   const [categories, setCategories] = useState<CategoryRow[]>([])
   const [catCounts, setCatCounts] = useState<CatCount[]>([])
 
@@ -33,7 +33,7 @@ export function useEmailCategories() {
     if (selectedAccountId != null) {
       void loadCategories(selectedAccountId)
     }
-  }, [selectedAccountId, loadCategories])
+  }, [selectedAccountId, mailMetricsRevision, loadCategories])
 
   const countForCategory = useCallback(
     (id: number) => catCounts.find((c) => c.categoryId === id)?.count ?? 0,
