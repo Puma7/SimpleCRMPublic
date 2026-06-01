@@ -34,3 +34,41 @@ export function pickBulkAdvanceAnchorId(
   }
   return null
 }
+
+/**
+ * After bulk-removing selected rows, pick the message to focus (Gmail-style).
+ * Prefers the first visible row after the last selected index, then before the
+ * first selected index; if selection is gapped (e.g. first and last), falls back
+ * to the first remaining row in list order.
+ */
+export function pickBulkAdvanceTargetId(
+  messages: ReadonlyArray<{ id: number }>,
+  selectedIds: ReadonlySet<number>,
+): number | null {
+  if (selectedIds.size === 0 || messages.length === 0) return null
+
+  const remaining = messages.filter((m) => !selectedIds.has(m.id))
+  if (remaining.length === 0) return null
+
+  let minIdx = messages.length
+  let maxIdx = -1
+  for (let i = 0; i < messages.length; i++) {
+    if (selectedIds.has(messages[i].id)) {
+      minIdx = Math.min(minIdx, i)
+      maxIdx = Math.max(maxIdx, i)
+    }
+  }
+  if (maxIdx === -1) return null
+
+  for (let i = maxIdx + 1; i < messages.length; i++) {
+    const m = messages[i]
+    if (!selectedIds.has(m.id)) return m.id
+  }
+
+  for (let i = minIdx - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!selectedIds.has(m.id)) return m.id
+  }
+
+  return remaining[0]?.id ?? null
+}

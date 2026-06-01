@@ -1,6 +1,7 @@
 import {
   pickAdjacentMessageId,
   pickBulkAdvanceAnchorId,
+  pickBulkAdvanceTargetId,
 } from '../../src/components/email/select-adjacent-message';
 
 const msgs = [{ id: 1 }, { id: 2 }, { id: 3 }];
@@ -38,5 +39,29 @@ describe('pickBulkAdvanceAnchorId', () => {
 
   test('uses first in list order when focus not in selection', () => {
     expect(pickBulkAdvanceAnchorId(msgs, new Set([2, 3]), 1)).toBe(2);
+  });
+});
+
+describe('pickBulkAdvanceTargetId', () => {
+  const four = [{ id: 10 }, { id: 20 }, { id: 30 }, { id: 40 }];
+
+  test('contiguous selection: picks first row after removed block', () => {
+    expect(pickBulkAdvanceTargetId(four, new Set([20, 30]))).toBe(40);
+  });
+
+  test('contiguous at end: picks row before block', () => {
+    expect(pickBulkAdvanceTargetId(four, new Set([30, 40]))).toBe(20);
+  });
+
+  test('non-contiguous selection: picks first remaining in list order', () => {
+    expect(pickBulkAdvanceTargetId(four, new Set([10, 40]))).toBe(20);
+  });
+
+  test('returns null when all visible rows are selected', () => {
+    expect(pickBulkAdvanceTargetId(four, new Set([10, 20, 30, 40]))).toBeNull();
+  });
+
+  test('returns null for empty selection', () => {
+    expect(pickBulkAdvanceTargetId(four, new Set())).toBeNull();
   });
 });

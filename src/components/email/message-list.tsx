@@ -31,7 +31,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { setMailDragData } from "./mail-drag"
 import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
-import { pickBulkAdvanceAnchorId } from "./select-adjacent-message"
+import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 
 type Props = {
   messages: EmailMessage[]
@@ -39,7 +39,10 @@ type Props = {
   loading: boolean
   onOpen: (m: EmailMessage) => void | Promise<void>
   onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
-  onListChanged?: (opts?: { advanceFromMessageId?: number }) => void | Promise<void>
+  onListChanged?: (opts?: {
+    advanceFromMessageId?: number
+    selectMessageId?: number | null
+  }) => void | Promise<void>
   loadMore?: () => void
   hasMore?: boolean
   loadingMore?: boolean
@@ -263,15 +266,13 @@ export function MessageList({
           "delete-drafts",
           "unsnooze",
           "not-spam",
+          "restore",
+          "unarchive",
         ]
-        const anchor = pickBulkAdvanceAnchorId(
-          visibleMessages,
-          selectedIds,
-          selectedMessage?.id ?? null,
-        )
+        const advanceTargetId = pickBulkAdvanceTargetId(visibleMessages, selectedIds)
         setSelectedIds(new Set())
-        if (anchor != null && advanceActions.includes(action)) {
-          await onListChanged?.({ advanceFromMessageId: anchor })
+        if (advanceActions.includes(action)) {
+          await onListChanged?.({ selectMessageId: advanceTargetId })
         } else {
           await onListChanged?.()
         }
@@ -281,7 +282,7 @@ export function MessageList({
         setBulkBusy(false)
       }
     },
-    [selectedIds, bulkAccountId, onListChanged, visibleMessages, selectedMessage?.id],
+    [selectedIds, bulkAccountId, onListChanged, visibleMessages],
   )
 
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =
