@@ -19,6 +19,11 @@ export type EmailAccount = {
   smtp_username?: string | null
   smtp_use_imap_auth?: number | null
   sent_folder_path?: string | null
+  sync_spam_folder_path?: string | null
+  sync_archive_folder_path?: string | null
+  imap_sync_sent?: number | null
+  imap_sync_archive?: number | null
+  imap_sync_spam?: number | null
   /** IMAP: mark \\Seen on server when opening a message locally (POP3: ignored). */
   imap_sync_seen_on_open?: number | null
   vacation_enabled?: number

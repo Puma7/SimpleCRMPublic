@@ -67,6 +67,9 @@ src/.DS_Store
 !docs/USER_GUIDE_CRM.md
 !docs/DEVELOPER_CRM.md
 !docs/PRODUCT_REQUIREMENTS.md
+!docs/MAIL_BETA_PHASE3_PLAN.md
+!docs/MAIL_TROUBLESHOOTING.md
+!docs/MAIL_SINGLE_USER_LIMITS.md
 !AGENTS.md
 
 coverage/

@@ -3,7 +3,7 @@ import { ImapFlow } from 'imapflow';
 import { listEmailAccounts } from './email-store';
 import { resolveImapAuth } from './email-imap-auth';
 import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
-import { syncInboxImap } from './email-imap-sync';
+import { syncAccountImap } from './email-imap-sync';
 import { syncInboxPop3 } from './email-pop3-sync';
 import { runScheduledWorkflowFire } from './email-workflow-engine';
 import { listWorkflowsWithCron } from './email-workflow-store';
@@ -66,7 +66,7 @@ async function startIdleForAccount(
       if (now - last < MIN_SYNC_GAP_MS) return;
       syncInFlight.add(acc.id);
       lastScheduledSyncAt.set(acc.id, now);
-      void syncInboxImap(acc.id)
+      void syncAccountImap(acc.id)
         .catch((e) => logger.debug(`[email] idle sync ${acc.id}`, e))
         .finally(() => {
           syncInFlight.delete(acc.id);
@@ -188,7 +188,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
             if ((acc.protocol || 'imap') === 'pop3') {
               await syncInboxPop3(acc.id);
             } else {
-              await syncInboxImap(acc.id);
+              await syncAccountImap(acc.id);
             }
           } catch (e) {
             logger.debug(`[email] sync ${acc.id}`, e);
@@ -212,6 +212,10 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     }
     void startIdleForAccount(acc, logger);
   }
+}
+
+export function isEmailBackgroundSyncBusy(): boolean {
+  return globalCronTickInFlight || syncInFlight.size > 0;
 }
 
 export function stopEmailBackgroundServices(): void {

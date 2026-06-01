@@ -118,7 +118,7 @@ import {
   updateAiProfile,
   type AiProviderPreset,
 } from '../email/email-ai-profiles';
-import { syncInboxImap, testImapConnection } from '../email/email-imap-sync';
+import { syncAccountImap, testImapConnection } from '../email/email-imap-sync';
 import { syncInboxPop3, testPop3Connection } from '../email/email-pop3-sync';
 import {
   evaluateOutboundWorkflows,
@@ -279,6 +279,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Port?: number | null;
           pop3Tls?: boolean | null;
           sentFolderPath?: string | null;
+          syncSpamFolderPath?: string | null;
+          syncArchiveFolderPath?: string | null;
+          imapSyncSent?: boolean;
+          imapSyncArchive?: boolean;
+          imapSyncSpam?: boolean;
           imapSyncSeenOnOpen?: boolean;
           vacationEnabled?: boolean;
           vacationSubject?: string | null;
@@ -309,6 +314,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           pop3Port: payload.pop3Port ?? undefined,
           pop3Tls: payload.pop3Tls === undefined ? undefined : Boolean(payload.pop3Tls),
           sentFolderPath: payload.sentFolderPath,
+          syncSpamFolderPath: payload.syncSpamFolderPath,
+          syncArchiveFolderPath: payload.syncArchiveFolderPath,
+          imapSyncSent: payload.imapSyncSent,
+          imapSyncArchive: payload.imapSyncArchive,
+          imapSyncSpam: payload.imapSyncSpam,
           imapSyncSeenOnOpen: payload.imapSyncSeenOnOpen,
           vacationEnabled: payload.vacationEnabled,
           vacationSubject: payload.vacationSubject,
@@ -386,6 +396,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             oauth_provider: null,
             oauth_refresh_keytar_key: null,
             sent_folder_path: 'Sent',
+            sync_spam_folder_path: null,
+            sync_archive_folder_path: null,
+            imap_sync_sent: 0,
+            imap_sync_archive: 0,
+            imap_sync_spam: 0,
             imap_sync_seen_on_open: 1,
             vacation_enabled: 0,
             vacation_subject: null,
@@ -419,8 +434,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             lastUid: result.lastUid,
           };
         }
-        const result = await syncInboxImap(accountId);
-        return { success: true as const, ...result };
+        const result = await syncAccountImap(accountId);
+        const inbox =
+          result.folders.find((f) => f.folderPath.toUpperCase() === 'INBOX') ??
+          result.folders[0];
+        return {
+          success: true as const,
+          fetched: result.totalFetched,
+          folderId: inbox?.folderId ?? 0,
+          lastUid: inbox?.lastUid ?? 0,
+          foldersSynced: result.folders.length,
+        };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         logger.error('[IPC] email:sync-account', e);
@@ -956,6 +980,50 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       const { exportLocalMailBackup } = await import('../email/email-local-backup');
       return exportLocalMailBackup();
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.VerifyLocalMailBackup, async () => {
+      const { verifyLocalMailBackup } = await import('../email/email-local-backup');
+      return verifyLocalMailBackup();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.PickLocalMailBackupZip, async () => {
+      const { pickLocalMailBackupZip } = await import('../email/email-local-restore');
+      return pickLocalMailBackupZip();
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.PreviewRestoreLocalMailBackup,
+      async (_event, payload: { zipPath: string }) => {
+        const { previewRestoreLocalMailBackup } = await import('../email/email-local-restore');
+        return previewRestoreLocalMailBackup(payload.zipPath);
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RestoreLocalMailBackup,
+      async (
+        _event,
+        payload: {
+          zipPath: string;
+          previewToken: string;
+          confirmPhrase: string;
+          createPreBackup: boolean;
+        },
+      ) => {
+        const { restoreLocalMailBackup } = await import('../email/email-local-restore');
+        return restoreLocalMailBackup(payload);
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

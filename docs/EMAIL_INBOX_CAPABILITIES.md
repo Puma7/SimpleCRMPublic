@@ -9,6 +9,7 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Posteingang, Gesendet, Archiv, Entwürfe, Spam, Papierkorb | stabil | Papierkorb = `soft_deleted` |
 | Archivieren / Spam / Massenaktionen | stabil | Checkboxen + Bulk-IPC |
 | Snooze (E-Mail) | stabil | `snoozed_until` |
+| Kategorien (manuell + Workflow) | stabil | UI + `set_category` |
 | Shop-„Ordner“ | teilweise | Kategorien + Workflows |
 
 ## Lesen & Datenschutz
@@ -51,11 +52,20 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Inbound: `sender_filter` / `ai.classify` direkt am Trigger | stabil | |
 | Webhook / CRM-Trigger | teilweise | Vorhanden, Feintuning laufend |
 
+## Backup & Diagnose
+
+| Funktion | Status | Hinweis |
+|----------|--------|---------|
+| Diagnose-JSON | stabil | Einstellungen → Diagnose |
+| Vollbackup ZIP | stabil | DB + Anhänge, ohne Keytar |
+| Backup prüfen | stabil | Manifest + `database.sqlite` |
+| Restore-Wizard | geplant | Manuell: `MAIL_BETA_PHASE3_PLAN.md` |
+
 ## Noch geplant / begrenzt
 
 | Funktion | Status |
 |----------|--------|
-| Vollständiger IMAP Multi-Folder-Sync | geplant |
+| IMAP Multi-Folder (Sent / Archiv / Spam) | stabil | Opt-in pro Konto unter SMTP/IMAP-Einstellungen |
 | PGP-Entschlüsselung | geplant |
 | Open/Click-Tracking | geplant |
 | Abwesenheitsantwort pro Konto | stabil | Einstellungen → Konten bearbeiten |

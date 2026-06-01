@@ -31,7 +31,7 @@ Dieses Dokument beschreibt das **Soll-Verhalten** des SimpleCRM-E-Mail-Moduls au
 
 - Kategorien sind **global** (z. B. Webshop, Rechnungen, Kundenservice) — nicht pro Konto.
 - Sie dienen als **Filter im Posteingang** („Alle“ = kein Kategoriefilter).
-- Zuweisung erfolgt heute vor allem über **Workflows** (`email.set_category` / Kategoriepfad). Manuelle Zuweisung in der UI ist geplant.
+- Zuweisung über **Workflows** (`email.set_category`) oder **manuell** am Thread (Kategorie-Dropdown in der Nachrichtenliste / Detail).
 - Zähler neben Kategorien beziehen sich auf den **aktuellen Kontext** (ein Konto oder alle Konten im Posteingang).
 
 ---
@@ -77,7 +77,7 @@ Dieses Dokument beschreibt das **Soll-Verhalten** des SimpleCRM-E-Mail-Moduls au
 - **Eingehend:** Trigger `inbound`, `draft_created`
 - **Ausgehend:** Trigger `outbound` (Qualitätsprüfung vor SMTP)
 - Graph-Editor: modulare Knoten aus der Palette; Ausführung über `graph_json`.
-- **KI-Profil** pro Knoten: in der Experten-JSON `profileId` (numerische ID aus Einstellungen → KI).
+- **KI-Profil** pro KI-Knoten: Dropdown in den Knoten-Eigenschaften (oder Experten-JSON `profileId`). Reihenfolge bei Prompt-Knoten: Knoten-Profil → Prompt-Profil → Standard-Profil.
 
 Ausführung intern: `workflow-executor` → `runtime` → Registry-Knoten. Tests: `npm test` (Workflow-Integration).
 

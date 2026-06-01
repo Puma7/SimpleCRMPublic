@@ -18,6 +18,20 @@ function effectiveProfileId(
   if (fromConfig != null) return fromConfig;
   return resolvePromptProfileId(prompt);
 }
+
+/** Match UI default: first library prompt when promptId is missing or 0. */
+function resolvePromptForConfig(
+  config: Record<string, unknown>,
+): AiPromptRow | undefined {
+  const prompts = listAiPrompts();
+  const id = Number(config.promptId ?? 0);
+  if (id > 0) {
+    const found = prompts.find((x) => x.id === id);
+    if (found) return found;
+  }
+  return prompts[0];
+}
+
 import {
   addMessageTag,
   createComposeDraft,
@@ -41,9 +55,7 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'action',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
     execute: async (ctx, config) => {
-      const promptId = Number(config.promptId ?? 0);
-      const prompts = listAiPrompts();
-      const p = prompts.find((x) => x.id === promptId);
+      const p = resolvePromptForConfig(config);
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
       const blockKw = String(config.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
@@ -190,8 +202,7 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { promptId: 0, targetVariable: 'ai.text' },
     execute: async (ctx, config) => {
-      const promptId = Number(config.promptId ?? 0);
-      const p = listAiPrompts().find((x) => x.id === promptId);
+      const p = resolvePromptForConfig(config);
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template, ctx);
       if (ctx.dryRun) return { status: 'ok' };

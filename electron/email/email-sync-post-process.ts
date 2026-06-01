@@ -35,7 +35,9 @@ export async function processNewMessagesAfterSync(
   accountId: number,
   items: SyncNewMessageItem[],
   folderId?: number,
+  opts?: { runInboundWorkflows?: boolean },
 ): Promise<void> {
+  const runInboundWorkflows = opts?.runInboundWorkflows !== false;
   const merged = [...items];
   if (folderId != null) {
     const pending = listMessagesPendingPostProcess(folderId);
@@ -62,7 +64,7 @@ export async function processNewMessagesAfterSync(
   const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
 
   const customerByEmail = buildCustomerEmailMap();
-  const inboundWorkflows = listWorkflowsByTrigger('inbound');
+  const inboundWorkflows = runInboundWorkflows ? listWorkflowsByTrigger('inbound') : [];
 
   for (const item of merged) {
     try {
@@ -78,19 +80,25 @@ export async function processNewMessagesAfterSync(
     }
   }
 
-  for (const item of merged) {
-    try {
-      const row = getEmailMessageById(item.localMsgId);
-      if (!row) continue;
-      const appliedWorkflowIds = loadAppliedWorkflowIdsForMessage(item.localMsgId);
-      await runInboundWorkflowsForMessage(item.localMsgId, {
-        row,
-        inboundWorkflows,
-        appliedWorkflowIds,
-      });
+  if (runInboundWorkflows) {
+    for (const item of merged) {
+      try {
+        const row = getEmailMessageById(item.localMsgId);
+        if (!row) continue;
+        const appliedWorkflowIds = loadAppliedWorkflowIdsForMessage(item.localMsgId);
+        await runInboundWorkflowsForMessage(item.localMsgId, {
+          row,
+          inboundWorkflows,
+          appliedWorkflowIds,
+        });
+        markMessagePostProcessDone(item.localMsgId);
+      } catch (e) {
+        console.warn(`[email] post-process workflows failed msg ${item.localMsgId}`, e);
+      }
+    }
+  } else {
+    for (const item of merged) {
       markMessagePostProcessDone(item.localMsgId);
-    } catch (e) {
-      console.warn(`[email] post-process workflows failed msg ${item.localMsgId}`, e);
     }
   }
 }

@@ -33,6 +33,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [smtpImapAuth, setSmtpImapAuth] = useState(true)
   const [smtpPass, setSmtpPass] = useState("")
   const [sentFolder, setSentFolder] = useState("Sent")
+  const [syncSent, setSyncSent] = useState(false)
+  const [syncArchive, setSyncArchive] = useState(false)
+  const [syncSpam, setSyncSpam] = useState(false)
+  const [archiveFolder, setArchiveFolder] = useState("")
+  const [spamFolder, setSpamFolder] = useState("")
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
 
@@ -61,6 +66,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       setSmtpUser(a.smtp_username || "")
       setSmtpImapAuth((a.smtp_use_imap_auth ?? 1) === 1)
       setSentFolder(a.sent_folder_path || "Sent")
+      setSyncSent((a.imap_sync_sent ?? 0) === 1)
+      setSyncArchive((a.imap_sync_archive ?? 0) === 1)
+      setSyncSpam((a.imap_sync_spam ?? 0) === 1)
+      setArchiveFolder(a.sync_archive_folder_path || "")
+      setSpamFolder(a.sync_spam_folder_path || "")
     }
   }, [accId, accounts])
 
@@ -77,6 +87,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         smtpUseImapAuth: smtpImapAuth,
         smtpPassword: smtpPass || undefined,
         sentFolderPath: sentFolder.trim() || null,
+        syncSpamFolderPath: spamFolder.trim() || null,
+        syncArchiveFolderPath: archiveFolder.trim() || null,
+        imapSyncSent: syncSent,
+        imapSyncArchive: syncArchive,
+        imapSyncSpam: syncSpam,
       })
       toast.success("SMTP gespeichert.")
       setSmtpPass("")
@@ -194,6 +209,49 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
               placeholder="Sent"
             />
           </div>
+          {(accounts.find((x) => x.id === accId)?.protocol || "imap") === "imap" ? (
+            <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+              <p className="text-xs font-medium">IMAP-Ordner vom Server synchronisieren</p>
+              <p className="text-xs text-muted-foreground">
+                Zusätzlich zum Posteingang (INBOX). Leere Pfad-Felder = automatische Erkennung
+                (\\Sent, \\Archive, \\Junk).
+              </p>
+              <div className="flex items-center gap-2">
+                <Switch checked={syncSent} onCheckedChange={setSyncSent} id="sync-sent" />
+                <Label htmlFor="sync-sent" className="font-normal text-sm">
+                  Gesendet-Ordner lesen
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch checked={syncArchive} onCheckedChange={setSyncArchive} id="sync-arch" />
+                <Label htmlFor="sync-arch" className="font-normal text-sm">
+                  Archiv-Ordner lesen
+                </Label>
+              </div>
+              {syncArchive ? (
+                <Input
+                  value={archiveFolder}
+                  onChange={(e) => setArchiveFolder(e.target.value)}
+                  placeholder="Archive (optional)"
+                  className="h-9"
+                />
+              ) : null}
+              <div className="flex items-center gap-2">
+                <Switch checked={syncSpam} onCheckedChange={setSyncSpam} id="sync-spam" />
+                <Label htmlFor="sync-spam" className="font-normal text-sm">
+                  Spam/Junk-Ordner lesen
+                </Label>
+              </div>
+              {syncSpam ? (
+                <Input
+                  value={spamFolder}
+                  onChange={(e) => setSpamFolder(e.target.value)}
+                  placeholder="Spam (optional)"
+                  className="h-9"
+                />
+              ) : null}
+            </div>
+          ) : null}
           <div className="flex gap-2">
             <Button
               type="button"

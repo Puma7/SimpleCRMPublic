@@ -14,6 +14,12 @@ const mockAccount = {
   imap_port: 993,
   imap_tls: 1,
   imap_username: 'u@x.de',
+  sent_folder_path: 'Sent',
+  sync_spam_folder_path: null,
+  sync_archive_folder_path: null,
+  imap_sync_sent: 0,
+  imap_sync_archive: 0,
+  imap_sync_spam: 0,
 };
 const mockFolder = { id: 10, account_id: 1, path: 'INBOX', last_uid: 0, uidvalidity: 1, uidvalidity_str: '1' };
 

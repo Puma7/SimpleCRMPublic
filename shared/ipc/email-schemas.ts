@@ -82,6 +82,11 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         pop3Port: z.number().int().positive().nullable().optional(),
         pop3Tls: z.boolean().nullable().optional(),
         sentFolderPath: z.string().nullable().optional(),
+        syncSpamFolderPath: z.string().nullable().optional(),
+        syncArchiveFolderPath: z.string().nullable().optional(),
+        imapSyncSent: z.boolean().optional(),
+        imapSyncArchive: z.boolean().optional(),
+        imapSyncSpam: z.boolean().optional(),
         imapSyncSeenOnOpen: z.boolean().optional(),
         vacationEnabled: z.boolean().optional(),
         vacationSubject: z.string().nullable().optional(),
@@ -316,6 +321,58 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: voidPayload,
     result: z.union([
       z.object({ ok: z.literal(true), path: z.string() }),
+      z.object({ ok: z.literal(false), error: z.string() }),
+    ]),
+  });
+  set(IPCChannels.Email.VerifyLocalMailBackup, {
+    payload: voidPayload,
+    result: z.union([
+      z.object({
+        ok: z.literal(true),
+        path: z.string(),
+        schemaGeneration: z.number().optional(),
+        schemaGenerationLabel: z.string().optional(),
+        exportedAt: z.string().optional(),
+        hasDatabase: z.boolean(),
+        hasAttachments: z.boolean(),
+      }),
+      z.object({ ok: z.literal(false), error: z.string() }),
+    ]),
+  });
+  set(IPCChannels.Email.PickLocalMailBackupZip, {
+    payload: voidPayload,
+    result: z.union([
+      z.object({ ok: z.literal(true), path: z.string() }),
+      z.object({ ok: z.literal(false), error: z.string() }),
+    ]),
+  });
+  set(IPCChannels.Email.PreviewRestoreLocalMailBackup, {
+    payload: z.object({ zipPath: z.string().min(1) }),
+    result: z.union([
+      z.object({
+        ok: z.literal(true),
+        path: z.string(),
+        previewToken: z.string(),
+        schemaGeneration: z.number().optional(),
+        schemaGenerationLabel: z.string().optional(),
+        currentSchemaGeneration: z.number(),
+        exportedAt: z.string().optional(),
+        hasAttachments: z.boolean(),
+        accountEmails: z.array(z.string()),
+        warnings: z.array(z.string()),
+      }),
+      z.object({ ok: z.literal(false), error: z.string() }),
+    ]),
+  });
+  set(IPCChannels.Email.RestoreLocalMailBackup, {
+    payload: z.object({
+      zipPath: z.string().min(1),
+      previewToken: z.string().min(1),
+      confirmPhrase: z.string().min(1),
+      createPreBackup: z.boolean(),
+    }),
+    result: z.union([
+      z.object({ ok: z.literal(true), preBackupPath: z.string().optional() }),
       z.object({ ok: z.literal(false), error: z.string() }),
     ]),
   });
