@@ -91,6 +91,7 @@ export type EmailMessageRow = {
   body_html: string | null;
   seen_local: number;
   done_local: number;
+  sent_imap_sync_failed: number;
   archived: number;
   soft_deleted: number;
   outbound_hold: number;
@@ -769,10 +770,80 @@ export function listMessagesForMailScope(
   return listMessagesForAccountView(accountScope, view, opts);
 }
 
+const BULK_SELECT_ID_CAP = 500;
+
+function listMessageIdsForAccountView(
+  accountId: number,
+  view: AccountMailView,
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    listFilter?: MessageListFilter;
+    doneFilter?: MessageDoneFilter;
+  } = {},
+): number[] {
+  const rows = listMessagesForAccountView(accountId, view, {
+    ...opts,
+    limit: Math.min(opts.limit ?? BULK_SELECT_ID_CAP, BULK_SELECT_ID_CAP),
+    offset: opts.offset ?? 0,
+    sort: 'date_desc',
+  });
+  return rows.map((r) => r.id);
+}
+
+function listMessageIdsForAllAccountsView(
+  view: AccountMailView,
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    listFilter?: MessageListFilter;
+    doneFilter?: MessageDoneFilter;
+  } = {},
+): number[] {
+  const rows = listMessagesForAllAccountsView(view, {
+    ...opts,
+    limit: Math.min(opts.limit ?? BULK_SELECT_ID_CAP, BULK_SELECT_ID_CAP),
+    offset: opts.offset ?? 0,
+    sort: 'date_desc',
+  });
+  return rows.map((r) => r.id);
+}
+
+export function listMessageIdsForMailScope(
+  accountScope: number | 'all',
+  view: AccountMailView,
+  opts: {
+    limit?: number;
+    offset?: number;
+    categoryId?: number | null;
+    listFilter?: MessageListFilter;
+    doneFilter?: MessageDoneFilter;
+  } = {},
+): number[] {
+  if (accountScope === 'all') {
+    return listMessageIdsForAllAccountsView(view, opts);
+  }
+  return listMessageIdsForAccountView(accountScope, view, opts);
+}
+
+export function backfillDoneLocalForHandledFolders(): number {
+  const r = getDb()
+    .prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET done_local = 1
+       WHERE (archived = 1 OR is_spam = 1 OR soft_deleted = 1)
+         AND COALESCE(done_local, 0) = 0`,
+    )
+    .run();
+  return r.changes;
+}
+
 export type MailFolderCounts = {
   inbox: number;
   inboxUnread: number;
-  sent: number;
+  /** Sent messages where IMAP server copy failed (not total sent). */
+  sentFailed: number;
   drafts: number;
   archived: number;
   spam: number;
@@ -796,7 +867,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
         SUM(CASE WHEN ${inboxOpen} THEN 1 ELSE 0 END) AS inbox,
         SUM(CASE WHEN ${inboxOpen} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam,
@@ -808,7 +879,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     trash: number | null;
     inbox: number | null;
     inbox_unread: number | null;
-    sent: number | null;
+    sent_failed: number | null;
     drafts: number | null;
     archived: number | null;
     spam: number | null;
@@ -818,7 +889,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
   return {
     inbox: Number(row?.inbox) || 0,
     inboxUnread: Number(row?.inbox_unread) || 0,
-    sent: Number(row?.sent) || 0,
+    sentFailed: Number(row?.sent_failed) || 0,
     drafts: Number(row?.drafts) || 0,
     archived: Number(row?.archived) || 0,
     spam: Number(row?.spam) || 0,
@@ -843,7 +914,7 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
         SUM(CASE WHEN soft_deleted = 1 THEN 1 ELSE 0 END) AS trash,
         SUM(CASE WHEN ${inboxOpen} THEN 1 ELSE 0 END) AS inbox,
         SUM(CASE WHEN ${inboxOpen} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam,
@@ -854,7 +925,7 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
     trash: number | null;
     inbox: number | null;
     inbox_unread: number | null;
-    sent: number | null;
+    sent_failed: number | null;
     drafts: number | null;
     archived: number | null;
     spam: number | null;
@@ -864,7 +935,7 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
   return {
     inbox: Number(row?.inbox) || 0,
     inboxUnread: Number(row?.inbox_unread) || 0,
-    sent: Number(row?.sent) || 0,
+    sentFailed: Number(row?.sent_failed) || 0,
     drafts: Number(row?.drafts) || 0,
     archived: Number(row?.archived) || 0,
     spam: Number(row?.spam) || 0,
@@ -1343,8 +1414,8 @@ export function bulkSoftDeleteMessages(messageIds: number[], accountId?: number)
   const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const sql =
     accountId != null
-      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
-      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1 WHERE id IN (${placeholders}) AND ${syncable}`;
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1, done_local = 1 WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET soft_deleted = 1, done_local = 1 WHERE id IN (${placeholders}) AND ${syncable}`;
   const params = accountId != null ? [accountId, ...messageIds] : messageIds;
   const r = getDb().prepare(sql).run(...params);
   return r.changes;
@@ -1358,14 +1429,15 @@ export function bulkSetMessagesArchived(
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
   const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const doneVal = archived ? 1 : 0;
   const sql =
     accountId != null
-      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`
-      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`;
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ?, done_local = ? WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ?, done_local = ? WHERE id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`;
   const params =
     accountId != null
-      ? [archived ? 1 : 0, accountId, ...messageIds]
-      : [archived ? 1 : 0, ...messageIds];
+      ? [archived ? 1 : 0, doneVal, accountId, ...messageIds]
+      : [archived ? 1 : 0, doneVal, ...messageIds];
   const r = getDb().prepare(sql).run(...params);
   return r.changes;
 }
@@ -1378,12 +1450,35 @@ export function bulkSetMessageSpam(
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
   const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const doneVal = spam ? 1 : 0;
   const sql =
     accountId != null
-      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, soft_deleted = 0, archived = 0 WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
-      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, soft_deleted = 0, archived = 0 WHERE id IN (${placeholders}) AND ${syncable}`;
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, soft_deleted = 0, archived = 0, done_local = ? WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, soft_deleted = 0, archived = 0, done_local = ? WHERE id IN (${placeholders}) AND ${syncable}`;
   const params =
-    accountId != null ? [spam ? 1 : 0, accountId, ...messageIds] : [spam ? 1 : 0, ...messageIds];
+    accountId != null
+      ? [spam ? 1 : 0, doneVal, accountId, ...messageIds]
+      : [spam ? 1 : 0, doneVal, ...messageIds];
+  const r = getDb().prepare(sql).run(...params);
+  return r.changes;
+}
+
+export function bulkSetMessagesDoneLocal(
+  messageIds: number[],
+  done: boolean,
+  accountId?: number,
+): number {
+  if (messageIds.length === 0) return 0;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
+  const sql =
+    accountId != null
+      ? `UPDATE ${EMAIL_MESSAGES_TABLE} SET done_local = ? WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`
+      : `UPDATE ${EMAIL_MESSAGES_TABLE} SET done_local = ? WHERE id IN (${placeholders}) AND ${syncable} AND soft_deleted = 0`;
+  const params =
+    accountId != null
+      ? [done ? 1 : 0, accountId, ...messageIds]
+      : [done ? 1 : 0, ...messageIds];
   const r = getDb().prepare(sql).run(...params);
   return r.changes;
 }
@@ -1401,8 +1496,8 @@ export function bulkDeleteLocalComposeDrafts(messageIds: number[]): number {
 
 export function setMessageArchived(messageId: number, archived: boolean): void {
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ? WHERE id = ?`)
-    .run(archived ? 1 : 0, messageId);
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET archived = ?, done_local = ? WHERE id = ?`)
+    .run(archived ? 1 : 0, archived ? 1 : 0, messageId);
 }
 
 export function setMessageSeenLocal(messageId: number, seen: boolean): void {
@@ -1419,8 +1514,14 @@ export function setMessageDoneLocal(messageId: number, done: boolean): void {
 
 export function setMessageSpam(messageId: number, spam: boolean): void {
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ? WHERE id = ?`)
-    .run(spam ? 1 : 0, messageId);
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = ?, done_local = ? WHERE id = ?`)
+    .run(spam ? 1 : 0, spam ? 1 : 0, messageId);
+}
+
+export function setSentImapSyncFailed(messageId: number, failed: boolean): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET sent_imap_sync_failed = ? WHERE id = ?`)
+    .run(failed ? 1 : 0, messageId);
 }
 
 export function listTagsForMessage(messageId: number): string[] {
@@ -1585,6 +1686,7 @@ export function setMessageSoftDeleted(messageId: number, deleted: boolean): void
       .prepare(
         `UPDATE ${EMAIL_MESSAGES_TABLE}
          SET soft_deleted = 1,
+             done_local = 1,
              trash_prev_archived = ?,
              trash_prev_is_spam = ?,
              trash_prev_folder_kind = ?
@@ -1597,6 +1699,7 @@ export function setMessageSoftDeleted(messageId: number, deleted: boolean): void
   const archived = row.trash_prev_archived ?? row.archived ?? 0;
   const isSpam = row.trash_prev_is_spam ?? row.is_spam ?? 0;
   const folderKind = row.trash_prev_folder_kind ?? row.folder_kind ?? 'inbox';
+  const backToInbox = archived === 0 && isSpam === 0;
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
@@ -1604,12 +1707,13 @@ export function setMessageSoftDeleted(messageId: number, deleted: boolean): void
            archived = ?,
            is_spam = ?,
            folder_kind = ?,
+           done_local = ?,
            trash_prev_archived = NULL,
            trash_prev_is_spam = NULL,
            trash_prev_folder_kind = NULL
        WHERE id = ?`,
     )
-    .run(archived, isSpam, folderKind, messageId);
+    .run(archived, isSpam, folderKind, backToInbox ? 0 : 1, messageId);
 }
 
 /** Move a message into a mail sidebar view (inbox, archive, spam, trash). */
@@ -1629,7 +1733,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
       getDb()
         .prepare(
           `UPDATE ${EMAIL_MESSAGES_TABLE}
-           SET soft_deleted = 0, archived = 0, is_spam = 0,
+           SET soft_deleted = 0, archived = 0, is_spam = 0, done_local = 0,
                folder_kind = 'inbox',
                trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
            WHERE id = ?`,
@@ -1640,7 +1744,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
       getDb()
         .prepare(
           `UPDATE ${EMAIL_MESSAGES_TABLE}
-           SET soft_deleted = 0, archived = 1, is_spam = 0,
+           SET soft_deleted = 0, archived = 1, is_spam = 0, done_local = 1,
                trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
            WHERE id = ?`,
         )
@@ -1650,7 +1754,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
       getDb()
         .prepare(
           `UPDATE ${EMAIL_MESSAGES_TABLE}
-           SET soft_deleted = 0, archived = 0, is_spam = 1,
+           SET soft_deleted = 0, archived = 0, is_spam = 1, done_local = 1,
                trash_prev_archived = NULL, trash_prev_is_spam = NULL, trash_prev_folder_kind = NULL
            WHERE id = ?`,
         )
@@ -1668,7 +1772,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
 export function markDraftAsSent(draftMessageId: number): void {
   getDb()
     .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0, scheduled_send_at = NULL WHERE id = ?`,
+      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0, scheduled_send_at = NULL, sent_imap_sync_failed = 0 WHERE id = ?`,
     )
     .run(draftMessageId);
 }

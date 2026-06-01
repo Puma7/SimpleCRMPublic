@@ -9,7 +9,7 @@ import { useMailWorkspace } from "../workspace-context"
 export type MailFolderCounts = {
   inbox: number
   inboxUnread: number
-  sent: number
+  sentFailed: number
   drafts: number
   archived: number
   spam: number
@@ -20,7 +20,7 @@ export type MailFolderCounts = {
 const EMPTY: MailFolderCounts = {
   inbox: 0,
   inboxUnread: 0,
-  sent: 0,
+  sentFailed: 0,
   drafts: 0,
   archived: 0,
   spam: 0,

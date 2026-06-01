@@ -18,6 +18,8 @@ import {
   getMailFolderCountsForAccount,
   getMailFolderCountsForScope,
   listMessagesForMailScope,
+  listMessageIdsForMailScope,
+  bulkSetMessagesDoneLocal,
   getEmailMessageById,
   createComposeDraft,
   updateComposeDraft,
@@ -735,6 +737,33 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           offset: payload.offset,
           categoryId: payload.categoryId,
           sort: payload.sort,
+          listFilter: payload.listFilter,
+          doneFilter: payload.doneFilter,
+        });
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListMessageIdsByView,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          accountId: number | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
+          limit?: number;
+          offset?: number;
+          categoryId?: number | null;
+          listFilter?: import('../../shared/email-list-filters').MessageListFilter;
+          doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
+        },
+      ) => {
+        return listMessageIdsForMailScope(payload.accountId, payload.view, {
+          limit: payload.limit,
+          offset: payload.offset,
+          categoryId: payload.categoryId,
           listFilter: payload.listFilter,
           doneFilter: payload.doneFilter,
         });
@@ -1830,6 +1859,31 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload: { messageIds: number[] }) => {
         try {
           const count = bulkDeleteLocalComposeDrafts(payload.messageIds);
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSetMessageDone,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; done: boolean; accountId?: number },
+      ) => {
+        try {
+          const count = bulkSetMessagesDoneLocal(
+            payload.messageIds,
+            payload.done,
+            payload.accountId,
+          );
           return { success: true as const, count };
         } catch (e) {
           return {

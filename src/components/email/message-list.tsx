@@ -3,11 +3,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
-import { Loader2, Paperclip, Search } from "lucide-react"
+import { ChevronDown, Loader2, Paperclip, Search } from "lucide-react"
 import { toast } from "sonner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Select,
   SelectContent,
@@ -109,7 +125,11 @@ export function MessageList({
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [selectAllDialogOpen, setSelectAllDialogOpen] = useState(false)
+  const [pendingSelectAllCount, setPendingSelectAllCount] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const lastSelectionAnchorRef = useRef<number | null>(null)
+  const pendingFolderSelectIdsRef = useRef<number[]>([])
 
   useEffect(() => {
     setSelectedIds(new Set())
@@ -152,13 +172,86 @@ export function MessageList({
     })
   }, [])
 
-  const toggleAll = useCallback(() => {
+  const toggleCheckbox = useCallback(
+    (id: number, checked: boolean, shiftKey: boolean) => {
+      if (shiftKey && lastSelectionAnchorRef.current != null) {
+        const anchor = lastSelectionAnchorRef.current
+        const start = selectableIds.indexOf(anchor)
+        const end = selectableIds.indexOf(id)
+        if (start >= 0 && end >= 0) {
+          const lo = Math.min(start, end)
+          const hi = Math.max(start, end)
+          setSelectedIds((prev) => {
+            const next = new Set(prev)
+            for (const rid of selectableIds.slice(lo, hi + 1)) {
+              if (checked) next.add(rid)
+              else next.delete(rid)
+            }
+            return next
+          })
+          lastSelectionAnchorRef.current = id
+          return
+        }
+      }
+      toggleOne(id, checked)
+      if (checked) lastSelectionAnchorRef.current = id
+      else if (lastSelectionAnchorRef.current === id) lastSelectionAnchorRef.current = null
+    },
+    [selectableIds, toggleOne],
+  )
+
+  const toggleAllLoaded = useCallback(() => {
     if (allSelected) {
       setSelectedIds(new Set())
+      lastSelectionAnchorRef.current = null
     } else {
       setSelectedIds(new Set(selectableIds))
+      lastSelectionAnchorRef.current = selectableIds[0] ?? null
     }
   }, [allSelected, selectableIds])
+
+  const requestSelectAllInView = useCallback(async () => {
+    if (!hasElectron()) return
+    if (selectedAccountId == null) {
+      toast.error("Bitte zuerst ein Konto wählen")
+      return
+    }
+    setBulkBusy(true)
+    try {
+      const ids = await invokeIpc<number[]>(IPCChannels.Email.ListMessageIdsByView, {
+        accountId: selectedAccountId,
+        view: mailView,
+        categoryId: categoryFilterId,
+        listFilter: messageListFilter === "all" ? undefined : messageListFilter,
+        doneFilter:
+          mailView === "inbox" && messageDoneFilter !== "all" ? messageDoneFilter : undefined,
+        limit: 500,
+      })
+      if (ids.length === 0) {
+        toast.message("Keine auswählbaren Nachrichten in dieser Ansicht")
+        return
+      }
+      pendingFolderSelectIdsRef.current = ids
+      setPendingSelectAllCount(ids.length)
+      setSelectAllDialogOpen(true)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Auswahl konnte nicht geladen werden")
+    } finally {
+      setBulkBusy(false)
+    }
+  }, [
+    selectedAccountId,
+    mailView,
+    categoryFilterId,
+    messageListFilter,
+    messageDoneFilter,
+  ])
+
+  const confirmSelectAllInView = useCallback(() => {
+    setSelectedIds(new Set(pendingFolderSelectIdsRef.current))
+    lastSelectionAnchorRef.current = pendingFolderSelectIdsRef.current[0] ?? null
+    setSelectAllDialogOpen(false)
+  }, [])
 
   type BulkAction =
     | "archive"
@@ -168,6 +261,8 @@ export function MessageList({
     | "restore"
     | "delete-drafts"
     | "unsnooze"
+    | "mark-done"
+    | "mark-open"
 
   const runBulk = useCallback(
     async (action: BulkAction) => {
@@ -228,6 +323,27 @@ export function MessageList({
                 ? `${r.count} Nachrichten archiviert`
                 : `${r.count} Nachrichten aus dem Archiv geholt`,
           )
+        } else if (action === "mark-done" || action === "mark-open") {
+          const r = await invokeIpc<
+            { success: true; count: number } | { success: false; error?: string }
+          >(IPCChannels.Email.BulkSetMessageDone, {
+            messageIds: ids,
+            done: action === "mark-done",
+            accountId: bulkAccountId,
+          })
+          if (!r.success) {
+            toast.error(r.error ?? "Erledigt-Status konnte nicht gesetzt werden")
+            return
+          }
+          toast.success(
+            r.count === 1
+              ? action === "mark-done"
+                ? "1 Nachricht als erledigt markiert"
+                : "1 Nachricht wieder offen"
+              : action === "mark-done"
+                ? `${r.count} Nachrichten als erledigt markiert`
+                : `${r.count} Nachrichten wieder offen`,
+          )
         } else if (action === "not-spam") {
           const r = await invokeIpc<
             { success: true; count: number } | { success: false; error?: string }
@@ -268,6 +384,7 @@ export function MessageList({
           "not-spam",
           "restore",
           "unarchive",
+          "mark-done",
         ]
         const advanceTargetId = pickBulkAdvanceTargetId(visibleMessages, selectedIds)
         setSelectedIds(new Set())
@@ -282,7 +399,14 @@ export function MessageList({
         setBulkBusy(false)
       }
     },
-    [selectedIds, bulkAccountId, onListChanged, visibleMessages],
+    [
+      selectedIds,
+      bulkAccountId,
+      onListChanged,
+      visibleMessages,
+      mailView,
+      messageDoneFilter,
+    ],
   )
 
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =
@@ -308,10 +432,20 @@ export function MessageList({
                   { action: "unsnooze", label: "Wieder aktiv", variant: "secondary" },
                   { action: "delete", label: "Papierkorb", variant: "outline" },
                 ]
-              : [
-                  { action: "archive", label: "Archivieren", variant: "secondary" },
-                  { action: "delete", label: "Papierkorb", variant: "outline" },
-                ]
+              : mailView === "inbox"
+                ? [
+                    {
+                      action: messageDoneFilter === "done" ? "mark-open" : "mark-done",
+                      label: messageDoneFilter === "done" ? "Wieder offen" : "Erledigt",
+                      variant: "secondary",
+                    },
+                    { action: "archive", label: "Archivieren", variant: "secondary" },
+                    { action: "delete", label: "Papierkorb", variant: "outline" },
+                  ]
+                : [
+                    { action: "archive", label: "Archivieren", variant: "secondary" },
+                    { action: "delete", label: "Papierkorb", variant: "outline" },
+                  ]
 
   return (
     <section className="flex h-full min-h-0 flex-col border-r">
@@ -349,12 +483,15 @@ export function MessageList({
             value={listDisplayMode}
             onValueChange={(v) => setListDisplayMode(v as MessageListDisplayMode)}
           >
-            <SelectTrigger className="h-8 w-[120px] text-xs">
+            <SelectTrigger
+              className="h-8 w-[148px] text-xs"
+              title="Threads: pro Konversation nur die oberste Zeile (Vorschau, ohne Aufklappen)."
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="flat">Flache Liste</SelectItem>
-              <SelectItem value="thread">Threads</SelectItem>
+              <SelectItem value="flat">Einzelne Nachrichten</SelectItem>
+              <SelectItem value="thread">Threads (Vorschau)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -403,19 +540,39 @@ export function MessageList({
                 <Checkbox
                   checked={allSelected}
                   disabled={bulkBusy}
-                  onCheckedChange={() => toggleAll()}
-                  aria-label="Alle auswählen"
+                  onCheckedChange={() => toggleAllLoaded()}
+                  aria-label="Alle geladenen auswählen"
                 />
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Auswahl
-                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 gap-0.5 px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                      disabled={bulkBusy}
+                    >
+                      Auswahl
+                      <ChevronDown className="h-3 w-3" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem onClick={() => toggleAllLoaded()}>
+                      Alle geladenen auswählen
+                      {hasMore ? ` (${selectableIds.length})` : ""}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => void requestSelectAllInView()}>
+                      Alle in dieser Ansicht (max. 500)
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </li>
             ) : null}
             {visibleMessages.map((m) => {
               const isDraft = m.uid < 0
               const blocked = !!m.outbound_hold
               const unread = !m.seen_local && m.uid >= 0
-              const open = !m.done_local && m.uid >= 0
+              const open = mailView === "inbox" && !m.done_local && m.uid >= 0
               const active = selectedMessage?.id === m.id
               const canSelect = isMessageSelectable(m)
               const checked = selectedIds.has(m.id)
@@ -432,9 +589,15 @@ export function MessageList({
                         <Checkbox
                           checked={checked}
                           disabled={bulkBusy}
-                          onCheckedChange={(v) => toggleOne(m.id, v === true)}
+                          onCheckedChange={(v) => toggleCheckbox(m.id, v === true, false)}
                           aria-label={`Nachricht ${m.id} auswählen`}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (e.shiftKey) {
+                              e.preventDefault()
+                              toggleCheckbox(m.id, true, true)
+                            }
+                          }}
                         />
                       </div>
                     ) : (
@@ -533,6 +696,22 @@ export function MessageList({
           </div>
         ) : null}
       </ScrollArea>
+
+      <AlertDialog open={selectAllDialogOpen} onOpenChange={setSelectAllDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Viele Nachrichten auswählen?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Es werden {pendingSelectAllCount} Nachrichten in dieser Ansicht ausgewählt (höchstens
+              500). Massenaktionen betreffen alle ausgewählten Zeilen.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmSelectAllInView}>Auswählen</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }

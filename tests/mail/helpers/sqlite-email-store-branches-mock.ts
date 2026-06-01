@@ -64,7 +64,13 @@ export function createSqliteEmailStoreBranchesMock() {
         trash: msgs.filter((m) => m.soft_deleted).length,
         inbox: inbox.length,
         inbox_unread: inbox.filter((m) => !m.seen_local).length,
-        sent: msgs.filter((m) => !m.soft_deleted && m.folder_kind === 'sent' && !m.is_spam).length,
+        sent_failed: msgs.filter(
+          (m) =>
+            !m.soft_deleted &&
+            m.folder_kind === 'sent' &&
+            !m.is_spam &&
+            (m as { sent_imap_sync_failed?: number }).sent_imap_sync_failed === 1,
+        ).length,
         drafts: msgs.filter((m) => !m.soft_deleted && m.folder_kind === 'draft').length,
         archived: msgs.filter(
           (m) => !m.soft_deleted && m.archived && ((m.uid as number) >= 0 || m.pop3_uidl) && !m.is_spam,

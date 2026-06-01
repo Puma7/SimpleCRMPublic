@@ -24,6 +24,7 @@ jest.mock('../../electron/email/email-store', () => ({
   markDraftAsSent: (...args: unknown[]) => mockMarkSent(...args),
   getEmailAccountById: (...args: unknown[]) => mockGetAccount(...args),
   setMessageDoneLocal: (...args: unknown[]) => mockSetMessageDoneLocal(...args),
+  setSentImapSyncFailed: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-workflow-engine', () => ({
