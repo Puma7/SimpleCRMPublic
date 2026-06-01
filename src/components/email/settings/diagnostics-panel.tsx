@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { ClipboardCopy, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
+import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { hasElectron, invokeIpc } from "../types"
 
@@ -51,6 +51,7 @@ export function DiagnosticsPanel() {
   const [report, setReport] = useState<DiagnosticsReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [backupRunning, setBackupRunning] = useState(false)
+  const [verifyRunning, setVerifyRunning] = useState(false)
 
   const load = useCallback(async () => {
     if (!hasElectron()) return
@@ -77,6 +78,41 @@ export function DiagnosticsPanel() {
       toast.success("Diagnose in Zwischenablage kopiert.")
     } catch {
       toast.error("Kopieren fehlgeschlagen.")
+    }
+  }
+
+  const runVerify = async () => {
+    if (!hasElectron()) return
+    setVerifyRunning(true)
+    try {
+      const r = await invokeIpc<
+        | {
+            ok: true
+            path: string
+            schemaGeneration?: number
+            schemaGenerationLabel?: string
+            exportedAt?: string
+            hasAttachments: boolean
+          }
+        | { ok: false; error: string }
+      >(IPCChannels.Email.VerifyLocalMailBackup)
+      if (r.ok) {
+        const parts = [
+          `Backup OK: ${r.path}`,
+          r.schemaGenerationLabel
+            ? `Schema ${r.schemaGeneration} (${r.schemaGenerationLabel})`
+            : null,
+          r.exportedAt
+            ? `Export: ${new Date(r.exportedAt).toLocaleString("de-DE")}`
+            : null,
+          r.hasAttachments ? "mit Anhängen" : "ohne Anhänge",
+        ].filter(Boolean)
+        toast.success(parts.join(" · "))
+      } else if (r.error !== "Abgebrochen") {
+        toast.error(r.error)
+      }
+    } finally {
+      setVerifyRunning(false)
     }
   }
 
@@ -137,6 +173,20 @@ export function DiagnosticsPanel() {
             <HardDriveDownload className="mr-2 h-4 w-4" />
           )}
           Vollbackup (ZIP)…
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={verifyRunning}
+          onClick={() => void runVerify()}
+        >
+          {verifyRunning ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <FileSearch className="mr-2 h-4 w-4" />
+          )}
+          Backup prüfen…
         </Button>
       </div>
 

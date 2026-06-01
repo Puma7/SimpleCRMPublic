@@ -18,7 +18,10 @@ jest.mock('../../electron/email/email-message-attachments-store', () => ({
   getAttachmentsRootForExport: () => path.join(tmpUserData, 'email-attachments'),
 }));
 
-import { exportLocalMailBackup } from '../../electron/email/email-local-backup';
+import {
+  exportLocalMailBackup,
+  inspectZipBackup,
+} from '../../electron/email/email-local-backup';
 
 describe('email-local-backup', () => {
   beforeEach(() => {
@@ -41,5 +44,29 @@ describe('email-local-backup', () => {
     fs.unlinkSync(path.join(tmpUserData, 'database.sqlite'));
     const r = await exportLocalMailBackup();
     expect(r.ok).toBe(false);
+  });
+
+  test('inspectZipBackup accepts exported zip', async () => {
+    const r = await exportLocalMailBackup();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = await inspectZipBackup(r.path);
+    if (!v.ok) {
+      throw new Error(`inspect failed: ${v.error}`);
+    }
+    expect(v.ok).toBe(true);
+    if (v.ok) {
+      expect(v.manifest.type).toBe('simplecrm-mail-local-backup');
+      expect(v.hasDatabase).toBe(true);
+      expect(v.hasAttachments).toBe(true);
+    }
+    fs.unlinkSync(r.path);
+  });
+
+  test('inspectZipBackup rejects invalid zip', async () => {
+    const bad = path.join(tmpUserData, 'not-a-backup.zip');
+    fs.writeFileSync(bad, 'not zip');
+    const v = await inspectZipBackup(bad);
+    expect(v.ok).toBe(false);
   });
 });

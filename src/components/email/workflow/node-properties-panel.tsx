@@ -25,6 +25,10 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
+import {
+  AiProfileSelect,
+  profileIdFromConfig,
+} from "../ai-profile-select"
 import { hasElectron, invokeIpc, type AiPrompt } from "../types"
 
 type Props = {
@@ -308,6 +312,29 @@ function patchConfig(
   patch({ config: { ...config, [key]: value } })
 }
 
+function AiProfileConfigField({
+  config,
+  patch,
+  hint,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+  hint?: string
+}) {
+  return (
+    <AiProfileSelect
+      value={profileIdFromConfig(config)}
+      onChange={(profileId) =>
+        patchConfig(patch, config, "profileId", profileId)
+      }
+      hint={
+        hint ??
+        "Überschreibt das Standard-Profil für diesen Knoten. Bei Prompt-Knoten gilt: Knoten-Profil vor Prompt-Profil."
+      }
+    />
+  )
+}
+
 function SenderFilterFields({
   config,
   patch,
@@ -348,6 +375,7 @@ function SpamScoreFields({
 }) {
   return (
     <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField config={config} patch={patch} />
       <div className="space-y-1.5">
         <Label className="text-xs">Kontext für KI</Label>
         <Select
@@ -494,6 +522,11 @@ function OutboundReviewFields({
 
   return (
     <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField
+        config={config}
+        patch={patch}
+        hint="Optional: anderes Profil als im KI-Prompt hinterlegt."
+      />
       <div className="space-y-1.5">
         <Label className="text-xs">KI-Prompt (optional)</Label>
         <Select
@@ -536,6 +569,7 @@ function ClassifyFields({
 }) {
   return (
     <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField config={config} patch={patch} />
       <div className="space-y-1.5">
         <Label className="text-xs">Kategorien (kommagetrennt)</Label>
         <Input
@@ -556,6 +590,77 @@ function ClassifyFields({
           <SelectContent>
             <SelectItem value="metadata">Nur Metadaten</SelectItem>
             <SelectItem value="full">Volltext</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  )
+}
+
+function AgentFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField config={config} patch={patch} />
+      <div className="space-y-1.5">
+        <Label className="text-xs">System-Prompt</Label>
+        <Input
+          className="h-9 text-xs"
+          value={String(config.systemPrompt ?? "")}
+          onChange={(e) => patchConfig(patch, config, "systemPrompt", e.target.value)}
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={config.createDraft !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "createDraft", v)}
+        />
+        <Label className="text-xs font-normal">Antwort-Entwurf anlegen</Label>
+      </div>
+    </div>
+  )
+}
+
+function TransformTextFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
+  useEffect(() => {
+    if (!hasElectron()) return
+    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+  }, [])
+
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField
+        config={config}
+        patch={patch}
+        hint="Knoten-Profil hat Vorrang vor dem Profil des gewählten Prompts."
+      />
+      <div className="space-y-1.5">
+        <Label className="text-xs">KI-Prompt</Label>
+        <Select
+          value={String(config.promptId ?? aiPrompts[0]?.id ?? "")}
+          onValueChange={(v) => patchConfig(patch, config, "promptId", parseInt(v, 10))}
+        >
+          <SelectTrigger className="h-9">
+            <SelectValue placeholder="Prompt wählen" />
+          </SelectTrigger>
+          <SelectContent>
+            {aiPrompts.map((p) => (
+              <SelectItem key={p.id} value={String(p.id)}>
+                {p.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -614,6 +719,12 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
       ) : null}
       {d.nodeType === "ai.outbound_review" ? (
         <OutboundReviewFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.agent" ? (
+        <AgentFields config={d.config ?? {}} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.transform_text" ? (
+        <TransformTextFields config={d.config ?? {}} patch={patch} />
       ) : null}
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>

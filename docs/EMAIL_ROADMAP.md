@@ -1,6 +1,6 @@
 # E-Mail-Modul — Roadmap
 
-Stand: Erweiterung nach Produkt-Rundgang (Branch `cursor/email-product-feedback-d125`).
+Stand: 2026-05-24 (`cursor/dev-from-main-d125` Sprint).
 
 ## Erledigt in dieser Runde
 
@@ -9,17 +9,20 @@ Stand: Erweiterung nach Produkt-Rundgang (Branch `cursor/email-product-feedback-
 - **KI-Profile** (mehrere Anbieter, Keys getrennt von Modellen)
 - **Team-Signaturen** (HTML) + Signatur in neuen Entwürfen
 - **IMAP-Server-Löschung** auch unter Einstellungen → Konten
-- Doku: `EMAIL_PRODUCT_GUIDE.md`
+- Doku: `EMAIL_PRODUCT_GUIDE.md`, `PRODUCT_REQUIREMENTS.md`
+- **KI-Profil-Dropdown** in Workflow-Knoten (`ai.spam_score`, `ai.classify`, `ai.agent`, …)
+- **Backup prüfen** (ZIP-Integrität) + Phase-3-Doku
+- Manuelle Kategorie am Thread (#71)
 
 ## Geplant
 
 | Priorität | Thema |
 |-----------|--------|
-| Erledigt | **P2 mailauth** — SPF/DKIM/DMARC/ARC auf `raw_headers` + Body (`docs/MAIL_SECURITY.md`) |
-| Erledigt | **P3 Rspamd** — optional HTTP `/checkv2` (localhost) |
+| Erledigt | **P2 mailauth** — SPF/DKIM/DMARC/ARC (`docs/MAIL_SECURITY.md`) |
+| Erledigt | **P3 Rspamd** — optional HTTP `/checkv2` |
+| Erledigt | KI-Profil-Auswahl im Workflow-Knoten-UI |
 | Hoch | Mehrbenutzer + Signatur des eingeloggten Users |
-| Hoch | KI-Profil-Auswahl im Workflow-Knoten-UI (`profileId` Dropdown) |
-| Mittel | Manuelle Kategorie am Thread |
+| Mittel | Restore-Wizard (ZIP → userData mit Bestätigung) |
 | Mittel | Kategorien-Verwaltung (anlegen/bearbeiten) in Einstellungen |
 | Mittel | „Erledigt“-Alias / UX für Archiv + Wieder einblenden |
 | Niedrig | Regex-Suche, Cursor-Pagination für sehr große Mailboxen |

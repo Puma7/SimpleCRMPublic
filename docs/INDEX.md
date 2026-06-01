@@ -6,7 +6,8 @@
 
 | Document | Purpose |
 |----------|---------|
-| [**AGENT_HANDOFF.md**](AGENT_HANDOFF.md) | **Start here** — what was built, branch/PR state, architecture, file map, open items |
+| [**AGENT_HANDOFF.md**](AGENT_HANDOFF.md) | **Start here** — architecture, file map, verification |
+| [**PRODUCT_REQUIREMENTS.md**](PRODUCT_REQUIREMENTS.md) | **Muss/Soll/Ist** — CRM, Mail, KI, Workflows, Backup |
 | [**LEARNINGS.md**](LEARNINGS.md) | Master learning index + cross-cutting rules |
 | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) | E-mail / IMAP / POP3 / SQLite pitfalls |
 | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) | Workflow engine, modular graphs, outbound/spam |
