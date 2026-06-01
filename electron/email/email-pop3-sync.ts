@@ -23,7 +23,11 @@ import {
   processNewMessagesAfterSync,
   type SyncNewMessageItem,
 } from './email-sync-post-process';
-import { withEmailAccountSyncLock } from './email-sync-mutex';
+import {
+  assertSyncNotAborted,
+  isEmailSyncAbortedError,
+  withEmailAccountSyncLock,
+} from './email-sync-mutex';
 import {
   addressJson,
   formatDate,
@@ -39,7 +43,7 @@ type UidlEntry = [string, string];
 
 export type Pop3SyncResult = { fetched: number; folderId: number; lastUid: number };
 
-async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult> {
+async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): Promise<Pop3SyncResult> {
   const account = getEmailAccountById(accountId);
   if (!account) throw new Error('Unbekanntes E-Mail-Konto');
   if ((account.protocol || 'imap') !== 'pop3') {
@@ -91,6 +95,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
   let maxNum = folderRow.last_uid;
 
   for (const [numStr, uidl] of list) {
+    assertSyncNotAborted(signal);
     if (uidl) serverUidls.push(uidl);
     const num = parseInt(numStr, 10);
     if (!uidl || Number.isNaN(num)) continue;
@@ -192,7 +197,7 @@ async function syncInboxPop3Internal(accountId: number): Promise<Pop3SyncResult>
 }
 
 export function syncInboxPop3(accountId: number): Promise<Pop3SyncResult> {
-  return withEmailAccountSyncLock(accountId, () => syncInboxPop3Internal(accountId));
+  return withEmailAccountSyncLock(accountId, (signal) => syncInboxPop3Internal(accountId, signal));
 }
 
 export async function testPop3Connection(account: EmailAccountRow, password: string): Promise<{ ok: true } | { ok: false; error: string }> {
