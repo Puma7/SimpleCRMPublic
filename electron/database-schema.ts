@@ -337,6 +337,7 @@ export const createEmailMessagesTable = `
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (folder_id) REFERENCES ${EMAIL_FOLDERS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (customer_id) REFERENCES ${CUSTOMERS_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (assigned_to) REFERENCES ${EMAIL_TEAM_MEMBERS_TABLE}(id) ON DELETE SET NULL,
     UNIQUE(account_id, folder_id, uid)
   );
 `;

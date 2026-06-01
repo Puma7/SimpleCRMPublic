@@ -23,7 +23,13 @@ import {
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
 import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
-import { withEmailAccountSyncLock } from './email-sync-mutex';
+import { reconcileSeenFlagsForFolder } from './email-seen-reconcile';
+import {
+  assertSyncNotAborted,
+  EmailSyncAbortedError,
+  isEmailSyncAbortedError,
+  withEmailAccountSyncLock,
+} from './email-sync-mutex';
 import {
   addressJson,
   formatDate,
@@ -69,6 +75,7 @@ async function syncFolderImapInternal(
   account: EmailAccountRow,
   client: ImapFlow,
   spec: ImapFolderSyncSpec,
+  signal?: AbortSignal,
 ): Promise<ImapSyncResult> {
   const accountId = account.id;
   const folderPath = spec.path;
@@ -141,6 +148,7 @@ async function syncFolderImapInternal(
       let chainEnd = lastUid;
       const skippedUids = new Set<number>();
       for (const uid of toFetch) {
+        assertSyncNotAborted(signal);
         if (shouldSkipImapUidAfterFailures(folderRow.id, uid)) {
           skippedUids.add(uid);
           console.warn(
@@ -223,6 +231,7 @@ async function syncFolderImapInternal(
           chainEnd = uid;
         }
         } catch (perMsgErr) {
+          if (isEmailSyncAbortedError(perMsgErr)) throw perMsgErr;
           const fails = recordImapUidFetchFailure(folderRow.id, uid);
           console.warn(
             `[imap-sync] UID ${uid} account ${accountId} failed (${fails}/${IMAP_UID_MAX_FAILURES}):`,
@@ -258,6 +267,26 @@ async function syncFolderImapInternal(
         }
       }
 
+      try {
+        const seenReconciled = await reconcileSeenFlagsForFolder(
+          client,
+          folderRow.id,
+          folderPath,
+          signal,
+        );
+        if (seenReconciled > 0) {
+          console.log(
+            `[imap-sync] reconciled seen_local for ${seenReconciled} message(s) in ${folderPath}`,
+          );
+        }
+      } catch (reconcileErr) {
+        if (isEmailSyncAbortedError(reconcileErr)) throw reconcileErr;
+        console.warn(
+          `[imap-sync] seen reconcile failed account ${accountId} ${folderPath}:`,
+          reconcileErr instanceof Error ? reconcileErr.message : reconcileErr,
+        );
+      }
+
       updateFolderSyncState(folderRow.id, {
         lastUid,
         uidvalidity: uidValidityNum ?? undefined,
@@ -270,7 +299,10 @@ async function syncFolderImapInternal(
   }
 }
 
-async function syncAccountImapInternal(accountId: number): Promise<ImapAccountSyncResult> {
+async function syncAccountImapInternal(
+  accountId: number,
+  signal?: AbortSignal,
+): Promise<ImapAccountSyncResult> {
   const account = getEmailAccountById(accountId);
   if (!account) {
     throw new Error('Unbekanntes E-Mail-Konto');
@@ -318,11 +350,13 @@ async function syncAccountImapInternal(accountId: number): Promise<ImapAccountSy
     }
     const specs = resolveSyncFoldersForAccount(account, listed);
     for (const spec of specs) {
+      assertSyncNotAborted(signal);
       try {
-        const r = await syncFolderImapInternal(account, client, spec);
+        const r = await syncFolderImapInternal(account, client, spec, signal);
         folders.push(r);
         totalFetched += r.fetched;
       } catch (folderErr) {
+        if (isEmailSyncAbortedError(folderErr)) throw folderErr;
         console.warn(
           `[imap-sync] folder ${spec.path} account ${accountId} failed:`,
           folderErr instanceof Error ? folderErr.message : folderErr,
@@ -337,7 +371,7 @@ async function syncAccountImapInternal(accountId: number): Promise<ImapAccountSy
 
 /** Sync INBOX plus optional Sent/Archive/Spam folders (account settings). */
 export function syncAccountImap(accountId: number): Promise<ImapAccountSyncResult> {
-  return withEmailAccountSyncLock(accountId, () => syncAccountImapInternal(accountId));
+  return withEmailAccountSyncLock(accountId, (signal) => syncAccountImapInternal(accountId, signal));
 }
 
 /** @deprecated Use syncAccountImap — kept for callers expecting a single-folder result. */

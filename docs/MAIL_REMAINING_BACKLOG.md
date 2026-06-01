@@ -11,17 +11,23 @@
 | ID | Thema | Aufwand | Maßnahme | Status |
 |----|--------|---------|----------|--------|
 | **DOC-AI5** | `PRODUCT_REQUIREMENTS.md` listet AI-5 als 🔲 | ~15 min | Doku: Embeddings-RAG ist in `knowledge-base.ts` / `email-openai.ts` (mit Keyword-Fallback) | ✅ in diesem Branch |
-| **NF17a** | `assigned_to` verwaist nach Team-Löschung | ~30 min | Beim `deleteEmailTeamMember`: `assigned_to = NULL` für betroffene Mails (App-Layer) | ✅ in diesem Branch |
-| **UX-SB** | Sidebar-Badges nach Aktion verzögert | ~1 h | `mailMetricsRevision` + Invalidierung nach Mutationen | PR [#84](https://github.com/Puma7/SimpleCRMPublic/pull/84) |
+| **NF17a** | `assigned_to` verwaist nach Team-Löschung | ~30 min | `deleteEmailTeamMember` + Trigger/FK (NF17b) | ✅ |
+| **UX-SB** | Sidebar-Badges nach Aktion verzögert | ~1 h | `mailMetricsRevision` + Invalidierung nach Mutationen | ✅ PR [#84](https://github.com/Puma7/SimpleCRMPublic/pull/84) |
 | **R-3** | Dropdown-Mehrfachklick | — | `runningId` / `busy` in `apply-workflow-menu.tsx`, `message-more-actions-menu.tsx` | ✅ verifiziert |
 | **R-4** | Outbound-Workflow aus Apply-Menü | — | `ApplyWorkflowMenu` + `filterWorkflowsForMessage` im Viewer | ✅ verifiziert |
 
-### Optional als Nächstes (klein, kein Schema-Rebuild)
+### Umgesetzt (NF11 / NF3 / NF17b)
+
+| ID | Thema | Status |
+|----|--------|--------|
+| **NF11** | `seen_local` Reconcile mit Server `\\Seen` | ✅ `email-seen-reconcile.ts` + IMAP-Upsert ohne MAX bei Sync |
+| **NF3** | Sync-Mutex In-Flight-Abbruch | ✅ `AbortController` in `email-sync-mutex.ts`, IMAP/POP3 prüfen Signal |
+| **NF17b** | `assigned_to` Referenzielle Integrität | ✅ FK auf Fresh-Install; Migration: Trigger + Orphan-Cleanup |
+
+### Optional als Nächstes
 
 | ID | Thema | Aufwand | Hinweis |
 |----|--------|---------|---------|
-| **NF17b** | SQLite-FK `assigned_to` → `email_team_members` | mittel | Nur per Tabellen-Rebuild in Migration; NF17a reicht für Datenintegrität |
-| **NF3** | Sync-Mutex In-Flight-Abbruch | mittel | `clearEmailAccountSyncLock` leert Queue; harter Abbruch laufender IMAP noch offen |
 | **TEST+** | Coverage Lücken `electron/email/**` | laufend | Ratchet ~90 %; gezielt Module mit &lt;80 % Branches |
 
 ---
@@ -30,7 +36,7 @@
 
 | ID | Thema | Aufwand | Beschreibung |
 |----|--------|---------|--------------|
-| **NF11** | `seen_local` Reconcile | 0,5–1 d | Read-Status Webmail ↔ SimpleCRM angleichen (lokal gewinnt heute) |
+| _(NF11 erledigt)_ | | | |
 | **NF12** | Workflow-`bodyText` Audit | 0,5 d | Diff/Log bei KI-geändertem Body (heute nur Banner) |
 | **NF8** | OAuth Tenant härten | konfig | Default `common` ok für Consumer; Enterprise-Tenant dokumentieren |
 
