@@ -25,7 +25,7 @@ SimpleCRM is an Electron + React + TypeScript desktop CRM app. All data is store
 | Unit + integration tests | `npm test` |
 | Unit tests only | `npm run test:unit` |
 | Mail module tests | `npm run test:mail` |
-| Mail module coverage (100% gate on `electron/email`) | `npm run test:mail:coverage` |
+| Mail module coverage (ratchet on `electron/email`) | `npm run test:mail:coverage` |
 | Integration tests only | `npm run test:integration` |
 | Build (web + electron main) | `npm run build` |
 | Dev mode | `xvfb-run --auto-servernum npm run electron:dev` |
@@ -41,6 +41,7 @@ See `package.json` `scripts` for the full list.
 - **Xvfb is required** on headless Linux to run the Electron app or E2E tests. Use `xvfb-run --auto-servernum` as a prefix.
 - **Dev mode** (`npm run electron:dev`) starts four concurrent processes: Vite build watcher, TypeScript compiler watcher, Electron main via nodemon, and Vite dev server on port 5173. DevTools open automatically in dev mode.
 - The SQLite database file is created at `~/.config/simplecrm/database.sqlite` (on Linux).
-- **Mail coverage:** `jest.mail.config.cjs` collects coverage from `electron/email/**/*.ts` with a **100%** global threshold. Run `npm run test:mail` while iterating (threshold disabled); use `npm run test:mail:coverage` before merging mail changes.
+- **Mail tests in CI:** GitHub Actions runs `pnpm run test:mail` after the main Jest suite (see `.github/workflows/ci.yml`).
+- **Mail coverage:** `jest.mail.config.cjs` collects coverage from `electron/email/**/*.ts` with a **ratchet** threshold (~91% lines, ~80% branches). Run `npm run test:mail` while iterating (threshold disabled); use `npm run test:mail:coverage` before merging mail changes. See [`docs/MAIL_TESTING.md`](docs/MAIL_TESTING.md).
 - The app UI is in German (e.g., "Kunden" = Customers, "Aufgaben" = Tasks, "Kalender" = Calendar, "Einstellungen" = Settings).
 - **Workflow graph UI:** `@xyflow/react` v12 (`^12.10.1`). Optional isolated Svelte experiment: `packages/svelte-lab` (`@xyflow/svelte`), see `packages/svelte-lab/README.md` and `VITE_ENABLE_SVELTE_LAB`.

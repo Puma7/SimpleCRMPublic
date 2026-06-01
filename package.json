@@ -41,6 +41,7 @@
     "test:coverage": "jest --coverage --selectProjects unit integration",
     "test:mail": "jest --config jest.mail.config.cjs --coverageThreshold='{}'",
     "test:mail:coverage": "jest --config jest.mail.config.cjs",
+    "test:mail:coverage:update-baseline": "npm run test:mail:coverage && node scripts/check-mail-coverage-ratchet.mjs --update-baseline",
     "test:electron": "jest --testMatch='**/__tests__/electron/**/*.test.ts'",
     "test:frontend": "jest --testMatch='**/__tests__/frontend/**/*.test.tsx'"
   },

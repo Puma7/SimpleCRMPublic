@@ -70,6 +70,8 @@ src/.DS_Store
 !docs/MAIL_BETA_PHASE3_PLAN.md
 !docs/MAIL_TROUBLESHOOTING.md
 !docs/MAIL_SINGLE_USER_LIMITS.md
+!docs/MAIL_TESTING.md
+!docs/MAIL_ALPHA_CHECKLIST.md
 !AGENTS.md
 
 coverage/

@@ -97,6 +97,70 @@ const sqliteVerboseLogger = (...args: unknown[]) => {
     }
 };
 
+/**
+ * Create all tables on an empty database (fresh install path).
+ * Uses module `db` during FTS/migrations — safe for tests when `connection` is assigned temporarily.
+ */
+export function bootstrapFreshDatabaseSchema(
+    connection: Database.Database,
+    opts?: { keepDbAssigned?: boolean },
+): void {
+    const previousDb = db;
+    db = connection;
+    try {
+        connection.exec('PRAGMA foreign_keys = ON;');
+
+        connection.exec(createCustomersTable);
+        connection.exec(createProductsTable);
+        connection.exec(createSyncInfoTable);
+        connection.exec(createDealsTable);
+        connection.exec(createTasksTable);
+        connection.exec(createDealProductsTable);
+        connection.exec(createCalendarEventsTable);
+        connection.exec(createCustomerCustomFieldsTable);
+        connection.exec(createCustomerCustomFieldValuesTable);
+        connection.exec(createActivityLogTable);
+        connection.exec(createSavedViewsTable);
+        connection.exec(createJtlFirmenTable);
+        connection.exec(createJtlWarenlagerTable);
+        connection.exec(createJtlZahlungsartenTable);
+        connection.exec(createJtlVersandartenTable);
+        connection.exec(createEmailAccountsTable);
+        connection.exec(createEmailFoldersTable);
+        connection.exec(createEmailMessagesTable);
+        connection.exec(createEmailWorkflowsTable);
+        connection.exec(createEmailWorkflowRunsTable);
+        connection.exec(createEmailMessageWorkflowAppliedTable);
+        connection.exec(createEmailMessageTagsTable);
+        connection.exec(createEmailThreadsTable);
+        connection.exec(createEmailCategoriesTable);
+        connection.exec(createEmailMessageCategoriesTable);
+        connection.exec(createEmailInternalNotesTable);
+        connection.exec(createEmailCannedResponsesTable);
+        connection.exec(createEmailAiProfilesTable);
+        connection.exec(createEmailAiPromptsTable);
+        connection.exec(createEmailTeamMembersTable);
+        connection.exec(createEmailAccountSignaturesTable);
+        connection.exec(createEmailMessageAttachmentsTable);
+        connection.exec(createEmailWorkflowForwardDedupTable);
+        connection.exec(createEmailWorkflowRunStepsTable);
+        connection.exec(createWorkflowKnowledgeBasesTable);
+        connection.exec(createWorkflowKnowledgeChunksTable);
+        connection.exec(createWorkflowDelayedJobsTable);
+        connection.exec(createEmailWorkflowVersionsTable);
+        indexes.forEach((index) => connection.exec(index));
+        runMigrations();
+        setupEmailFtsIndex();
+        migrateEmailFtsSearchV2();
+        setSyncInfo('lastSyncStatus', 'Never');
+        setSyncInfo('lastSyncTimestamp', '');
+    } finally {
+        if (!opts?.keepDbAssigned) {
+            db = previousDb;
+        }
+    }
+}
+
 export function initializeDatabase() {
     const dbExists = fs.existsSync(dbPath);
     const connection = new Database(dbPath, isDevelopment ? { verbose: sqliteVerboseLogger } : undefined);
@@ -107,55 +171,7 @@ export function initializeDatabase() {
             console.debug('Initializing new SQLite database...');
         }
         try {
-            // Enable Foreign Keys support right away
-            connection.exec('PRAGMA foreign_keys = ON;');
-
-            connection.exec(createCustomersTable);
-            db.exec(createProductsTable);
-            db.exec(createSyncInfoTable);
-            db.exec(createDealsTable);
-            db.exec(createTasksTable);
-            db.exec(createDealProductsTable);
-            db.exec(createCalendarEventsTable);
-            db.exec(createCustomerCustomFieldsTable);
-            db.exec(createCustomerCustomFieldValuesTable);
-            db.exec(createActivityLogTable);
-            db.exec(createSavedViewsTable);
-            db.exec(createJtlFirmenTable);
-            db.exec(createJtlWarenlagerTable);
-            db.exec(createJtlZahlungsartenTable);
-            db.exec(createJtlVersandartenTable);
-            db.exec(createEmailAccountsTable);
-            db.exec(createEmailFoldersTable);
-            db.exec(createEmailMessagesTable);
-            db.exec(createEmailWorkflowsTable);
-            db.exec(createEmailWorkflowRunsTable);
-            db.exec(createEmailMessageWorkflowAppliedTable);
-            db.exec(createEmailMessageTagsTable);
-            db.exec(createEmailThreadsTable);
-            db.exec(createEmailCategoriesTable);
-            db.exec(createEmailMessageCategoriesTable);
-            db.exec(createEmailInternalNotesTable);
-            db.exec(createEmailCannedResponsesTable);
-            db.exec(createEmailAiProfilesTable);
-            db.exec(createEmailAiPromptsTable);
-            db.exec(createEmailTeamMembersTable);
-            db.exec(createEmailAccountSignaturesTable);
-            db.exec(createEmailMessageAttachmentsTable);
-            db.exec(createEmailWorkflowForwardDedupTable);
-            db.exec(createEmailWorkflowRunStepsTable);
-            db.exec(createWorkflowKnowledgeBasesTable);
-            db.exec(createWorkflowKnowledgeChunksTable);
-            db.exec(createWorkflowDelayedJobsTable);
-            db.exec(createEmailWorkflowVersionsTable);
-            setupEmailFtsIndex();
-            migrateEmailFtsSearchV2();
-            indexes.forEach((index) => connection.exec(index));
-            // Same column/table ensure path as upgraded databases (Codex P0: fresh install parity).
-            runMigrations();
-            // Seed initial sync info if needed
-            setSyncInfo('lastSyncStatus', 'Never');
-            setSyncInfo('lastSyncTimestamp', '');
+            bootstrapFreshDatabaseSchema(connection, { keepDbAssigned: true });
             if (isDevelopment) {
                 console.debug('Database initialized successfully.');
             }

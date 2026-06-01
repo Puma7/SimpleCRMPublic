@@ -38,11 +38,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Rebuild better-sqlite3 for Node (mail integration tests)
+        run: npm rebuild better-sqlite3
+
       - name: Lint
         run: pnpm run lint
 
       - name: Run tests
         run: pnpm test
+
+      - name: Mail module tests
+        run: pnpm run test:mail
 
       - name: Build (renderer)
         run: pnpm run build

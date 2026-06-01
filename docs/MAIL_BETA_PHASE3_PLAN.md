@@ -2,6 +2,8 @@
 
 **Stand:** 2026-06-01 · Nach Merge [#76](https://github.com/Puma7/SimpleCRMPublic/pull/76) + [#77](https://github.com/Puma7/SimpleCRMPublic/pull/77)
 
+**Mail Alpha-Gate:** Automatisierte Checkliste und CI (`test:mail`) — siehe [`MAIL_ALPHA_CHECKLIST.md`](MAIL_ALPHA_CHECKLIST.md) und [`MAIL_TESTING.md`](MAIL_TESTING.md).
+
 Phase 3 bündelt Betriebssicherheit für Single-User-Desktop: Vollbackup, Integritätsprüfung, Restore-Wizard, Diagnose-JSON, Doku-Konsistenz, optionaler IMAP-Mehrordner-Sync.
 
 ---
