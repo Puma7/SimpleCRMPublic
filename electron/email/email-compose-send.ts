@@ -40,13 +40,15 @@ function maxComposeAttachmentBytes(): number {
   return clamped * 1024 * 1024;
 }
 
-/** IMAP APPEND is optional; skip above this size to avoid long hangs after successful SMTP. */
+const DEFAULT_IMAP_SENT_APPEND_MAX_BYTES = 20 * 1024 * 1024;
+
+/** IMAP APPEND is optional; skip above this **total message** size (independent of per-file SMTP limit). */
 function maxImapSentAppendBytes(): number {
   const mb = parseInt(getSyncInfo('email_imap_sent_append_max_mb') || '0', 10);
   if (Number.isFinite(mb) && mb > 0) {
     return Math.max(1, Math.min(mb, 100)) * 1024 * 1024;
   }
-  return Math.min(maxComposeAttachmentBytes(), 20 * 1024 * 1024);
+  return DEFAULT_IMAP_SENT_APPEND_MAX_BYTES;
 }
 
 function joinWarnings(parts: Array<string | undefined>): string | undefined {

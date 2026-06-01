@@ -53,11 +53,17 @@ type PreparedPart = {
   contentType: string | null;
 };
 
+export type PersistLocalComposeAttachmentsResult = {
+  expectedCount: number;
+  storedCount: number;
+  failures: { name: string; reason: string }[];
+};
+
 function insertPreparedAttachments(
   messageId: number,
   prepared: PreparedPart[],
   omitted: { name: string; size: number; reason: string }[],
-): void {
+): { storedCount: number; writeFailures: { name: string; reason: string }[] } {
   const db = getDb();
   const metaJson =
     omitted.length > 0
@@ -78,13 +84,14 @@ function insertPreparedAttachments(
     } else if (row?.has_attachments === 1) {
       db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 0 WHERE id = ?`).run(messageId);
     }
-    return;
+    return { storedCount: 0, writeFailures: [] };
   }
 
   const dir = path.join(attachmentsRoot(), String(messageId));
   fs.mkdirSync(dir, { recursive: true });
 
   const written: { filePath: string; displayName: string; hash: string; contentType: string | null; size: number }[] = [];
+  const writeFailures: { name: string; reason: string }[] = [];
   let fileIdx = 0;
   for (const p of prepared) {
     let filePath = path.join(dir, p.displayName);
@@ -100,8 +107,11 @@ function insertPreparedAttachments(
         contentType: p.contentType,
         size: p.buf.length,
       });
-    } catch {
-      /* skip this part */
+    } catch (e) {
+      writeFailures.push({
+        name: p.displayName,
+        reason: e instanceof Error ? e.message : 'write_failed',
+      });
     }
     fileIdx += 1;
   }
@@ -112,14 +122,17 @@ function insertPreparedAttachments(
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
 
+  let storedCount = 0;
   const transaction = db.transaction(() => {
     let storedAny = false;
     for (const w of written) {
       const r = ins.run(messageId, w.displayName, w.contentType, w.size, w.filePath, w.hash);
       if (r.changes > 0) {
         storedAny = true;
+        storedCount += 1;
       } else {
         void fs.promises.unlink(w.filePath).catch(() => undefined);
+        writeFailures.push({ name: w.displayName, reason: 'db_insert_skipped' });
       }
     }
 
@@ -138,40 +151,69 @@ function insertPreparedAttachments(
   });
 
   transaction();
+  return { storedCount, writeFailures };
 }
 
 export function persistLocalComposeAttachments(
   messageId: number,
   attachments: { filename?: string; path: string; contentType?: string }[] | undefined,
-): void {
+): PersistLocalComposeAttachmentsResult {
   if (!attachments?.length) {
     getDb().prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 0 WHERE id = ?`).run(messageId);
-    return;
+    return { expectedCount: 0, storedCount: 0, failures: [] };
   }
 
+  const readFailures: { name: string; reason: string }[] = [];
   const prepared: PreparedPart[] = [];
   const seenSha = new Set<string>();
+  const expectedCount = attachments.length;
+
   for (const [idx, attachment] of attachments.entries()) {
+    const displayName = safeFilename(
+      attachment.filename || path.basename(attachment.path) || `file-${idx}`,
+    );
     try {
       const st = fs.statSync(attachment.path);
-      if (!st.isFile()) continue;
+      if (!st.isFile()) {
+        readFailures.push({ name: displayName, reason: 'not_a_file' });
+        continue;
+      }
       const buf = fs.readFileSync(attachment.path);
-      if (buf.length === 0) continue;
+      if (buf.length === 0) {
+        readFailures.push({ name: displayName, reason: 'empty_file' });
+        continue;
+      }
       const hash = sha256Hex(buf);
-      if (seenSha.has(hash)) continue;
+      if (seenSha.has(hash)) {
+        readFailures.push({ name: displayName, reason: 'duplicate_content' });
+        continue;
+      }
       seenSha.add(hash);
       prepared.push({
         hash,
         buf,
-        displayName: safeFilename(attachment.filename || path.basename(attachment.path) || `file-${idx}`),
+        displayName,
         contentType: attachment.contentType ?? null,
       });
-    } catch {
-      /* skip unreadable compose attachment copies; SMTP already validated before send */
+    } catch (e) {
+      readFailures.push({
+        name: displayName,
+        reason: e instanceof Error ? e.message : 'read_failed',
+      });
     }
   }
 
-  insertPreparedAttachments(messageId, prepared, []);
+  const { storedCount, writeFailures } = insertPreparedAttachments(messageId, prepared, []);
+  const failures = [...readFailures, ...writeFailures];
+
+  if (expectedCount > 0 && storedCount < expectedCount) {
+    const detail = failures.map((f) => `${f.name}: ${f.reason}`).join('; ');
+    throw new Error(
+      `Nur ${storedCount} von ${expectedCount} Anhängen lokal gespeichert${detail ? ` (${detail})` : ''}.`,
+    );
+  }
+
+  return { expectedCount, storedCount, failures };
 }
 
 /**

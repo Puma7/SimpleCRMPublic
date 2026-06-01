@@ -261,6 +261,54 @@ describe('email-compose-send expanded', () => {
     expect(order).toEqual(['persist', 'markSent', 'imap']);
   });
 
+  test('warns when local attachment persistence fails after SMTP', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-warn-'));
+    const fp = path.join(dir, 'doc.pdf');
+    fs.writeFileSync(fp, 'pdf');
+    mockPersistLocalComposeAttachments.mockImplementation(() => {
+      throw new Error('Nur 0 von 1 Anhängen lokal gespeichert (doc.pdf: read_failed).');
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+      attachmentPaths: [fp],
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(r.ok).toBe(true);
+    expect(mockMarkSent).toHaveBeenCalled();
+    expect((r as { warning?: string }).warning).toMatch(/Anhänge konnten nicht übernommen werden/);
+  });
+
+  test('does not skip IMAP append when per-file limit is low but total under 20MB', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-imap-'));
+    const a = path.join(dir, 'a.bin');
+    const b = path.join(dir, 'b.bin');
+    fs.writeFileSync(a, Buffer.alloc(4 * 1024 * 1024));
+    fs.writeFileSync(b, Buffer.alloc(4 * 1024 * 1024));
+    mockGetSyncInfo.mockImplementation((key: string) => {
+      if (key === 'email_max_attachment_mb') return '5';
+      return null;
+    });
+    mockGetAccount.mockReturnValue({
+      id: 1,
+      email_address: 'me@shop.test',
+      protocol: 'imap',
+    });
+    await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+      attachmentPaths: [a, b],
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(mockAppendSent).toHaveBeenCalled();
+  });
+
   test('skips IMAP append when estimated message exceeds limit', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-send-'));
     const bigPath = path.join(dir, 'large.bin');
