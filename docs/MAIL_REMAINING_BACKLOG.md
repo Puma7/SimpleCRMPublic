@@ -42,14 +42,24 @@
 
 ---
 
+## Phasen-Roadmap (Mail Security, 2026)
+
+| Phase | Thema | Status |
+|-------|--------|--------|
+| 1 | Remote-Content Block-all + MDN | ✅ siehe [`MAIL_TRACKING_PRIVACY.md`](MAIL_TRACKING_PRIVACY.md) |
+| 2 | Security Foundation (users, audit, IPC) | ✅ Basis (`auth:*`, `workspaces`, dormant `workspace_id`) |
+| 3 | Threading (edges, expand, aliases) | ✅ Basis |
+| 4 | Login UI + Benutzerverwaltung | ✅ optional `auth_middleware_v1` |
+| 5 | PGP (OpenPGP.js Main) | ✅ Basis |
+
 ## Groß / bewusst zurückgestellt
 
 | ID | Thema | Bewertung |
 |----|--------|-----------|
-| **F14** | Mehrbenutzer-Login + User-Signatur | Roadmap „Hoch“; für Single-User-Desktop **kein** Alpha/Beta-Blocker ([`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIMITS.md)) |
-| **F11** | Echtes Server-Threading (Aufklappen, Thread-Bulk) | Display-Mode „Threads (Vorschau)“ vorhanden; Voll-Threading = eigenes Epic |
-| **F7** | Open/Click-Tracking | ⛔ Datenschutz — bewusst nicht |
-| **F8** | PGP/S/MIME Entschlüsselung | 🟡 nur Erkennungs-Hinweis im Viewer |
+| **F14** | Mehrbenutzer kryptographisch | Stufe 1 = Profil + Audit nur ([`MAIL_AUTH_THREAT_MODEL.md`](MAIL_AUTH_THREAT_MODEL.md)) |
+| **F11** | Thread-Bulk / `imapflow.thread()` | Teilweise; Bulk-by-thread folgt |
+| **F7** | Open/Click-Tracking (Marketing) | ⛔ Datenschutz — bewusst nicht |
+| **F8** | S/MIME | Nach PGP ([`MAIL_PGP_THREAT_MODEL.md`](MAIL_PGP_THREAT_MODEL.md)) |
 | **NF14** | `draft_created` nur einmal | by design, dokumentiert |
 
 ---

@@ -1,6 +1,7 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE, EMAIL_THREADS_TABLE } from '../database-schema';
 import { extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
+import { rebuildThreadEdges, upsertThreadAggregates } from './email-thread-aggregate';
 
 function normId(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -144,4 +145,6 @@ export function assignJwzThreadAndTicket(
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ?, ticket_code = ? WHERE id = ?`)
     .run(threadId, ticketCode, messageId);
+  rebuildThreadEdges(threadId);
+  upsertThreadAggregates(threadId);
 }

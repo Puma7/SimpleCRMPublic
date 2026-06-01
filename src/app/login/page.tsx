@@ -1,17 +1,18 @@
-import { useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
-import { createClient } from '@/utils/supabase/client'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+"use client"
+
+import { useState } from "react"
+import { useNavigate } from "@tanstack/react-router"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useAuth } from "@/components/auth/auth-context"
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const supabase = createClient()
-
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const { login } = useAuth()
+  const [username, setUsername] = useState("")
+  const [passphrase, setPassphrase] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -19,53 +20,50 @@ export default function LoginPage() {
     e.preventDefault()
     setIsLoading(true)
     setError(null)
-
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    
-    if (error) {
-      setError(error.message)
-      setIsLoading(false)
+    const r = await login(username.trim(), passphrase)
+    setIsLoading(false)
+    if (!r.ok) {
+      setError(r.error ?? "Anmeldung fehlgeschlagen")
       return
     }
-
-    navigate({ to: '/' })
+    navigate({ to: "/" })
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center">
+    <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Login</CardTitle>
-          <CardDescription>Enter your credentials to access your account</CardDescription>
+          <CardTitle>Anmelden</CardTitle>
+          <CardDescription>
+            Lokales Benutzerkonto für dieses SimpleCRM (Profil + Audit, kein Cloud-Login).
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="username">Benutzername</Label>
               <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                id="username"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="passphrase">Passphrase</Label>
               <Input
-                id="password"
+                id="passphrase"
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
                 required
               />
             </div>
-            {error && (
-              <div className="text-sm text-red-500">{error}</div>
-            )}
+            {error ? <p className="text-sm text-destructive">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? 'Logging in...' : 'Login'}
+              {isLoading ? "…" : "Anmelden"}
             </Button>
           </form>
         </CardContent>

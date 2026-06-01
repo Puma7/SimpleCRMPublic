@@ -13,6 +13,8 @@ import {
   useCommandPaletteShortcut,
 } from "@/components/theme/command-palette"
 import { cn } from "@/lib/utils"
+import { AuthProvider } from "@/components/auth/auth-context"
+import { AuthGate } from "@/components/auth/auth-gate"
 
 function AppMain() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -39,14 +41,18 @@ export function AppShell() {
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
-      <div className="flex h-screen min-h-0 flex-col overflow-hidden font-sans antialiased">
-        <Titlebar />
-        <MainNav onOpenCommandPalette={openPalette} />
-        <UpdateStatusDisplay />
-        <AppMain />
+      <AuthProvider>
+        <AuthGate>
+          <div className="flex h-screen min-h-0 flex-col overflow-hidden font-sans antialiased">
+            <Titlebar />
+            <MainNav onOpenCommandPalette={openPalette} />
+            <UpdateStatusDisplay />
+            <AppMain />
         <Toaster richColors closeButton position="bottom-right" />
-        <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
-      </div>
+            <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+          </div>
+        </AuthGate>
+      </AuthProvider>
     </ThemeProvider>
   )
 }

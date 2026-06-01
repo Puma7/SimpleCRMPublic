@@ -32,6 +32,7 @@ import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
+import { UsersPanel } from "@/components/settings/users-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -83,6 +84,7 @@ const TAB_DEFS: TabDef[] = [
     render: () => <PromptsPanel />,
   },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
+  { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
   { id: "diagnostics", label: "Diagnose", icon: Stethoscope, render: () => <DiagnosticsPanel /> },
@@ -97,7 +99,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
-  { label: "Team & Vorlagen", tabIds: ["team", "canned"] },
+  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "diagnostics"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]

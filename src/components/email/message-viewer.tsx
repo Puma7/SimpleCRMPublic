@@ -134,6 +134,8 @@ export function MessageViewer(props: Props) {
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
+  const [readReceiptRequested, setReadReceiptRequested] = useState(false)
+  const [readReceiptRespond, setReadReceiptRespond] = useState<string>("never")
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
@@ -141,6 +143,31 @@ export function MessageViewer(props: Props) {
   useEffect(() => {
     setHtmlView(false)
     setLoadRemoteImages(false)
+    setReadReceiptRequested(false)
+  }, [selectedMessage?.id])
+
+  useEffect(() => {
+    if (!selectedMessage?.id || !hasElectron()) return
+    void (async () => {
+      try {
+        const policy = await invokeIpc(IPCChannels.Email.GetRemoteContentPolicy, {
+          messageId: selectedMessage.id,
+        })
+        if (policy && typeof policy === "object" && "allowRemote" in policy) {
+          setLoadRemoteImages(Boolean((policy as { allowRemote: boolean }).allowRemote))
+        }
+        const rr = await invokeIpc(IPCChannels.Email.GetReadReceiptState, {
+          messageId: selectedMessage.id,
+        })
+        if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
+          const s = rr as { requested: boolean; respond: string }
+          setReadReceiptRequested(s.requested)
+          setReadReceiptRespond(s.respond)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
   }, [selectedMessage?.id])
 
   const sanitizedHtml = useMemo(() => {
@@ -848,15 +875,60 @@ export function MessageViewer(props: Props) {
                     </p>
                     {htmlHasRemoteImages && !loadRemoteImages ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                        <span>Externe Bilder sind aus Datenschutzgründen blockiert.</span>
+                        <span>Remote-Inhalte sind blockiert (Datenschutz).</span>
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
                           className="h-7 text-xs"
-                          onClick={() => setLoadRemoteImages(true)}
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            await invokeIpc(IPCChannels.Email.SetRemoteContentPolicy, {
+                              messageId: selectedMessage.id,
+                              policy: "allowed_once",
+                            })
+                            setLoadRemoteImages(true)
+                          }}
                         >
-                          Externe Bilder laden
+                          Einmal laden
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            await invokeIpc(IPCChannels.Email.SetRemoteContentPolicy, {
+                              messageId: selectedMessage.id,
+                              policy: "allowed_sender",
+                              rememberSender: true,
+                            })
+                            setLoadRemoteImages(true)
+                          }}
+                        >
+                          Absender erlauben
+                        </Button>
+                      </div>
+                    ) : null}
+                    {readReceiptRequested && readReceiptRespond === "ask" ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                        <span>Absender bittet um Lesebestätigung.</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            await invokeIpc(IPCChannels.Email.RespondReadReceipt, {
+                              messageId: selectedMessage.id,
+                              action: "decline",
+                            })
+                            setReadReceiptRequested(false)
+                          }}
+                        >
+                          Ignorieren
                         </Button>
                       </div>
                     ) : null}

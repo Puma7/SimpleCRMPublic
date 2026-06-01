@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
-import { getCustomerById } from '../sqlite-service';
+import { getCustomerById, getDb } from '../sqlite-service';
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
@@ -1161,6 +1161,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           inReplyToMessageId?: number | null;
           attachmentPaths?: string[];
           markReplyParentDone?: boolean;
+          requestReadReceipt?: boolean;
         },
       ) => {
         const r = await sendComposeDraft(payload);
@@ -2492,6 +2493,132 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       const url = buildMicrosoftOAuthAuthorizeUrl({ clientId, redirectUri: redirectUri.trim() });
       return { success: true as const, url };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetRemoteContentPolicy,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const { resolveRemoteContentPolicy } = await import('../email/email-remote-content');
+        return resolveRemoteContentPolicy(db, payload.messageId);
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetRemoteContentPolicy,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          messageId: number;
+          policy: 'blocked' | 'allowed_once' | 'allowed_sender' | 'allowed_domain';
+          rememberSender?: boolean;
+          rememberDomain?: boolean;
+        },
+      ) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const { setRemoteContentPolicy } = await import('../email/email-remote-content');
+        let remember: { scope: 'sender' | 'domain'; value: string } | undefined;
+        if (payload.rememberSender || payload.rememberDomain) {
+          try {
+            const p = JSON.parse(row.from_json ?? '{}') as { value?: { address?: string }[] };
+            const addr = p.value?.[0]?.address?.toLowerCase() ?? '';
+            if (addr) {
+              if (payload.rememberSender) remember = { scope: 'sender', value: addr };
+              else if (payload.rememberDomain) {
+                const dom = addr.includes('@') ? addr.split('@')[1]! : addr;
+                remember = { scope: 'domain', value: dom };
+              }
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetReadReceiptState,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const { getReadReceiptSettings } = await import('../email/email-read-receipt');
+        const settings = getReadReceiptSettings(db, row.account_id);
+        return {
+          success: true as const,
+          requested: (row as { read_receipt_requested?: number }).read_receipt_requested === 1,
+          respond: settings.respond,
+          trustedDomains: settings.trustedDomains,
+        };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RespondReadReceipt,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const { logReadReceiptAction } = await import('../email/email-read-receipt');
+        logReadReceiptAction(
+          db,
+          payload.messageId,
+          payload.action === 'send' ? 'sent_back' : 'declined',
+        );
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListThreadMessages,
+      async (_event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
+        const { listThreadMessages } = await import('../email/email-thread-aggregate');
+        return listThreadMessages(payload.threadId, payload.limit ?? 50, payload.offset ?? 0);
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListThreadsByView,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          accountScope: number | 'all';
+          view: string;
+          limit?: number;
+          offset?: number;
+        },
+      ) => {
+        const { listThreadsForMailScope } = await import('../email/email-thread-aggregate');
+        return listThreadsForMailScope(
+          payload.accountScope as number | 'all',
+          payload.view as import('../email/email-store').AccountMailView,
+          { limit: payload.limit, offset: payload.offset },
+        );
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

@@ -75,6 +75,15 @@ export async function processNewMessagesAfterSync(
     try {
       assignJwzThreadAndTicket(item.localMsgId, accountId, item.threading);
       tryLinkMessageToCustomer(item.localMsgId, customerByEmail);
+      const row = getEmailMessageById(item.localMsgId);
+      if (row?.raw_headers) {
+        const { getDb } = await import('../sqlite-service');
+        const { detectAndFlagReadReceiptRequest } = await import('./email-read-receipt');
+        const db = getDb();
+        if (db) detectAndFlagReadReceiptRequest(db, item.localMsgId, row.raw_headers);
+        const { detectPgpInbound } = await import('../pgp/pgp-service');
+        detectPgpInbound(item.localMsgId);
+      }
     } catch (e) {
       console.warn(`[email] post-process threading/crm failed msg ${item.localMsgId}`, e);
     }

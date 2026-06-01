@@ -2,10 +2,18 @@ import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import { z, ZodTypeAny } from 'zod';
 import { InvokeChannel } from '../../shared/ipc/channels';
 import { getPayloadSchema, getResultSchema, isDeprecatedChannel } from '../../shared/ipc/schemas';
+import { resolveAuthContext } from '../auth/current-user';
+import type { SessionRole } from '../auth/session-store';
+import { getDb } from '../sqlite-service';
+import { canAccessAccount, type AccountAccessLevel } from '../auth/account-access';
 
 export interface RegisterIpcOptions {
   logger?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   onDeprecatedUse?: (channel: InvokeChannel) => void;
+  requireAuth?: boolean;
+  requireRole?: SessionRole[];
+  accountScope?: (payload: unknown) => number | undefined;
+  accountAccess?: AccountAccessLevel;
 }
 
 export type IpcHandler<C extends InvokeChannel> = (
@@ -33,7 +41,14 @@ export function registerIpcHandler<C extends InvokeChannel>(
   handler: IpcHandler<C>,
   options: RegisterIpcOptions = {},
 ) {
-  const { logger = console, onDeprecatedUse } = options;
+  const {
+    logger = console,
+    onDeprecatedUse,
+    requireAuth = false,
+    requireRole,
+    accountScope,
+    accountAccess = 'ro',
+  } = options;
   const payloadSchema = getPayloadSchema(channel);
   const resultSchema = getResultSchema(channel);
   const deprecated = isDeprecatedChannel(channel);
@@ -46,6 +61,25 @@ export function registerIpcHandler<C extends InvokeChannel>(
 
       const payload = args.length <= 1 ? args[0] : args;
       const parsedPayload = parseWithSchema(payloadSchema, payload);
+
+      if (requireAuth) {
+        const session = resolveAuthContext(event);
+        if (!session) throw new Error('Nicht angemeldet');
+        if (requireRole && !requireRole.includes(session.role)) {
+          throw new Error('Keine Berechtigung');
+        }
+        if (accountScope) {
+          const accountId = accountScope(parsedPayload);
+          if (accountId != null) {
+            const db = getDb();
+            if (!db) throw new Error('Database not initialized');
+            if (!canAccessAccount(db, session.userId, accountId, accountAccess, session.role)) {
+              throw new Error('Kein Zugriff auf dieses Konto');
+            }
+          }
+        }
+      }
+
       const result = await handler(event, parsedPayload);
       return parseWithSchema(resultSchema, result);
     } catch (error) {

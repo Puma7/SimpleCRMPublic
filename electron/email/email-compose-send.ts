@@ -28,6 +28,15 @@ import {
 } from './email-outbound-threading';
 import { SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
+import type { EmailAccountRow } from './email-store';
+
+function resolveRequestReadReceipt(
+  acc: EmailAccountRow,
+  override?: boolean,
+): boolean {
+  if (override !== undefined) return override;
+  return (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+}
 import {
   cleanupInlineImageTempFiles,
   extractInlineImagesFromHtml,
@@ -234,6 +243,7 @@ async function finalizeCommittedSmtpDraft(
     cc?: string;
     bcc?: string;
     inReplyToMessageId?: number | null;
+    requestReadReceipt?: boolean;
   },
   draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
   html: string | null,
@@ -256,8 +266,7 @@ async function finalizeCommittedSmtpDraft(
   const subjectBase = draft.subject?.trim() || input.subject.trim() || '(Ohne Betreff)';
   const ticket = draft.ticket_code?.trim();
   const finalSubject = ticket ? ensureTicketInSubject(subjectBase, ticket) : subjectBase;
-  const requestReceipt =
-    (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+  const requestReceipt = resolveRequestReadReceipt(acc, input.requestReadReceipt);
 
   const fin = await finalizeSentDraft({
     accountId: input.accountId,
@@ -309,6 +318,8 @@ export async function sendComposeDraft(input: {
   attachmentPaths?: string[];
   /** When replying: mark original message done (default true). */
   markReplyParentDone?: boolean;
+  /** Override account default for Disposition-Notification-To. */
+  requestReadReceipt?: boolean;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
   | { ok: false; error: string; workflowRunId?: number | null }
@@ -496,8 +507,7 @@ export async function sendComposeDraft(input: {
       cid: 'cid' in a && typeof a.cid === 'string' ? a.cid : undefined,
     }));
 
-    const requestReceipt =
-      (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+    const requestReceipt = resolveRequestReadReceipt(acc, input.requestReadReceipt);
 
     if (input.markReplyParentDone !== undefined) {
       setComposeMarkReplyParentDone(input.draftMessageId, input.markReplyParentDone);

@@ -3,6 +3,7 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
 import { ensureAssignedToReferentialIntegrity } from './email/email-assigned-to-integrity';
+import { runMailRoadmapMigrations } from './mail-roadmap-migrations';
 import {
     createCustomersTable,
     createProductsTable,
@@ -759,6 +760,8 @@ function runMigrations() {
             console.log('Creating email_workflow_forward_dedup table...');
             db.exec(createEmailWorkflowForwardDedupTable);
         }
+
+        runMailRoadmapMigrations(conn);
 
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
