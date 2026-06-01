@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { createWriteStream } from 'fs';
 import archiver from 'archiver';
-import { app, dialog, type SaveDialogReturnValue } from 'electron';
+import yauzl from 'yauzl';
+import { app, dialog, type OpenDialogReturnValue, type SaveDialogReturnValue } from 'electron';
 import { MAIL_SCHEMA_GENERATION, MAIL_SCHEMA_GENERATION_LABEL } from '../db/mail-schema-version';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 
@@ -110,4 +111,163 @@ export async function exportLocalMailBackup(): Promise<
       fail(e instanceof Error ? e : String(e));
     }
   });
+}
+
+type BackupManifest = {
+  type?: string;
+  exportedAt?: string;
+  schemaGeneration?: number;
+  schemaGenerationLabel?: string;
+};
+
+function openZip(filePath: string): Promise<yauzl.ZipFile> {
+  return new Promise((resolve, reject) => {
+    yauzl.open(filePath, { lazyEntries: true }, (err, zip) => {
+      if (err || !zip) reject(err ?? new Error('ZIP konnte nicht geöffnet werden.'));
+      else resolve(zip);
+    });
+  });
+}
+
+function readZipEntryText(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
+  return new Promise((resolve, reject) => {
+    zip.openReadStream(entry, (err, stream) => {
+      if (err || !stream) {
+        reject(err ?? new Error('Eintrag konnte nicht gelesen werden.'));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      stream.on('data', (c: Buffer) => chunks.push(c));
+      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      stream.on('error', reject);
+    });
+  });
+}
+
+type ZipWalkState = {
+  hasDatabase: boolean;
+  hasAttachments: boolean;
+  manifest: BackupManifest | null;
+};
+
+async function walkZipBackupEntries(zip: yauzl.ZipFile): Promise<ZipWalkState> {
+  const walked: ZipWalkState = {
+    hasDatabase: false,
+    hasAttachments: false,
+    manifest: null,
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    const nextEntry = () => {
+      zip.readEntry();
+    };
+
+    zip.on('entry', (entry: yauzl.Entry) => {
+      const name = entry.fileName.replace(/\\/g, '/');
+      if (name === 'database.sqlite' || name.endsWith('/database.sqlite')) {
+        walked.hasDatabase = true;
+        nextEntry();
+        return;
+      }
+      if (name.startsWith('email-attachments/') && !name.endsWith('/')) {
+        walked.hasAttachments = true;
+        nextEntry();
+        return;
+      }
+      if (name === 'manifest.json') {
+        void readZipEntryText(zip, entry)
+          .then((raw) => {
+            try {
+              walked.manifest = JSON.parse(raw) as BackupManifest;
+            } catch {
+              walked.manifest = null;
+            }
+            nextEntry();
+          })
+          .catch(reject);
+        return;
+      }
+      nextEntry();
+    });
+    zip.on('end', () => resolve());
+    zip.on('error', reject);
+    zip.readEntry();
+  });
+
+  return walked;
+}
+
+/** @internal Exported for unit tests. */
+export async function inspectZipBackup(filePath: string): Promise<
+  | {
+      ok: true;
+      manifest: BackupManifest;
+      hasDatabase: boolean;
+      hasAttachments: boolean;
+    }
+  | { ok: false; error: string }
+> {
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, error: 'Datei nicht gefunden.' };
+  }
+  let zip: yauzl.ZipFile | null = null;
+  try {
+    zip = await openZip(filePath);
+    const walked = await walkZipBackupEntries(zip);
+
+    if (!walked.hasDatabase) {
+      return { ok: false, error: 'ZIP enthält keine database.sqlite.' };
+    }
+    if (!walked.manifest || walked.manifest.type !== 'simplecrm-mail-local-backup') {
+      return {
+        ok: false,
+        error: 'manifest.json fehlt oder ist kein SimpleCRM-Mail-Backup.',
+      };
+    }
+    return {
+      ok: true,
+      manifest: walked.manifest,
+      hasDatabase: walked.hasDatabase,
+      hasAttachments: walked.hasAttachments,
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    zip?.close();
+  }
+}
+
+/** Read-only integrity check for an exported mail backup ZIP. */
+export async function verifyLocalMailBackup(): Promise<
+  | {
+      ok: true;
+      path: string;
+      schemaGeneration?: number;
+      schemaGenerationLabel?: string;
+      exportedAt?: string;
+      hasDatabase: boolean;
+      hasAttachments: boolean;
+    }
+  | { ok: false; error: string }
+> {
+  const dlg = (await dialog.showOpenDialog({
+    title: 'Mail-Backup prüfen',
+    filters: [{ name: 'ZIP', extensions: ['zip'] }],
+    properties: ['openFile'],
+  })) as unknown as OpenDialogReturnValue;
+  if (dlg.canceled || !dlg.filePaths?.[0]) {
+    return { ok: false, error: 'Abgebrochen' };
+  }
+  const filePath = dlg.filePaths[0];
+  const inspected = await inspectZipBackup(filePath);
+  if (!inspected.ok) return inspected;
+  return {
+    ok: true,
+    path: filePath,
+    schemaGeneration: inspected.manifest.schemaGeneration,
+    schemaGenerationLabel: inspected.manifest.schemaGenerationLabel,
+    exportedAt: inspected.manifest.exportedAt,
+    hasDatabase: inspected.hasDatabase,
+    hasAttachments: inspected.hasAttachments,
+  };
 }

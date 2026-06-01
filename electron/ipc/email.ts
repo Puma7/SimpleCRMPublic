@@ -959,6 +959,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(IPCChannels.Email.VerifyLocalMailBackup, async () => {
+      const { verifyLocalMailBackup } = await import('../email/email-local-backup');
+      return verifyLocalMailBackup();
+    }, { logger }),
+  );
+
+  disposers.push(
     registerIpcHandler(IPCChannels.Email.ListImapAuthNotices, async () => {
       const { listImapAuthNotices } = await import('../email/email-imap-auth-notice');
       return listImapAuthNotices();

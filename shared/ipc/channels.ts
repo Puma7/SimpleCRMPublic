@@ -171,6 +171,7 @@ const EmailChannels = literal({
   GetLatestWorkflowRunForMessage: 'email:get-latest-workflow-run-for-message',
   GetMailDiagnostics: 'email:get-mail-diagnostics',
   ExportLocalMailBackup: 'email:export-local-mail-backup',
+  VerifyLocalMailBackup: 'email:verify-local-mail-backup',
   TestSmtp: 'email:test-smtp',
   ListCategories: 'email:list-categories',
   CreateCategory: 'email:create-category',
