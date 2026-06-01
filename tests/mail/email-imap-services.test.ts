@@ -25,6 +25,13 @@ jest.mock('../../electron/email/email-store', () => ({
 jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: jest.fn().mockResolvedValue({ user: 'u', pass: 'p' }),
 }));
+jest.mock('../../electron/email/email-imap-auth-notice', () => ({
+  clearImapAuthNotice: jest.fn(),
+  maybeRecordImapAuthNotice: jest.fn(),
+}));
+jest.mock('../../electron/sync-info-maintenance', () => ({
+  sweepStaleSyncInfoKeys: jest.fn(() => ({ removed: 0 })),
+}));
 jest.mock('../../electron/email/email-imap-sync', () => ({
   syncAccountImap: jest.fn().mockResolvedValue({
     folders: [{ fetched: 0, folderId: 1, lastUid: 0, folderPath: 'INBOX' }],

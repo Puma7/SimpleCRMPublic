@@ -9,11 +9,14 @@ import Database from 'better-sqlite3';
 import { MAIL_SCHEMA_GENERATION } from '../db/mail-schema-version';
 import { inspectZipBackup } from './email-local-backup';
 import { exportLocalMailBackupToPath } from './email-local-backup-export';
+import { resolveSafePathUnderDirectory } from './email-zip-path-safety';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 import { isEmailBackgroundSyncBusy, stopEmailBackgroundServices } from './email-imap-services';
 import { closeDatabase } from '../sqlite-service';
 
 const RESTORE_CONFIRM_PHRASE = 'WIEDERHERSTELLEN';
+
+export { resolveSafePathUnderDirectory } from './email-zip-path-safety';
 
 type BackupManifest = {
   type?: string;
@@ -38,12 +41,18 @@ async function extractZipToDirectory(zipPath: string, destDir: string): Promise<
       const next = () => zip.readEntry();
       zip.on('entry', (entry) => {
         const rel = entry.fileName.replace(/\\/g, '/');
+        let outPath: string;
+        try {
+          outPath = resolveSafePathUnderDirectory(destDir, rel);
+        } catch (e) {
+          reject(e);
+          return;
+        }
         if (rel.endsWith('/')) {
-          fs.mkdirSync(path.join(destDir, rel), { recursive: true });
+          fs.mkdirSync(outPath, { recursive: true });
           next();
           return;
         }
-        const outPath = path.join(destDir, rel);
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         zip.openReadStream(entry, (err, readStream) => {
           if (err || !readStream) {
@@ -200,15 +209,24 @@ export async function previewRestoreLocalMailBackup(zipPath: string): Promise<
   }
 }
 
-function renameForBackup(targetPath: string, suffix: string): string {
+function renameForBackup(targetPath: string, suffix: string): string | null {
   const stamped = `${targetPath}.pre-restore-${suffix}`;
   if (fs.existsSync(stamped)) {
     fs.rmSync(stamped, { recursive: true, force: true });
   }
-  if (fs.existsSync(targetPath)) {
-    fs.renameSync(targetPath, stamped);
+  if (!fs.existsSync(targetPath)) {
+    return null;
   }
+  fs.renameSync(targetPath, stamped);
   return stamped;
+}
+
+function rollbackRenamedBackup(targetPath: string, backupPath: string | null): void {
+  if (!backupPath || !fs.existsSync(backupPath)) return;
+  if (fs.existsSync(targetPath)) {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+  }
+  fs.renameSync(backupPath, targetPath);
 }
 
 export async function restoreLocalMailBackup(input: {
@@ -269,12 +287,19 @@ export async function restoreLocalMailBackup(input: {
         return { ok: false, error: 'Entpacktes Backup enthält keine database.sqlite.' };
       }
 
-      renameForBackup(dbPath, stamp);
-      renameForBackup(attRoot, stamp);
-
-      fs.copyFileSync(extractedDb, dbPath);
-      if (fs.existsSync(extractedAtt)) {
-        fs.cpSync(extractedAtt, attRoot, { recursive: true });
+      const dbBackupPath = renameForBackup(dbPath, stamp);
+      const attBackupPath = renameForBackup(attRoot, stamp);
+      try {
+        fs.copyFileSync(extractedDb, dbPath);
+        if (fs.existsSync(extractedAtt)) {
+          fs.cpSync(extractedAtt, attRoot, { recursive: true });
+        } else if (attBackupPath && fs.existsSync(attRoot)) {
+          fs.rmSync(attRoot, { recursive: true, force: true });
+        }
+      } catch (copyErr) {
+        rollbackRenamedBackup(dbPath, dbBackupPath);
+        rollbackRenamedBackup(attRoot, attBackupPath);
+        throw copyErr;
       }
     } finally {
       fs.rmSync(extractDir, { recursive: true, force: true });
