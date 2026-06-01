@@ -177,7 +177,7 @@ export function KnowledgePanel() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-6">
       <div>
         <h3 className="text-base font-semibold">KI-Wissensbasis</h3>
         <p className="text-sm text-muted-foreground">
@@ -199,7 +199,7 @@ export function KnowledgePanel() {
         </Button>
       </div>
 
-      <ul className="divide-y rounded-lg border">
+      <ul className="max-h-48 shrink-0 divide-y overflow-y-auto rounded-lg border lg:max-h-56">
         {list.length === 0 ? (
           <li className="px-3 py-4 text-sm text-muted-foreground">Noch keine Wissensbasis.</li>
         ) : (
@@ -233,7 +233,7 @@ export function KnowledgePanel() {
       </ul>
 
       {selectedId != null ? (
-        <div className="space-y-3 rounded-lg border p-4">
+        <div className="flex min-h-0 flex-1 flex-col space-y-3 rounded-lg border p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium">
@@ -269,20 +269,23 @@ export function KnowledgePanel() {
           </div>
 
           {loadingDoc ? (
-            <div className="flex h-[360px] items-center justify-center text-sm text-muted-foreground">
+            <div className="flex min-h-[280px] flex-1 items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Lädt Markdown…
             </div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5">
               <Label className="text-xs text-muted-foreground">Inhalt (Markdown)</Label>
-              <KnowledgeMarkdownEditor
-                value={markdown}
-                onChange={(v) => {
-                  setMarkdown(v)
-                  setDirty(true)
-                }}
-              />
+              <div className="min-h-[280px] flex-1">
+                <KnowledgeMarkdownEditor
+                  value={markdown}
+                  onChange={(v) => {
+                    setMarkdown(v)
+                    setDirty(true)
+                  }}
+                  height="100%"
+                />
+              </div>
             </div>
           )}
         </div>

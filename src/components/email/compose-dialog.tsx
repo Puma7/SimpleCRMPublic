@@ -165,8 +165,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   /** When replying: keep original in inbox as open (do not set done on send). */
   const [keepReplyOpenInInbox, setKeepReplyOpenInInbox] = useState(false)
-  const { width: composeDialogWidth, startResize: startComposeWidthResize } =
-    useComposeDialogSize()
+  const {
+    width: composeDialogWidth,
+    dialogHeightCss,
+    startResize: startComposeWidthResize,
+    startHeightResize: startComposeHeightResize,
+  } = useComposeDialogSize()
 
   const isReplyCompose =
     composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
@@ -721,8 +725,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       }}
     >
       <DialogContent
-        className="fixed left-1/2 top-[4vh] z-50 flex h-[calc(100vh-8vh)] max-h-[calc(100vh-8vh)] min-h-0 w-full -translate-x-1/2 translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw] sm:rounded-lg"
-        style={{ width: composeDialogWidth, maxWidth: "96vw" }}
+        className="fixed left-1/2 top-[4vh] z-50 flex min-h-0 w-full -translate-x-1/2 translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw] sm:rounded-lg"
+        style={{
+          width: composeDialogWidth,
+          maxWidth: "96vw",
+          height: dialogHeightCss,
+          maxHeight: dialogHeightCss,
+        }}
       >
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
@@ -732,6 +741,14 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           title="Dialogbreite: am rechten Rand nach links oder rechts ziehen"
           className="absolute right-0 top-0 z-10 h-full w-2 cursor-ew-resize rounded-r-lg hover:bg-primary/10"
           onMouseDown={startComposeWidthResize}
+        />
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Dialoghöhe anpassen"
+          title="Dialoghöhe: am unteren Rand nach oben oder unten ziehen"
+          className="absolute bottom-0 left-0 right-0 z-10 h-2 cursor-ns-resize rounded-b-lg hover:bg-primary/10"
+          onMouseDown={startComposeHeightResize}
         />
         <DialogHeader className="shrink-0 border-b px-6 pt-6 pb-3">
           <DialogTitle>

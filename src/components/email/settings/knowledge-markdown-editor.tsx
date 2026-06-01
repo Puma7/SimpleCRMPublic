@@ -8,7 +8,11 @@ type Props = {
   height?: string
 }
 
-export function KnowledgeMarkdownEditor({ value, onChange, height = "360px" }: Props) {
+export function KnowledgeMarkdownEditor({
+  value,
+  onChange,
+  height = "min(360px, calc(100vh - 14rem))",
+}: Props) {
   return (
     <div className="overflow-hidden rounded-md border" style={{ height }}>
       <AppMonacoEditor

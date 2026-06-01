@@ -9,6 +9,7 @@ import { formatEmailSyncError } from "@shared/email-sync-error-hint"
 import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { logError } from "../log"
+import { pickAdjacentMessageId } from "../select-adjacent-message"
 import { useMailWorkspace } from "../workspace-context"
 
 const PAGE_SIZE = 100
@@ -37,7 +38,12 @@ export function useEmailMessages() {
   const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
+  const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
 
   useEffect(() => {
     selectedMessageIdRef.current = selectedMessage?.id ?? null
@@ -61,7 +67,14 @@ export function useEmailMessages() {
       query: string,
       sort: MessageListSortMode,
       listFilter: MessageListFilter,
-      opts?: { preserveSelection?: boolean; append?: boolean },
+      opts?: {
+        preserveSelection?: boolean
+        append?: boolean
+        /** After reload, select this id (full fetch). Falls back if id missing. */
+        selectMessageId?: number | null
+        /** Used with selectMessageId when preferred row is no longer in the list. */
+        advanceFromRemovedId?: number
+      },
     ) => {
       if (!hasElectron()) return
       const append = opts?.append ?? false
@@ -119,7 +132,31 @@ export function useEmailMessages() {
           setMessages(list)
           offsetRef.current = list.length
         }
-        if (keepId != null && !append) {
+        if (!append && opts?.selectMessageId !== undefined) {
+          let targetId = opts.selectMessageId
+          if (targetId != null && !list.some((m) => m.id === targetId)) {
+            const removed = opts.advanceFromRemovedId ?? targetId
+            targetId = pickAdjacentMessageId(list, removed)
+          }
+          if (targetId == null) {
+            setSelectedMessage(null)
+          } else {
+            const row = list.find((m) => m.id === targetId)
+            if (row) {
+              try {
+                const full = await invokeIpc<EmailMessage | null>(
+                  IPCChannels.Email.GetMessage,
+                  row.id,
+                )
+                setSelectedMessage(full ?? row)
+              } catch {
+                setSelectedMessage(row)
+              }
+            } else {
+              setSelectedMessage(null)
+            }
+          }
+        } else if (keepId != null && !append) {
           const still = list.find((m) => m.id === keepId)
           if (still) {
             setSelectedMessage((prev) =>
@@ -188,7 +225,11 @@ export function useEmailMessages() {
   ])
 
   const refreshList = useCallback(
-    async (opts?: { preserveSelection?: boolean }) => {
+    async (opts?: {
+      preserveSelection?: boolean
+      selectMessageId?: number | null
+      advanceFromRemovedId?: number
+    }) => {
       offsetRef.current = 0
       if (selectedAccountId == null) return
       await loadMessages(
@@ -211,6 +252,17 @@ export function useEmailMessages() {
       messageDoneFilter,
       loadMessages,
     ],
+  )
+
+  const advanceSelectionAfterMessageRemoved = useCallback(
+    async (removedId: number) => {
+      const preferredId = pickAdjacentMessageId(messagesRef.current, removedId)
+      await refreshList({
+        selectMessageId: preferredId,
+        advanceFromRemovedId: removedId,
+      })
+    },
+    [refreshList],
   )
 
   const moveMessageToView = useCallback(
@@ -236,16 +288,17 @@ export function useEmailMessages() {
         }
         toast.success(`Nachricht → ${labels[targetView]}`)
         if (selectedMessage?.id === messageId && targetView !== mailView) {
-          setSelectedMessage(null)
+          await advanceSelectionAfterMessageRemoved(messageId)
+        } else {
+          await refreshList({ preserveSelection: true })
         }
-        await refreshList()
         return true
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Verschieben fehlgeschlagen")
         return false
       }
     },
-    [mailView, refreshList, selectedMessage?.id, setSelectedMessage],
+    [mailView, refreshList, selectedMessage?.id, advanceSelectionAfterMessageRemoved],
   )
 
   const handleSync = useCallback(
@@ -364,16 +417,17 @@ export function useEmailMessages() {
         })
         toast.success("Nachricht zurückgestellt (morgen 8:00)")
         if (selectedMessage?.id === messageId && mailView !== "snoozed") {
-          setSelectedMessage(null)
+          await advanceSelectionAfterMessageRemoved(messageId)
+        } else {
+          await refreshList({ preserveSelection: true })
         }
-        await refreshList({ preserveSelection: mailView === "snoozed" })
         return true
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Zurückstellen fehlgeschlagen")
         return false
       }
     },
-    [mailView, refreshList, selectedMessage?.id, setSelectedMessage],
+    [mailView, refreshList, selectedMessage?.id, advanceSelectionAfterMessageRemoved],
   )
 
   return {
@@ -390,5 +444,6 @@ export function useEmailMessages() {
     moveMessageToView,
     assignMessageCategory,
     snoozeMessageUntilTomorrow,
+    advanceSelectionAfterMessageRemoved,
   }
 }

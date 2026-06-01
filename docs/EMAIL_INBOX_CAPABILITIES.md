@@ -10,6 +10,8 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Archivieren / Spam / Massenaktionen | stabil | Checkboxen + Bulk-IPC |
 | Snooze (E-Mail) | stabil | `snoozed_until` |
 | Kategorien (manuell + Workflow) | stabil | UI + `set_category` |
+| Sidebar-Zähler Posteingang / Kategorien | stabil | Nur **unerledigte** offene Inbox-Mails (`done_local = 0`, nicht snoozed) — nicht Ungelesen |
+| Auto-Auswahl nächste Mail nach Erledigen/Archiv/Spam | stabil | Nächste Zeile in der Liste |
 | Shop-„Ordner“ | teilweise | Kategorien + Workflows |
 
 ## Lesen & Datenschutz

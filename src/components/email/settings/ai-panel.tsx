@@ -9,6 +9,7 @@ import {
 } from "@shared/ai-provider-presets"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -197,6 +198,8 @@ export function AiPanel() {
       </div>
 
       <ReplySuggestionSettingsSection />
+
+      <Separator />
 
       <div>
         <h3 className="text-base font-semibold">KI-Profile (Anbieter &amp; Modelle)</h3>

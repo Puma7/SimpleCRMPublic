@@ -86,7 +86,12 @@ type Props = {
   messageAttachments: MessageAttachment[]
   reloadNotes: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
-  refreshList: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
+  refreshList: (opts?: {
+    preserveSelection?: boolean
+    selectMessageId?: number | null
+    advanceFromRemovedId?: number
+  }) => void | Promise<void>
+  advanceSelectionAfterMessageRemoved: (removedId: number) => void | Promise<void>
   categories: CategoryRow[]
   reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage, initialReplyHtml?: string) => void
@@ -107,6 +112,7 @@ export function MessageViewer(props: Props) {
     categories,
     refreshCurrentMessage,
     refreshList,
+    advanceSelectionAfterMessageRemoved,
     onReply,
     onReplyAll,
     onForward,
@@ -198,10 +204,12 @@ export function MessageViewer(props: Props) {
     } else {
       toast.success("Wieder im Posteingang")
     }
-    await refreshList({ preserveSelection: until != null && inSnoozed })
-    if (!until || !inSnoozed) {
-      setSelectedMessage(null)
+    const leavesCurrentView =
+      (until != null && mailView === "inbox") || (until == null && inSnoozed)
+    if (leavesCurrentView) {
+      await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
+      await refreshList({ preserveSelection: true })
       await refreshCurrentMessage()
     }
   }
@@ -218,8 +226,7 @@ export function MessageViewer(props: Props) {
   const handleSoftDelete = async () => {
     await invokeIpc(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
     toast.success("In den Papierkorb verschoben")
-    await refreshList()
-    setSelectedMessage(null)
+    await advanceSelectionAfterMessageRemoved(selectedMessage.id)
   }
 
   const handleDeleteLocalDraft = async () => {
@@ -233,8 +240,7 @@ export function MessageViewer(props: Props) {
     }
     toast.success("Entwurf endgültig gelöscht")
     setDeleteDraftOpen(false)
-    await refreshList()
-    setSelectedMessage(null)
+    await advanceSelectionAfterMessageRemoved(selectedMessage.id)
   }
 
   const handleRestore = async () => {
@@ -251,8 +257,12 @@ export function MessageViewer(props: Props) {
       archived: !wasArchived,
     })
     toast.success(wasArchived ? "Wieder im Posteingang sichtbar" : "Archiviert")
-    await refreshCurrentMessage()
-    await refreshList()
+    if (!wasArchived) {
+      await advanceSelectionAfterMessageRemoved(selectedMessage.id)
+    } else {
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
+    }
   }
 
   const handleToggleSeen = async () => {
@@ -274,11 +284,11 @@ export function MessageViewer(props: Props) {
     })
     toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
     const hideFromInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
-    await refreshList({ preserveSelection: !hideFromInbox })
     if (hideFromInbox) {
-      setSelectedMessage(null)
+      await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
       await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
     }
   }
 
@@ -289,9 +299,12 @@ export function MessageViewer(props: Props) {
       spam: !spam,
     })
     toast.success(spam ? "Kein Spam mehr" : "Als Spam markiert")
-    await refreshList()
-    if (!spam) setSelectedMessage(null)
-    else await refreshCurrentMessage()
+    if (!spam) {
+      await advanceSelectionAfterMessageRemoved(selectedMessage.id)
+    } else {
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
+    }
   }
 
   // Text-only rendering — prefer the richer source (blocked compose drafts often store
