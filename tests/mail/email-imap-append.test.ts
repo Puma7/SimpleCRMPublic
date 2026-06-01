@@ -19,6 +19,7 @@ jest.mock('../../electron/email/mail-rfc822-compose', () => ({
 
 import {
   appendSentToImap,
+  imapTimeoutsForMessageBytes,
   resolveSentMailboxCandidates,
 } from '../../electron/email/email-imap-append';
 
@@ -113,6 +114,13 @@ describe('appendSentToImap', () => {
         },
       ]),
     ).toEqual(expect.arrayContaining(['Sent', 'INBOX/Gesendete Objekte']));
+  });
+
+  test('imapTimeoutsForMessageBytes scales with payload size', () => {
+    const small = imapTimeoutsForMessageBytes(100_000);
+    const large = imapTimeoutsForMessageBytes(15 * 1024 * 1024);
+    expect(large.socketTimeout).toBeGreaterThan(small.socketTimeout);
+    expect(large.connectionTimeout).toBeGreaterThan(small.connectionTimeout);
   });
 
   test('uses oauth access token auth', async () => {

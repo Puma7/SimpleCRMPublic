@@ -19,6 +19,7 @@ import {
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { sendSmtpForAccount } from './email-smtp';
 import { appendSentToImap } from './email-imap-append';
+import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
 import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
 import {
   buildOutboundThreadingHeaders,
@@ -37,6 +38,20 @@ function maxComposeAttachmentBytes(): number {
   const mb = parseInt(getSyncInfo('email_max_attachment_mb') || '25', 10);
   const clamped = Number.isFinite(mb) ? Math.max(1, Math.min(mb, 100)) : 25;
   return clamped * 1024 * 1024;
+}
+
+/** IMAP APPEND is optional; skip above this size to avoid long hangs after successful SMTP. */
+function maxImapSentAppendBytes(): number {
+  const mb = parseInt(getSyncInfo('email_imap_sent_append_max_mb') || '0', 10);
+  if (Number.isFinite(mb) && mb > 0) {
+    return Math.max(1, Math.min(mb, 100)) * 1024 * 1024;
+  }
+  return Math.min(maxComposeAttachmentBytes(), 20 * 1024 * 1024);
+}
+
+function joinWarnings(parts: Array<string | undefined>): string | undefined {
+  const merged = parts.map((p) => p?.trim()).filter((p): p is string => Boolean(p));
+  return merged.length > 0 ? merged.join(' ') : undefined;
 }
 
 function smtpCommittedKey(draftMessageId: number): string {
@@ -109,44 +124,91 @@ async function finalizeSentDraft(input: {
   attachments?: { filename: string; path: string; cid?: string }[];
   requestReadReceipt?: boolean;
 }): Promise<{ sentAppendWarning?: string }> {
-  let sentAppendWarning: string | undefined;
-  const acc = getEmailAccountById(input.accountId);
-  if (acc && (acc.protocol || 'imap') !== 'imap') {
-    sentAppendWarning =
-      'E-Mail wurde versendet. POP3-Konten können keine Kopie per IMAP in „Gesendet“ ablegen.';
-  } else {
-    try {
-      await appendSentToImap({
-        accountId: input.accountId,
-        from: input.from,
-        to: input.to,
-        cc: input.cc,
-        subject: input.subject,
-        text: input.text,
-        html: input.html,
-        messageId: input.messageId,
-        inReplyTo: input.inReplyTo,
-        references: input.references,
-        attachments: input.attachments,
-        includeBccInHeaders: false,
-        requestReadReceipt: input.requestReadReceipt,
-      });
-    } catch (e) {
-      console.warn('[email-compose] sent IMAP append failed:', e);
-      sentAppendWarning =
-        e instanceof Error
-          ? `E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden: ${e.message}`
-          : 'E-Mail wurde versendet, konnte aber nicht in den Server-Ordner „Gesendet“ kopiert werden.';
-    }
-  }
+  const warnings: string[] = [];
+
   try {
     persistLocalComposeAttachments(input.draftMessageId, input.attachments);
   } catch (e) {
     console.warn('[email-compose] local sent attachment persistence failed:', e);
+    warnings.push(
+      e instanceof Error
+        ? `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert, aber Anhänge konnten nicht übernommen werden: ${e.message}`
+        : 'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert, aber Anhänge konnten nicht übernommen werden.',
+    );
   }
+
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
-  return { sentAppendWarning };
+
+  const acc = getEmailAccountById(input.accountId);
+  if (acc && (acc.protocol || 'imap') !== 'imap') {
+    warnings.push(
+      'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. POP3-Konten können keine Kopie per IMAP auf dem Server ablegen.',
+    );
+    return { sentAppendWarning: joinWarnings(warnings) };
+  }
+
+  const appendInput = {
+    accountId: input.accountId,
+    from: input.from,
+    to: input.to,
+    cc: input.cc,
+    subject: input.subject,
+    text: input.text,
+    html: input.html,
+    messageId: input.messageId,
+    inReplyTo: input.inReplyTo,
+    references: input.references,
+    attachments: input.attachments,
+    includeBccInHeaders: false as const,
+    requestReadReceipt: input.requestReadReceipt,
+  };
+  const estimatedBytes = estimateComposeRfc822Bytes({
+    text: input.text,
+    html: input.html,
+    attachments: input.attachments,
+  });
+  const imapLimit = maxImapSentAppendBytes();
+  if (estimatedBytes > imapLimit) {
+    const mb = (estimatedBytes / (1024 * 1024)).toFixed(1);
+    const limitMb = Math.round(imapLimit / (1024 * 1024));
+    warnings.push(
+      `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie (IMAP) übersprungen — Nachricht zu groß (ca. ${mb} MB, IMAP-Limit ${limitMb} MB).`,
+    );
+    return { sentAppendWarning: joinWarnings(warnings) };
+  }
+
+  let rfc822: Buffer | undefined;
+  try {
+    rfc822 = buildComposeRfc822({
+      ...appendInput,
+      bcc: undefined,
+    });
+  } catch (e) {
+    console.warn('[email-compose] RFC822 build for IMAP failed:', e);
+    warnings.push(
+      e instanceof Error
+        ? `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie konnte nicht vorbereitet werden: ${e.message}`
+        : 'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie konnte nicht vorbereitet werden.',
+    );
+    return { sentAppendWarning: joinWarnings(warnings) };
+  }
+
+  try {
+    await appendSentToImap(appendInput, {
+      source: rfc822,
+      estimatedBytes: Math.max(estimatedBytes, rfc822.length),
+    });
+  } catch (e) {
+    console.warn('[email-compose] sent IMAP append failed:', e);
+    warnings.push(
+      e instanceof Error
+        ? `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Kopie auf dem Server im Ordner „Gesendet“ fehlgeschlagen: ${e.message}`
+        : 'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Kopie auf dem Server im Ordner „Gesendet“ fehlgeschlagen.',
+    );
+  }
+
+  return { sentAppendWarning: joinWarnings(warnings) };
 }
 
 function maybeMarkReplyParentDone(
@@ -227,6 +289,7 @@ export async function sendComposeDraft(input: {
       toJson,
       ccJson,
       bccJson,
+      draftAttachmentPaths: input.attachmentPaths,
     });
 
     const { clearOutboundHoldForResend } = await import('./email-outbound-review');

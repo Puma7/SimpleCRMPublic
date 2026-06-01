@@ -20,8 +20,11 @@ Kurzreferenz für Support und Entwickler. Technische Details: [`DEVELOPER_EMAIL.
 | Symptom | Ursache | Aktion |
 |---------|---------|--------|
 | Senden grau / Hold | Outbound-Workflow blockiert | Entwurf im Posteingang (gelber Hinweis), Workflow-Log |
-| Gesendet fehlt am Server | IMAP APPEND fehlgeschlagen | SMTP-Log, Konto → Sent-Ordner |
+| Gesendet fehlt am Server | IMAP APPEND fehlgeschlagen oder übersprungen (große Anhänge) | Toast prüfen; lokal sollte unter **Gesendet** sein; bei >~20 MB oft nur SMTP, kein IMAP-Append |
+| Gesendet fehlt **lokal** | Finalisierung unterbrochen (Crash während Senden) | Compose erneut öffnen → Banner „Versand unterbrochen“ → **Senden** (kein zweites SMTP) |
+| Warnung trotz Empfang | SMTP OK, IMAP-Kopie fehlgeschlagen | Normal bei großen Anhängen/Timeout; Mail liegt lokal unter Gesendet |
 | Anhang fehlt nach Entwurf neu öffnen | Alte DB ohne `draft_attachment_paths` | Update, Entwurf neu anlegen |
+| Anhang fehlt in **Gesendet** (lokal) | `persistLocalComposeAttachments` fehlgeschlagen | Toast-Hinweis; erneut senden oder Anhang manuell prüfen |
 
 ---
 

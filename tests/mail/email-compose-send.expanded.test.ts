@@ -240,6 +240,56 @@ describe('email-compose-send expanded', () => {
     expect(mockSetSyncInfo).not.toHaveBeenCalledWith('email_compose_smtp_ok:10', '1');
   });
 
+  test('finalizes locally (attachments + sent) before IMAP append', async () => {
+    const order: string[] = [];
+    mockPersistLocalComposeAttachments.mockImplementation(() => {
+      order.push('persist');
+    });
+    mockMarkSent.mockImplementation(() => {
+      order.push('markSent');
+    });
+    mockAppendSent.mockImplementation(async () => {
+      order.push('imap');
+    });
+    await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+    });
+    expect(order).toEqual(['persist', 'markSent', 'imap']);
+  });
+
+  test('skips IMAP append when estimated message exceeds limit', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-send-'));
+    const bigPath = path.join(dir, 'large.bin');
+    fs.writeFileSync(bigPath, Buffer.alloc(2 * 1024 * 1024));
+    mockGetSyncInfo.mockImplementation((key: string) => {
+      if (key === 'email_imap_sent_append_max_mb') return '1';
+      if (key === 'email_max_attachment_mb') return '25';
+      return null;
+    });
+    mockGetAccount.mockReturnValue({
+      id: 1,
+      email_address: 'me@shop.test',
+      protocol: 'imap',
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+      attachmentPaths: [bigPath],
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(r.ok).toBe(true);
+    expect(mockMarkSent).toHaveBeenCalled();
+    expect(mockAppendSent).not.toHaveBeenCalled();
+    expect((r as { warning?: string }).warning).toMatch(/lokal unter „Gesendet“/);
+  });
+
   test('smtp success sets commit flag only after send', async () => {
     await sendComposeDraft({
       accountId: 1,
