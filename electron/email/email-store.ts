@@ -454,7 +454,11 @@ export function getDefaultComposeSignatureHtml(): string | null {
 }
 
 export function deleteEmailTeamMember(id: string): void {
-  getDb().prepare(`DELETE FROM ${EMAIL_TEAM_MEMBERS_TABLE} WHERE id = ?`).run(id);
+  const db = getDb();
+  db.prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE} SET assigned_to = NULL WHERE assigned_to = ?`,
+  ).run(id);
+  db.prepare(`DELETE FROM ${EMAIL_TEAM_MEMBERS_TABLE} WHERE id = ?`).run(id);
 }
 
 export async function deleteEmailAccountRecord(id: number): Promise<void> {

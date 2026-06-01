@@ -1,4 +1,5 @@
 import { createSqliteEmailStoreBranchesMock } from './helpers/sqlite-email-store-branches-mock';
+import { seedMessage } from './helpers/sqlite-email-store-state';
 import { POP3_UID_CEILING } from '../../electron/email/email-store';
 
 const mock = createSqliteEmailStoreBranchesMock();
@@ -195,6 +196,21 @@ describe('email-store branches', () => {
       expect(first.length).toBeGreaterThan(0);
       upsertEmailTeamMember({ id: ' custom ', displayName: ' Agent ', role: ' lead ', signatureHtml: ' sig ' });
       deleteEmailTeamMember('custom');
+    });
+
+    test('deleteEmailTeamMember clears message assignments', () => {
+      upsertEmailTeamMember({ id: 'agent1', displayName: 'Agent', role: 'agent' });
+      const msgId = mock.state.nextMessageId;
+      seedMessage(mock.state, {
+        id: msgId,
+        account_id: 1,
+        folder_id: 1,
+        uid: 1,
+        assigned_to: 'agent1',
+      });
+      deleteEmailTeamMember('agent1');
+      expect(mock.state.messages.get(msgId)?.assigned_to).toBeNull();
+      expect(mock.state.teamMembers.some((m) => m.id === 'agent1')).toBe(false);
     });
 
     test('getComposeSignatureHtml returns null for missing account', () => {
