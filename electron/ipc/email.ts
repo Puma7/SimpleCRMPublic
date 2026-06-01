@@ -958,13 +958,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     }, { logger }),
   );
 
-  registerIpcHandler(
-    IPCChannels.Email.VerifyLocalMailBackup,
-    async () => {
+  disposers.push(
+    registerIpcHandler(IPCChannels.Email.VerifyLocalMailBackup, async () => {
       const { verifyLocalMailBackup } = await import('../email/email-local-backup');
       return verifyLocalMailBackup();
-    },
-    { logger },
+    }, { logger }),
   );
 
   disposers.push(

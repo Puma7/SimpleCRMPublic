@@ -144,6 +144,59 @@ function readZipEntryText(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<strin
   });
 }
 
+type ZipWalkState = {
+  hasDatabase: boolean;
+  hasAttachments: boolean;
+  manifest: BackupManifest | null;
+};
+
+async function walkZipBackupEntries(zip: yauzl.ZipFile): Promise<ZipWalkState> {
+  const walked: ZipWalkState = {
+    hasDatabase: false,
+    hasAttachments: false,
+    manifest: null,
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    const nextEntry = () => {
+      zip.readEntry();
+    };
+
+    zip.on('entry', (entry: yauzl.Entry) => {
+      const name = entry.fileName.replace(/\\/g, '/');
+      if (name === 'database.sqlite' || name.endsWith('/database.sqlite')) {
+        walked.hasDatabase = true;
+        nextEntry();
+        return;
+      }
+      if (name.startsWith('email-attachments/') && !name.endsWith('/')) {
+        walked.hasAttachments = true;
+        nextEntry();
+        return;
+      }
+      if (name === 'manifest.json') {
+        void readZipEntryText(zip, entry)
+          .then((raw) => {
+            try {
+              walked.manifest = JSON.parse(raw) as BackupManifest;
+            } catch {
+              walked.manifest = null;
+            }
+            nextEntry();
+          })
+          .catch(reject);
+        return;
+      }
+      nextEntry();
+    });
+    zip.on('end', () => resolve());
+    zip.on('error', reject);
+    zip.readEntry();
+  });
+
+  return walked;
+}
+
 /** @internal Exported for unit tests. */
 export async function inspectZipBackup(filePath: string): Promise<
   | {
@@ -160,57 +213,23 @@ export async function inspectZipBackup(filePath: string): Promise<
   let zip: yauzl.ZipFile | null = null;
   try {
     zip = await openZip(filePath);
-    let hasDatabase = false;
-    let hasAttachments = false;
-    let manifest: BackupManifest | null = null;
+    const walked = await walkZipBackupEntries(zip);
 
-    await new Promise<void>((resolve, reject) => {
-      const nextEntry = () => {
-        zip!.readEntry();
-      };
-
-      zip!.on('entry', (entry: yauzl.Entry) => {
-        const name = entry.fileName.replace(/\\/g, '/');
-        if (name === 'database.sqlite' || name.endsWith('/database.sqlite')) {
-          hasDatabase = true;
-          nextEntry();
-          return;
-        }
-        if (name.startsWith('email-attachments/') && !name.endsWith('/')) {
-          hasAttachments = true;
-          nextEntry();
-          return;
-        }
-        if (name === 'manifest.json') {
-          void readZipEntryText(zip!, entry)
-            .then((raw) => {
-              try {
-                manifest = JSON.parse(raw) as BackupManifest;
-              } catch {
-                manifest = null;
-              }
-              nextEntry();
-            })
-            .catch(reject);
-          return;
-        }
-        nextEntry();
-      });
-      zip!.on('end', () => resolve());
-      zip!.on('error', reject);
-      zip!.readEntry();
-    });
-
-    if (!hasDatabase) {
+    if (!walked.hasDatabase) {
       return { ok: false, error: 'ZIP enthält keine database.sqlite.' };
     }
-    if (!manifest || manifest.type !== 'simplecrm-mail-local-backup') {
+    if (!walked.manifest || walked.manifest.type !== 'simplecrm-mail-local-backup') {
       return {
         ok: false,
         error: 'manifest.json fehlt oder ist kein SimpleCRM-Mail-Backup.',
       };
     }
-    return { ok: true, manifest, hasDatabase, hasAttachments };
+    return {
+      ok: true,
+      manifest: walked.manifest,
+      hasDatabase: walked.hasDatabase,
+      hasAttachments: walked.hasAttachments,
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   } finally {
