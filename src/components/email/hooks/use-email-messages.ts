@@ -9,6 +9,7 @@ import { formatEmailSyncError } from "@shared/email-sync-error-hint"
 import type { MailAccountScope } from "../account-scope"
 import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
 import { logError } from "../log"
+import { advanceSelectionAfterMessageRemoved } from "../select-adjacent-message"
 import { useMailWorkspace } from "../workspace-context"
 
 const PAGE_SIZE = 100
@@ -37,11 +38,16 @@ export function useEmailMessages() {
   const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
+  const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
 
   useEffect(() => {
     selectedMessageIdRef.current = selectedMessage?.id ?? null
   }, [selectedMessage?.id])
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
 
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -213,41 +219,6 @@ export function useEmailMessages() {
     ],
   )
 
-  const moveMessageToView = useCallback(
-    async (messageId: number, targetView: MailView) => {
-      if (!hasElectron()) return false
-      try {
-        const r = await invokeIpc<{ success: boolean; error?: string }>(
-          IPCChannels.Email.MoveMessageToView,
-          { messageId, view: targetView },
-        )
-        if (!r.success) {
-          toast.error(r.error ?? "Verschieben fehlgeschlagen")
-          return false
-        }
-        const labels: Record<MailView, string> = {
-          inbox: "Posteingang",
-          snoozed: "Zurückgestellt",
-          sent: "Gesendet",
-          drafts: "Entwürfe",
-          archived: "Archiv",
-          spam: "Spam",
-          trash: "Papierkorb",
-        }
-        toast.success(`Nachricht → ${labels[targetView]}`)
-        if (selectedMessage?.id === messageId && targetView !== mailView) {
-          setSelectedMessage(null)
-        }
-        await refreshList()
-        return true
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Verschieben fehlgeschlagen")
-        return false
-      }
-    },
-    [mailView, refreshList, selectedMessage?.id, setSelectedMessage],
-  )
-
   const handleSync = useCallback(
     async (opts?: HandleSyncOptions) => {
       if (!hasElectron() || selectedAccountId == null) return
@@ -316,6 +287,66 @@ export function useEmailMessages() {
     [setSelectedMessage],
   )
 
+  const applySelectionAfterRemoved = useCallback(
+    async (removed: number | number[]) => {
+      const listBefore = messagesRef.current
+      const affectsSelection = Array.isArray(removed)
+        ? removed.some((id) => id === selectedMessageIdRef.current)
+        : removed === selectedMessageIdRef.current
+      const nextId = affectsSelection
+        ? advanceSelectionAfterMessageRemoved(listBefore, removed)
+        : null
+      await refreshList()
+      if (nextId == null) {
+        if (affectsSelection) setSelectedMessage(null)
+        return
+      }
+      const next = messagesRef.current.find((m) => m.id === nextId)
+      if (next) {
+        await openMessage(next)
+      } else {
+        setSelectedMessage(null)
+      }
+    },
+    [refreshList, openMessage, setSelectedMessage],
+  )
+
+  const moveMessageToView = useCallback(
+    async (messageId: number, targetView: MailView) => {
+      if (!hasElectron()) return false
+      try {
+        const r = await invokeIpc<{ success: boolean; error?: string }>(
+          IPCChannels.Email.MoveMessageToView,
+          { messageId, view: targetView },
+        )
+        if (!r.success) {
+          toast.error(r.error ?? "Verschieben fehlgeschlagen")
+          return false
+        }
+        const labels: Record<MailView, string> = {
+          inbox: "Posteingang",
+          snoozed: "Zurückgestellt",
+          sent: "Gesendet",
+          drafts: "Entwürfe",
+          archived: "Archiv",
+          spam: "Spam",
+          trash: "Papierkorb",
+        }
+        toast.success(`Nachricht → ${labels[targetView]}`)
+        if (selectedMessage?.id === messageId && targetView !== mailView) {
+          await applySelectionAfterRemoved(messageId)
+        } else {
+          await refreshList()
+        }
+        return true
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Verschieben fehlgeschlagen")
+        return false
+      }
+    },
+    [mailView, refreshList, selectedMessage?.id, applySelectionAfterRemoved],
+  )
+
   const refreshCurrentMessage = useCallback(async () => {
     if (!selectedMessage || !hasElectron()) return
     try {
@@ -364,16 +395,17 @@ export function useEmailMessages() {
         })
         toast.success("Nachricht zurückgestellt (morgen 8:00)")
         if (selectedMessage?.id === messageId && mailView !== "snoozed") {
-          setSelectedMessage(null)
+          await applySelectionAfterRemoved(messageId)
+        } else {
+          await refreshList({ preserveSelection: mailView === "snoozed" })
         }
-        await refreshList({ preserveSelection: mailView === "snoozed" })
         return true
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Zurückstellen fehlgeschlagen")
         return false
       }
     },
-    [mailView, refreshList, selectedMessage?.id, setSelectedMessage],
+    [mailView, refreshList, selectedMessage?.id, applySelectionAfterRemoved],
   )
 
   return {
@@ -390,5 +422,6 @@ export function useEmailMessages() {
     moveMessageToView,
     assignMessageCategory,
     snoozeMessageUntilTomorrow,
+    applySelectionAfterRemoved,
   }
 }

@@ -58,6 +58,7 @@ function MailShellInner() {
     moveMessageToView,
     assignMessageCategory,
     snoozeMessageUntilTomorrow,
+    applySelectionAfterRemoved,
     loadMore,
     hasMore,
     loadingMore,
@@ -120,6 +121,7 @@ function MailShellInner() {
             onOpen={openMessage}
             onMoveMessageToView={moveMessageToView}
             onListChanged={refreshList}
+            applySelectionAfterRemoved={applySelectionAfterRemoved}
             loadMore={loadMore}
             hasMore={hasMore}
             loadingMore={loadingMore}
@@ -142,6 +144,7 @@ function MailShellInner() {
             reloadTags={reloadTags}
             refreshCurrentMessage={refreshCurrentMessage}
             refreshList={refreshList}
+            applySelectionAfterRemoved={applySelectionAfterRemoved}
             onReply={(m, initialReplyHtml) =>
               setComposeIntent({ mode: "reply", message: m, initialReplyHtml })
             }

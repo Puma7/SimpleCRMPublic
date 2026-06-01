@@ -39,6 +39,7 @@ type Props = {
   onOpen: (m: EmailMessage) => void | Promise<void>
   onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
   onListChanged?: () => void | Promise<void>
+  applySelectionAfterRemoved?: (removed: number | number[]) => void | Promise<void>
   loadMore?: () => void
   hasMore?: boolean
   loadingMore?: boolean
@@ -69,6 +70,7 @@ export function MessageList({
   loading,
   onOpen,
   onListChanged,
+  applySelectionAfterRemoved,
   loadMore,
   hasMore,
   loadingMore,
@@ -256,15 +258,20 @@ export function MessageList({
               : `${r.count} Nachrichten in den Papierkorb verschoben`,
           )
         }
+        const removedIds = ids
         setSelectedIds(new Set())
-        await onListChanged?.()
+        if (applySelectionAfterRemoved) {
+          await applySelectionAfterRemoved(removedIds)
+        } else {
+          await onListChanged?.()
+        }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Massenaktion fehlgeschlagen")
       } finally {
         setBulkBusy(false)
       }
     },
-    [selectedIds, bulkAccountId, onListChanged],
+    [selectedIds, bulkAccountId, onListChanged, applySelectionAfterRemoved],
   )
 
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =

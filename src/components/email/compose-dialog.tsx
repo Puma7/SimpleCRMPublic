@@ -165,8 +165,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   /** When replying: keep original in inbox as open (do not set done on send). */
   const [keepReplyOpenInInbox, setKeepReplyOpenInInbox] = useState(false)
-  const { width: composeDialogWidth, startResize: startComposeWidthResize } =
-    useComposeDialogSize()
+  const {
+    width: composeDialogWidth,
+    height: composeDialogHeight,
+    startWidthResize: startComposeWidthResize,
+    startHeightResize: startComposeHeightResize,
+  } = useComposeDialogSize()
 
   const isReplyCompose =
     composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
@@ -721,8 +725,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       }}
     >
       <DialogContent
-        className="fixed left-1/2 top-[4vh] z-50 flex h-[calc(100vh-8vh)] max-h-[calc(100vh-8vh)] min-h-0 w-full -translate-x-1/2 translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw] sm:rounded-lg"
-        style={{ width: composeDialogWidth, maxWidth: "96vw" }}
+        className="fixed left-1/2 top-[4vh] z-50 flex min-h-0 w-full -translate-x-1/2 translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[96vw] sm:rounded-lg"
+        style={{
+          width: composeDialogWidth,
+          height: composeDialogHeight,
+          maxWidth: "96vw",
+          maxHeight: "96vh",
+        }}
       >
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
@@ -1061,14 +1070,21 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           </div>
           </div>
 
-          <div
-            className="compose-quill compose-editor-fill min-h-0 flex-1 rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
-            title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
-          >
-            <ComposeQuillEditor
-              ref={editorRef}
-              value={bodyHtml}
-              onChange={setBodyHtml}
+          <div className="relative min-h-0 flex-1">
+            <div className="compose-quill compose-editor-fill h-full min-h-0 rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted">
+              <ComposeQuillEditor
+                ref={editorRef}
+                value={bodyHtml}
+                onChange={setBodyHtml}
+              />
+            </div>
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Editorhöhe anpassen"
+              title="Nachrichtenhöhe: am unteren Rand nach oben oder unten ziehen"
+              className="absolute inset-x-0 bottom-0 z-10 h-2 cursor-ns-resize rounded-b-md hover:bg-primary/10"
+              onMouseDown={startComposeHeightResize}
             />
           </div>
         </div>

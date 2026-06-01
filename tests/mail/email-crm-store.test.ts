@@ -121,6 +121,18 @@ describe('email-crm-store', () => {
       expect(listCategoryCountsForAccount(1)).toEqual([{ categoryId: 1, count: 3 }]);
     });
 
+    test('listCategoryCounts filters open active inbox messages only', () => {
+      listCategoryCountsForAllAccounts();
+      const allSql = mock.db.prepare.mock.calls.at(-1)?.[0] as string;
+      expect(allSql).toContain('done_local');
+      expect(allSql).toContain('snoozed_until');
+
+      listCategoryCountsForAccount(1);
+      const accountSql = mock.db.prepare.mock.calls.at(-1)?.[0] as string;
+      expect(accountSql).toContain('done_local');
+      expect(accountSql).toContain('snoozed_until');
+    });
+
     test('updateCategory validates and updates fields', () => {
       mock.addCategory({ id: 1, parent_id: null, name: 'Old', sort_order: 0 });
       updateCategory(1, { name: 'New', parentId: null, sortOrder: 5 });

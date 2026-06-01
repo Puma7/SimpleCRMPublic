@@ -123,9 +123,11 @@ export function MailSidebar({
                 <Tag className="h-3 w-3 shrink-0 text-muted-foreground" />
                 {n.name}
               </span>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
-                {countForCategory(n.id)}
-              </span>
+              {countForCategory(n.id) > 0 ? (
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {countForCategory(n.id)}
+                </span>
+              ) : null}
             </button>,
             ...render(childrenOf(n.id), depth + 1),
           ])
@@ -182,7 +184,16 @@ export function MailSidebar({
           {FOLDERS.map(({ id, label, icon: Icon, countKey, unreadKey }) => {
             const total = countKey ? counts[countKey] : 0
             const unread = unreadKey ? counts[unreadKey] : 0
-            const badge = unread > 0 ? unread : total > 0 ? total : null
+            const badge =
+              id === "inbox"
+                ? total > 0
+                  ? total
+                  : null
+                : unread > 0
+                  ? unread
+                  : total > 0
+                    ? total
+                    : null
             const canDrop = DROPPABLE_FOLDER_VIEWS.includes(id)
             return (
               <button

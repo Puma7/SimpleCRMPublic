@@ -46,6 +46,18 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | Canvas-Ports für `email.sender_filter` / `logic.threshold` | ✅ |
 | Zusätzliche Vorlagen (Schedule, Manual, CRM-Deal, Newsletter-Archiv) | ✅ |
 
+## Smoke-Check 2026-06-01
+
+Kurzprüfung nach Sprint-Merge (Workflow-/Outbound-Teil; Postfach-UX separat in PR-Follow-up):
+
+| Check | Ergebnis |
+|-------|----------|
+| `npm run build:electron:main` | ✅ |
+| Workflow-Engine / Graph-Kompilierung (gezielte Tests) | ✅ |
+| Outbound-Review / `ai.outbound_review` (gezielte Tests) | ✅ |
+
+Hinweis: Auto-Auswahl nächste Mail, Inbox-Badge, Kategorie-Counts und Composer-Höhe waren in diesem Lauf nicht durch die Workflow-Tests abgedeckt.
+
 ## Bekannte Grenzen (nach P7)
 
 - Embeddings nur wenn OpenAI-Key konfiguriert; sonst Keyword-RAG.

@@ -160,6 +160,8 @@ export function listCategoryCountsForAllAccounts(): { categoryId: number; count:
          AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '')
          AND m.archived = 0 AND m.is_spam = 0
          AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)
+         AND COALESCE(m.done_local, 0) = 0
+         AND ${SNOOZE_FILTER_SQL}
        GROUP BY mc.category_id`,
     )
     .all() as { categoryId: number; count: number }[];
@@ -171,7 +173,10 @@ export function listCategoryCountsForAccount(accountId: number): { categoryId: n
       `SELECT mc.category_id as categoryId, COUNT(DISTINCT mc.message_id) as count
        FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc
        INNER JOIN ${EMAIL_MESSAGES_TABLE} m ON m.id = mc.message_id
-       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.archived = 0 AND m.is_spam = 0 AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL) AND m.folder_kind = 'inbox'
+       WHERE m.account_id = ? AND m.soft_deleted = 0 AND m.archived = 0 AND m.is_spam = 0
+         AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL) AND m.folder_kind = 'inbox'
+         AND COALESCE(m.done_local, 0) = 0
+         AND ${SNOOZE_FILTER_SQL}
        GROUP BY mc.category_id`,
     )
     .all(accountId) as { categoryId: number; count: number }[];
