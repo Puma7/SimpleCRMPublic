@@ -19,9 +19,9 @@ import { useEmailMessages } from "./hooks/use-email-messages"
 import { useEmailCategories } from "./hooks/use-email-categories"
 import { useMessageMetadata } from "./hooks/use-message-metadata"
 import { useMailAuxData } from "./hooks/use-mail-aux-data"
-import { useMailFolderCounts } from "./hooks/use-mail-folder-counts"
 import { UidValidityNoticeBanner } from "./uid-validity-notice-banner"
 import { ImapAuthNoticeBanner } from "./imap-auth-notice-banner"
+import type { MailView } from "./types"
 
 const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
 
@@ -35,18 +35,19 @@ function MailShellInner() {
     selectedAccountId,
     selectedMessage,
     setMetadataPanelOpen,
+    bumpMailMetricsRevision,
   } = useMailWorkspace()
 
   useEffect(() => {
     setMetadataPanelOpen(true)
   }, [setMetadataPanelOpen])
 
+  const invalidateMailMetrics = useCallback(() => {
+    bumpMailMetricsRevision()
+  }, [bumpMailMetricsRevision])
+
   const { accounts, teamMembers, loadingAccounts } = useEmailAccounts()
-  const { categories, countForCategory, loadCategories } = useEmailCategories()
-  const reloadCategories = useCallback(async () => {
-    if (selectedAccountId != null) await loadCategories(selectedAccountId)
-  }, [selectedAccountId, loadCategories])
-  const { reloadCounts } = useMailFolderCounts()
+  const { categories, countForCategory } = useEmailCategories()
   const {
     messages,
     loadingMessages,
@@ -55,42 +56,85 @@ function MailShellInner() {
     refreshList: refreshListBase,
     refreshCurrentMessage,
     handleSync,
-    moveMessageToView,
-    assignMessageCategory,
-    snoozeMessageUntilTomorrow,
-    advanceSelectionAfterMessageRemoved,
+    moveMessageToView: moveMessageToViewBase,
+    assignMessageCategory: assignMessageCategoryBase,
+    snoozeMessageUntilTomorrow: snoozeMessageUntilTomorrowBase,
+    advanceSelectionAfterMessageRemoved: advanceSelectionAfterMessageRemovedBase,
     loadMore,
     hasMore,
     loadingMore,
   } = useEmailMessages()
-  const refreshList = async (opts?: {
-    preserveSelection?: boolean
-    selectMessageId?: number | null
-    advanceFromRemovedId?: number
-  }) => {
-    await refreshListBase(opts)
-    if (selectedAccountId != null) await reloadCounts(selectedAccountId)
-  }
-  const handleListChanged = async (opts?: {
-    advanceFromMessageId?: number
-    selectMessageId?: number | null
-  }) => {
-    if (opts?.selectMessageId !== undefined) {
-      await refreshList({ selectMessageId: opts.selectMessageId })
-    } else if (opts?.advanceFromMessageId != null) {
-      await advanceSelectionAfterMessageRemoved(opts.advanceFromMessageId)
-      if (selectedAccountId != null) await reloadCounts(selectedAccountId)
-    } else {
-      await refreshList()
-    }
-  }
-  const handleSyncWithCategories = () =>
-    void handleSync({
-      onAfterSync: async (accountId) => {
-        await loadCategories(accountId)
-        await reloadCounts(accountId)
-      },
-    })
+
+  const advanceSelectionAfterMessageRemoved = useCallback(
+    async (removedId: number) => {
+      await advanceSelectionAfterMessageRemovedBase(removedId)
+      invalidateMailMetrics()
+    },
+    [advanceSelectionAfterMessageRemovedBase, invalidateMailMetrics],
+  )
+
+  const refreshList = useCallback(
+    async (opts?: {
+      preserveSelection?: boolean
+      selectMessageId?: number | null
+      advanceFromRemovedId?: number
+    }) => {
+      await refreshListBase(opts)
+      invalidateMailMetrics()
+    },
+    [refreshListBase, invalidateMailMetrics],
+  )
+
+  const handleListChanged = useCallback(
+    async (opts?: {
+      advanceFromMessageId?: number
+      selectMessageId?: number | null
+    }) => {
+      if (opts?.selectMessageId !== undefined) {
+        await refreshList({ selectMessageId: opts.selectMessageId })
+      } else if (opts?.advanceFromMessageId != null) {
+        await advanceSelectionAfterMessageRemoved(opts.advanceFromMessageId)
+      } else {
+        await refreshList()
+      }
+    },
+    [refreshList, advanceSelectionAfterMessageRemoved],
+  )
+
+  const moveMessageToView = useCallback(
+    async (messageId: number, view: MailView) => {
+      const ok = await moveMessageToViewBase(messageId, view)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [moveMessageToViewBase, invalidateMailMetrics],
+  )
+
+  const assignMessageCategory = useCallback(
+    async (messageId: number, categoryId: number) => {
+      const ok = await assignMessageCategoryBase(messageId, categoryId)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [assignMessageCategoryBase, invalidateMailMetrics],
+  )
+
+  const snoozeMessageUntilTomorrow = useCallback(
+    async (messageId: number) => {
+      const ok = await snoozeMessageUntilTomorrowBase(messageId)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [snoozeMessageUntilTomorrowBase, invalidateMailMetrics],
+  )
+
+  const handleSyncWithCategories = useCallback(() => {
+    void (async () => {
+      await handleSync()
+      invalidateMailMetrics()
+    })()
+  }, [handleSync, invalidateMailMetrics])
+
   const { messageTags, internalNotes, messageAttachments, reloadNotes, reloadTags } =
     useMessageMetadata()
   const { cannedList, aiPrompts } = useMailAuxData()
@@ -123,7 +167,7 @@ function MailShellInner() {
             loadingAccounts={loadingAccounts}
             categories={categories}
             countForCategory={countForCategory}
-            onCategoriesChanged={reloadCategories}
+            onCategoriesChanged={invalidateMailMetrics}
             onMoveMessageToView={moveMessageToView}
             onAssignMessageCategory={assignMessageCategory}
             onSnoozeMessage={snoozeMessageUntilTomorrow}

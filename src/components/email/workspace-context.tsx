@@ -90,6 +90,12 @@ type MailWorkspaceState = {
    */
   accountsRevision: number
   bumpAccountsRevision: () => void
+  /**
+   * Bumps when folder/category sidebar counts should refresh (move, erledigt, sync, …).
+   * Consumed by useMailFolderCounts / useEmailCategories in the sidebar only.
+   */
+  mailMetricsRevision: number
+  bumpMailMetricsRevision: () => void
 }
 
 const MailWorkspaceContext = createContext<MailWorkspaceState | null>(null)
@@ -220,9 +226,14 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   )
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
+  const [mailMetricsRevision, setMailMetricsRevision] = useState(0)
 
   const bumpAccountsRevision = useCallback(() => {
     setAccountsRevision((v) => v + 1)
+  }, [])
+
+  const bumpMailMetricsRevision = useCallback(() => {
+    setMailMetricsRevision((v) => v + 1)
   }, [])
 
   // Persist the few slices that deserve it.
@@ -281,6 +292,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setMetadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
+      mailMetricsRevision,
+      bumpMailMetricsRevision,
     }),
     [
       selectedAccountScope,
@@ -298,6 +311,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       metadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
+      mailMetricsRevision,
+      bumpMailMetricsRevision,
     ],
   )
 
