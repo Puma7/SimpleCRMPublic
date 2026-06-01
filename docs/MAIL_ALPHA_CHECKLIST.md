@@ -25,8 +25,10 @@ Stand: automatisierte Gates + kurzer manueller Smoke.
 - 100 % Coverage auf `electron/email/**`
 - PGP / Open-Click-Tracking
 
-## PR-Merge-Reihenfolge (Maintainer)
+## PR-Merge-Reihenfolge
 
-1. [#80](https://github.com/Puma7/SimpleCRMPublic/pull/80) Posteingang UX (Bulk-Advance)
-2. [#81](https://github.com/Puma7/SimpleCRMPublic/pull/81) Phase 2 (Erledigt, Badges, Auswahl)
-3. Mail Alpha-Gate-PR (`cursor/mail-alpha-gate-d125`)
+1. [#80](https://github.com/Puma7/SimpleCRMPublic/pull/80) Posteingang UX — **merged**
+2. [#81](https://github.com/Puma7/SimpleCRMPublic/pull/81) Phase 2 — **merged**
+3. [#82](https://github.com/Puma7/SimpleCRMPublic/pull/82) Mail Alpha-Gate (`cursor/mail-alpha-gate-d125`) — CI `test:mail`, Coverage-Ratchet, Fresh-DB-Integrationstest
+
+Lokale Merge-Simulation (vor #80/#81): keine Konflikte mit `main`.
