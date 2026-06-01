@@ -80,4 +80,4 @@ Technik: eine IMAP-Verbindung, `client.list()`, Erkennung via `\\Sent` / `\\Arch
 | P3-4a | `PRODUCT_REQUIREMENTS.md` (Muss/Soll/Ist) | ✅ |
 | P3-4b | `AGENT_HANDOFF.md` / `INDEX.md` | ✅ (laufend pflegen) |
 
-Siehe auch [`EMAIL_ROADMAP.md`](EMAIL_ROADMAP.md), [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md), [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIMITS.md).
+Siehe auch [`EMAIL_ROADMAP.md`](EMAIL_ROADMAP.md), [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md), [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIMITS.md), [`MAIL_REMAINING_BACKLOG.md`](MAIL_REMAINING_BACKLOG.md) (offene F/NF-Punkte nach Tiefenanalyse).

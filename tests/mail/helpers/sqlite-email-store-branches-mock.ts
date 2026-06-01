@@ -322,6 +322,13 @@ export function createSqliteEmailStoreBranchesMock() {
       return { changes: 1, lastInsertRowid: id };
     }
     if (lastSql.includes('UPDATE') && lastSql.includes('email_messages')) {
+      if (lastSql.includes('assigned_to = NULL') && lastSql.includes('WHERE assigned_to')) {
+        const memberId = args[0] as string;
+        for (const msg of state.messages.values()) {
+          if (msg.assigned_to === memberId) msg.assigned_to = null;
+        }
+        return { changes: 1, lastInsertRowid: 0 };
+      }
       const id = args[args.length - 1] as number;
       const msg = state.messages.get(id);
       if (msg) {

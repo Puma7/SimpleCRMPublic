@@ -72,6 +72,7 @@ src/.DS_Store
 !docs/MAIL_SINGLE_USER_LIMITS.md
 !docs/MAIL_TESTING.md
 !docs/MAIL_ALPHA_CHECKLIST.md
+!docs/MAIL_REMAINING_BACKLOG.md
 !AGENTS.md
 
 coverage/
