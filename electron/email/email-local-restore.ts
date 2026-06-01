@@ -104,44 +104,6 @@ function readAccountsFromBackupDb(dbPath: string): string[] {
   }
 }
 
-async function extractDatabaseToTemp(zipPath: string): Promise<{ tmpDir: string; dbPath: string }> {
-  const tmpDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'crm-restore-preview-'));
-  const zip = await openZip(zipPath);
-  let dbEntry: yauzl.Entry | null = null;
-  await new Promise<void>((resolve, reject) => {
-    zip.on('entry', (entry) => {
-      const name = entry.fileName.replace(/\\/g, '/');
-      if (name === 'database.sqlite' || name.endsWith('/database.sqlite')) {
-        dbEntry = entry;
-      }
-      zip.readEntry();
-    });
-    zip.on('end', () => resolve());
-    zip.on('error', reject);
-    zip.readEntry();
-  });
-  if (!dbEntry) {
-    zip.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-    throw new Error('ZIP enthält keine database.sqlite.');
-  }
-  const dbPath = path.join(tmpDir, 'database.sqlite');
-  await new Promise<void>((resolve, reject) => {
-    zip.openReadStream(dbEntry!, (err, readStream) => {
-      if (err || !readStream) {
-        reject(err ?? new Error('database.sqlite konnte nicht gelesen werden.'));
-        return;
-      }
-      const writeStream = createWriteStream(dbPath);
-      void pipeline(readStream, writeStream)
-        .then(() => resolve())
-        .catch(reject);
-    });
-  });
-  zip.close();
-  return { tmpDir, dbPath };
-}
-
 export async function pickLocalMailBackupZip(): Promise<
   { ok: true; path: string } | { ok: false; error: string }
 > {
@@ -176,9 +138,13 @@ export async function previewRestoreLocalMailBackup(zipPath: string): Promise<
 
   let tmpDir: string | null = null;
   try {
-    const extracted = await extractDatabaseToTemp(zipPath);
-    tmpDir = extracted.tmpDir;
-    const accountEmails = readAccountsFromBackupDb(extracted.dbPath);
+    tmpDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'crm-restore-preview-'));
+    await extractZipToDirectory(zipPath, tmpDir);
+    const previewDbPath = findDatabaseSqliteInTree(tmpDir);
+    if (!previewDbPath) {
+      return { ok: false, error: 'ZIP enthält keine database.sqlite.' };
+    }
+    const accountEmails = readAccountsFromBackupDb(previewDbPath);
     const warnings: string[] = [
       'Ersetzt die lokale Datenbank und Anhänge (gesamte SimpleCRM-Daten, nicht nur Mail).',
       'Passwörter und API-Keys (Keytar) sind nicht im Backup — nach Restore ggf. neu eintragen.',
@@ -237,6 +203,27 @@ function rollbackRenamedBackup(targetPath: string, backupPath: string | null): v
 }
 
 export { findDatabaseSqliteInTree } from './email-zip-path-safety';
+
+async function restoreFailureRecovery(
+  servicesStopped: boolean,
+  databaseClosed: boolean,
+  logger: Pick<typeof console, 'warn' | 'error' | 'debug'>,
+): Promise<void> {
+  if (databaseClosed) {
+    try {
+      reopenDatabaseConnection();
+    } catch (reopenErr) {
+      logger.error('[restore] reopenDatabaseConnection failed', reopenErr);
+    }
+  }
+  if (servicesStopped) {
+    try {
+      await startEmailBackgroundServices(logger);
+    } catch (restartErr) {
+      logger.error('[restore] startEmailBackgroundServices failed', restartErr);
+    }
+  }
+}
 
 function findExtractedAttachmentsDir(extractDir: string): string | null {
   const direct = path.join(extractDir, 'email-attachments');
@@ -315,8 +302,13 @@ export async function restoreLocalMailBackup(input: {
 
       stopEmailBackgroundServices();
       servicesStopped = true;
-      closeDatabase();
-      databaseClosed = true;
+      try {
+        closeDatabase();
+        databaseClosed = true;
+      } catch (closeErr) {
+        await restoreFailureRecovery(servicesStopped, false, console);
+        throw closeErr;
+      }
 
       const dbBackupPath = renameForBackup(dbPath, stamp);
       const attBackupPath = renameForBackup(attRoot, stamp);
@@ -340,20 +332,7 @@ export async function restoreLocalMailBackup(input: {
     app.exit(0);
     return { ok: true, preBackupPath };
   } catch (e) {
-    if (databaseClosed) {
-      try {
-        reopenDatabaseConnection();
-      } catch (reopenErr) {
-        recoveryLogger.error('[restore] reopenDatabaseConnection failed', reopenErr);
-      }
-    }
-    if (servicesStopped) {
-      try {
-        await startEmailBackgroundServices(recoveryLogger);
-      } catch (restartErr) {
-        recoveryLogger.error('[restore] startEmailBackgroundServices failed', restartErr);
-      }
-    }
+    await restoreFailureRecovery(servicesStopped, databaseClosed, recoveryLogger);
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

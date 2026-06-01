@@ -2,6 +2,7 @@ import {
   resolveSyncFoldersForAccount,
   resolveArchiveMailboxPath,
   resolveSentMailboxPath,
+  orderedSentMailboxCandidates,
 } from '../../electron/email/imap-mailbox-resolve';
 import type { EmailAccountRow } from '../../electron/email/email-store';
 
@@ -46,6 +47,18 @@ describe('imap-mailbox-resolve', () => {
       listed,
     );
     expect(resolved).toBe('INBOX/Gesendet');
+  });
+
+  test('orderedSentMailboxCandidates prefers existing server path first', () => {
+    const listed = [
+      { path: 'INBOX/Gesendet', name: 'Gesendet', delimiter: '/', specialUse: '\\Sent', flags: new Set() },
+    ];
+    const ordered = orderedSentMailboxCandidates(
+      { sent_folder_path: 'Sent' } as Pick<EmailAccountRow, 'sent_folder_path'>,
+      listed,
+    );
+    expect(ordered[0]).toBe('INBOX/Gesendet');
+    expect(ordered).toContain('Sent');
   });
 
   test('resolveArchiveMailboxPath uses special use', () => {

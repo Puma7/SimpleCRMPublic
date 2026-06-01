@@ -113,6 +113,31 @@ export function resolveSentMailboxPath(
   return findSentMailboxOnServer(listed);
 }
 
+/** Try server-resolved Sent path first, then remaining candidates (IMAP APPEND). */
+export function orderedSentMailboxCandidates(
+  account: Pick<EmailAccountRow, 'sent_folder_path'>,
+  listed: MailboxListEntry[],
+): string[] {
+  const configured = account.sent_folder_path || 'Sent';
+  const candidates = resolveSentMailboxCandidates(configured, listed);
+  const primary = resolveSentMailboxPath(account, listed);
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string | null | undefined) => {
+    const trimmed = value?.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    ordered.push(trimmed);
+  };
+  push(primary);
+  for (const c of candidates) {
+    push(c);
+  }
+  return ordered;
+}
+
 /** Folders to sync for one IMAP account (INBOX always; others opt-in). */
 export function resolveSyncFoldersForAccount(
   account: EmailAccountRow,

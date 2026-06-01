@@ -2,10 +2,8 @@ import { ImapFlow } from 'imapflow';
 import { resolveImapAuth } from './email-imap-auth';
 import { getEmailAccountById } from './email-store';
 import { buildComposeRfc822, type ComposeRfc822Attachment } from './mail-rfc822-compose';
-import {
-  resolveSentMailboxCandidates,
-  type MailboxListEntry,
-} from './imap-mailbox-names';
+import { orderedSentMailboxCandidates } from './imap-mailbox-resolve';
+import type { MailboxListEntry } from './imap-mailbox-names';
 
 export type { MailboxListEntry } from './imap-mailbox-names';
 export { resolveSentMailboxCandidates } from './imap-mailbox-names';
@@ -61,7 +59,10 @@ export async function appendSentToImap(input: {
     } catch {
       listedMailboxes = [];
     }
-    const candidates = resolveSentMailboxCandidates(folder, listedMailboxes);
+    const candidates = orderedSentMailboxCandidates(
+      { sent_folder_path: folder },
+      listedMailboxes,
+    );
     const failures: string[] = [];
     for (const appendMailbox of candidates) {
       try {
