@@ -9,6 +9,7 @@ Short, durable facts discovered during implementation. **Read before refactoring
 | Area | File |
 |------|------|
 | **Agent continuity (start here)** | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) |
+| CRM (Kunden, Deals, Follow-up, JTL) | [CRM_PRODUCT_GUIDE.md](CRM_PRODUCT_GUIDE.md), [DEVELOPER_CRM.md](DEVELOPER_CRM.md) |
 | E-mail / sync / SQLite / UI | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) |
 | Workflows / graphs / outbound / spam | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) |
 | Doc map | [INDEX.md](INDEX.md) |

@@ -63,6 +63,10 @@ src/.DS_Store
 !docs/EMAIL_PRODUCT_GUIDE.md
 !docs/EMAIL_ROADMAP.md
 !docs/MAIL_SECURITY.md
+!docs/CRM_PRODUCT_GUIDE.md
+!docs/USER_GUIDE_CRM.md
+!docs/DEVELOPER_CRM.md
+!docs/PRODUCT_REQUIREMENTS.md
 !AGENTS.md
 
 coverage/

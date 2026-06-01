@@ -2,6 +2,8 @@
 
 **For AI agents:** start with [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md), then domain learnings below.
 
+**Produktanforderungen (Muss/Soll/Ist):** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md)
+
 ## Handoff & continuity
 
 | Document | Purpose |
@@ -10,6 +12,14 @@
 | [**LEARNINGS.md**](LEARNINGS.md) | Master learning index + cross-cutting rules |
 | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) | E-mail / IMAP / POP3 / SQLite pitfalls |
 | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) | Workflow engine, modular graphs, outbound/spam |
+
+## CRM core
+
+| Document | Purpose |
+|----------|---------|
+| [**CRM_PRODUCT_GUIDE.md**](CRM_PRODUCT_GUIDE.md) | **Product logic** — entities, pipeline, follow-up, JTL |
+| [USER_GUIDE_CRM.md](USER_GUIDE_CRM.md) | End-user oriented (Kunden, Deals, Aufgaben, Nachverfolgung) |
+| [DEVELOPER_CRM.md](DEVELOPER_CRM.md) | Technical map (schema, IPC, services, file map) |
 
 ## E-mail module
 
