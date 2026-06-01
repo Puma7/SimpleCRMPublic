@@ -35,6 +35,12 @@ Hintergrund: `electron/email/email-imap-services.ts` (Cron, IDLE), `email-sync-m
 - Main-Prozess: `npm run build:electron:main` (`tsconfig.electron.json`).
 - Native/Peer-Hinweis: `npm install --legacy-peer-deps` (siehe README).
 
+## Tests
+
+- **CI:** `pnpm run test:mail` läuft in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) nach der Haupt-Jest-Suite.
+- **Lokal:** `npm run test:mail` (ohne Coverage-Schwelle); `npm run test:mail:coverage` vor Mail-Merges (Ratchet, siehe [`MAIL_TESTING.md`](MAIL_TESTING.md)).
+- Fresh-Install-Schema: `bootstrapFreshDatabaseSchema()` in `sqlite-service.ts`; Integrationstest `tests/mail/sqlite-fresh-install.integration.test.ts`.
+
 ## Dateien, die bei Änderungen oft zusammenspielen
 
 - Schema/Migrationen: `electron/database-schema.ts`, `electron/sqlite-service.ts` (`runMigrations`)

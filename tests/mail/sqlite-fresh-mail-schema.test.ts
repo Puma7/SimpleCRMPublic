@@ -12,10 +12,26 @@ describe('sqlite fresh mail schema contract', () => {
   );
 
   const freshBlock = (() => {
-    const start = src.indexOf('if (!dbExists)');
-    const end = src.indexOf('} else {', start);
-    return start >= 0 && end > start ? src.slice(start, end) : '';
+    const marker = 'export function bootstrapFreshDatabaseSchema';
+    const start = src.indexOf(marker);
+    if (start < 0) return '';
+    const bodyStart = src.indexOf('): void {', start);
+    if (bodyStart < 0) return '';
+    const open = bodyStart + '): void '.length;
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth += 1;
+      if (src[i] === '}') {
+        depth -= 1;
+        if (depth === 0) return src.slice(open, i + 1);
+      }
+    }
+    return '';
   })();
+
+  test('bootstrapFreshDatabaseSchema exists', () => {
+    expect(freshBlock.length).toBeGreaterThan(100);
+  });
 
   test('fresh init creates email_ai_profiles before prompts', () => {
     const profilesIdx = freshBlock.indexOf('createEmailAiProfilesTable');
@@ -30,5 +46,11 @@ describe('sqlite fresh mail schema contract', () => {
     const migrationsIdx = freshBlock.indexOf('runMigrations()');
     const messagesIdx = freshBlock.indexOf('createEmailMessagesTable');
     expect(migrationsIdx).toBeGreaterThan(messagesIdx);
+  });
+
+  test('fresh init runs FTS setup after runMigrations', () => {
+    const migrationsIdx = freshBlock.indexOf('runMigrations()');
+    const ftsIdx = freshBlock.indexOf('setupEmailFtsIndex()');
+    expect(ftsIdx).toBeGreaterThan(migrationsIdx);
   });
 });
