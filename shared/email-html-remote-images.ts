@@ -4,6 +4,7 @@
  */
 
 const IMG_TAG_START = /<img\b/gi;
+const SOURCE_TAG_START = /<source\b/gi;
 const REMOTE_URL = /https?:\/\//i;
 
 const PLACEHOLDER_SVG =
@@ -27,23 +28,69 @@ function srcLooksCid(src: string): boolean {
   return src.trim().toLowerCase().startsWith('cid:');
 }
 
-function replaceRemoteSrcInImgTag(tag: string): string {
+function sanitizeRemoteUrlInValue(value: string, useCidPlaceholder: boolean): string {
+  if (!REMOTE_URL.test(value)) return value;
+  const placeholder = useCidPlaceholder ? CID_PLACEHOLDER_SVG : PLACEHOLDER_SVG;
+  return value.replace(/https?:\/\/[^\s"'>,]+/gi, placeholder);
+}
+
+function replaceQuotedAttr(tag: string, attrName: string, replaceValue: (raw: string) => string): string {
   const lower = tag.toLowerCase();
-  for (const attr of ['src="', "src='"]) {
-    const idx = lower.indexOf(attr);
+  const attr = attrName.toLowerCase();
+  for (const opener of [`${attr}="`, `${attr}='`]) {
+    const idx = lower.indexOf(opener);
     if (idx < 0) continue;
-    const quote = attr.endsWith('"') ? '"' : "'";
-    const valueStart = idx + attr.length;
+    const quote = opener.endsWith('"') ? '"' : "'";
+    const valueStart = idx + opener.length;
     const valueEnd = tag.indexOf(quote, valueStart);
     if (valueEnd < 0) continue;
-    const src = tag.slice(valueStart, valueEnd);
-    if (srcLooksCid(src)) {
-      return `${tag.slice(0, valueStart)}${CID_PLACEHOLDER_SVG}${tag.slice(valueEnd)}`;
-    }
-    if (!srcLooksRemote(src)) return tag;
-    return `${tag.slice(0, valueStart)}${PLACEHOLDER_SVG}${tag.slice(valueEnd)}`;
+    const raw = tag.slice(valueStart, valueEnd);
+    const next = replaceValue(raw);
+    if (next === raw) return tag;
+    return `${tag.slice(0, valueStart)}${next}${tag.slice(valueEnd)}`;
   }
   return tag;
+}
+
+function replaceRemoteSrcInImgTag(tag: string): string {
+  let out = replaceQuotedAttr(tag, 'src', (src) => {
+    if (srcLooksCid(src)) return CID_PLACEHOLDER_SVG;
+    if (!srcLooksRemote(src)) return src;
+    return PLACEHOLDER_SVG;
+  });
+  out = replaceQuotedAttr(out, 'srcset', (srcset) => sanitizeRemoteUrlInValue(srcset, false));
+  out = replaceQuotedAttr(out, 'poster', (poster) =>
+    srcLooksRemote(poster) ? PLACEHOLDER_SVG : poster,
+  );
+  return out;
+}
+
+function replaceRemoteSrcInSourceTag(tag: string): string {
+  let out = replaceQuotedAttr(tag, 'src', (src) => (srcLooksRemote(src) ? PLACEHOLDER_SVG : src));
+  out = replaceQuotedAttr(out, 'srcset', (srcset) => sanitizeRemoteUrlInValue(srcset, false));
+  return out;
+}
+
+function rewriteTagsMatching(
+  html: string,
+  tagRe: RegExp,
+  transform: (tag: string) => string,
+): string {
+  if (!tagRe.test(html)) return html;
+  tagRe.lastIndex = 0;
+  let rebuilt = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  tagRe.lastIndex = 0;
+  while ((m = tagRe.exec(html)) !== null) {
+    const start = m.index;
+    const tagEnd = html.indexOf('>', start);
+    if (tagEnd < 0) break;
+    const tag = html.slice(start, tagEnd + 1);
+    rebuilt += html.slice(last, start) + transform(tag);
+    last = tagEnd + 1;
+  }
+  return rebuilt + html.slice(last);
 }
 
 /** Strip http(s) url(...) from inline style attributes (tracking pixels via CSS). */
@@ -60,23 +107,8 @@ function blockRemoteUrlsInStyleAttributes(html: string): string {
 /** Replace http(s) img src with a local placeholder SVG (privacy). */
 export function blockRemoteImagesInHtml(html: string): string {
   if (!html) return html;
-  let out = html;
-  if (IMG_TAG_START.test(out)) {
-    IMG_TAG_START.lastIndex = 0;
-    let rebuilt = '';
-    let last = 0;
-    let m: RegExpExecArray | null;
-    IMG_TAG_START.lastIndex = 0;
-    while ((m = IMG_TAG_START.exec(out)) !== null) {
-      const start = m.index;
-      const tagEnd = out.indexOf('>', start);
-      if (tagEnd < 0) break;
-      const tag = out.slice(start, tagEnd + 1);
-      rebuilt += out.slice(last, start) + replaceRemoteSrcInImgTag(tag);
-      last = tagEnd + 1;
-    }
-    out = rebuilt + out.slice(last);
-  }
+  let out = rewriteTagsMatching(html, IMG_TAG_START, replaceRemoteSrcInImgTag);
+  out = rewriteTagsMatching(out, SOURCE_TAG_START, replaceRemoteSrcInSourceTag);
   return blockRemoteUrlsInStyleAttributes(out);
 }
 
