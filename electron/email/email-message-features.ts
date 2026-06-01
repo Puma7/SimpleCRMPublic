@@ -37,7 +37,8 @@ export async function exportMessageAsEml(messageId: number): Promise<{ ok: true;
   if (!row) return { ok: false, error: 'Nachricht nicht gefunden' };
   const attachments = listAttachmentsForMessage(messageId);
   const { eml, meta } = buildEmlForMessage(row, attachments);
-  if (!eml.trim()) {
+  const rawB64 = row.raw_rfc822_b64?.trim();
+  if (!eml.trim() && !rawB64) {
     return { ok: false, error: 'Keine RFC822-Daten für diese Nachricht gespeichert' };
   }
   const subj = (row.subject ?? 'nachricht').replace(/[^\w.-]+/g, '_').slice(0, 60);
@@ -47,10 +48,9 @@ export async function exportMessageAsEml(messageId: number): Promise<{ ok: true;
     filters: [{ name: 'E-Mail', extensions: ['eml'] }],
   });
   if (canceled || !filePath) return { ok: false, error: 'Abgebrochen' };
-  const buf =
-    meta.source === 'original' && row.raw_rfc822_b64?.trim()
-      ? Buffer.from(row.raw_rfc822_b64, 'base64')
-      : Buffer.from(eml, 'utf8');
+  const useRaw =
+    Boolean(rawB64) && (meta.source === 'original' || !eml.trim());
+  const buf = useRaw ? Buffer.from(rawB64!, 'base64') : Buffer.from(eml, 'utf8');
   fs.writeFileSync(filePath, buf);
   return { ok: true, path: filePath };
 }

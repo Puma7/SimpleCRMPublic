@@ -43,7 +43,7 @@ jest.mock('../../electron/sqlite-service', () => {
     trash: 0,
     inbox: 2,
     inbox_unread: 1,
-    sent: 0,
+    sent_failed: 0,
     drafts: 0,
     archived: 0,
     spam: 0,
@@ -62,7 +62,16 @@ jest.mock('../../electron/sqlite-service', () => {
     get: () =>
       sql.includes('SUM(CASE')
         ? aggregateCounts
-        : { trash: 0, inbox: 1, inbox_unread: 0, sent: 0, drafts: 0, archived: 0, spam: 0, snoozed: 0 },
+        : {
+            trash: 0,
+            inbox: 1,
+            inbox_unread: 0,
+            sent_failed: 0,
+            drafts: 0,
+            archived: 0,
+            spam: 0,
+            snoozed: 0,
+          },
     run: jest.fn(),
   }));
   return {

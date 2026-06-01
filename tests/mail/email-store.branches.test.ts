@@ -273,7 +273,7 @@ describe('email-store branches', () => {
         trash: null,
         inbox: null,
         inbox_unread: null,
-        sent: null,
+        sent_failed: null,
         drafts: null,
         archived: null,
         spam: null,
@@ -284,13 +284,20 @@ describe('email-store branches', () => {
     });
 
     test('getMailFolderCounts sums real messages', () => {
-      mock.seedMessage({ id: 201, uid: 8, folder_kind: 'sent', is_spam: 0, soft_deleted: 0 });
+      mock.seedMessage({
+        id: 201,
+        uid: 8,
+        folder_kind: 'sent',
+        is_spam: 0,
+        soft_deleted: 0,
+        sent_imap_sync_failed: 1,
+      });
       mock.seedMessage({ id: 202, uid: 9, folder_kind: 'draft', soft_deleted: 0 });
       mock.seedMessage({ id: 203, uid: 10, archived: 1, soft_deleted: 0, is_spam: 0 });
       mock.seedMessage({ id: 204, uid: 11, is_spam: 1, soft_deleted: 0 });
       mock.seedMessage({ id: 205, uid: -2, folder_kind: 'draft', outbound_hold: 1, soft_deleted: 0 });
       const counts = getMailFolderCountsForAccount(1);
-      expect(counts.sent).toBeGreaterThanOrEqual(1);
+      expect(counts.sentFailed).toBeGreaterThanOrEqual(1);
       expect(counts.drafts).toBeGreaterThanOrEqual(1);
     });
   });

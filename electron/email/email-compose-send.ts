@@ -10,6 +10,7 @@ import {
   getEmailMessageById,
   markDraftAsSent,
   setMessageDoneLocal,
+  setSentImapSyncFailed,
   updateComposeDraft,
 } from './email-store';
 import {
@@ -127,6 +128,7 @@ async function finalizeSentDraft(input: {
   requestReadReceipt?: boolean;
 }): Promise<{ sentAppendWarning?: string }> {
   const warnings: string[] = [];
+  let imapSyncFailed = false;
 
   try {
     persistLocalComposeAttachments(input.draftMessageId, input.attachments);
@@ -144,9 +146,11 @@ async function finalizeSentDraft(input: {
 
   const acc = getEmailAccountById(input.accountId);
   if (acc && (acc.protocol || 'imap') !== 'imap') {
+    imapSyncFailed = true;
     warnings.push(
       'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. POP3-Konten können keine Kopie per IMAP auf dem Server ablegen.',
     );
+    setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
     return { sentAppendWarning: joinWarnings(warnings) };
   }
 
@@ -172,11 +176,13 @@ async function finalizeSentDraft(input: {
   });
   const imapLimit = maxImapSentAppendBytes();
   if (estimatedBytes > imapLimit) {
+    imapSyncFailed = true;
     const mb = (estimatedBytes / (1024 * 1024)).toFixed(1);
     const limitMb = Math.round(imapLimit / (1024 * 1024));
     warnings.push(
       `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie (IMAP) übersprungen — Nachricht zu groß (ca. ${mb} MB, IMAP-Limit ${limitMb} MB).`,
     );
+    setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
     return { sentAppendWarning: joinWarnings(warnings) };
   }
 
@@ -187,12 +193,14 @@ async function finalizeSentDraft(input: {
       bcc: undefined,
     });
   } catch (e) {
+    imapSyncFailed = true;
     console.warn('[email-compose] RFC822 build for IMAP failed:', e);
     warnings.push(
       e instanceof Error
         ? `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie konnte nicht vorbereitet werden: ${e.message}`
         : 'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie konnte nicht vorbereitet werden.',
     );
+    setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
     return { sentAppendWarning: joinWarnings(warnings) };
   }
 
@@ -202,6 +210,7 @@ async function finalizeSentDraft(input: {
       estimatedBytes: Math.max(estimatedBytes, rfc822.length),
     });
   } catch (e) {
+    imapSyncFailed = true;
     console.warn('[email-compose] sent IMAP append failed:', e);
     warnings.push(
       e instanceof Error
@@ -210,6 +219,7 @@ async function finalizeSentDraft(input: {
     );
   }
 
+  setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
   return { sentAppendWarning: joinWarnings(warnings) };
 }
 

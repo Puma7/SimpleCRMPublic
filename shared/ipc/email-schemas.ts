@@ -389,6 +389,18 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: recordArray,
   });
+  set(IPCChannels.Email.ListMessageIdsByView, {
+    payload: z.object({
+      accountId: mailAccountScopeSchema,
+      view: accountMailViewSchema,
+      limit: z.number().int().positive().max(500).optional(),
+      offset: z.number().int().nonnegative().optional(),
+      categoryId: z.number().int().positive().nullable().optional(),
+      listFilter: messageListFilterSchema.optional(),
+      doneFilter: messageDoneFilterSchema.optional(),
+    }),
+    result: z.array(positiveInt),
+  });
   set(IPCChannels.Email.SetMessageDone, {
     payload: z.object({
       messageId: positiveInt,
@@ -680,6 +692,17 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       messageIds: z.array(positiveInt).min(1).max(500),
       spam: z.boolean(),
+      accountId: positiveInt.optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.BulkSetMessageDone, {
+    payload: z.object({
+      messageIds: z.array(positiveInt).min(1).max(500),
+      done: z.boolean(),
       accountId: positiveInt.optional(),
     }),
     result: z.union([

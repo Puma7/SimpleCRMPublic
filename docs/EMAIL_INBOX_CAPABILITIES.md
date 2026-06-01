@@ -11,6 +11,10 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Snooze (E-Mail) | stabil | `snoozed_until` |
 | Kategorien (manuell + Workflow) | stabil | UI + `set_category` |
 | Sidebar-Zähler Posteingang / Kategorien | stabil | Nur **unerledigte** offene Inbox-Mails (`done_local = 0`, nicht snoozed) — nicht Ungelesen |
+| Sidebar-Zähler Gesendet | stabil | Nur Mails mit fehlgeschlagener IMAP-Server-Kopie (`sent_imap_sync_failed`) |
+| Erledigt bei Archiv/Spam/Papierkorb | stabil | Automatisch `done_local = 1`; Wiederherstellen setzt wieder offen |
+| Shift-Auswahl / Alle im Ordner | stabil | Bereichsauswahl; bis 500 IDs pro Ansicht |
+| Bulk „Erledigt“ (Posteingang) | stabil | `BulkSetMessageDone` |
 | Auto-Auswahl nächste Mail nach Erledigen/Archiv/Spam | stabil | Nächste Zeile in der Liste |
 | Shop-„Ordner“ | teilweise | Kategorien + Workflows |
 
@@ -43,7 +47,7 @@ Legende: **stabil** · **teilweise** · **geplant**
 | Suche mit Load-more + Kategorie | stabil | FTS/LIKE/Regex, Offset |
 | Filter (ungelesen, Anhang, Kunde, Workflow) | stabil | Serverseitig in `ListMessagesByView` |
 | Prioritäts-Sortierung | stabil | Tags + Sort `priority` |
-| Thread-Listenmodus | stabil | |
+| Thread-Listenmodus | teilweise | Client-Dedup (Vorschau), keine Aufklappung |
 
 ## Workflows
 

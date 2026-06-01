@@ -41,7 +41,7 @@ const FOLDERS: {
 }[] = [
   { id: "inbox", label: "Posteingang", icon: Inbox, countKey: "inbox" },
   { id: "snoozed", label: "Zurückgestellt", icon: Clock, countKey: "snoozed" },
-  { id: "sent", label: "Gesendet", icon: Send, countKey: "sent" },
+  { id: "sent", label: "Gesendet", icon: Send, countKey: "sentFailed" },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
   { id: "spam", label: "Spam", icon: ShieldAlert, countKey: "spam" },
@@ -183,11 +183,16 @@ export function MailSidebar({
           {FOLDERS.map(({ id, label, icon: Icon, countKey }) => {
             const total = countKey ? counts[countKey] : 0
             const badge = total > 0 ? total : null
+            const folderTitle =
+              id === "sent" && badge != null
+                ? `${label}: ${badge} mit fehlgeschlagener Server-Kopie`
+                : label
             const canDrop = DROPPABLE_FOLDER_VIEWS.includes(id)
             return (
               <button
                 key={id}
                 type="button"
+                title={folderTitle}
                 onClick={() => {
                   setMailView(id)
                   setCategoryFilterId(null)

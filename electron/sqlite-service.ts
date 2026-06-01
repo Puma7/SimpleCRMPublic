@@ -592,6 +592,7 @@ function runMigrations() {
                 { name: 'post_process_done', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN post_process_done INTEGER NOT NULL DEFAULT 1` },
                 { name: 'reply_parent_message_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_parent_message_id INTEGER` },
                 { name: 'done_local', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN done_local INTEGER NOT NULL DEFAULT 0` },
+                { name: 'sent_imap_sync_failed', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN sent_imap_sync_failed INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {
@@ -611,6 +612,19 @@ function runMigrations() {
                     db.exec(col.sql);
                     mcn = readMsgCols2();
                 }
+            }
+            if (!getSyncInfo('done_local_handled_backfill_v1')) {
+                const backfill = db
+                    .prepare(
+                        `UPDATE ${EMAIL_MESSAGES_TABLE} SET done_local = 1
+                         WHERE (archived = 1 OR is_spam = 1 OR soft_deleted = 1)
+                           AND COALESCE(done_local, 0) = 0`,
+                    )
+                    .run();
+                if (backfill.changes > 0) {
+                    console.log(`Backfilled done_local for ${backfill.changes} handled messages`);
+                }
+                setSyncInfo('done_local_handled_backfill_v1', '1');
             }
         }
 

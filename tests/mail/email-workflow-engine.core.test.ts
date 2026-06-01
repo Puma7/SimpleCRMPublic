@@ -89,6 +89,10 @@ jest.mock('../../electron/email/email-imap-sync', () => ({
   syncInboxImap: (...args: unknown[]) => mockSyncInboxImap(...args),
 }));
 
+jest.mock('../../electron/workflow/run-steps', () => ({
+  getLatestWorkflowRunForMessage: jest.fn(() => undefined),
+}));
+
 import {
   evaluateOutboundWorkflows,
   outboundPayloadFromMessage,
@@ -416,7 +420,7 @@ describe('email-workflow-engine core', () => {
       mockGetEmailMessageById.mockReturnValue(row);
       mockListWorkflowsByTrigger.mockReturnValue([{ id: 1, name: 'W', trigger: 'outbound', enabled: 1 }]);
       const r = await evaluateOutboundWorkflows(outboundPayloadFromMessage(row));
-      expect(r).toEqual({ allowed: true, reason: null });
+      expect(r).toEqual({ allowed: true, reason: null, workflowRunId: null });
       expect(mockSetOutboundHold).toHaveBeenCalledWith(10, false, null);
     });
 
