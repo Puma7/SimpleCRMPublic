@@ -44,6 +44,11 @@ import {
   tryRestoreLocalMetaFromUidValidityBackup,
 } from './email-uidvalidity-reset';
 import { rfc822SourceToStorageB64 } from './mail-eml-build';
+import type { MailboxListEntry } from './imap-mailbox-names';
+import {
+  resolveSyncFoldersForAccount,
+  type ImapFolderSyncSpec,
+} from './imap-mailbox-resolve';
 
 /** First sync: fetch up to this many newest messages (not entire mailbox). */
 const FIRST_SYNC_MAX_MESSAGES = 2000;
@@ -52,53 +57,27 @@ export type ImapSyncResult = {
   fetched: number;
   folderId: number;
   lastUid: number;
+  folderPath: string;
 };
 
-async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult> {
-  const account = getEmailAccountById(accountId);
-  if (!account) {
-    throw new Error('Unbekanntes E-Mail-Konto');
-  }
-  if ((account.protocol || 'imap') !== 'imap') {
-    throw new Error('Konto ist kein IMAP-Konto (POP3 separat synchronisieren)');
-  }
+export type ImapAccountSyncResult = {
+  folders: ImapSyncResult[];
+  totalFetched: number;
+};
 
-  let auth: Awaited<ReturnType<typeof resolveImapAuth>>;
-  try {
-    auth = await resolveImapAuth(account);
-    clearImapAuthNotice(accountId);
-  } catch (e) {
-    maybeRecordImapAuthNotice(accountId, e);
-    throw e;
-  }
-  const client = new ImapFlow({
-    host: account.imap_host,
-    port: account.imap_port,
-    secure: Boolean(account.imap_tls),
-    auth:
-      'accessToken' in auth
-        ? {
-            user: auth.user,
-            accessToken: auth.accessToken,
-          }
-        : {
-            user: auth.user,
-            pass: auth.pass,
-          },
-    logger: false,
-    connectionTimeout: 90_000,
-    socketTimeout: 120_000,
-  });
-
-  const folderPath = 'INBOX';
+async function syncFolderImapInternal(
+  account: EmailAccountRow,
+  client: ImapFlow,
+  spec: ImapFolderSyncSpec,
+): Promise<ImapSyncResult> {
+  const accountId = account.id;
+  const folderPath = spec.path;
   let folderRow = getFolderByAccountAndPath(accountId, folderPath);
   let lastUid = folderRow?.last_uid ?? 0;
   let fetched = 0;
 
+  const lock = await client.getMailboxLock(folderPath);
   try {
-    await client.connect();
-    const lock = await client.getMailboxLock(folderPath);
-    try {
       const status = await client.status(folderPath, { uidValidity: true, uidNext: true, messages: true });
       const uidValidityRaw = status.uidValidity;
       const uidValidityStr = serverUidValidityToString(uidValidityRaw ?? null);
@@ -219,6 +198,9 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
             attachmentsJson,
             rawHeaders: rawHeadersFromParsed(parsed),
             rawRfc822B64: rfc822SourceToStorageB64(sourceBuf),
+            folderKind: spec.folderKind,
+            archived: spec.archived,
+            isSpam: spec.isSpam,
           },
           upsertCtx,
         );
@@ -256,10 +238,12 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
       }
 
       try {
-        await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+        await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id, {
+          runInboundWorkflows: spec.runInboundWorkflows,
+        });
       } catch (postErr) {
         console.error(
-          `[imap-sync] post-process failed account ${accountId} folder ${folderRow.id}:`,
+          `[imap-sync] post-process failed account ${accountId} folder ${folderPath}:`,
           postErr instanceof Error ? postErr.message : postErr,
         );
       }
@@ -280,18 +264,91 @@ async function syncInboxImapInternal(accountId: number): Promise<ImapSyncResult>
         uidvalidityStr: uidValidityStr ?? undefined,
       });
 
-      return { fetched, folderId: folderRow.id, lastUid };
-    } finally {
-      lock.release();
+      return { fetched, folderId: folderRow.id, lastUid, folderPath };
+  } finally {
+    lock.release();
+  }
+}
+
+async function syncAccountImapInternal(accountId: number): Promise<ImapAccountSyncResult> {
+  const account = getEmailAccountById(accountId);
+  if (!account) {
+    throw new Error('Unbekanntes E-Mail-Konto');
+  }
+  if ((account.protocol || 'imap') !== 'imap') {
+    throw new Error('Konto ist kein IMAP-Konto (POP3 separat synchronisieren)');
+  }
+
+  let auth: Awaited<ReturnType<typeof resolveImapAuth>>;
+  try {
+    auth = await resolveImapAuth(account);
+    clearImapAuthNotice(accountId);
+  } catch (e) {
+    maybeRecordImapAuthNotice(accountId, e);
+    throw e;
+  }
+  const client = new ImapFlow({
+    host: account.imap_host,
+    port: account.imap_port,
+    secure: Boolean(account.imap_tls),
+    auth:
+      'accessToken' in auth
+        ? {
+            user: auth.user,
+            accessToken: auth.accessToken,
+          }
+        : {
+            user: auth.user,
+            pass: auth.pass,
+          },
+    logger: false,
+    connectionTimeout: 90_000,
+    socketTimeout: 120_000,
+  });
+
+  const folders: ImapSyncResult[] = [];
+  let totalFetched = 0;
+  try {
+    await client.connect();
+    let listed: MailboxListEntry[] = [];
+    try {
+      listed = (await client.list()) as MailboxListEntry[];
+    } catch {
+      listed = [];
+    }
+    const specs = resolveSyncFoldersForAccount(account, listed);
+    for (const spec of specs) {
+      try {
+        const r = await syncFolderImapInternal(account, client, spec);
+        folders.push(r);
+        totalFetched += r.fetched;
+      } catch (folderErr) {
+        console.warn(
+          `[imap-sync] folder ${spec.path} account ${accountId} failed:`,
+          folderErr instanceof Error ? folderErr.message : folderErr,
+        );
+      }
     }
   } finally {
     await client.logout().catch(() => undefined);
   }
+  return { folders, totalFetched };
 }
 
-/** Serialized per account with POP3/cron/IDLE to avoid overlapping IMAP sessions. */
-export function syncInboxImap(accountId: number): Promise<ImapSyncResult> {
-  return withEmailAccountSyncLock(accountId, () => syncInboxImapInternal(accountId));
+/** Sync INBOX plus optional Sent/Archive/Spam folders (account settings). */
+export function syncAccountImap(accountId: number): Promise<ImapAccountSyncResult> {
+  return withEmailAccountSyncLock(accountId, () => syncAccountImapInternal(accountId));
+}
+
+/** @deprecated Use syncAccountImap — kept for callers expecting a single-folder result. */
+export async function syncInboxImap(accountId: number): Promise<ImapSyncResult> {
+  const r = await syncAccountImap(accountId);
+  const inbox =
+    r.folders.find((f) => f.folderPath.toUpperCase() === 'INBOX') ?? r.folders[0];
+  if (!inbox) {
+    return { fetched: 0, folderId: 0, lastUid: 0, folderPath: 'INBOX' };
+  }
+  return inbox;
 }
 
 export async function testImapConnection(account: EmailAccountRow, password: string): Promise<{ ok: true } | { ok: false; error: string }> {

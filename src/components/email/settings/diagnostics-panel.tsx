@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
+import { RestoreWizardPanel } from "./restore-wizard-panel"
 import { Button } from "@/components/ui/button"
 import { hasElectron, invokeIpc } from "../types"
 
@@ -189,6 +190,8 @@ export function DiagnosticsPanel() {
           Backup prüfen…
         </Button>
       </div>
+
+      <RestoreWizardPanel />
 
       {!report && !loading ? (
         <p className="text-sm text-muted-foreground">Keine Diagnosedaten.</p>
