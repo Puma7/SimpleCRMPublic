@@ -90,6 +90,7 @@ export function DiagnosticsPanel() {
         | {
             ok: true
             path: string
+            schemaGeneration?: number
             schemaGenerationLabel?: string
             exportedAt?: string
             hasAttachments: boolean
@@ -98,9 +99,13 @@ export function DiagnosticsPanel() {
       >(IPCChannels.Email.VerifyLocalMailBackup)
       if (r.ok) {
         const parts = [
-          `Backup OK`,
-          r.schemaGenerationLabel,
-          r.exportedAt ? new Date(r.exportedAt).toLocaleString("de-DE") : null,
+          `Backup OK: ${r.path}`,
+          r.schemaGenerationLabel
+            ? `Schema ${r.schemaGeneration} (${r.schemaGenerationLabel})`
+            : null,
+          r.exportedAt
+            ? `Export: ${new Date(r.exportedAt).toLocaleString("de-DE")}`
+            : null,
           r.hasAttachments ? "mit Anhängen" : "ohne Anhänge",
         ].filter(Boolean)
         toast.success(parts.join(" · "))

@@ -333,6 +333,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         schemaGeneration: z.number().optional(),
         schemaGenerationLabel: z.string().optional(),
         exportedAt: z.string().optional(),
+        hasDatabase: z.boolean(),
         hasAttachments: z.boolean(),
       }),
       z.object({ ok: z.literal(false), error: z.string() }),
