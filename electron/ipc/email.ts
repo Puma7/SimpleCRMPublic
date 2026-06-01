@@ -2305,9 +2305,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (payload.accountId != null) {
           const acc = getEmailAccountById(payload.accountId);
           if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
-          const pw = await getEmailPassword(acc.keytar_account_key);
+          const host = payload.host.trim();
+          const user = payload.user.trim();
+          const testAcc: EmailAccountRow = {
+            ...acc,
+            pop3_host: host || acc.pop3_host,
+            pop3_port: payload.port ?? acc.pop3_port,
+            pop3_tls: payload.tls ? 1 : 0,
+            imap_host: host || acc.imap_host,
+            imap_port: payload.port ?? acc.imap_port,
+            imap_tls: payload.tls ? 1 : 0,
+            imap_username: user || acc.imap_username,
+          };
+          const pw =
+            payload.password.trim().length > 0
+              ? payload.password
+              : await getEmailPassword(acc.keytar_account_key);
           if (!pw) return { success: false as const, error: 'Kein Passwort' };
-          const r = await testPop3Connection(acc, pw);
+          const r = await testPop3Connection(testAcc, pw);
           return r.ok ? { success: true as const } : { success: false as const, error: r.error };
         }
         const fakeAcc = {

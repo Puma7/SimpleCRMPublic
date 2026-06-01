@@ -11,6 +11,7 @@ jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => db,
   getSyncInfo: (k: string) => syncStore.get(k) ?? null,
   setSyncInfo: (k: string, v: string) => syncStore.set(k, v),
+  createActivityLog: jest.fn(),
 }));
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: jest.fn(),

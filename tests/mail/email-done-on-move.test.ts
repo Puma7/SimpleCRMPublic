@@ -62,10 +62,9 @@ describe('done_local on folder moves', () => {
     setMessageSoftDeleted(7, true);
     expect(mockRun).toHaveBeenCalledWith(
       expect.stringContaining('done_local = 1'),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
+      0,
+      0,
+      'inbox',
       7,
     );
   });

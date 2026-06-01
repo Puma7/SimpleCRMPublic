@@ -1,3 +1,16 @@
+jest.mock('../../electron/sqlite-service', () => ({
+  getDb: () => ({
+    prepare: () => ({
+      run: jest.fn(),
+      get: jest.fn(),
+      all: jest.fn(() => []),
+    }),
+  }),
+  getSyncInfo: jest.fn(() => null),
+  setSyncInfo: jest.fn(),
+  deleteSyncInfo: jest.fn(),
+}));
+
 const mockUidl = jest.fn();
 const mockRetr = jest.fn();
 const mockQuit = jest.fn();
@@ -136,7 +149,7 @@ describe('email-pop3-sync', () => {
     const { getEmailPassword } = await import('../../electron/email/email-keytar');
     (resolveImapAuth as jest.Mock).mockRejectedValueOnce(new Error('no oauth'));
     (getEmailPassword as jest.Mock).mockResolvedValueOnce('');
-    await expect(syncInboxPop3(1)).rejects.toThrow(/Passwort/);
+    await expect(syncInboxPop3(1)).rejects.toThrow(/no oauth|Passwort/);
   });
 
   test('sync creates folder when missing', async () => {

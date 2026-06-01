@@ -214,9 +214,12 @@ export function createSqliteCrmStoreMock() {
     if (lastSql.includes('UPDATE email_categories')) {
       const id = args[args.length - 1] as number;
       const row = categories.find((c) => c.id === id);
-      if (row && lastSql.includes('name =')) row.name = args[0] as string;
-      if (row && lastSql.includes('parent_id =')) row.parent_id = args[0] as number | null;
-      if (row && lastSql.includes('sort_order =')) row.sort_order = args[0] as number;
+      if (row) {
+        let i = 0;
+        if (lastSql.includes('name = ?')) row.name = args[i++] as string;
+        if (lastSql.includes('parent_id = ?')) row.parent_id = args[i++] as number | null;
+        if (lastSql.includes('sort_order = ?')) row.sort_order = args[i++] as number;
+      }
       return { changes: 1, lastInsertRowid: 0 };
     }
     if (lastSql.includes('DELETE FROM email_categories')) {

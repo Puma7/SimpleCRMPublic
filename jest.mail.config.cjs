@@ -32,6 +32,7 @@ module.exports = {
     '<rootDir>/tests/unit/email-forward-copy.test.ts',
     '<rootDir>/tests/unit/rspamd-url.test.ts',
   ],
+  setupFiles: ['<rootDir>/tests/setup/jest.mail.electron-mock.ts'],
   setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
   transform: {
     '^.+\\.tsx?$': [
