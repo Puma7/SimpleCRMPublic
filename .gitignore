@@ -63,6 +63,7 @@ src/.DS_Store
 !docs/EMAIL_PRODUCT_GUIDE.md
 !docs/EMAIL_ROADMAP.md
 !docs/MAIL_SECURITY.md
+!docs/MAIL_BETA_PHASE3_PLAN.md
 !AGENTS.md
 
 coverage/

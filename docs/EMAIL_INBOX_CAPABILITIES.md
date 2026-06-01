@@ -55,7 +55,7 @@ Legende: **stabil** · **teilweise** · **geplant**
 
 | Funktion | Status |
 |----------|--------|
-| Vollständiger IMAP Multi-Folder-Sync | geplant |
+| IMAP Multi-Folder (Sent / Archiv / Spam) | stabil | Opt-in pro Konto unter SMTP/IMAP-Einstellungen |
 | PGP-Entschlüsselung | geplant |
 | Open/Click-Tracking | geplant |
 | Abwesenheitsantwort pro Konto | stabil | Einstellungen → Konten bearbeiten |

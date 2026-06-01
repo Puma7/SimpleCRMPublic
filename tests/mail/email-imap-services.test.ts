@@ -26,7 +26,11 @@ jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: jest.fn().mockResolvedValue({ user: 'u', pass: 'p' }),
 }));
 jest.mock('../../electron/email/email-imap-sync', () => ({
-  syncInboxImap: jest.fn().mockResolvedValue({ fetched: 0, folderId: 1, lastUid: 0 }),
+  syncAccountImap: jest.fn().mockResolvedValue({
+    folders: [{ fetched: 0, folderId: 1, lastUid: 0, folderPath: 'INBOX' }],
+    totalFetched: 0,
+  }),
+  syncInboxImap: jest.fn().mockResolvedValue({ fetched: 0, folderId: 1, lastUid: 0, folderPath: 'INBOX' }),
 }));
 jest.mock('../../electron/email/email-pop3-sync', () => ({
   syncInboxPop3: jest.fn().mockResolvedValue({ fetched: 0, folderId: 2, lastUid: 0 }),
@@ -65,7 +69,7 @@ jest.mock('../../electron/email/email-scheduled-send', () => ({
   processDueScheduledSends: jest.fn().mockResolvedValue(0),
 }));
 
-import { syncInboxImap } from '../../electron/email/email-imap-sync';
+import { syncAccountImap } from '../../electron/email/email-imap-sync';
 import { syncInboxPop3 } from '../../electron/email/email-pop3-sync';
 import { resolveImapAuth } from '../../electron/email/email-imap-auth';
 import cron from 'node-cron';
@@ -104,7 +108,7 @@ describe('email-imap-services', () => {
     await globalTask.fn();
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
-    expect(syncInboxImap).toHaveBeenCalledWith(1);
+    expect(syncAccountImap).toHaveBeenCalledWith(1);
     expect(syncInboxPop3).toHaveBeenCalledWith(2);
     stopEmailBackgroundServices();
   });
@@ -118,7 +122,7 @@ describe('email-imap-services', () => {
     jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
     existsHandler!();
     await new Promise((r) => setImmediate(r));
-    expect(syncInboxImap).toHaveBeenCalled();
+    expect(syncAccountImap).toHaveBeenCalled();
     jest.restoreAllMocks();
     stopEmailBackgroundServices();
   });

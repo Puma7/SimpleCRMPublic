@@ -525,6 +525,19 @@ function runMigrations() {
             addAcc('vacation_body_text', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN vacation_body_text TEXT`);
             addAcc('request_read_receipt', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN request_read_receipt INTEGER NOT NULL DEFAULT 0`);
             addAcc('sync_spam_folder_path', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN sync_spam_folder_path TEXT`);
+            addAcc('sync_archive_folder_path', `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN sync_archive_folder_path TEXT`);
+            addAcc(
+                'imap_sync_sent',
+                `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_sent INTEGER NOT NULL DEFAULT 0`,
+            );
+            addAcc(
+                'imap_sync_archive',
+                `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_archive INTEGER NOT NULL DEFAULT 0`,
+            );
+            addAcc(
+                'imap_sync_spam',
+                `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_spam INTEGER NOT NULL DEFAULT 0`,
+            );
         }
 
         if (emailFolderExists) {

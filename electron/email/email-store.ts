@@ -46,6 +46,11 @@ export type EmailAccountRow = {
   oauth_provider: string | null;
   oauth_refresh_keytar_key: string | null;
   sent_folder_path: string | null;
+  sync_spam_folder_path: string | null;
+  sync_archive_folder_path: string | null;
+  imap_sync_sent: number;
+  imap_sync_archive: number;
+  imap_sync_spam: number;
   imap_sync_seen_on_open: number;
   vacation_enabled: number;
   vacation_subject: string | null;
@@ -125,6 +130,11 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth, smtp_keytar_account_key,
             COALESCE(protocol, 'imap') AS protocol, pop3_host, pop3_port, pop3_tls, oauth_provider, oauth_refresh_keytar_key,
             COALESCE(sent_folder_path, 'Sent') AS sent_folder_path,
+            sync_spam_folder_path,
+            sync_archive_folder_path,
+            COALESCE(imap_sync_sent, 0) AS imap_sync_sent,
+            COALESCE(imap_sync_archive, 0) AS imap_sync_archive,
+            COALESCE(imap_sync_spam, 0) AS imap_sync_spam,
             COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
             COALESCE(vacation_enabled, 0) AS vacation_enabled,
             vacation_subject, vacation_body_text,
@@ -224,6 +234,11 @@ export function updateEmailAccountRecord(
     oauthProvider: string | null;
     oauthRefreshKeytarKey: string | null;
     sentFolderPath: string | null;
+    syncSpamFolderPath: string | null;
+    syncArchiveFolderPath: string | null;
+    imapSyncSent: boolean;
+    imapSyncArchive: boolean;
+    imapSyncSpam: boolean;
     imapSyncSeenOnOpen: boolean;
     vacationEnabled: boolean;
     vacationSubject: string | null;
@@ -258,6 +273,26 @@ export function updateEmailAccountRecord(
   if (input.oauthProvider !== undefined) { sets.push('oauth_provider = ?'); vals.push(input.oauthProvider); }
   if (input.oauthRefreshKeytarKey !== undefined) { sets.push('oauth_refresh_keytar_key = ?'); vals.push(input.oauthRefreshKeytarKey); }
   if (input.sentFolderPath !== undefined) { sets.push('sent_folder_path = ?'); vals.push(input.sentFolderPath); }
+  if (input.syncSpamFolderPath !== undefined) {
+    sets.push('sync_spam_folder_path = ?');
+    vals.push(input.syncSpamFolderPath);
+  }
+  if (input.syncArchiveFolderPath !== undefined) {
+    sets.push('sync_archive_folder_path = ?');
+    vals.push(input.syncArchiveFolderPath);
+  }
+  if (input.imapSyncSent !== undefined) {
+    sets.push('imap_sync_sent = ?');
+    vals.push(input.imapSyncSent ? 1 : 0);
+  }
+  if (input.imapSyncArchive !== undefined) {
+    sets.push('imap_sync_archive = ?');
+    vals.push(input.imapSyncArchive ? 1 : 0);
+  }
+  if (input.imapSyncSpam !== undefined) {
+    sets.push('imap_sync_spam = ?');
+    vals.push(input.imapSyncSpam ? 1 : 0);
+  }
   if (input.imapSyncSeenOnOpen !== undefined) {
     sets.push('imap_sync_seen_on_open = ?');
     vals.push(input.imapSyncSeenOnOpen ? 1 : 0);
@@ -992,8 +1027,14 @@ export function insertOrUpdateEmailMessage(input: {
   pop3Uidl?: string | null;
   rawHeaders?: string | null;
   rawRfc822B64?: string | null;
+  folderKind?: 'inbox' | 'sent' | 'draft';
+  archived?: boolean;
+  isSpam?: boolean;
 }, ctx?: MessageUpsertContext): { id: number; isNew: boolean } {
   const hasAtt = input.hasAttachments ? 1 : 0;
+  const folderKind = input.folderKind ?? 'inbox';
+  const archived = input.archived ? 1 : 0;
+  const isSpam = input.isSpam ? 1 : 0;
   const attJson = input.attachmentsJson ?? null;
   const imapTid = input.imapThreadId ?? null;
   const pop3Uidl = input.pop3Uidl?.trim() || null;
@@ -1084,7 +1125,7 @@ export function insertOrUpdateEmailMessage(input: {
       subject, from_json, to_json, cc_json, bcc_json, date_received, snippet, body_text, body_html, seen_local,
       imap_thread_id, has_attachments, attachments_json, pop3_uidl, raw_headers, raw_rfc822_b64,
       thread_id, ticket_code, customer_id, folder_kind, post_process_done
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'inbox', 0)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       message_id = excluded.message_id,
       in_reply_to = excluded.in_reply_to,
@@ -1104,7 +1145,10 @@ export function insertOrUpdateEmailMessage(input: {
       pop3_uidl = COALESCE(excluded.pop3_uidl, ${EMAIL_MESSAGES_TABLE}.pop3_uidl),
       raw_headers = COALESCE(excluded.raw_headers, ${EMAIL_MESSAGES_TABLE}.raw_headers),
       raw_rfc822_b64 = COALESCE(excluded.raw_rfc822_b64, ${EMAIL_MESSAGES_TABLE}.raw_rfc822_b64),
-      seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`,
+      seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local),
+      folder_kind = excluded.folder_kind,
+      archived = excluded.archived,
+      is_spam = excluded.is_spam`,
   );
   const result = stmt.run(
     input.accountId,
@@ -1129,6 +1173,9 @@ export function insertOrUpdateEmailMessage(input: {
     pop3Uidl,
     input.rawHeaders ?? null,
     input.rawRfc822B64 ?? null,
+    folderKind,
+    archived,
+    isSpam,
   );
   let id = existing?.id ?? 0;
   if (!id) {
