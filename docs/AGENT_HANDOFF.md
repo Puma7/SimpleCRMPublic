@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-05-24 (Sprint: docs + KI-Profil-UI + Backup-Verify)  
-**Integration branch:** `main` (feature work: `cursor/dev-from-main-d125`)  
+**Last updated:** 2026-06-01 (main: Sprint #76, Restore/IMAP #77, CRM-Doku #78)  
+**Integration branch:** `main`  
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 
 ---
@@ -9,11 +9,12 @@
 ## 1. Read this first
 
 1. This file + [`LEARNINGS.md`](LEARNINGS.md).
-2. Code: [`DEVELOPER_EMAIL.md`](DEVELOPER_EMAIL.md), [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
-3. Beta/Backup: [`MAIL_BETA_PHASE3_PLAN.md`](MAIL_BETA_PHASE3_PLAN.md), [`MAIL_TROUBLESHOOTING.md`](MAIL_TROUBLESHOOTING.md).
-4. Verify: `npm test`, `npm run build:electron:main`, `npx eslint . --ext ts,tsx --max-warnings 0`.
+2. **E-Mail:** [`DEVELOPER_EMAIL.md`](DEVELOPER_EMAIL.md), [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
+3. **CRM:** [`DEVELOPER_CRM.md`](DEVELOPER_CRM.md), [`CRM_PRODUCT_GUIDE.md`](CRM_PRODUCT_GUIDE.md).
+4. **Backup/Restore:** [`MAIL_BETA_PHASE3_PLAN.md`](MAIL_BETA_PHASE3_PLAN.md), [`MAIL_TROUBLESHOOTING.md`](MAIL_TROUBLESHOOTING.md).
+5. Verify: `npm test`, `npm run build:electron:main`, `npx eslint . --ext ts,tsx --max-warnings 0`.
 
-**UI language:** German.
+**UI language:** German (Posteingang = inbox, Aufgaben = tasks, Kunden = customers).
 
 ---
 

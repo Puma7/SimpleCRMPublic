@@ -1,8 +1,8 @@
 # SimpleCRM — Produktanforderungen (Muss / Soll / Ist)
 
-**Stand:** 2026-05-24 · Verbindliche Übersicht für PO, Support und Entwicklung.
+**Stand:** 2026-06-01 · Verbindliche Übersicht für PO, Support und Entwicklung.
 
-Detaillierte Checklisten: [`EMAIL_PHASES.md`](EMAIL_PHASES.md), [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
+Detaillierte Checklisten: [`EMAIL_PHASES.md`](EMAIL_PHASES.md), [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md). **CRM-Produktlogik:** [`CRM_PRODUCT_GUIDE.md`](CRM_PRODUCT_GUIDE.md).
 
 Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration · **Ist** = implementiert (✅/🔲)
 
@@ -12,9 +12,17 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 
 | ID | Anforderung | Priorität | Ist |
 |----|-------------|-----------|-----|
-| CRM-1 | Kunden, Deals, Aufgaben, Kalender lokal in SQLite | Muss | ✅ |
+| CRM-1 | Kunden, Deals, Aufgaben, Kalender, Produkte lokal in SQLite | Muss | ✅ |
 | CRM-2 | Kein Cloud-Backend für CRM-Daten | Muss | ✅ |
 | CRM-3 | Deutsche UI | Muss | ✅ |
+| CRM-4 | Dashboard mit Kennzahlen und Einstiegslisten | Muss | ✅ |
+| CRM-5 | Nachverfolgung (Queues, Aktivitäten, Snooze) | Soll | ✅ |
+| CRM-6 | Deal-Pipeline mit Stages und Produkten am Deal | Muss | ✅ |
+| CRM-7 | Benutzerdefinierte Kundenfelder | Soll | ✅ |
+| CRM-8 | Optional JTL-Wawi-Sync (MSSQL) | Soll | ✅ |
+| CRM-9 | CRM-Dokumentation (Produkt, User, Developer) | Muss | ✅ |
+
+**Doku:** [`CRM_PRODUCT_GUIDE.md`](CRM_PRODUCT_GUIDE.md) · [`USER_GUIDE_CRM.md`](USER_GUIDE_CRM.md) · [`DEVELOPER_CRM.md`](DEVELOPER_CRM.md)
 
 ---
 
@@ -30,8 +38,8 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 | MAIL-6 | HTML-Lesemodus + DOMPurify | Muss | ✅ |
 | MAIL-7 | Externe Links mit Bestätigung | Muss | ✅ |
 | MAIL-8 | Compose: Antwort, Weiterleitung, Anhänge, geplanter Versand | Muss | ✅ |
-| MAIL-9 | Manuelle Kategorie am Thread (UI) | Soll | ✅ (#71) |
-| MAIL-10 | IMAP Sync aller Server-Ordner | Soll | 🔲 |
+| MAIL-9 | Manuelle Kategorie am Thread (UI) | Soll | ✅ |
+| MAIL-10 | IMAP Sync optional Sent/Archive/Spam pro Konto | Soll | ✅ |
 
 ---
 
@@ -53,7 +61,7 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 | AI-1 | Mehrere KI-Profile (Modell + Key) | Muss | ✅ |
 | AI-2 | Prompt-Bibliothek mit Profil-Zuordnung | Muss | ✅ |
 | AI-3 | Workflow-Knoten: Spam-Score, Klassifizierung, Agent, Outbound-Review | Muss | ✅ |
-| AI-4 | **KI-Profil-Dropdown** im Workflow-Knoten-Editor | Muss | ✅ Sprint |
+| AI-4 | **KI-Profil-Dropdown** im Workflow-Knoten-Editor | Muss | ✅ |
 | AI-5 | Embeddings / Vektor-RAG | Soll | 🔲 |
 
 ---
@@ -66,7 +74,7 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 | WF-2 | Trigger: inbound, outbound, schedule, CRM, webhook | Muss | ✅ |
 | WF-3 | Outbound fail-closed bei Fehler/Block | Muss | ✅ |
 | WF-4 | Vorlagen, Versionen, Dry-Run, Lauf-Historie | Soll | ✅ |
-| WF-5 | Visuelle KI-Profil-Auswahl (nicht nur JSON) | Muss | ✅ Sprint |
+| WF-5 | Visuelle KI-Profil-Auswahl (nicht nur JSON) | Muss | ✅ |
 
 ---
 
@@ -77,8 +85,8 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 | OPS-1 | Diagnose-JSON (Support) | Muss | ✅ |
 | OPS-2 | Vollbackup ZIP (DB + Anhänge) | Muss | ✅ |
 | OPS-3 | Restore-Dokumentation | Muss | ✅ [`MAIL_BETA_PHASE3_PLAN.md`](MAIL_BETA_PHASE3_PLAN.md) |
-| OPS-4 | Backup-Integritätsprüfung | Soll | ✅ Sprint |
-| OPS-5 | Restore-Wizard in der App | Soll | 🔲 |
+| OPS-4 | Backup-Integritätsprüfung | Soll | ✅ |
+| OPS-5 | Restore-Wizard in der App | Soll | ✅ |
 
 ---
 
@@ -95,9 +103,10 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 
 | ID | Anforderung | Ist |
 |----|-------------|-----|
-| DOC-1 | `docs/INDEX.md` ohne tote Links | ✅ Sprint |
-| DOC-2 | `AGENT_HANDOFF.md` aktuell | ✅ Sprint |
+| DOC-1 | `docs/INDEX.md` ohne tote Links | ✅ |
+| DOC-2 | `AGENT_HANDOFF.md` aktuell | ✅ |
 | DOC-3 | Produktlogik `EMAIL_PRODUCT_GUIDE.md` | ✅ |
+| DOC-4 | CRM-Doku (`CRM_*`, `USER_GUIDE_CRM`, `DEVELOPER_CRM`) | ✅ |
 
 ---
 
@@ -105,4 +114,7 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 
 | Datum | Änderung |
 |-------|----------|
-| 2026-05-24 | Erstversion + Sprint: fehlende Mail-Docs, KI-Profil-UI, Backup-Verify |
+| 2026-05-24 | Erstversion (Mail-Sprint #76) |
+| 2026-05-24 | CRM-Kern + dedizierte CRM-Dokumentation (#78) |
+| 2026-06-01 | Nach #76/#77: MAIL-10, AI-4, WF-5, OPS-3–5 auf ✅ |
+| 2026-06-01 | Nach #78: INDEX/Handoff CRM-Pfade, DOC-4 |
