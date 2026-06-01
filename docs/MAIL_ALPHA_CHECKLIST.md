@@ -29,6 +29,6 @@ Stand: automatisierte Gates + kurzer manueller Smoke.
 
 1. [#80](https://github.com/Puma7/SimpleCRMPublic/pull/80) Posteingang UX — **merged**
 2. [#81](https://github.com/Puma7/SimpleCRMPublic/pull/81) Phase 2 — **merged**
-3. [#82](https://github.com/Puma7/SimpleCRMPublic/pull/82) Mail Alpha-Gate (`cursor/mail-alpha-gate-d125`) — CI `test:mail`, Coverage-Ratchet, Fresh-DB-Integrationstest
+3. [#83](https://github.com/Puma7/SimpleCRMPublic/pull/83) Mail Alpha-Gate — **merged** (CI `test:mail`, Coverage-Ratchet, Fresh-DB-Integrationstest)
 
 Lokale Merge-Simulation (vor #80/#81): keine Konflikte mit `main`.
