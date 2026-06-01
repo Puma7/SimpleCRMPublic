@@ -94,3 +94,37 @@ export function resolveSentMailboxCandidates(
 
   return candidates;
 }
+
+/** First candidate that exists on the server (case-insensitive path match). */
+export function pickFirstMailboxPathOnServer(
+  candidates: string[],
+  listedMailboxes: MailboxListEntry[],
+): string | null {
+  if (listedMailboxes.length === 0) {
+    return candidates[0] ?? null;
+  }
+  const paths = new Set(listedMailboxes.map((e) => e.path.toLowerCase()));
+  for (const candidate of candidates) {
+    if (paths.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function findSentMailboxOnServer(listedMailboxes: MailboxListEntry[]): string | null {
+  for (const entry of listedMailboxes) {
+    if (mailboxHasSentSpecialUse(entry)) {
+      return entry.path;
+    }
+  }
+  for (const entry of listedMailboxes) {
+    if (
+      isSentLikeMailboxName(entry.name) ||
+      isSentLikeMailboxName(pathLeaf(entry.path, entry.delimiter))
+    ) {
+      return entry.path;
+    }
+  }
+  return null;
+}

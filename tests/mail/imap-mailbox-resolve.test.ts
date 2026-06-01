@@ -1,6 +1,7 @@
 import {
   resolveSyncFoldersForAccount,
   resolveArchiveMailboxPath,
+  resolveSentMailboxPath,
 } from '../../electron/email/imap-mailbox-resolve';
 import type { EmailAccountRow } from '../../electron/email/email-store';
 
@@ -27,6 +28,24 @@ describe('imap-mailbox-resolve', () => {
       [{ path: 'INBOX/Sent', name: 'Sent', delimiter: '/', specialUse: '\\Sent', flags: new Set() }],
     );
     expect(specs.some((s) => s.folderKind === 'sent')).toBe(true);
+  });
+
+  test('resolveSentMailboxPath skips configured Sent when only Gesendet exists', () => {
+    const listed = [
+      { path: 'INBOX', name: 'INBOX', delimiter: '/', specialUse: undefined, flags: new Set() },
+      {
+        path: 'INBOX/Gesendet',
+        name: 'Gesendet',
+        delimiter: '/',
+        specialUse: '\\Sent',
+        flags: new Set(['\\Sent']),
+      },
+    ];
+    const resolved = resolveSentMailboxPath(
+      { sent_folder_path: 'Sent' } as Pick<EmailAccountRow, 'sent_folder_path'>,
+      listed,
+    );
+    expect(resolved).toBe('INBOX/Gesendet');
   });
 
   test('resolveArchiveMailboxPath uses special use', () => {

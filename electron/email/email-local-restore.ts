@@ -9,10 +9,17 @@ import Database from 'better-sqlite3';
 import { MAIL_SCHEMA_GENERATION } from '../db/mail-schema-version';
 import { inspectZipBackup } from './email-local-backup';
 import { exportLocalMailBackupToPath } from './email-local-backup-export';
-import { resolveSafePathUnderDirectory } from './email-zip-path-safety';
+import {
+  findDatabaseSqliteInTree,
+  resolveSafePathUnderDirectory,
+} from './email-zip-path-safety';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
-import { isEmailBackgroundSyncBusy, stopEmailBackgroundServices } from './email-imap-services';
-import { closeDatabase } from '../sqlite-service';
+import {
+  isEmailBackgroundSyncBusy,
+  startEmailBackgroundServices,
+  stopEmailBackgroundServices,
+} from './email-imap-services';
+import { closeDatabase, reopenDatabaseConnection } from '../sqlite-service';
 
 const RESTORE_CONFIRM_PHRASE = 'WIEDERHERSTELLEN';
 
@@ -229,6 +236,25 @@ function rollbackRenamedBackup(targetPath: string, backupPath: string | null): v
   fs.renameSync(backupPath, targetPath);
 }
 
+export { findDatabaseSqliteInTree } from './email-zip-path-safety';
+
+function findExtractedAttachmentsDir(extractDir: string): string | null {
+  const direct = path.join(extractDir, 'email-attachments');
+  if (fs.existsSync(direct)) return direct;
+  const stack = [extractDir];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory() && ent.name === 'email-attachments') {
+        return full;
+      }
+      if (ent.isDirectory()) stack.push(full);
+    }
+  }
+  return null;
+}
+
 export async function restoreLocalMailBackup(input: {
   zipPath: string;
   previewToken: string;
@@ -263,9 +289,11 @@ export async function restoreLocalMailBackup(input: {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 
   let preBackupPath: string | undefined;
-  try {
-    stopEmailBackgroundServices();
+  let servicesStopped = false;
+  let databaseClosed = false;
+  const recoveryLogger = console;
 
+  try {
     if (input.createPreBackup) {
       const preDir = path.join(userData, 'pre-restore-backups');
       fs.mkdirSync(preDir, { recursive: true });
@@ -276,22 +304,25 @@ export async function restoreLocalMailBackup(input: {
       }
     }
 
-    closeDatabase();
-
     const extractDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'crm-restore-extract-'));
     try {
       await extractZipToDirectory(input.zipPath, extractDir);
-      const extractedDb = path.join(extractDir, 'database.sqlite');
-      const extractedAtt = path.join(extractDir, 'email-attachments');
-      if (!fs.existsSync(extractedDb)) {
+      const extractedDb = findDatabaseSqliteInTree(extractDir);
+      if (!extractedDb) {
         return { ok: false, error: 'Entpacktes Backup enthält keine database.sqlite.' };
       }
+      const extractedAtt = findExtractedAttachmentsDir(extractDir);
+
+      stopEmailBackgroundServices();
+      servicesStopped = true;
+      closeDatabase();
+      databaseClosed = true;
 
       const dbBackupPath = renameForBackup(dbPath, stamp);
       const attBackupPath = renameForBackup(attRoot, stamp);
       try {
         fs.copyFileSync(extractedDb, dbPath);
-        if (fs.existsSync(extractedAtt)) {
+        if (extractedAtt) {
           fs.cpSync(extractedAtt, attRoot, { recursive: true });
         } else if (attBackupPath && fs.existsSync(attRoot)) {
           fs.rmSync(attRoot, { recursive: true, force: true });
@@ -309,6 +340,20 @@ export async function restoreLocalMailBackup(input: {
     app.exit(0);
     return { ok: true, preBackupPath };
   } catch (e) {
+    if (databaseClosed) {
+      try {
+        reopenDatabaseConnection();
+      } catch (reopenErr) {
+        recoveryLogger.error('[restore] reopenDatabaseConnection failed', reopenErr);
+      }
+    }
+    if (servicesStopped) {
+      try {
+        await startEmailBackgroundServices(recoveryLogger);
+      } catch (restartErr) {
+        recoveryLogger.error('[restore] startEmailBackgroundServices failed', restartErr);
+      }
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

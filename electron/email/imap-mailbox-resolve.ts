@@ -1,6 +1,8 @@
 import type { EmailAccountRow } from './email-store';
 import {
+  findSentMailboxOnServer,
   normalizeMailboxName,
+  pickFirstMailboxPathOnServer,
   resolveSentMailboxCandidates,
   type MailboxListEntry,
 } from './imap-mailbox-names';
@@ -105,7 +107,10 @@ export function resolveSentMailboxPath(
   listed: MailboxListEntry[],
 ): string | null {
   const candidates = resolveSentMailboxCandidates(account.sent_folder_path || 'Sent', listed);
-  return candidates[0] ?? null;
+  const onServer = pickFirstMailboxPathOnServer(candidates, listed);
+  if (onServer) return onServer;
+  if (listed.length === 0) return candidates[0] ?? null;
+  return findSentMailboxOnServer(listed);
 }
 
 /** Folders to sync for one IMAP account (INBOX always; others opt-in). */

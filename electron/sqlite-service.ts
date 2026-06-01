@@ -87,7 +87,7 @@ import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
 
 const dbPath = path.join(app.getPath('userData'), 'database.sqlite');
-let db: Database.Database;
+let db: Database.Database | undefined;
 // Optional: let knex: Knex.Knex;
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -99,7 +99,8 @@ const sqliteVerboseLogger = (...args: unknown[]) => {
 
 export function initializeDatabase() {
     const dbExists = fs.existsSync(dbPath);
-    db = new Database(dbPath, isDevelopment ? { verbose: sqliteVerboseLogger } : undefined);
+    const connection = new Database(dbPath, isDevelopment ? { verbose: sqliteVerboseLogger } : undefined);
+    db = connection;
 
     if (!dbExists) {
         if (isDevelopment) {
@@ -107,9 +108,9 @@ export function initializeDatabase() {
         }
         try {
             // Enable Foreign Keys support right away
-            db.exec('PRAGMA foreign_keys = ON;');
+            connection.exec('PRAGMA foreign_keys = ON;');
 
-            db.exec(createCustomersTable);
+            connection.exec(createCustomersTable);
             db.exec(createProductsTable);
             db.exec(createSyncInfoTable);
             db.exec(createDealsTable);
@@ -149,7 +150,7 @@ export function initializeDatabase() {
             db.exec(createEmailWorkflowVersionsTable);
             setupEmailFtsIndex();
             migrateEmailFtsSearchV2();
-            indexes.forEach(index => db.exec(index));
+            indexes.forEach((index) => connection.exec(index));
             // Same column/table ensure path as upgraded databases (Codex P0: fresh install parity).
             runMigrations();
             // Seed initial sync info if needed
@@ -167,21 +168,21 @@ export function initializeDatabase() {
             console.debug('Database already exists.');
         }
         // Ensure Foreign Keys are enabled on existing DBs too
-        db.exec('PRAGMA foreign_keys = ON;');
+        connection.exec('PRAGMA foreign_keys = ON;');
         // Here you could add migration logic if schema changes
         // Example: Check if deal_products table exists and create if not
-        const checkTableStmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?");
+        const checkTableStmt = connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?");
 
         // Helper function to check and create table with its indexes
         const ensureTableExists = (tableName: string, createTableSql: string, tableIndexes: string[]) => {
             if (!checkTableStmt.get(tableName)) {
                 console.log(`Table ${tableName} not found, creating...`);
                 try {
-                    db.exec(createTableSql);
+                    connection.exec(createTableSql);
                     tableIndexes.forEach(indexSql => {
                         // Ensure the index creation SQL targets the correct table, e.g., by checking if tableName is in indexSql
                         if (indexSql.includes(tableName)) {
-                           db.exec(indexSql);
+                           connection.exec(indexSql);
                         }
                     });
                     console.log(`Table ${tableName} and its specific indexes created.`);
@@ -393,7 +394,10 @@ function setupEmailFtsIndex() {
  * Run database migrations to update schema for existing databases
  */
 function runMigrations() {
-    if (!db) return;
+    if (!db) {
+        throw new Error('Database not initialized');
+    }
+    const conn = db;
 
     try {
         // Migration: Add value_calculation_method column to deals table if it doesn't exist
@@ -459,7 +463,7 @@ function runMigrations() {
         if (msgTableExists) {
             const readMsgCols = () =>
                 new Set(
-                    (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).map(
+                    (conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).map(
                         (c) => c.name,
                     ),
                 );
@@ -499,7 +503,7 @@ function runMigrations() {
             const addAcc = (name: string, sql: string) => {
                 if (!an.has(name)) {
                     console.log(`Adding ${name} to email_accounts...`);
-                    db.exec(sql);
+                    conn.exec(sql);
                     an.add(name);
                 }
             };
@@ -552,7 +556,7 @@ function runMigrations() {
         if (msgTableExists) {
             const readMsgCols2 = () =>
                 new Set(
-                    (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).map(
+                    (conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).map(
                         (c) => c.name,
                     ),
                 );
@@ -646,13 +650,13 @@ function runMigrations() {
         }
 
         const ensureMigrationTable = (tableName: string, createTableSql: string, tableIndexes: string[]) => {
-            const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+            const exists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
             if (!exists) {
                 console.log(`Table ${tableName} not found, creating...`);
-                db.exec(createTableSql);
+                conn.exec(createTableSql);
                 for (const indexSql of tableIndexes) {
                     if (indexSql.includes(tableName)) {
-                        db.exec(indexSql);
+                        conn.exec(indexSql);
                     }
                 }
             }
@@ -2961,8 +2965,27 @@ export function deleteSavedView(id: number): { success: boolean; error?: string 
 export function closeDatabase() {
     if (db) {
         db.close();
+        db = undefined;
         console.log('Database connection closed.');
     }
+}
+
+/** Re-open SQLite after a failed restore (main process still running). */
+export function reopenDatabaseConnection(): void {
+    if (db) {
+        try {
+            db.prepare('SELECT 1').get();
+            return;
+        } catch {
+            try {
+                db.close();
+            } catch {
+                /* already closed */
+            }
+            db = undefined;
+        }
+    }
+    initializeDatabase();
     // Optional Knex cleanup
     // if (knex) {
     //   await knex.destroy();

@@ -1003,6 +1003,111 @@ export function createImapUpsertContext(folderId: number, uids: number[]): Messa
   return { imapUidToId: loadImapUidToIdMap(folderId, uids) };
 }
 
+/** Promote locally sent draft (negative uid) when the server copy arrives via IMAP Sent sync. */
+function tryPromoteLocalSentImapRow(
+  db: ReturnType<typeof getDb>,
+  input: {
+    accountId: number;
+    folderId: number;
+    uid: number;
+    messageId: string;
+    inReplyTo: string | null;
+    referencesHeader: string | null;
+    subject: string | null;
+    fromJson: string | null;
+    toJson: string | null;
+    ccJson: string | null;
+    bccJson: string | null;
+    dateReceived: string | null;
+    snippet: string | null;
+    bodyText: string | null;
+    bodyHtml: string | null;
+    seenLocal: boolean;
+    imapThreadId: string | null;
+    hasAttachments: number;
+    attachmentsJson: string | null;
+    rawHeaders: string | null;
+    rawRfc822B64: string | null;
+    archived: number;
+    isSpam: number;
+  },
+): number | null {
+  const mid = input.messageId.trim();
+  if (!mid) return null;
+
+  const local = db
+    .prepare(
+      `SELECT id FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND message_id = ? AND folder_kind = 'sent' AND uid < 0
+       LIMIT 1`,
+    )
+    .get(input.accountId, mid) as { id: number } | undefined;
+  if (!local) return null;
+
+  const conflict = db
+    .prepare(
+      `SELECT id FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND folder_id = ? AND uid = ? AND id != ?`,
+    )
+    .get(input.accountId, input.folderId, input.uid, local.id) as { id: number } | undefined;
+  if (conflict) {
+    db.prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(local.id);
+    return null;
+  }
+
+  db.prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE} SET
+      folder_id = ?,
+      uid = ?,
+      in_reply_to = ?,
+      references_header = ?,
+      subject = ?,
+      from_json = ?,
+      to_json = ?,
+      cc_json = ?,
+      bcc_json = COALESCE(?, bcc_json),
+      date_received = ?,
+      snippet = ?,
+      body_text = ?,
+      body_html = ?,
+      seen_local = MAX(seen_local, ?),
+      imap_thread_id = COALESCE(?, imap_thread_id),
+      has_attachments = ?,
+      attachments_json = COALESCE(?, attachments_json),
+      raw_headers = COALESCE(?, raw_headers),
+      raw_rfc822_b64 = COALESCE(?, raw_rfc822_b64),
+      archived = ?,
+      is_spam = ?,
+      soft_deleted = 0,
+      outbound_hold = 0
+    WHERE id = ?`,
+  ).run(
+    input.folderId,
+    input.uid,
+    input.inReplyTo,
+    input.referencesHeader,
+    input.subject,
+    input.fromJson,
+    input.toJson,
+    input.ccJson,
+    input.bccJson,
+    input.dateReceived,
+    input.snippet,
+    input.bodyText,
+    input.bodyHtml,
+    input.seenLocal ? 1 : 0,
+    input.imapThreadId,
+    input.hasAttachments,
+    input.attachmentsJson,
+    input.rawHeaders,
+    input.rawRfc822B64,
+    input.archived,
+    input.isSpam,
+    local.id,
+  );
+  return local.id;
+}
+
 export function insertOrUpdateEmailMessage(input: {
   accountId: number;
   folderId: number;
@@ -1106,6 +1211,45 @@ export function insertOrUpdateEmailMessage(input: {
       ctx.nextPop3Uid -= 1;
     } else {
       uidForRow = allocatePop3NegativeUid(input.accountId, input.folderId);
+    }
+  }
+
+  if (
+    !pop3Uidl &&
+    folderKind === 'sent' &&
+    uidForRow >= 0 &&
+    input.messageId?.trim()
+  ) {
+    const promotedId = tryPromoteLocalSentImapRow(db, {
+      accountId: input.accountId,
+      folderId: input.folderId,
+      uid: uidForRow,
+      messageId: input.messageId.trim(),
+      inReplyTo: input.inReplyTo,
+      referencesHeader: input.referencesHeader,
+      subject: input.subject,
+      fromJson: input.fromJson,
+      toJson: input.toJson,
+      ccJson: input.ccJson,
+      bccJson: input.bccJson ?? null,
+      dateReceived: input.dateReceived,
+      snippet: input.snippet,
+      bodyText: input.bodyText,
+      bodyHtml: input.bodyHtml,
+      seenLocal: input.seenLocal,
+      imapThreadId: imapTid,
+      hasAttachments: hasAtt,
+      attachmentsJson: attJson,
+      rawHeaders: input.rawHeaders ?? null,
+      rawRfc822B64: input.rawRfc822B64 ?? null,
+      archived,
+      isSpam,
+    });
+    if (promotedId != null) {
+      if (ctx?.imapUidToId) {
+        ctx.imapUidToId.set(uidForRow, promotedId);
+      }
+      return { id: promotedId, isNew: false };
     }
   }
 
