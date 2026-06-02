@@ -60,11 +60,11 @@ describe('insertOrUpdateEmailMessage INSERT column alignment', () => {
       isSpam: true,
     });
 
-    expect(capturedInsertSql).toContain('archived, is_spam, post_process_done');
+    expect(capturedInsertSql).toContain('archived, is_spam, spam_status, post_process_done');
     expect(countInsertColumns(capturedInsertSql)).toBe(countValueSlots(capturedInsertSql));
 
     const placeholders = (capturedInsertSql.match(/\?/g) ?? []).length;
-    expect(placeholders).toBe(25);
-    expect(stmt.run.mock.calls[0]?.length).toBe(25);
+    expect(placeholders).toBe(26);
+    expect(stmt.run.mock.calls[0]?.length).toBe(26);
   });
 });

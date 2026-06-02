@@ -43,11 +43,14 @@ describe('mail-security-store', () => {
       auth_arc: 'none',
       rspamd_score: 3,
       rspamd_action: 'reject',
+      spam_status: 'clean',
       spam_score_label: 'review',
     });
     expect(vars['auth.spf']).toBe('pass');
     expect(vars['rspamd.score']).toBe(3);
+    expect(vars['spam.status']).toBe('clean');
     expect(vars['spam.label']).toBe('review');
+    expect(vars['spam.recommendation']).toBe('review');
     expect(securityVariablesFromRow({})).toEqual({});
   });
 });

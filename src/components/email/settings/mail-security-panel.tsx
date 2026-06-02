@@ -177,7 +177,10 @@ export function MailSecurityPanel() {
               min={0}
               max={100}
               value={String(s.spamReviewThreshold)}
-              onChange={(e) => patch({ spamReviewThreshold: parseInt(e.target.value, 10) || 45 })}
+              onChange={(e) => {
+                const value = parseInt(e.target.value, 10)
+                patch({ spamReviewThreshold: Number.isFinite(value) ? value : 45 })
+              }}
             />
           </div>
           <div className="grid gap-2">
@@ -187,7 +190,10 @@ export function MailSecurityPanel() {
               min={0}
               max={100}
               value={String(s.spamSpamThreshold)}
-              onChange={(e) => patch({ spamSpamThreshold: parseInt(e.target.value, 10) || 75 })}
+              onChange={(e) => {
+                const value = parseInt(e.target.value, 10)
+                patch({ spamSpamThreshold: Number.isFinite(value) ? value : 75 })
+              }}
             />
           </div>
         </div>
@@ -201,10 +207,6 @@ export function MailSecurityPanel() {
             checked={s.rspamdContributionEnabled}
             onCheckedChange={(on) => patch({ rspamdContributionEnabled: on })}
           />
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          <Label className="text-sm">Rspamd-Learning bei Korrekturen vorbereiten</Label>
-          <Switch checked={s.rspamdLearningEnabled} onCheckedChange={(on) => patch({ rspamdLearningEnabled: on })} />
         </div>
       </div>
 

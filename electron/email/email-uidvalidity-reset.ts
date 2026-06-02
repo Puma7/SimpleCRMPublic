@@ -12,6 +12,12 @@ export type UidValidityBackupEntry = {
   customer_id: number | null;
   assigned_to: string | null;
   is_spam: number;
+  spam_status?: string | null;
+  spam_score?: number | null;
+  spam_score_label?: string | null;
+  spam_decision_source?: string | null;
+  spam_score_breakdown_json?: string | null;
+  spam_decided_at?: string | null;
   tags: string[];
   category_ids: number[];
   workflow_ids: number[];
@@ -41,7 +47,9 @@ function backupKey(folderId: number): string {
 export function backupFolderLocalMetaBeforeUidValidityReset(folderId: number): UidValidityBackupEntry[] {
   const rows = getDb()
     .prepare(
-      `SELECT m.id, m.uid, m.message_id, m.customer_id, m.assigned_to, m.is_spam
+      `SELECT m.id, m.uid, m.message_id, m.customer_id, m.assigned_to, m.is_spam,
+              m.spam_status, m.spam_score, m.spam_score_label, m.spam_decision_source,
+              m.spam_score_breakdown_json, m.spam_decided_at
        FROM ${EMAIL_MESSAGES_TABLE} m
        WHERE m.folder_id = ? AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`,
     )
@@ -52,6 +60,12 @@ export function backupFolderLocalMetaBeforeUidValidityReset(folderId: number): U
     customer_id: number | null;
     assigned_to: string | null;
     is_spam: number;
+    spam_status: string | null;
+    spam_score: number | null;
+    spam_score_label: string | null;
+    spam_decision_source: string | null;
+    spam_score_breakdown_json: string | null;
+    spam_decided_at: string | null;
   }[];
 
   const entries: UidValidityBackupEntry[] = [];
@@ -75,6 +89,12 @@ export function backupFolderLocalMetaBeforeUidValidityReset(folderId: number): U
       customer_id: row.customer_id,
       assigned_to: row.assigned_to,
       is_spam: row.is_spam,
+      spam_status: row.spam_status,
+      spam_score: row.spam_score,
+      spam_score_label: row.spam_score_label,
+      spam_decision_source: row.spam_decision_source,
+      spam_score_breakdown_json: row.spam_score_breakdown_json,
+      spam_decided_at: row.spam_decided_at,
       tags,
       category_ids,
       workflow_ids,
@@ -182,8 +202,28 @@ export function tryRestoreLocalMetaFromUidValidityBackup(
       localMsgId,
     );
   }
-  if (entry.is_spam === 1) {
-    db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET is_spam = 1 WHERE id = ?`).run(localMsgId);
+  if (entry.spam_status !== undefined || entry.is_spam === 1) {
+    const spamStatus = entry.spam_status ?? (entry.is_spam === 1 ? 'spam' : 'clean');
+    db.prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET is_spam = ?,
+           spam_status = ?,
+           spam_score = ?,
+           spam_score_label = ?,
+           spam_decision_source = ?,
+           spam_score_breakdown_json = ?,
+           spam_decided_at = ?
+       WHERE id = ?`,
+    ).run(
+      spamStatus === 'spam' ? 1 : 0,
+      spamStatus,
+      entry.spam_score ?? null,
+      entry.spam_score_label ?? null,
+      entry.spam_decision_source ?? null,
+      entry.spam_score_breakdown_json ?? null,
+      entry.spam_decided_at ?? null,
+      localMsgId,
+    );
   }
   for (const tag of entry.tags) {
     db.prepare(

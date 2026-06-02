@@ -341,6 +341,15 @@ export async function runInboundWorkflowsForMessage(
       });
     }
     if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
+    const afterWorkflowRow = getEmailMessageById(messageId);
+    if (
+      !afterWorkflowRow ||
+      afterWorkflowRow.is_spam === 1 ||
+      afterWorkflowRow.spam_status === 'spam' ||
+      afterWorkflowRow.spam_status === 'review'
+    ) {
+      return;
+    }
   }
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;

@@ -14,6 +14,7 @@ const mockRecordSpamLearning = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({
+    transaction: (fn: () => unknown) => fn,
     prepare: (sql: string) => ({
       run: (...args: unknown[]) => {
         mockRun(sql, ...args);

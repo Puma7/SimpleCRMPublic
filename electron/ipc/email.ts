@@ -2071,7 +2071,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.DeleteSpamListEntry,
       async (_event: IpcMainInvokeEvent, id: number) => {
-        deleteSpamListEntry(id);
+        if (!deleteSpamListEntry(id)) {
+          return { success: false as const, error: 'Listen-Eintrag nicht gefunden' };
+        }
         return { success: true as const };
       },
       { logger },

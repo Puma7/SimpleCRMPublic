@@ -106,7 +106,9 @@ export function saveSpamListEntry(input: SpamListInput): SpamListEntry {
          WHERE id = ?`,
       )
       .run(input.listType, patternType, pattern, accountId, note, existing.id);
-    return getSpamListEntry(existing.id)!;
+    const updated = getSpamListEntry(existing.id);
+    if (!updated) throw new Error('Spam-Listen-Eintrag nicht gefunden');
+    return updated;
   }
 
   const r = getDb()
@@ -283,6 +285,16 @@ export function saveSpamDecision(
       json,
       breakdown.modelVersion,
     );
+    db.prepare(
+      `DELETE FROM ${EMAIL_SPAM_DECISIONS_TABLE}
+       WHERE message_id = ?
+         AND id NOT IN (
+           SELECT id FROM ${EMAIL_SPAM_DECISIONS_TABLE}
+           WHERE message_id = ?
+           ORDER BY datetime(created_at) DESC, id DESC
+           LIMIT 20
+         )`,
+    ).run(messageId, messageId);
   });
   tx();
 }

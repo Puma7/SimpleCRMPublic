@@ -26,6 +26,7 @@ function token(value: string): string {
 
 export function extractSpamFeatureKeys(row: EmailMessageRow): string[] {
   const features = new Set<string>();
+  const maxFeatureChars = 50_000;
   const from = addressesFromRecipientJson(row.from_json);
   const email = normalizeSenderEmail(from);
   const domain = senderDomain(email);
@@ -42,9 +43,9 @@ export function extractSpamFeatureKeys(row: EmailMessageRow): string[] {
   }
 
   const subject = row.subject ?? '';
-  const body = `${row.body_text ?? ''}\n${textFromHtml(row.body_html)}`;
+  const html = (row.body_html ?? '').slice(0, maxFeatureChars);
+  const body = `${(row.body_text ?? '').slice(0, maxFeatureChars)}\n${textFromHtml(html)}`;
   const combined = `${subject}\n${row.snippet ?? ''}\n${body}`.toLowerCase();
-  const html = row.body_html ?? '';
   const urlCount = (combined.match(/https?:\/\//g) ?? []).length;
   if (urlCount > 0) features.add('content:has_url');
   if (urlCount >= 5) features.add('content:many_urls');

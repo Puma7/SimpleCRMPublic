@@ -66,6 +66,7 @@ export function securityVariablesFromRow(row: {
   auth_arc?: string | null;
   rspamd_score?: number | null;
   rspamd_action?: string | null;
+  spam_status?: string | null;
   spam_score?: number | null;
   spam_score_label?: string | null;
   spam_decision_source?: string | null;
@@ -83,8 +84,9 @@ export function securityVariablesFromRow(row: {
   if (row.spam_score != null && !Number.isNaN(row.spam_score)) {
     vars['spam.score'] = row.spam_score;
   }
-  if (row.spam_score_label) vars['spam.status'] = row.spam_score_label;
+  if (row.spam_status) vars['spam.status'] = row.spam_status;
   if (row.spam_score_label) vars['spam.label'] = row.spam_score_label;
+  if (row.spam_score_label) vars['spam.recommendation'] = row.spam_score_label;
   if (row.spam_decision_source) vars['spam.source'] = row.spam_decision_source;
   if (row.spam_score_breakdown_json) {
     try {

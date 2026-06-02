@@ -8,6 +8,7 @@ import {
   setMessageArchived,
   setMessageSeenLocal,
   setMessageSpam,
+  setMessageSpamStatus,
   addMessageTag,
   setMessageAssignedTo,
 } from '../email/email-store';
@@ -130,10 +131,13 @@ export const EmailApiService = {
         setMessageSeenLocal(messageId, false);
         return { success: true };
       case 'spam':
-        setMessageSpam(messageId, true);
+        setMessageSpam(messageId, true, { train: payload.train === true, source: 'api' });
         return { success: true };
       case 'not_spam':
-        setMessageSpam(messageId, false);
+        setMessageSpam(messageId, false, { train: payload.train === true, source: 'api' });
+        return { success: true };
+      case 'spam_review':
+        setMessageSpamStatus(messageId, 'review', { train: payload.train === true, source: 'api' });
         return { success: true };
       case 'link_customer': {
         if (payload.customerId === null) {

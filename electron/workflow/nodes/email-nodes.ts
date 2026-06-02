@@ -297,7 +297,10 @@ export function registerEmailNodes(register: Reg): void {
           await moveImapMessage(row, 'Spam');
         }
       }
-      return { status: 'ok', variables: { 'email.is_spam': spam } };
+      return {
+        status: 'ok',
+        variables: { 'email.is_spam': spam, 'spam.status': spam ? 'spam' : 'clean' },
+      };
     },
   });
 

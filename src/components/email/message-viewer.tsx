@@ -335,6 +335,8 @@ export function MessageViewer(props: Props) {
       ? bodyFromHtml
       : bodyFromText || bodyFromHtml || selectedMessage.snippet || "—"
 
+  const isSyncableMail = selectedMessage.uid >= 0 || Boolean(selectedMessage.pop3_uidl)
+
   return (
     <TooltipProvider delayDuration={150}>
       <div className="flex h-full min-h-0 flex-col">
@@ -525,7 +527,7 @@ export function MessageViewer(props: Props) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView && !isDraft ? (
+            {isSyncableMail && !inTrash && !inDraftsView && !isDraft ? (
               <>
                 {selectedMessage.spam_status === "review" || selectedMessage.spam_status === "spam" || selectedMessage.is_spam ? (
                   <Button

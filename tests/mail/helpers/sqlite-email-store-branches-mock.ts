@@ -333,6 +333,10 @@ export function createSqliteEmailStoreBranchesMock() {
         pop3_uidl: args[19],
         raw_headers: args[20],
         raw_rfc822_b64: args[21],
+        folder_kind: args[22],
+        archived: args[23],
+        is_spam: args[24],
+        spam_status: args[25],
       });
       return { changes: 1, lastInsertRowid: id };
     }
