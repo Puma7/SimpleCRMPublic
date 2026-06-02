@@ -7,16 +7,19 @@ import {
   isRspamdEnabled,
 } from './mail-security-settings';
 import { saveMessageSecurity } from './mail-security-store';
+import { evaluateAndSaveSpamDecision } from './email-spam-engine';
 import { applyPreWorkflowMailSecurity } from './mail-security-static';
+import type { SpamScoreBreakdown } from './email-spam-types';
 
 export type MailSecurityPipelineResult = {
   authChecked: boolean;
   rspamdChecked: boolean;
+  spam: SpamScoreBreakdown | null;
   preWorkflow: { skippedWorkflows: boolean; tags: string[] };
 };
 
 /**
- * Run mailauth + optional Rspamd, persist results, apply static pre-workflow rules.
+ * Run mailauth + optional Rspamd, persist security results, then score via the local spam engine.
  */
 export async function runMailSecurityPipeline(
   messageId: number,
@@ -27,6 +30,7 @@ export async function runMailSecurityPipeline(
     return {
       authChecked: false,
       rspamdChecked: false,
+      spam: null,
       preWorkflow: { skippedWorkflows: false, tags: [] },
     };
   }
@@ -59,12 +63,15 @@ export async function runMailSecurityPipeline(
     saveMessageSecurity(messageId, auth, rspamd);
   }
 
-  const rowForPre = auth || rspamd ? getEmailMessageById(messageId) : row;
-  const preWorkflow = applyPreWorkflowMailSecurity(messageId, rowForPre ?? undefined);
+  const rowForSpam = auth || rspamd ? getEmailMessageById(messageId) : row;
+  const spam = evaluateAndSaveSpamDecision(messageId, rowForSpam ?? undefined);
+  const rowForPre = rowForSpam ?? row;
+  const preWorkflow = applyPreWorkflowMailSecurity(messageId, rowForPre);
 
   return {
     authChecked: auth != null,
     rspamdChecked: rspamd != null,
+    spam,
     preWorkflow,
   };
 }

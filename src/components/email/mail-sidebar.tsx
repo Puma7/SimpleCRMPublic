@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useState } from "react"
-import { Archive, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, Tag, Trash2 } from "lucide-react"
+import { Archive, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -31,7 +31,7 @@ type Props = {
   onSnoozeMessage: (messageId: number) => Promise<boolean>
 }
 
-const DROPPABLE_FOLDER_VIEWS: MailView[] = ["inbox", "archived", "spam", "trash", "snoozed"]
+const DROPPABLE_FOLDER_VIEWS: MailView[] = ["inbox", "archived", "spam_review", "spam", "trash", "snoozed"]
 
 const FOLDERS: {
   id: MailView
@@ -44,6 +44,7 @@ const FOLDERS: {
   { id: "sent", label: "Gesendet", icon: Send, countKey: "sentFailed" },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
+  { id: "spam_review", label: "Spam prÃ¼fen", icon: ShieldQuestion, countKey: "spamReview" },
   { id: "spam", label: "Spam", icon: ShieldAlert, countKey: "spam" },
   { id: "trash", label: "Papierkorb", icon: Trash2, countKey: "trash" },
 ]

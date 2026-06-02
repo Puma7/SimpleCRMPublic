@@ -138,6 +138,57 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplateDto[] = [
     } as WorkflowGraphDocument,
   },
   {
+    id: 'inbound-spam-local-engine',
+    name: 'Eingehend: Lokale Spam-Engine',
+    description:
+      'Nutzt den internen spam.score: hoher Score -> Spam, mittlerer Score -> Spam pruefen, darunter bleibt die Mail im Posteingang.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'spam_high',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'spam.score', operator: 'gte', value: 75 },
+          },
+        },
+        {
+          id: 'set_spam',
+          type: 'registry',
+          data: {
+            nodeType: 'email.set_spam_status',
+            config: { status: 'spam', tag: 'auto-spam' },
+          },
+        },
+        {
+          id: 'spam_review',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'spam.score', operator: 'gte', value: 45 },
+          },
+        },
+        {
+          id: 'set_review',
+          type: 'registry',
+          data: {
+            nodeType: 'email.set_spam_status',
+            config: { status: 'review', tag: 'spam-review' },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'spam_high' },
+        { id: 'e_spam', source: 'spam_high', target: 'set_spam', label: 'yes' },
+        { id: 'e_review_check', source: 'spam_high', target: 'spam_review', label: 'no' },
+        { id: 'e_review', source: 'spam_review', target: 'set_review', label: 'yes' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'inbound-spam-ai',
     name: 'Eingehend: KI-Spam-Pipeline (DSGVO)',
     description:

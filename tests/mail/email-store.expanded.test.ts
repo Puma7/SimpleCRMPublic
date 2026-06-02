@@ -1,9 +1,13 @@
 import { createSqliteEmailStoreMock } from './helpers/sqlite-email-store-mock';
 
 const mock = createSqliteEmailStoreMock();
+const mockRecordSpamLearning = jest.fn();
 jest.mock('../../electron/sqlite-service', () => ({ getDb: () => mock.db }));
 jest.mock('../../electron/email/email-message-attachments-store', () => ({
   purgeAttachmentFilesForAccount: jest.fn().mockResolvedValue(undefined),
+}));
+jest.mock('../../electron/email/email-spam-store', () => ({
+  recordSpamLearningForMessage: (...args: unknown[]) => mockRecordSpamLearning(...args),
 }));
 
 import {

@@ -10,6 +10,7 @@ import {
   buildDefaultOutboundGraph,
 } from '../workflow/graph-presets';
 import { migrateLegacyWorkflowsWithoutGraph } from '../workflow/workflow-graph-resolve';
+import { WORKFLOW_TEMPLATES } from '../workflow/templates';
 
 export type EmailWorkflowRow = {
   id: number;
@@ -50,6 +51,18 @@ export function ensureDefaultWorkflowsSeeded(): void {
      VALUES (?, ?, 1, ?, ?, ?, NULL, NULL, 'graph', 1, ?, ?)`,
   );
   const t = nowIso();
+  const spamTemplate = WORKFLOW_TEMPLATES.find((tpl) => tpl.id === 'inbound-spam-local-engine');
+  if (spamTemplate) {
+    ins.run(
+      spamTemplate.name,
+      'inbound',
+      1,
+      JSON.stringify({ version: 1, rules: [] }),
+      JSON.stringify(spamTemplate.graph),
+      t,
+      t,
+    );
+  }
   ins.run(
     'Eingehend: Amazon & Newsletter',
     'inbound',

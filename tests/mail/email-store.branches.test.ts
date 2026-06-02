@@ -3,12 +3,16 @@ import { seedMessage } from './helpers/sqlite-email-store-state';
 import { POP3_UID_CEILING } from '../../electron/email/email-store';
 
 const mock = createSqliteEmailStoreBranchesMock();
+const mockRecordSpamLearning = jest.fn();
 jest.mock('../../electron/sqlite-service', () => ({ getDb: () => mock.db }));
 jest.mock('../../electron/email/email-keytar', () => ({
   deleteEmailPassword: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../../electron/email/email-message-attachments-store', () => ({
   purgeAttachmentFilesForAccount: jest.fn().mockResolvedValue(undefined),
+}));
+jest.mock('../../electron/email/email-spam-store', () => ({
+  recordSpamLearningForMessage: (...args: unknown[]) => mockRecordSpamLearning(...args),
 }));
 
 import { deleteEmailPassword } from '../../electron/email/email-keytar';
@@ -57,6 +61,7 @@ import {
   setMessageSeenLocal,
   setMessageSoftDeleted,
   setMessageSpam,
+  setMessageSpamStatus,
   setOutboundHold,
   updateComposeDraft,
   updateEmailAccountRecord,
@@ -251,7 +256,7 @@ describe('email-store branches', () => {
   });
 
   describe('message listing views filters and sorts', () => {
-    const views = ['inbox', 'sent', 'archived', 'drafts', 'spam', 'trash', 'all'] as const;
+    const views = ['inbox', 'sent', 'archived', 'drafts', 'spam_review', 'spam', 'trash', 'all'] as const;
     const filters = [undefined, 'unread', 'attachment', 'customer', 'workflow'] as const;
     const sorts = [undefined, 'priority', 'date_asc'] as const;
 
@@ -277,6 +282,14 @@ describe('email-store branches', () => {
 
     test('listMessagesForFolder returns inbox rows', () => {
       listMessagesForFolder(10, { limit: 10, offset: 0 });
+    });
+
+    test('spam review and inbox views use spam_status filters', () => {
+      listMessagesForAccountView(1, 'spam_review');
+      expect(mock.getLastSql()).toContain("COALESCE(m.spam_status, 'clean') = 'review'");
+
+      listMessagesForAccountView(1, 'inbox');
+      expect(mock.getLastSql()).toContain("COALESCE(m.spam_status, 'clean') = 'clean'");
     });
   });
 
@@ -312,9 +325,13 @@ describe('email-store branches', () => {
       mock.seedMessage({ id: 203, uid: 10, archived: 1, soft_deleted: 0, is_spam: 0 });
       mock.seedMessage({ id: 204, uid: 11, is_spam: 1, soft_deleted: 0 });
       mock.seedMessage({ id: 205, uid: -2, folder_kind: 'draft', outbound_hold: 1, soft_deleted: 0 });
+      mock.seedMessage({ id: 206, uid: 12, spam_status: 'review', soft_deleted: 0 });
+      mock.seedMessage({ id: 207, uid: 13, spam_status: 'spam', soft_deleted: 0 });
       const counts = getMailFolderCountsForAccount(1);
       expect(counts.sentFailed).toBeGreaterThanOrEqual(1);
       expect(counts.drafts).toBeGreaterThanOrEqual(1);
+      expect(counts.spamReview).toBeGreaterThanOrEqual(1);
+      expect(counts.spam).toBeGreaterThanOrEqual(2);
     });
   });
 
@@ -443,6 +460,30 @@ describe('email-store branches', () => {
       setOutboundHold(100, true, 'reason');
       setOutboundHold(100, false, null);
     });
+
+    test('setMessageSpamStatus maps review spam and clean states', () => {
+      setMessageSpamStatus(100, 'review');
+      expect(getEmailMessageById(100)).toMatchObject({
+        spam_status: 'review',
+        is_spam: 0,
+        done_local: 0,
+        seen_local: 0,
+      });
+
+      setMessageSpamStatus(100, 'spam');
+      expect(getEmailMessageById(100)).toMatchObject({
+        spam_status: 'spam',
+        is_spam: 1,
+        done_local: 1,
+      });
+
+      setMessageSpamStatus(100, 'clean');
+      expect(getEmailMessageById(100)).toMatchObject({
+        spam_status: 'clean',
+        is_spam: 0,
+        done_local: 0,
+      });
+    });
   });
 
   describe('tags', () => {
@@ -557,6 +598,19 @@ describe('email-store branches', () => {
       moveMessageToMailView(100, 'inbox');
       moveMessageToMailView(100, 'archived');
       moveMessageToMailView(100, 'spam');
+      expect(mockRecordSpamLearning).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 100 }),
+        'spam',
+        'drag-and-drop',
+      );
+      mockRecordSpamLearning.mockClear();
+      mock.seedMessage({ id: 900, uid: 90, spam_status: 'review', is_spam: 0 });
+      moveMessageToMailView(900, 'inbox');
+      expect(mockRecordSpamLearning).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 900 }),
+        'ham',
+        'drag-and-drop',
+      );
       mock.stmt.get.mockReturnValueOnce(undefined);
       expect(() => moveMessageToMailView(999, 'inbox')).toThrow(/nicht gefunden/);
       mock.stmt.get.mockReturnValueOnce({ id: 800, uid: -1, pop3_uidl: null });

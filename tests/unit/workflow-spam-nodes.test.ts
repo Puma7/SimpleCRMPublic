@@ -4,6 +4,29 @@ jest.mock('../../electron/email/email-openai', () => ({
   runChatCompletion: jest.fn(async () => '88'),
 }));
 
+jest.mock('../../electron/email/email-store', () => ({
+  addMessageTag: jest.fn(),
+  setMessageArchived: jest.fn(),
+  setMessageSeenLocal: jest.fn(),
+  setMessageSpam: jest.fn(),
+  setMessageSpamStatus: jest.fn(),
+  setMessageAssignedTo: jest.fn(),
+  setOutboundHold: jest.fn(),
+  getEmailAccountById: jest.fn(() => null),
+}));
+
+jest.mock('../../electron/email/email-crm-store', () => ({
+  assignCategoryPathToMessage: jest.fn(),
+}));
+
+jest.mock('../../electron/email/email-forward-copy', () => ({
+  sendWorkflowForwardCopy: jest.fn(),
+}));
+
+jest.mock('../../electron/email/email-imap-flags', () => ({
+  syncSeenFlagToServer: jest.fn(),
+}));
+
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: jest.fn(() => null),
   getCustomerById: jest.fn(() => null),
@@ -18,6 +41,7 @@ describe('workflow spam routing nodes', () => {
     expect(getWorkflowNode('ai.spam_score')?.label).toMatch(/Spam/i);
     expect(getWorkflowNode('logic.threshold')).toBeDefined();
     expect(getWorkflowNode('email.sender_filter')).toBeDefined();
+    expect(getWorkflowNode('email.set_spam_status')).toBeDefined();
     expect(getWorkflowNode('email.mark_spam')).toBeDefined();
     expect(getWorkflowNode('email.assign')).toBeDefined();
   });
@@ -56,5 +80,23 @@ describe('workflow spam routing nodes', () => {
     };
     const r = await def.execute(ctx as never, { variable: 'ai.spam_score', operator: 'gte', value: 70 });
     expect(r.port).toBe('yes');
+  });
+
+  test('email.set_spam_status exposes the selected spam state', async () => {
+    const def = getWorkflowNode('email.set_spam_status')!;
+    const ctx = {
+      variables: {},
+      strings: {},
+      dryRun: true,
+      messageId: 1,
+      message: { id: 1 },
+      direction: 'inbound' as const,
+      trigger: 'inbound' as const,
+      workflowId: 1,
+      runId: 1,
+      ai: {},
+    };
+    const r = await def.execute(ctx as never, { status: 'review' });
+    expect(r.variables).toMatchObject({ 'email.is_spam': false, 'spam.status': 'review' });
   });
 });

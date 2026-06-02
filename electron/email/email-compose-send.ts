@@ -18,8 +18,6 @@ import {
   setComposeMarkReplyParentDone,
 } from './compose-reply-done';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
-import { sendSmtpForAccount } from './email-smtp';
-import { appendSentToImap } from './email-imap-append';
 import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
 import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
 import {
@@ -214,6 +212,7 @@ async function finalizeSentDraft(input: {
   }
 
   try {
+    const { appendSentToImap } = await import('./email-imap-append');
     await appendSentToImap(appendInput, {
       source: rfc822,
       estimatedBytes: Math.max(estimatedBytes, rfc822.length),
@@ -548,6 +547,7 @@ export async function sendComposeDraft(input: {
     }
 
     try {
+      const { sendSmtpForAccount } = await import('./email-smtp');
       await sendSmtpForAccount(input.accountId, {
         from: acc.email_address,
         to: smtpTo,

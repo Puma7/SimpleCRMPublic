@@ -51,14 +51,16 @@ export function createSqliteEmailStoreBranchesMock() {
       const msgs = lastSql.includes('account_id = ?')
         ? messagesArray().filter((m) => m.account_id === args[0])
         : messagesArray();
+      const spamStatus = (m: Record<string, unknown>) => String(m.spam_status ?? 'clean');
       const inbox = msgs.filter(
         (m) =>
           !m.soft_deleted &&
-          (((m.uid as number) >= 0 || m.pop3_uidl) &&
+          ((((m.uid as number) >= 0 || m.pop3_uidl) &&
             (m.folder_kind === 'inbox' || m.folder_kind == null || m.folder_kind === '') &&
             !m.archived &&
-            !m.is_spam) ||
-          ((m.uid as number) < 0 && m.folder_kind === 'draft' && m.outbound_hold),
+            !m.is_spam &&
+            spamStatus(m) === 'clean') ||
+            ((m.uid as number) < 0 && m.folder_kind === 'draft' && m.outbound_hold)),
       );
       return {
         trash: msgs.filter((m) => m.soft_deleted).length,
@@ -73,10 +75,23 @@ export function createSqliteEmailStoreBranchesMock() {
         ).length,
         drafts: msgs.filter((m) => !m.soft_deleted && m.folder_kind === 'draft').length,
         archived: msgs.filter(
-          (m) => !m.soft_deleted && m.archived && ((m.uid as number) >= 0 || m.pop3_uidl) && !m.is_spam,
+          (m) =>
+            !m.soft_deleted &&
+            m.archived &&
+            ((m.uid as number) >= 0 || m.pop3_uidl) &&
+            !m.is_spam,
+        ).length,
+        spam_review: msgs.filter(
+          (m) =>
+            !m.soft_deleted &&
+            ((m.uid as number) >= 0 || m.pop3_uidl) &&
+            spamStatus(m) === 'review',
         ).length,
         spam: msgs.filter(
-          (m) => !m.soft_deleted && ((m.uid as number) >= 0 || m.pop3_uidl) && m.is_spam,
+          (m) =>
+            !m.soft_deleted &&
+            ((m.uid as number) >= 0 || m.pop3_uidl) &&
+            (m.is_spam || spamStatus(m) === 'spam'),
         ).length,
       };
     }
@@ -318,6 +333,10 @@ export function createSqliteEmailStoreBranchesMock() {
         pop3_uidl: args[19],
         raw_headers: args[20],
         raw_rfc822_b64: args[21],
+        folder_kind: args[22],
+        archived: args[23],
+        is_spam: args[24],
+        spam_status: args[25],
       });
       return { changes: 1, lastInsertRowid: id };
     }
@@ -368,6 +387,27 @@ export function createSqliteEmailStoreBranchesMock() {
         } else if (lastSql.includes('folder_kind = \'sent\'')) {
           msg.folder_kind = 'sent';
           msg.outbound_hold = 0;
+        } else if (lastSql.includes("spam_status = 'spam'")) {
+          msg.is_spam = 1;
+          msg.spam_status = 'spam';
+          msg.soft_deleted = 0;
+          msg.archived = 0;
+          msg.done_local = 1;
+        } else if (lastSql.includes("spam_status = 'review'")) {
+          msg.is_spam = 0;
+          msg.spam_status = 'review';
+          msg.soft_deleted = 0;
+          msg.archived = 0;
+          msg.done_local = 0;
+          msg.seen_local = 0;
+          msg.folder_kind = 'inbox';
+        } else if (lastSql.includes("spam_status = 'clean'")) {
+          msg.is_spam = 0;
+          msg.spam_status = 'clean';
+          msg.soft_deleted = 0;
+          msg.archived = 0;
+          msg.done_local = 0;
+          if (msg.folder_kind !== 'sent' && msg.folder_kind !== 'draft') msg.folder_kind = 'inbox';
         } else if (lastSql.includes('assigned_to =')) {
           msg.assigned_to = args[0];
         } else if (lastSql.includes('pop3_uidl = ?') || lastSql.includes('message_id = ?')) {

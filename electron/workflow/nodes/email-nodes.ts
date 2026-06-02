@@ -3,15 +3,15 @@ import {
   setMessageArchived,
   setMessageSeenLocal,
   setMessageSpam,
+  setMessageSpamStatus,
   setMessageAssignedTo,
   setOutboundHold,
   getEmailAccountById,
 } from '../../email/email-store';
 import { evaluateSenderFilter } from '../sender-filter';
 import { assignCategoryPathToMessage } from '../../email/email-crm-store';
-import { sendWorkflowForwardCopy } from '../../email/email-forward-copy';
-import { syncSeenFlagToServer } from '../../email/email-imap-flags';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
+import type { SpamStatus } from '../../email/email-spam-types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -46,6 +46,7 @@ export function registerEmailNodes(register: Reg): void {
       if (!ctx.dryRun) {
         setMessageSeenLocal(messageId, true);
         try {
+          const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
           await syncSeenFlagToServer(row, true);
         } catch {
           /* best-effort */
@@ -110,6 +111,7 @@ export function registerEmailNodes(register: Reg): void {
       if (ctx.dryRun) return { status: 'ok', message: `dry-run forward ${to}` };
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');
+      const { sendWorkflowForwardCopy } = await import('../../email/email-forward-copy');
       const sent = await sendWorkflowForwardCopy({
         accountId: row.account_id,
         sourceMessageId: messageId,
@@ -251,6 +253,33 @@ export function registerEmailNodes(register: Reg): void {
   });
 
   register({
+    type: 'email.set_spam_status',
+    label: 'Spam-Status setzen',
+    category: 'email',
+    canvasType: 'registry',
+    description: 'Setzt den lokalen Spam-Status: clean, review oder spam.',
+    defaultConfig: { status: 'review', train: false, tag: '' },
+    execute: async (ctx, config) => {
+      const { messageId } = requireMessage(ctx);
+      const raw = String(config.status ?? 'review').toLowerCase();
+      const status: SpamStatus =
+        raw === 'spam' || raw === 'clean' || raw === 'review' ? raw : 'review';
+      const tag = String(config.tag ?? '').trim();
+      if (!ctx.dryRun) {
+        setMessageSpamStatus(messageId, status, {
+          train: config.train === true,
+          source: 'workflow',
+        });
+        if (tag) addMessageTag(messageId, tag);
+      }
+      return {
+        status: 'ok',
+        variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
+      };
+    },
+  });
+
+  register({
     type: 'email.mark_spam',
     label: 'Als Spam markieren',
     category: 'email',
@@ -261,14 +290,17 @@ export function registerEmailNodes(register: Reg): void {
       const spam = config.spam !== false;
       const tag = String(config.tag ?? 'auto-spam').trim();
       if (!ctx.dryRun) {
-        setMessageSpam(messageId, spam);
+        setMessageSpam(messageId, spam, { train: config.train === true, source: 'workflow' });
         if (tag) addMessageTag(messageId, tag);
         if (config.moveImap === true && spam) {
           const { moveImapMessage } = await import('../../email/email-imap-move');
           await moveImapMessage(row, 'Spam');
         }
       }
-      return { status: 'ok', variables: { 'email.is_spam': spam } };
+      return {
+        status: 'ok',
+        variables: { 'email.is_spam': spam, 'spam.status': spam ? 'spam' : 'clean' },
+      };
     },
   });
 

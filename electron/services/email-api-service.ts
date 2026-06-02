@@ -8,6 +8,7 @@ import {
   setMessageArchived,
   setMessageSeenLocal,
   setMessageSpam,
+  setMessageSpamStatus,
   addMessageTag,
   setMessageAssignedTo,
 } from '../email/email-store';
@@ -19,6 +20,7 @@ const ALLOWED_VIEWS: AccountMailView[] = [
   'sent',
   'archived',
   'drafts',
+  'spam_review',
   'spam',
   'trash',
   'snoozed',
@@ -48,6 +50,10 @@ export function sanitizeMessage(row: EmailMessageRow, includeBody: boolean) {
     to_json: row.to_json,
     seen_local: row.seen_local,
     is_spam: row.is_spam,
+    spam_status: row.spam_status,
+    spam_score: row.spam_score,
+    spam_score_label: row.spam_score_label,
+    spam_decision_source: row.spam_decision_source,
     archived: row.archived,
     customer_id: row.customer_id,
     assigned_to: row.assigned_to,
@@ -125,10 +131,13 @@ export const EmailApiService = {
         setMessageSeenLocal(messageId, false);
         return { success: true };
       case 'spam':
-        setMessageSpam(messageId, true);
+        setMessageSpam(messageId, true, { train: payload.train === true, source: 'api' });
         return { success: true };
       case 'not_spam':
-        setMessageSpam(messageId, false);
+        setMessageSpam(messageId, false, { train: payload.train === true, source: 'api' });
+        return { success: true };
+      case 'spam_review':
+        setMessageSpamStatus(messageId, 'review', { train: payload.train === true, source: 'api' });
         return { success: true };
       case 'link_customer': {
         if (payload.customerId === null) {

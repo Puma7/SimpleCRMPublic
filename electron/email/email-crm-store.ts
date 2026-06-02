@@ -717,9 +717,11 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
     case 'trash':
       return 'm.soft_deleted = 1';
     case 'archived':
-      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.archived = 1 AND m.is_spam = 0`;
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.archived = 1 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
+    case 'spam_review':
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
     case 'spam':
-      return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.is_spam = 1`;
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
     case 'sent':
       return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
     case 'drafts':
@@ -728,7 +730,7 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
       return `m.soft_deleted = 0 AND (m.snoozed_until IS NOT NULL AND datetime(m.snoozed_until) > datetime('now'))`;
     case 'inbox':
       return `m.soft_deleted = 0 AND (
-        (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0)
+        (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
         OR ${outboundHeldInInbox}
       )`;
     default:

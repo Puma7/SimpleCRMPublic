@@ -24,7 +24,6 @@ import {
 import { listAiPrompts } from './email-crm-store';
 import { addressesFromRecipientJson } from './email-parse-utils';
 import { runChatCompletion } from './email-openai';
-import { sendWorkflowForwardCopy } from './email-forward-copy';
 import { getLatestWorkflowRunForMessage } from '../workflow/run-steps';
 
 export type OutboundDraftPayload = {
@@ -136,6 +135,7 @@ async function executeInboundStep(
       log.push('link_customer');
       return true;
     case 'forward_copy': {
+      const { sendWorkflowForwardCopy } = await import('./email-forward-copy');
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [
         row.body_text ?? row.snippet ?? '',
@@ -341,13 +341,33 @@ export async function runInboundWorkflowsForMessage(
       });
     }
     if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
+    const afterWorkflowRow = getEmailMessageById(messageId);
+    if (
+      !afterWorkflowRow ||
+      afterWorkflowRow.is_spam === 1 ||
+      afterWorkflowRow.spam_status === 'spam' ||
+      afterWorkflowRow.spam_status === 'review'
+    ) {
+      return;
+    }
+  }
+
+  const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
+  if (
+    postWorkflowRow.is_spam === 1 ||
+    postWorkflowRow.spam_status === 'spam' ||
+    postWorkflowRow.spam_status === 'review' ||
+    postWorkflowRow.spam_score_label === 'spam' ||
+    postWorkflowRow.spam_score_label === 'review'
+  ) {
+    return;
   }
 
   const { ensureReplySuggestion } = await import('./email-reply-ai');
-  ensureReplySuggestion(messageId, { row: freshRow, trigger: 'inbound' });
+  ensureReplySuggestion(messageId, { row: postWorkflowRow, trigger: 'inbound' });
 
   const { maybeSendVacationAutoReply } = await import('./email-vacation');
-  await maybeSendVacationAutoReply(messageId, freshRow);
+  await maybeSendVacationAutoReply(messageId, postWorkflowRow);
 }
 
 export async function runDraftCreatedWorkflowsForMessage(messageId: number): Promise<void> {

@@ -259,6 +259,7 @@ export function MessageList({
     | "archive"
     | "unarchive"
     | "delete"
+    | "spam"
     | "not-spam"
     | "restore"
     | "delete-drafts"
@@ -346,12 +347,12 @@ export function MessageList({
                 ? `${r.count} Nachrichten als erledigt markiert`
                 : `${r.count} Nachrichten wieder offen`,
           )
-        } else if (action === "not-spam") {
+        } else if (action === "spam" || action === "not-spam") {
           const r = await invokeIpc<
             { success: true; count: number } | { success: false; error?: string }
           >(IPCChannels.Email.BulkSetMessageSpam, {
             messageIds: ids,
-            spam: false,
+            spam: action === "spam",
             accountId: bulkAccountId,
           })
           if (!r.success) {
@@ -359,7 +360,13 @@ export function MessageList({
             return
           }
           toast.success(
-            r.count === 1 ? "1 Nachricht als kein Spam markiert" : `${r.count} Nachrichten als kein Spam markiert`,
+            action === "spam"
+              ? r.count === 1
+                ? "1 Nachricht als Spam markiert"
+                : `${r.count} Nachrichten als Spam markiert`
+              : r.count === 1
+                ? "1 Nachricht als kein Spam markiert"
+                : `${r.count} Nachrichten als kein Spam markiert`,
           )
         } else {
           const r = await invokeIpc<
@@ -383,6 +390,7 @@ export function MessageList({
           "delete",
           "delete-drafts",
           "unsnooze",
+          "spam",
           "not-spam",
           "restore",
           "unarchive",
@@ -414,6 +422,12 @@ export function MessageList({
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =
     mailView === "drafts"
       ? [{ action: "delete-drafts", label: "Entwürfe löschen", variant: "outline" }]
+      : mailView === "spam_review"
+        ? [
+            { action: "not-spam", label: "Kein Spam", variant: "secondary" },
+            { action: "spam", label: "Spam", variant: "secondary" },
+            { action: "delete", label: "Papierkorb", variant: "outline" },
+          ]
       : mailView === "spam"
         ? [
             { action: "not-spam", label: "Kein Spam", variant: "secondary" },

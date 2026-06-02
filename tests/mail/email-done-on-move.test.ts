@@ -10,9 +10,11 @@ import {
 
 const mockRun = jest.fn();
 const mockGet = jest.fn();
+const mockRecordSpamLearning = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({
+    transaction: (fn: () => unknown) => fn,
     prepare: (sql: string) => ({
       run: (...args: unknown[]) => {
         mockRun(sql, ...args);
@@ -22,6 +24,9 @@ jest.mock('../../electron/sqlite-service', () => ({
       all: jest.fn(() => []),
     }),
   }),
+}));
+jest.mock('../../electron/email/email-spam-store', () => ({
+  recordSpamLearningForMessage: (...args: unknown[]) => mockRecordSpamLearning(...args),
 }));
 
 describe('done_local on folder moves', () => {
@@ -51,11 +56,10 @@ describe('done_local on folder moves', () => {
   test('setMessageSpam(true) sets done_local', () => {
     setMessageSpam(6, true);
     expect(mockRun).toHaveBeenCalledWith(
-      expect.stringContaining('done_local'),
-      1,
-      1,
+      expect.stringContaining("spam_status = 'spam'"),
       6,
     );
+    expect(mockRun.mock.calls[0][0]).toContain('done_local = 1');
   });
 
   test('setMessageSoftDeleted(true) sets done_local', () => {

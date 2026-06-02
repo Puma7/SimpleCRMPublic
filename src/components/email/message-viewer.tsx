@@ -27,6 +27,7 @@ import {
   CheckCircle2,
   Circle,
   ShieldAlert,
+  ShieldQuestion,
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -343,14 +344,30 @@ export function MessageViewer(props: Props) {
     }
   }
 
-  const handleToggleSpam = async () => {
-    const spam = !!selectedMessage.is_spam
-    await invokeIpc(IPCChannels.Email.SetMessageSpam, {
-      messageId: selectedMessage.id,
-      spam: !spam,
-    })
-    toast.success(spam ? "Kein Spam mehr" : "Als Spam markiert")
-    if (!spam) {
+  const handleSetSpamStatus = async (status: "clean" | "review" | "spam") => {
+    try {
+      const result = await invokeIpc<{ success: boolean; error?: string }>(
+        IPCChannels.Email.SetMessageSpamStatus,
+        {
+          messageId: selectedMessage.id,
+          status,
+          train: true,
+        },
+      )
+      if (!result.success) {
+        toast.error(result.error ?? "Spam-Status konnte nicht gesetzt werden.")
+        return
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Spam-Status konnte nicht gesetzt werden.")
+      return
+    }
+    const label =
+      status === "spam" ? "Als Spam markiert" : status === "review" ? "Zur Prüfung markiert" : "Kein Spam mehr"
+    toast.success(label)
+    const targetView =
+      status === "spam" ? "spam" : status === "review" ? "spam_review" : "inbox"
+    if (targetView !== mailView) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
       await refreshCurrentMessage()
@@ -368,6 +385,8 @@ export function MessageViewer(props: Props) {
     bodyFromHtml.length > bodyFromText.length + 30
       ? bodyFromHtml
       : bodyFromText || bodyFromHtml || selectedMessage.snippet || "—"
+
+  const isSyncableMail = selectedMessage.uid >= 0 || Boolean(selectedMessage.pop3_uidl)
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -559,19 +578,45 @@ export function MessageViewer(props: Props) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView && !isDraft ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="gap-1.5 bg-orange-500/12 text-orange-900 hover:bg-orange-500/20 dark:text-orange-100"
-                onClick={() => void handleToggleSpam()}
-              >
-                <ShieldAlert className="h-4 w-4" />
-                <span className="hidden lg:inline">
-                  {selectedMessage.is_spam ? "Kein Spam" : "Spam"}
-                </span>
-              </Button>
+            {isSyncableMail && !inTrash && !inDraftsView && !isDraft ? (
+              <>
+                {selectedMessage.spam_status === "review" || selectedMessage.spam_status === "spam" || selectedMessage.is_spam ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="gap-1.5 bg-emerald-500/12 text-emerald-900 hover:bg-emerald-500/20 dark:text-emerald-100"
+                    onClick={() => void handleSetSpamStatus("clean")}
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span className="hidden lg:inline">Kein Spam</span>
+                  </Button>
+                ) : null}
+                {selectedMessage.spam_status !== "review" && selectedMessage.spam_status !== "spam" && !selectedMessage.is_spam ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="gap-1.5 bg-amber-500/12 text-amber-900 hover:bg-amber-500/20 dark:text-amber-100"
+                    onClick={() => void handleSetSpamStatus("review")}
+                  >
+                    <ShieldQuestion className="h-4 w-4" />
+                    <span className="hidden lg:inline">Spam prÃ¼fen</span>
+                  </Button>
+                ) : null}
+                {selectedMessage.spam_status !== "spam" && !selectedMessage.is_spam ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="gap-1.5 bg-orange-500/12 text-orange-900 hover:bg-orange-500/20 dark:text-orange-100"
+                    onClick={() => void handleSetSpamStatus("spam")}
+                  >
+                    <ShieldAlert className="h-4 w-4" />
+                    <span className="hidden lg:inline">Spam</span>
+                  </Button>
+                ) : null}
+              </>
             ) : null}
             {selectedMessage.uid >= 0 && !inTrash && !isDraft ? (
               <Button
@@ -678,7 +723,12 @@ export function MessageViewer(props: Props) {
                       Archiviert
                     </span>
                   ) : null}
-                  {selectedMessage.is_spam ? (
+                  {selectedMessage.spam_status === "review" ? (
+                    <span className="ml-1 inline-block rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-700 dark:text-amber-400">
+                      Spam prÃ¼fen
+                    </span>
+                  ) : null}
+                  {selectedMessage.is_spam || selectedMessage.spam_status === "spam" ? (
                     <span className="ml-1 inline-block rounded bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-red-700 dark:text-red-400">
                       Spam
                     </span>

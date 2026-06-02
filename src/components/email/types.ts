@@ -1,4 +1,4 @@
-export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam" | "trash" | "snoozed"
+export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed"
 
 export type EmailAccount = {
   id: number
@@ -67,6 +67,12 @@ export type EmailMessage = {
   seen_local: number
   done_local?: number
   is_spam?: number
+  spam_status?: "clean" | "review" | "spam" | string | null
+  spam_score?: number | null
+  spam_score_label?: string | null
+  spam_decision_source?: string | null
+  spam_score_breakdown_json?: string | null
+  spam_decided_at?: string | null
   archived?: number
   outbound_hold?: number
   outbound_block_reason?: string | null
