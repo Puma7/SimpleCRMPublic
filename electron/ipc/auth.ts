@@ -6,6 +6,7 @@ import {
   createSession,
   revokeSession,
   getSessionFromEvent,
+  touchSession,
   type SessionRole,
 } from '../auth/session-store';
 import { listAuditLog, logAuthAction, verifyAuditLogChain } from '../auth/audit-log';
@@ -16,10 +17,19 @@ import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../au
 
 interface AuthRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
+  getMainWindow?: () => import('electron').BrowserWindow | null;
+}
+
+function isMainRenderer(
+  event: { sender: { id: number } },
+  getMainWindow?: () => import('electron').BrowserWindow | null,
+): boolean {
+  const win = getMainWindow?.();
+  return Boolean(win && event.sender.id === win.webContents.id);
 }
 
 export function registerAuthHandlers(options: AuthRouterOptions): () => void {
-  const { logger } = options;
+  const { logger, getMainWindow } = options;
   const disposers: Array<() => void> = [];
 
   disposers.push(
@@ -78,6 +88,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       );
       logAuthAction(db, { userId: row.id, action: 'login.success' });
       deleteSyncInfo('local_owner_one_time_pass');
+      touchSession(event.sender.id);
       event.sender.once('destroyed', () => revokeSession(event.sender.id));
       return {
         success: true as const,
@@ -173,7 +184,10 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Auth.SetInitialPassword,
-      async (_event, payload: { passphrase: string; setupToken?: string }) => {
+      async (event, payload: { passphrase: string; setupToken: string }) => {
+        if (!isMainRenderer(event, getMainWindow)) {
+          return { success: false as const, error: 'Nur aus dem Hauptfenster erlaubt' };
+        }
         const db = getDb();
         if (!db) throw new Error('Database not initialized');
         if (!payload.passphrase || payload.passphrase.length < 10) {
@@ -186,7 +200,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
           return { success: false as const, error: 'Einrichtung bereits abgeschlossen' };
         }
         const token = getSyncInfo('local_owner_one_time_pass');
-        if (token && payload.setupToken !== token) {
+        if (!token || payload.setupToken !== token) {
           return { success: false as const, error: 'Ungültiges Setup-Token' };
         }
         const now = new Date().toISOString();
@@ -205,7 +219,10 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Auth.GetOneTimeSetupPassword,
-      async () => {
+      async (event) => {
+        if (!isMainRenderer(event, getMainWindow)) {
+          return { success: false as const, error: 'Nur aus dem Hauptfenster erlaubt' };
+        }
         const db = getDb();
         if (!db) return { success: false as const, error: 'Database not initialized' };
         const owner = db

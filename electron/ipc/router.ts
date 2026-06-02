@@ -44,7 +44,7 @@ export function registerAllIpcHandlers(options: IpcRouterOptions) {
   disposers.push(registerWorkflowHandlers({ logger }));
   disposers.push(registerFollowUpHandlers({ logger }));
   disposers.push(registerAutomationHandlers({ logger }));
-  disposers.push(registerAuthHandlers({ logger }));
+  disposers.push(registerAuthHandlers({ logger, getMainWindow }));
   disposers.push(registerPgpHandlers({ logger }));
 
   return () => {

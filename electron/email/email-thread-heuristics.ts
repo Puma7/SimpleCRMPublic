@@ -60,12 +60,6 @@ export function runCrossAccountThreadHeuristics(messageId: number): ThreadAliasW
     const canonB = canonicalThreadId(c.thread_id);
     if (canonA === canonB) continue;
 
-    db.prepare(
-      `INSERT OR IGNORE INTO ${EMAIL_THREAD_ALIASES_TABLE}
-       (alias_thread_id, canonical_thread_id, confidence, source)
-       VALUES (?, ?, 'medium', 'cross_account_subject')`,
-    ).run(canonB, canonA);
-
     return {
       messageId: row.id,
       accountId: row.account_id,
@@ -90,11 +84,6 @@ export function runCrossAccountThreadHeuristics(messageId: number): ThreadAliasW
     if (overlap && overlap.thread_id !== row.thread_id) {
       const canonA = canonicalThreadId(row.thread_id);
       const canonB = canonicalThreadId(overlap.thread_id);
-      db.prepare(
-        `INSERT OR IGNORE INTO ${EMAIL_THREAD_ALIASES_TABLE}
-         (alias_thread_id, canonical_thread_id, confidence, source)
-         VALUES (?, ?, 'medium', 'cross_account_message_id')`,
-      ).run(canonB, canonA);
       return {
         messageId: row.id,
         accountId: row.account_id,

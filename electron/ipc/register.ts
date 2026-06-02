@@ -8,7 +8,6 @@ import type { SessionRole } from '../auth/session-store';
 import { getDb } from '../sqlite-service';
 import { canAccessAccount, type AccountAccessLevel } from '../auth/account-access';
 import { ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
-import { touchSession } from '../auth/session-store';
 import { resolveEmailChannelAccountId } from './ipc-account-scope';
 
 export interface RegisterIpcOptions {
@@ -75,7 +74,6 @@ export function registerIpcHandler<C extends InvokeChannel>(
           ? getSessionFromEvent(event)
           : resolveAuthContext(event);
         if (!session) throw new Error('Nicht angemeldet');
-        touchSession(event.sender.id);
         if (requireRole && !requireRole.includes(session.role)) {
           throw new Error('Keine Berechtigung');
         }

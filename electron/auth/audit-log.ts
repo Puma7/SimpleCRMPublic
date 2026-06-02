@@ -88,15 +88,7 @@ export function verifyAuditLogChain(db: Database.Database): {
       action: row.action,
       resourceType: row.resource_type,
       resourceId: row.resource_id,
-      detail: row.detail_json
-        ? (() => {
-            try {
-              return JSON.parse(row.detail_json!) as unknown;
-            } catch {
-              return row.detail_json;
-            }
-          })()
-        : null,
+      detail: row.detail_json ? JSON.parse(row.detail_json) : null,
       at: row.at,
       prevHash,
     });

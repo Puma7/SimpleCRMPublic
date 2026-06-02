@@ -2,8 +2,7 @@
 const PUBLIC_IPC_CHANNELS = new Set<string>([
   'auth:login',
   'auth:get-session',
-  'auth:get-one-time-setup-password',
-  'auth:set-initial-password',
+  'auth:get-setup-state',
 ]);
 
 /** Default IPC auth policy: email + PGP namespaces require auth unless explicitly public. */

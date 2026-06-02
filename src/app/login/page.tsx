@@ -40,9 +40,13 @@ export default function LoginPage() {
     }
     setIsLoading(true)
     setError(null)
+    if (!setupToken.trim()) {
+      setError("Setup-Token erforderlich (Einmal-Passwort abrufen)")
+      return
+    }
     const res = await invokeIpc(IPCChannels.Auth.SetInitialPassword, {
       passphrase: setupPass,
-      setupToken: setupToken.trim() || undefined,
+      setupToken: setupToken.trim(),
     })
     setIsLoading(false)
     if (res && typeof res === "object" && "success" in res && (res as { success: boolean }).success) {

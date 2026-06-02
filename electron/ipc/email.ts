@@ -2603,6 +2603,23 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         if (payload.action === 'send') {
+          const { getReadReceiptSettings, domainTrusted } = await import('../email/email-read-receipt');
+          const settings = getReadReceiptSettings(db, row.account_id);
+          if (settings.respond === 'never') {
+            return { success: false as const, error: 'Lesebestätigungen sind deaktiviert' };
+          }
+          if (settings.respond === 'always_trusted') {
+            try {
+              const from = JSON.parse(row.from_json ?? '{}') as { value?: { address?: string }[] };
+              const addr = from.value?.[0]?.address ?? '';
+              const dom = addr.includes('@') ? addr.split('@')[1]! : '';
+              if (!domainTrusted(settings.trustedDomains, dom)) {
+                return { success: false as const, error: 'Absender nicht in vertrauenswürdigen Domains' };
+              }
+            } catch {
+              return { success: false as const, error: 'Absender nicht verifizierbar' };
+            }
+          }
           const { sendReadReceiptMdn } = await import('../email/email-read-receipt-mdn');
           const r = await sendReadReceiptMdn(payload.messageId);
           if (!r.ok) return { success: false as const, error: r.error };
@@ -2632,11 +2649,20 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.MergeThreads,
       async (
         event: IpcMainInvokeEvent,
-        payload: { aliasThreadId: string; canonicalThreadId: string },
+        payload: { aliasThreadId: string; canonicalThreadId: string; accountId: number },
       ) => {
-        requireRealAuthSession(event);
+        const session = requireRealAuthSession(event);
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        if (!canAccessAccount(db, session.userId, payload.accountId, 'rw', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
         const { mergeThreads } = await import('../email/email-thread-admin');
-        const r = mergeThreads(payload.aliasThreadId, payload.canonicalThreadId);
+        const r = mergeThreads(
+          payload.aliasThreadId,
+          payload.canonicalThreadId,
+          payload.accountId,
+        );
         if (!r.ok) return { success: false as const, error: r.error };
         return { success: true as const };
       },

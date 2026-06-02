@@ -196,6 +196,13 @@ export async function verifySignedMessage(
   const peers = db.prepare(`SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE}`).all() as {
     public_key_armor: string;
   }[];
+  if (peers.length === 0) {
+    db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ? WHERE id = ?`).run(
+      'key_missing',
+      messageId,
+    );
+    return { valid: false, status: 'key_missing' };
+  }
   const verificationKeys = await Promise.all(
     peers.map((p) => openpgp.readKey({ armoredKey: p.public_key_armor })),
   );

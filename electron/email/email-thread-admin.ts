@@ -12,6 +12,7 @@ import { canonicalThreadId } from './email-thread-resolve';
 export function mergeThreads(
   aliasThreadId: string,
   canonicalThreadId: string,
+  accountId: number,
   source = 'manual_merge',
 ): { ok: true } | { ok: false; error: string } {
   const db = getDb();
@@ -27,7 +28,9 @@ export function mergeThreads(
      VALUES (?, ?, 'high', ?)`,
   ).run(alias, canon, source);
 
-  db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ? WHERE thread_id = ?`).run(canon, alias);
+  db.prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ? WHERE thread_id = ? AND account_id = ?`,
+  ).run(canon, alias, accountId);
   const orphan = db
     .prepare(`SELECT 1 FROM ${EMAIL_MESSAGES_TABLE} WHERE thread_id = ? LIMIT 1`)
     .get(alias);

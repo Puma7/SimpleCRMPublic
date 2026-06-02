@@ -30,6 +30,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -139,6 +140,7 @@ export function MessageViewer(props: Props) {
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   const [decryptedPlain, setDecryptedPlain] = useState<string | null>(null)
+  const [pgpPassphrase, setPgpPassphrase] = useState("")
   const [threadAliasHint, setThreadAliasHint] = useState<string | null>(null)
   const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
 
@@ -152,13 +154,12 @@ export function MessageViewer(props: Props) {
 
   useEffect(() => {
     if (!selectedMessage?.id || !hasElectron()) return
+    const messageId = selectedMessage.id
     void (async () => {
       const w = await invokeIpc(IPCChannels.Email.ListThreadAliasWarnings, undefined)
       if (!Array.isArray(w)) return
-      const hit = (w as { messageId: number; confidence: string }[]).find(
-        (x) => x.messageId === selectedMessage.id,
-      )
-      if (hit) {
+      const hit = (w as { messageId: number }[]).find((x) => x.messageId === messageId)
+      if (hit && selectedMessage?.id === messageId) {
         setThreadAliasHint(
           "Möglicherweise gleicher Thread in anderem Konto (Heuristik). Prüfen Sie Einstellungen → Threads.",
         )
@@ -885,15 +886,21 @@ export function MessageViewer(props: Props) {
                 bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
                   <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
                     <span>Verschlüsselte PGP-Nachricht.</span>
+                    <Input
+                      type="password"
+                      placeholder="PGP-Passphrase"
+                      className="h-7 max-w-[180px] text-xs"
+                      value={pgpPassphrase}
+                      onChange={(e) => setPgpPassphrase(e.target.value)}
+                    />
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       className="h-7 text-xs"
                       onClick={async () => {
-                        if (!selectedMessage || !hasElectron()) return
-                        const pass = window.prompt("PGP-Passphrase für Entschlüsselung")
-                        if (!pass) return
+                        if (!selectedMessage || !hasElectron() || !pgpPassphrase) return
+                        const pass = pgpPassphrase
                         try {
                           const res = await invokeIpc(IPCChannels.Pgp.DecryptMessage, {
                             messageId: selectedMessage.id,

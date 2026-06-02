@@ -43,7 +43,7 @@ describe('mergeThreads', () => {
   });
 
   it('merges alias into canonical', () => {
-    const r = mergeThreads('t-b', 't-a');
+    const r = mergeThreads('t-b', 't-a', 1);
     expect(r.ok).toBe(true);
     const alias = db
       .prepare(`SELECT canonical_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE alias_thread_id = 't-b'`)

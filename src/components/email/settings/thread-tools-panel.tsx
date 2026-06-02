@@ -20,6 +20,7 @@ export function ThreadToolsPanel() {
   const [warnings, setWarnings] = useState<Warning[]>([])
   const [aliasId, setAliasId] = useState("")
   const [canonId, setCanonId] = useState("")
+  const [mergeAccountId, setMergeAccountId] = useState("")
   const [splitMsgId, setSplitMsgId] = useState("")
 
   const reload = useCallback(async () => {
@@ -52,14 +53,24 @@ export function ThreadToolsPanel() {
             <Label>Kanonische Thread-ID</Label>
             <Input value={canonId} onChange={(e) => setCanonId(e.target.value)} />
           </div>
+          <div>
+            <Label>Konto-ID</Label>
+            <Input value={mergeAccountId} onChange={(e) => setMergeAccountId(e.target.value)} />
+          </div>
         </div>
         <Button
           type="button"
           size="sm"
           onClick={async () => {
+            const accountId = parseInt(mergeAccountId, 10)
+            if (!Number.isFinite(accountId)) {
+              toast.error("Konto-ID erforderlich")
+              return
+            }
             const r = await invokeIpc(IPCChannels.Email.MergeThreads, {
               aliasThreadId: aliasId.trim(),
               canonicalThreadId: canonId.trim(),
+              accountId,
             })
             if (r && typeof r === "object" && "success" in r && (r as { success: boolean }).success) {
               toast.success("Zusammengeführt")

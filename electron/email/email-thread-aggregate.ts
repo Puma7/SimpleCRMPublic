@@ -193,7 +193,7 @@ export function listThreadsForMailScope(
 
   if (typeof accountScope === 'number') {
     const sqlRows = listThreadsFromAggregatesTable(accountScope, view, lim, off);
-    if (sqlRows && sqlRows.length > 0) return sqlRows;
+    if (sqlRows !== null) return sqlRows;
   }
 
   const messages = listMessagesForMailScope(accountScope, view, {
@@ -211,8 +211,12 @@ export function listThreadsForMailScope(
   for (const [threadId, msgs] of byThread) {
     const sorted = [...msgs].sort((a, b) => (b.date_received ?? '').localeCompare(a.date_received ?? ''));
     const latest = sorted[0]!;
+    const dbThreadId =
+      latest.thread_id?.trim() ||
+      sorted.find((m) => m.thread_id?.trim())?.thread_id?.trim() ||
+      threadId;
     rows.push({
-      threadId,
+      threadId: dbThreadId,
       messageCount: msgs.length,
       lastMessageAt: latest.date_received,
       hasUnread: msgs.some((x) => x.seen_local === 0 && x.uid >= 0),
