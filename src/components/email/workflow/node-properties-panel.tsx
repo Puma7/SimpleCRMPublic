@@ -1,20 +1,22 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import type { Node } from "@xyflow/react"
+import type { Edge, Node } from "@xyflow/react"
 import { IPCChannels } from "@shared/ipc/channels"
 import {
   WORKFLOW_ACTION_LABELS,
   resolveRegistryNodeLabel,
 } from "@shared/workflow-ui-labels"
-import { Filter, GitBranch, Play, Sparkles, Trash2 } from "lucide-react"
+import { Filter, GitBranch, Play, Plus, Sparkles, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import { AppMonacoEditor } from "@/components/shared/app-monaco-editor"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
 import { ExpertJsonEditor } from "./expert-json-editor"
 import {
   Select,
@@ -30,13 +32,26 @@ import {
   profileIdFromConfig,
 } from "../ai-profile-select"
 import { hasElectron, invokeIpc, type AiPrompt } from "../types"
+import {
+  edgeLabelOptionsForSource,
+  edgeSourceHandleFromLabel,
+  isEdgeLabelValidForSource,
+  normalizeEdgeLabelForSource,
+  parseSwitchCases,
+  stringifySwitchCases,
+} from "./workflow-edge-labels"
 
 type Props = {
   selectedNodeId: string | null
+  selectedEdgeId: string | null
   onClearSelection: () => void
 }
 
-export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props) {
+export function NodePropertiesPanel({
+  selectedNodeId,
+  selectedEdgeId,
+  onClearSelection,
+}: Props) {
   const { labelByType } = useWorkflowNodeCatalog()
   const nodes = useWorkflowEditorStore((s) => s.nodes)
   const edges = useWorkflowEditorStore((s) => s.edges)
@@ -46,6 +61,8 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
   const node: Node | undefined = selectedNodeId
     ? nodes.find((n) => n.id === selectedNodeId)
     : undefined
+  const edge: Edge | undefined =
+    !node && selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : undefined
 
   const patch = (partial: Record<string, unknown>) => {
     if (!node) return
@@ -76,6 +93,18 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
   }
 
   if (!node) {
+    if (edge) {
+      return (
+        <EdgePropertiesPanel
+          edge={edge}
+          edges={edges}
+          nodes={nodes}
+          labelByType={labelByType}
+          setEdges={setEdges}
+          onClearSelection={onClearSelection}
+        />
+      )
+    }
     return (
       <aside className="flex min-h-0 flex-1 flex-col border-l bg-muted/10">
         <div className="shrink-0 border-b px-4 py-3">
@@ -85,7 +114,7 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
         </div>
         <div className="flex flex-1 items-center justify-center p-6 text-center">
           <p className="text-sm text-muted-foreground">
-            Wählen Sie einen Knoten im Graph aus, um seine Eigenschaften zu bearbeiten.
+            Wählen Sie einen Knoten oder eine Kante im Graph aus, um seine Eigenschaften zu bearbeiten.
           </p>
         </div>
       </aside>
@@ -165,6 +194,156 @@ export function NodePropertiesPanel({ selectedNodeId, onClearSelection }: Props)
       </ScrollArea>
     </aside>
   )
+}
+
+type EdgePropertiesPanelProps = {
+  edge: Edge
+  edges: Edge[]
+  nodes: Node[]
+  labelByType: Map<string, string>
+  setEdges: (edges: Edge[]) => void
+  onClearSelection: () => void
+}
+
+function EdgePropertiesPanel({
+  edge,
+  edges,
+  nodes,
+  labelByType,
+  setEdges,
+  onClearSelection,
+}: EdgePropertiesPanelProps) {
+  const sourceNode = nodes.find((n) => n.id === edge.source)
+  const targetNode = nodes.find((n) => n.id === edge.target)
+  const rawLabel = typeof edge.label === "string" ? edge.label : ""
+  const normalizedLabel = normalizeEdgeLabelForSource(sourceNode, rawLabel)
+  const options = edgeLabelOptionsForSource(sourceNode)
+  const labelValid = isEdgeLabelValidForSource(sourceNode, rawLabel)
+  const selectValue = labelValid && normalizedLabel ? normalizedLabel : "__invalid__"
+
+  const updateLabel = (label: string) => {
+    const nextLabel = label.trim()
+      ? normalizeEdgeLabelForSource(sourceNode, label)
+      : undefined
+    setEdges(
+      edges.map((candidate) =>
+        candidate.id === edge.id
+          ? {
+              ...candidate,
+              label: nextLabel,
+              sourceHandle: edgeSourceHandleFromLabel(nextLabel, sourceNode),
+            }
+          : candidate,
+      ),
+    )
+  }
+
+  const deleteEdge = () => {
+    setEdges(edges.filter((candidate) => candidate.id !== edge.id))
+    onClearSelection()
+  }
+
+  return (
+    <aside className="flex min-h-0 flex-1 flex-col border-l bg-muted/10">
+      <div className="shrink-0 border-b px-4 py-3">
+        <div className="flex items-center gap-2">
+          <GitBranch className="h-4 w-4 text-sky-500" />
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold">Kante</h3>
+            <p className="truncate text-[10px] text-muted-foreground">
+              {nodeDisplayName(sourceNode, labelByType)} → {nodeDisplayName(targetNode, labelByType)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="space-y-4 p-4">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Label</Label>
+            {options.restricted ? (
+              <Select value={selectValue} onValueChange={updateLabel}>
+                <SelectTrigger className="h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {!labelValid || !normalizedLabel ? (
+                    <SelectItem value="__invalid__" disabled>
+                      {rawLabel ? `Ungültig: ${rawLabel}` : "Kein Label"}
+                    </SelectItem>
+                  ) : null}
+                  {options.labels.map((label) => (
+                    <SelectItem key={label} value={label}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                className="h-9"
+                value={rawLabel}
+                onChange={(e) => updateLabel(e.target.value)}
+                placeholder="Optionales Label"
+              />
+            )}
+            {options.restricted && (!labelValid || !normalizedLabel) ? (
+              <p className="text-[11px] text-amber-600">
+                Aktuelles Label passt nicht zu den Ausgängen dieses Knotens.
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-2 rounded-md border p-3 text-[11px] text-muted-foreground">
+            <div className="min-w-0">
+              <span className="font-medium text-foreground">Quelle:</span>{" "}
+              <span className="break-all">{sourceNode?.id ?? edge.source}</span>
+            </div>
+            <div className="min-w-0">
+              <span className="font-medium text-foreground">Ziel:</span>{" "}
+              <span className="break-all">{targetNode?.id ?? edge.target}</span>
+            </div>
+            {edge.sourceHandle ? (
+              <div className="min-w-0">
+                <span className="font-medium text-foreground">Handle:</span>{" "}
+                <span className="break-all">{edge.sourceHandle}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <Separator />
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="w-full gap-2"
+            onClick={deleteEdge}
+          >
+            <Trash2 className="h-4 w-4" />
+            Kante löschen
+          </Button>
+        </div>
+      </ScrollArea>
+    </aside>
+  )
+}
+
+function nodeDisplayName(
+  node: Node | null | undefined,
+  labelByType: Map<string, string>,
+): string {
+  if (!node) return "Unbekannt"
+  if (node.type === "trigger") return "Trigger"
+  if (node.type === "condition") return "Bedingung"
+  if (node.type === "action") {
+    const actionType = (node.data as { actionType?: string }).actionType ?? "tag"
+    return WORKFLOW_ACTION_LABELS[actionType] ?? "Aktion"
+  }
+  if (node.type === "registry") {
+    const data = node.data as { nodeType?: string; label?: string }
+    return resolveRegistryNodeLabel(data.nodeType, labelByType, data.label)
+  }
+  return node.id
 }
 
 type FieldProps = {
@@ -702,6 +881,186 @@ function TransformTextFields({
   )
 }
 
+function SwitchCaseBuilderFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  const cases = parseSwitchCases(config.cases ?? "A,B,C")
+  const updateCases = (nextCases: string[]) => {
+    patchConfig(patch, config, "cases", stringifySwitchCases(nextCases))
+  }
+  const addCase = () => {
+    let index = cases.length + 1
+    let next = `fall${index}`
+    while (cases.includes(next)) {
+      index += 1
+      next = `fall${index}`
+    }
+    updateCases([...cases, next])
+  }
+
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Feld / Variable</Label>
+        <Input
+          className="h-9 font-mono text-xs"
+          value={String(config.field ?? "ai.class")}
+          onChange={(e) => patchConfig(patch, config, "field", e.target.value)}
+          placeholder="ai.class"
+        />
+      </div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <Label className="text-xs">Fälle</Label>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-2"
+            onClick={addCase}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Fall
+          </Button>
+        </div>
+        {cases.length > 0 ? (
+          <div className="space-y-2">
+            {cases.map((caseLabel, index) => (
+              <div key={`${caseLabel}-${index}`} className="flex items-center gap-2">
+                <Input
+                  className="h-9 font-mono text-xs"
+                  value={caseLabel}
+                  onChange={(e) => {
+                    const next = [...cases]
+                    next[index] = e.target.value
+                    updateCases(next)
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  onClick={() => updateCases(cases.filter((_, i) => i !== index))}
+                  aria-label="Fall löschen"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground">
+            Keine Fälle konfiguriert. Die Kante <strong>default</strong> bleibt verfügbar.
+          </p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Standard-Ausgang</Label>
+        <Input className="h-9 font-mono text-xs" value="default" disabled />
+      </div>
+    </div>
+  )
+}
+
+function clampLoopMaxItems(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 50
+  return Math.min(500, Math.max(1, Math.trunc(parsed)))
+}
+
+function LoopConfigFields({
+  config,
+  patch,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Listen-Variable</Label>
+        <Input
+          className="h-9 font-mono text-xs"
+          value={String(config.sourceVariable ?? "attachment_names")}
+          onChange={(e) => patchConfig(patch, config, "sourceVariable", e.target.value)}
+          placeholder="attachment_names"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Fallback-Items</Label>
+        <Textarea
+          className="min-h-[90px] font-mono text-xs"
+          value={String(config.items ?? "")}
+          onChange={(e) => patchConfig(patch, config, "items", e.target.value)}
+          placeholder="eins, zwei, drei"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Max. Items</Label>
+        <Input
+          type="number"
+          min={1}
+          max={500}
+          className="h-9"
+          value={String(config.maxItems ?? 50)}
+          onChange={(e) =>
+            patchConfig(patch, config, "maxItems", clampLoopMaxItems(e.target.value))
+          }
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Kanten: <strong>each</strong> für jedes Element und <strong>done</strong> nach der Schleife.
+      </p>
+    </div>
+  )
+}
+
+function CodeConfigFields({
+  config,
+  patch,
+  language,
+}: {
+  config: Record<string, unknown>
+  patch: (p: Record<string, unknown>) => void
+  language: "javascript" | "python"
+}) {
+  const value = String(config.code ?? "")
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Code</Label>
+        <div className="overflow-hidden rounded-md border bg-background">
+          <AppMonacoEditor
+            value={value}
+            language={language}
+            theme="vs-dark"
+            height="260px"
+            onChange={(next) => patchConfig(patch, config, "code", next ?? "")}
+            options={{
+              automaticLayout: true,
+              fontSize: 12,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+            }}
+            loadingFallback={
+              <Textarea
+                className="min-h-[260px] rounded-none border-0 font-mono text-xs"
+                value={value}
+                disabled
+              />
+            }
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
   const d = node.data as {
     nodeType?: string
@@ -709,6 +1068,7 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
     config?: Record<string, unknown>
     expertJson?: string
   }
+  const config = d.config ?? {}
   const displayLabel = resolveRegistryNodeLabel(d.nodeType, labelByType, d.label)
   return (
     <>
@@ -720,45 +1080,41 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
         ) : null}
       </div>
       {d.nodeType === "logic.switch" ? (
-        <p className="text-[11px] text-muted-foreground">
-          Kanten vom Schalter-Knoten müssen dieselben Labels tragen wie die Fälle in{" "}
-          <code className="text-[10px]">cases</code> (kommagetrennt) plus{" "}
-          <code className="text-[10px]">default</code>. Beim Verbinden werden Labels automatisch
-          gesetzt.
-        </p>
+        <SwitchCaseBuilderFields config={config} patch={patch} />
       ) : null}
-      {d.nodeType === "logic.loop" ? (
-        <p className="text-[11px] text-muted-foreground">
-          Verwenden Sie die Ausgänge <strong>Je Element</strong> (Schleifenkörper) und{" "}
-          <strong>Fertig</strong> (nach der Schleife).
-        </p>
+      {d.nodeType === "logic.loop" ? <LoopConfigFields config={config} patch={patch} /> : null}
+      {d.nodeType === "code.javascript" ? (
+        <CodeConfigFields config={config} patch={patch} language="javascript" />
+      ) : null}
+      {d.nodeType === "code.python" ? (
+        <CodeConfigFields config={config} patch={patch} language="python" />
       ) : null}
       {d.nodeType === "email.sender_filter" ? (
-        <SenderFilterFields config={d.config ?? {}} patch={patch} />
+        <SenderFilterFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "ai.spam_score" ? (
-        <SpamScoreFields config={d.config ?? {}} patch={patch} />
+        <SpamScoreFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "logic.threshold" ? (
-        <ThresholdFields config={d.config ?? {}} patch={patch} />
+        <ThresholdFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "email.mark_spam" ? (
-        <MarkSpamFields config={d.config ?? {}} patch={patch} />
+        <MarkSpamFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "email.assign" ? (
-        <AssignFields config={d.config ?? {}} patch={patch} />
+        <AssignFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "ai.classify" ? (
-        <ClassifyFields config={d.config ?? {}} patch={patch} />
+        <ClassifyFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "ai.outbound_review" ? (
-        <OutboundReviewFields config={d.config ?? {}} patch={patch} />
+        <OutboundReviewFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "ai.agent" ? (
-        <AgentFields config={d.config ?? {}} patch={patch} />
+        <AgentFields config={config} patch={patch} />
       ) : null}
       {d.nodeType === "ai.transform_text" ? (
-        <TransformTextFields config={d.config ?? {}} patch={patch} />
+        <TransformTextFields config={config} patch={patch} />
       ) : null}
       <div className="space-y-1.5">
         <Label className="text-xs">Experten-JSON (config)</Label>

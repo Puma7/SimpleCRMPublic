@@ -23,6 +23,10 @@ import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { workflowTriggerLabel } from "./trigger-labels"
+import {
+  defaultLabelForConnection,
+  switchCaseHandles,
+} from "./workflow-edge-labels"
 
 const CONDITION_FIELD_LABELS: Record<string, string> = {
   subject: "Betreff",
@@ -142,15 +146,6 @@ function ActionNodeCard({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Bottom} className="!bg-sky-500" />
     </div>
   )
-}
-
-function switchCaseHandles(config: Record<string, unknown> | undefined): string[] {
-  const raw = config?.cases ?? (config as { cases?: string } | undefined)?.cases
-  const cases = String(raw ?? "A,B,C")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-  return [...cases, "default"]
 }
 
 function RegistryNodeCard({ data, selected }: NodeProps) {
@@ -280,7 +275,7 @@ const nodeTypes = {
 }
 
 type Props = {
-  onSelectionChange: (selectedNodeId: string | null) => void
+  onSelectionChange: (selection: { nodeId: string | null; edgeId: string | null }) => void
 }
 
 export function WorkflowCanvas({ onSelectionChange }: Props) {
@@ -307,28 +302,12 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
     (params: Connection) => {
       const state = useWorkflowEditorStore.getState()
       const sourceNode = state.nodes.find((n) => n.id === params.source)
-      let label: string | undefined
-      if (sourceNode?.type === "condition") {
-        if (params.sourceHandle === "no") label = "nein"
-        else if (params.sourceHandle === "yes") label = "ja"
-        else {
-          const existing = state.edges.filter((e) => e.source === params.source)
-          label = existing.length === 0 ? "ja" : "nein"
-        }
-      } else if (sourceNode?.type === "registry") {
-        const nt = (sourceNode.data as { nodeType?: string }).nodeType
-        if (nt === "logic.loop") {
-          if (params.sourceHandle === "done") label = "done"
-          else if (params.sourceHandle === "each") label = "each"
-        } else if (nt === "logic.switch" && params.sourceHandle) {
-          label = params.sourceHandle
-        } else if (nt === "email.sender_filter" && params.sourceHandle) {
-          label = params.sourceHandle
-        } else if (nt === "logic.threshold") {
-          if (params.sourceHandle === "no") label = "no"
-          else label = "yes"
-        }
-      }
+      const label = defaultLabelForConnection(
+        sourceNode,
+        params.sourceHandle,
+        state.edges,
+        params.source,
+      )
       setEdges(
         addEdge(
           {
@@ -345,7 +324,11 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
   const handleSelectionChange = useCallback(
     (params: OnSelectionChangeParams) => {
       const first = params.nodes[0]
-      onSelectionChange(first ? first.id : null)
+      const firstEdge = params.edges[0]
+      onSelectionChange({
+        nodeId: first ? first.id : null,
+        edgeId: first ? null : firstEdge?.id ?? null,
+      })
     },
     [onSelectionChange],
   )
@@ -359,6 +342,8 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
       onConnect={onConnect}
       onSelectionChange={handleSelectionChange}
       nodeTypes={nodeTypes}
+      snapToGrid
+      snapGrid={[16, 16]}
       fitView
       className="bg-muted/20"
       defaultEdgeOptions={{

@@ -148,11 +148,18 @@ async function walkGraph(
         String(ctx.strings[sourceKey] ?? '') ||
         String(ctx.variables[sourceKey] ?? '') ||
         String(config.items ?? '');
-      const items = raw
+      const requestedMaxItems = Number(config.maxItems ?? 50);
+      const maxItems = Number.isFinite(requestedMaxItems)
+        ? Math.min(500, Math.max(1, Math.trunc(requestedMaxItems)))
+        : 50;
+      const allItems = raw
         .split(/[,;\n]+/)
         .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, 50);
+        .filter(Boolean);
+      const items = allItems.slice(0, maxItems);
+      if (allItems.length > maxItems) {
+        log.push(`loop:limit:${maxItems}`);
+      }
       const outs = outgoing(doc.edges, currentId);
       const eachEdge = pickEdge(outs, 'each');
       const doneEdge = pickEdge(outs, 'done');
@@ -345,4 +352,3 @@ export async function runWorkflowGraphFromNode(
     input.direction === 'inbound' ? { conditionOk: inboundOk } : undefined;
   return walkGraph(ctx, doc, input.startNodeId, log, undefined, undefined, gate);
 }
-
