@@ -15,6 +15,8 @@ const registerEmailHandlers = makeRegisterMock();
 const registerWorkflowHandlers = makeRegisterMock();
 const registerFollowUpHandlers = makeRegisterMock();
 const registerAutomationHandlers = makeRegisterMock();
+const registerAuthHandlers = makeRegisterMock();
+const registerPgpHandlers = makeRegisterMock();
 
 jest.mock('../../electron/ipc/window', () => ({ registerWindowHandlers }));
 jest.mock('../../electron/ipc/database', () => ({ registerDatabaseHandlers }));
@@ -31,6 +33,8 @@ jest.mock('../../electron/ipc/email', () => ({ registerEmailHandlers }));
 jest.mock('../../electron/ipc/workflow', () => ({ registerWorkflowHandlers }));
 jest.mock('../../electron/ipc/followup', () => ({ registerFollowUpHandlers }));
 jest.mock('../../electron/ipc/automation', () => ({ registerAutomationHandlers }));
+jest.mock('../../electron/ipc/auth', () => ({ registerAuthHandlers }));
+jest.mock('../../electron/ipc/pgp', () => ({ registerPgpHandlers }));
 
 import { registerAllIpcHandlers } from '../../electron/ipc/router';
 
@@ -57,6 +61,8 @@ describe('registerAllIpcHandlers', () => {
     expect(registerWorkflowHandlers).toHaveBeenCalled();
     expect(registerFollowUpHandlers).toHaveBeenCalled();
     expect(registerAutomationHandlers).toHaveBeenCalled();
+    expect(registerAuthHandlers).toHaveBeenCalled();
+    expect(registerPgpHandlers).toHaveBeenCalled();
 
     expect(typeof dispose).toBe('function');
     dispose();

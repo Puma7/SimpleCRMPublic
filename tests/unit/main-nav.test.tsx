@@ -13,6 +13,10 @@ jest.mock('@/lib/utils', () => ({
   cn: (...classes: any[]) => classes.filter(Boolean).join(' '),
 }));
 
+jest.mock('@/components/auth/user-switcher', () => ({
+  UserSwitcher: () => null,
+}));
+
 import { MainNav } from '@/components/main-nav';
 
 describe('MainNav', () => {

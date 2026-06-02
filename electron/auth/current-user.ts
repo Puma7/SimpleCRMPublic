@@ -1,11 +1,32 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import type Database from 'better-sqlite3';
-import { getDb } from '../sqlite-service';
+import { LOCAL_OWNER_USER_ID, LOCAL_WORKSPACE_ID } from '../mail-roadmap-migrations';
+import { getDb, getSyncInfo } from '../sqlite-service';
 import { getSessionFromEvent, type AppSession } from './session-store';
 
-/** UI/bootstrap only — not for privileged IPC. */
+function syntheticBootstrapSession(): AppSession {
+  const now = new Date().toISOString();
+  return {
+    sessionId: 'bootstrap',
+    userId: LOCAL_OWNER_USER_ID,
+    username: 'local',
+    displayName: 'Lokal',
+    role: 'owner',
+    workspaceId: LOCAL_WORKSPACE_ID,
+    createdAt: now,
+    expiresAt: new Date(Date.now() + 86400000).toISOString(),
+    lastActivityAt: now,
+  };
+}
+
+/** IPC auth: real session, or bootstrap owner until `auth_middleware_v1` is enabled. */
 export function resolveAuthContext(event: IpcMainInvokeEvent): AppSession | null {
-  return getSessionFromEvent(event);
+  const session = getSessionFromEvent(event);
+  if (session) return session;
+  if (getSyncInfo('auth_middleware_v1') !== '1') {
+    return syntheticBootstrapSession();
+  }
+  return null;
 }
 
 export function requireAuthSession(event: IpcMainInvokeEvent): AppSession {

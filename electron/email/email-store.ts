@@ -20,8 +20,10 @@ import type { MessageListSortMode } from '../../shared/email-list-options';
 import type { MessageListFilter } from '../../shared/email-list-filters';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import { clampEmailListLimit } from '../../shared/email-list-pagination';
+import { accountAccessSql, type MailScopeSession } from './mail-scope-access';
 
 export { doneFilterSql };
+export type { MailScopeSession };
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
 
 export type EmailAccountRow = {
@@ -702,11 +704,13 @@ export function listMessagesForAllAccountsView(
     listFilter?: MessageListFilter;
     doneFilter?: MessageDoneFilter;
   } = {},
+  access?: MailScopeSession,
 ): EmailMessageRow[] {
   const limit = clampEmailListLimit(opts.limit);
   const offset = opts.offset ?? 0;
   let sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m`;
   const params: (string | number)[] = [];
+  const { sql: accessSql, params: accessParams } = accountAccessSql(getDb(), access);
 
   if (opts.categoryId != null && opts.categoryId > 0 && view !== 'trash' && view !== 'snoozed') {
     sql += ` INNER JOIN ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc ON mc.message_id = m.id AND mc.category_id = ?`;
@@ -723,11 +727,15 @@ export function listMessagesForAllAccountsView(
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
   if (view === 'trash') {
+    sql += accessSql;
+    params.push(...accessParams);
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
   }
   if (view === 'snoozed') {
+    sql += accessSql;
+    params.push(...accessParams);
     sql += ` ORDER BY datetime(m.snoozed_until) ASC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
@@ -749,6 +757,8 @@ export function listMessagesForAllAccountsView(
     sql += ` AND ${nonDraftMail}`;
   }
 
+  sql += accessSql;
+  params.push(...accessParams);
   sql += listFilterSql(opts.listFilter);
   sql += doneFilterSql(opts.doneFilter, view);
   sql += ` ${orderClauseForSort(opts.sort)} LIMIT ? OFFSET ?`;
@@ -767,9 +777,10 @@ export function listMessagesForMailScope(
     listFilter?: MessageListFilter;
     doneFilter?: MessageDoneFilter;
   } = {},
+  access?: MailScopeSession,
 ): EmailMessageRow[] {
   if (accountScope === 'all') {
-    return listMessagesForAllAccountsView(view, opts);
+    return listMessagesForAllAccountsView(view, opts, access);
   }
   return listMessagesForAccountView(accountScope, view, opts);
 }
@@ -805,13 +816,18 @@ function listMessageIdsForAllAccountsView(
     listFilter?: MessageListFilter;
     doneFilter?: MessageDoneFilter;
   } = {},
+  access?: MailScopeSession,
 ): number[] {
-  const rows = listMessagesForAllAccountsView(view, {
-    ...opts,
-    limit: Math.min(opts.limit ?? BULK_SELECT_ID_CAP, BULK_SELECT_ID_CAP),
-    offset: opts.offset ?? 0,
-    sort: 'date_desc',
-  });
+  const rows = listMessagesForAllAccountsView(
+    view,
+    {
+      ...opts,
+      limit: Math.min(opts.limit ?? BULK_SELECT_ID_CAP, BULK_SELECT_ID_CAP),
+      offset: opts.offset ?? 0,
+      sort: 'date_desc',
+    },
+    access,
+  );
   return rows.map((r) => r.id);
 }
 
@@ -825,9 +841,10 @@ export function listMessageIdsForMailScope(
     listFilter?: MessageListFilter;
     doneFilter?: MessageDoneFilter;
   } = {},
+  access?: MailScopeSession,
 ): number[] {
   if (accountScope === 'all') {
-    return listMessageIdsForAllAccountsView(view, opts);
+    return listMessageIdsForAllAccountsView(view, opts, access);
   }
   return listMessageIdsForAccountView(accountScope, view, opts);
 }
@@ -903,7 +920,14 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
 }
 
 /** Folder badges when „Alle Konten“ is selected — sums across accounts. */
-export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
+export function getMailFolderCountsForAllAccounts(
+  access?: MailScopeSession,
+): MailFolderCounts {
+  const { sql: accessSql, params: accessParams } = accountAccessSql(
+    getDb(),
+    access,
+    'account_id',
+  );
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
@@ -923,9 +947,10 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 THEN 1 ELSE 0 END) AS archived,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND is_spam = 1 THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
-      FROM ${EMAIL_MESSAGES_TABLE}`,
+      FROM ${EMAIL_MESSAGES_TABLE}
+      WHERE 1=1${accessSql.replace(/^ AND /, ' ')}`,
     )
-    .get() as {
+    .get(...accessParams) as {
     trash: number | null;
     inbox: number | null;
     inbox_unread: number | null;
@@ -948,9 +973,12 @@ export function getMailFolderCountsForAllAccounts(): MailFolderCounts {
   };
 }
 
-export function getMailFolderCountsForScope(accountScope: number | 'all'): MailFolderCounts {
+export function getMailFolderCountsForScope(
+  accountScope: number | 'all',
+  access?: MailScopeSession,
+): MailFolderCounts {
   if (accountScope === 'all') {
-    return getMailFolderCountsForAllAccounts();
+    return getMailFolderCountsForAllAccounts(access);
   }
   return getMailFolderCountsForAccount(accountScope);
 }
@@ -1636,6 +1664,7 @@ export function listConversationMessagesForScope(
     customerId?: number | null;
     limit?: number;
   },
+  access?: MailScopeSession,
 ): EmailMessageRow[] {
   const limit = Math.min(opts.limit ?? 20, 50);
   const clauses: string[] = ['m.soft_deleted = 0'];
@@ -1643,6 +1672,12 @@ export function listConversationMessagesForScope(
   if (accountScope !== 'all') {
     clauses.push('m.account_id = ?');
     params.push(accountScope);
+  } else {
+    const { sql, params: ap } = accountAccessSql(getDb(), access);
+    if (sql) {
+      clauses.push(sql.replace(/^ AND /, ''));
+      params.push(...ap);
+    }
   }
   if (opts.excludeMessageId != null) {
     clauses.push('m.id != ?');

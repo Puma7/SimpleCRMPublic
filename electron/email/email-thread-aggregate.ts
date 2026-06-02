@@ -187,6 +187,7 @@ export function listThreadsForMailScope(
   accountScope: number | 'all',
   view: AccountMailView,
   opts: { limit?: number; offset?: number } = {},
+  access?: import('./email-store').MailScopeSession,
 ): ThreadListRow[] {
   const off = opts.offset ?? 0;
   const lim = opts.limit ?? 100;
@@ -199,7 +200,7 @@ export function listThreadsForMailScope(
   const messages = listMessagesForMailScope(accountScope, view, {
     limit: 200,
     offset: 0,
-  });
+  }, access);
   const byThread = new Map<string, EmailMessageRow[]>();
   for (const m of messages) {
     const { key } = resolveThreadListKey(m);

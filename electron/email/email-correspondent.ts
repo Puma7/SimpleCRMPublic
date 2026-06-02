@@ -1,6 +1,7 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
-import type { EmailMessageRow } from './email-store';
+import type { EmailMessageRow, MailScopeSession } from './email-store';
+import { accountAccessSql } from './mail-scope-access';
 
 /** Escape `%` and `_` for SQL LIKE. */
 export function likePatternContainsEmail(email: string): string {
@@ -16,6 +17,7 @@ export function listMessagesByCorrespondentEmail(
     excludeMessageId?: number;
     limit?: number;
   },
+  access?: MailScopeSession,
 ): EmailMessageRow[] {
   const normalized = opts.email.trim().toLowerCase();
   if (!normalized.includes('@')) return [];
@@ -28,6 +30,12 @@ export function listMessagesByCorrespondentEmail(
   if (accountScope !== 'all') {
     clauses.push('m.account_id = ?');
     params.push(accountScope);
+  } else {
+    const { sql, params: ap } = accountAccessSql(getDb(), access);
+    if (sql) {
+      clauses.push(sql.replace(/^ AND /, ''));
+      params.push(...ap);
+    }
   }
   if (opts.excludeMessageId != null) {
     clauses.push('m.id != ?');

@@ -5,7 +5,18 @@ import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById, getDb } from '../sqlite-service';
-import { requireAuthSession, requireRealAuthSession } from '../auth/current-user';
+import {
+  resolveAuthContext,
+  requireAuthSession,
+  requireRealAuthSession,
+} from '../auth/current-user';
+import type { MailScopeSession } from '../email/email-store';
+
+function mailScopeSessionFromEvent(event: IpcMainInvokeEvent): MailScopeSession {
+  const session = resolveAuthContext(event);
+  if (!session) throw new Error('Nicht angemeldet');
+  return { userId: session.userId, role: session.role };
+}
 import { canAccessAccount } from '../auth/account-access';
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
@@ -721,9 +732,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListMessagesByView,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
           limit?: number;
@@ -732,8 +741,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           sort?: import('../../shared/email-list-options').MessageListSortMode;
           listFilter?: import('../../shared/email-list-filters').MessageListFilter;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return listMessagesForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
@@ -741,7 +751,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           sort: payload.sort,
           listFilter: payload.listFilter,
           doneFilter: payload.doneFilter,
-        });
+        }, access);
       },
       { logger },
     ),
@@ -750,9 +760,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListMessageIdsByView,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
           limit?: number;
@@ -760,15 +768,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           categoryId?: number | null;
           listFilter?: import('../../shared/email-list-filters').MessageListFilter;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return listMessageIdsForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
           categoryId: payload.categoryId,
           listFilter: payload.listFilter,
           doneFilter: payload.doneFilter,
-        });
+        }, access);
       },
       { logger },
     ),
@@ -777,9 +786,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SearchMessages,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           query: string;
           limit?: number;
@@ -787,8 +794,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           view?: import('../email/email-store').AccountMailView;
           categoryId?: number | null;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-        },
-      ) => {
+        }) => {
         if (payload.accountId !== 'all') {
           const { rows, searchMode, hasMore } = searchMessagesForAccountWithMeta(
             payload.accountId,
@@ -803,6 +809,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           );
           return { messages: rows, searchMode, hasMore };
         }
+        const access = mailScopeSessionFromEvent(event);
         const { rows, hasMore } = searchMessagesForMailScopeWithMeta(
           payload.accountId,
           payload.query,
@@ -813,6 +820,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             categoryId: payload.categoryId,
             doneFilter: payload.doneFilter,
           },
+          access,
         );
         return { messages: rows, searchMode: 'like' as const, hasMore };
       },
@@ -1115,32 +1123,36 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListConversationMessages,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           messageId: number;
           ticketCode?: string | null;
           customerId?: number | null;
           correspondentEmail?: string | null;
           limit?: number;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         const { normalizeEmailAddress } = await import('../../shared/email-address-normalize');
         const raw = payload.correspondentEmail?.trim() ?? '';
         const email = raw.includes('@') ? normalizeEmailAddress(raw) : '';
         if (email) {
-          return listMessagesByCorrespondentEmail(payload.accountId, {
-            email,
-            limit: payload.limit,
-          });
+          return listMessagesByCorrespondentEmail(
+            payload.accountId,
+            { email, limit: payload.limit },
+            access,
+          );
         }
-        return listConversationMessagesForScope(payload.accountId, {
-          excludeMessageId: payload.messageId,
-          ticketCode: payload.ticketCode,
-          customerId: payload.customerId,
-          limit: payload.limit,
-        });
+        return listConversationMessagesForScope(
+          payload.accountId,
+          {
+            excludeMessageId: payload.messageId,
+            ticketCode: payload.ticketCode,
+            customerId: payload.customerId,
+            limit: payload.limit,
+          },
+          access,
+        );
       },
       { logger },
     ),
@@ -1354,8 +1366,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.CategoryCounts,
-      async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
-        listCategoryCountsForMailScope(accountId),
+      async (event: IpcMainInvokeEvent, accountId: number | 'all') => {
+        const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
+        return listCategoryCountsForMailScope(accountId, access);
+      },
       { logger },
     ),
   );
@@ -1363,8 +1377,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.MailFolderCounts,
-      async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
-        getMailFolderCountsForScope(accountId),
+      async (event: IpcMainInvokeEvent, accountId: number | 'all') => {
+        const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
+        return getMailFolderCountsForScope(accountId, access);
+      },
       { logger },
     ),
   );
@@ -2698,20 +2714,20 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListThreadsByView,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountScope: number | 'all';
           view: string;
           limit?: number;
           offset?: number;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountScope === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         const { listThreadsForMailScope } = await import('../email/email-thread-aggregate');
         return listThreadsForMailScope(
           payload.accountScope as number | 'all',
           payload.view as import('../email/email-store').AccountMailView,
           { limit: payload.limit, offset: payload.offset },
+          access,
         );
       },
       { logger },
