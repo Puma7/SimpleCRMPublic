@@ -114,6 +114,9 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
     addCol(conn, EMAIL_MESSAGES_TABLE, 'thread_resolver_version', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN thread_resolver_version INTEGER NOT NULL DEFAULT 0`);
     addCol(conn, EMAIL_MESSAGES_TABLE, 'normalized_subject', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN normalized_subject TEXT`);
     addCol(conn, EMAIL_MESSAGES_TABLE, 'server_thread_source', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN server_thread_source TEXT`);
+    conn.exec(
+      `CREATE INDEX IF NOT EXISTS idx_email_messages_normalized_subject ON ${EMAIL_MESSAGES_TABLE}(normalized_subject)`,
+    );
   }
 
   const accExists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_ACCOUNTS_TABLE);
@@ -152,6 +155,23 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
     `CREATE INDEX IF NOT EXISTS idx_thread_edges_child ON ${EMAIL_THREAD_EDGES_TABLE}(child_message_id)`,
   ]);
   ensureTable(conn, EMAIL_THREAD_ALIASES_TABLE, createEmailThreadAliasesTable);
+  const aliasCycleTrigger = conn
+    .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='email_thread_alias_no_direct_cycle'")
+    .get();
+  if (!aliasCycleTrigger) {
+    conn.exec(`
+      CREATE TRIGGER IF NOT EXISTS email_thread_alias_no_direct_cycle
+      BEFORE INSERT ON ${EMAIL_THREAD_ALIASES_TABLE}
+      WHEN EXISTS (
+        SELECT 1 FROM ${EMAIL_THREAD_ALIASES_TABLE}
+        WHERE alias_thread_id = NEW.canonical_thread_id
+          AND canonical_thread_id = NEW.alias_thread_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'thread alias cycle');
+      END;
+    `);
+  }
   ensureTable(conn, PGP_IDENTITIES_TABLE, createPgpIdentitiesTable);
   ensureTable(conn, PGP_PEER_KEYS_TABLE, createPgpPeerKeysTable, [
     `CREATE INDEX IF NOT EXISTS idx_pgp_peer_email ON ${PGP_PEER_KEYS_TABLE}(email)`,

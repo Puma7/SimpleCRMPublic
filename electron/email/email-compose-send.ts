@@ -364,6 +364,17 @@ export async function sendComposeDraft(input: {
   try {
     let bodyText = input.bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
+    if (input.pgpEncrypt) {
+      const hasAttachments = (input.attachmentPaths?.length ?? 0) > 0;
+      const hasHtml = Boolean(html?.trim());
+      if (hasAttachments || hasHtml) {
+        return {
+          ok: false,
+          error:
+            'PGP-Verschlüsselung ist nur für Klartext ohne Anhänge und ohne HTML verfügbar. Anhänge würden sonst unverschlüsselt mitgesendet.',
+        };
+      }
+    }
     if (input.pgpEncrypt || input.pgpSign) {
       const { prepareOutboundPgpBody } = await import('../pgp/pgp-service');
       const { extractEmailAddressesFromRecipientField } = await import('../../shared/email-recipient-parse');

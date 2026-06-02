@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -26,7 +27,15 @@ import {
 describe('email-local-backup', () => {
   beforeEach(() => {
     fs.mkdirSync(path.join(tmpUserData, 'email-attachments', '1'), { recursive: true });
-    fs.writeFileSync(path.join(tmpUserData, 'database.sqlite'), 'sqlite-data');
+    const dbPath = path.join(tmpUserData, 'database.sqlite');
+    try {
+      fs.unlinkSync(dbPath);
+    } catch {
+      /* fresh db each test */
+    }
+    const db = new Database(dbPath);
+    db.exec('CREATE TABLE sync_info (key TEXT PRIMARY KEY, value TEXT)');
+    db.close();
     fs.writeFileSync(path.join(tmpUserData, 'email-attachments', '1', 'a.bin'), 'att');
   });
 

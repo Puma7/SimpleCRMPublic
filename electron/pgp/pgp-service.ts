@@ -11,6 +11,20 @@ import {
 
 const PGP_KEYTAR_PREFIX = 'pgp-priv-';
 
+/** Keys trusted for outbound encryption (manual import counts as explicit trust). */
+const ENCRYPT_TRUST_LEVELS = "('verified', 'tofu', 'imported')";
+
+/** Keys that may yield a green “valid signature” in the UI. */
+const VERIFY_TRUST_LEVELS = "('verified', 'tofu')";
+
+function isEncryptableTrustLevel(level: string): boolean {
+  return level === 'verified' || level === 'tofu' || level === 'imported';
+}
+
+function isVerifiedTrustLevel(level: string): boolean {
+  return level === 'verified' || level === 'tofu';
+}
+
 export async function listPgpIdentities(userId: string = LOCAL_OWNER_USER_ID) {
   const db = getDb();
   if (!db) return [];
@@ -136,11 +150,15 @@ export async function encryptPlaintextForRecipients(
   for (const email of recipientEmails) {
     const row = db
       .prepare(
-        `SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE ORDER BY id DESC LIMIT 1`,
+        `SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE}
+         WHERE email = ? COLLATE NOCASE AND trust_level IN ${ENCRYPT_TRUST_LEVELS}
+         ORDER BY CASE trust_level WHEN 'verified' THEN 0 WHEN 'tofu' THEN 1 WHEN 'imported' THEN 2 ELSE 3 END,
+                  id DESC
+         LIMIT 1`,
       )
       .get(email.trim()) as { public_key_armor: string } | undefined;
     if (!row?.public_key_armor) {
-      throw new Error(`Kein öffentlicher Schlüssel für ${email}`);
+      throw new Error(`Kein vertrauenswürdiger öffentlicher Schlüssel für ${email}`);
     }
     keys.push(await openpgp.readKey({ armoredKey: row.public_key_armor }));
   }
@@ -205,8 +223,10 @@ export async function verifySignedMessage(
   }
   const peers = senderEmail
     ? (db
-        .prepare(`SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE`)
-        .all(senderEmail) as { public_key_armor: string }[])
+        .prepare(
+          `SELECT public_key_armor, fingerprint, trust_level FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE`,
+        )
+        .all(senderEmail) as { public_key_armor: string; fingerprint: string; trust_level: string }[])
     : [];
   if (peers.length === 0) {
     db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ? WHERE id = ?`).run(
@@ -232,7 +252,18 @@ export async function verifySignedMessage(
       valid = false;
     }
   }
-  const status = valid ? 'signed_valid' : 'signed_invalid';
+  let status = valid ? 'signed_valid' : 'signed_invalid';
+  if (valid && fp) {
+    const trusted = peers.some(
+      (p) => p.fingerprint?.toLowerCase() === fp && isVerifiedTrustLevel(p.trust_level),
+    );
+    if (!trusted) {
+      valid = false;
+      status = peers.some((p) => p.fingerprint?.toLowerCase() === fp && isEncryptableTrustLevel(p.trust_level))
+        ? 'signed_untrusted_key'
+        : 'signed_unknown_key';
+    }
+  }
   db.prepare(
     `UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ?, pgp_signer_fingerprint = ? WHERE id = ?`,
   ).run(status, fp ?? null, messageId);
@@ -263,7 +294,11 @@ export function checkRecipientKeys(
   return emails.map((email) => {
     const row = db
       .prepare(
-        `SELECT fingerprint FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE ORDER BY id DESC LIMIT 1`,
+        `SELECT fingerprint FROM ${PGP_PEER_KEYS_TABLE}
+         WHERE email = ? COLLATE NOCASE AND trust_level IN ${ENCRYPT_TRUST_LEVELS}
+         ORDER BY CASE trust_level WHEN 'verified' THEN 0 WHEN 'tofu' THEN 1 WHEN 'imported' THEN 2 ELSE 3 END,
+                  id DESC
+         LIMIT 1`,
       )
       .get(email.trim()) as { fingerprint: string } | undefined;
     return {

@@ -2536,8 +2536,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
           throw new Error('Kein Zugriff');
         }
-        const { resolveRemoteContentPolicy } = await import('../email/email-remote-content');
-        return resolveRemoteContentPolicy(db, payload.messageId);
+        const { consumeAllowedOnceRemoteContent } = await import('../email/email-remote-content');
+        return consumeAllowedOnceRemoteContent(db, payload.messageId);
       },
       { logger, requireAuth: true, requireRealSession: true },
     ),
@@ -2580,9 +2580,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             /* ignore */
           }
         }
-        if (payload.policy !== 'allowed_once') {
-          setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
-        }
+        setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
         return { success: true as const };
       },
       { logger, requireAuth: true, requireRealSession: true },

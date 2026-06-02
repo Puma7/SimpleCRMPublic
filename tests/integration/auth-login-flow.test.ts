@@ -1,4 +1,9 @@
-import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../../electron/auth/login-guard';
+import {
+  checkLoginAllowed,
+  recordLoginFailure,
+  clearLoginFailures,
+  reloadLoginFailuresFromDb,
+} from '../../electron/auth/login-guard';
 import { hashPassword, verifyPassword } from '../../electron/auth/password-hash';
 
 describe('auth login flow (unit slice)', () => {
@@ -10,10 +15,12 @@ describe('auth login flow (unit slice)', () => {
 
   it('brute-force guard integrates with login policy', () => {
     clearLoginFailures('alice');
+    reloadLoginFailuresFromDb();
     expect(checkLoginAllowed('alice').ok).toBe(true);
     for (let i = 0; i < 5; i++) recordLoginFailure('alice');
     expect(checkLoginAllowed('alice').ok).toBe(false);
     clearLoginFailures('alice');
+    reloadLoginFailuresFromDb();
     expect(checkLoginAllowed('alice').ok).toBe(true);
   });
 });

@@ -79,13 +79,27 @@ export function resolveRemoteContentPolicy(
     return { policy, allowRemote: true };
   }
   if (policy === 'allowed_once') {
-    return { policy: 'blocked', allowRemote: false };
+    return { policy: 'allowed_once', allowRemote: true };
   }
   if (policy === 'allowed_sender' || policy === 'allowed_domain') {
     return { policy: 'blocked', allowRemote: false };
   }
 
   return { policy: policy === 'blocked' ? 'blocked' : policy, allowRemote: false };
+}
+
+/** One-shot allow: load remote content once, then revert to blocked. */
+export function consumeAllowedOnceRemoteContent(
+  db: Database.Database,
+  messageId: number,
+): EffectiveRemotePolicy {
+  const resolved = resolveRemoteContentPolicy(db, messageId);
+  if (resolved.policy === 'allowed_once' && resolved.allowRemote) {
+    db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET remote_content_policy = 'blocked' WHERE id = ?`).run(
+      messageId,
+    );
+  }
+  return resolved;
 }
 
 export function setRemoteContentPolicy(

@@ -6,7 +6,7 @@ import {
 } from '../database-schema';
 import { generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
 import { rebuildThreadEdges, upsertThreadAggregates } from './email-thread-aggregate';
-import { canonicalThreadId } from './email-thread-resolve';
+import { canonicalThreadId, wouldCreateThreadAliasCycle } from './email-thread-resolve';
 
 /** Merge alias thread into canonical (non-destructive alias row). */
 export function mergeThreads(
@@ -21,6 +21,9 @@ export function mergeThreads(
   const canon = canonicalThreadId.trim();
   if (!alias || !canon) return { ok: false, error: 'Thread-IDs erforderlich' };
   if (alias === canon) return { ok: false, error: 'Gleiche Thread-ID' };
+  if (wouldCreateThreadAliasCycle(alias, canon)) {
+    return { ok: false, error: 'Thread-Zusammenführung würde einen Alias-Zyklus erzeugen' };
+  }
 
   db.prepare(
     `INSERT OR REPLACE INTO ${EMAIL_THREAD_ALIASES_TABLE}

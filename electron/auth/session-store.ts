@@ -46,12 +46,9 @@ export function createSession(
   return session;
 }
 
+/** Legacy name: only refreshes idle activity, not absolute session expiry. */
 export function touchSession(webContentsId: number): void {
-  const s = sessionsByWebContents.get(webContentsId);
-  if (!s) return;
-  const now = Date.now();
-  s.lastActivityAt = new Date(now).toISOString();
-  s.expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
+  touchSessionActivity(webContentsId);
 }
 
 /** IPC activity: extend idle window only, not absolute session TTL. */

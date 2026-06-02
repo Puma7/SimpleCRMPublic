@@ -11,7 +11,12 @@ export function canonicalThreadId(threadId: string): string {
   }
   if (!db) return threadId;
   let current = threadId;
-  for (let i = 0; i < 8; i++) {
+  const visited = new Set<string>();
+  for (let i = 0; i < 32; i++) {
+    if (visited.has(current)) {
+      return threadId;
+    }
+    visited.add(current);
     const row = db
       .prepare(
         `SELECT canonical_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE alias_thread_id = ?`,
@@ -21,6 +26,33 @@ export function canonicalThreadId(threadId: string): string {
     current = row.canonical_thread_id;
   }
   return current;
+}
+
+/** True if mapping alias → canon would close a loop in the alias graph. */
+export function wouldCreateThreadAliasCycle(aliasThreadId: string, canonicalThreadId: string): boolean {
+  if (aliasThreadId === canonicalThreadId) return true;
+  let db: ReturnType<typeof getDb> | null = null;
+  try {
+    db = getDb();
+  } catch {
+    return false;
+  }
+  if (!db) return false;
+  let walk = canonicalThreadId;
+  const visited = new Set<string>();
+  for (let i = 0; i < 64; i++) {
+    if (walk === aliasThreadId) return true;
+    if (visited.has(walk)) return false;
+    visited.add(walk);
+    const row = db
+      .prepare(
+        `SELECT canonical_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE alias_thread_id = ?`,
+      )
+      .get(walk) as { canonical_thread_id: string } | undefined;
+    if (!row) return false;
+    walk = row.canonical_thread_id;
+  }
+  return false;
 }
 
 export type ThreadConfidence = 'high' | 'medium' | 'low';
@@ -79,5 +111,5 @@ export function resolveThreadListKey(
       resolver: 'normalized_subject',
     };
   }
-  return { key: `m:${m.id}`, confidence: 'low', resolver: 'singleton' };
+  return { key: `msg:${m.id}`, confidence: 'low', resolver: 'message_id' };
 }
