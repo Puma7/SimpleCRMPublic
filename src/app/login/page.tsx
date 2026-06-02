@@ -18,6 +18,7 @@ export default function LoginPage() {
   const [setupPass, setSetupPass] = useState("")
   const [setupPass2, setSetupPass2] = useState("")
   const [setupToken, setSetupToken] = useState("")
+  const [setupUsername, setSetupUsername] = useState("")
   const [needsSetup, setNeedsSetup] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isFetchingSetupToken, setIsFetchingSetupToken] = useState(false)
@@ -29,6 +30,10 @@ export default function LoginPage() {
       const res = await invokeIpc(IPCChannels.Auth.GetSetupState, undefined)
       if (res && typeof res === "object" && "needsInitialPassword" in res) {
         setNeedsSetup(Boolean((res as { needsInitialPassword: boolean }).needsInitialPassword))
+        if ("setupUsername" in res && typeof (res as { setupUsername?: unknown }).setupUsername === "string") {
+          setSetupUsername((res as { setupUsername: string }).setupUsername)
+          setUsername((res as { setupUsername: string }).setupUsername)
+        }
       }
     })()
   }, [])
@@ -37,6 +42,11 @@ export default function LoginPage() {
     e.preventDefault()
     if (setupPass !== setupPass2) {
       setError("Passwörter stimmen nicht überein")
+      return
+    }
+    const normalizedSetupUsername = setupUsername.trim()
+    if (!normalizedSetupUsername) {
+      setError("Benutzername erforderlich")
       return
     }
     if (!setupToken.trim()) {
@@ -49,10 +59,19 @@ export default function LoginPage() {
       const res = await invokeIpc(IPCChannels.Auth.SetInitialPassword, {
         passphrase: setupPass,
         setupToken: setupToken.trim(),
+        username: normalizedSetupUsername,
       })
       if (res && typeof res === "object" && "success" in res && (res as { success: boolean }).success) {
+        const loginResult = await login(normalizedSetupUsername, setupPass)
+        if (loginResult.ok) {
+          setNeedsSetup(false)
+          setError(null)
+          navigate({ to: "/" })
+          return
+        }
         setNeedsSetup(false)
-        setError(null)
+        setUsername(normalizedSetupUsername)
+        setError(loginResult.error ?? "Einrichtung abgeschlossen. Bitte mit Benutzername und Passwort anmelden.")
         return
       }
       const err =
@@ -113,12 +132,25 @@ export default function LoginPage() {
           <CardHeader>
             <CardTitle>Ersteinrichtung</CardTitle>
             <CardDescription>
-              Legen Sie das Administrator-Passwort fest (min. 10 Zeichen). Das Setup-Token kann lokal
-              abgerufen werden.
+              Legen Sie Ihr lokales Administratorkonto an. Das Passwort brauchen Sie später zum Anmelden.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSetup} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="setup-username">Benutzername</Label>
+                <Input
+                  id="setup-username"
+                  autoComplete="username"
+                  value={setupUsername}
+                  onChange={(e) => setSetupUsername(e.target.value)}
+                  required
+                  maxLength={80}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Diesen Namen verwenden Sie später zusammen mit Ihrem Passwort zur Anmeldung.
+                </p>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="setup-pass">Neues Passwort</Label>
                 <Input
@@ -160,6 +192,9 @@ export default function LoginPage() {
                 >
                   {isFetchingSetupToken ? "..." : "Einmal-Passwort abrufen"}
                 </Button>
+                <p className="text-xs text-muted-foreground">
+                  Das Token bestätigt nur diese erste Einrichtung und wird über den Button lokal abgerufen.
+                </p>
               </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={isLoading}>
@@ -178,7 +213,7 @@ export default function LoginPage() {
         <CardHeader>
           <CardTitle>Anmelden</CardTitle>
           <CardDescription>
-            Lokales Benutzerkonto für dieses SimpleCRM (Profil + Audit, kein Cloud-Login).
+            Melden Sie sich mit dem Benutzernamen und Passwort aus der Ersteinrichtung an.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -194,7 +229,7 @@ export default function LoginPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="passphrase">Passphrase</Label>
+              <Label htmlFor="passphrase">Passwort</Label>
               <Input
                 id="passphrase"
                 type="password"

@@ -176,14 +176,16 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       const db = getDb();
       if (!db) return { needsInitialPassword: false as const };
       const owner = db
-        .prepare(`SELECT must_set_password, last_login_at FROM ${USERS_TABLE} WHERE id = ?`)
+        .prepare(`SELECT username, display_name, must_set_password, last_login_at FROM ${USERS_TABLE} WHERE id = ?`)
         .get(LOCAL_OWNER_USER_ID) as
-        | { must_set_password: number; last_login_at: string | null }
+        | { username: string; display_name: string; must_set_password: number; last_login_at: string | null }
         | undefined;
       const needs = Boolean(owner && owner.must_set_password === 1);
       return {
         needsInitialPassword: needs,
         hasOneTimeToken: needs && hasActiveOneTimeSetupToken(),
+        setupUsername: owner?.username ?? null,
+        setupDisplayName: owner?.display_name ?? null,
       };
     }, { logger }),
   );
@@ -191,7 +193,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Auth.SetInitialPassword,
-      async (event, payload: { passphrase: string; setupToken: string }) => {
+      async (event, payload: { passphrase: string; setupToken: string; username?: string }) => {
         if (!isMainRenderer(event, getMainWindow)) {
           return { success: false as const, error: 'Nur aus dem Hauptfenster erlaubt' };
         }
@@ -206,13 +208,28 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!owner || owner.must_set_password !== 1) {
           return { success: false as const, error: 'Einrichtung bereits abgeschlossen' };
         }
+        const setupUsername = payload.username?.trim();
+        if (!setupUsername) {
+          return { success: false as const, error: 'Benutzername erforderlich' };
+        }
+        if (setupUsername.length > 80) {
+          return { success: false as const, error: 'Benutzername maximal 80 Zeichen' };
+        }
+        const duplicate = db
+          .prepare(`SELECT id FROM ${USERS_TABLE} WHERE username = ? COLLATE NOCASE AND id != ?`)
+          .get(setupUsername, LOCAL_OWNER_USER_ID) as { id: string } | undefined;
+        if (duplicate) {
+          return { success: false as const, error: 'Benutzername ist bereits vergeben' };
+        }
         if (!validateOneTimeSetupToken(payload.setupToken)) {
           return { success: false as const, error: 'Ungültiges Setup-Token' };
         }
         const now = new Date().toISOString();
         db.prepare(
-          `UPDATE ${USERS_TABLE} SET password_hash = ?, password_updated_at = ?, must_set_password = 0 WHERE id = ?`,
-        ).run(hashPassword(payload.passphrase), now, LOCAL_OWNER_USER_ID);
+          `UPDATE ${USERS_TABLE}
+           SET username = ?, display_name = ?, password_hash = ?, password_updated_at = ?, must_set_password = 0
+           WHERE id = ?`,
+        ).run(setupUsername, setupUsername, hashPassword(payload.passphrase), now, LOCAL_OWNER_USER_ID);
         clearOneTimeSetupToken();
         setSyncInfo('auth_middleware_v1', '1');
         logAuthAction(db, { userId: LOCAL_OWNER_USER_ID, action: 'user.password.initial_set' });
