@@ -12,6 +12,7 @@ import { logAuthAction } from '../auth/audit-log';
 import { LOCAL_OWNER_USER_ID, LOCAL_WORKSPACE_ID } from '../mail-roadmap-migrations';
 import { USERS_TABLE, USER_ACCOUNT_ACCESS_TABLE } from '../database-schema';
 import { randomUUID } from 'crypto';
+import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../auth/login-guard';
 
 interface AuthRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -25,9 +26,14 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
     registerIpcHandler(IPCChannels.Auth.Login, async (event, payload: { username: string; passphrase: string }) => {
       const db = getDb();
       if (!db) throw new Error('Database not initialized');
+      const allowed = checkLoginAllowed(payload.username);
+      if (!allowed.ok) {
+        const sec = Math.ceil(allowed.waitMs / 1000);
+        return { success: false as const, error: `Zu viele Versuche. Bitte ${sec}s warten.` };
+      }
       const row = db
         .prepare(
-          `SELECT id, username, display_name, role, password_hash, is_active FROM ${USERS_TABLE}
+          `SELECT id, username, display_name, role, password_hash, is_active, must_set_password FROM ${USERS_TABLE}
            WHERE username = ? COLLATE NOCASE`,
         )
         .get(payload.username) as
@@ -38,16 +44,27 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
             role: string;
             password_hash: string;
             is_active: number;
+            must_set_password: number;
           }
         | undefined;
       if (!row || row.is_active !== 1) {
+        recordLoginFailure(payload.username);
         logAuthAction(db, { action: 'login.fail', detail: { username: payload.username } });
         return { success: false as const, error: 'Ungültige Anmeldedaten' };
+      }
+      if (row.must_set_password === 1) {
+        return {
+          success: false as const,
+          error: 'Bitte zuerst das Administrator-Passwort in der Einrichtung setzen.',
+          needsInitialPassword: true as const,
+        };
       }
       if (!verifyPassword(row.password_hash, payload.passphrase)) {
+        recordLoginFailure(payload.username);
         logAuthAction(db, { action: 'login.fail', detail: { username: payload.username } });
         return { success: false as const, error: 'Ungültige Anmeldedaten' };
       }
+      clearLoginFailures(payload.username);
       const session = createSession(event.sender.id, {
         id: row.id,
         username: row.username,
@@ -133,6 +150,55 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
           .all();
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(IPCChannels.Auth.GetSetupState, async () => {
+      const db = getDb();
+      if (!db) return { needsInitialPassword: false as const };
+      const owner = db
+        .prepare(`SELECT must_set_password, last_login_at FROM ${USERS_TABLE} WHERE id = ?`)
+        .get(LOCAL_OWNER_USER_ID) as
+        | { must_set_password: number; last_login_at: string | null }
+        | undefined;
+      const needs = Boolean(owner && owner.must_set_password === 1);
+      return {
+        needsInitialPassword: needs,
+        hasOneTimeToken: needs && Boolean(getSyncInfo('local_owner_one_time_pass')),
+      };
+    }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Auth.SetInitialPassword,
+      async (_event, payload: { passphrase: string; setupToken?: string }) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        if (!payload.passphrase || payload.passphrase.length < 10) {
+          return { success: false as const, error: 'Passwort mindestens 10 Zeichen' };
+        }
+        const owner = db
+          .prepare(`SELECT must_set_password FROM ${USERS_TABLE} WHERE id = ?`)
+          .get(LOCAL_OWNER_USER_ID) as { must_set_password: number } | undefined;
+        if (!owner || owner.must_set_password !== 1) {
+          return { success: false as const, error: 'Einrichtung bereits abgeschlossen' };
+        }
+        const token = getSyncInfo('local_owner_one_time_pass');
+        if (token && payload.setupToken !== token) {
+          return { success: false as const, error: 'Ungültiges Setup-Token' };
+        }
+        const now = new Date().toISOString();
+        db.prepare(
+          `UPDATE ${USERS_TABLE} SET password_hash = ?, password_updated_at = ?, must_set_password = 0 WHERE id = ?`,
+        ).run(hashPassword(payload.passphrase), now, LOCAL_OWNER_USER_ID);
+        deleteSyncInfo('local_owner_one_time_pass');
+        setSyncInfo('auth_middleware_v1', '1');
+        logAuthAction(db, { userId: LOCAL_OWNER_USER_ID, action: 'user.password.initial_set' });
+        return { success: true as const };
+      },
+      { logger },
     ),
   );
 

@@ -162,7 +162,7 @@ export function MessageViewer(props: Props) {
         }
         const rr = await invokeIpc(IPCChannels.Email.GetReadReceiptState, { messageId })
         if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
-          const s = rr as { requested: boolean; respond: string }
+          const s = rr as unknown as { requested: boolean; respond: string }
           if (selectedMessage?.id !== messageId) return
           setReadReceiptRequested(s.requested)
           setReadReceiptRespond(s.respond)
@@ -861,10 +861,43 @@ export function MessageViewer(props: Props) {
                   ) : null}
                 </div>
 
-                {bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
-                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
-                    Diese Nachricht scheint verschlüsselt (PGP/S/MIME). Entschlüsselung ist in
-                    SimpleCRM nicht integriert.
+                {selectedMessage.pgp_status === "encrypted_unread" ||
+                bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+                    <span>Verschlüsselte PGP-Nachricht.</span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={async () => {
+                        if (!selectedMessage || !hasElectron()) return
+                        const pass = window.prompt("PGP-Passphrase für Entschlüsselung")
+                        if (!pass) return
+                        try {
+                          const res = await invokeIpc(IPCChannels.Pgp.DecryptMessage, {
+                            messageId: selectedMessage.id,
+                            passphrase: pass,
+                          })
+                          if (res && typeof res === "object" && "text" in res) {
+                            toast.success("Entschlüsselt (nur in dieser Ansicht)")
+                            void res
+                          }
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "Entschlüsselung fehlgeschlagen")
+                        }
+                      }}
+                    >
+                      Entschlüsseln
+                    </Button>
+                  </div>
+                ) : null}
+                {selectedMessage.pgp_status?.startsWith("signed_") ? (
+                  <p className="rounded-md border border-muted px-3 py-2 text-xs text-muted-foreground">
+                    PGP-Signatur: {selectedMessage.pgp_status.replace("signed_", "")}
+                    {selectedMessage.pgp_signer_fingerprint
+                      ? ` (${selectedMessage.pgp_signer_fingerprint.slice(0, 16)}…)`
+                      : ""}
                   </p>
                 ) : null}
 

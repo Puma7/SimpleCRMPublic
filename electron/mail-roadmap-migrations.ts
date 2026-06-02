@@ -72,8 +72,8 @@ function bootstrapLocalOwner(conn: Database.Database): void {
   ).run(LOCAL_WORKSPACE_ID, 'Lokal');
 
   conn.prepare(
-    `INSERT INTO ${USERS_TABLE} (id, username, display_name, role, password_hash, password_updated_at, is_active)
-     VALUES (?, ?, ?, 'owner', ?, ?, 1)`,
+    `INSERT INTO ${USERS_TABLE} (id, username, display_name, role, password_hash, password_updated_at, is_active, must_set_password)
+     VALUES (?, ?, ?, 'owner', ?, ?, 1, 1)`,
   ).run(LOCAL_OWNER_USER_ID, username, username, hash, now);
 
   conn.prepare(
@@ -94,6 +94,7 @@ function bootstrapLocalOwner(conn: Database.Database): void {
 export function runMailRoadmapMigrations(conn: Database.Database): void {
   ensureTable(conn, WORKSPACES_TABLE, createWorkspacesTable);
   ensureTable(conn, USERS_TABLE, createUsersTable);
+  addCol(conn, USERS_TABLE, 'must_set_password', `ALTER TABLE ${USERS_TABLE} ADD COLUMN must_set_password INTEGER NOT NULL DEFAULT 0`);
   ensureTable(conn, WORKSPACE_MEMBERS_TABLE, createWorkspaceMembersTable);
   ensureTable(conn, USER_ACCOUNT_ACCESS_TABLE, createUserAccountAccessTable);
   ensureTable(conn, AUTH_AUDIT_LOG_TABLE, createAuthAuditLogTable, [
@@ -108,6 +109,10 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
     addCol(conn, EMAIL_MESSAGES_TABLE, 'pgp_status', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pgp_status TEXT`);
     addCol(conn, EMAIL_MESSAGES_TABLE, 'pgp_signer_fingerprint', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN pgp_signer_fingerprint TEXT`);
     addCol(conn, EMAIL_MESSAGES_TABLE, 'workspace_id', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN workspace_id TEXT`);
+    addCol(conn, EMAIL_MESSAGES_TABLE, 'thread_confidence', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN thread_confidence TEXT`);
+    addCol(conn, EMAIL_MESSAGES_TABLE, 'thread_resolver_version', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN thread_resolver_version INTEGER NOT NULL DEFAULT 0`);
+    addCol(conn, EMAIL_MESSAGES_TABLE, 'normalized_subject', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN normalized_subject TEXT`);
+    addCol(conn, EMAIL_MESSAGES_TABLE, 'server_thread_source', `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN server_thread_source TEXT`);
   }
 
   const accExists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_ACCOUNTS_TABLE);

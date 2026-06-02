@@ -19,4 +19,12 @@
 
 ## IPC
 
-- Zod-Validierung bleibt; optionale Middleware `requireAuth` / `accountScope` (Feature-Flag `auth_middleware_v1` in `sync_info`).
+- Zod-Validierung bleibt; `email:*` und `pgp:*` Channels sind standardmäßig mit `requireAuth` annotiert (siehe `shared/ipc/channel-auth-policy.ts`).
+- Privilegierte Aktionen (Benutzerverwaltung, PGP-Keys, Remote-Policy schreiben) verlangen zusätzlich eine **echte Session** (`requireRealSession`), kein synthetischer Bootstrap-Owner.
+- Nach Ersteinrichtung setzt `auth:set-initial-password` das Flag `auth_middleware_v1` — danach ist Login Pflicht.
+- **Disk-Zugriff** auf `database.sqlite` umgeht alle IPC-Schutzmechanismen (Stufe 1).
+
+## Ersteinrichtung
+
+- Kein hardcodiertes Default-Passwort; `users.must_set_password = 1` bis `auth:set-initial-password`.
+- Optionales Einmal-Setup-Token in `sync_info` (`local_owner_one_time_pass`), kein Klartext-Log.

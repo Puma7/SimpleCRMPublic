@@ -93,6 +93,8 @@ const AuthChannels = literal({
   ListUsers: 'auth:list-users',
   SaveUser: 'auth:save-user',
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
+  SetInitialPassword: 'auth:set-initial-password',
+  GetSetupState: 'auth:get-setup-state',
 });
 
 const PgpChannels = literal({
@@ -101,6 +103,9 @@ const PgpChannels = literal({
   ImportPeerKey: 'pgp:import-peer-key',
   DecryptMessage: 'pgp:decrypt-message',
   DetectInbound: 'pgp:detect-inbound',
+  EncryptMessage: 'pgp:encrypt-message',
+  SignMessage: 'pgp:sign-message',
+  VerifyMessage: 'pgp:verify-message',
 });
 
 const AutomationChannels = literal({

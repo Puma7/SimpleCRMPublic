@@ -10,6 +10,7 @@ export function resolveAuthContext(event: IpcMainInvokeEvent): AppSession | null
   const session = getSessionFromEvent(event);
   if (session) return session;
   if (!middlewareOn) {
+    const now = new Date().toISOString();
     return {
       sessionId: 'bootstrap',
       userId: LOCAL_OWNER_USER_ID,
@@ -17,8 +18,9 @@ export function resolveAuthContext(event: IpcMainInvokeEvent): AppSession | null
       displayName: 'Lokal',
       role: 'owner',
       workspaceId: 'local-default',
-      createdAt: new Date().toISOString(),
+      createdAt: now,
       expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      lastActivityAt: now,
     };
   }
   return null;

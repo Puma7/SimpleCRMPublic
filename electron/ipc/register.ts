@@ -7,6 +7,8 @@ import { resolveAuthContext } from '../auth/current-user';
 import type { SessionRole } from '../auth/session-store';
 import { getDb } from '../sqlite-service';
 import { canAccessAccount, type AccountAccessLevel } from '../auth/account-access';
+import { ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
+import { touchSession } from '../auth/session-store';
 
 export interface RegisterIpcOptions {
   logger?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -47,12 +49,13 @@ export function registerIpcHandler<C extends InvokeChannel>(
   const {
     logger = console,
     onDeprecatedUse,
-    requireAuth = false,
+    requireAuth: requireAuthOption,
     requireRealSession = false,
     requireRole,
     accountScope,
     accountAccess = 'ro',
   } = options;
+  const requireAuth = requireAuthOption ?? ipcChannelRequiresAuth(channel);
   const payloadSchema = getPayloadSchema(channel);
   const resultSchema = getResultSchema(channel);
   const deprecated = isDeprecatedChannel(channel);
@@ -71,6 +74,7 @@ export function registerIpcHandler<C extends InvokeChannel>(
           ? getSessionFromEvent(event)
           : resolveAuthContext(event);
         if (!session) throw new Error('Nicht angemeldet');
+        touchSession(event.sender.id);
         if (requireRole && !requireRole.includes(session.role)) {
           throw new Error('Keine Berechtigung');
         }

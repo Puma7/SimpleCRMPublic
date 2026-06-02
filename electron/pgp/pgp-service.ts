@@ -126,6 +126,100 @@ export function detectPgpInbound(messageId: number): void {
   }
 }
 
+export async function encryptPlaintextForRecipients(
+  plaintext: string,
+  recipientEmails: string[],
+  userId: string,
+): Promise<{ armored: string }> {
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const keys: openpgp.PublicKey[] = [];
+  for (const email of recipientEmails) {
+    const row = db
+      .prepare(
+        `SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE ORDER BY id DESC LIMIT 1`,
+      )
+      .get(email.trim()) as { public_key_armor: string } | undefined;
+    if (!row?.public_key_armor) {
+      throw new Error(`Kein öffentlicher Schlüssel für ${email}`);
+    }
+    keys.push(await openpgp.readKey({ armoredKey: row.public_key_armor }));
+  }
+  if (keys.length === 0) throw new Error('Keine Empfänger-Schlüssel');
+  const message = await openpgp.createMessage({ text: plaintext });
+  const armored = await openpgp.encrypt({
+    message,
+    encryptionKeys: keys,
+  });
+  return { armored: String(armored) };
+}
+
+export async function signPlaintext(
+  plaintext: string,
+  userId: string,
+  passphrase: string,
+): Promise<{ armored: string }> {
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const identity = db
+    .prepare(
+      `SELECT keytar_private_key_handle FROM ${PGP_IDENTITIES_TABLE}
+       WHERE user_id = ? AND has_private_key = 1 ORDER BY is_primary DESC LIMIT 1`,
+    )
+    .get(userId) as { keytar_private_key_handle: string | null } | undefined;
+  if (!identity?.keytar_private_key_handle) throw new Error('Kein privater Schlüssel');
+  const privArmored = await getPgpPrivateKey(identity.keytar_private_key_handle);
+  if (!privArmored) throw new Error('Privater Schlüssel nicht in Keytar');
+  const privateKey = await openpgp.readPrivateKey({ armoredKey: privArmored });
+  const signingKey = await openpgp.decryptKey({ privateKey, passphrase });
+  const message = await openpgp.createMessage({ text: plaintext });
+  const armored = await openpgp.sign({ message, signingKeys: signingKey });
+  return { armored: String(armored) };
+}
+
+export async function verifySignedMessage(
+  messageId: number,
+): Promise<{ valid: boolean; fingerprint?: string; status: string }> {
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const row = db
+    .prepare(`SELECT body_text, body_html FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
+    .get(messageId) as { body_text: string | null; body_html: string | null };
+  if (!row) throw new Error('Nachricht nicht gefunden');
+  const armored =
+    (row.body_text ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
+      ? row.body_text!
+      : (row.body_html ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
+        ? row.body_html!
+        : null;
+  if (!armored) throw new Error('Keine signierte PGP-Nachricht');
+  const peers = db.prepare(`SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE}`).all() as {
+    public_key_armor: string;
+  }[];
+  const verificationKeys = await Promise.all(
+    peers.map((p) => openpgp.readKey({ armoredKey: p.public_key_armor })),
+  );
+  const message = await openpgp.readMessage({ armoredMessage: armored });
+  const verification = await openpgp.verify({ message, verificationKeys });
+  const sig0 = verification.signatures[0];
+  let valid = false;
+  let fp: string | undefined;
+  if (sig0) {
+    try {
+      await sig0.verified;
+      valid = true;
+      fp = sig0.keyID?.toHex?.()?.toLowerCase();
+    } catch {
+      valid = false;
+    }
+  }
+  const status = valid ? 'signed_valid' : 'signed_invalid';
+  db.prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ?, pgp_signer_fingerprint = ? WHERE id = ?`,
+  ).run(status, fp ?? null, messageId);
+  return { valid, fingerprint: fp, status };
+}
+
 export async function deletePgpIdentity(id: number): Promise<void> {
   const db = getDb();
   if (!db) return;

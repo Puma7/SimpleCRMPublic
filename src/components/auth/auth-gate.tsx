@@ -1,20 +1,37 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { useAuth } from "./auth-context"
+import { IPCChannels } from "@shared/ipc/channels"
+import { hasElectron, invokeIpc } from "@/components/email/types"
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { loading, authenticated, authRequired } = useAuth()
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const [needsSetup, setNeedsSetup] = useState(false)
+
+  useEffect(() => {
+    if (!hasElectron()) return
+    void (async () => {
+      const res = await invokeIpc(IPCChannels.Auth.GetSetupState, undefined)
+      if (res && typeof res === "object" && "needsInitialPassword" in res) {
+        setNeedsSetup(Boolean((res as { needsInitialPassword: boolean }).needsInitialPassword))
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     if (loading) return
+    if (needsSetup && pathname !== "/login") {
+      navigate({ to: "/login" })
+      return
+    }
     if (authRequired && !authenticated && pathname !== "/login") {
       navigate({ to: "/login" })
     }
-  }, [loading, authRequired, authenticated, pathname, navigate])
+  }, [loading, authRequired, authenticated, pathname, navigate, needsSetup])
 
   if (loading) {
     return (
@@ -24,7 +41,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (authRequired && !authenticated && pathname !== "/login") {
+  if ((needsSetup || (authRequired && !authenticated)) && pathname !== "/login") {
     return null
   }
 

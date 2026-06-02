@@ -8,24 +8,11 @@ import {
 import type { AccountMailView, EmailMessageRow } from './email-store';
 import { listMessagesForMailScope } from './email-store';
 import { generateTicketCode } from './email-ticket';
+import { canonicalThreadId, resolveThreadListKey } from './email-thread-resolve';
 
 const MAX_REF_IDS = 64;
 
-export function canonicalThreadId(threadId: string): string {
-  const db = getDb();
-  if (!db) return threadId;
-  let current = threadId;
-  for (let i = 0; i < 8; i++) {
-    const row = db
-      .prepare(
-        `SELECT canonical_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE alias_thread_id = ?`,
-      )
-      .get(current) as { canonical_thread_id: string } | undefined;
-    if (!row) break;
-    current = row.canonical_thread_id;
-  }
-  return current;
-}
+export { canonicalThreadId } from './email-thread-resolve';
 
 export function rebuildThreadEdges(threadId: string): void {
   const db = getDb();
@@ -163,26 +150,62 @@ export type ThreadListRow = {
   latestMessageId: number | null;
 };
 
+function listThreadsFromAggregatesTable(
+  accountScope: number,
+  view: AccountMailView,
+  lim: number,
+  off: number,
+): ThreadListRow[] | null {
+  const db = getDb();
+  if (!db || view !== 'inbox') return null;
+  const rows = db
+    .prepare(
+      `SELECT t.id AS threadId, t.message_count AS messageCount, t.last_message_at AS lastMessageAt,
+              t.has_unread AS hasUnread, t.subject_normalized AS subject,
+              (SELECT m.id FROM ${EMAIL_MESSAGES_TABLE} m
+               WHERE m.thread_id = t.id AND m.account_id = ?
+               ORDER BY m.date_received DESC LIMIT 1) AS latestMessageId
+       FROM ${EMAIL_THREADS_TABLE} t
+       WHERE EXISTS (
+         SELECT 1 FROM ${EMAIL_MESSAGES_TABLE} m
+         WHERE m.account_id = ? AND m.thread_id = t.id
+           AND m.soft_deleted = 0 AND m.archived = 0 AND m.is_spam = 0
+           AND (m.snoozed_until IS NULL OR m.snoozed_until <= datetime('now'))
+       )
+       ORDER BY t.last_message_at DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(accountScope, accountScope, lim, off) as ThreadListRow[];
+  return rows.map((r) => ({
+    ...r,
+    hasUnread: Boolean(r.hasUnread),
+    subject: r.subject ?? null,
+  }));
+}
+
 export function listThreadsForMailScope(
   accountScope: number | 'all',
   view: AccountMailView,
   opts: { limit?: number; offset?: number } = {},
 ): ThreadListRow[] {
+  const off = opts.offset ?? 0;
+  const lim = opts.limit ?? 100;
+
+  if (typeof accountScope === 'number') {
+    const sqlRows = listThreadsFromAggregatesTable(accountScope, view, lim, off);
+    if (sqlRows && sqlRows.length > 0) return sqlRows;
+  }
+
   const messages = listMessagesForMailScope(accountScope, view, {
-    limit: 500,
+    limit: 200,
     offset: 0,
   });
   const byThread = new Map<string, EmailMessageRow[]>();
   for (const m of messages) {
-    const key =
-      m.thread_id?.trim() ||
-      m.imap_thread_id?.trim() ||
-      m.ticket_code?.trim() ||
-      `m:${m.id}`;
-    const canon = m.thread_id ? canonicalThreadId(m.thread_id) : key;
-    const arr = byThread.get(canon) ?? [];
+    const { key } = resolveThreadListKey(m);
+    const arr = byThread.get(key) ?? [];
     arr.push(m);
-    byThread.set(canon, arr);
+    byThread.set(key, arr);
   }
   const rows: ThreadListRow[] = [];
   for (const [threadId, msgs] of byThread) {
@@ -198,7 +221,5 @@ export function listThreadsForMailScope(
     });
   }
   rows.sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
-  const off = opts.offset ?? 0;
-  const lim = opts.limit ?? 100;
   return rows.slice(off, off + lim);
 }

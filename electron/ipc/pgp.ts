@@ -8,6 +8,9 @@ import {
   decryptMessageBody,
   detectPgpInbound,
   deletePgpIdentity,
+  encryptPlaintextForRecipients,
+  signPlaintext,
+  verifySignedMessage,
 } from '../pgp/pgp-service';
 
 export function registerPgpHandlers(options: {
@@ -66,7 +69,40 @@ export function registerPgpHandlers(options: {
         detectPgpInbound(payload.messageId);
         return { success: true as const };
       },
-      { logger },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.EncryptMessage,
+      async (event, payload: { plaintext: string; recipientEmails: string[] }) => {
+        const session = requireRealAuthSession(event);
+        return encryptPlaintextForRecipients(payload.plaintext, payload.recipientEmails, session.userId);
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.SignMessage,
+      async (event, payload: { plaintext: string; passphrase: string }) => {
+        const session = requireRealAuthSession(event);
+        return signPlaintext(payload.plaintext, session.userId, payload.passphrase);
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.VerifyMessage,
+      async (event, payload: { messageId: number }) => {
+        requireRealAuthSession(event);
+        return verifySignedMessage(payload.messageId);
+      },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 

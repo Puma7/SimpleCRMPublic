@@ -12,10 +12,13 @@ export type AppSession = {
   workspaceId: string;
   createdAt: string;
   expiresAt: string;
+  lastActivityAt: string;
 };
 
 const sessionsByWebContents = new Map<number, AppSession>();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/** Auto-lock after idle (plan: explicit idle lock). */
+export const SESSION_IDLE_MS = 30 * 60 * 1000;
 
 export function createSession(
   webContentsId: number,
@@ -37,15 +40,29 @@ export function createSession(
     workspaceId: user.workspaceId,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
+    lastActivityAt: new Date(now).toISOString(),
   };
   sessionsByWebContents.set(webContentsId, session);
   return session;
 }
 
+export function touchSession(webContentsId: number): void {
+  const s = sessionsByWebContents.get(webContentsId);
+  if (!s) return;
+  const now = Date.now();
+  s.lastActivityAt = new Date(now).toISOString();
+  s.expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
+}
+
 export function getSessionForWebContents(webContentsId: number): AppSession | null {
   const s = sessionsByWebContents.get(webContentsId);
   if (!s) return null;
-  if (Date.parse(s.expiresAt) < Date.now()) {
+  const now = Date.now();
+  if (Date.parse(s.expiresAt) < now) {
+    sessionsByWebContents.delete(webContentsId);
+    return null;
+  }
+  if (Date.parse(s.lastActivityAt) + SESSION_IDLE_MS < now) {
     sessionsByWebContents.delete(webContentsId);
     return null;
   }
