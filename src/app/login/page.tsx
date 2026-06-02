@@ -20,6 +20,7 @@ export default function LoginPage() {
   const [setupToken, setSetupToken] = useState("")
   const [needsSetup, setNeedsSetup] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [isFetchingSetupToken, setIsFetchingSetupToken] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -38,40 +39,71 @@ export default function LoginPage() {
       setError("Passwörter stimmen nicht überein")
       return
     }
-    setIsLoading(true)
-    setError(null)
     if (!setupToken.trim()) {
       setError("Setup-Token erforderlich (Einmal-Passwort abrufen)")
       return
     }
-    const res = await invokeIpc(IPCChannels.Auth.SetInitialPassword, {
-      passphrase: setupPass,
-      setupToken: setupToken.trim(),
-    })
-    setIsLoading(false)
-    if (res && typeof res === "object" && "success" in res && (res as { success: boolean }).success) {
-      setNeedsSetup(false)
-      setError(null)
-      return
+    setIsLoading(true)
+    setError(null)
+    try {
+      const res = await invokeIpc(IPCChannels.Auth.SetInitialPassword, {
+        passphrase: setupPass,
+        setupToken: setupToken.trim(),
+      })
+      if (res && typeof res === "object" && "success" in res && (res as { success: boolean }).success) {
+        setNeedsSetup(false)
+        setError(null)
+        return
+      }
+      const err =
+        res && typeof res === "object" && "error" in res
+          ? String((res as { error?: string }).error)
+          : "Einrichtung fehlgeschlagen"
+      setError(err)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Einrichtung fehlgeschlagen")
+    } finally {
+      setIsLoading(false)
     }
-    const err =
-      res && typeof res === "object" && "error" in res
-        ? String((res as { error?: string }).error)
-        : "Einrichtung fehlgeschlagen"
-    setError(err)
+  }
+
+  async function handleFetchSetupToken() {
+    setIsFetchingSetupToken(true)
+    setError(null)
+    try {
+      const res = await invokeIpc(IPCChannels.Auth.GetOneTimeSetupPassword, undefined)
+      if (res && typeof res === "object" && "success" in res && (res as { success: boolean }).success) {
+        setSetupToken(String((res as { passphrase?: string }).passphrase ?? ""))
+        return
+      }
+      const err =
+        res && typeof res === "object" && "error" in res
+          ? String((res as { error?: string }).error)
+          : "Setup-Token konnte nicht abgerufen werden"
+      setError(err)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Setup-Token konnte nicht abgerufen werden")
+    } finally {
+      setIsFetchingSetupToken(false)
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setIsLoading(true)
     setError(null)
-    const r = await login(username.trim(), passphrase)
-    setIsLoading(false)
-    if (!r.ok) {
-      setError(r.error ?? "Anmeldung fehlgeschlagen")
-      return
+    try {
+      const r = await login(username.trim(), passphrase)
+      if (!r.ok) {
+        setError(r.error ?? "Anmeldung fehlgeschlagen")
+        return
+      }
+      navigate({ to: "/" })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Anmeldung fehlgeschlagen")
+    } finally {
+      setIsLoading(false)
     }
-    navigate({ to: "/" })
   }
 
   if (needsSetup) {
@@ -81,8 +113,8 @@ export default function LoginPage() {
           <CardHeader>
             <CardTitle>Ersteinrichtung</CardTitle>
             <CardDescription>
-              Legen Sie das Administrator-Passwort fest (min. 10 Zeichen). Optional: Setup-Token aus
-              der Erstinstallation.
+              Legen Sie das Administrator-Passwort fest (min. 10 Zeichen). Das Setup-Token kann lokal
+              abgerufen werden.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -112,13 +144,22 @@ export default function LoginPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="setup-token">Setup-Token (optional)</Label>
+                <Label htmlFor="setup-token">Setup-Token</Label>
                 <Input
                   id="setup-token"
                   type="password"
                   value={setupToken}
                   onChange={(e) => setSetupToken(e.target.value)}
                 />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleFetchSetupToken}
+                  disabled={isFetchingSetupToken || isLoading}
+                >
+                  {isFetchingSetupToken ? "..." : "Einmal-Passwort abrufen"}
+                </Button>
               </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={isLoading}>

@@ -13,12 +13,13 @@ import { listAuditLog, logAuthAction, verifyAuditLogChain } from '../auth/audit-
 import { LOCAL_OWNER_USER_ID, LOCAL_WORKSPACE_ID } from '../mail-roadmap-migrations';
 import {
   clearOneTimeSetupToken,
-  consumeOneTimeSetupToken,
   hasActiveOneTimeSetupToken,
+  readOneTimeSetupToken,
+  setStoredOneTimeSetupToken,
   validateOneTimeSetupToken,
 } from '../auth/setup-token';
 import { USERS_TABLE, USER_ACCOUNT_ACCESS_TABLE } from '../database-schema';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../auth/login-guard';
 
 interface AuthRouterOptions {
@@ -236,8 +237,11 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!owner || owner.last_login_at) {
           return { success: false as const, error: 'Setup-Passwort nicht verfügbar' };
         }
-        const pass = consumeOneTimeSetupToken();
-        if (!pass) return { success: false as const, error: 'Setup-Passwort nicht verfügbar' };
+        let pass = readOneTimeSetupToken();
+        if (!pass) {
+          pass = randomBytes(24).toString('base64url');
+          setStoredOneTimeSetupToken(pass);
+        }
         return { success: true as const, passphrase: pass };
       },
       { logger },
