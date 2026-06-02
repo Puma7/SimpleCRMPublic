@@ -2500,13 +2500,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.GetRemoteContentPolicy,
-      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+      async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
         const db = getDb();
         if (!db) throw new Error('Database not initialized');
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { policy: 'blocked' as const, allowRemote: false };
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          throw new Error('Kein Zugriff');
+        }
         const { resolveRemoteContentPolicy } = await import('../email/email-remote-content');
         return resolveRemoteContentPolicy(db, payload.messageId);
       },
-      { logger },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 
