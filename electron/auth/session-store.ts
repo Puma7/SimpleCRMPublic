@@ -54,6 +54,13 @@ export function touchSession(webContentsId: number): void {
   s.expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
 }
 
+/** IPC activity: extend idle window only, not absolute session TTL. */
+export function touchSessionActivity(webContentsId: number): void {
+  const s = sessionsByWebContents.get(webContentsId);
+  if (!s) return;
+  s.lastActivityAt = new Date().toISOString();
+}
+
 export function getSessionForWebContents(webContentsId: number): AppSession | null {
   const s = sessionsByWebContents.get(webContentsId);
   if (!s) return null;

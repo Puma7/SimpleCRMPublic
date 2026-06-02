@@ -97,7 +97,6 @@ export async function decryptMessageBody(
     decryptionKeys: decryptedKey,
   });
   const text = typeof data === 'string' ? data : new TextDecoder().decode(data as Uint8Array);
-  db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ? WHERE id = ?`).run('decrypted', messageId);
   return { text, status: 'decrypted' };
 }
 
@@ -183,8 +182,12 @@ export async function verifySignedMessage(
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   const row = db
-    .prepare(`SELECT body_text, body_html FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
-    .get(messageId) as { body_text: string | null; body_html: string | null };
+    .prepare(`SELECT body_text, body_html, from_json FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
+    .get(messageId) as {
+    body_text: string | null;
+    body_html: string | null;
+    from_json: string | null;
+  };
   if (!row) throw new Error('Nachricht nicht gefunden');
   const armored =
     (row.body_text ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
@@ -193,9 +196,18 @@ export async function verifySignedMessage(
         ? row.body_html!
         : null;
   if (!armored) throw new Error('Keine signierte PGP-Nachricht');
-  const peers = db.prepare(`SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE}`).all() as {
-    public_key_armor: string;
-  }[];
+  let senderEmail = '';
+  try {
+    const from = JSON.parse(row.from_json ?? '{}') as { value?: { address?: string }[] };
+    senderEmail = (from.value?.[0]?.address ?? '').trim().toLowerCase();
+  } catch {
+    senderEmail = '';
+  }
+  const peers = senderEmail
+    ? (db
+        .prepare(`SELECT public_key_armor FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE`)
+        .all(senderEmail) as { public_key_armor: string }[])
+    : [];
   if (peers.length === 0) {
     db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ? WHERE id = ?`).run(
       'key_missing',

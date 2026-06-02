@@ -2,7 +2,7 @@ import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import { z, ZodTypeAny } from 'zod';
 import { InvokeChannel } from '../../shared/ipc/channels';
 import { getPayloadSchema, getResultSchema, isDeprecatedChannel } from '../../shared/ipc/schemas';
-import { getSessionFromEvent } from '../auth/session-store';
+import { getSessionFromEvent, touchSessionActivity } from '../auth/session-store';
 import { resolveAuthContext } from '../auth/current-user';
 import type { SessionRole } from '../auth/session-store';
 import { getDb } from '../sqlite-service';
@@ -74,6 +74,9 @@ export function registerIpcHandler<C extends InvokeChannel>(
           ? getSessionFromEvent(event)
           : resolveAuthContext(event);
         if (!session) throw new Error('Nicht angemeldet');
+        if (!requireRealSession && getSessionFromEvent(event)) {
+          touchSessionActivity(event.sender.id);
+        }
         if (requireRole && !requireRole.includes(session.role)) {
           throw new Error('Keine Berechtigung');
         }

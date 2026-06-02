@@ -370,6 +370,7 @@ export async function sendComposeDraft(input: {
       const recipients = [
         ...extractEmailAddressesFromRecipientField(input.to),
         ...(input.cc ? extractEmailAddressesFromRecipientField(input.cc) : []),
+        ...(input.bcc ? extractEmailAddressesFromRecipientField(input.bcc) : []),
       ];
       const prepared = await prepareOutboundPgpBody({
         bodyText,

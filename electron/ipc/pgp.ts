@@ -1,6 +1,10 @@
+import type { IpcMainInvokeEvent } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { requireRealAuthSession } from '../auth/current-user';
+import { canAccessAccount } from '../auth/account-access';
+import { getEmailMessageById } from '../email/email-store';
+import { getDb } from '../sqlite-service';
 import {
   listPgpIdentities,
   generatePgpIdentity,
@@ -15,6 +19,18 @@ import {
   deletePgpPeerKey,
   checkRecipientKeys,
 } from '../pgp/pgp-service';
+
+function requireMessageAccountAccess(event: IpcMainInvokeEvent, messageId: number) {
+  const session = requireRealAuthSession(event);
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const row = getEmailMessageById(messageId);
+  if (!row) throw new Error('Nachricht nicht gefunden');
+  if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+    throw new Error('Kein Zugriff');
+  }
+  return session;
+}
 
 export function registerPgpHandlers(options: {
   logger?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -47,10 +63,11 @@ export function registerPgpHandlers(options: {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Pgp.ImportPeerKey,
-      async (_event, payload: { armored: string }) => {
+      async (event, payload: { armored: string }) => {
+        requireRealAuthSession(event);
         return importPublicKeyArmored(payload.armored);
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -58,7 +75,7 @@ export function registerPgpHandlers(options: {
     registerIpcHandler(
       IPCChannels.Pgp.DecryptMessage,
       async (event, payload: { messageId: number; passphrase: string }) => {
-        const session = requireRealAuthSession(event);
+        const session = requireMessageAccountAccess(event, payload.messageId);
         return decryptMessageBody(payload.messageId, payload.passphrase, session.userId);
       },
       { logger, requireAuth: true, requireRealSession: true },
@@ -68,7 +85,8 @@ export function registerPgpHandlers(options: {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Pgp.DetectInbound,
-      async (_event, payload: { messageId: number }) => {
+      async (event, payload: { messageId: number }) => {
+        requireMessageAccountAccess(event, payload.messageId);
         detectPgpInbound(payload.messageId);
         return { success: true as const };
       },
@@ -102,7 +120,7 @@ export function registerPgpHandlers(options: {
     registerIpcHandler(
       IPCChannels.Pgp.VerifyMessage,
       async (event, payload: { messageId: number }) => {
-        requireRealAuthSession(event);
+        requireMessageAccountAccess(event, payload.messageId);
         return verifySignedMessage(payload.messageId);
       },
       { logger, requireAuth: true, requireRealSession: true },

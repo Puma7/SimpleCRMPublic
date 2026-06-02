@@ -58,4 +58,8 @@ describe('resolveEmailChannelAccountId', () => {
       expect(resolveEmailChannelAccountId(ch, {})).toBeUndefined();
     }
   });
+
+  it('treats bare number on multi-account channels as account id', () => {
+    expect(resolveEmailChannelAccountId('email:reporting', 3)).toBe(3);
+  });
 });

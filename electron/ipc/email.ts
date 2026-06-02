@@ -1201,7 +1201,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           workflowRunId: 'workflowRunId' in r ? r.workflowRunId ?? null : null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2476,8 +2476,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.EmailReporting,
-      async (_event: IpcMainInvokeEvent, accountId: number | null) => {
-        return { success: true as const, data: getEmailReportingSnapshot(accountId) };
+      async (event: IpcMainInvokeEvent, accountId: number | null) => {
+        const access = accountId === null ? mailScopeSessionFromEvent(event) : undefined;
+        return {
+          success: true as const,
+          data: getEmailReportingSnapshot(accountId, access),
+        };
       },
       { logger },
     ),
@@ -2588,11 +2592,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.GetReadReceiptState,
-      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+      async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
         const db = getDb();
         if (!db) throw new Error('Database not initialized');
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
         const { getReadReceiptSettings } = await import('../email/email-read-receipt');
         const settings = getReadReceiptSettings(db, row.account_id);
         return {

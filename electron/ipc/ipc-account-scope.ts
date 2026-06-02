@@ -104,6 +104,7 @@ export function resolveEmailChannelAccountId(channel: string, payload: unknown):
     if (EMAIL_BARE_MESSAGE_ID_CHANNELS.has(channel)) {
       return getEmailMessageById(payload)?.account_id;
     }
+    if (EMAIL_MULTI_ACCOUNT_CHANNELS.has(channel)) return payload;
     return undefined;
   }
 
