@@ -66,6 +66,10 @@ export function securityVariablesFromRow(row: {
   auth_arc?: string | null;
   rspamd_score?: number | null;
   rspamd_action?: string | null;
+  spam_score?: number | null;
+  spam_score_label?: string | null;
+  spam_decision_source?: string | null;
+  spam_score_breakdown_json?: string | null;
 }): Record<string, string | number | boolean | null> {
   const vars: Record<string, string | number | boolean | null> = {};
   if (row.auth_spf) vars['auth.spf'] = row.auth_spf;
@@ -76,5 +80,23 @@ export function securityVariablesFromRow(row: {
     vars['rspamd.score'] = row.rspamd_score;
   }
   if (row.rspamd_action) vars['rspamd.action'] = row.rspamd_action;
+  if (row.spam_score != null && !Number.isNaN(row.spam_score)) {
+    vars['spam.score'] = row.spam_score;
+  }
+  if (row.spam_score_label) vars['spam.status'] = row.spam_score_label;
+  if (row.spam_decision_source) vars['spam.source'] = row.spam_decision_source;
+  if (row.spam_score_breakdown_json) {
+    try {
+      const parsed = JSON.parse(row.spam_score_breakdown_json) as {
+        listMatch?: { listType?: string; pattern?: string };
+        reasons?: { label?: string }[];
+      };
+      if (parsed.listMatch?.listType) vars['spam.list_match'] = parsed.listMatch.listType;
+      const top = parsed.reasons?.[0]?.label;
+      if (top) vars['spam.top_reason'] = top;
+    } catch {
+      /* ignore invalid stored explanation */
+    }
+  }
   return vars;
 }

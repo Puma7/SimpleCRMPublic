@@ -104,6 +104,7 @@ function isAutomatedInbound(row: EmailMessageRow): boolean {
 export function canSuggestReplyForMessage(row: EmailMessageRow): boolean {
   if (row.soft_deleted) return false;
   if (row.is_spam) return false;
+  if (row.spam_status === 'spam' || row.spam_status === 'review') return false;
   if (row.folder_kind !== 'inbox') return false;
   if (row.uid < 0 && !row.pop3_uidl) return false;
   if (isAutomatedInbound(row)) return false;

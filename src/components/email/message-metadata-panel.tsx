@@ -43,6 +43,22 @@ type Props = {
   fillWidth?: boolean
 }
 
+function spamReasonLabels(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as { reasons?: { label?: string; points?: number }[] }
+    return (parsed.reasons ?? [])
+      .map((r) => {
+        if (!r.label) return null
+        return r.points != null ? `${r.label} (${r.points > 0 ? "+" : ""}${r.points})` : r.label
+      })
+      .filter((v): v is string => Boolean(v))
+      .slice(0, 3)
+  } catch {
+    return []
+  }
+}
+
 function categoryPathLabel(categories: CategoryRow[], id: number): string {
   const parts: string[] = []
   let cur = categories.find((c) => c.id === id)
@@ -84,6 +100,12 @@ export function MessageMetadataPanel({
     securityCheckedAt: string | null
     authError: string | null
     rspamdError: string | null
+    spamStatus: string | null
+    spamScore: number | null
+    spamScoreLabel: string | null
+    spamDecisionSource: string | null
+    spamScoreBreakdownJson: string | null
+    spamDecidedAt: string | null
   } | null>(null)
   const [securityLoading, setSecurityLoading] = useState(false)
 
@@ -118,6 +140,12 @@ export function MessageMetadataPanel({
       securityCheckedAt?: string | null
       authError?: string | null
       rspamdError?: string | null
+      spamStatus?: string | null
+      spamScore?: number | null
+      spamScoreLabel?: string | null
+      spamDecisionSource?: string | null
+      spamScoreBreakdownJson?: string | null
+      spamDecidedAt?: string | null
     }>(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
       .then((r) => {
         if (r.success) {
@@ -132,6 +160,12 @@ export function MessageMetadataPanel({
             securityCheckedAt: r.securityCheckedAt ?? null,
             authError: r.authError ?? null,
             rspamdError: r.rspamdError ?? null,
+            spamStatus: r.spamStatus ?? null,
+            spamScore: r.spamScore ?? null,
+            spamScoreLabel: r.spamScoreLabel ?? null,
+            spamDecisionSource: r.spamDecisionSource ?? null,
+            spamScoreBreakdownJson: r.spamScoreBreakdownJson ?? null,
+            spamDecidedAt: r.spamDecidedAt ?? null,
           })
         } else setSecurity(null)
       })
@@ -443,6 +477,12 @@ export function MessageMetadataPanel({
                         securityCheckedAt?: string | null
                         authError?: string | null
                         rspamdError?: string | null
+                        spamStatus?: string | null
+                        spamScore?: number | null
+                        spamScoreLabel?: string | null
+                        spamDecisionSource?: string | null
+                        spamScoreBreakdownJson?: string | null
+                        spamDecidedAt?: string | null
                       }>(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
                       if (r.success) {
                         setSecurity({
@@ -456,6 +496,12 @@ export function MessageMetadataPanel({
                           securityCheckedAt: r.securityCheckedAt ?? null,
                           authError: r.authError ?? null,
                           rspamdError: r.rspamdError ?? null,
+                          spamStatus: r.spamStatus ?? null,
+                          spamScore: r.spamScore ?? null,
+                          spamScoreLabel: r.spamScoreLabel ?? null,
+                          spamDecisionSource: r.spamDecisionSource ?? null,
+                          spamScoreBreakdownJson: r.spamScoreBreakdownJson ?? null,
+                          spamDecidedAt: r.spamDecidedAt ?? null,
                         })
                       }
                       toast.success("Prüfung abgeschlossen")
@@ -491,6 +537,17 @@ export function MessageMetadataPanel({
                     </dd>
                   </>
                 ) : null}
+                {security.spamScore != null ? (
+                  <>
+                    <dt className="text-muted-foreground">Spam-Score</dt>
+                    <dd className="font-mono">
+                      {security.spamScore}/100
+                      {security.spamScoreLabel ? ` (${security.spamScoreLabel})` : ""}
+                    </dd>
+                    <dt className="text-muted-foreground">Quelle</dt>
+                    <dd className="font-mono">{security.spamDecisionSource ?? "lokal"}</dd>
+                  </>
+                ) : null}
               </dl>
             ) : (
               <p className="text-[10px] text-muted-foreground">
@@ -519,6 +576,13 @@ export function MessageMetadataPanel({
                 <strong>ARC fail</strong> ist bei normaler Post ohne Weiterleitungskette häufig — oft
                 unkritisch.
               </p>
+            ) : null}
+            {security?.spamScoreBreakdownJson ? (
+              <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
+                {spamReasonLabels(security.spamScoreBreakdownJson).map((reason) => (
+                  <p key={reason}>{reason}</p>
+                ))}
+              </div>
             ) : null}
             {security?.authError || security?.rspamdError ? (
               <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">

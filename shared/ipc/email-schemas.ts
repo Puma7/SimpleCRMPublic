@@ -23,6 +23,7 @@ const accountMailViewSchema = z.enum([
   'sent',
   'archived',
   'drafts',
+  'spam_review',
   'spam',
   'trash',
   'snoozed',
@@ -447,7 +448,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.MoveMessageToView, {
     payload: z.object({
       messageId: positiveInt,
-      view: z.enum(['inbox', 'sent', 'archived', 'drafts', 'spam', 'trash']),
+      view: z.enum(['inbox', 'sent', 'archived', 'drafts', 'spam_review', 'spam', 'trash']),
     }),
     result: standardResult,
   });
@@ -512,6 +513,12 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         rspamdSymbols: z.string().nullable(),
         rspamdError: z.string().nullable(),
         securityCheckedAt: z.string().nullable(),
+        spamStatus: z.string().nullable(),
+        spamScore: z.number().nullable(),
+        spamScoreLabel: z.string().nullable(),
+        spamDecisionSource: z.string().nullable(),
+        spamScoreBreakdownJson: z.string().nullable(),
+        spamDecidedAt: z.string().nullable(),
       }),
       failResult,
     ]),
@@ -530,6 +537,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       senderWhitelist: z.string(),
       senderBlacklist: z.string(),
       spamScoreThreshold: z.number(),
+      spamEngineEnabled: z.boolean(),
+      spamReviewThreshold: z.number(),
+      spamSpamThreshold: z.number(),
+      localLearningEnabled: z.boolean(),
+      rspamdContributionEnabled: z.boolean(),
+      rspamdLearningEnabled: z.boolean(),
+      aiSpamWorkflowEnabled: z.boolean(),
     }),
   });
   set(IPCChannels.Email.SetMailSecuritySettings, {
@@ -545,6 +559,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       senderWhitelist: z.string().optional(),
       senderBlacklist: z.string().optional(),
       spamScoreThreshold: z.number().optional(),
+      spamEngineEnabled: z.boolean().optional(),
+      spamReviewThreshold: z.number().optional(),
+      spamSpamThreshold: z.number().optional(),
+      localLearningEnabled: z.boolean().optional(),
+      rspamdContributionEnabled: z.boolean().optional(),
+      rspamdLearningEnabled: z.boolean().optional(),
+      aiSpamWorkflowEnabled: z.boolean().optional(),
     }),
     result: standardResult,
   });
@@ -558,6 +579,9 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         authSpf: z.string().nullable().optional(),
         authDmarc: z.string().nullable().optional(),
         rspamdScore: z.number().nullable().optional(),
+        spamScore: z.number().nullable().optional(),
+        spamStatus: z.string().nullable().optional(),
+        spamDecisionSource: z.string().nullable().optional(),
       }),
       failResult,
     ]),
@@ -582,6 +606,34 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.SetMessageSpam, {
     payload: z.object({ messageId: positiveInt, spam: z.boolean() }),
+    result: standardResult,
+  });
+  const spamStatusSchema = z.enum(['clean', 'review', 'spam']);
+  set(IPCChannels.Email.SetMessageSpamStatus, {
+    payload: z.object({
+      messageId: positiveInt,
+      status: spamStatusSchema,
+      train: z.boolean().optional(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ListSpamListEntries, {
+    payload: z.union([z.literal('all'), positiveInt]).optional(),
+    result: recordArray,
+  });
+  set(IPCChannels.Email.SaveSpamListEntry, {
+    payload: z.object({
+      id: positiveInt.optional(),
+      listType: z.enum(['allow', 'block']),
+      patternType: z.enum(['email', 'domain']).optional(),
+      pattern: z.string().min(1),
+      accountId: positiveInt.nullable().optional(),
+      note: z.string().nullable().optional(),
+    }),
+    result: z.union([z.object({ success: z.literal(true), entry: z.record(z.string(), z.unknown()) }), failResult]),
+  });
+  set(IPCChannels.Email.DeleteSpamListEntry, {
+    payload: positiveInt,
     result: standardResult,
   });
   set(IPCChannels.Email.LinkCustomer, {
@@ -693,6 +745,18 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       messageIds: z.array(positiveInt).min(1).max(500),
       spam: z.boolean(),
       accountId: positiveInt.optional(),
+    }),
+    result: z.union([
+      z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
+      failResult,
+    ]),
+  });
+  set(IPCChannels.Email.BulkSetMessageSpamStatus, {
+    payload: z.object({
+      messageIds: z.array(positiveInt).min(1).max(500),
+      status: z.enum(['clean', 'review', 'spam']),
+      accountId: positiveInt.optional(),
+      train: z.boolean().optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),

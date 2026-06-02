@@ -2,7 +2,7 @@ const mockGetMessage = jest.fn();
 const mockVerify = jest.fn();
 const mockRspamd = jest.fn();
 const mockSave = jest.fn();
-const mockPre = jest.fn();
+const mockSpam = jest.fn();
 const mockSettings = jest.fn();
 const mockMailauth = jest.fn();
 const mockRspamdOn = jest.fn();
@@ -19,8 +19,8 @@ jest.mock('../../electron/email/rspamd-client', () => ({
 jest.mock('../../electron/email/mail-security-store', () => ({
   saveMessageSecurity: (...a: unknown[]) => mockSave(...a),
 }));
-jest.mock('../../electron/email/mail-security-static', () => ({
-  applyPreWorkflowMailSecurity: (...a: unknown[]) => mockPre(...a),
+jest.mock('../../electron/email/email-spam-engine', () => ({
+  evaluateAndSaveSpamDecision: (...a: unknown[]) => mockSpam(...a),
 }));
 jest.mock('../../electron/email/mail-security-settings', () => ({
   getMailSecuritySettings: () => mockSettings(),
@@ -38,7 +38,7 @@ describe('runMailSecurityPipeline', () => {
     mockRspamdOn.mockReturnValue(true);
     mockVerify.mockResolvedValue({ spf: 'pass' });
     mockRspamd.mockResolvedValue({ score: 1 });
-    mockPre.mockReturnValue({ skippedWorkflows: false, tags: [] });
+    mockSpam.mockReturnValue({ score: 8, status: 'clean', source: 'local', reasons: [], featureKeys: [] });
     mockGetMessage.mockReturnValue({
       id: 1,
       raw_rfc822_b64: 'x',
@@ -60,17 +60,18 @@ describe('runMailSecurityPipeline', () => {
     expect(r.authChecked).toBe(true);
     expect(r.rspamdChecked).toBe(true);
     expect(mockSave).toHaveBeenCalledWith(1, { spf: 'pass' }, { score: 1 });
-    expect(mockPre).toHaveBeenCalled();
+    expect(mockSpam).toHaveBeenCalled();
+    expect(r.spam?.score).toBe(8);
   });
 
-  test('uses preloaded row without refetch for pre-workflow when no checks', async () => {
+  test('uses preloaded row without refetch for spam scoring when no checks', async () => {
     mockMailauth.mockReturnValue(false);
     mockRspamdOn.mockReturnValue(false);
     const row = { id: 2, raw_rfc822_b64: null, raw_headers: null, body_text: null, body_html: null };
     const r = await runMailSecurityPipeline(2, row as never);
     expect(r.authChecked).toBe(false);
     expect(mockGetMessage).not.toHaveBeenCalled();
-    expect(mockPre).toHaveBeenCalledWith(2, row);
+    expect(mockSpam).toHaveBeenCalledWith(2, row);
     expect(r.preWorkflow.skippedWorkflows).toBe(false);
   });
 });

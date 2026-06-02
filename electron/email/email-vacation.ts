@@ -97,6 +97,8 @@ export async function maybeSendVacationAutoReply(
   if (
     !fresh ||
     fresh.is_spam === 1 ||
+    fresh.spam_status === 'spam' ||
+    fresh.spam_status === 'review' ||
     fresh.archived === 1 ||
     fresh.soft_deleted === 1 ||
     fresh.folder_kind !== 'inbox'

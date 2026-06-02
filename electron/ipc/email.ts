@@ -30,12 +30,14 @@ import {
   bulkSoftDeleteMessages,
   bulkSetMessagesArchived,
   bulkSetMessageSpam,
+  bulkSetMessageSpamStatus,
   bulkDeleteLocalComposeDrafts,
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
   setMessageDoneLocal,
   setMessageSpam,
+  setMessageSpamStatus,
   setMessageAssignedTo,
   addMessageTag,
   removeMessageTag,
@@ -48,6 +50,12 @@ import {
   saveAccountSignature,
   type EmailAccountRow,
 } from '../email/email-store';
+import {
+  deleteSpamListEntry,
+  listSpamListEntries,
+  saveSpamListEntry,
+} from '../email/email-spam-store';
+import type { SpamStatus } from '../email/email-spam-types';
 import { listMessagesByCorrespondentEmail } from '../email/email-correspondent';
 import {
   previewInboxArchiveRecovery,
@@ -723,7 +731,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -752,7 +760,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -1840,6 +1848,33 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             payload.messageIds,
             payload.spam,
             payload.accountId,
+            { train: true, source: 'bulk-manual' },
+          );
+          return { success: true as const, count };
+        } catch (e) {
+          return {
+            success: false as const,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.BulkSetMessageSpamStatus,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageIds: number[]; status: SpamStatus; accountId?: number; train?: boolean },
+      ) => {
+        try {
+          const count = bulkSetMessageSpamStatus(
+            payload.messageIds,
+            payload.status,
+            payload.accountId,
+            { train: payload.train !== false, source: 'bulk-manual' },
           );
           return { success: true as const, count };
         } catch (e) {
@@ -2009,6 +2044,42 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.ListSpamListEntries,
+      async (_event: IpcMainInvokeEvent, payload?: number | 'all') => {
+        return listSpamListEntries(payload ?? 'all');
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SaveSpamListEntry,
+      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof saveSpamListEntry>[0]) => {
+        try {
+          const entry = saveSpamListEntry(payload);
+          return { success: true as const, entry };
+        } catch (e) {
+          return { success: false as const, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.DeleteSpamListEntry,
+      async (_event: IpcMainInvokeEvent, id: number) => {
+        deleteSpamListEntry(id);
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.GetMessageSecurity,
       async (_event: IpcMainInvokeEvent, messageId: number) => {
         const row = getEmailMessageById(messageId);
@@ -2026,6 +2097,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           rspamdSymbols: row.rspamd_symbols ?? null,
           rspamdError: row.rspamd_error ?? null,
           securityCheckedAt: row.security_checked_at ?? null,
+          spamStatus: row.spam_status ?? null,
+          spamScore: row.spam_score ?? null,
+          spamScoreLabel: row.spam_score_label ?? null,
+          spamDecisionSource: row.spam_decision_source ?? null,
+          spamScoreBreakdownJson: row.spam_score_breakdown_json ?? null,
+          spamDecidedAt: row.spam_decided_at ?? null,
         };
       },
       { logger },
@@ -2047,6 +2124,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           authSpf: updated?.auth_spf ?? null,
           authDmarc: updated?.auth_dmarc ?? null,
           rspamdScore: updated?.rspamd_score ?? null,
+          spamScore: r.spam?.score ?? updated?.spam_score ?? null,
+          spamStatus: r.spam?.status ?? updated?.spam_score_label ?? null,
+          spamDecisionSource: r.spam?.source ?? updated?.spam_decision_source ?? null,
         };
       },
       { logger },
@@ -2136,7 +2216,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetMessageSpam,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; spam: boolean }) => {
-        setMessageSpam(payload.messageId, payload.spam);
+        setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual' });
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageSpamStatus,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; status: SpamStatus; train?: boolean },
+      ) => {
+        setMessageSpamStatus(payload.messageId, payload.status, {
+          train: payload.train !== false,
+          source: 'manual',
+        });
         return { success: true as const };
       },
       { logger },

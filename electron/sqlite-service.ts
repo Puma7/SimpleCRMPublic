@@ -55,11 +55,19 @@ import {
     createWorkflowKnowledgeChunksTable,
     createWorkflowDelayedJobsTable,
     createEmailWorkflowVersionsTable,
+    createEmailSpamListEntriesTable,
+    createEmailSpamLearningEventsTable,
+    createEmailSpamFeatureStatsTable,
+    createEmailSpamDecisionsTable,
     EMAIL_WORKFLOW_VERSIONS_TABLE,
     EMAIL_WORKFLOW_RUN_STEPS_TABLE,
     WORKFLOW_KNOWLEDGE_BASES_TABLE,
     WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
     WORKFLOW_DELAYED_JOBS_TABLE,
+    EMAIL_SPAM_LIST_ENTRIES_TABLE,
+    EMAIL_SPAM_LEARNING_EVENTS_TABLE,
+    EMAIL_SPAM_FEATURE_STATS_TABLE,
+    EMAIL_SPAM_DECISIONS_TABLE,
     EMAIL_ACCOUNTS_TABLE,
     EMAIL_FOLDERS_TABLE,
     EMAIL_MESSAGES_TABLE,
@@ -148,6 +156,10 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createWorkflowKnowledgeChunksTable);
         connection.exec(createWorkflowDelayedJobsTable);
         connection.exec(createEmailWorkflowVersionsTable);
+        connection.exec(createEmailSpamListEntriesTable);
+        connection.exec(createEmailSpamLearningEventsTable);
+        connection.exec(createEmailSpamFeatureStatsTable);
+        connection.exec(createEmailSpamDecisionsTable);
         indexes.forEach((index) => connection.exec(index));
         runMigrations();
         setupEmailFtsIndex();
@@ -586,6 +598,12 @@ function runMigrations() {
                 { name: 'raw_headers', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_headers TEXT` },
                 { name: 'raw_rfc822_b64', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN raw_rfc822_b64 TEXT` },
                 { name: 'is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN is_spam INTEGER NOT NULL DEFAULT 0` },
+                { name: 'spam_status', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN spam_status TEXT NOT NULL DEFAULT 'clean'` },
+                { name: 'spam_score', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN spam_score INTEGER` },
+                { name: 'spam_score_label', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN spam_score_label TEXT` },
+                { name: 'spam_decision_source', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN spam_decision_source TEXT` },
+                { name: 'spam_score_breakdown_json', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN spam_score_breakdown_json TEXT` },
+                { name: 'spam_decided_at', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN spam_decided_at TEXT` },
                 { name: 'auth_spf', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_spf TEXT` },
                 { name: 'auth_dkim', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_dkim TEXT` },
                 { name: 'auth_dmarc', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auth_dmarc TEXT` },
@@ -641,6 +659,14 @@ function runMigrations() {
                     console.log(`Backfilled done_local for ${backfill.changes} handled messages`);
                 }
                 setSyncInfo('done_local_handled_backfill_v1', '1');
+            }
+            if (!getSyncInfo('email_spam_status_backfill_v1')) {
+                db.prepare(
+                    `UPDATE ${EMAIL_MESSAGES_TABLE}
+                     SET spam_status = CASE WHEN COALESCE(is_spam, 0) = 1 THEN 'spam' ELSE 'clean' END
+                     WHERE spam_status IS NULL OR spam_status = ''`,
+                ).run();
+                setSyncInfo('email_spam_status_backfill_v1', '1');
             }
         }
 
@@ -705,6 +731,17 @@ function runMigrations() {
         ensureMigrationTable(EMAIL_WORKFLOW_VERSIONS_TABLE, createEmailWorkflowVersionsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_versions_wf ON ${EMAIL_WORKFLOW_VERSIONS_TABLE}(workflow_id);`,
         ]);
+        ensureMigrationTable(EMAIL_SPAM_LIST_ENTRIES_TABLE, createEmailSpamListEntriesTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_spam_list_lookup ON ${EMAIL_SPAM_LIST_ENTRIES_TABLE}(account_id, list_type, pattern_type, pattern);`,
+        ]);
+        ensureMigrationTable(EMAIL_SPAM_LEARNING_EVENTS_TABLE, createEmailSpamLearningEventsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_spam_learning_msg ON ${EMAIL_SPAM_LEARNING_EVENTS_TABLE}(message_id);`,
+            `CREATE INDEX IF NOT EXISTS idx_email_spam_learning_account ON ${EMAIL_SPAM_LEARNING_EVENTS_TABLE}(account_id, created_at);`,
+        ]);
+        ensureMigrationTable(EMAIL_SPAM_FEATURE_STATS_TABLE, createEmailSpamFeatureStatsTable, []);
+        ensureMigrationTable(EMAIL_SPAM_DECISIONS_TABLE, createEmailSpamDecisionsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_spam_decisions_msg ON ${EMAIL_SPAM_DECISIONS_TABLE}(message_id, created_at);`,
+        ]);
 
         const kbChunkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE);
         if (kbChunkTable) {
@@ -735,6 +772,9 @@ function runMigrations() {
 
         db.exec(
             `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_msg_pop3_uidl ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id, pop3_uidl) WHERE pop3_uidl IS NOT NULL AND pop3_uidl != ''`,
+        );
+        db.exec(
+            `CREATE INDEX IF NOT EXISTS idx_email_messages_spam_status ON ${EMAIL_MESSAGES_TABLE}(account_id, spam_status)`,
         );
 
         const pop3UidlCol = (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[]).some(

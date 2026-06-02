@@ -40,6 +40,10 @@ export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
 export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
 export const WORKFLOW_DELAYED_JOBS_TABLE = 'workflow_delayed_jobs';
 export const EMAIL_WORKFLOW_VERSIONS_TABLE = 'email_workflow_versions';
+export const EMAIL_SPAM_LIST_ENTRIES_TABLE = 'email_spam_list_entries';
+export const EMAIL_SPAM_LEARNING_EVENTS_TABLE = 'email_spam_learning_events';
+export const EMAIL_SPAM_FEATURE_STATS_TABLE = 'email_spam_feature_stats';
+export const EMAIL_SPAM_DECISIONS_TABLE = 'email_spam_decisions';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -330,6 +334,12 @@ export const createEmailMessagesTable = `
     attachments_json TEXT,
     assigned_to TEXT,
     is_spam INTEGER NOT NULL DEFAULT 0,
+    spam_status TEXT NOT NULL DEFAULT 'clean',
+    spam_score INTEGER,
+    spam_score_label TEXT,
+    spam_decision_source TEXT,
+    spam_score_breakdown_json TEXT,
+    spam_decided_at TEXT,
     pop3_uidl TEXT,
     raw_headers TEXT,
     raw_rfc822_b64 TEXT,
@@ -539,6 +549,59 @@ export const createEmailWorkflowVersionsTable = `
   );
 `;
 
+export const createEmailSpamListEntriesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_SPAM_LIST_ENTRIES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_type TEXT NOT NULL CHECK (list_type IN ('allow', 'block')),
+    pattern_type TEXT NOT NULL CHECK (pattern_type IN ('email', 'domain')),
+    pattern TEXT NOT NULL,
+    account_id INTEGER,
+    note TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailSpamLearningEventsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_SPAM_LEARNING_EVENTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER,
+    account_id INTEGER NOT NULL,
+    label TEXT NOT NULL CHECK (label IN ('spam', 'ham')),
+    source TEXT NOT NULL,
+    feature_keys_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailSpamFeatureStatsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_SPAM_FEATURE_STATS_TABLE} (
+    feature_key TEXT PRIMARY KEY,
+    spam_count INTEGER NOT NULL DEFAULT 0,
+    ham_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createEmailSpamDecisionsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_SPAM_DECISIONS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER,
+    account_id INTEGER NOT NULL,
+    score INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('clean', 'review', 'spam')),
+    source TEXT NOT NULL,
+    breakdown_json TEXT,
+    model_version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
 export const createWorkflowDelayedJobsTable = `
   CREATE TABLE IF NOT EXISTS ${WORKFLOW_DELAYED_JOBS_TABLE} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -655,9 +718,14 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_messages_ticket ON ${EMAIL_MESSAGES_TABLE}(ticket_code);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_customer ON ${EMAIL_MESSAGES_TABLE}(customer_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_folder_kind ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_kind);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_messages_spam_status ON ${EMAIL_MESSAGES_TABLE}(account_id, spam_status);`,
     `CREATE INDEX IF NOT EXISTS idx_email_categories_parent ON ${EMAIL_CATEGORIES_TABLE}(parent_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_msg_cat_category ON ${EMAIL_MESSAGE_CATEGORIES_TABLE}(category_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_notes_message ON ${EMAIL_INTERNAL_NOTES_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_spam_list_lookup ON ${EMAIL_SPAM_LIST_ENTRIES_TABLE}(account_id, list_type, pattern_type, pattern);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_spam_learning_msg ON ${EMAIL_SPAM_LEARNING_EVENTS_TABLE}(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_spam_learning_account ON ${EMAIL_SPAM_LEARNING_EVENTS_TABLE}(account_id, created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_spam_decisions_msg ON ${EMAIL_SPAM_DECISIONS_TABLE}(message_id, created_at);`,
     // Indexes for activity_log
     `CREATE INDEX IF NOT EXISTS idx_activity_log_customer_id ON ${ACTIVITY_LOG_TABLE}(customer_id);`,
     `CREATE INDEX IF NOT EXISTS idx_activity_log_deal_id ON ${ACTIVITY_LOG_TABLE}(deal_id);`,

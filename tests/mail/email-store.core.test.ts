@@ -34,6 +34,13 @@ describe('email-store core helpers', () => {
   });
 
   test('message flag helpers run updates', () => {
+    stmt.get.mockReturnValue({
+      id: 1,
+      account_id: 1,
+      is_spam: 0,
+      spam_status: 'clean',
+      folder_kind: 'inbox',
+    });
     setMessageArchived(1, true);
     setMessageSeenLocal(1, true);
     setMessageSpam(1, true);
