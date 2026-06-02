@@ -41,6 +41,27 @@ Object.assign(console, log.functions); // Override console functions
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
+const clearProductionRendererCache = async (windowInstance) => {
+  if (isDevelopment) {
+    return;
+  }
+
+  const rendererSession = windowInstance?.webContents?.session;
+  if (!rendererSession) {
+    return;
+  }
+
+  try {
+    await rendererSession.clearCache();
+    if (typeof rendererSession.clearCodeCaches === 'function') {
+      await rendererSession.clearCodeCaches({ urls: [] });
+    }
+    log.info('[Electron Main] Cleared production renderer cache before loading app:// content.');
+  } catch (error) {
+    log.warn('[Electron Main] Could not clear production renderer cache before loading app:// content:', error);
+  }
+};
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -159,6 +180,7 @@ if (isDevelopment) {
       const loadURL = electronServeFunc({ directory: path.join(__dirname, '../dist') });
       loadURLFunction = async (windowInstance) => {
         log.info('[Electron Main] Production mode: Loading with electron-serve');
+        await clearProductionRendererCache(windowInstance);
         await loadURL(windowInstance);
         log.info('[Electron Main] Content loaded successfully with electron-serve');
       };
@@ -171,6 +193,7 @@ if (isDevelopment) {
     loadURLFunction = async (windowInstance) => {
       const indexPath = path.join(__dirname, '../dist/index.html');
       log.info(`[Electron Main] Production mode: Loading file directly: ${indexPath}`);
+      await clearProductionRendererCache(windowInstance);
       await windowInstance.loadFile(indexPath, { hash: '/' });
       log.info('[Electron Main] Content loaded successfully with loadFile');
     };

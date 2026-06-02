@@ -6,6 +6,7 @@ import {
   documentWithResolvedPositions,
   isValidGraphPosition,
 } from "@/components/email/workflow/workflow-graph-layout"
+import { edgeSourceHandleFromLabel } from "@/components/email/workflow/workflow-edge-labels"
 
 type State = {
   nodes: Node[]
@@ -49,39 +50,12 @@ function graphToFlow(doc: WorkflowGraphDocument): { nodes: Node[]; edges: Edge[]
     source: e.source,
     target: e.target,
     label: e.label,
-    sourceHandle: edgeSourceHandleFromLabel(e.label, e.source, resolved),
+    sourceHandle: edgeSourceHandleFromLabel(
+      e.label,
+      resolved.nodes.find((n) => n.id === e.source),
+    ),
   }))
   return { nodes, edges }
-}
-
-/** Map stored edge labels back to React Flow source handles where needed. */
-function edgeSourceHandleFromLabel(
-  label: string | undefined,
-  sourceId: string,
-  doc: WorkflowGraphDocument,
-): string | undefined {
-  if (!label) return undefined
-  const source = doc.nodes.find((n) => n.id === sourceId)
-  if (source?.type === "condition") {
-    const l = label.toLowerCase()
-    if (l === "nein" || l === "no" || l === "false") return "no"
-    if (l === "ja" || l === "yes" || l === "true" || !l) return "yes"
-  }
-  if (source?.type === "registry") {
-    const nt = (source.data as { nodeType?: string }).nodeType
-    const l = label.toLowerCase()
-    if (nt === "logic.loop") {
-      if (l === "done" || l === "fertig" || l === "end") return "done"
-      if (l === "each" || l === "je" || l === "loop") return "each"
-    }
-    if (nt === "logic.threshold") {
-      if (l === "no" || l === "nein") return "no"
-      if (l === "yes" || l === "ja") return "yes"
-    }
-    if (nt === "email.sender_filter") return label
-    if (nt === "logic.switch") return label
-  }
-  return undefined
 }
 
 export const useWorkflowEditorStore = create<State>((set, get) => ({

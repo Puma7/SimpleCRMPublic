@@ -140,7 +140,7 @@ export function registerLogicNodes(register: Reg): void {
     label: 'Schleife',
     category: 'logic',
     canvasType: 'registry',
-    defaultConfig: { sourceVariable: 'attachment_names', items: '' },
+    defaultConfig: { sourceVariable: 'attachment_names', items: '', maxItems: 50 },
     execute: async () => ({ status: 'ok', port: 'default' }),
   });
 }

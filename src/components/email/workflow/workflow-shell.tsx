@@ -118,6 +118,7 @@ export function WorkflowShell() {
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [triggerFilter, setTriggerFilter] = useState<
     "all" | "inbound" | "outbound" | "other"
   >("all")
@@ -176,6 +177,7 @@ export function WorkflowShell() {
     setEditScheduleAccountId(w.schedule_account_id ?? "")
     setEditEnabled(w.enabled === 1)
     setSelectedNodeId(null)
+    setSelectedEdgeId(null)
 
     let doc: WorkflowGraphDocument | null = null
     if (w.graph_json) {
@@ -309,6 +311,8 @@ export function WorkflowShell() {
       await invokeIpc(IPCChannels.Email.DeleteWorkflow, selectedId)
       toast.success("Gelöscht.")
       setSelectedId(null)
+      setSelectedNodeId(null)
+      setSelectedEdgeId(null)
       await load()
     } catch (e) {
       logError("workflow-shell: delete", e)
@@ -763,7 +767,12 @@ export function WorkflowShell() {
                     <div className="absolute left-3 top-3 z-10">
                       <NodePalette />
                     </div>
-                    <WorkflowCanvas onSelectionChange={setSelectedNodeId} />
+                    <WorkflowCanvas
+                      onSelectionChange={(selection) => {
+                        setSelectedNodeId(selection.nodeId)
+                        setSelectedEdgeId(selection.edgeId)
+                      }}
+                    />
                   </>
                 )}
               </div>
@@ -779,7 +788,11 @@ export function WorkflowShell() {
                   <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">
                     <NodePropertiesPanel
                       selectedNodeId={selectedNodeId}
-                      onClearSelection={() => setSelectedNodeId(null)}
+                      selectedEdgeId={selectedEdgeId}
+                      onClearSelection={() => {
+                        setSelectedNodeId(null)
+                        setSelectedEdgeId(null)
+                      }}
                     />
                   </div>
                   <div className="flex min-h-[200px] flex-[2] flex-col overflow-hidden border-t">
@@ -808,6 +821,8 @@ export function WorkflowShell() {
           onOpenChange={setTemplatesOpen}
           onPick={(t: WorkflowTemplateDto) => {
             useWorkflowEditorStore.getState().resetFromGraph(t.graph)
+            setSelectedNodeId(null)
+            setSelectedEdgeId(null)
             toast.success(`Vorlage „${t.name}" geladen — bitte speichern.`)
           }}
         />

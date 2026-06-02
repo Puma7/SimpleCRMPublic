@@ -140,7 +140,7 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 
 ## 4. Knoten-Taxonomie (Gesamtumfang & Status)
 
-*Legende: ✅ umgesetzt (W0–W6) · 🔲 Langfrist / noch offen · ❌ bewusst out of scope (Kap. 9)*
+*Legende: ✅ umgesetzt (W0–W7) · 🔲 Langfrist / noch offen · ❌ bewusst out of scope (Kap. 9)*
 
 ### 4.1 Trigger-Knoten
 
@@ -150,22 +150,22 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | `email.outbound` | Vor Versand | ✅ |
 | `email.draft_created` | Entwurf erstellt | ✅ |
 | `schedule.cron` | Zeitplan + optional Sync | ✅ |
-| `crm.customer_created` | Neuer Kunde | 🔲 |
-| `crm.deal_stage_changed` | Deal-Phase geändert | 🔲 |
-| `task.due` | Aufgabe fällig / überfällig | 🔲 |
-| `calendar.event_start` | Termin beginnt (Erinnerung) | 🔲 |
-| `manual.run` | Button „Workflow jetzt ausführen“ | 🔲 |
-| `webhook.incoming` | HTTP-Webhook (optional, lokal) | 🔲 |
+| `crm.customer_created` | Neuer Kunde | ✅ |
+| `crm.deal_stage_changed` | Deal-Phase geändert | ✅ |
+| `task.due` | Aufgabe fällig / überfällig | ✅ |
+| `calendar.event_start` | Termin beginnt (Erinnerung) | ✅ |
+| `manual.run` | Button „Workflow jetzt ausführen“ | ✅ |
+| `webhook.incoming` | HTTP-Webhook (optional, lokal) | ✅ |
 
 ### 4.2 Logik-Knoten
 
 | ID | Beschreibung | Status |
 |----|--------------|--------|
 | `logic.if` | Bedingung mit Ja/Nein-Ausgang | ✅ (über Bedingungsknoten + Compiler) |
-| `logic.switch` | Mehrfach-Verzweigung nach Wert | 🔲 |
-| `logic.merge` | Pfade zusammenführen | 🔲 |
-| `logic.loop` | Über Liste (Tags, Anhänge, Zeilen) | 🔲 |
-| `logic.delay` | Warten (Minuten/Stunden; Job in DB, Resume-Worker 🔲) | ✅ (teilweise) |
+| `logic.switch` | Mehrfach-Verzweigung nach Wert | ✅ |
+| `logic.merge` | Pfade zusammenführen | ✅ |
+| `logic.loop` | Über Liste (Tags, Anhänge, Zeilen) | ✅ |
+| `logic.delay` | Warten (Minuten/Stunden; Job in DB, Resume-Worker) | ✅ |
 | `logic.set_variable` | Variable setzen | ✅ |
 | `logic.filter` | CRM-/Mail-Filter ohne Code | 🔲 |
 
@@ -181,8 +181,8 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | `email.forward_copy` | Kopie per SMTP | ✅ |
 | `email.hold_outbound` | Versand sperren | ✅ |
 | `email.create_draft` | Antwort-/Fwd-Entwurf erzeugen | ✅ |
-| `email.move_imap` | IMAP-Ordner (Spam, Trash, …) | 🔲 |
-| `email.delete_server` | Server-Löschung (opt-in, konfigurierbar) | 🔲 |
+| `email.move_imap` | IMAP-Ordner (Spam, Trash, …) | ✅ |
+| `email.delete_server` | Server-Löschung (opt-in, konfigurierbar) | ✅ |
 
 ### 4.4 CRM-Aktionen
 
@@ -190,7 +190,7 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 |----|--------------|--------|
 | `crm.link_customer` | Wie heute | ✅ (als `link_customer`) |
 | `crm.create_task` | Aufgabe aus Mail | ✅ |
-| `crm.update_deal` | Deal-Feld / Stage | 🔲 |
+| `crm.update_deal` | Deal-Feld / Stage | ✅ |
 | `crm.log_activity` | Follow-up-Timeline | ✅ |
 | `crm.set_custom_field` | Benutzerdefiniertes Feld | 🔲 |
 
@@ -202,7 +202,7 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | `ai.transform_text` | Text umschreiben (wie Composer) | ✅ |
 | `ai.classify` | Kategorie/Tag aus Inhalt | ✅ |
 | `ai.agent` | Agent mit System-Prompt + optional RAG | ✅ (Keyword-RAG) |
-| `ai.agent_tool` | Sub-Tool-Aufruf (intern) | 🔲 |
+| `ai.agent_tool` | Sub-Tool-Aufruf (intern) | ✅ |
 
 **KI-Agent-Knoten (Ziel-Detail):**
 
@@ -226,7 +226,8 @@ flowchart LR
 | ID | Beschreibung | Status |
 |----|--------------|--------|
 | `jtl.create_order` | JTL-Auftrag (bestehendes IPC) | 🔲 |
-| `mssql.query` | Read-only Abfrage (gespeicherte Verbindung) | 🔲 |
+| `jtl.lookup` | JTL Stammdaten lesen | ✅ |
+| `mssql.query` | Read-only Abfrage (gespeicherte Verbindung) | ✅ |
 | `http.request` | HTTP GET/POST mit Allowlist | ✅ |
 | `sync.run` | Daten-Sync auslösen | ✅ |
 
@@ -458,10 +459,10 @@ gantt
 |-------|---------|
 | React Flow für „alles über den Flow“? | **Ja** — Canvas + Registry-Knoten + Graph-Runtime (W1+). |
 | JS/Python-Custom-Knoten? | **Ja** (W4), Sandbox/Subprozess. |
-| GUI + Code für Profis? | **Experten-JSON** pro Registry-Knoten; Monaco **noch offen**. |
+| GUI + Code für Profis? | **Experten-JSON** pro Registry-Knoten; Inline-Monaco für `code.javascript` / `code.python`; Switch-/Loop-Builder. |
 | KI-Agent im Flow? | **Ja** (`ai.agent` + Keyword-Wissensbasis); Embeddings **offen**. |
 | n8n-Parität? | **Subset** mit CRM-/Mail-Fokus und Desktop-Sicherheit — kein 1:1-Klon. |
 
 **Ist-Stand detailliert:** [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) · **E-Mail-Phasen:** [`EMAIL_PHASES.md`](EMAIL_PHASES.md)
 
-*Letzte Aktualisierung: nach Umsetzung W0–W6; Vision-Tabellen für Langfrist ergänzt.*
+*Letzte Aktualisierung: 2026-06-02 nach Workflow-Editor-Roadmap (WF-1–WF-6).*
