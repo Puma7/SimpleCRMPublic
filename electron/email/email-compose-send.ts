@@ -222,6 +222,64 @@ async function finalizeSentDraft(input: {
   return { sentAppendWarning: joinWarnings(warnings) };
 }
 
+/** SMTP already succeeded (crash recovery): skip outbound/attachment gates, finalize only. */
+async function finalizeCommittedSmtpDraft(
+  input: {
+    accountId: number;
+    draftMessageId: number;
+    subject: string;
+    bodyText: string;
+    to: string;
+    cc?: string;
+    bcc?: string;
+    inReplyToMessageId?: number | null;
+  },
+  draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
+  html: string | null,
+): Promise<
+  | { ok: true; warning?: string; recoveredSentAppend: true }
+  | { ok: false; error: string }
+> {
+  const acc = getEmailAccountById(input.accountId);
+  if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
+
+  const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
+  const smtpCc = input.cc?.trim()
+    ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+    : undefined;
+  const smtpBcc = input.bcc?.trim()
+    ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
+    : undefined;
+  const outboundMessageId =
+    draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
+  const subjectBase = draft.subject?.trim() || input.subject.trim() || '(Ohne Betreff)';
+  const ticket = draft.ticket_code?.trim();
+  const finalSubject = ticket ? ensureTicketInSubject(subjectBase, ticket) : subjectBase;
+  const requestReceipt =
+    (acc as { request_read_receipt?: number }).request_read_receipt === 1;
+
+  const fin = await finalizeSentDraft({
+    accountId: input.accountId,
+    draftMessageId: input.draftMessageId,
+    from: acc.email_address,
+    to: smtpTo,
+    cc: smtpCc,
+    bcc: smtpBcc,
+    subject: finalSubject,
+    text: input.bodyText,
+    html: html || undefined,
+    messageId: outboundMessageId,
+    inReplyTo: draft.in_reply_to ?? undefined,
+    references: draft.references_header ?? undefined,
+    attachments: [],
+    requestReadReceipt: requestReceipt,
+  });
+  if (fin.sentAppendWarning) {
+    return { ok: true, warning: fin.sentAppendWarning, recoveredSentAppend: true };
+  }
+  return { ok: true, recoveredSentAppend: true };
+}
+
 function maybeMarkReplyParentDone(
   inReplyToMessageId: number | null | undefined,
   draftMessageId: number,
@@ -305,6 +363,16 @@ export async function sendComposeDraft(input: {
 
     const { clearOutboundHoldForResend } = await import('./email-outbound-review');
     clearOutboundHoldForResend(input.draftMessageId);
+
+    if (isSmtpCommitted(input.draftMessageId)) {
+      const recovered = await finalizeCommittedSmtpDraft(input, draft, html ?? null);
+      maybeMarkReplyParentDone(
+        input.inReplyToMessageId,
+        input.draftMessageId,
+        input.markReplyParentDone,
+      );
+      return recovered;
+    }
 
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,
@@ -432,34 +500,6 @@ export async function sendComposeDraft(input: {
 
     if (input.markReplyParentDone !== undefined) {
       setComposeMarkReplyParentDone(input.draftMessageId, input.markReplyParentDone);
-    }
-
-    if (isSmtpCommitted(input.draftMessageId)) {
-      const fin = await finalizeSentDraft({
-        accountId: input.accountId,
-        draftMessageId: input.draftMessageId,
-        from: acc.email_address,
-        to: smtpTo,
-        cc: smtpCc,
-        bcc: smtpBcc,
-        subject: finalSubject,
-        text: input.bodyText,
-        html: htmlOut || undefined,
-        messageId: outboundMessageId,
-        inReplyTo: threadHeaders.inReplyTo,
-        references: threadHeaders.references,
-        attachments: sentAppendAttachments,
-        requestReadReceipt: requestReceipt,
-      });
-      maybeMarkReplyParentDone(
-        input.inReplyToMessageId,
-        input.draftMessageId,
-        input.markReplyParentDone,
-      );
-      if (fin.sentAppendWarning) {
-        return { ok: true, warning: fin.sentAppendWarning };
-      }
-      return { ok: true, recoveredSentAppend: true };
     }
 
     try {

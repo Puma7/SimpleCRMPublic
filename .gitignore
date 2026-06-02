@@ -1,7 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules/
+**/node_modules/
 
 # next.js
 /.next/
@@ -72,6 +73,7 @@ src/.DS_Store
 !docs/MAIL_SINGLE_USER_LIMITS.md
 !docs/MAIL_TESTING.md
 !docs/MAIL_ALPHA_CHECKLIST.md
+!docs/MAIL_REMAINING_BACKLOG.md
 !AGENTS.md
 
 coverage/

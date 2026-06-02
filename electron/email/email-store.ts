@@ -462,7 +462,11 @@ export function getDefaultComposeSignatureHtml(): string | null {
 }
 
 export function deleteEmailTeamMember(id: string): void {
-  getDb().prepare(`DELETE FROM ${EMAIL_TEAM_MEMBERS_TABLE} WHERE id = ?`).run(id);
+  const db = getDb();
+  db.prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE} SET assigned_to = NULL WHERE assigned_to = ?`,
+  ).run(id);
+  db.prepare(`DELETE FROM ${EMAIL_TEAM_MEMBERS_TABLE} WHERE id = ?`).run(id);
 }
 
 export async function deleteEmailAccountRecord(id: number): Promise<void> {
@@ -1075,6 +1079,8 @@ export type MessageUpsertContext = {
   pop3UidlToId?: Map<string, number>;
   nextPop3Uid?: number;
   imapUidToId?: Map<number, number>;
+  /** IMAP sync: server \\Seen wins on upsert (NF11). POP3 leaves false. */
+  reconcileSeenFromServer?: boolean;
 };
 
 export function createPop3UpsertContext(folderId: number, accountId: number): MessageUpsertContext {
@@ -1091,7 +1097,16 @@ export function createPop3UpsertContext(folderId: number, accountId: number): Me
 }
 
 export function createImapUpsertContext(folderId: number, uids: number[]): MessageUpsertContext {
-  return { imapUidToId: loadImapUidToIdMap(folderId, uids) };
+  return {
+    imapUidToId: loadImapUidToIdMap(folderId, uids),
+    reconcileSeenFromServer: true,
+  };
+}
+
+function seenLocalOnConflictExpr(reconcileFromServer: boolean): string {
+  return reconcileFromServer
+    ? 'seen_local = excluded.seen_local'
+    : `seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`;
 }
 
 /** Promote locally sent draft (negative uid) when the server copy arrives via IMAP Sent sync. */
@@ -1353,6 +1368,7 @@ export function insertOrUpdateEmailMessage(input: {
           .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND folder_id = ? AND uid = ?`)
           .get(input.accountId, input.folderId, uidForRow) as { id: number } | undefined);
   const isNew = !existing;
+  const reconcileSeen = ctx?.reconcileSeenFromServer ?? false;
 
   const stmt = db.prepare(
     `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
@@ -1380,7 +1396,7 @@ export function insertOrUpdateEmailMessage(input: {
       pop3_uidl = COALESCE(excluded.pop3_uidl, ${EMAIL_MESSAGES_TABLE}.pop3_uidl),
       raw_headers = COALESCE(excluded.raw_headers, ${EMAIL_MESSAGES_TABLE}.raw_headers),
       raw_rfc822_b64 = COALESCE(excluded.raw_rfc822_b64, ${EMAIL_MESSAGES_TABLE}.raw_rfc822_b64),
-      seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local),
+      ${seenLocalOnConflictExpr(reconcileSeen)},
       folder_kind = excluded.folder_kind,
       archived = excluded.archived,
       is_spam = excluded.is_spam`,

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
+import { ensureAssignedToReferentialIntegrity } from './email/email-assigned-to-integrity';
 import {
     createCustomersTable,
     createProductsTable,
@@ -135,6 +136,7 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createJtlVersandartenTable);
         connection.exec(createEmailAccountsTable);
         connection.exec(createEmailFoldersTable);
+        connection.exec(createEmailTeamMembersTable);
         connection.exec(createEmailMessagesTable);
         connection.exec(createEmailWorkflowsTable);
         connection.exec(createEmailWorkflowRunsTable);
@@ -147,7 +149,6 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailCannedResponsesTable);
         connection.exec(createEmailAiProfilesTable);
         connection.exec(createEmailAiPromptsTable);
-        connection.exec(createEmailTeamMembersTable);
         connection.exec(createEmailAccountSignaturesTable);
         connection.exec(createEmailMessageAttachmentsTable);
         connection.exec(createEmailWorkflowForwardDedupTable);
@@ -669,6 +670,10 @@ function runMigrations() {
                         OR (COALESCE(is_spam, 0) = 1 AND COALESCE(spam_status, 'clean') <> 'spam')`,
                 ).run();
                 setSyncInfo('email_spam_status_backfill_v1', '1');
+            }
+            if (!getSyncInfo('email_assigned_to_integrity_v1')) {
+                ensureAssignedToReferentialIntegrity(conn);
+                setSyncInfo('email_assigned_to_integrity_v1', '1');
             }
         }
 

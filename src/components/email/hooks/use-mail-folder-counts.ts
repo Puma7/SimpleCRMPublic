@@ -31,7 +31,8 @@ const EMPTY: MailFolderCounts = {
 }
 
 export function useMailFolderCounts() {
-  const { selectedAccountId, accountsRevision, mailView } = useMailWorkspace()
+  const { selectedAccountId, accountsRevision, mailView, mailMetricsRevision } =
+    useMailWorkspace()
   const [counts, setCounts] = useState<MailFolderCounts>(EMPTY)
 
   const load = useCallback(async (accountScope: MailAccountScope) => {
@@ -53,7 +54,7 @@ export function useMailFolderCounts() {
     } else {
       setCounts(EMPTY)
     }
-  }, [selectedAccountId, accountsRevision, mailView, load])
+  }, [selectedAccountId, accountsRevision, mailView, mailMetricsRevision, load])
 
   return { counts, reloadCounts: load }
 }

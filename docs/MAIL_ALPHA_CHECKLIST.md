@@ -19,6 +19,12 @@ Stand: automatisierte Gates + kurzer manueller Smoke.
 - [ ] Shift+Klick Bereichsauswahl; Bulk **Erledigt** im Posteingang
 - [ ] „Alle in dieser Ansicht“ mit Bestätigungsdialog (max. 500)
 
+## Nach Alpha (kleine UX/Rest)
+
+- Sidebar-Badges sofort nach Aktionen: ✅ [#84](https://github.com/Puma7/SimpleCRMPublic/pull/84)
+- NF11/NF3/NF17b: ✅ [#86](https://github.com/Puma7/SimpleCRMPublic/pull/86)
+- Rest-Backlog F/NF: [`MAIL_REMAINING_BACKLOG.md`](MAIL_REMAINING_BACKLOG.md)
+
 ## Bewusst nicht Alpha-Blocker
 
 - Echtes Server-Threading (Aufklappen, Thread-Bulk)

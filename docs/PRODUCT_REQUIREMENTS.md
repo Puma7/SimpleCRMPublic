@@ -62,7 +62,7 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 | AI-2 | Prompt-Bibliothek mit Profil-Zuordnung | Muss | ✅ |
 | AI-3 | Workflow-Knoten: Spam-Score, Klassifizierung, Agent, Outbound-Review | Muss | ✅ |
 | AI-4 | **KI-Profil-Dropdown** im Workflow-Knoten-Editor | Muss | ✅ |
-| AI-5 | Embeddings / Vektor-RAG | Soll | 🔲 |
+| AI-5 | Embeddings / Vektor-RAG | Soll | ✅ (Keyword + Cosine in `knowledge-base.ts`; `runEmbedding` wenn Embedding-Modell konfiguriert) |
 
 ---
 

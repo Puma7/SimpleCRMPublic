@@ -51,7 +51,10 @@ jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: jest.fn().mockRejectedValue(new Error('no oauth')),
 }));
 jest.mock('../../electron/email/email-sync-mutex', () => ({
-  withEmailAccountSyncLock: (_id: number, fn: () => Promise<unknown>) => fn(),
+  withEmailAccountSyncLock: (_id: number, fn: (signal: AbortSignal) => Promise<unknown>) =>
+    fn(new AbortController().signal),
+  assertSyncNotAborted: jest.fn(),
+  isEmailSyncAbortedError: jest.fn(() => false),
 }));
 jest.mock('../../electron/email/email-sync-post-process', () => ({
   processNewMessagesAfterSync: jest.fn().mockResolvedValue(undefined),

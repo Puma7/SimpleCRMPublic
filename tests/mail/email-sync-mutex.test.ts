@@ -1,5 +1,6 @@
 import {
   clearEmailAccountSyncLock,
+  EmailSyncAbortedError,
   withEmailAccountSyncLock,
 } from '../../electron/email/email-sync-mutex';
 
@@ -35,5 +36,22 @@ describe('email-sync-mutex', () => {
     ).rejects.toThrow('fail');
     const ok = await withEmailAccountSyncLock(2, async () => true);
     expect(ok).toBe(true);
+  });
+
+  test('clearEmailAccountSyncLock aborts in-flight sync', async () => {
+    clearEmailAccountSyncLock(7);
+    let sawAbort = false;
+    const running = withEmailAccountSyncLock(7, async (signal) => {
+      await new Promise((r) => setTimeout(r, 80));
+      if (signal.aborted) sawAbort = true;
+      if (signal.aborted) throw new EmailSyncAbortedError();
+      return 'done';
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    clearEmailAccountSyncLock(7);
+    await expect(running).rejects.toThrow(EmailSyncAbortedError);
+    expect(sawAbort).toBe(true);
+    const after = await withEmailAccountSyncLock(7, async () => 'ok');
+    expect(after).toBe('ok');
   });
 });

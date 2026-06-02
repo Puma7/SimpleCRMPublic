@@ -106,6 +106,40 @@ describe('sendComposeDraft', () => {
     expect(mockSendSmtp).not.toHaveBeenCalled();
   });
 
+  it('skips outbound workflow when smtp already committed', async () => {
+    mockGetMessage.mockReturnValue({
+      id: 10,
+      uid: -1,
+      account_id: 1,
+      folder_kind: 'draft',
+      body_html: null,
+      message_id: '<committed@local>',
+      subject: 'Hi',
+      in_reply_to: null,
+      references_header: null,
+      ticket_code: null,
+    });
+    mockGetSyncInfo.mockImplementation((key: string) =>
+      key === 'email_compose_smtp_ok:10' ? '1' : null,
+    );
+    mockEvaluateOutbound.mockResolvedValue({
+      allowed: false,
+      reason: 'would block',
+      workflowRunId: 99,
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Hi',
+      bodyText: 'Body',
+      to: 'a@b.de',
+      attachmentPaths: ['/missing/file.pdf'],
+    });
+    expect(r).toEqual({ ok: true, recoveredSentAppend: true });
+    expect(mockEvaluateOutbound).not.toHaveBeenCalled();
+    expect(mockSendSmtp).not.toHaveBeenCalled();
+  });
+
   it('skips second SMTP when commit flag is set', async () => {
     mockGetMessage.mockReturnValue({
       id: 10,

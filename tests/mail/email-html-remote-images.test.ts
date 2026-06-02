@@ -23,6 +23,23 @@ describe('blockRemoteImagesInHtml', () => {
     expect(blockRemoteImagesInHtml(html)).toBe(html);
   });
 
+  test('blocks https srcset on img', () => {
+    const html =
+      '<img src="data:image/png;base64,abc" srcset="https://cdn.example/a.png 1x, https://cdn.example/b.png 2x">';
+    const out = blockRemoteImagesInHtml(html);
+    expect(out).not.toContain('https://cdn.example');
+    expect(out).toContain('srcset=');
+    expect(out).toContain('data:image/svg+xml');
+  });
+
+  test('blocks remote srcset on source inside picture', () => {
+    const html =
+      '<picture><source srcset="https://cdn.example/hero.webp" type="image/webp"><img src="https://x.com/f.jpg"></picture>';
+    const out = blockRemoteImagesInHtml(html);
+    expect(out).not.toContain('https://cdn.example');
+    expect(out).not.toContain('https://x.com');
+  });
+
   test('blocks remote url in inline style', () => {
     const html =
       '<div style="background-image: url(https://track.example/bg.png)">x</div>';
