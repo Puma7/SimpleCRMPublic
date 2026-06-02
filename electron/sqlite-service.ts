@@ -664,7 +664,9 @@ function runMigrations() {
                 db.prepare(
                     `UPDATE ${EMAIL_MESSAGES_TABLE}
                      SET spam_status = CASE WHEN COALESCE(is_spam, 0) = 1 THEN 'spam' ELSE 'clean' END
-                     WHERE spam_status IS NULL OR spam_status = ''`,
+                     WHERE spam_status IS NULL
+                        OR spam_status = ''
+                        OR (COALESCE(is_spam, 0) = 1 AND COALESCE(spam_status, 'clean') <> 'spam')`,
                 ).run();
                 setSyncInfo('email_spam_status_backfill_v1', '1');
             }

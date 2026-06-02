@@ -344,7 +344,13 @@ export async function runInboundWorkflowsForMessage(
   }
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
-  if (postWorkflowRow.is_spam === 1 || postWorkflowRow.spam_status === 'spam' || postWorkflowRow.spam_status === 'review') {
+  if (
+    postWorkflowRow.is_spam === 1 ||
+    postWorkflowRow.spam_status === 'spam' ||
+    postWorkflowRow.spam_status === 'review' ||
+    postWorkflowRow.spam_score_label === 'spam' ||
+    postWorkflowRow.spam_score_label === 'review'
+  ) {
     return;
   }
 

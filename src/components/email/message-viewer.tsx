@@ -294,11 +294,23 @@ export function MessageViewer(props: Props) {
   }
 
   const handleSetSpamStatus = async (status: "clean" | "review" | "spam") => {
-    await invokeIpc(IPCChannels.Email.SetMessageSpamStatus, {
-      messageId: selectedMessage.id,
-      status,
-      train: true,
-    })
+    try {
+      const result = await invokeIpc<{ success: boolean; error?: string }>(
+        IPCChannels.Email.SetMessageSpamStatus,
+        {
+          messageId: selectedMessage.id,
+          status,
+          train: true,
+        },
+      )
+      if (!result.success) {
+        toast.error(result.error ?? "Spam-Status konnte nicht gesetzt werden.")
+        return
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Spam-Status konnte nicht gesetzt werden.")
+      return
+    }
     const label =
       status === "spam" ? "Als Spam markiert" : status === "review" ? "Zur Prüfung markiert" : "Kein Spam mehr"
     toast.success(label)

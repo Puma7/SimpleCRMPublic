@@ -1,6 +1,7 @@
 import type { EmailMessageRow } from '../email/email-store';
 import { addressesFromRecipientJson } from '../email/email-parse-utils';
 import { getSyncInfo } from '../sqlite-service';
+import { listSpamListEntries } from '../email/email-spam-store';
 
 /** Domains commonly used for transactional mail (PayPal, Amazon, …) — pre-filter before KI. */
 export const BUILTIN_TRUSTED_SENDER_ENTRIES = [
@@ -71,11 +72,29 @@ export function matchSenderList(fromAddress: string, entries: string[]): boolean
 }
 
 export function getGlobalSenderWhitelist(): string[] {
-  return parseSenderList(getSyncInfo(WHITELIST_KEY));
+  try {
+    return [
+      ...parseSenderList(getSyncInfo(WHITELIST_KEY)),
+      ...listSpamListEntries('all')
+        .filter((e) => e.list_type === 'allow' && e.account_id == null)
+        .map((e) => e.pattern),
+    ];
+  } catch {
+    return parseSenderList(getSyncInfo(WHITELIST_KEY));
+  }
 }
 
 export function getGlobalSenderBlacklist(): string[] {
-  return parseSenderList(getSyncInfo(BLACKLIST_KEY));
+  try {
+    return [
+      ...parseSenderList(getSyncInfo(BLACKLIST_KEY)),
+      ...listSpamListEntries('all')
+        .filter((e) => e.list_type === 'block' && e.account_id == null)
+        .map((e) => e.pattern),
+    ];
+  } catch {
+    return parseSenderList(getSyncInfo(BLACKLIST_KEY));
+  }
 }
 
 export type SenderFilterResult = 'whitelist' | 'blacklist' | 'default';

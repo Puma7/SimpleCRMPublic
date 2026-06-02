@@ -2,12 +2,16 @@ import { createSqliteEmailStoreBranchesMock } from './helpers/sqlite-email-store
 import { POP3_UID_CEILING } from '../../electron/email/email-store';
 
 const mock = createSqliteEmailStoreBranchesMock();
+const mockRecordSpamLearning = jest.fn();
 jest.mock('../../electron/sqlite-service', () => ({ getDb: () => mock.db }));
 jest.mock('../../electron/email/email-keytar', () => ({
   deleteEmailPassword: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../../electron/email/email-message-attachments-store', () => ({
   purgeAttachmentFilesForAccount: jest.fn().mockResolvedValue(undefined),
+}));
+jest.mock('../../electron/email/email-spam-store', () => ({
+  recordSpamLearningForMessage: (...args: unknown[]) => mockRecordSpamLearning(...args),
 }));
 
 import { deleteEmailPassword } from '../../electron/email/email-keytar';
@@ -578,6 +582,19 @@ describe('email-store branches', () => {
       moveMessageToMailView(100, 'inbox');
       moveMessageToMailView(100, 'archived');
       moveMessageToMailView(100, 'spam');
+      expect(mockRecordSpamLearning).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 100 }),
+        'spam',
+        'drag-and-drop',
+      );
+      mockRecordSpamLearning.mockClear();
+      mock.seedMessage({ id: 900, uid: 90, spam_status: 'review', is_spam: 0 });
+      moveMessageToMailView(900, 'inbox');
+      expect(mockRecordSpamLearning).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 900 }),
+        'ham',
+        'drag-and-drop',
+      );
       mock.stmt.get.mockReturnValueOnce(undefined);
       expect(() => moveMessageToMailView(999, 'inbox')).toThrow(/nicht gefunden/);
       mock.stmt.get.mockReturnValueOnce({ id: 800, uid: -1, pop3_uidl: null });

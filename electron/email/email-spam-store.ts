@@ -58,7 +58,12 @@ export function normalizeSpamPattern(
   const withoutAt = trimmed.startsWith('@') ? trimmed.slice(1) : trimmed;
   const inferred: SpamPatternType = rawType ?? (withoutAt.includes('@') ? 'email' : 'domain');
   const pattern = inferred === 'email' ? normalizeSenderEmail(withoutAt) : withoutAt.replace(/^\.+|\.+$/g, '');
-  if (!pattern || (inferred === 'email' && !pattern.includes('@'))) {
+  const domainPattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+  const valid =
+    inferred === 'email'
+      ? /^[^\s@]+@[^\s@]+$/.test(pattern) && domainPattern.test(senderDomain(pattern))
+      : domainPattern.test(pattern);
+  if (!valid) {
     throw new Error('Ungültiger Spam-Listen-Eintrag');
   }
   return { pattern, patternType: inferred };
@@ -202,15 +207,16 @@ export function evaluateSpamListMatch(row: EmailMessageRow): SpamListMatch | nul
 export function loadSpamFeatureStats(featureKeys: string[]): Map<string, SpamFeatureStat> {
   const out = new Map<string, SpamFeatureStat>();
   if (featureKeys.length === 0) return out;
-  for (const featureKey of featureKeys) {
-    const row = getDb()
-      .prepare(
-        `SELECT feature_key, spam_count, ham_count
-         FROM ${EMAIL_SPAM_FEATURE_STATS_TABLE}
-         WHERE feature_key = ?`,
-      )
-      .get(featureKey) as SpamFeatureStat | undefined;
-    if (row) out.set(featureKey, row);
+  const placeholders = featureKeys.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(
+      `SELECT feature_key, spam_count, ham_count
+       FROM ${EMAIL_SPAM_FEATURE_STATS_TABLE}
+       WHERE feature_key IN (${placeholders})`,
+    )
+    .all(...featureKeys) as SpamFeatureStat[];
+  for (const row of rows) {
+    out.set(row.feature_key, row);
   }
   return out;
 }

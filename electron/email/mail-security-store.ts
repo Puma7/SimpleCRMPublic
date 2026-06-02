@@ -84,6 +84,7 @@ export function securityVariablesFromRow(row: {
     vars['spam.score'] = row.spam_score;
   }
   if (row.spam_score_label) vars['spam.status'] = row.spam_score_label;
+  if (row.spam_score_label) vars['spam.label'] = row.spam_score_label;
   if (row.spam_decision_source) vars['spam.source'] = row.spam_decision_source;
   if (row.spam_score_breakdown_json) {
     try {

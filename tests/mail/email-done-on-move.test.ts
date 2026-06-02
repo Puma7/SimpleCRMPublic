@@ -10,6 +10,7 @@ import {
 
 const mockRun = jest.fn();
 const mockGet = jest.fn();
+const mockRecordSpamLearning = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({
@@ -22,6 +23,9 @@ jest.mock('../../electron/sqlite-service', () => ({
       all: jest.fn(() => []),
     }),
   }),
+}));
+jest.mock('../../electron/email/email-spam-store', () => ({
+  recordSpamLearningForMessage: (...args: unknown[]) => mockRecordSpamLearning(...args),
 }));
 
 describe('done_local on folder moves', () => {

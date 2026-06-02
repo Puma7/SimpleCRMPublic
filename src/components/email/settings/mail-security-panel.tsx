@@ -112,7 +112,16 @@ export function MailSecurityPanel() {
 
   const deleteEntry = async (id: number) => {
     if (!hasElectron()) return
-    await invokeIpc(IPCChannels.Email.DeleteSpamListEntry, id)
+    try {
+      const result = await invokeIpc<{ success: boolean; error?: string }>(IPCChannels.Email.DeleteSpamListEntry, id)
+      if (!result.success) {
+        toast.error(result.error ?? "Listen-Eintrag konnte nicht geloescht werden.")
+        return
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Listen-Eintrag konnte nicht geloescht werden.")
+      return
+    }
     toast.success("Listen-Eintrag geloescht.")
     await load()
   }

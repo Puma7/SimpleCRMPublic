@@ -110,6 +110,10 @@ describe('email-vacation', () => {
       .mockReturnValueOnce(baseMsg)
       .mockReturnValueOnce({ ...baseMsg, is_spam: 1 });
     await maybeSendVacationAutoReply(1);
+    (getEmailMessageById as jest.Mock)
+      .mockReturnValueOnce(baseMsg)
+      .mockReturnValueOnce({ ...baseMsg, spam_score_label: 'review' });
+    await maybeSendVacationAutoReply(1);
     expect(sendSmtpForAccount).not.toHaveBeenCalled();
   });
 

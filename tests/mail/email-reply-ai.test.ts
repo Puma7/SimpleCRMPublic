@@ -104,6 +104,8 @@ describe('email-reply-ai', () => {
     expect(canSuggestReplyForMessage(inboxRow())).toBe(true);
     expect(canSuggestReplyForMessage(inboxRow({ soft_deleted: 1 }))).toBe(false);
     expect(canSuggestReplyForMessage(inboxRow({ is_spam: 1 }))).toBe(false);
+    expect(canSuggestReplyForMessage(inboxRow({ spam_score_label: 'review' }))).toBe(false);
+    expect(canSuggestReplyForMessage(inboxRow({ spam_score_label: 'spam' }))).toBe(false);
     expect(canSuggestReplyForMessage(inboxRow({ folder_kind: 'sent' }))).toBe(false);
     expect(canSuggestReplyForMessage(inboxRow({ uid: -1, pop3_uidl: null }))).toBe(false);
     expect(canSuggestReplyForMessage(inboxRow({ pop3_uidl: 'uidl-1' }))).toBe(true);

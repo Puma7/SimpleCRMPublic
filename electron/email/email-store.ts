@@ -1480,16 +1480,34 @@ export function bulkSetMessageSpamStatus(
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
   const syncable = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
-  const sql =
+  const where =
     accountId != null
-      ? `SELECT * FROM ${EMAIL_MESSAGES_TABLE} WHERE account_id = ? AND id IN (${placeholders}) AND ${syncable}`
-      : `SELECT * FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${placeholders}) AND ${syncable}`;
+      ? `account_id = ? AND id IN (${placeholders}) AND ${syncable}`
+      : `id IN (${placeholders}) AND ${syncable}`;
   const params = accountId != null ? [accountId, ...messageIds] : [...messageIds];
-  const rows = getDb().prepare(sql).all(...params) as EmailMessageRow[];
-  for (const row of rows) {
-    setMessageSpamStatus(row.id, status, { ...opts, preloadedRow: row });
+  const rows = getDb()
+    .prepare(`SELECT * FROM ${EMAIL_MESSAGES_TABLE} WHERE ${where}`)
+    .all(...params) as EmailMessageRow[];
+  if (rows.length === 0) return 0;
+
+  const setSql =
+    status === 'spam'
+      ? `is_spam = 1, spam_status = 'spam', soft_deleted = 0, archived = 0, done_local = 1, spam_decided_at = datetime('now')`
+      : status === 'review'
+        ? `is_spam = 0, spam_status = 'review', soft_deleted = 0, archived = 0, done_local = 0, seen_local = 0, folder_kind = 'inbox', spam_decided_at = datetime('now')`
+        : `is_spam = 0, spam_status = 'clean', soft_deleted = 0, archived = 0, done_local = 0, folder_kind = CASE WHEN folder_kind IN ('sent', 'draft') THEN folder_kind ELSE 'inbox' END, spam_decided_at = datetime('now')`;
+  const r = getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${setSql} WHERE ${where}`)
+    .run(...params);
+
+  if (opts.train) {
+    for (const row of rows) {
+      const previous = row.spam_status ?? (row.is_spam ? 'spam' : 'clean');
+      const label = learningLabelForTransition(previous, status);
+      if (label) recordSpamLearningForMessage(row, label, opts.source ?? 'manual');
+    }
   }
-  return rows.length;
+  return r.changes;
 }
 
 export function bulkSetMessagesDoneLocal(
@@ -1827,7 +1845,11 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
   }
 
   switch (view) {
-    case 'inbox':
+    case 'inbox': {
+      const previousSpamStatus = row.spam_status ?? (row.is_spam ? 'spam' : 'clean');
+      if (previousSpamStatus === 'spam' || previousSpamStatus === 'review') {
+        recordSpamLearningForMessage(row, 'ham', 'drag-and-drop');
+      }
       getDb()
         .prepare(
           `UPDATE ${EMAIL_MESSAGES_TABLE}
@@ -1838,6 +1860,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
         )
         .run(messageId);
       break;
+    }
     case 'archived':
       getDb()
         .prepare(
@@ -1849,10 +1872,10 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
         .run(messageId);
       break;
     case 'spam_review':
-      setMessageSpamStatus(messageId, 'review', { train: false, preloadedRow: row });
+      setMessageSpamStatus(messageId, 'review', { train: true, source: 'drag-and-drop', preloadedRow: row });
       break;
     case 'spam':
-      setMessageSpamStatus(messageId, 'spam', { train: false, preloadedRow: row });
+      setMessageSpamStatus(messageId, 'spam', { train: true, source: 'drag-and-drop', preloadedRow: row });
       break;
     case 'sent':
     case 'drafts':

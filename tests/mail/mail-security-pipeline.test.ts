@@ -6,6 +6,7 @@ const mockSpam = jest.fn();
 const mockSettings = jest.fn();
 const mockMailauth = jest.fn();
 const mockRspamdOn = jest.fn();
+const mockPreWorkflow = jest.fn();
 
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...a: unknown[]) => mockGetMessage(...a),
@@ -21,6 +22,9 @@ jest.mock('../../electron/email/mail-security-store', () => ({
 }));
 jest.mock('../../electron/email/email-spam-engine', () => ({
   evaluateAndSaveSpamDecision: (...a: unknown[]) => mockSpam(...a),
+}));
+jest.mock('../../electron/email/mail-security-static', () => ({
+  applyPreWorkflowMailSecurity: (...a: unknown[]) => mockPreWorkflow(...a),
 }));
 jest.mock('../../electron/email/mail-security-settings', () => ({
   getMailSecuritySettings: () => mockSettings(),
@@ -39,6 +43,7 @@ describe('runMailSecurityPipeline', () => {
     mockVerify.mockResolvedValue({ spf: 'pass' });
     mockRspamd.mockResolvedValue({ score: 1 });
     mockSpam.mockReturnValue({ score: 8, status: 'clean', source: 'local', reasons: [], featureKeys: [] });
+    mockPreWorkflow.mockReturnValue({ skippedWorkflows: false, tags: [] });
     mockGetMessage.mockReturnValue({
       id: 1,
       raw_rfc822_b64: 'x',
@@ -61,6 +66,7 @@ describe('runMailSecurityPipeline', () => {
     expect(r.rspamdChecked).toBe(true);
     expect(mockSave).toHaveBeenCalledWith(1, { spf: 'pass' }, { score: 1 });
     expect(mockSpam).toHaveBeenCalled();
+    expect(mockPreWorkflow).toHaveBeenCalledWith(1, expect.objectContaining({ id: 1 }));
     expect(r.spam?.score).toBe(8);
   });
 
@@ -72,6 +78,7 @@ describe('runMailSecurityPipeline', () => {
     expect(r.authChecked).toBe(false);
     expect(mockGetMessage).not.toHaveBeenCalled();
     expect(mockSpam).toHaveBeenCalledWith(2, row);
+    expect(mockPreWorkflow).toHaveBeenCalledWith(2, row);
     expect(r.preWorkflow.skippedWorkflows).toBe(false);
   });
 });

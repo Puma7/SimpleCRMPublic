@@ -54,6 +54,11 @@ describe('email spam list matching', () => {
     });
   });
 
+  test('rejects too broad or malformed patterns', () => {
+    expect(() => normalizeSpamPattern('com')).toThrow(/Ung/);
+    expect(() => normalizeSpamPattern('bad@')).toThrow(/Ung/);
+  });
+
   test('allowlist wins before a more specific blocklist match', () => {
     const match = selectSpamListMatch(
       [

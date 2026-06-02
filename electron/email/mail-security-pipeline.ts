@@ -8,6 +8,7 @@ import {
 } from './mail-security-settings';
 import { saveMessageSecurity } from './mail-security-store';
 import { evaluateAndSaveSpamDecision } from './email-spam-engine';
+import { applyPreWorkflowMailSecurity } from './mail-security-static';
 import type { SpamScoreBreakdown } from './email-spam-types';
 
 export type MailSecurityPipelineResult = {
@@ -64,11 +65,13 @@ export async function runMailSecurityPipeline(
 
   const rowForSpam = auth || rspamd ? getEmailMessageById(messageId) : row;
   const spam = evaluateAndSaveSpamDecision(messageId, rowForSpam ?? undefined);
+  const rowForPre = rowForSpam ?? row;
+  const preWorkflow = applyPreWorkflowMailSecurity(messageId, rowForPre);
 
   return {
     authChecked: auth != null,
     rspamdChecked: rspamd != null,
     spam,
-    preWorkflow: { skippedWorkflows: false, tags: [] },
+    preWorkflow,
   };
 }
