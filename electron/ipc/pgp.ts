@@ -11,6 +11,9 @@ import {
   encryptPlaintextForRecipients,
   signPlaintext,
   verifySignedMessage,
+  listPgpPeerKeys,
+  deletePgpPeerKey,
+  checkRecipientKeys,
 } from '../pgp/pgp-service';
 
 export function registerPgpHandlers(options: {
@@ -103,6 +106,52 @@ export function registerPgpHandlers(options: {
         return verifySignedMessage(payload.messageId);
       },
       { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.ListPeerKeys,
+      async (event) => {
+        requireRealAuthSession(event);
+        return listPgpPeerKeys();
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.DeletePeerKey,
+      async (event, payload: { id: number }) => {
+        requireRealAuthSession(event);
+        deletePgpPeerKey(payload.id);
+        return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.CheckRecipientKeys,
+      async (event, payload: { emails: string[] }) => {
+        requireRealAuthSession(event);
+        return checkRecipientKeys(payload.emails);
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.DeleteIdentity,
+      async (event, payload: { id: number }) => {
+        requireRealAuthSession(event);
+        await deletePgpIdentity(payload.id);
+        return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 

@@ -33,6 +33,9 @@ import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
+import { PgpPanel } from "./settings/pgp-panel"
+import { AuditLogPanel } from "./settings/audit-log-panel"
+import { ThreadToolsPanel } from "./settings/thread-tools-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -87,6 +90,9 @@ const TAB_DEFS: TabDef[] = [
   { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
+  { id: "pgp", label: "PGP", icon: KeyRound, render: () => <PgpPanel /> },
+  { id: "auditLog", label: "Audit-Log", icon: ShieldCheck, render: () => <AuditLogPanel /> },
+  { id: "threadTools", label: "Threads", icon: Workflow, render: () => <ThreadToolsPanel /> },
   { id: "diagnostics", label: "Diagnose", icon: Stethoscope, render: () => <DiagnosticsPanel /> },
   { id: "misc", label: "Sonstiges", icon: Wrench, render: () => <MiscPanel /> },
 ]
@@ -100,7 +106,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
   { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "canned"] },
-  { label: "Datenschutz & Support", tabIds: ["export", "diagnostics"] },
+  { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
 

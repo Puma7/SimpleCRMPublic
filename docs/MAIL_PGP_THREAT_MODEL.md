@@ -17,9 +17,20 @@
 - **Lokaler Angreifer** mit DB-/Dateizugriff.
 - **WKD/Keyserver** sind standardmäßig aus (Kontakt-Leaks).
 
+## Implementiert (Stufe 1)
+
+- Inbound: Erkennung, Entschlüsseln im Viewer (nur RAM, nicht persistiert).
+- Outbound: Verschlüsseln/Signieren vor SMTP (`prepareOutboundPgpBody`, fail-closed ohne Empfänger-Key).
+- Settings → PGP: Identitäten, Peer-Keys CRUD.
+- Signatur-Verifikation: `pgp:verify-message`.
+
 ## Workflows
 
 - Kein automatischer Klartext für verschlüsselte Mails; optionaler Workflow-Knoten `pgp.decrypt_if_possible` (später).
+
+## Anhänge
+
+- Verschlüsselte Anhänge: noch kein Decrypt-on-open; Klartext nicht in `email-attachments/` ablegen (Policy).
 
 ## S/MIME
 

@@ -83,6 +83,8 @@ export async function processNewMessagesAfterSync(
         if (db) detectAndFlagReadReceiptRequest(db, item.localMsgId, row.raw_headers);
         const { detectPgpInbound } = await import('../pgp/pgp-service');
         detectPgpInbound(item.localMsgId);
+        const { runCrossAccountThreadHeuristics } = await import('./email-thread-heuristics');
+        runCrossAccountThreadHeuristics(item.localMsgId);
       }
     } catch (e) {
       console.warn(`[email] post-process threading/crm failed msg ${item.localMsgId}`, e);

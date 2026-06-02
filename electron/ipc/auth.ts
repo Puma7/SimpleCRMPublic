@@ -8,7 +8,7 @@ import {
   getSessionFromEvent,
   type SessionRole,
 } from '../auth/session-store';
-import { logAuthAction } from '../auth/audit-log';
+import { listAuditLog, logAuthAction, verifyAuditLogChain } from '../auth/audit-log';
 import { LOCAL_OWNER_USER_ID, LOCAL_WORKSPACE_ID } from '../mail-roadmap-migrations';
 import { USERS_TABLE, USER_ACCOUNT_ACCESS_TABLE } from '../database-schema';
 import { randomUUID } from 'crypto';
@@ -262,6 +262,30 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         ).run(id, payload.username, payload.displayName, payload.role, hashPassword(payload.passphrase), now);
         logAuthAction(db, { action: 'user.create', resourceId: id });
         return { success: true as const, id };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Auth.ListAuditLog,
+      async (_event, payload: { limit?: number; offset?: number }) => {
+        const db = getDb();
+        if (!db) return [];
+        return listAuditLog(db, payload);
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Auth.VerifyAuditChain,
+      async () => {
+        const db = getDb();
+        if (!db) return { valid: false, checked: 0 };
+        return verifyAuditLogChain(db);
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),

@@ -220,6 +220,65 @@ export async function verifySignedMessage(
   return { valid, fingerprint: fp, status };
 }
 
+export function listPgpPeerKeys() {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .prepare(
+      `SELECT id, email, fingerprint, trust_level, source, created_at FROM ${PGP_PEER_KEYS_TABLE} ORDER BY email`,
+    )
+    .all();
+}
+
+export function deletePgpPeerKey(id: number): void {
+  const db = getDb();
+  if (!db) return;
+  db.prepare(`DELETE FROM ${PGP_PEER_KEYS_TABLE} WHERE id = ?`).run(id);
+}
+
+export function checkRecipientKeys(
+  emails: string[],
+): { email: string; hasKey: boolean; fingerprint?: string }[] {
+  const db = getDb();
+  if (!db) return emails.map((email) => ({ email, hasKey: false }));
+  return emails.map((email) => {
+    const row = db
+      .prepare(
+        `SELECT fingerprint FROM ${PGP_PEER_KEYS_TABLE} WHERE email = ? COLLATE NOCASE ORDER BY id DESC LIMIT 1`,
+      )
+      .get(email.trim()) as { fingerprint: string } | undefined;
+    return {
+      email,
+      hasKey: Boolean(row),
+      fingerprint: row?.fingerprint,
+    };
+  });
+}
+
+/** Fail-closed outbound: encrypt and/or sign plaintext before SMTP. */
+export async function prepareOutboundPgpBody(input: {
+  bodyText: string;
+  recipientEmails: string[];
+  userId: string;
+  encrypt?: boolean;
+  sign?: boolean;
+  passphrase?: string;
+}): Promise<{ bodyText: string }> {
+  let text = input.bodyText;
+  if (input.sign) {
+    if (!input.passphrase) throw new Error('Passphrase für Signatur erforderlich');
+    text = (await signPlaintext(text, input.userId, input.passphrase)).armored;
+  }
+  if (input.encrypt) {
+    const missing = checkRecipientKeys(input.recipientEmails).filter((r) => !r.hasKey);
+    if (missing.length > 0) {
+      throw new Error(`Kein Schlüssel für: ${missing.map((m) => m.email).join(', ')}`);
+    }
+    text = (await encryptPlaintextForRecipients(text, input.recipientEmails, input.userId)).armored;
+  }
+  return { bodyText: text };
+}
+
 export async function deletePgpIdentity(id: number): Promise<void> {
   const db = getDb();
   if (!db) return;

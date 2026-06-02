@@ -320,6 +320,10 @@ export async function sendComposeDraft(input: {
   markReplyParentDone?: boolean;
   /** Override account default for Disposition-Notification-To. */
   requestReadReceipt?: boolean;
+  pgpEncrypt?: boolean;
+  pgpSign?: boolean;
+  pgpPassphrase?: string;
+  pgpUserId?: string;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
   | { ok: false; error: string; workflowRunId?: number | null }
@@ -358,14 +362,32 @@ export async function sendComposeDraft(input: {
 
   const inlineTempPaths: string[] = [];
   try {
+    let bodyText = input.bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
+    if (input.pgpEncrypt || input.pgpSign) {
+      const { prepareOutboundPgpBody } = await import('../pgp/pgp-service');
+      const { extractEmailAddressesFromRecipientField } = await import('../../shared/email-recipient-parse');
+      const recipients = [
+        ...extractEmailAddressesFromRecipientField(input.to),
+        ...(input.cc ? extractEmailAddressesFromRecipientField(input.cc) : []),
+      ];
+      const prepared = await prepareOutboundPgpBody({
+        bodyText,
+        recipientEmails: recipients,
+        userId: input.pgpUserId ?? 'local-owner',
+        encrypt: input.pgpEncrypt,
+        sign: input.pgpSign,
+        passphrase: input.pgpPassphrase,
+      });
+      bodyText = prepared.bodyText;
+    }
     const toJson = recipientJsonFromField(input.to);
     const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
     const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
 
     updateComposeDraft(input.draftMessageId, {
       subject: input.subject,
-      bodyText: input.bodyText,
+      bodyText,
       bodyHtml: html ?? null,
       toJson,
       ccJson,
@@ -389,7 +411,7 @@ export async function sendComposeDraft(input: {
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,
       subject: input.subject,
-      bodyText: input.bodyText,
+      bodyText,
       bodyHtml: html ?? undefined,
       to: input.to,
       cc: input.cc,
@@ -453,8 +475,8 @@ export async function sendComposeDraft(input: {
       )
       .run(
         finalSubject,
-        input.bodyText,
-        html ?? null,
+        bodyText,
+        input.pgpEncrypt ? null : html ?? null,
         ticketCode,
         threadId,
         outboundMessageId,
@@ -520,8 +542,8 @@ export async function sendComposeDraft(input: {
         cc: smtpCc,
         bcc: smtpBcc,
         subject: finalSubject,
-        text: input.bodyText,
-        html: htmlOut,
+        text: bodyText,
+        html: input.pgpEncrypt ? undefined : htmlOut,
         attachments: allAttachments.length > 0 ? allAttachments : undefined,
         messageId: outboundMessageId,
         inReplyTo: threadHeaders.inReplyTo,
@@ -541,8 +563,8 @@ export async function sendComposeDraft(input: {
       cc: smtpCc,
       bcc: smtpBcc,
       subject: finalSubject,
-      text: input.bodyText,
-      html: htmlOut || undefined,
+      text: bodyText,
+      html: input.pgpEncrypt ? undefined : htmlOut || undefined,
       messageId: outboundMessageId,
       inReplyTo: threadHeaders.inReplyTo,
       references: threadHeaders.references,

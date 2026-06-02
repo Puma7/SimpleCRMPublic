@@ -1,7 +1,8 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE, EMAIL_THREADS_TABLE } from '../database-schema';
 import { extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
-import { rebuildThreadEdges, upsertThreadAggregates } from './email-thread-aggregate';
+import { rebuildThreadEdges } from './email-thread-aggregate';
+import { applyMessageThreadMetadata, confidenceForJwzAssign } from './email-thread-metadata';
 
 function normId(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -145,5 +146,21 @@ export function assignJwzThreadAndTicket(
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ?, ticket_code = ? WHERE id = ?`)
     .run(threadId, ticketCode, messageId);
+
+  const row = getDb()
+    .prepare(`SELECT subject, from_json FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
+    .get(messageId) as { subject: string | null; from_json: string | null };
+  applyMessageThreadMetadata(messageId, accountId, {
+    subject: row?.subject ?? input.subject,
+    from_json: row?.from_json ?? null,
+    ticket_code: ticketCode,
+    thread_id: threadId,
+    serverThreadSource: 'jwz_headers',
+  });
+  const conf = confidenceForJwzAssign(Boolean(ticketFromSubject), matches.length);
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_confidence = ? WHERE id = ?`)
+    .run(conf, messageId);
+
   rebuildThreadEdges(threadId);
 }

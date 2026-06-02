@@ -5,7 +5,7 @@ import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById, getDb } from '../sqlite-service';
-import { requireRealAuthSession } from '../auth/current-user';
+import { requireAuthSession, requireRealAuthSession } from '../auth/current-user';
 import { canAccessAccount } from '../auth/account-access';
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
@@ -1164,9 +1164,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           attachmentPaths?: string[];
           markReplyParentDone?: boolean;
           requestReadReceipt?: boolean;
+          pgpEncrypt?: boolean;
+          pgpSign?: boolean;
+          pgpPassphrase?: string;
         },
       ) => {
-        const r = await sendComposeDraft(payload);
+        const session = requireAuthSession(_event);
+        const r = await sendComposeDraft({
+          ...payload,
+          pgpUserId: session.userId,
+        });
         if (r.ok) {
           if (r.warning) {
             return { success: true as const, warning: r.warning };
@@ -2586,18 +2593,26 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.RespondReadReceipt,
-      async (_event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
+      async (event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
         const db = getDb();
         if (!db) throw new Error('Database not initialized');
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
+        if (payload.action === 'send') {
+          const { sendReadReceiptMdn } = await import('../email/email-read-receipt-mdn');
+          const r = await sendReadReceiptMdn(payload.messageId);
+          if (!r.ok) return { success: false as const, error: r.error };
+          return { success: true as const };
+        }
         const { logReadReceiptAction } = await import('../email/email-read-receipt');
-        logReadReceiptAction(
-          db,
-          payload.messageId,
-          payload.action === 'send' ? 'sent_back' : 'declined',
-        );
+        logReadReceiptAction(db, payload.messageId, 'declined');
         return { success: true as const };
       },
-      { logger },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -2609,6 +2624,48 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         return listThreadMessages(payload.threadId, payload.limit ?? 50, payload.offset ?? 0);
       },
       { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.MergeThreads,
+      async (
+        event: IpcMainInvokeEvent,
+        payload: { aliasThreadId: string; canonicalThreadId: string },
+      ) => {
+        requireRealAuthSession(event);
+        const { mergeThreads } = await import('../email/email-thread-admin');
+        const r = mergeThreads(payload.aliasThreadId, payload.canonicalThreadId);
+        if (!r.ok) return { success: false as const, error: r.error };
+        return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SplitMessageThread,
+      async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        requireRealAuthSession(event);
+        const { splitMessageToOwnThread } = await import('../email/email-thread-admin');
+        const r = splitMessageToOwnThread(payload.messageId);
+        if (!r.ok) return { success: false as const, error: r.error };
+        return { success: true as const, threadId: r.threadId };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListThreadAliasWarnings,
+      async () => {
+        const { listPendingThreadAliasWarnings } = await import('../email/email-thread-heuristics');
+        return listPendingThreadAliasWarnings(50);
+      },
+      { logger, requireAuth: true },
     ),
   );
 

@@ -43,6 +43,9 @@ export type SettingsTab =
   | "prompts"
   | "export"
   | "diagnostics"
+  | "pgp"
+  | "auditLog"
+  | "threadTools"
   | "misc"
 
 type MailWorkspaceState = {

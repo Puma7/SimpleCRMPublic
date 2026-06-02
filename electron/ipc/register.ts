@@ -9,6 +9,7 @@ import { getDb } from '../sqlite-service';
 import { canAccessAccount, type AccountAccessLevel } from '../auth/account-access';
 import { ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
 import { touchSession } from '../auth/session-store';
+import { resolveEmailChannelAccountId } from './ipc-account-scope';
 
 export interface RegisterIpcOptions {
   logger?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -78,14 +79,13 @@ export function registerIpcHandler<C extends InvokeChannel>(
         if (requireRole && !requireRole.includes(session.role)) {
           throw new Error('Keine Berechtigung');
         }
-        if (accountScope) {
-          const accountId = accountScope(parsedPayload);
-          if (accountId != null) {
-            const db = getDb();
-            if (!db) throw new Error('Database not initialized');
-            if (!canAccessAccount(db, session.userId, accountId, accountAccess, session.role)) {
-              throw new Error('Kein Zugriff auf dieses Konto');
-            }
+        const accountId =
+          accountScope?.(parsedPayload) ?? resolveEmailChannelAccountId(channel, parsedPayload);
+        if (accountId != null) {
+          const db = getDb();
+          if (!db) throw new Error('Database not initialized');
+          if (!canAccessAccount(db, session.userId, accountId, accountAccess, session.role)) {
+            throw new Error('Kein Zugriff auf dieses Konto');
           }
         }
       }

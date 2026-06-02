@@ -28,3 +28,5 @@
 
 - Kein hardcodiertes Default-Passwort; `users.must_set_password = 1` bis `auth:set-initial-password`.
 - Optionales Einmal-Setup-Token in `sync_info` (`local_owner_one_time_pass`), kein Klartext-Log.
+- Auto-Lock nach 30 Minuten Idle; Brute-Force-Sperre nach 5 Fehlversuchen.
+- Audit-Log UI + Hash-Ketten-Prüfung (`auth:list-audit-log`, `auth:verify-audit-chain`).

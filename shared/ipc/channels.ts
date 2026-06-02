@@ -95,6 +95,8 @@ const AuthChannels = literal({
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
   SetInitialPassword: 'auth:set-initial-password',
   GetSetupState: 'auth:get-setup-state',
+  ListAuditLog: 'auth:list-audit-log',
+  VerifyAuditChain: 'auth:verify-audit-chain',
 });
 
 const PgpChannels = literal({
@@ -106,6 +108,10 @@ const PgpChannels = literal({
   EncryptMessage: 'pgp:encrypt-message',
   SignMessage: 'pgp:sign-message',
   VerifyMessage: 'pgp:verify-message',
+  ListPeerKeys: 'pgp:list-peer-keys',
+  DeletePeerKey: 'pgp:delete-peer-key',
+  CheckRecipientKeys: 'pgp:check-recipient-keys',
+  DeleteIdentity: 'pgp:delete-identity',
 });
 
 const AutomationChannels = literal({
@@ -307,6 +313,9 @@ const EmailChannels = literal({
   RespondReadReceipt: 'email:respond-read-receipt',
   ListThreadMessages: 'email:list-thread-messages',
   ListThreadsByView: 'email:list-threads-by-view',
+  MergeThreads: 'email:merge-threads',
+  SplitMessageThread: 'email:split-message-thread',
+  ListThreadAliasWarnings: 'email:list-thread-alias-warnings',
 });
 
 export const IPCChannels = {

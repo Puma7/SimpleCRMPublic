@@ -138,12 +138,32 @@ export function MessageViewer(props: Props) {
   const [readReceiptRespond, setReadReceiptRespond] = useState<string>("never")
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
+  const [decryptedPlain, setDecryptedPlain] = useState<string | null>(null)
+  const [threadAliasHint, setThreadAliasHint] = useState<string | null>(null)
   const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
 
   useEffect(() => {
     setHtmlView(false)
     setLoadRemoteImages(false)
     setReadReceiptRequested(false)
+    setDecryptedPlain(null)
+    setThreadAliasHint(null)
+  }, [selectedMessage?.id])
+
+  useEffect(() => {
+    if (!selectedMessage?.id || !hasElectron()) return
+    void (async () => {
+      const w = await invokeIpc(IPCChannels.Email.ListThreadAliasWarnings, undefined)
+      if (!Array.isArray(w)) return
+      const hit = (w as { messageId: number; confidence: string }[]).find(
+        (x) => x.messageId === selectedMessage.id,
+      )
+      if (hit) {
+        setThreadAliasHint(
+          "Möglicherweise gleicher Thread in anderem Konto (Heuristik). Prüfen Sie Einstellungen → Threads.",
+        )
+      }
+    })()
   }, [selectedMessage?.id])
 
   useEffect(() => {
@@ -880,8 +900,8 @@ export function MessageViewer(props: Props) {
                             passphrase: pass,
                           })
                           if (res && typeof res === "object" && "text" in res) {
-                            toast.success("Entschlüsselt (nur in dieser Ansicht)")
-                            void res
+                            setDecryptedPlain(String((res as { text: string }).text))
+                            toast.success("Entschlüsselt (nur in dieser Ansicht, nicht gespeichert)")
                           }
                         } catch (e) {
                           toast.error(e instanceof Error ? e.message : "Entschlüsselung fehlgeschlagen")
@@ -940,9 +960,35 @@ export function MessageViewer(props: Props) {
                         </Button>
                       </div>
                     ) : null}
+                    {threadAliasHint ? (
+                      <p className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs">
+                        {threadAliasHint}
+                      </p>
+                    ) : null}
                     {readReceiptRequested && readReceiptRespond === "ask" ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
                         <span>Absender bittet um Lesebestätigung.</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            const r = await invokeIpc(IPCChannels.Email.RespondReadReceipt, {
+                              messageId: selectedMessage.id,
+                              action: "send",
+                            })
+                            if (r && typeof r === "object" && "success" in r && (r as { success: boolean }).success) {
+                              toast.success("Lesebestätigung gesendet")
+                              setReadReceiptRequested(false)
+                            } else {
+                              toast.error("MDN konnte nicht gesendet werden")
+                            }
+                          }}
+                        >
+                          Bestätigen senden
+                        </Button>
                         <Button
                           type="button"
                           size="sm"
@@ -970,7 +1016,7 @@ export function MessageViewer(props: Props) {
                   </div>
                 ) : (
                   <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                    {bodyText}
+                    {decryptedPlain ?? bodyText}
                   </pre>
                 )}
               </div>
