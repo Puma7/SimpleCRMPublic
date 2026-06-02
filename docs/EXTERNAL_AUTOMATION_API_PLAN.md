@@ -43,15 +43,15 @@ flowchart LR
 | Mechanismus | Richtung | Für externe Tools nutzbar? |
 |-------------|----------|----------------------------|
 | `shared/ipc/channels.ts` (~100+ Kanäle: Kunden, Deals, Tasks, E-Mail, JTL, MSSQL, …) | UI → Main | **Nein** (nur im laufenden Electron-Prozess) |
-| Interne Workflows (`electron/workflow/`) | Events in der App | **Nein** (Trigger: Mail, CRM, Cron — nicht von außen) |
+| Interne Workflows (`electron/workflow/`) | Events in der App | **Teilweise** (`manual` / `webhook.incoming` über Automation-API; Mail/CRM/Cron bleiben App-Events) |
 | `http.request` | SimpleCRM → URL | **Teilweise** (n8n kann **Webhooks empfangen**, SimpleCRM **ruft** n8n auf) |
-| `webhook.incoming` (geplant) | Internet/LAN → SimpleCRM | **Nein** (🔲 in `WORKFLOW_VISION.md`) |
+| `webhook.incoming` | Internet/LAN → SimpleCRM | **Ja** (Automation-API/IPC mit Secret; startet Workflow-Trigger) |
 | JTL/MSSQL-IPC | Main → Fremdsysteme | Nur **aus** Workflows/Kontext der App |
 
 ### 1.2 Was „fast“ extern geht (Workarounds)
 
 1. **n8n als Ziel:** Workflow-Knoten **HTTP-Anfrage** → POST an n8n-Webhook-URL (Host in `workflow_http_allowlist`).
-2. **n8n als Orchestrator:** n8n kann SimpleCRM **nicht** zuverlässig steuern (kein „Kunde anlegen“, „Mail lesen“, „Deal stage“).
+2. **n8n als Orchestrator:** n8n kann Workflows per API/Webhook anstoßen; vollständige CRM-/Mail-Steuerung läuft über die stabilen API-Endpunkte.
 3. **Datenbank direkt:** SQLite-Datei unter `~/.config/simplecrm/` — **nicht empfohlen** (Schema-Migrationen, Mutex, Korruption, keine Geschäftslogik).
 4. **Datei-/Sync-Integrationen:** Nur wo bereits vorhanden (z. B. MSSQL/JTL-Read in Workflows), nicht als generische API.
 
@@ -218,10 +218,10 @@ Kein Zwang zu Custom-Node: **HTTP Request** + **Webhook** reichen für v1.
 
 **Erfolgskriterium:** n8n klassifiziert Mail extern (OpenAI-Node) und setzt Tag per API.
 
-### Phase C — Webhooks & Events (bidirektional)
+### Phase C — Webhooks & Events (bidirektional, teilweise umgesetzt)
 
 - [ ] Outbound-Subscriptions + HMAC-Signatur (`X-SimpleCRM-Signature`)
-- [ ] Inbound `POST /hooks/incoming/:id` → `webhook.incoming` Trigger (Vision 🔲 schließen)
+- [x] Inbound `POST /hooks/incoming/:id` → `webhook.incoming` Trigger
 - [ ] Event-Emitter an DB-Hooks (customer, deal, email)
 
 **Erfolgskriterium:** SimpleCRM feuert `deal.stage_changed` → n8n → Slack + Rückkanal API Update.
@@ -267,7 +267,7 @@ Betroffene Pakete (priorisiert): `electron/ipc/db*.ts`, `deals`, `tasks`, `email
 |---|--------|------------|
 | 1 | Port & Pfad fest? | Default `127.0.0.1:3847`, Pfad `/api/v1` |
 | 2 | Nur HTTPS? | v1 HTTP localhost ok; TLS optional Phase D |
-| 3 | Webhook-Inbound in v1? | Nein — Phase C (nach stabiler Auth) |
+| 3 | Webhook-Inbound in v1? | Ja — `webhook.incoming`; Outbound-Subscriptions bleiben Phase C |
 | 4 | MCP parallel? | Phase D, gleiche Services |
 | 5 | Öffentliche API-Doku im Repo? | Ja, `docs/API_V1.md` + OpenAPI |
 
@@ -277,7 +277,7 @@ Betroffene Pakete (priorisiert): `electron/ipc/db*.ts`, `deals`, `tasks`, `email
 
 | Dokument | Relevanz |
 |----------|----------|
-| [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md) | `webhook.incoming` 🔲 → Phase C |
+| [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md) | `webhook.incoming` ist umgesetzt; Outbound-Subscriptions bleiben Phase C |
 | [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) | Interne P1–P7 bleiben; **W8 = External API** (neu) |
 | [`DEVELOPER_EMAIL.md`](DEVELOPER_EMAIL.md) | E-Mail-IPC wird Service + API |
 | [`AGENTS.md`](../AGENTS.md) | Kein Server-Prozess heute — Phase A ändert das bewusst |

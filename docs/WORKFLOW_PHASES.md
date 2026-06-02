@@ -1,4 +1,4 @@
-# Workflow-Phasen — Umsetzungsstand (W0–W6)
+# Workflow-Phasen — Umsetzungsstand (W0–W7)
 
 Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 
@@ -26,7 +26,7 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | Prio | Thema | Lieferung |
 |------|--------|-----------|
 | **P1** | Delay-Job-Processor | `processDueDelayedJobs` im E-Mail-Cron; Resume via `executeWorkflowForTrigger` + `startNodeId`; `resolveResumeNodeAfter` |
-| **P2** | CRM-/Kalender-Trigger | `workflow-trigger-dispatch.ts`; `crm.deal_stage_changed` bei `updateDealStage`; Cron-Scan für `task.due` / `calendar.event_start` (15-Min-Fenster, Dedup 60s) |
+| **P2** | CRM-/Kalender-Trigger | `workflow-trigger-dispatch.ts`; `crm.customer_created`; `crm.deal_stage_changed` bei `updateDealStage`; Cron-Scan für `task.due` / `calendar.event_start` (15-Min-Fenster, Dedup 60s) |
 | **P3** | Embeddings-RAG | `embedding_json` an Chunks; `runEmbedding` in OpenAI-Layer; Cosine + Keyword-Fallback in `knowledge-base.ts` |
 | **P4** | `logic.switch` / `merge` / `loop` | Registry-Knoten + Loop-Walker in `runtime.ts` (Ports `each`/`done`, dynamische Switch-Labels) |
 | **P5** | IMAP-Aktionen | `email.move_imap`, `email.delete_server` (Opt-in `workflow_imap_delete_opt_in` in `sync_info`) |
@@ -45,6 +45,8 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | Compose: **Ausgang prüfen** (Dry-Run, keine DB-Mutation) | ✅ |
 | Canvas-Ports für `email.sender_filter` / `logic.threshold` | ✅ |
 | Zusätzliche Vorlagen (Schedule, Manual, CRM-Deal, Newsletter-Archiv) | ✅ |
+| Editor-UX: editierbare Kanten-Labels, Switch-/Loop-Felder, Monaco-Codefelder, Snap-to-grid | ✅ |
+| Trigger `webhook.incoming` über E-Mail-IPC/Automation-API | ✅ |
 
 ## Smoke-Check 2026-06-01
 
@@ -56,9 +58,7 @@ Automatisierte Stichprobe (CI-äquivalent, lokal):
 | Outbound | `email-workflow-engine.core`, `email-compose-send` | OK |
 | Schedule | `workflow-scheduled-fire`, `email-workflow-engine.core` | OK |
 
-Manuell empfohlen: Vorlage pro Trigger aktivieren → Lauf-Historie; „Jetzt ausführen“ bei Schedule; Compose „Ausgang prüfen“ (Dry-Run).
-
-Offen (unverändert): `webhook.incoming` nicht vollständig angebunden.
+Manuell empfohlen: Vorlage pro Trigger aktivieren → Lauf-Historie; „Jetzt ausführen“ bei Schedule; Compose „Ausgang prüfen“ (Dry-Run); Switch-Fälle und Loop-Limit im Editor speichern/neu laden.
 
 ## Bekannte Grenzen (nach P7)
 
@@ -67,6 +67,6 @@ Offen (unverändert): `webhook.incoming` nicht vollständig angebunden.
 - JTL: Lookup/Masterdata, keine vollständige Auftragserstellung.
 - HTTP-Allowlist: `sync_info` Key `workflow_http_allowlist` (kommaseparierte Hosts).
 - `draft_created` nur bei neuem Entwurf, nicht bei jedem Update.
-- `webhook.incoming`, `crm.customer_created` noch nicht als Trigger.
+- Externe Outbound-Webhook-Subscriptions bleiben API-Roadmap; der interne Trigger `webhook.incoming` ist angebunden.
 
 *Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle, Auto-Send ohne Freigabe.
