@@ -221,7 +221,7 @@ Kein Zwang zu Custom-Node: **HTTP Request** + **Webhook** reichen für v1.
 ### Phase C — Webhooks & Events (bidirektional, teilweise umgesetzt)
 
 - [ ] Outbound-Subscriptions + HMAC-Signatur (`X-SimpleCRM-Signature`)
-- [x] Inbound `POST /webhooks/incoming` → `webhook.incoming` Trigger
+- [x] Inbound `POST /api/v1/webhooks/incoming` → `webhook.incoming` Trigger
 - [ ] Event-Emitter an DB-Hooks (customer, deal, email)
 
 **Erfolgskriterium:** SimpleCRM feuert `deal.stage_changed` → n8n → Slack + Rückkanal API Update.
