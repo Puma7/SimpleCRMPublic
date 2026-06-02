@@ -14,6 +14,7 @@ import {
   SETUP_TOKEN_SYNC_KEY,
   consumeOneTimeSetupToken,
   hasActiveOneTimeSetupToken,
+  readOneTimeSetupToken,
   setStoredOneTimeSetupToken,
   validateOneTimeSetupToken,
 } from '../../electron/auth/setup-token';
@@ -35,6 +36,13 @@ describe('setup-token', () => {
     expect(consumeOneTimeSetupToken()).toBe('once');
     expect(store[SETUP_TOKEN_SYNC_KEY]).toBeUndefined();
     expect(hasActiveOneTimeSetupToken()).toBe(false);
+  });
+
+  it('read keeps token available for initial password setup', () => {
+    setStoredOneTimeSetupToken('peek');
+    expect(readOneTimeSetupToken()).toBe('peek');
+    expect(store[SETUP_TOKEN_SYNC_KEY]).toBeDefined();
+    expect(validateOneTimeSetupToken('peek')).toBe(true);
   });
 
   it('rejects expired token', () => {

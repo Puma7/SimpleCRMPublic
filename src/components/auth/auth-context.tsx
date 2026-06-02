@@ -45,18 +45,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false)
       return
     }
-    const res = await invokeIpc(IPCChannels.Auth.GetSession, undefined)
-    if (res && typeof res === "object" && "authenticated" in res) {
-      const r = res as {
-        authenticated: boolean
-        authRequired?: boolean
-        user?: AuthUser
+    try {
+      const res = await invokeIpc(IPCChannels.Auth.GetSession, undefined)
+      if (res && typeof res === "object" && "authenticated" in res) {
+        const r = res as {
+          authenticated: boolean
+          authRequired?: boolean
+          user?: AuthUser
+        }
+        setAuthenticated(r.authenticated)
+        setAuthRequired(r.authRequired ?? false)
+        setUser(r.user ?? null)
       }
-      setAuthenticated(r.authenticated)
-      setAuthRequired(r.authRequired ?? false)
-      setUser(r.user ?? null)
+    } catch {
+      setAuthenticated(false)
+      setAuthRequired(true)
+      setUser(null)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [])
 
   useEffect(() => {

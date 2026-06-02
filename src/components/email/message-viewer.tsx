@@ -27,7 +27,6 @@ import {
   CheckCircle2,
   Circle,
   ShieldAlert,
-  ShieldQuestion,
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -592,18 +591,6 @@ export function MessageViewer(props: Props) {
                     <span className="hidden lg:inline">Kein Spam</span>
                   </Button>
                 ) : null}
-                {selectedMessage.spam_status !== "review" && selectedMessage.spam_status !== "spam" && !selectedMessage.is_spam ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="gap-1.5 bg-amber-500/12 text-amber-900 hover:bg-amber-500/20 dark:text-amber-100"
-                    onClick={() => void handleSetSpamStatus("review")}
-                  >
-                    <ShieldQuestion className="h-4 w-4" />
-                    <span className="hidden lg:inline">Spam prÃ¼fen</span>
-                  </Button>
-                ) : null}
                 {selectedMessage.spam_status !== "spam" && !selectedMessage.is_spam ? (
                   <Button
                     type="button"
@@ -725,7 +712,7 @@ export function MessageViewer(props: Props) {
                   ) : null}
                   {selectedMessage.spam_status === "review" ? (
                     <span className="ml-1 inline-block rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-700 dark:text-amber-400">
-                      Spam prÃ¼fen
+                      Spam prüfen
                     </span>
                   ) : null}
                   {selectedMessage.is_spam || selectedMessage.spam_status === "spam" ? (

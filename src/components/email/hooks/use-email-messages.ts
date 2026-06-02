@@ -283,7 +283,7 @@ export function useEmailMessages() {
           sent: "Gesendet",
           drafts: "Entwürfe",
           archived: "Archiv",
-          spam_review: "Spam prÃ¼fen",
+          spam_review: "Spam prüfen",
           spam: "Spam",
           trash: "Papierkorb",
         }

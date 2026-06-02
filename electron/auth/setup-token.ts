@@ -50,7 +50,16 @@ export function validateOneTimeSetupToken(candidate: string): boolean {
   return row.token === candidate;
 }
 
-/** Read and delete the one-time setup token (GetOneTimeSetupPassword). */
+export function readOneTimeSetupToken(): string | null {
+  const row = parseStored(getSyncInfo(SETUP_TOKEN_SYNC_KEY));
+  if (!row || row.expiresAt <= Date.now()) {
+    if (row) deleteSyncInfo(SETUP_TOKEN_SYNC_KEY);
+    return null;
+  }
+  return row.token;
+}
+
+/** Read and delete the one-time setup token. */
 export function consumeOneTimeSetupToken(): string | null {
   const row = parseStored(getSyncInfo(SETUP_TOKEN_SYNC_KEY));
   deleteSyncInfo(SETUP_TOKEN_SYNC_KEY);

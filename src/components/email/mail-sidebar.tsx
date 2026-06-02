@@ -44,7 +44,7 @@ const FOLDERS: {
   { id: "sent", label: "Gesendet", icon: Send, countKey: "sentFailed" },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
-  { id: "spam_review", label: "Spam prÃ¼fen", icon: ShieldQuestion, countKey: "spamReview" },
+  { id: "spam_review", label: "Spam prüfen", icon: ShieldQuestion, countKey: "spamReview" },
   { id: "spam", label: "Spam", icon: ShieldAlert, countKey: "spam" },
   { id: "trash", label: "Papierkorb", icon: Trash2, countKey: "trash" },
 ]
