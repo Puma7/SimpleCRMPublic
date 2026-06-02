@@ -50,4 +50,10 @@ describe('workflow editor edge label helpers', () => {
     expect(isEdgeLabelValidForSource(source, 'vertrieb')).toBe(false);
     expect(edgeSourceHandleFromLabel('vertrieb', source)).toBeUndefined();
   });
+
+  test('accepts legacy registryType metadata for label options', () => {
+    const source = { type: 'registry', data: { registryType: 'logic.loop' } };
+    expect(edgeLabelOptionsForSource(source).labels).toEqual(['each', 'done']);
+    expect(edgeSourceHandleFromLabel('fertig', source)).toBe('done');
+  });
 });

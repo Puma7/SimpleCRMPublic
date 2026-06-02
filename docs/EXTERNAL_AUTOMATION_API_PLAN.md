@@ -7,7 +7,7 @@
 | Frage | Antwort |
 |--------|---------|
 | Gibt es heute eine **öffentliche API** für n8n & Co.? | **Ja (lokal):** `http://127.0.0.1:3847/api/v1` — siehe [`API_V1.md`](API_V1.md) |
-| Gibt es **PAI**? | Vermutlich gemeint: **API** — **REST + OpenAPI**; Inbound-Webhooks noch **Phase C** |
+| Gibt es **PAI**? | Vermutlich gemeint: **API** — **REST + OpenAPI**; Inbound-Webhooks sind über `/api/v1/webhooks/incoming` angebunden |
 | Was gibt es stattdessen? | **IPC** (nur Renderer ↔ Electron-Main), **interne Workflows** (React Flow), **ausgehend** `http.request` mit Host-Allowlist |
 | n8n-Import/-Export? | **Nein** — eigenes Graph-Schema; in [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md) nur „ggf. später Export-Subset“ |
 
@@ -45,7 +45,7 @@ flowchart LR
 | `shared/ipc/channels.ts` (~100+ Kanäle: Kunden, Deals, Tasks, E-Mail, JTL, MSSQL, …) | UI → Main | **Nein** (nur im laufenden Electron-Prozess) |
 | Interne Workflows (`electron/workflow/`) | Events in der App | **Teilweise** (`manual` / `webhook.incoming` über Automation-API; Mail/CRM/Cron bleiben App-Events) |
 | `http.request` | SimpleCRM → URL | **Teilweise** (n8n kann **Webhooks empfangen**, SimpleCRM **ruft** n8n auf) |
-| `webhook.incoming` | Internet/LAN → SimpleCRM | **Ja** (Automation-API/IPC mit Secret; startet Workflow-Trigger) |
+| `webhook.incoming` | Lokale Automation-API/IPC → SimpleCRM | **Ja** (Secret erforderlich; startet Workflow-Trigger) |
 | JTL/MSSQL-IPC | Main → Fremdsysteme | Nur **aus** Workflows/Kontext der App |
 
 ### 1.2 Was „fast“ extern geht (Workarounds)
@@ -176,7 +176,7 @@ Konfiguration: `POST /api/v1/webhooks/subscriptions` mit `{ url, events[], secre
 
 | Endpoint | Wirkung |
 |----------|---------|
-| `POST /api/v1/hooks/incoming/:hookId` | Startet Workflow mit Trigger `webhook.incoming` + Payload als Variable |
+| `POST /api/v1/webhooks/incoming` | Startet Workflow mit Trigger `webhook.incoming`; Secret + Payload im JSON-Body |
 | `POST /api/v1/workflows/:id/execute` | Manueller Lauf mit JSON-Kontext |
 
 Implementierung koppelt an bestehenden `workflow-trigger-dispatch` / Graph-Interpreter.
@@ -221,7 +221,7 @@ Kein Zwang zu Custom-Node: **HTTP Request** + **Webhook** reichen für v1.
 ### Phase C — Webhooks & Events (bidirektional, teilweise umgesetzt)
 
 - [ ] Outbound-Subscriptions + HMAC-Signatur (`X-SimpleCRM-Signature`)
-- [x] Inbound `POST /hooks/incoming/:id` → `webhook.incoming` Trigger
+- [x] Inbound `POST /webhooks/incoming` → `webhook.incoming` Trigger
 - [ ] Event-Emitter an DB-Hooks (customer, deal, email)
 
 **Erfolgskriterium:** SimpleCRM feuert `deal.stage_changed` → n8n → Slack + Rückkanal API Update.

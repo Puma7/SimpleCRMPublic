@@ -11,6 +11,7 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | **W4** | ✅ | `code.javascript` (vm), `code.python`, Plugin-Manifest-Loader |
 | **W5** | ✅ | `crm.create_task`, `crm.log_activity`, `sync.run`, `http.request` (Allowlist), `logic.delay` / `set_variable` |
 | **W6** | ✅ | Import/Export Bundle IPC, Lauf-Historie UI, Workflow-Reporting weiter über Runs |
+| **W7** | ✅ | Editor-Roadmap: editierbare Kanten-Labels, Switch-/Loop-Builder, Inline-Code-Monaco, Snap-to-grid, direkte Node-/Helper-Tests |
 
 ## Architektur (kurz)
 

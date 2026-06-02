@@ -66,11 +66,14 @@ export function NodePropertiesPanel({
 
   const patch = (partial: Record<string, unknown>) => {
     if (!node) return
+    const nextData = { ...node.data, ...partial }
+    const nextNode = { ...node, data: nextData }
     setNodes(
       nodes.map((n) =>
-        n.id === node.id ? { ...n, data: { ...n.data, ...partial } } : n,
+        n.id === node.id ? nextNode : n,
       ),
     )
+    setEdges(resyncOutgoingEdgeHandles(edges, nextNode))
   }
 
   // Replaces the node's entire `data` object. Used when switching action
@@ -78,7 +81,9 @@ export function NodePropertiesPanel({
   // "tag setzen" to "archivieren") don't end up in the compiled workflow.
   const replaceData = (next: Record<string, unknown>) => {
     if (!node) return
-    setNodes(nodes.map((n) => (n.id === node.id ? { ...n, data: next } : n)))
+    const nextNode = { ...node, data: next }
+    setNodes(nodes.map((n) => (n.id === node.id ? nextNode : n)))
+    setEdges(resyncOutgoingEdgeHandles(edges, nextNode))
   }
 
   const deleteNode = () => {
@@ -344,6 +349,14 @@ function nodeDisplayName(
     return resolveRegistryNodeLabel(data.nodeType, labelByType, data.label)
   }
   return node.id
+}
+
+function resyncOutgoingEdgeHandles(edges: Edge[], sourceNode: Node): Edge[] {
+  return edges.map((edge) =>
+    edge.source === sourceNode.id
+      ? { ...edge, sourceHandle: edgeSourceHandleFromLabel(edge.label, sourceNode) }
+      : edge,
+  )
 }
 
 type FieldProps = {

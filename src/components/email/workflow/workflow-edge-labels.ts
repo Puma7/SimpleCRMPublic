@@ -37,7 +37,8 @@ export function switchCaseHandles(config: Record<string, unknown> | undefined): 
 
 function registryTypeOf(source: EdgeSourceNode | null | undefined): string | undefined {
   if (source?.type !== "registry") return undefined
-  return (source.data as { nodeType?: string } | undefined)?.nodeType
+  const data = source.data as { nodeType?: string; registryType?: string } | undefined
+  return data?.nodeType ?? data?.registryType
 }
 
 export function edgeLabelOptionsForSource(
