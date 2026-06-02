@@ -11,6 +11,12 @@ import {
 } from '../auth/session-store';
 import { listAuditLog, logAuthAction, verifyAuditLogChain } from '../auth/audit-log';
 import { LOCAL_OWNER_USER_ID, LOCAL_WORKSPACE_ID } from '../mail-roadmap-migrations';
+import {
+  clearOneTimeSetupToken,
+  consumeOneTimeSetupToken,
+  hasActiveOneTimeSetupToken,
+  validateOneTimeSetupToken,
+} from '../auth/setup-token';
 import { USERS_TABLE, USER_ACCOUNT_ACCESS_TABLE } from '../database-schema';
 import { randomUUID } from 'crypto';
 import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../auth/login-guard';
@@ -87,7 +93,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         row.id,
       );
       logAuthAction(db, { userId: row.id, action: 'login.success' });
-      deleteSyncInfo('local_owner_one_time_pass');
+      clearOneTimeSetupToken();
       touchSession(event.sender.id);
       event.sender.once('destroyed', () => revokeSession(event.sender.id));
       return {
@@ -176,7 +182,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       const needs = Boolean(owner && owner.must_set_password === 1);
       return {
         needsInitialPassword: needs,
-        hasOneTimeToken: needs && Boolean(getSyncInfo('local_owner_one_time_pass')),
+        hasOneTimeToken: needs && hasActiveOneTimeSetupToken(),
       };
     }, { logger }),
   );
@@ -199,15 +205,14 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!owner || owner.must_set_password !== 1) {
           return { success: false as const, error: 'Einrichtung bereits abgeschlossen' };
         }
-        const token = getSyncInfo('local_owner_one_time_pass');
-        if (!token || payload.setupToken !== token) {
+        if (!validateOneTimeSetupToken(payload.setupToken)) {
           return { success: false as const, error: 'Ungültiges Setup-Token' };
         }
         const now = new Date().toISOString();
         db.prepare(
           `UPDATE ${USERS_TABLE} SET password_hash = ?, password_updated_at = ?, must_set_password = 0 WHERE id = ?`,
         ).run(hashPassword(payload.passphrase), now, LOCAL_OWNER_USER_ID);
-        deleteSyncInfo('local_owner_one_time_pass');
+        clearOneTimeSetupToken();
         setSyncInfo('auth_middleware_v1', '1');
         logAuthAction(db, { userId: LOCAL_OWNER_USER_ID, action: 'user.password.initial_set' });
         return { success: true as const };
@@ -231,9 +236,8 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!owner || owner.last_login_at) {
           return { success: false as const, error: 'Setup-Passwort nicht verfügbar' };
         }
-        const pass = getSyncInfo('local_owner_one_time_pass');
+        const pass = consumeOneTimeSetupToken();
         if (!pass) return { success: false as const, error: 'Setup-Passwort nicht verfügbar' };
-        deleteSyncInfo('local_owner_one_time_pass');
         return { success: true as const, passphrase: pass };
       },
       { logger },

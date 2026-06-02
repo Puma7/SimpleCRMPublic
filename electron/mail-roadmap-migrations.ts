@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'crypto';
 import { hashPassword } from './auth/password-hash';
+import { setStoredOneTimeSetupToken } from './auth/setup-token';
 import os from 'os';
 import { setSyncInfo } from './sqlite-service';
 import {
@@ -65,7 +66,7 @@ function bootstrapLocalOwner(conn: Database.Database): void {
   const oneTimePass = randomBytes(24).toString('base64url');
   const hash = hashPassword(oneTimePass);
   const now = new Date().toISOString();
-  setSyncInfo('local_owner_one_time_pass', oneTimePass);
+  setStoredOneTimeSetupToken(oneTimePass);
 
   conn.prepare(
     `INSERT INTO ${WORKSPACES_TABLE} (id, name) VALUES (?, ?)`,

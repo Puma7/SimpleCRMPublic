@@ -719,6 +719,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       toast.error(e instanceof Error ? e.message : "Versand fehlgeschlagen.")
     } finally {
       setSending(false)
+      setPgpPassphrase("")
     }
   }
 
