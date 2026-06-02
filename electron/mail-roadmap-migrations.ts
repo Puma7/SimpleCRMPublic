@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
+import { randomBytes } from 'crypto';
 import { hashPassword } from './auth/password-hash';
 import os from 'os';
+import { setSyncInfo } from './sqlite-service';
 import {
   AUTH_AUDIT_LOG_TABLE,
   createAuthAuditLogTable,
@@ -60,8 +62,10 @@ function bootstrapLocalOwner(conn: Database.Database): void {
   if (owner) return;
 
   const username = os.userInfo().username || 'owner';
-  const hash = hashPassword('changeme-local-owner');
+  const oneTimePass = randomBytes(24).toString('base64url');
+  const hash = hashPassword(oneTimePass);
   const now = new Date().toISOString();
+  setSyncInfo('local_owner_one_time_pass', oneTimePass);
 
   conn.prepare(
     `INSERT INTO ${WORKSPACES_TABLE} (id, name) VALUES (?, ?)`,
@@ -83,7 +87,7 @@ function bootstrapLocalOwner(conn: Database.Database): void {
   for (const a of accounts) {
     ins.run(LOCAL_OWNER_USER_ID, a.id);
   }
-  console.log('[roadmap] Bootstrapped local-owner user (default passphrase: changeme-local-owner)');
+  console.log('[roadmap] Bootstrapped local-owner user (one-time setup password stored; use Auth.GetOneTimeSetupPassword once)');
 }
 
 /** Phase 1–5 additive schema for mail security roadmap. */

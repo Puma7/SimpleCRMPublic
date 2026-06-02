@@ -5,6 +5,8 @@ import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { getCustomerById, getDb } from '../sqlite-service';
+import { requireRealAuthSession } from '../auth/current-user';
+import { canAccessAccount } from '../auth/account-access';
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
@@ -2512,7 +2514,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetRemoteContentPolicy,
       async (
-        _event: IpcMainInvokeEvent,
+        event: IpcMainInvokeEvent,
         payload: {
           messageId: number;
           policy: 'blocked' | 'allowed_once' | 'allowed_sender' | 'allowed_domain';
@@ -2524,6 +2526,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!db) throw new Error('Database not initialized');
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
         const { setRemoteContentPolicy } = await import('../email/email-remote-content');
         let remember: { scope: 'sender' | 'domain'; value: string } | undefined;
         if (payload.rememberSender || payload.rememberDomain) {
@@ -2541,10 +2547,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             /* ignore */
           }
         }
-        setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
+        if (payload.policy !== 'allowed_once') {
+          setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
+        }
         return { success: true as const };
       },
-      { logger },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 

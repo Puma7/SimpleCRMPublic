@@ -52,9 +52,7 @@ function srcLooksCid(src: string): boolean {
 function sanitizeRemoteUrlInValue(value: string, useCidPlaceholder: boolean): string {
   if (!REMOTE_URL.test(value)) return value;
   const placeholder = useCidPlaceholder ? CID_PLACEHOLDER_SVG : PLACEHOLDER_SVG;
-  return value
-    .replace(/https?:\/\/[^\s"'>,]+/gi, placeholder)
-    .replace(/\/\/[^\s"'>,]+/gi, placeholder);
+  return value.replace(/https?:\/\/[^\s"'>,]+/gi, placeholder);
 }
 
 function replaceQuotedAttr(tag: string, attrName: string, replaceValue: (raw: string) => string): string {
@@ -162,9 +160,7 @@ export function blockRemoteImagesInHtml(html: string): string {
 /** True if HTML likely loads remote resources without user consent. */
 export function htmlHasRemoteResources(html: string): boolean {
   if (!html) return false;
-  if (/(?:https?:)?\/\//i.test(html) && !/^\s*data:/i.test(html)) {
-    if (/https?:\/\//i.test(html) || /(?:^|[\s"'=(])\/\/[a-z0-9]/i.test(html)) return true;
-  }
+  if (/https?:\/\//i.test(html)) return true;
   return /\bcid:/i.test(html);
 }
 

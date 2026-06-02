@@ -3,7 +3,11 @@ import { randomUUID } from 'crypto';
 import { getDb } from '../sqlite-service';
 import { PGP_IDENTITIES_TABLE, PGP_PEER_KEYS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { LOCAL_OWNER_USER_ID } from '../mail-roadmap-migrations';
-import { saveEmailPassword, getEmailPassword, deleteEmailPassword } from '../email/email-keytar';
+import {
+  savePgpPrivateKey,
+  getPgpPrivateKey,
+  deletePgpPrivateKey,
+} from '../email/email-keytar';
 
 const PGP_KEYTAR_PREFIX = 'pgp-priv-';
 
@@ -48,7 +52,7 @@ export async function generatePgpIdentity(
   const key = await openpgp.readKey({ armoredKey: publicKey });
   const fp = key.getFingerprint().toLowerCase();
   const handle = `${PGP_KEYTAR_PREFIX}${randomUUID()}`;
-  await saveEmailPassword(handle, privateKey);
+  await savePgpPrivateKey(handle, privateKey);
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   db.prepare(
@@ -62,6 +66,7 @@ export async function generatePgpIdentity(
 export async function decryptMessageBody(
   messageId: number,
   passphrase: string,
+  userId: string = LOCAL_OWNER_USER_ID,
 ): Promise<{ text: string; status: string }> {
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
@@ -81,9 +86,9 @@ export async function decryptMessageBody(
       `SELECT keytar_private_key_handle FROM ${PGP_IDENTITIES_TABLE}
        WHERE user_id = ? AND has_private_key = 1 ORDER BY is_primary DESC LIMIT 1`,
     )
-    .get(LOCAL_OWNER_USER_ID) as { keytar_private_key_handle: string | null } | undefined;
+    .get(userId) as { keytar_private_key_handle: string | null } | undefined;
   if (!identity?.keytar_private_key_handle) throw new Error('Kein privater Schlüssel');
-  const privArmored = await getEmailPassword(identity.keytar_private_key_handle);
+  const privArmored = await getPgpPrivateKey(identity.keytar_private_key_handle);
   if (!privArmored) throw new Error('Privater Schlüssel nicht in Keytar');
   const privateKey = await openpgp.readPrivateKey({ armoredKey: privArmored });
   const decryptedKey = await openpgp.decryptKey({ privateKey, passphrase });
@@ -103,13 +108,17 @@ export function detectPgpInbound(messageId: number): void {
     .prepare(`SELECT body_text, body_html FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
     .get(messageId) as { body_text: string | null; body_html: string | null };
   if (!row) return;
-  const blob = `${row.body_text ?? ''}\n${row.body_html ?? ''}`;
-  if (blob.includes('BEGIN PGP MESSAGE')) {
+  const textHead = (row.body_text ?? '').trimStart();
+  const htmlHead = (row.body_html ?? '').trimStart();
+  if (textHead.startsWith('-----BEGIN PGP MESSAGE-----') || htmlHead.startsWith('-----BEGIN PGP MESSAGE-----')) {
     db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ? WHERE id = ?`).run(
       'encrypted_unread',
       messageId,
     );
-  } else if (blob.includes('BEGIN PGP SIGNED MESSAGE')) {
+  } else if (
+    textHead.startsWith('-----BEGIN PGP SIGNED MESSAGE-----') ||
+    htmlHead.startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
+  ) {
     db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ? WHERE id = ?`).run(
       'signed_unknown_key',
       messageId,
@@ -124,7 +133,7 @@ export async function deletePgpIdentity(id: number): Promise<void> {
     .prepare(`SELECT keytar_private_key_handle FROM ${PGP_IDENTITIES_TABLE} WHERE id = ?`)
     .get(id) as { keytar_private_key_handle: string | null } | undefined;
   if (row?.keytar_private_key_handle) {
-    await deleteEmailPassword(row.keytar_private_key_handle);
+    await deletePgpPrivateKey(row.keytar_private_key_handle);
   }
   db.prepare(`DELETE FROM ${PGP_IDENTITIES_TABLE} WHERE id = ?`).run(id);
 }

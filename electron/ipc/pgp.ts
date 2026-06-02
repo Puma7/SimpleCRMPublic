@@ -1,6 +1,6 @@
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
-import { requireAuthSession } from '../auth/current-user';
+import { requireRealAuthSession } from '../auth/current-user';
 import {
   listPgpIdentities,
   generatePgpIdentity,
@@ -20,10 +20,10 @@ export function registerPgpHandlers(options: {
     registerIpcHandler(
       IPCChannels.Pgp.ListIdentities,
       async (event) => {
-        const session = requireAuthSession(event);
+        const session = requireRealAuthSession(event);
         return listPgpIdentities(session.userId);
       },
-      { logger, requireAuth: true },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -31,10 +31,10 @@ export function registerPgpHandlers(options: {
     registerIpcHandler(
       IPCChannels.Pgp.GenerateIdentity,
       async (event, payload: { email: string; passphrase: string }) => {
-        const session = requireAuthSession(event);
+        const session = requireRealAuthSession(event);
         return generatePgpIdentity(session.userId, payload.email, payload.passphrase);
       },
-      { logger, requireAuth: true },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -44,7 +44,7 @@ export function registerPgpHandlers(options: {
       async (_event, payload: { armored: string }) => {
         return importPublicKeyArmored(payload.armored);
       },
-      { logger, requireAuth: true },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -52,10 +52,10 @@ export function registerPgpHandlers(options: {
     registerIpcHandler(
       IPCChannels.Pgp.DecryptMessage,
       async (event, payload: { messageId: number; passphrase: string }) => {
-        requireAuthSession(event);
-        return decryptMessageBody(payload.messageId, payload.passphrase);
+        const session = requireRealAuthSession(event);
+        return decryptMessageBody(payload.messageId, payload.passphrase, session.userId);
       },
-      { logger, requireAuth: true },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 

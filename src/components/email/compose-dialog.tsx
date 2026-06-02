@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import DOMPurify from "dompurify"
-import { sanitizeMailHtmlBlockRemote } from "@shared/email-html-remote-images"
 import {
   ComposeQuillEditor,
   type ComposeQuillEditorHandle,
@@ -111,8 +110,7 @@ function getComposeContextMessageId(
 }
 
 function sanitizeComposeHtml(html: string): string {
-  const clean = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
-  return sanitizeMailHtmlBlockRemote(clean)
+  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
 }
 
 export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props) {

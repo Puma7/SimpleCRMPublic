@@ -92,6 +92,7 @@ const AuthChannels = literal({
   GetSession: 'auth:get-session',
   ListUsers: 'auth:list-users',
   SaveUser: 'auth:save-user',
+  GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
 });
 
 const PgpChannels = literal({

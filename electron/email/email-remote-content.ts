@@ -79,7 +79,7 @@ export function resolveRemoteContentPolicy(
     return { policy, allowRemote: true };
   }
   if (policy === 'allowed_once') {
-    return { policy, allowRemote: true };
+    return { policy: 'blocked', allowRemote: false };
   }
   if (policy === 'allowed_sender' || policy === 'allowed_domain') {
     return { policy: 'blocked', allowRemote: false };

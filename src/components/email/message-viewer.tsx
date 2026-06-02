@@ -148,19 +148,22 @@ export function MessageViewer(props: Props) {
 
   useEffect(() => {
     if (!selectedMessage?.id || !hasElectron()) return
+    const messageId = selectedMessage.id
     void (async () => {
       try {
         const policy = await invokeIpc(IPCChannels.Email.GetRemoteContentPolicy, {
-          messageId: selectedMessage.id,
+          messageId,
         })
         if (policy && typeof policy === "object" && "allowRemote" in policy) {
-          setLoadRemoteImages(Boolean((policy as { allowRemote: boolean }).allowRemote))
+          setLoadRemoteImages((prev) => {
+            if (selectedMessage?.id !== messageId) return prev
+            return Boolean((policy as { allowRemote: boolean }).allowRemote)
+          })
         }
-        const rr = await invokeIpc(IPCChannels.Email.GetReadReceiptState, {
-          messageId: selectedMessage.id,
-        })
+        const rr = await invokeIpc(IPCChannels.Email.GetReadReceiptState, { messageId })
         if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
           const s = rr as { requested: boolean; respond: string }
+          if (selectedMessage?.id !== messageId) return
           setReadReceiptRequested(s.requested)
           setReadReceiptRespond(s.respond)
         }
@@ -881,14 +884,7 @@ export function MessageViewer(props: Props) {
                           size="sm"
                           variant="outline"
                           className="h-7 text-xs"
-                          onClick={async () => {
-                            if (!selectedMessage) return
-                            await invokeIpc(IPCChannels.Email.SetRemoteContentPolicy, {
-                              messageId: selectedMessage.id,
-                              policy: "allowed_once",
-                            })
-                            setLoadRemoteImages(true)
-                          }}
+                          onClick={() => setLoadRemoteImages(true)}
                         >
                           Einmal laden
                         </Button>

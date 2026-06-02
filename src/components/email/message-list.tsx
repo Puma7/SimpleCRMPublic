@@ -579,8 +579,8 @@ export function MessageList({
               const canSelect = isMessageSelectable(m)
               const checked = selectedIds.has(m.id)
               const tKey = threadKey(m)
-              const isThreadRoot = listDisplayMode === "thread"
-              const threadIdForExpand = m.thread_id?.trim() || tKey.replace(/^t:/, "")
+              const threadIdForExpand = m.thread_id?.trim() ?? ""
+              const isThreadRoot = listDisplayMode === "thread" && threadIdForExpand.length > 0
               const expanded = expandedThreads.has(tKey)
               const children = threadChildren[tKey] ?? []
               return (
@@ -603,7 +603,7 @@ export function MessageList({
                           if (expanded) next.delete(tKey)
                           else {
                             next.add(tKey)
-                            if (!threadChildren[tKey] && hasElectron()) {
+                            if (!threadChildren[tKey] && hasElectron() && threadIdForExpand) {
                               const rows = await invokeIpc(IPCChannels.Email.ListThreadMessages, {
                                 threadId: threadIdForExpand,
                                 limit: 50,

@@ -7,6 +7,7 @@ import {
 } from '../database-schema';
 import type { AccountMailView, EmailMessageRow } from './email-store';
 import { listMessagesForMailScope } from './email-store';
+import { generateTicketCode } from './email-ticket';
 
 const MAX_REF_IDS = 64;
 
@@ -104,15 +105,22 @@ export function upsertThreadAggregates(threadId: string): void {
     has_att: number;
   };
   if (!stats || stats.cnt === 0) return;
+  const ticketRow = db
+    .prepare(
+      `SELECT ticket_code FROM ${EMAIL_THREADS_TABLE} WHERE id = ?
+       UNION SELECT ticket_code FROM ${EMAIL_MESSAGES_TABLE} WHERE thread_id = ? AND ticket_code IS NOT NULL LIMIT 1`,
+    )
+    .get(canon, canon) as { ticket_code: string } | undefined;
+  const ticketCode = ticketRow?.ticket_code ?? generateTicketCode();
   db.prepare(
     `INSERT INTO ${EMAIL_THREADS_TABLE} (id, ticket_code, message_count, last_message_at, has_unread, has_attachments)
-     VALUES (?, COALESCE((SELECT ticket_code FROM ${EMAIL_THREADS_TABLE} WHERE id = ?), ?), ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        message_count = excluded.message_count,
        last_message_at = excluded.last_message_at,
        has_unread = excluded.has_unread,
        has_attachments = excluded.has_attachments`,
-  ).run(canon, canon, `thread-${canon.slice(0, 8)}`, stats.cnt, stats.last_at, stats.has_unread, stats.has_att);
+  ).run(canon, ticketCode, stats.cnt, stats.last_at, stats.has_unread, stats.has_att);
 }
 
 export function rebuildThreadAggregates(): void {
@@ -161,7 +169,7 @@ export function listThreadsForMailScope(
   opts: { limit?: number; offset?: number } = {},
 ): ThreadListRow[] {
   const messages = listMessagesForMailScope(accountScope, view, {
-    limit: 5000,
+    limit: 500,
     offset: 0,
   });
   const byThread = new Map<string, EmailMessageRow[]>();

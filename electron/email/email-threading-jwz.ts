@@ -146,5 +146,4 @@ export function assignJwzThreadAndTicket(
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ?, ticket_code = ? WHERE id = ?`)
     .run(threadId, ticketCode, messageId);
   rebuildThreadEdges(threadId);
-  upsertThreadAggregates(threadId);
 }

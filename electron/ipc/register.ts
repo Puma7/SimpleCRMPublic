@@ -2,6 +2,7 @@ import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import { z, ZodTypeAny } from 'zod';
 import { InvokeChannel } from '../../shared/ipc/channels';
 import { getPayloadSchema, getResultSchema, isDeprecatedChannel } from '../../shared/ipc/schemas';
+import { getSessionFromEvent } from '../auth/session-store';
 import { resolveAuthContext } from '../auth/current-user';
 import type { SessionRole } from '../auth/session-store';
 import { getDb } from '../sqlite-service';
@@ -11,6 +12,8 @@ export interface RegisterIpcOptions {
   logger?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   onDeprecatedUse?: (channel: InvokeChannel) => void;
   requireAuth?: boolean;
+  /** When true with requireAuth, synthetic bootstrap session is rejected. */
+  requireRealSession?: boolean;
   requireRole?: SessionRole[];
   accountScope?: (payload: unknown) => number | undefined;
   accountAccess?: AccountAccessLevel;
@@ -45,6 +48,7 @@ export function registerIpcHandler<C extends InvokeChannel>(
     logger = console,
     onDeprecatedUse,
     requireAuth = false,
+    requireRealSession = false,
     requireRole,
     accountScope,
     accountAccess = 'ro',
@@ -63,7 +67,9 @@ export function registerIpcHandler<C extends InvokeChannel>(
       const parsedPayload = parseWithSchema(payloadSchema, payload);
 
       if (requireAuth) {
-        const session = resolveAuthContext(event);
+        const session = requireRealSession
+          ? getSessionFromEvent(event)
+          : resolveAuthContext(event);
         if (!session) throw new Error('Nicht angemeldet');
         if (requireRole && !requireRole.includes(session.role)) {
           throw new Error('Keine Berechtigung');

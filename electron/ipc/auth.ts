@@ -1,6 +1,6 @@
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
-import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { getDb, getSyncInfo, setSyncInfo, deleteSyncInfo } from '../sqlite-service';
 import { verifyPassword, hashPassword } from '../auth/password-hash';
 import {
   createSession,
@@ -60,6 +60,8 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         row.id,
       );
       logAuthAction(db, { userId: row.id, action: 'login.success' });
+      deleteSyncInfo('local_owner_one_time_pass');
+      event.sender.once('destroyed', () => revokeSession(event.sender.id));
       return {
         success: true as const,
         user: {
@@ -130,7 +132,28 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
           )
           .all();
       },
-      { logger, requireAuth: true, requireRole: ['owner', 'admin'] },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Auth.GetOneTimeSetupPassword,
+      async () => {
+        const db = getDb();
+        if (!db) return { success: false as const, error: 'Database not initialized' };
+        const owner = db
+          .prepare(`SELECT last_login_at FROM ${USERS_TABLE} WHERE id = ?`)
+          .get(LOCAL_OWNER_USER_ID) as { last_login_at: string | null } | undefined;
+        if (!owner || owner.last_login_at) {
+          return { success: false as const, error: 'Setup-Passwort nicht verfügbar' };
+        }
+        const pass = getSyncInfo('local_owner_one_time_pass');
+        if (!pass) return { success: false as const, error: 'Setup-Passwort nicht verfügbar' };
+        deleteSyncInfo('local_owner_one_time_pass');
+        return { success: true as const, passphrase: pass };
+      },
+      { logger },
     ),
   );
 
@@ -174,7 +197,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         logAuthAction(db, { action: 'user.create', resourceId: id });
         return { success: true as const, id };
       },
-      { logger, requireAuth: true, requireRole: ['owner', 'admin'] },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 
