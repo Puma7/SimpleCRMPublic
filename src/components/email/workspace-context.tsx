@@ -38,10 +38,14 @@ export type SettingsTab =
   | "mailSecurity"
   | "automation"
   | "team"
+  | "appUsers"
   | "canned"
   | "prompts"
   | "export"
   | "diagnostics"
+  | "pgp"
+  | "auditLog"
+  | "threadTools"
   | "misc"
 
 type MailWorkspaceState = {
@@ -162,6 +166,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "mailSecurity",
   "automation",
   "team",
+  "appUsers",
   "canned",
   "prompts",
   "export",

@@ -3,6 +3,7 @@ import {
   EMAIL_MESSAGES_TABLE,
   WORKFLOW_DELAYED_JOBS_TABLE,
 } from './database-schema';
+import { SETUP_TOKEN_SYNC_KEY } from './auth/setup-token';
 import { deleteSyncInfo, getDb, getSyncInfo } from './sqlite-service';
 
 const WEBHOOK_DEDUP_MS = 5 * 60 * 1000;
@@ -97,6 +98,20 @@ function tryRemoveStaleKey(db: ReturnType<typeof getDb>, key: string): boolean {
     const t = new Date(raw).getTime();
     if (Number.isNaN(t) || Date.now() - t > VACATION_FAIL_TTL_MS) {
       return deleteKey(key);
+    }
+    return false;
+  }
+
+  if (key === SETUP_TOKEN_SYNC_KEY) {
+    const raw = getSyncInfo(key);
+    if (!raw) return deleteKey(key);
+    try {
+      const o = JSON.parse(raw) as { expiresAt?: number };
+      if (typeof o.expiresAt === 'number' && o.expiresAt <= Date.now()) {
+        return deleteKey(key);
+      }
+    } catch {
+      return false;
     }
     return false;
   }

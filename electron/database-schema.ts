@@ -40,6 +40,18 @@ export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
 export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
 export const WORKFLOW_DELAYED_JOBS_TABLE = 'workflow_delayed_jobs';
 export const EMAIL_WORKFLOW_VERSIONS_TABLE = 'email_workflow_versions';
+export const EMAIL_REMOTE_CONTENT_ALLOWLIST_TABLE = 'email_remote_content_allowlist';
+export const EMAIL_READ_RECEIPT_LOG_TABLE = 'email_read_receipt_log';
+export const EMAIL_THREAD_EDGES_TABLE = 'email_thread_edges';
+export const EMAIL_THREAD_ALIASES_TABLE = 'email_thread_aliases';
+export const WORKSPACES_TABLE = 'workspaces';
+export const USERS_TABLE = 'users';
+export const WORKSPACE_MEMBERS_TABLE = 'workspace_members';
+export const USER_ACCOUNT_ACCESS_TABLE = 'user_account_access';
+export const AUTH_AUDIT_LOG_TABLE = 'auth_audit_log';
+export const PGP_IDENTITIES_TABLE = 'pgp_identities';
+export const PGP_PEER_KEYS_TABLE = 'pgp_peer_keys';
+export const AUTOMATION_API_KEYS_TABLE = 'automation_api_keys';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -375,6 +387,145 @@ export const createEmailThreadsTable = `
   CREATE TABLE IF NOT EXISTS ${EMAIL_THREADS_TABLE} (
     id TEXT PRIMARY KEY,
     ticket_code TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    root_message_id INTEGER,
+    last_message_at TEXT,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    has_unread INTEGER NOT NULL DEFAULT 0,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
+    subject_normalized TEXT,
+    workspace_id TEXT
+  );
+`;
+
+export const createEmailRemoteContentAllowlistTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_REMOTE_CONTENT_ALLOWLIST_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    value TEXT NOT NULL COLLATE NOCASE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(scope, value)
+  );
+`;
+
+export const createEmailReadReceiptLogTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_READ_RECEIPT_LOG_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    recipient TEXT,
+    at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailThreadEdgesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_THREAD_EDGES_TABLE} (
+    parent_message_id INTEGER NOT NULL,
+    child_message_id INTEGER NOT NULL,
+    PRIMARY KEY (parent_message_id, child_message_id),
+    FOREIGN KEY (parent_message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (child_message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailThreadAliasesTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_THREAD_ALIASES_TABLE} (
+    alias_thread_id TEXT NOT NULL,
+    canonical_thread_id TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'high',
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (alias_thread_id, canonical_thread_id)
+  );
+`;
+
+export const createWorkspacesTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKSPACES_TABLE} (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createUsersTable = `
+  CREATE TABLE IF NOT EXISTS ${USERS_TABLE} (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'agent',
+    password_hash TEXT NOT NULL,
+    password_updated_at TEXT NOT NULL,
+    signature_html TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT
+  );
+`;
+
+export const createWorkspaceMembersTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKSPACE_MEMBERS_TABLE} (
+    workspace_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, user_id),
+    FOREIGN KEY (workspace_id) REFERENCES ${WORKSPACES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES ${USERS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createUserAccountAccessTable = `
+  CREATE TABLE IF NOT EXISTS ${USER_ACCOUNT_ACCESS_TABLE} (
+    user_id TEXT NOT NULL,
+    account_id INTEGER NOT NULL,
+    access_level TEXT NOT NULL DEFAULT 'rw',
+    PRIMARY KEY (user_id, account_id),
+    FOREIGN KEY (user_id) REFERENCES ${USERS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createAuthAuditLogTable = `
+  CREATE TABLE IF NOT EXISTS ${AUTH_AUDIT_LOG_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id TEXT,
+    detail_json TEXT,
+    prev_hash TEXT,
+    row_hash TEXT NOT NULL,
+    at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export const createPgpIdentitiesTable = `
+  CREATE TABLE IF NOT EXISTS ${PGP_IDENTITIES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    public_key_armor TEXT NOT NULL,
+    has_private_key INTEGER NOT NULL DEFAULT 0,
+    keytar_private_key_handle TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(user_id, fingerprint),
+    FOREIGN KEY (user_id) REFERENCES ${USERS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createPgpPeerKeysTable = `
+  CREATE TABLE IF NOT EXISTS ${PGP_PEER_KEYS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL COLLATE NOCASE,
+    fingerprint TEXT NOT NULL UNIQUE,
+    public_key_armor TEXT NOT NULL,
+    source TEXT NOT NULL,
+    verified_at TEXT,
+    verified_by_user_id TEXT,
+    trust_level TEXT NOT NULL DEFAULT 'unknown',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `;

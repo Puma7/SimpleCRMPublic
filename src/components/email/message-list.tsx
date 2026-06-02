@@ -65,7 +65,7 @@ type Props = {
 }
 
 function threadKey(m: EmailMessage): string {
-  const t = m.imap_thread_id?.trim() || m.ticket_code?.trim()
+  const t = m.thread_id?.trim() || m.imap_thread_id?.trim() || m.ticket_code?.trim()
   if (t) return `t:${t}`
   return `m:${m.id}`
 }
@@ -127,6 +127,8 @@ export function MessageList({
   const [bulkBusy, setBulkBusy] = useState(false)
   const [selectAllDialogOpen, setSelectAllDialogOpen] = useState(false)
   const [pendingSelectAllCount, setPendingSelectAllCount] = useState(0)
+  const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set())
+  const [threadChildren, setThreadChildren] = useState<Record<string, EmailMessage[]>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
   const lastSelectionAnchorRef = useRef<number | null>(null)
   const pendingFolderSelectIdsRef = useRef<number[]>([])
@@ -485,7 +487,7 @@ export function MessageList({
           >
             <SelectTrigger
               className="h-8 w-[148px] text-xs"
-              title="Threads: pro Konversation nur die oberste Zeile (Vorschau, ohne Aufklappen)."
+              title="Threads: Wurzelzeilen mit Aufklappen für weitere Nachrichten."
             >
               <SelectValue />
             </SelectTrigger>
@@ -576,6 +578,11 @@ export function MessageList({
               const active = selectedMessage?.id === m.id
               const canSelect = isMessageSelectable(m)
               const checked = selectedIds.has(m.id)
+              const tKey = threadKey(m)
+              const threadIdForExpand = m.thread_id?.trim() ?? ""
+              const isThreadRoot = listDisplayMode === "thread" && threadIdForExpand.length > 0
+              const expanded = expandedThreads.has(tKey)
+              const children = threadChildren[tKey] ?? []
               return (
                 <li key={m.id}>
                   <div
@@ -584,6 +591,41 @@ export function MessageList({
                       active && "bg-muted",
                     )}
                   >
+                    {isThreadRoot && threadIdForExpand ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="mt-2 h-6 w-6 shrink-0"
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          const next = new Set(expandedThreads)
+                          if (expanded) next.delete(tKey)
+                          else {
+                            next.add(tKey)
+                            if (!threadChildren[tKey] && hasElectron() && threadIdForExpand) {
+                              const rows = await invokeIpc(IPCChannels.Email.ListThreadMessages, {
+                                threadId: threadIdForExpand,
+                                limit: 50,
+                              })
+                              if (Array.isArray(rows)) {
+                                setThreadChildren((prev) => ({
+                                  ...prev,
+                                  [tKey]: rows as EmailMessage[],
+                                }))
+                              }
+                            }
+                          }
+                          setExpandedThreads(next)
+                        }}
+                      >
+                        <ChevronDown
+                          className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")}
+                        />
+                      </Button>
+                    ) : (
+                      <div className="w-6 shrink-0" />
+                    )}
                     {canSelect ? (
                       <div className="flex shrink-0 items-center py-3 pl-2">
                         <Checkbox
@@ -676,6 +718,24 @@ export function MessageList({
                       </div>
                     </button>
                   </div>
+                  {expanded && children.length > 0
+                    ? children
+                        .filter((c) => c.id !== m.id)
+                        .map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            className="flex w-full border-t border-muted/40 py-2 pl-12 pr-3 text-left text-xs hover:bg-muted/40"
+                            onClick={() => void onOpen(c)}
+                          >
+                            <span className="truncate font-medium">{formatFrom(c.from_json)}</span>
+                            <span className="mx-2 text-muted-foreground">·</span>
+                            <span className="truncate text-muted-foreground">
+                              {formatListDateTime(c.date_received)}
+                            </span>
+                          </button>
+                        ))
+                    : null}
                 </li>
               )
             })}

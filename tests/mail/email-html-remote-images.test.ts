@@ -1,6 +1,7 @@
 import {
   blockRemoteImagesInHtml,
   htmlHasRemoteResources,
+  isRemoteUrl,
 } from '../../shared/email-html-remote-images';
 
 describe('blockRemoteImagesInHtml', () => {
@@ -46,6 +47,37 @@ describe('blockRemoteImagesInHtml', () => {
     const out = blockRemoteImagesInHtml(html);
     expect(out).not.toContain('https://track.example');
     expect(out).toContain('about:blank');
+  });
+
+  test('blocks protocol-relative img src', () => {
+    const html = '<img src="//cdn.example/track.gif">';
+    const out = blockRemoteImagesInHtml(html);
+    expect(out).not.toContain('//cdn.example');
+  });
+
+  test('blocks remote video src', () => {
+    const html = '<video src="https://v.example/m.mp4"></video>';
+    const out = blockRemoteImagesInHtml(html);
+    expect(out).not.toContain('https://v.example');
+  });
+
+  test('blocks remote link href', () => {
+    const html = '<link rel="stylesheet" href="https://fonts.example/f.css">';
+    const out = blockRemoteImagesInHtml(html);
+    expect(out).not.toContain('https://fonts.example');
+  });
+
+  test('blocks remote url in style block', () => {
+    const html = '<style>body { background: url(https://t.example/bg.png); }</style>';
+    const out = blockRemoteImagesInHtml(html);
+    expect(out).not.toContain('https://t.example');
+  });
+
+  test('isRemoteUrl', () => {
+    expect(isRemoteUrl('https://a.com')).toBe(true);
+    expect(isRemoteUrl('//a.com/x')).toBe(true);
+    expect(isRemoteUrl('cid:x')).toBe(false);
+    expect(isRemoteUrl('data:image/png;base64,x')).toBe(false);
   });
 
   test('htmlHasRemoteResources detects http and cid', () => {

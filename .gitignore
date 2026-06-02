@@ -74,6 +74,9 @@ src/.DS_Store
 !docs/MAIL_TESTING.md
 !docs/MAIL_ALPHA_CHECKLIST.md
 !docs/MAIL_REMAINING_BACKLOG.md
+!docs/MAIL_TRACKING_PRIVACY.md
+!docs/MAIL_AUTH_THREAT_MODEL.md
+!docs/MAIL_PGP_THREAT_MODEL.md
 !AGENTS.md
 
 coverage/

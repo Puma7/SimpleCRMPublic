@@ -30,6 +30,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -134,13 +135,63 @@ export function MessageViewer(props: Props) {
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
+  const [readReceiptRequested, setReadReceiptRequested] = useState(false)
+  const [readReceiptRespond, setReadReceiptRespond] = useState<string>("never")
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
+  const [decryptedPlain, setDecryptedPlain] = useState<string | null>(null)
+  const [pgpPassphrase, setPgpPassphrase] = useState("")
+  const [threadAliasHint, setThreadAliasHint] = useState<string | null>(null)
   const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
 
   useEffect(() => {
     setHtmlView(false)
     setLoadRemoteImages(false)
+    setReadReceiptRequested(false)
+    setDecryptedPlain(null)
+    setThreadAliasHint(null)
+  }, [selectedMessage?.id])
+
+  useEffect(() => {
+    if (!selectedMessage?.id || !hasElectron()) return
+    const messageId = selectedMessage.id
+    void (async () => {
+      const w = await invokeIpc(IPCChannels.Email.ListThreadAliasWarnings, undefined)
+      if (!Array.isArray(w)) return
+      const hit = (w as { messageId: number }[]).find((x) => x.messageId === messageId)
+      if (hit && selectedMessage?.id === messageId) {
+        setThreadAliasHint(
+          "Möglicherweise gleicher Thread in anderem Konto (Heuristik). Prüfen Sie Einstellungen → Threads.",
+        )
+      }
+    })()
+  }, [selectedMessage?.id])
+
+  useEffect(() => {
+    if (!selectedMessage?.id || !hasElectron()) return
+    const messageId = selectedMessage.id
+    void (async () => {
+      try {
+        const policy = await invokeIpc(IPCChannels.Email.GetRemoteContentPolicy, {
+          messageId,
+        })
+        if (policy && typeof policy === "object" && "allowRemote" in policy) {
+          setLoadRemoteImages((prev) => {
+            if (selectedMessage?.id !== messageId) return prev
+            return Boolean((policy as { allowRemote: boolean }).allowRemote)
+          })
+        }
+        const rr = await invokeIpc(IPCChannels.Email.GetReadReceiptState, { messageId })
+        if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
+          const s = rr as unknown as { requested: boolean; respond: string }
+          if (selectedMessage?.id !== messageId) return
+          setReadReceiptRequested(s.requested)
+          setReadReceiptRespond(s.respond)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
   }, [selectedMessage?.id])
 
   const sanitizedHtml = useMemo(() => {
@@ -831,10 +882,49 @@ export function MessageViewer(props: Props) {
                   ) : null}
                 </div>
 
-                {bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
-                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
-                    Diese Nachricht scheint verschlüsselt (PGP/S/MIME). Entschlüsselung ist in
-                    SimpleCRM nicht integriert.
+                {selectedMessage.pgp_status === "encrypted_unread" ||
+                bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+                    <span>Verschlüsselte PGP-Nachricht.</span>
+                    <Input
+                      type="password"
+                      placeholder="PGP-Passphrase"
+                      className="h-7 max-w-[180px] text-xs"
+                      value={pgpPassphrase}
+                      onChange={(e) => setPgpPassphrase(e.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={async () => {
+                        if (!selectedMessage || !hasElectron() || !pgpPassphrase) return
+                        const pass = pgpPassphrase
+                        try {
+                          const res = await invokeIpc(IPCChannels.Pgp.DecryptMessage, {
+                            messageId: selectedMessage.id,
+                            passphrase: pass,
+                          })
+                          if (res && typeof res === "object" && "text" in res) {
+                            setDecryptedPlain(String((res as { text: string }).text))
+                            toast.success("Entschlüsselt (nur in dieser Ansicht, nicht gespeichert)")
+                          }
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "Entschlüsselung fehlgeschlagen")
+                        }
+                      }}
+                    >
+                      Entschlüsseln
+                    </Button>
+                  </div>
+                ) : null}
+                {selectedMessage.pgp_status?.startsWith("signed_") ? (
+                  <p className="rounded-md border border-muted px-3 py-2 text-xs text-muted-foreground">
+                    PGP-Signatur: {selectedMessage.pgp_status.replace("signed_", "")}
+                    {selectedMessage.pgp_signer_fingerprint
+                      ? ` (${selectedMessage.pgp_signer_fingerprint.slice(0, 16)}…)`
+                      : ""}
                   </p>
                 ) : null}
 
@@ -848,7 +938,7 @@ export function MessageViewer(props: Props) {
                     </p>
                     {htmlHasRemoteImages && !loadRemoteImages ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                        <span>Externe Bilder sind aus Datenschutzgründen blockiert.</span>
+                        <span>Remote-Inhalte sind blockiert (Datenschutz).</span>
                         <Button
                           type="button"
                           size="sm"
@@ -856,7 +946,71 @@ export function MessageViewer(props: Props) {
                           className="h-7 text-xs"
                           onClick={() => setLoadRemoteImages(true)}
                         >
-                          Externe Bilder laden
+                          Einmal laden
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            await invokeIpc(IPCChannels.Email.SetRemoteContentPolicy, {
+                              messageId: selectedMessage.id,
+                              policy: "allowed_sender",
+                              rememberSender: true,
+                            })
+                            setLoadRemoteImages(true)
+                          }}
+                        >
+                          Absender erlauben
+                        </Button>
+                      </div>
+                    ) : null}
+                    {threadAliasHint ? (
+                      <p className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs">
+                        {threadAliasHint}
+                      </p>
+                    ) : null}
+                    {readReceiptRequested && readReceiptRespond === "ask" ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                        <span>Absender bittet um Lesebestätigung.</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            const r = await invokeIpc(IPCChannels.Email.RespondReadReceipt, {
+                              messageId: selectedMessage.id,
+                              action: "send",
+                            })
+                            if (r && typeof r === "object" && "success" in r && (r as { success: boolean }).success) {
+                              toast.success("Lesebestätigung gesendet")
+                              setReadReceiptRequested(false)
+                            } else {
+                              toast.error("MDN konnte nicht gesendet werden")
+                            }
+                          }}
+                        >
+                          Bestätigen senden
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            if (!selectedMessage) return
+                            await invokeIpc(IPCChannels.Email.RespondReadReceipt, {
+                              messageId: selectedMessage.id,
+                              action: "decline",
+                            })
+                            setReadReceiptRequested(false)
+                          }}
+                        >
+                          Ignorieren
                         </Button>
                       </div>
                     ) : null}
@@ -869,7 +1023,7 @@ export function MessageViewer(props: Props) {
                   </div>
                 ) : (
                   <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                    {bodyText}
+                    {decryptedPlain ?? bodyText}
                   </pre>
                 )}
               </div>

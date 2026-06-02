@@ -14,6 +14,7 @@ import {
   Search,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { UserSwitcher } from "@/components/auth/user-switcher"
 
 const navLinks = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
@@ -71,6 +72,7 @@ export function MainNav({
               <span>Strg+K</span>
             </button>
           ) : null}
+          <UserSwitcher />
           <Link
             to="/settings"
             className={cn(

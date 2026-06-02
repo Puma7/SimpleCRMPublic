@@ -1,8 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { randomUUID } from 'crypto';
 import { createWriteStream } from 'fs';
 import archiver from 'archiver';
+import Database from 'better-sqlite3';
 import { app } from 'electron';
+import { redactOneTimeSetupTokenInDatabase } from '../auth/setup-token';
 import { MAIL_SCHEMA_GENERATION, MAIL_SCHEMA_GENERATION_LABEL } from '../db/mail-schema-version';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 
@@ -50,8 +54,14 @@ export async function exportLocalMailBackupToPath(
   return new Promise((resolve) => {
     const out = createWriteStream(filePath);
     const archive = archiver('zip', { zlib: { level: 6 } });
+    const tempDbPath = path.join(os.tmpdir(), `simplecrm-mail-backup-${randomUUID()}.sqlite`);
 
     const fail = (err: Error | string) => {
+      try {
+        fs.unlinkSync(tempDbPath);
+      } catch {
+        /* ignore */
+      }
       try {
         archive.abort();
       } catch {
@@ -67,12 +77,23 @@ export async function exportLocalMailBackupToPath(
 
     out.on('error', (e) => fail(e));
     archive.on('error', (e) => fail(e));
-    out.on('close', () => resolve({ ok: true, path: filePath }));
+    out.on('close', () => {
+      try {
+        fs.unlinkSync(tempDbPath);
+      } catch {
+        /* ignore */
+      }
+      resolve({ ok: true, path: filePath });
+    });
 
     archive.pipe(out);
 
     try {
-      archive.file(dbPath, { name: 'database.sqlite' });
+      fs.copyFileSync(dbPath, tempDbPath);
+      const copyDb = new Database(tempDbPath);
+      redactOneTimeSetupTokenInDatabase(copyDb);
+      copyDb.close();
+      archive.file(tempDbPath, { name: 'database.sqlite' });
       if (fs.existsSync(attRoot)) {
         archive.directory(attRoot, 'email-attachments');
       }
@@ -85,6 +106,7 @@ export async function exportLocalMailBackupToPath(
             schemaGenerationLabel: MAIL_SCHEMA_GENERATION_LABEL,
             warnings: [
               'Enthält KEINE Passwörter, OAuth-Refresh-Tokens oder API-Keys (Keytar).',
+              'Einmal-Setup-Token wird aus der Datenbank-Kopie entfernt.',
             ],
           },
           null,

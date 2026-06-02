@@ -14,6 +14,8 @@ import { registerEmailHandlers } from './email';
 import { registerWorkflowHandlers } from './workflow';
 import { registerFollowUpHandlers } from './followup';
 import { registerAutomationHandlers } from './automation';
+import { registerAuthHandlers } from './auth';
+import { registerPgpHandlers } from './pgp';
 
 interface IpcRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -42,6 +44,8 @@ export function registerAllIpcHandlers(options: IpcRouterOptions) {
   disposers.push(registerWorkflowHandlers({ logger }));
   disposers.push(registerFollowUpHandlers({ logger }));
   disposers.push(registerAutomationHandlers({ logger }));
+  disposers.push(registerAuthHandlers({ logger, getMainWindow }));
+  disposers.push(registerPgpHandlers({ logger }));
 
   return () => {
     disposers.forEach((dispose) => dispose());

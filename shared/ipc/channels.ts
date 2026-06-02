@@ -86,6 +86,34 @@ const JtlChannels = literal({
   CreateOrder: 'jtl:create-order',
 });
 
+const AuthChannels = literal({
+  Login: 'auth:login',
+  Logout: 'auth:logout',
+  GetSession: 'auth:get-session',
+  ListUsers: 'auth:list-users',
+  SaveUser: 'auth:save-user',
+  GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
+  SetInitialPassword: 'auth:set-initial-password',
+  GetSetupState: 'auth:get-setup-state',
+  ListAuditLog: 'auth:list-audit-log',
+  VerifyAuditChain: 'auth:verify-audit-chain',
+});
+
+const PgpChannels = literal({
+  ListIdentities: 'pgp:list-identities',
+  GenerateIdentity: 'pgp:generate-identity',
+  ImportPeerKey: 'pgp:import-peer-key',
+  DecryptMessage: 'pgp:decrypt-message',
+  DetectInbound: 'pgp:detect-inbound',
+  EncryptMessage: 'pgp:encrypt-message',
+  SignMessage: 'pgp:sign-message',
+  VerifyMessage: 'pgp:verify-message',
+  ListPeerKeys: 'pgp:list-peer-keys',
+  DeletePeerKey: 'pgp:delete-peer-key',
+  CheckRecipientKeys: 'pgp:check-recipient-keys',
+  DeleteIdentity: 'pgp:delete-identity',
+});
+
 const AutomationChannels = literal({
   GetSettings: 'automation:get-settings',
   SetSettings: 'automation:set-settings',
@@ -279,6 +307,15 @@ const EmailChannels = literal({
   SetMicrosoftOAuthApp: 'email:set-microsoft-oauth-app',
   BuildMicrosoftOAuthUrl: 'email:build-microsoft-oauth-url',
   FinishMicrosoftOAuth: 'email:finish-microsoft-oauth',
+  GetRemoteContentPolicy: 'email:get-remote-content-policy',
+  SetRemoteContentPolicy: 'email:set-remote-content-policy',
+  GetReadReceiptState: 'email:get-read-receipt-state',
+  RespondReadReceipt: 'email:respond-read-receipt',
+  ListThreadMessages: 'email:list-thread-messages',
+  ListThreadsByView: 'email:list-threads-by-view',
+  MergeThreads: 'email:merge-threads',
+  SplitMessageThread: 'email:split-message-thread',
+  ListThreadAliasWarnings: 'email:list-thread-alias-warnings',
 });
 
 export const IPCChannels = {
@@ -295,6 +332,8 @@ export const IPCChannels = {
   Dashboard: DashboardChannels,
   CustomFields: CustomFieldChannels,
   Email: EmailChannels,
+  Auth: AuthChannels,
+  Pgp: PgpChannels,
   Automation: AutomationChannels,
   FollowUp: FollowUpChannels,
 } as const;
@@ -314,6 +353,8 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Dashboard),
   ...Object.values(IPCChannels.CustomFields),
   ...Object.values(IPCChannels.Email),
+  ...Object.values(IPCChannels.Auth),
+  ...Object.values(IPCChannels.Pgp),
   ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
 );

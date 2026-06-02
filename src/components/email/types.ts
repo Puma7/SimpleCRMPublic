@@ -71,6 +71,7 @@ export type EmailMessage = {
   outbound_hold?: number
   outbound_block_reason?: string | null
   ticket_code?: string | null
+  thread_id?: string | null
   customer_id?: number | null
   folder_kind?: string
   assigned_to?: string | null
@@ -81,6 +82,8 @@ export type EmailMessage = {
   reply_parent_message_id?: number | null
   raw_headers?: string | null
   snoozed_until?: string | null
+  pgp_status?: string | null
+  pgp_signer_fingerprint?: string | null
 }
 
 export type CategoryRow = {

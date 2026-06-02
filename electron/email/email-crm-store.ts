@@ -3,6 +3,7 @@ import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import { getDb } from '../sqlite-service';
+import { accountAccessSql } from './mail-scope-access';
 import {
   CUSTOMERS_TABLE,
   EMAIL_CATEGORIES_TABLE,
@@ -142,9 +143,10 @@ export function getMessageCategoryId(messageId: number): number | null {
 
 export function listCategoryCountsForMailScope(
   accountScope: number | 'all',
+  access?: import('./email-store').MailScopeSession,
 ): { categoryId: number; count: number }[] {
   if (accountScope === 'all') {
-    return listCategoryCountsForAllAccounts();
+    return listCategoryCountsForAllAccounts(access);
   }
   return listCategoryCountsForAccount(accountScope);
 }
@@ -157,16 +159,19 @@ const CATEGORY_INBOX_OPEN_WHERE = `m.soft_deleted = 0
          AND ${SNOOZE_FILTER_SQL}`;
 
 /** Inbox messages per category summed across all accounts (open / unerledigt only). */
-export function listCategoryCountsForAllAccounts(): { categoryId: number; count: number }[] {
+export function listCategoryCountsForAllAccounts(
+  access?: import('./email-store').MailScopeSession,
+): { categoryId: number; count: number }[] {
+  const { sql: accessSql, params: accessParams } = accountAccessSql(getDb(), access);
   return getDb()
     .prepare(
       `SELECT mc.category_id AS categoryId, COUNT(*) AS count
        FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} mc
        INNER JOIN ${EMAIL_MESSAGES_TABLE} m ON m.id = mc.message_id
-       WHERE ${CATEGORY_INBOX_OPEN_WHERE}
+       WHERE ${CATEGORY_INBOX_OPEN_WHERE}${accessSql}
        GROUP BY mc.category_id`,
     )
-    .all() as { categoryId: number; count: number }[];
+    .all(...accessParams) as { categoryId: number; count: number }[];
 }
 
 export function listCategoryCountsForAccount(accountId: number): { categoryId: number; count: number }[] {
@@ -676,13 +681,14 @@ export function searchMessagesForMailScopeWithMeta(
   accountScope: number | 'all',
   q: string,
   opts: MessageSearchOpts = {},
+  access?: import('./email-store').MailScopeSession,
 ): { rows: import('./email-store').EmailMessageRow[]; hasMore: boolean } {
   const limit = opts.limit ?? 80;
   if (accountScope !== 'all') {
     const r = searchMessagesForAccountWithMeta(accountScope, q, opts);
     return { rows: r.rows, hasMore: r.hasMore };
   }
-  const rows = searchMessagesForAllAccounts(q, { ...opts, limit: (opts.limit ?? 80) + 1 });
+  const rows = searchMessagesForAllAccounts(q, { ...opts, limit: (opts.limit ?? 80) + 1 }, access);
   const hasMore = rows.length > limit;
   return { rows: rows.slice(0, limit), hasMore };
 }
@@ -742,6 +748,7 @@ export function searchMessagesForMailScope(
 export function searchMessagesForAllAccounts(
   q: string,
   opts: MessageSearchOpts = {},
+  access?: import('./email-store').MailScopeSession,
 ): import('./email-store').EmailMessageRow[] {
   if (!q.trim()) return [];
   const limit = opts.limit ?? 100;
@@ -750,6 +757,7 @@ export function searchMessagesForAllAccounts(
   const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
   const doneSql = doneFilterSql(opts.doneFilter, view ?? 'inbox');
   const cat = categoryJoinSql(opts.categoryId);
+  const { sql: accessSql, params: accessParams } = accountAccessSql(getDb(), access);
   const fts = ftsMatchExpression(q);
   if (fts) {
     const ftsTable = getDb()
@@ -759,14 +767,14 @@ export function searchMessagesForAllAccounts(
       try {
         const params: (string | number)[] = [];
         if (cat.param != null) params.push(cat.param);
-        params.push(fts, limit, offset);
+        params.push(...accessParams, fts, limit, offset);
         return getDb()
           .prepare(
             `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
              ${cat.sql}
              INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
              WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-             ${doneSql}
+             ${doneSql}${accessSql}
              AND fts MATCH ?
              ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
              LIMIT ? OFFSET ?`,
@@ -781,13 +789,13 @@ export function searchMessagesForAllAccounts(
   const params: (string | number)[] = [];
   if (cat.param != null) params.push(cat.param);
   pushLikeSearchTerms(params, term);
-  params.push(limit, offset);
+  params.push(...accessParams, limit, offset);
   return getDb()
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        ${cat.sql}
        WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-       ${doneSql}
+       ${doneSql}${accessSql}
        AND ${LIKE_SEARCH_FIELDS}
        ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
        LIMIT ? OFFSET ?`,

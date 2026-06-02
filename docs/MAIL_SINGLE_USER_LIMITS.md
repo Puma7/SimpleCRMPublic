@@ -10,7 +10,7 @@ SimpleCRM-Mail ist für **einen Desktop-Nutzer pro Installation** ausgelegt (lok
 |--------|--------|
 | Datenhaltung | Lokal `userData/database.sqlite` |
 | Geheimnisse | OS-Keytar (nicht in Backups) |
-| Team-Feature | Metadaten (`assigned_to`), keine echte Multi-User-Auth |
+| Team-Feature | Metadaten (`assigned_to`); optional App-Login (Stufe 1: Profil + Audit, **kein** Disk-Schutz) |
 | Shared Inbox | UI „Alle Konten“ — alle Konten einer Installation |
 
 ---
@@ -31,7 +31,7 @@ SimpleCRM-Mail ist für **einen Desktop-Nutzer pro Installation** ausgelegt (lok
 - Gleichzeitiger Zugriff mehrerer PCs auf **dieselbe** DB-Datei (Netzwerkshare)
 - Server-seitige Benutzerverwaltung für Mail
 - Cloud-Sync der Datenbank zwischen Geräten
-- PGP-Verschlüsselung (geplant)
+- PGP-Verschlüsselung: Basis in Main (OpenPGP.js); S/MIME folgt
 
 ---
 

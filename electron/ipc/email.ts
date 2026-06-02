@@ -4,7 +4,20 @@ import fs from 'fs';
 import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
-import { getCustomerById } from '../sqlite-service';
+import { getCustomerById, getDb } from '../sqlite-service';
+import {
+  resolveAuthContext,
+  requireAuthSession,
+  requireRealAuthSession,
+} from '../auth/current-user';
+import type { MailScopeSession } from '../email/email-store';
+
+function mailScopeSessionFromEvent(event: IpcMainInvokeEvent): MailScopeSession {
+  const session = resolveAuthContext(event);
+  if (!session) throw new Error('Nicht angemeldet');
+  return { userId: session.userId, role: session.role };
+}
+import { canAccessAccount } from '../auth/account-access';
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
@@ -719,9 +732,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListMessagesByView,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
           limit?: number;
@@ -730,8 +741,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           sort?: import('../../shared/email-list-options').MessageListSortMode;
           listFilter?: import('../../shared/email-list-filters').MessageListFilter;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return listMessagesForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
@@ -739,7 +751,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           sort: payload.sort,
           listFilter: payload.listFilter,
           doneFilter: payload.doneFilter,
-        });
+        }, access);
       },
       { logger },
     ),
@@ -748,9 +760,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListMessageIdsByView,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam' | 'trash' | 'all';
           limit?: number;
@@ -758,15 +768,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           categoryId?: number | null;
           listFilter?: import('../../shared/email-list-filters').MessageListFilter;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return listMessageIdsForMailScope(payload.accountId, payload.view, {
           limit: payload.limit,
           offset: payload.offset,
           categoryId: payload.categoryId,
           listFilter: payload.listFilter,
           doneFilter: payload.doneFilter,
-        });
+        }, access);
       },
       { logger },
     ),
@@ -775,9 +786,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SearchMessages,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           query: string;
           limit?: number;
@@ -785,8 +794,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           view?: import('../email/email-store').AccountMailView;
           categoryId?: number | null;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-        },
-      ) => {
+        }) => {
         if (payload.accountId !== 'all') {
           const { rows, searchMode, hasMore } = searchMessagesForAccountWithMeta(
             payload.accountId,
@@ -801,6 +809,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           );
           return { messages: rows, searchMode, hasMore };
         }
+        const access = mailScopeSessionFromEvent(event);
         const { rows, hasMore } = searchMessagesForMailScopeWithMeta(
           payload.accountId,
           payload.query,
@@ -811,6 +820,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             categoryId: payload.categoryId,
             doneFilter: payload.doneFilter,
           },
+          access,
         );
         return { messages: rows, searchMode: 'like' as const, hasMore };
       },
@@ -1113,32 +1123,36 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListConversationMessages,
-      async (
-        _event: IpcMainInvokeEvent,
-        payload: {
+      async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
           messageId: number;
           ticketCode?: string | null;
           customerId?: number | null;
           correspondentEmail?: string | null;
           limit?: number;
-        },
-      ) => {
+        }) => {
+        const access =
+          payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         const { normalizeEmailAddress } = await import('../../shared/email-address-normalize');
         const raw = payload.correspondentEmail?.trim() ?? '';
         const email = raw.includes('@') ? normalizeEmailAddress(raw) : '';
         if (email) {
-          return listMessagesByCorrespondentEmail(payload.accountId, {
-            email,
-            limit: payload.limit,
-          });
+          return listMessagesByCorrespondentEmail(
+            payload.accountId,
+            { email, limit: payload.limit },
+            access,
+          );
         }
-        return listConversationMessagesForScope(payload.accountId, {
-          excludeMessageId: payload.messageId,
-          ticketCode: payload.ticketCode,
-          customerId: payload.customerId,
-          limit: payload.limit,
-        });
+        return listConversationMessagesForScope(
+          payload.accountId,
+          {
+            excludeMessageId: payload.messageId,
+            ticketCode: payload.ticketCode,
+            customerId: payload.customerId,
+            limit: payload.limit,
+          },
+          access,
+        );
       },
       { logger },
     ),
@@ -1161,9 +1175,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           inReplyToMessageId?: number | null;
           attachmentPaths?: string[];
           markReplyParentDone?: boolean;
+          requestReadReceipt?: boolean;
+          pgpEncrypt?: boolean;
+          pgpSign?: boolean;
+          pgpPassphrase?: string;
         },
       ) => {
-        const r = await sendComposeDraft(payload);
+        const session = requireAuthSession(_event);
+        const r = await sendComposeDraft({
+          ...payload,
+          pgpUserId: session.userId,
+        });
         if (r.ok) {
           if (r.warning) {
             return { success: true as const, warning: r.warning };
@@ -1179,7 +1201,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           workflowRunId: 'workflowRunId' in r ? r.workflowRunId ?? null : null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1344,8 +1366,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.CategoryCounts,
-      async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
-        listCategoryCountsForMailScope(accountId),
+      async (event: IpcMainInvokeEvent, accountId: number | 'all') => {
+        const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
+        return listCategoryCountsForMailScope(accountId, access);
+      },
       { logger },
     ),
   );
@@ -1353,8 +1377,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.MailFolderCounts,
-      async (_event: IpcMainInvokeEvent, accountId: number | 'all') =>
-        getMailFolderCountsForScope(accountId),
+      async (event: IpcMainInvokeEvent, accountId: number | 'all') => {
+        const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
+        return getMailFolderCountsForScope(accountId, access);
+      },
       { logger },
     ),
   );
@@ -2450,8 +2476,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.EmailReporting,
-      async (_event: IpcMainInvokeEvent, accountId: number | null) => {
-        return { success: true as const, data: getEmailReportingSnapshot(accountId) };
+      async (event: IpcMainInvokeEvent, accountId: number | null) => {
+        const access = accountId === null ? mailScopeSessionFromEvent(event) : undefined;
+        return {
+          success: true as const,
+          data: getEmailReportingSnapshot(accountId, access),
+        };
       },
       { logger },
     ),
@@ -2492,6 +2522,222 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       const url = buildMicrosoftOAuthAuthorizeUrl({ clientId, redirectUri: redirectUri.trim() });
       return { success: true as const, url };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetRemoteContentPolicy,
+      async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { policy: 'blocked' as const, allowRemote: false };
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          throw new Error('Kein Zugriff');
+        }
+        const { consumeAllowedOnceRemoteContent } = await import('../email/email-remote-content');
+        return consumeAllowedOnceRemoteContent(db, payload.messageId);
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetRemoteContentPolicy,
+      async (
+        event: IpcMainInvokeEvent,
+        payload: {
+          messageId: number;
+          policy: 'blocked' | 'allowed_once' | 'allowed_sender' | 'allowed_domain';
+          rememberSender?: boolean;
+          rememberDomain?: boolean;
+        },
+      ) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
+        const { setRemoteContentPolicy } = await import('../email/email-remote-content');
+        let remember: { scope: 'sender' | 'domain'; value: string } | undefined;
+        if (payload.rememberSender || payload.rememberDomain) {
+          try {
+            const p = JSON.parse(row.from_json ?? '{}') as { value?: { address?: string }[] };
+            const addr = p.value?.[0]?.address?.toLowerCase() ?? '';
+            if (addr) {
+              if (payload.rememberSender) remember = { scope: 'sender', value: addr };
+              else if (payload.rememberDomain) {
+                const dom = addr.includes('@') ? addr.split('@')[1]! : addr;
+                remember = { scope: 'domain', value: dom };
+              }
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
+        return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetReadReceiptState,
+      async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
+        const { getReadReceiptSettings } = await import('../email/email-read-receipt');
+        const settings = getReadReceiptSettings(db, row.account_id);
+        return {
+          success: true as const,
+          requested: (row as { read_receipt_requested?: number }).read_receipt_requested === 1,
+          respond: settings.respond,
+          trustedDomains: settings.trustedDomains,
+        };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RespondReadReceipt,
+      async (event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        const row = getEmailMessageById(payload.messageId);
+        if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
+        const session = requireRealAuthSession(event);
+        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
+        if (payload.action === 'send') {
+          const { getReadReceiptSettings, domainTrusted } = await import('../email/email-read-receipt');
+          const settings = getReadReceiptSettings(db, row.account_id);
+          if (settings.respond === 'never') {
+            return { success: false as const, error: 'Lesebestätigungen sind deaktiviert' };
+          }
+          if (settings.respond === 'always_trusted') {
+            try {
+              const from = JSON.parse(row.from_json ?? '{}') as { value?: { address?: string }[] };
+              const addr = from.value?.[0]?.address ?? '';
+              const dom = addr.includes('@') ? addr.split('@')[1]! : '';
+              if (!domainTrusted(settings.trustedDomains, dom)) {
+                return { success: false as const, error: 'Absender nicht in vertrauenswürdigen Domains' };
+              }
+            } catch {
+              return { success: false as const, error: 'Absender nicht verifizierbar' };
+            }
+          }
+          const { sendReadReceiptMdn } = await import('../email/email-read-receipt-mdn');
+          const r = await sendReadReceiptMdn(payload.messageId);
+          if (!r.ok) return { success: false as const, error: r.error };
+          return { success: true as const };
+        }
+        const { logReadReceiptAction } = await import('../email/email-read-receipt');
+        logReadReceiptAction(db, payload.messageId, 'declined');
+        return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListThreadMessages,
+      async (_event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
+        const { listThreadMessages } = await import('../email/email-thread-aggregate');
+        return listThreadMessages(payload.threadId, payload.limit ?? 50, payload.offset ?? 0);
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.MergeThreads,
+      async (
+        event: IpcMainInvokeEvent,
+        payload: { aliasThreadId: string; canonicalThreadId: string; accountId: number },
+      ) => {
+        const session = requireRealAuthSession(event);
+        const db = getDb();
+        if (!db) throw new Error('Database not initialized');
+        if (!canAccessAccount(db, session.userId, payload.accountId, 'rw', session.role)) {
+          return { success: false as const, error: 'Kein Zugriff' };
+        }
+        const { mergeThreads } = await import('../email/email-thread-admin');
+        const r = mergeThreads(
+          payload.aliasThreadId,
+          payload.canonicalThreadId,
+          payload.accountId,
+        );
+        if (!r.ok) return { success: false as const, error: r.error };
+        return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SplitMessageThread,
+      async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        requireRealAuthSession(event);
+        const { splitMessageToOwnThread } = await import('../email/email-thread-admin');
+        const r = splitMessageToOwnThread(payload.messageId);
+        if (!r.ok) return { success: false as const, error: r.error };
+        return { success: true as const, threadId: r.threadId };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListThreadAliasWarnings,
+      async () => {
+        const { listPendingThreadAliasWarnings } = await import('../email/email-thread-heuristics');
+        return listPendingThreadAliasWarnings(50);
+      },
+      { logger, requireAuth: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListThreadsByView,
+      async (event: IpcMainInvokeEvent, payload: {
+          accountScope: number | 'all';
+          view: string;
+          limit?: number;
+          offset?: number;
+        }) => {
+        const access =
+          payload.accountScope === 'all' ? mailScopeSessionFromEvent(event) : undefined;
+        const { listThreadsForMailScope } = await import('../email/email-thread-aggregate');
+        return listThreadsForMailScope(
+          payload.accountScope as number | 'all',
+          payload.view as import('../email/email-store').AccountMailView,
+          { limit: payload.limit, offset: payload.offset },
+          access,
+        );
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

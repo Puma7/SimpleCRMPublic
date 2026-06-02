@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import os from 'os';
 import { app } from 'electron';
 import fs from 'fs';
 import { ensureAssignedToReferentialIntegrity } from './email/email-assigned-to-integrity';
+import { runMailRoadmapMigrations } from './mail-roadmap-migrations';
 import {
     createCustomersTable,
     createProductsTable,
@@ -87,7 +89,18 @@ import {
 import { Product, DealProduct } from './types';
 // Optional: import Knex from 'knex';
 
-const dbPath = path.join(app.getPath('userData'), 'database.sqlite');
+function getDatabasePath(): string {
+  try {
+    if (app?.getPath) {
+      return path.join(app.getPath('userData'), 'database.sqlite');
+    }
+  } catch {
+    /* Electron app not available (Jest / tooling) */
+  }
+  const base =
+    process.env.SIMPLECRM_USER_DATA ?? path.join(os.tmpdir(), 'simplecrm-test');
+  return path.join(base, 'database.sqlite');
+}
 let db: Database.Database | undefined;
 // Optional: let knex: Knex.Knex;
 const isDevelopment = process.env.NODE_ENV === 'development';
@@ -163,6 +176,7 @@ export function bootstrapFreshDatabaseSchema(
 }
 
 export function initializeDatabase() {
+    const dbPath = getDatabasePath();
     const dbExists = fs.existsSync(dbPath);
     const connection = new Database(dbPath, isDevelopment ? { verbose: sqliteVerboseLogger } : undefined);
     db = connection;
@@ -759,6 +773,8 @@ function runMigrations() {
             console.log('Creating email_workflow_forward_dedup table...');
             db.exec(createEmailWorkflowForwardDedupTable);
         }
+
+        runMailRoadmapMigrations(conn);
 
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();

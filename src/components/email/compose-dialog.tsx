@@ -133,6 +133,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [subject, setSubject] = useState("")
   const [bodyHtml, setBodyHtml] = useState("")
   const [sending, setSending] = useState(false)
+  const [pgpEncrypt, setPgpEncrypt] = useState(false)
+  const [pgpSign, setPgpSign] = useState(false)
+  const [pgpPassphrase, setPgpPassphrase] = useState("")
+  const [recipientKeyHint, setRecipientKeyHint] = useState<string | null>(null)
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
   /** Resolved SMTP account for the open draft (never "all"). */
@@ -658,6 +662,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           attachmentPaths: attachmentPaths.length > 0 ? attachmentPaths : undefined,
           markReplyParentDone:
             isReplyCompose && replyToId != null ? !keepReplyOpenInInbox : undefined,
+          pgpEncrypt: pgpEncrypt || undefined,
+          pgpSign: pgpSign || undefined,
+          pgpPassphrase: pgpSign ? pgpPassphrase : undefined,
         },
       )
       if (!r.success) {
@@ -712,6 +719,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       toast.error(e instanceof Error ? e.message : "Versand fehlgeschlagen.")
     } finally {
       setSending(false)
+      setPgpPassphrase("")
     }
   }
 
@@ -1091,6 +1099,54 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         </div>
 
         <div className="flex shrink-0 flex-col gap-2 border-t bg-muted/30 px-6 py-3">
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <label className="flex items-center gap-2">
+              <Checkbox checked={pgpEncrypt} onCheckedChange={(v) => setPgpEncrypt(v === true)} />
+              PGP verschlüsseln
+            </label>
+            <label className="flex items-center gap-2">
+              <Checkbox checked={pgpSign} onCheckedChange={(v) => setPgpSign(v === true)} />
+              PGP signieren
+            </label>
+            {pgpSign ? (
+              <Input
+                type="password"
+                placeholder="PGP-Passphrase"
+                className="h-8 max-w-[200px]"
+                value={pgpPassphrase}
+                onChange={(e) => setPgpPassphrase(e.target.value)}
+              />
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8"
+              onClick={async () => {
+                if (!hasElectron() || !to.trim()) return
+                const { extractEmailAddressesFromRecipientField } = await import(
+                  "@shared/email-recipient-parse"
+                )
+                const emails = extractEmailAddressesFromRecipientField(to)
+                const status = await invokeIpc<
+                  { email: string; hasKey: boolean }[]
+                >(IPCChannels.Pgp.CheckRecipientKeys, { emails })
+                if (Array.isArray(status)) {
+                  const missing = status.filter((s) => !s.hasKey).map((s) => s.email)
+                  setRecipientKeyHint(
+                    missing.length
+                      ? `Ohne Schlüssel: ${missing.join(", ")}`
+                      : "Alle Empfänger haben Schlüssel",
+                  )
+                }
+              }}
+            >
+              Schlüssel prüfen
+            </Button>
+            {recipientKeyHint ? (
+              <span className="text-muted-foreground">{recipientKeyHint}</span>
+            ) : null}
+          </div>
           {attachmentPaths.length > 0 ? (
             <ul className="max-h-24 space-y-1 overflow-y-auto">
               {attachmentPaths.map((p) => (
