@@ -4,6 +4,7 @@ export type ServerEditionEnv = {
   ACCESS_TOKEN_SECRET?: string;
   ACCESS_TOKEN_KEY_ID?: string;
   PUBLIC_BASE_URL?: string;
+  CORS_ALLOWED_ORIGINS?: string;
   AUTH_INVITE_FROM?: string;
   AUTH_INVITE_SMTP_HOST?: string;
   AUTH_INVITE_SMTP_PORT?: string;
@@ -30,6 +31,7 @@ export type ServerEditionConfig = {
   accessTokenSecret: string;
   accessTokenKeyId: string;
   publicBaseUrl: string;
+  corsAllowedOrigins: readonly string[];
   authInvitationMail?: AuthInvitationMailConfig;
   attachmentsDir: string;
   auditArchiveDir?: string;
@@ -77,6 +79,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   assertNoKnownWeakProductionSecrets(env, masterKey, accessTokenSecret);
   const accessTokenKeyId = env.ACCESS_TOKEN_KEY_ID?.trim() || 'default';
   const publicBaseUrl = normalizePublicBaseUrl(requireEnv(env, 'PUBLIC_BASE_URL'));
+  const corsAllowedOrigins = parseCorsAllowedOrigins({ ...env, PUBLIC_BASE_URL: publicBaseUrl });
   const authInvitationMail = parseAuthInvitationMailConfig({ ...env, PUBLIC_BASE_URL: publicBaseUrl });
   const attachmentsDir = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveDir = env.AUDIT_ARCHIVE_DIR?.trim() || undefined;
@@ -90,6 +93,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     accessTokenSecret,
     accessTokenKeyId,
     publicBaseUrl,
+    corsAllowedOrigins,
     ...(authInvitationMail ? { authInvitationMail } : {}),
     attachmentsDir,
     ...(auditArchiveDir ? { auditArchiveDir } : {}),
@@ -165,6 +169,29 @@ export function normalizePublicBaseUrl(input: string): string {
     throw new Error('PUBLIC_BASE_URL must use http or https');
   }
   return url.toString().replace(/\/$/, '');
+}
+
+export function parseCorsAllowedOrigins(env: Pick<ServerEditionEnv, 'PUBLIC_BASE_URL' | 'CORS_ALLOWED_ORIGINS'>): readonly string[] {
+  const origins = new Set<string>();
+  addCorsOrigin(origins, env.PUBLIC_BASE_URL, 'PUBLIC_BASE_URL');
+  for (const rawOrigin of env.CORS_ALLOWED_ORIGINS?.split(',') ?? []) {
+    addCorsOrigin(origins, rawOrigin, 'CORS_ALLOWED_ORIGINS');
+  }
+  return [...origins];
+}
+
+function addCorsOrigin(origins: Set<string>, value: string | undefined, key: string): void {
+  const trimmed = value?.trim();
+  if (!trimmed) return;
+  if (trimmed === 'null' && key === 'CORS_ALLOWED_ORIGINS') {
+    origins.add('null');
+    return;
+  }
+  const url = new URL(trimmed);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${key} must use http or https origins`);
+  }
+  origins.add(url.origin);
 }
 
 function requireInviteMailValue(value: string | undefined, key: string): string {

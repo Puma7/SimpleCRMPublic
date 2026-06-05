@@ -32,6 +32,7 @@ Set these in `docker/.env`:
 - `ACCESS_TOKEN_SECRET`: Base64 value that decodes to at least 32 bytes.
 - `PUBLIC_DOMAIN`: domain for Caddy, for example `crm.example.com`.
 - `PUBLIC_BASE_URL`: public URL, for example `https://crm.example.com`.
+- `CORS_ALLOWED_ORIGINS`: optional comma-separated extra browser origins for server-client HTTP transport. `PUBLIC_BASE_URL` is allowed automatically. Add `null` only for trusted packaged desktop/file-origin clients that require it.
 
 Invite SMTP variables are optional. If they are empty, invite creation can still return a manual link.
 

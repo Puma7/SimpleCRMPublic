@@ -7,6 +7,7 @@ import {
 } from './api';
 import {
   assertNoKnownWeakProductionSecrets,
+  parseCorsAllowedOrigins,
   parseAuthInvitationMailConfig,
   parsePort,
   parseServerJobWorkerConfig,
@@ -185,6 +186,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const host = options.host ?? env.HOST ?? '0.0.0.0';
   const accessTokenSigner = options.accessTokenSigner ?? accessTokenSignerFromEnv(env);
   const databaseUrl = options.databaseUrl ?? env.DATABASE_URL;
+  const corsAllowedOrigins = parseCorsAllowedOrigins(env);
   const attachmentsRoot = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
@@ -236,6 +238,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     ports,
     accessTokenSigner,
     logger: options.logger ?? true,
+    corsAllowedOrigins,
   });
 
   app.addHook('onClose', async () => {

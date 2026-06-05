@@ -38,11 +38,15 @@ export type FastifyServerOptions = Readonly<{
   logger?: boolean | LoggerOptions;
   resolvePrincipal?: FastifyPrincipalResolver;
   accessTokenSigner?: AccessTokenSigner;
+  corsAllowedOrigins?: readonly string[];
 }>;
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
 const SERVER_JSON_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+const CORS_ALLOWED_METHODS = [...SUPPORTED_METHODS, 'OPTIONS'].join(', ');
+const CORS_ALLOWED_HEADERS = ['Accept', 'Authorization', 'Content-Type', 'Sec-WebSocket-Protocol'].join(', ');
+const CORS_MAX_AGE_SECONDS = '600';
 
 type EventWebSocket = {
   readyState: number;
@@ -57,6 +61,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     bodyLimit: SERVER_JSON_BODY_LIMIT_BYTES,
   });
   const api = createServerApi(options.ports);
+  const corsAllowedOrigins = new Set(options.corsAllowedOrigins ?? []);
   const resolvePrincipal = options.resolvePrincipal ?? (
     options.accessTokenSigner
       ? createBearerTokenPrincipalResolver(
@@ -70,6 +75,22 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   const handler = createFastifyHandler(api, resolvePrincipal);
 
   void app.register(websocketPlugin);
+  app.addHook('onRequest', (request, reply, done) => {
+    if (request.method === 'OPTIONS') {
+      done();
+      return;
+    }
+    if (!applyCorsHeaders(request, reply, corsAllowedOrigins)) {
+      reply.code(403).send({
+        error: {
+          code: 'cors_origin_not_allowed',
+          message: 'Origin nicht erlaubt',
+        },
+      });
+      return;
+    }
+    done();
+  });
   app.after(() => {
     app.get('/api/v1/events', { websocket: true }, (socket, request) => {
       void handleEventSocket(options.ports, resolvePrincipal, socket, request).catch((error) => {
@@ -84,8 +105,51 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     url: '/*',
     handler,
   });
+  app.options('/*', (request, reply) => {
+    if (!applyCorsHeaders(request, reply, corsAllowedOrigins)) {
+      reply.code(403).send({
+        error: {
+          code: 'cors_origin_not_allowed',
+          message: 'Origin nicht erlaubt',
+        },
+      });
+      return;
+    }
+    reply.code(204).send();
+  });
 
   return app;
+}
+
+function applyCorsHeaders(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  allowedOrigins: ReadonlySet<string>,
+): boolean {
+  const rawOrigin = singleHeader(request.headers.origin);
+  if (!rawOrigin) return true;
+  const origin = normalizeCorsOrigin(rawOrigin);
+  if (!origin) return false;
+  if (!allowedOrigins.has(origin)) return false;
+  reply.header('Vary', 'Origin');
+  reply.header('Access-Control-Allow-Origin', origin);
+  reply.header('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
+  reply.header('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
+  reply.header('Access-Control-Max-Age', CORS_MAX_AGE_SECONDS);
+  return true;
+}
+
+function normalizeCorsOrigin(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (trimmed === 'null') return 'null';
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 async function handleEventSocket(

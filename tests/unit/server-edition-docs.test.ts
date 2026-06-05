@@ -67,6 +67,7 @@ describe('server edition AP-12 operator docs', () => {
     expect(envExample).toEqual(expect.stringContaining('MASTER_KEY='));
     expect(envExample).toEqual(expect.stringContaining('ACCESS_TOKEN_SECRET='));
     expect(envExample).toEqual(expect.stringContaining('PUBLIC_BASE_URL='));
+    expect(envExample).toEqual(expect.stringContaining('CORS_ALLOWED_ORIGINS='));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_DAILY=7'));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_WEEKLY=4'));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_MONTHLY=12'));

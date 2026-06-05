@@ -114,6 +114,7 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('./postgres-init:/docker-entrypoint-initdb.d:ro');
     expect(compose).toContain('pg_isready -U simplecrm_app -d simplecrm');
     expect(compose).toContain('ACCESS_TOKEN_SECRET: ${ACCESS_TOKEN_SECRET}');
+    expect(compose).toContain('CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}');
     expect(compose).toContain('AUTH_INVITE_FROM: ${AUTH_INVITE_FROM:-}');
     expect(compose).toContain('AUTH_INVITE_SMTP_HOST: ${AUTH_INVITE_SMTP_HOST:-}');
     expect(compose).toContain('AUTH_INVITE_SMTP_PORT: ${AUTH_INVITE_SMTP_PORT:-587}');
@@ -270,6 +271,7 @@ describe('server edition repository boundaries', () => {
     expect(envExample).toContain('PUBLIC_DOMAIN=localhost');
     expect(envExample).toContain('CADDY_HTTP_PORT=80');
     expect(envExample).toContain('CADDY_HTTPS_PORT=443');
+    expect(envExample).toContain('CORS_ALLOWED_ORIGINS=');
     expect(envExample).toContain('PG_ADMIN_PASSWORD=CHANGE_ME_postgres_admin_password');
     expect(envExample).toContain('PG_PASSWORD=CHANGE_ME_postgres_app_password');
     expect(envExample).toContain('BACKUP_RETENTION_DAILY=7');
@@ -1724,6 +1726,58 @@ describe('server edition repository boundaries', () => {
         payload: { reason: 'reply' },
       });
       expect(missingBearerDoesNotUseHeaderFallback.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('fastify adapter handles CORS preflights for configured server-client origins', async () => {
+    const app = createFastifyServer({
+      ports: makeServerApiPorts(),
+      corsAllowedOrigins: ['https://client.example.com', 'null'],
+    });
+
+    try {
+      const preflight = await app.inject({
+        method: 'OPTIONS',
+        url: '/api/v1/customers',
+        headers: {
+          origin: 'https://client.example.com',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'Authorization, Content-Type',
+        },
+      });
+      expect(preflight.statusCode).toBe(204);
+      expect(preflight.headers['access-control-allow-origin']).toBe('https://client.example.com');
+      expect(preflight.headers['access-control-allow-methods']).toContain('POST');
+      expect(preflight.headers['access-control-allow-headers']).toContain('Authorization');
+      expect(preflight.headers['access-control-max-age']).toBe('600');
+      expect(preflight.headers.vary).toBe('Origin');
+
+      const actual = await app.inject({
+        method: 'GET',
+        url: '/health',
+        headers: { origin: 'https://client.example.com' },
+      });
+      expect(actual.statusCode).toBe(200);
+      expect(actual.headers['access-control-allow-origin']).toBe('https://client.example.com');
+
+      const opaqueDesktopOrigin = await app.inject({
+        method: 'OPTIONS',
+        url: '/health',
+        headers: { origin: 'null' },
+      });
+      expect(opaqueDesktopOrigin.statusCode).toBe(204);
+      expect(opaqueDesktopOrigin.headers['access-control-allow-origin']).toBe('null');
+
+      const denied = await app.inject({
+        method: 'OPTIONS',
+        url: '/health',
+        headers: { origin: 'https://evil.example.com' },
+      });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+      expect((denied.json() as any).error.code).toBe('cors_origin_not_allowed');
     } finally {
       await app.close();
     }

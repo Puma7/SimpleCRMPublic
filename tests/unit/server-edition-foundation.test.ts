@@ -1089,6 +1089,7 @@ describe('server edition foundation', () => {
       SIMPLECRM_MASTER_KEY: 'base64-master-key',
       ACCESS_TOKEN_SECRET: Buffer.alloc(32, 1).toString('base64'),
       PUBLIC_BASE_URL: 'https://crm.example.com/',
+      CORS_ALLOWED_ORIGINS: 'https://app.example.com, http://localhost:5173/path, null',
       HOST: '127.0.0.1',
       PORT: '3001',
       ACCESS_TOKEN_KEY_ID: 'prod',
@@ -1100,6 +1101,7 @@ describe('server edition foundation', () => {
       databaseUrl: 'postgres://simplecrm@postgres/simplecrm',
       accessTokenKeyId: 'prod',
       publicBaseUrl: 'https://crm.example.com',
+      corsAllowedOrigins: ['https://crm.example.com', 'https://app.example.com', 'http://localhost:5173', 'null'],
       attachmentsDir: '/app/data/attachments',
       host: '127.0.0.1',
       port: 3001,
@@ -1118,6 +1120,13 @@ describe('server edition foundation', () => {
     });
     expect(() => parseServerJobWorkerConfig({ JOB_WORKER_ENABLED: 'maybe' })).toThrow('JOB_WORKER_ENABLED');
     expect(() => parseServerJobWorkerConfig({ JOB_WORKER_AI_CONCURRENCY: '101' })).toThrow('JOB_WORKER_AI_CONCURRENCY');
+    expect(() => parseServerEditionConfig({
+      DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+      SIMPLECRM_MASTER_KEY: 'base64-master-key',
+      ACCESS_TOKEN_SECRET: Buffer.alloc(32, 1).toString('base64'),
+      PUBLIC_BASE_URL: 'https://crm.example.com',
+      CORS_ALLOWED_ORIGINS: 'file://desktop',
+    })).toThrow('CORS_ALLOWED_ORIGINS');
   });
 
   test('server bootstrap creates DB-backed API ports with audit and events', () => {
