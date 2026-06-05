@@ -527,16 +527,19 @@ describe('renderer transport', () => {
       paginated: true,
       limit: 1,
       offset: 1,
+      status: 'Lead',
+      sortBy: 'fullName',
+      sortDirection: 'desc',
     });
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      'https://crm.example.com/api/v1/customers?limit=1',
+      'https://crm.example.com/api/v1/customers?limit=1&status=Lead&sortBy=fullName&sortDirection=desc',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      'https://crm.example.com/api/v1/customers?limit=1&cursor=42',
+      'https://crm.example.com/api/v1/customers?limit=1&status=Lead&sortBy=fullName&sortDirection=desc&cursor=42',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result).toEqual({

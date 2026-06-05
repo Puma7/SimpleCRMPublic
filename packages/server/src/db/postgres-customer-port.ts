@@ -49,9 +49,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
           let query = trx
             .selectFrom('customers')
             .select(customerSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
           let countQuery = trx
             .selectFrom('customers')
             .select((eb) => eb.fn.countAll<number>().as('count'))
@@ -76,6 +74,42 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               eb('email', 'ilike', pattern),
             ]));
           }
+
+          const status = input.status?.trim();
+          if (status) {
+            query = query.where('status', '=', status);
+            countQuery = countQuery.where('status', '=', status);
+          }
+
+          const sortDirection = input.sortDirection === 'desc' ? 'desc' : 'asc';
+          switch (input.sortBy) {
+            case 'fullName':
+              query = query.orderBy('name', sortDirection).orderBy('first_name', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'customerNumber':
+              query = query.orderBy('customer_number', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'company':
+              query = query.orderBy('company', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'email':
+              query = query.orderBy('email', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'contactPhone':
+              query = query.orderBy('phone', sortDirection).orderBy('mobile', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'status':
+              query = query.orderBy('status', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'jtlCustomerNumber':
+              query = query.orderBy('source_sqlite_id', sortDirection).orderBy('id', 'asc');
+              break;
+            default:
+              query = query.orderBy('id', 'asc');
+              break;
+          }
+
+          query = query.limit(limit + 1);
 
           const [rows, countRow] = await Promise.all([
             query.execute(),

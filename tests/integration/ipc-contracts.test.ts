@@ -76,6 +76,8 @@ describe('IPC contracts', () => {
         offset: 100,
         query: 'Meyer',
         status: 'Active',
+        sortBy: 'fullName',
+        sortDirection: 'desc',
       })
     ).not.toThrow();
     expect(() =>

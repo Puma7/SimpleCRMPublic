@@ -136,6 +136,16 @@ describe('sqlite-service', () => {
       expect(result.total).toBe(1);
       expect(mockDb.prepare.mock.calls[1][0]).toContain("COALESCE(zipCode, '') AS zip");
     });
+
+    test('uses whitelisted global sort fields for paginated customers', () => {
+      mockDb.prepare
+        .mockReturnValueOnce(makeStmt({ total: 1 }))
+        .mockReturnValueOnce(makeStmt([{ id: 1, email: 'kunde@example.com' }]));
+
+      getCustomersPage({ limit: 50, sortBy: 'email', sortDirection: 'desc' });
+
+      expect(mockDb.prepare.mock.calls[1][0]).toContain('ORDER BY email DESC, id ASC');
+    });
   });
 
   describe('searchProducts', () => {

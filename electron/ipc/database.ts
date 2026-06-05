@@ -54,6 +54,8 @@ function parseCustomerListPayload(payload: unknown): {
   offset?: number;
   query?: string;
   status?: string | null;
+  sortBy?: string;
+  sortDirection?: 'asc' | 'desc';
 } {
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     const input = payload as Record<string, unknown>;
@@ -64,6 +66,8 @@ function parseCustomerListPayload(payload: unknown): {
       offset: typeof input.offset === 'number' ? input.offset : undefined,
       query: typeof input.query === 'string' ? input.query : undefined,
       status: typeof input.status === 'string' ? input.status : null,
+      sortBy: typeof input.sortBy === 'string' ? input.sortBy : undefined,
+      sortDirection: input.sortDirection === 'desc' ? 'desc' : 'asc',
     };
   }
 

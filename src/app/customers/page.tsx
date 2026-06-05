@@ -44,7 +44,6 @@ import {
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
-  getSortedRowModel,
   SortingState,
   VisibilityState,
   RowSelectionState,
@@ -287,6 +286,7 @@ export default function CustomersPage() {
 
   const loadCustomers = useCallback(async () => {
     setIsLoading(true)
+    const activeSort = sorting[0]
     try {
       const { customers: fetchedCustomers, total } = await getCustomersPage({
         limit: pagination.pageSize,
@@ -294,6 +294,8 @@ export default function CustomersPage() {
         query: debouncedSearch,
         status: statusFilter ?? null,
         includeCustomFields: false,
+        sortBy: activeSort?.id,
+        sortDirection: activeSort?.desc ? 'desc' : 'asc',
       })
 
       setCustomers(fetchedCustomers)
@@ -306,7 +308,7 @@ export default function CustomersPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [debouncedSearch, pagination.pageIndex, pagination.pageSize, statusFilter])
+  }, [debouncedSearch, pagination.pageIndex, pagination.pageSize, sorting, statusFilter])
 
   useEffect(() => {
     void loadCustomers()
@@ -321,15 +323,18 @@ export default function CustomersPage() {
       rowSelection,
       pagination,
     },
-    onSortingChange: setSorting,
+    onSortingChange: (updaterOrValue) => {
+      setSorting((current) => typeof updaterOrValue === 'function' ? updaterOrValue(current) : updaterOrValue)
+      setPagination((current) => current.pageIndex === 0 ? current : { ...current, pageIndex: 0 })
+    },
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
     manualPagination: true,
+    manualSorting: true,
     rowCount: totalCustomers,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getSortedRowModel: getSortedRowModel(),
   })
 
   const copyAffiliateLink = (link?: string) => {

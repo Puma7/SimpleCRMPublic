@@ -1258,6 +1258,8 @@ interface CustomerPageOptions {
     offset?: number;
     query?: string;
     status?: string | null;
+    sortBy?: string;
+    sortDirection?: 'asc' | 'desc';
 }
 
 interface CustomerPageResult {
@@ -1266,6 +1268,39 @@ interface CustomerPageResult {
 }
 
 const CUSTOMER_LIST_MAX_LIMIT = 500;
+
+function getCustomerOrderSql(sortBy: string | undefined, sortDirection: 'asc' | 'desc' | undefined, hasQuery: boolean): string {
+    const direction = sortDirection === 'desc' ? 'DESC' : 'ASC';
+    switch (sortBy) {
+        case 'fullName':
+            return `ORDER BY name ${direction}, firstName ${direction}, id ASC`;
+        case 'customerNumber':
+            return `ORDER BY customerNumber ${direction}, id ASC`;
+        case 'company':
+            return `ORDER BY company ${direction}, id ASC`;
+        case 'email':
+            return `ORDER BY email ${direction}, id ASC`;
+        case 'contactPhone':
+            return `ORDER BY phone ${direction}, mobile ${direction}, id ASC`;
+        case 'status':
+            return `ORDER BY status ${direction}, id ASC`;
+        case 'jtlCustomerNumber':
+            return `ORDER BY jtl_kKunde ${direction}, id ASC`;
+        default:
+            return hasQuery
+                ? `ORDER BY
+                    CASE
+                        WHEN customerNumber LIKE @prefixTerm THEN 1
+                        WHEN name LIKE @prefixTerm THEN 2
+                        WHEN firstName LIKE @prefixTerm THEN 3
+                        WHEN company LIKE @prefixTerm THEN 4
+                        WHEN email LIKE @prefixTerm THEN 5
+                        ELSE 6
+                    END,
+                    name ASC`
+                : 'ORDER BY name ASC';
+    }
+}
 
 function normalizeListLimit(limit: unknown, fallback: number, max: number = CUSTOMER_LIST_MAX_LIMIT): number {
     const numericLimit = Number(limit);
@@ -1429,18 +1464,7 @@ export function getCustomersPage(options: CustomerPageOptions = {}): CustomerPag
     }
 
     const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
-    const orderSql = query
-        ? `ORDER BY
-            CASE
-                WHEN customerNumber LIKE @prefixTerm THEN 1
-                WHEN name LIKE @prefixTerm THEN 2
-                WHEN firstName LIKE @prefixTerm THEN 3
-                WHEN company LIKE @prefixTerm THEN 4
-                WHEN email LIKE @prefixTerm THEN 5
-                ELSE 6
-            END,
-            name ASC`
-        : 'ORDER BY name ASC';
+    const orderSql = getCustomerOrderSql(options.sortBy, options.sortDirection, Boolean(query));
     const columns = `
         id, jtl_kKunde, customerNumber, name, firstName, company, email,
         phone, mobile, street, COALESCE(zipCode, '') AS zip, city, country, status, notes, affiliateLink,

@@ -58,7 +58,7 @@ describe('registerDatabaseHandlers', () => {
       test('returns paginated customers when object payload is provided', async () => {
         sqliteMocks.getCustomersPage.mockReturnValue({ items: [{ id: 2, name: 'Beta' }], total: 42 });
         const handler = handlers.get(IPCChannels.Db.GetCustomers);
-        const result = await handler({}, { paginated: true, limit: 25, offset: 50, query: 'Beta', status: 'Active' });
+        const result = await handler({}, { paginated: true, limit: 25, offset: 50, query: 'Beta', status: 'Active', sortBy: 'fullName', sortDirection: 'desc' });
         expect(result).toEqual({ items: [{ id: 2, name: 'Beta' }], total: 42 });
         expect(sqliteMocks.getCustomersPage).toHaveBeenCalledWith({
           includeCustomFields: false,
@@ -67,6 +67,8 @@ describe('registerDatabaseHandlers', () => {
           offset: 50,
           query: 'Beta',
           status: 'Active',
+          sortBy: 'fullName',
+          sortDirection: 'desc',
         });
       });
     });

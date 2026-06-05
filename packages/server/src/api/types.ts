@@ -527,6 +527,9 @@ export type CustomerApiPort = {
   list(input: {
     workspaceId: string;
     search?: string;
+    status?: string;
+    sortBy?: string;
+    sortDirection?: 'asc' | 'desc';
     cursor?: number;
     limit: number;
   }): Promise<CustomerListResult>;

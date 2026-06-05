@@ -75,6 +75,6 @@ describe('localDataService', () => {
     const products = await localDataService.getProducts();
     expect(products[0].id).toBe('7');
     expect(products[0].isActive).toBe(true);
-    expect(invoke).toHaveBeenCalledWith(IPCChannels.Products.Search, { query: '', limit: 200 });
+    expect(invoke).toHaveBeenCalledWith(IPCChannels.Products.GetAll);
   });
 });

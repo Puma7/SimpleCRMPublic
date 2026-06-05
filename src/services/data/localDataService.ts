@@ -45,6 +45,8 @@ export interface CustomerPageRequest {
   query?: string;
   status?: string | null;
   includeCustomFields?: boolean;
+  sortBy?: string;
+  sortDirection?: 'asc' | 'desc';
 }
 
 export interface CustomerPageResult {
@@ -58,6 +60,8 @@ export const getCustomersPage = async ({
   query = '',
   status = null,
   includeCustomFields = false,
+  sortBy,
+  sortDirection,
 }: CustomerPageRequest = {}): Promise<CustomerPageResult> => {
   try {
     const response = await invokeRenderer(IPCChannels.Db.GetCustomers, {
@@ -67,6 +71,8 @@ export const getCustomersPage = async ({
       offset,
       query,
       status,
+      sortBy,
+      sortDirection,
     }) as { items?: any[]; total?: number };
 
     const items = Array.isArray(response?.items) ? response.items : [];
@@ -156,7 +162,7 @@ export const localDataService: DataService = {
   // --- Products ---
   async getProducts(): Promise<Product[]> {
     try {
-       const dbProducts = await invokeRenderer(IPCChannels.Products.Search, { query: '', limit: 200 }) as any[];
+       const dbProducts = await invokeRenderer(IPCChannels.Products.GetAll) as any[];
        return dbProducts.map(mapDbProductToApp);
     } catch (error) {
         console.error("Error invoking 'db:get-products':", error);
@@ -200,7 +206,7 @@ export const getLocalProducts = async (): Promise<Product[]> => {
         console.debug("localDataService: getLocalProducts called");
     }
     try {
-        const dbProducts = await invokeRenderer(IPCChannels.Products.Search, { query: '', limit: 200 }) as any[];
+        const dbProducts = await invokeRenderer(IPCChannels.Products.GetAll) as any[];
         if (import.meta.env.DEV) {
             console.debug("localDataService: Received products from main", { count: Array.isArray(dbProducts) ? dbProducts.length : 'unknown' });
         }

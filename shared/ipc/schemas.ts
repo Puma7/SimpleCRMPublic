@@ -389,6 +389,8 @@ baseSchemaMap.set(IPCChannels.Db.GetCustomers, {
       offset: z.number().int().nonnegative().optional(),
       query: z.string().optional(),
       status: z.string().nullable().optional(),
+      sortBy: z.string().optional(),
+      sortDirection: z.union([z.literal('asc'), z.literal('desc')]).optional(),
     }).passthrough(),
   ]),
   result: z.union([

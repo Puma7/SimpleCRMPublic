@@ -12860,6 +12860,9 @@ describe('server edition foundation', () => {
         search: ' Alice ',
         cursor: '5',
         limit: '20',
+        status: 'Lead',
+        sortBy: 'fullName',
+        sortDirection: 'desc',
       },
       principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
     });
@@ -12870,6 +12873,9 @@ describe('server edition foundation', () => {
       limit: 20,
       cursor: 5,
       search: 'Alice',
+      status: 'Lead',
+      sortBy: 'fullName',
+      sortDirection: 'desc',
     }]);
 
     const get = await api.handle({

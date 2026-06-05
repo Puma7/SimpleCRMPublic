@@ -944,9 +944,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     const offset = offsetValue(paginatedPayload?.offset)
     const search = paginatedPayload && typeof paginatedPayload.query === "string" ? paginatedPayload.query : ""
     const status = paginatedPayload && typeof paginatedPayload.status === "string" ? paginatedPayload.status : ""
+    const sortBy = paginatedPayload && typeof paginatedPayload.sortBy === "string" ? paginatedPayload.sortBy : ""
+    const sortDirection = paginatedPayload?.sortDirection === "desc" ? "desc" : "asc"
     const baseQuery: Record<string, string | number | boolean | null | undefined> = { limit }
     if (search) baseQuery.search = search
     if (status) baseQuery.status = status
+    if (sortBy) {
+      baseQuery.sortBy = sortBy
+      baseQuery.sortDirection = sortDirection
+    }
 
     return {
       method: "GET",

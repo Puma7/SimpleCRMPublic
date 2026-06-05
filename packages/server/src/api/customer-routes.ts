@@ -60,6 +60,15 @@ export async function handleCustomerRoute(
     const search = normalizeSearch(req.query?.search);
     if (search === null) return error(400, 'invalid_search', 'search darf maximal 200 Zeichen haben');
 
+    const status = normalizeOptionalText(req.query?.status, 50);
+    if (status === null) return error(400, 'invalid_status', 'status darf maximal 50 Zeichen haben');
+
+    const sortBy = normalizeOptionalText(req.query?.sortBy, 50);
+    if (sortBy === null) return error(400, 'invalid_sort_by', 'sortBy darf maximal 50 Zeichen haben');
+
+    const sortDirection = parseSortDirection(req.query?.sortDirection);
+    if (sortDirection === null) return error(400, 'invalid_sort_direction', 'sortDirection muss asc oder desc sein');
+
     if (!ports.customers) return error(503, 'customers_unavailable', 'Customer API nicht konfiguriert');
 
     const result = await ports.customers.list({
@@ -67,6 +76,9 @@ export async function handleCustomerRoute(
       limit,
       ...(cursor === undefined ? {} : { cursor }),
       ...(search === undefined ? {} : { search }),
+      ...(status === undefined ? {} : { status }),
+      ...(sortBy === undefined ? {} : { sortBy }),
+      ...(sortDirection === undefined ? {} : { sortDirection }),
     });
     return data(200, result);
   }
@@ -250,6 +262,20 @@ function normalizeSearch(value: string | undefined): string | undefined | null {
   if (!normalized) return undefined;
   if (normalized.length > 200) return null;
   return normalized;
+}
+
+function normalizeOptionalText(value: string | undefined, maxLength: number): string | undefined | null {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  if (normalized.length > maxLength) return null;
+  return normalized;
+}
+
+function parseSortDirection(value: string | undefined): 'asc' | 'desc' | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  if (value === 'asc' || value === 'desc') return value;
+  return null;
 }
 
 function parseCustomerMutationBody(
