@@ -28,7 +28,8 @@ export default function ProductsPage() {
     setError(null);
     try {
       const fetchedProducts = await invokeRenderer(
-        IPCChannels.Products.GetAll
+        IPCChannels.Products.Search,
+        { query: '', limit: 200 }
       ) as Product[];
       // Ensure isActive is boolean (it comes as 0/1 from SQLite)
       const mappedProducts = fetchedProducts.map((p) => ({

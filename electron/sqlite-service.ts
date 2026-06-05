@@ -1083,6 +1083,42 @@ export function getCustomFieldValuesForAllCustomers(): Map<number, CustomFieldVa
     return valuesByCustomer;
 }
 
+export function getCustomFieldValuesForCustomers(customerIds: number[]): Map<number, CustomFieldValueRecord[]> {
+    const uniqueIds = Array.from(new Set(
+        customerIds
+            .map((id) => Number(id))
+            .filter((id) => Number.isInteger(id) && id > 0)
+    ));
+
+    if (uniqueIds.length === 0) {
+        return new Map();
+    }
+
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    const stmt = getDb().prepare(`
+        SELECT cfv.id, cfv.customer_id, cfv.field_id, cfv.value,
+               cf.name, cf.label, cf.type, cf.required, cf.options,
+               cf.default_value, cf.placeholder, cf.description
+        FROM ${CUSTOMER_CUSTOM_FIELD_VALUES_TABLE} cfv
+        JOIN ${CUSTOMER_CUSTOM_FIELDS_TABLE} cf ON cfv.field_id = cf.id
+        WHERE cf.active = 1
+          AND cfv.customer_id IN (${placeholders})
+        ORDER BY cfv.customer_id, cf.display_order ASC, cf.name ASC
+    `);
+
+    const values = stmt.all(...uniqueIds) as CustomFieldValueRecord[];
+    const valuesByCustomer = new Map<number, CustomFieldValueRecord[]>();
+
+    for (const value of values) {
+        if (!valuesByCustomer.has(value.customer_id)) {
+            valuesByCustomer.set(value.customer_id, []);
+        }
+        valuesByCustomer.get(value.customer_id)!.push(value);
+    }
+
+    return valuesByCustomer;
+}
+
 // Set a custom field value for a customer
 export function setCustomFieldValue(customerId: number, fieldId: number, value: any) {
     const now = new Date().toISOString();
@@ -1216,6 +1252,71 @@ interface CustomFieldValueRecord {
 
 // --- Customer Operations ---
 
+interface CustomerPageOptions {
+    includeCustomFields?: boolean;
+    limit?: number;
+    offset?: number;
+    query?: string;
+    status?: string | null;
+}
+
+interface CustomerPageResult {
+    items: any[];
+    total: number;
+}
+
+const CUSTOMER_LIST_MAX_LIMIT = 500;
+
+function normalizeListLimit(limit: unknown, fallback: number, max: number = CUSTOMER_LIST_MAX_LIMIT): number {
+    const numericLimit = Number(limit);
+    if (!Number.isFinite(numericLimit)) {
+        return fallback;
+    }
+    return Math.min(max, Math.max(1, Math.floor(numericLimit)));
+}
+
+function normalizeListOffset(offset: unknown): number {
+    const numericOffset = Number(offset);
+    if (!Number.isFinite(numericOffset)) {
+        return 0;
+    }
+    return Math.max(0, Math.floor(numericOffset));
+}
+
+function buildCustomFieldsObject(fieldValues: CustomFieldValueRecord[] = []): Record<string, any> {
+    const customFields: Record<string, any> = {};
+
+    fieldValues.forEach((field: CustomFieldValueRecord) => {
+        let parsedValue: any = field.value;
+        if (field.type === 'number' && parsedValue !== null) {
+            parsedValue = parseFloat(parsedValue);
+        } else if (field.type === 'boolean' && parsedValue !== null) {
+            parsedValue = parsedValue === 'true' || parsedValue === '1';
+        }
+
+        if (field.name) {
+            customFields[field.name] = parsedValue;
+        }
+    });
+
+    return customFields;
+}
+
+function attachCustomFieldsForPage(customers: any[]): any[] {
+    if (customers.length === 0) {
+        return customers;
+    }
+
+    const customFieldValuesByCustomer = getCustomFieldValuesForCustomers(
+        customers.map((customer: any) => Number(customer.id))
+    );
+
+    return customers.map((customer: any) => ({
+        ...customer,
+        customFields: buildCustomFieldsObject(customFieldValuesByCustomer.get(Number(customer.id)) || []),
+    }));
+}
+
 // Lightweight function for dropdown population - no custom fields
 export function getCustomersForDropdown(): any[] {
     const stmt = getDb().prepare(`
@@ -1234,43 +1335,48 @@ export function getCustomersForDropdown(): any[] {
 // Search customers with limit for autocomplete/combobox
 export function searchCustomers(query: string = '', limit: number = 20): any[] {
     const startTime = Date.now();
+    const safeLimit = normalizeListLimit(limit, 20, 50);
+    const trimmedQuery = query.trim();
+
     let sql = `
         SELECT id, name, firstName, company, customerNumber, email
         FROM ${CUSTOMERS_TABLE}
     `;
-    
+
     const params: any[] = [];
-    
-    if (query && query.trim() !== '') {
+
+    if (trimmedQuery !== '') {
         sql += ` WHERE (
-            name LIKE ? OR 
-            firstName LIKE ? OR 
-            company LIKE ? OR 
+            name LIKE ? OR
+            firstName LIKE ? OR
+            company LIKE ? OR
             customerNumber LIKE ? OR
-            email LIKE ?
+            email LIKE ? OR
+            CAST(jtl_kKunde AS TEXT) LIKE ?
         )`;
-        const searchTerm = `%${query}%`;
-        params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
+        const searchTerm = `%${trimmedQuery}%`;
+        params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
     }
-    
-    sql += ` ORDER BY 
+
+    if (trimmedQuery === '') {
+        sql += ` ORDER BY name ASC LIMIT ?`;
+        params.push(safeLimit);
+    } else {
+        sql += ` ORDER BY
         CASE 
             WHEN name LIKE ? THEN 1
             WHEN firstName LIKE ? THEN 2
             WHEN company LIKE ? THEN 3
-            ELSE 4
+            WHEN customerNumber LIKE ? THEN 4
+            WHEN email LIKE ? THEN 5
+            ELSE 6
         END,
         name ASC
         LIMIT ?`;
-    
-    if (query && query.trim() !== '') {
-        const startTerm = `${query}%`;
-        params.push(startTerm, startTerm, startTerm);
-    } else {
-        params.push('', '', '');
+        const startTerm = `${trimmedQuery}%`;
+        params.push(startTerm, startTerm, startTerm, startTerm, startTerm, safeLimit);
     }
-    params.push(limit);
-    
+
     if (isDevelopment) {
         console.debug(`🔍 [SQLite] Executing customer search SQL with ${params.length} parameters`);
     }
@@ -1288,6 +1394,77 @@ export function searchCustomers(query: string = '', limit: number = 20): any[] {
         customerNumber: customer.customerNumber,
         email: customer.email
     }));
+}
+
+export function getCustomersPage(options: CustomerPageOptions = {}): CustomerPageResult {
+    const includeCustomFields = Boolean(options.includeCustomFields);
+    const limit = normalizeListLimit(options.limit, 50);
+    const offset = normalizeListOffset(options.offset);
+    const query = (options.query ?? '').trim();
+    const status = options.status && options.status !== 'all' ? options.status : null;
+    const params: Record<string, unknown> = {
+        limit,
+        offset,
+    };
+    const whereParts: string[] = [];
+
+    if (status) {
+        whereParts.push('status = @status');
+        params.status = status;
+    }
+
+    if (query) {
+        whereParts.push(`(
+            name LIKE @searchTerm OR
+            firstName LIKE @searchTerm OR
+            company LIKE @searchTerm OR
+            customerNumber LIKE @searchTerm OR
+            email LIKE @searchTerm OR
+            phone LIKE @searchTerm OR
+            mobile LIKE @searchTerm OR
+            CAST(jtl_kKunde AS TEXT) LIKE @searchTerm
+        )`);
+        params.searchTerm = `%${query}%`;
+        params.prefixTerm = `${query}%`;
+    }
+
+    const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+    const orderSql = query
+        ? `ORDER BY
+            CASE
+                WHEN customerNumber LIKE @prefixTerm THEN 1
+                WHEN name LIKE @prefixTerm THEN 2
+                WHEN firstName LIKE @prefixTerm THEN 3
+                WHEN company LIKE @prefixTerm THEN 4
+                WHEN email LIKE @prefixTerm THEN 5
+                ELSE 6
+            END,
+            name ASC`
+        : 'ORDER BY name ASC';
+    const columns = `
+        id, jtl_kKunde, customerNumber, name, firstName, company, email,
+        phone, mobile, street, zip, city, country, status, notes, affiliateLink,
+        jtl_dateCreated
+    `;
+
+    const totalRow = getDb().prepare(`
+        SELECT COUNT(*) as total
+        FROM ${CUSTOMERS_TABLE}
+        ${whereSql}
+    `).get(params) as { total?: number } | undefined;
+
+    const rows = getDb().prepare(`
+        SELECT ${columns}
+        FROM ${CUSTOMERS_TABLE}
+        ${whereSql}
+        ${orderSql}
+        LIMIT @limit OFFSET @offset
+    `).all(params);
+
+    return {
+        items: includeCustomFields ? attachCustomFieldsForPage(rows) : rows,
+        total: Number(totalRow?.total ?? 0),
+    };
 }
 
 export function getAllCustomers(includeCustomFields: boolean = false): any[] {
@@ -1646,10 +1823,8 @@ export function getProductById(id: number): Product | null {
 }
 
 export function searchProducts(query: string = '', limit: number = 20): Product[] {
-    console.log(`🔍 [SQLite] searchProducts() called with query: "${query}", limit: ${limit}`);
-    console.log(`🔍 [SQLite] SearchProducts call stack:`, new Error().stack?.split('\n').slice(1, 6).join('\n'));
-
     const startTime = Date.now();
+    const safeLimit = normalizeListLimit(limit, 20, 100);
 
     const trimmedQuery = query.trim();
     const lowerQuery = trimmedQuery.toLowerCase();
@@ -1667,7 +1842,7 @@ export function searchProducts(query: string = '', limit: number = 20): Product[
             ORDER BY name
             LIMIT @limit
         `);
-        results = stmt.all({ limit });
+        results = stmt.all({ limit: safeLimit });
     } else {
         // Search by name, description, or SKU (cArtNr)
         stmt = getDb().prepare(`
@@ -1689,10 +1864,12 @@ export function searchProducts(query: string = '', limit: number = 20): Product[
                 name
             LIMIT @limit
         `);
-        results = stmt.all({ likePattern, lowerQuery, prefixPattern, limit });
+        results = stmt.all({ likePattern, lowerQuery, prefixPattern, limit: safeLimit });
     }
 
-    console.log(`🔍 [SQLite] searchProducts() returned ${results.length} products in ${Date.now() - startTime}ms`);
+    if (isDevelopment) {
+        console.debug(`🔍 [SQLite] searchProducts() returned ${results.length} products in ${Date.now() - startTime}ms`);
+    }
     return results as Product[];
 }
 
@@ -2359,6 +2536,26 @@ export function getTaskById(taskId: number): any {
 
 export function createTask(taskData: any): { success: boolean; id?: number; error?: string } {
   try {
+    const customerId = Number(taskData?.customer_id);
+    const title = String(taskData?.title ?? '').trim();
+    const priority = String(taskData?.priority ?? 'Medium').trim() || 'Medium';
+
+    if (!Number.isInteger(customerId) || customerId <= 0) {
+      return { success: false, error: 'Bitte wählen Sie einen gültigen Kunden aus.' };
+    }
+
+    if (!title) {
+      return { success: false, error: 'Bitte geben Sie einen Aufgabentitel ein.' };
+    }
+
+    const customerExists = getDb()
+      .prepare(`SELECT id FROM ${CUSTOMERS_TABLE} WHERE id = ? LIMIT 1`)
+      .get(customerId);
+
+    if (!customerExists) {
+      return { success: false, error: `Kunde ${customerId} wurde nicht gefunden.` };
+    }
+
     // Prepare timestamp
     const now = new Date().toISOString();
 
@@ -2374,11 +2571,11 @@ export function createTask(taskData: any): { success: boolean; id?: number; erro
     `);
 
     const result = stmt.run({
-      customer_id: taskData.customer_id,
-      title: taskData.title,
+      customer_id: customerId,
+      title,
       description: taskData.description || '',
-      due_date: taskData.due_date ?? '',
-      priority: taskData.priority,
+      due_date: taskData.due_date || '',
+      priority,
       completed: taskData.completed ? 1 : 0,
       calendar_event_id: taskData.calendar_event_id ?? null,
       created_date: now,
@@ -2389,10 +2586,10 @@ export function createTask(taskData: any): { success: boolean; id?: number; erro
 
     try {
       createActivityLog({
-        customer_id: taskData.customer_id,
+        customer_id: customerId,
         task_id: newTaskId,
         activity_type: 'task_created',
-        title: `Aufgabe erstellt: ${taskData.title}`,
+        title: `Aufgabe erstellt: ${title}`,
       });
     } catch (e) {
       console.error('Failed to log task creation activity:', e);

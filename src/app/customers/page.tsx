@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
   ChevronDown,
@@ -24,8 +24,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
-import { localDataService } from "@/services/data/localDataService"
-import { customFieldService } from "@/services/data/customFieldService"
+import { getCustomersPage, localDataService } from "@/services/data/localDataService"
 import {
   getRendererTransport,
   isCustomerListRefreshEvent,
@@ -45,14 +44,12 @@ import {
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
-  getPaginationRowModel,
   getSortedRowModel,
   SortingState,
-  ColumnFiltersState,
   VisibilityState,
   RowSelectionState,
+  PaginationState,
   useReactTable,
-  FilterFn,
 } from "@tanstack/react-table"
 
 // Helper function for date formatting (if needed for sync status)
@@ -205,28 +202,12 @@ const columnDisplayNames: Record<string, string> = {
   'actions': 'Aktionen'
 };
 
-// Custom global filter function
-const globalFilterFn: FilterFn<Customer> = (row, columnId, filterValue) => {
-  const customer = row.original;
-  const query = String(filterValue).toLowerCase(); // Ensure query is string and lowercase
-
-  // Check across relevant fields
-  const nameMatch = customer.name?.toLowerCase().includes(query) ?? false;
-  const firstNameMatch = customer.firstName?.toLowerCase().includes(query) ?? false;
-  const emailMatch = customer.email?.toLowerCase().includes(query) ?? false;
-  const companyMatch = customer.company?.toLowerCase().includes(query) ?? false;
-  const phoneMatch = customer.phone?.toLowerCase().includes(query) ?? false;
-  const mobileMatch = customer.mobile?.toLowerCase().includes(query) ?? false;
-  const jtlIdMatch = customer.jtl_kKunde !== undefined && customer.jtl_kKunde !== null ? customer.jtl_kKunde.toString().includes(query) : false;
-
-  return nameMatch || firstNameMatch || emailMatch || companyMatch || phoneMatch || mobileMatch || jtlIdMatch;
-};
-
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [serverEventRefresh, setServerEventRefresh] = useState(0)
+  const [totalCustomers, setTotalCustomers] = useState(0)
   const navigate = useNavigate()
   const serverClientMode = getRendererTransport().kind === "http"
 
@@ -238,10 +219,12 @@ export default function CustomersPage() {
 
   // React Table State
   const [sorting, setSorting] = useState<SortingState>([])
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
-  const [globalFilter, setGlobalFilter] = useState(''); // State for global filter input
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 })
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
+  const [globalFilter, setGlobalFilter] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
 
   // Initialize grouping options from customerGroupingFields and custom fields
   useEffect(() => {
@@ -293,68 +276,59 @@ export default function CustomersPage() {
   }, [serverClientMode])
 
   useEffect(() => {
-    const fetchCustomersWithCustomFields = async () => {
-      setIsLoading(true)
-      try {
-        const fetchedCustomers = await localDataService.getCustomers()
-        const customersWithFields = await Promise.all(
-          fetchedCustomers.map(async (customer) => {
-            try {
-              const customFieldValues = await customFieldService.getCustomFieldValuesForCustomer(Number(customer.id));
+    const timeoutId = window.setTimeout(() => {
+      const nextSearch = globalFilter.trim()
+      setDebouncedSearch((current) => current === nextSearch ? current : nextSearch)
+      setPagination((current) => current.pageIndex === 0 ? current : { ...current, pageIndex: 0 })
+    }, 350)
 
-              // Convert array of values to a key-value object
-              const customFields = customFieldValues.reduce((acc, field) => {
-                acc[field.name || ''] = field.value;
-                return acc;
-              }, {} as Record<string, any>);
+    return () => window.clearTimeout(timeoutId)
+  }, [globalFilter])
 
-              // Return customer with custom fields
-              return {
-                ...customer,
-                customFields
-              };
-            } catch (error) {
-              console.error(`Failed to fetch custom fields for customer ${customer.id}:`, error);
-              // Return customer without custom fields
-              return {
-                ...customer,
-                customFields: {}
-              };
-            }
-          })
-        );
+  const loadCustomers = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const { customers: fetchedCustomers, total } = await getCustomersPage({
+        limit: pagination.pageSize,
+        offset: pagination.pageIndex * pagination.pageSize,
+        query: debouncedSearch,
+        status: statusFilter ?? null,
+        includeCustomFields: false,
+      })
 
-        setCustomers(customersWithFields);
-      } catch (error) {
-        console.error("Failed to fetch customers:", error)
-        toast.error("Kunden konnten nicht geladen werden.")
-        setCustomers([])
-      } finally {
-        setIsLoading(false)
-      }
+      setCustomers(fetchedCustomers)
+      setTotalCustomers(total)
+    } catch (error) {
+      console.error("Failed to fetch customers:", error)
+      toast.error("Kunden konnten nicht geladen werden.")
+      setCustomers([])
+      setTotalCustomers(0)
+    } finally {
+      setIsLoading(false)
     }
-    fetchCustomersWithCustomFields()
-  }, [serverEventRefresh])
+  }, [debouncedSearch, pagination.pageIndex, pagination.pageSize, statusFilter])
+
+  useEffect(() => {
+    void loadCustomers()
+  }, [loadCustomers, serverEventRefresh])
 
   const table = useReactTable({
     data: customers,
     columns,
     state: {
       sorting,
-      columnFilters,
       columnVisibility,
       rowSelection,
-      globalFilter,
+      pagination,
     },
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
-    onGlobalFilterChange: setGlobalFilter, // Link state to table
-    globalFilterFn: globalFilterFn, // Use custom global filter
+    onPaginationChange: setPagination,
+    manualPagination: true,
+    rowCount: totalCustomers,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
   })
 
@@ -369,6 +343,7 @@ export default function CustomersPage() {
 
   const handleCustomerAdded = (newCustomer: Customer) => {
     setCustomers(prev => [newCustomer, ...prev]);
+    setTotalCustomers(prev => prev + 1);
     // Optionally reset filters/sorting or navigate
   };
 
@@ -389,6 +364,7 @@ export default function CustomersPage() {
 
       // Update state after successful deletion
       setCustomers(prev => prev.filter(c => !selectedIds.includes(c.id)));
+      setTotalCustomers(prev => Math.max(0, prev - selectedIds.length));
       table.resetRowSelection(); // Clear selection
       toast.success(`${selectedIds.length} Kunde(n) gelöscht.`);
     } catch (error) {
@@ -413,7 +389,10 @@ export default function CustomersPage() {
                 placeholder="Kunden suchen..."
                 className="pl-8 w-full"
                 value={globalFilter ?? ''}
-                onChange={(e) => setGlobalFilter(e.target.value)}
+                onChange={(e) => {
+                  setGlobalFilter(e.target.value)
+                  table.resetRowSelection()
+                }}
               />
             </div>
 
@@ -429,7 +408,12 @@ export default function CustomersPage() {
             {/* Status Filter */}
             {(() => {
               const statusLabels: Record<string, string> = { Active: 'Aktiv', Lead: 'Lead', Inactive: 'Inaktiv' }
-              const currentFilter = table.getColumn('status')?.getFilterValue() as string | undefined
+              const currentFilter = statusFilter
+              const applyStatusFilter = (value: string | undefined) => {
+                setStatusFilter(value)
+                setPagination((current) => ({ ...current, pageIndex: 0 }))
+                table.resetRowSelection()
+              }
               return (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -439,10 +423,10 @@ export default function CustomersPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue(undefined)}>Alle</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Active')}>Aktiv</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Lead')}>Lead</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => table.getColumn('status')?.setFilterValue('Inactive')}>Inaktiv</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => applyStatusFilter(undefined)}>Alle</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => applyStatusFilter('Active')}>Aktiv</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => applyStatusFilter('Lead')}>Lead</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => applyStatusFilter('Inactive')}>Inaktiv</DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               )
@@ -524,7 +508,7 @@ export default function CustomersPage() {
             <CardDescription>
               {isLoading
                 ? "Lade Kunden..."
-                : ` ${table.getFilteredRowModel().rows.length} von ${customers.length} Kunden angezeigt${isGrouped && selectedGrouping ? ` (gruppiert nach: ${availableGroupingFields.find(f => f.value === selectedGrouping)?.label || selectedGrouping})` : ''}.`}
+                : ` ${customers.length} von ${totalCustomers.toLocaleString("de-DE")} Kunden angezeigt${isGrouped && selectedGrouping ? ` (aktuelle Seite gruppiert nach: ${availableGroupingFields.find(f => f.value === selectedGrouping)?.label || selectedGrouping})` : ''}.`}
             </CardDescription>
           </CardHeader>
           <CardContent>

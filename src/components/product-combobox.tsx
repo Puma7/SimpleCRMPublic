@@ -40,6 +40,9 @@ const formatCurrency = (amount: number): string => {
   return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(amount);
 };
 
+const MIN_PRODUCT_SEARCH_LENGTH = 2;
+const PRODUCT_SEARCH_LIMIT = 50;
+
 export function ProductCombobox({
   value,
   onValueChange,
@@ -59,16 +62,22 @@ export function ProductCombobox({
     console.log(`🔍 [ProductCombobox] useEffect triggered for searchQuery: "${searchQuery}"`);
     
     const searchProducts = async () => {
+      const trimmedQuery = searchQuery.trim();
+      if (trimmedQuery.length < MIN_PRODUCT_SEARCH_LENGTH) {
+        setProducts([]);
+        setLoading(false);
+        return;
+      }
+
       console.log(`🔍 [ProductCombobox] Starting product search for: "${searchQuery}"`);
       const startTime = Date.now();
       
       setLoading(true)
       try {
-        console.log(`🔍 [ProductCombobox] Calling products:search with query: "${searchQuery}", limit: 50`);
+        console.log(`🔍 [ProductCombobox] Calling products:search with query: "${trimmedQuery}", limit: ${PRODUCT_SEARCH_LIMIT}`);
         const results = await invokeRenderer(
           IPCChannels.Products.Search,
-          searchQuery,
-          50
+          { query: trimmedQuery, limit: PRODUCT_SEARCH_LIMIT }
         ) as Product[]
         console.log(`🔍 [ProductCombobox] Received ${results.length} products in ${Date.now() - startTime}ms`);
         const normalizedResults: Product[] = results
@@ -84,36 +93,7 @@ export function ProductCombobox({
         setProducts(normalizedResults)
       } catch (error) {
         console.error('🚨 [ProductCombobox] Failed to search products:', error)
-        // Fallback to get-all if search doesn't exist
-        try {
-          console.log(`🔍 [ProductCombobox] Falling back to products:get-all`);
-          const allProducts = await invokeRenderer(IPCChannels.Products.GetAll) as Product[]
-          const normalizedQuery = searchQuery.toLowerCase();
-          const filteredProducts: Product[] = allProducts
-            .filter(p => (p as any).isActive !== false)
-            .filter((p) => {
-              if (!searchQuery) {
-                return true
-              }
-              const lowerName = (p.name ?? '').toLowerCase()
-              const lowerSku = (p.sku ?? '').toLowerCase()
-              return lowerName.includes(normalizedQuery) || lowerSku.includes(normalizedQuery)
-            })
-            .slice(0, 50)
-            .map((p) => ({
-              id: p.id,
-              name: p.name ?? 'Unbenanntes Produkt',
-              price: typeof p.price === 'number' ? p.price : Number(p.price) || 0,
-              description: p.description,
-              sku: p.sku ?? undefined,
-              productNumber: (p as any).productNumber ?? p.sku ?? undefined,
-            }))
-          console.log(`🔍 [ProductCombobox] Fallback: Received ${filteredProducts.length} products`);
-          setProducts(filteredProducts)
-        } catch (fallbackError) {
-          console.error('🚨 [ProductCombobox] Fallback also failed:', fallbackError)
-          setProducts([])
-        }
+        setProducts([])
       } finally {
         setLoading(false)
       }
@@ -123,7 +103,7 @@ export function ProductCombobox({
     const timeoutId = setTimeout(() => {
       console.log(`🔍 [ProductCombobox] Debounce timeout reached, executing search...`);
       searchProducts()
-    }, searchQuery ? 300 : 0)
+    }, searchQuery.trim().length >= MIN_PRODUCT_SEARCH_LENGTH ? 300 : 0)
 
     return () => {
       console.log(`🔍 [ProductCombobox] Cleaning up timeout for: "${searchQuery}"`);
@@ -205,7 +185,9 @@ export function ProductCombobox({
               </div>
             ) : products.length === 0 ? (
               <CommandEmpty>
-                {searchQuery ? "Keine Produkte gefunden." : "Geben Sie einen Suchbegriff ein..."}
+                {searchQuery.trim().length >= MIN_PRODUCT_SEARCH_LENGTH
+                  ? "Keine Produkte gefunden."
+                  : `Mindestens ${MIN_PRODUCT_SEARCH_LENGTH} Zeichen eingeben...`}
               </CommandEmpty>
             ) : (
               <CommandGroup className="p-1">

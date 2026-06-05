@@ -321,7 +321,7 @@ baseSchemaMap.set(IPCChannels.Tasks.ToggleCompletion, {
 
 baseSchemaMap.set(IPCChannels.Tasks.Delete, {
   payload: z.number().int().positive(),
-  result: z.undefined(),
+  result: z.any(),
 });
 
 // --- Custom Fields ---
@@ -379,8 +379,25 @@ baseSchemaMap.set(IPCChannels.CustomFields.DeleteValue, {
 
 // --- Remaining DB channels ---
 baseSchemaMap.set(IPCChannels.Db.GetCustomers, {
-  payload: z.union([z.undefined(), z.boolean()]),
-  result: z.array(z.any()),
+  payload: z.union([
+    z.undefined(),
+    z.boolean(),
+    z.object({
+      includeCustomFields: z.boolean().optional(),
+      paginated: z.boolean().optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
+      query: z.string().optional(),
+      status: z.string().nullable().optional(),
+    }).passthrough(),
+  ]),
+  result: z.union([
+    z.array(z.any()),
+    z.object({
+      items: z.array(z.any()),
+      total: z.number().int().nonnegative(),
+    }).passthrough(),
+  ]),
 });
 
 baseSchemaMap.set(IPCChannels.Db.GetCustomersDropdown, {

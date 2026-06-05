@@ -68,6 +68,19 @@ describe('IPC contracts', () => {
       })
     ).not.toThrow();
     expect(() => getPayloadSchema(IPCChannels.Db.GetCustomers).parse(false)).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Db.GetCustomers).parse({
+        paginated: true,
+        includeCustomFields: false,
+        limit: 50,
+        offset: 100,
+        query: 'Meyer',
+        status: 'Active',
+      })
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Db.GetCustomers).parse({ items: [{ id: 1 }], total: 650000 })
+    ).not.toThrow();
     expect(() => getPayloadSchema(IPCChannels.Calendar.GetCalendarEvents).parse(undefined)).not.toThrow();
     expect(() =>
       getPayloadSchema(IPCChannels.Tasks.ToggleCompletion).parse({ taskId: 1, completed: true })

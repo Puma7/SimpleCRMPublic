@@ -10,7 +10,6 @@ import {
   Command,
   CommandEmpty,
   CommandGroup,
-  CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
@@ -35,6 +34,9 @@ interface CustomerComboboxProps {
   onCustomerSelect?: (customer: CustomerOption | null) => void
 }
 
+const MIN_CUSTOMER_SEARCH_LENGTH = 2
+const CUSTOMER_SEARCH_LIMIT = 25
+
 export function CustomerCombobox({
   value,
   onValueChange,
@@ -50,15 +52,23 @@ export function CustomerCombobox({
 
   React.useEffect(() => {
     const searchCustomers = async () => {
+      const trimmedQuery = searchQuery.trim()
+      if (trimmedQuery.length < MIN_CUSTOMER_SEARCH_LENGTH) {
+        setCustomers([])
+        setLoading(false)
+        return
+      }
+
       setLoading(true)
       try {
         const results = await invokeRenderer(
           IPCChannels.Db.SearchCustomers,
-          searchQuery
+          { query: trimmedQuery, limit: CUSTOMER_SEARCH_LIMIT }
         ) as CustomerOption[]
         setCustomers(results)
       } catch (error) {
         console.error('🚨 [CustomerCombobox] Failed to search customers:', error)
+        setCustomers([])
       } finally {
         setLoading(false)
       }
@@ -66,7 +76,7 @@ export function CustomerCombobox({
 
     const timeoutId = setTimeout(() => {
       searchCustomers()
-    }, searchQuery ? 300 : 0)
+    }, searchQuery.trim().length >= MIN_CUSTOMER_SEARCH_LENGTH ? 300 : 0)
 
     return () => {
       clearTimeout(timeoutId)
@@ -149,7 +159,9 @@ export function CustomerCombobox({
               </div>
             ) : customers.length === 0 ? (
               <CommandEmpty>
-                {searchQuery ? "Keine Kunden gefunden." : "Geben Sie einen Suchbegriff ein..."}
+                {searchQuery.trim().length >= MIN_CUSTOMER_SEARCH_LENGTH
+                  ? "Keine Kunden gefunden."
+                  : `Mindestens ${MIN_CUSTOMER_SEARCH_LENGTH} Zeichen eingeben...`}
               </CommandEmpty>
             ) : (
               <CommandGroup className="p-1">

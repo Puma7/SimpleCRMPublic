@@ -935,21 +935,46 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
-  [IPCChannels.Db.GetCustomers, ([includeCustomFields]) => ({
-    method: "GET",
-    path: "/api/v1/customers",
-    query: { limit: DEFAULT_LIST_LIMIT },
-    transform: async (body, context) => {
+  [IPCChannels.Db.GetCustomers, ([payload]) => {
+    const paginatedPayload = isRecord(payload) ? payload : null
+    const includeCustomFields = paginatedPayload ? Boolean(paginatedPayload.includeCustomFields) : Boolean(payload)
+    const limit = paginatedPayload && typeof paginatedPayload.limit === "number" ? paginatedPayload.limit : DEFAULT_LIST_LIMIT
+    const offset = paginatedPayload && typeof paginatedPayload.offset === "number" ? paginatedPayload.offset : 0
+    const search = paginatedPayload && typeof paginatedPayload.query === "string" ? paginatedPayload.query : ""
+    const status = paginatedPayload && typeof paginatedPayload.status === "string" ? paginatedPayload.status : ""
+    const baseQuery: Record<string, string | number | boolean | null | undefined> = { limit }
+    if (search) baseQuery.search = search
+    if (status) baseQuery.status = status
+    if (offset > 0) baseQuery.cursor = offset
+
+    return {
+      method: "GET",
+      path: "/api/v1/customers",
+      query: baseQuery,
+      transform: async (body, context) => {
+      if (paginatedPayload && paginatedPayload.paginated !== false) {
+        const page = listResult<CustomerRecord>(body)
+        const customers = page.items.map(mapCustomerRecord)
+        const items = includeCustomFields
+          ? customers.map((customer) => ({ ...customer, customFields: {} }))
+          : customers
+        return {
+          items,
+          total: page.nextCursor == null ? offset + items.length : offset + items.length + limit,
+        }
+      }
+
       const items = await collectPagedListItems<CustomerRecord>(body, context, {
         method: "GET",
         path: "/api/v1/customers",
-        query: { limit: DEFAULT_LIST_LIMIT },
+        query: baseQuery,
       })
       const customers = items.map(mapCustomerRecord)
       if (!includeCustomFields) return customers
       return customers.map((customer) => ({ ...customer, customFields: {} }))
     },
-  })],
+    }
+  }],
   [IPCChannels.Db.GetCustomersDropdown, () => ({
     method: "GET",
     path: "/api/v1/customers",
@@ -968,20 +993,26 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }))
     },
   })],
-  [IPCChannels.Db.SearchCustomers, ([query]) => ({
-    method: "GET",
-    path: "/api/v1/customers",
-    query: { limit: DEFAULT_LIST_LIMIT, search: String(query ?? "") },
-    transform: async (body, context) => {
-      const search = String(query ?? "")
-      const items = await collectPagedListItems<CustomerRecord>(body, context, {
-        method: "GET",
-        path: "/api/v1/customers",
-        query: { limit: DEFAULT_LIST_LIMIT, search },
-      })
-      return items.map(mapCustomerRecord)
-    },
-  })],
+  [IPCChannels.Db.SearchCustomers, ([payload]) => {
+    const searchPayload = isRecord(payload) ? payload : null
+    const search = searchPayload ? String(searchPayload.query ?? "") : String(payload ?? "")
+    const limit = searchPayload && typeof searchPayload.limit === "number" ? searchPayload.limit : DEFAULT_LIST_LIMIT
+    return {
+      method: "GET",
+      path: "/api/v1/customers",
+      query: { limit, search },
+      transform: async (body, context) => {
+        const items = searchPayload
+          ? listItems<CustomerRecord>(body)
+          : await collectPagedListItems<CustomerRecord>(body, context, {
+              method: "GET",
+              path: "/api/v1/customers",
+              query: { limit, search },
+            })
+        return items.map(mapCustomerRecord)
+      },
+    }
+  }],
   [IPCChannels.Db.GetCustomer, ([id]) => ({
     method: "GET",
     path: `/api/v1/customers/${positiveId(id, "customer id")}`,
@@ -1043,20 +1074,26 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       return items.map(mapProductRecord)
     },
   })],
-  [IPCChannels.Products.Search, ([query]) => ({
-    method: "GET",
-    path: "/api/v1/products",
-    query: { limit: DEFAULT_LIST_LIMIT, search: String(query ?? "") },
-    transform: async (body, context) => {
-      const search = String(query ?? "")
-      const items = await collectPagedListItems<ProductRecord>(body, context, {
-        method: "GET",
-        path: "/api/v1/products",
-        query: { limit: DEFAULT_LIST_LIMIT, search },
-      })
-      return items.map(mapProductRecord)
-    },
-  })],
+  [IPCChannels.Products.Search, ([payload]) => {
+    const searchPayload = isRecord(payload) ? payload : null
+    const search = searchPayload ? String(searchPayload.query ?? "") : String(payload ?? "")
+    const limit = searchPayload && typeof searchPayload.limit === "number" ? searchPayload.limit : DEFAULT_LIST_LIMIT
+    return {
+      method: "GET",
+      path: "/api/v1/products",
+      query: { limit, search },
+      transform: async (body, context) => {
+        const items = searchPayload
+          ? listItems<ProductRecord>(body)
+          : await collectPagedListItems<ProductRecord>(body, context, {
+              method: "GET",
+              path: "/api/v1/products",
+              query: { limit, search },
+            })
+        return items.map(mapProductRecord)
+      },
+    }
+  }],
   [IPCChannels.Products.GetById, ([id]) => ({
     method: "GET",
     path: `/api/v1/products/${positiveId(id, "product id")}`,

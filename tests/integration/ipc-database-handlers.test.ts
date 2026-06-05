@@ -11,6 +11,7 @@ jest.mock('../../electron/ipc/register', () => ({
 
 const sqliteMocks = {
   getAllCustomers: jest.fn(),
+  getCustomersPage: jest.fn(),
   getCustomerById: jest.fn(),
   createCustomer: jest.fn(),
   updateCustomer: jest.fn(),
@@ -52,6 +53,21 @@ describe('registerDatabaseHandlers', () => {
         sqliteMocks.getAllCustomers.mockImplementation(() => { throw new Error('DB error'); });
         const handler = handlers.get(IPCChannels.Db.GetCustomers);
         await expect(handler({}, false)).rejects.toThrow('DB error');
+      });
+
+      test('returns paginated customers when object payload is provided', async () => {
+        sqliteMocks.getCustomersPage.mockReturnValue({ items: [{ id: 2, name: 'Beta' }], total: 42 });
+        const handler = handlers.get(IPCChannels.Db.GetCustomers);
+        const result = await handler({}, { paginated: true, limit: 25, offset: 50, query: 'Beta', status: 'Active' });
+        expect(result).toEqual({ items: [{ id: 2, name: 'Beta' }], total: 42 });
+        expect(sqliteMocks.getCustomersPage).toHaveBeenCalledWith({
+          includeCustomFields: false,
+          paginated: true,
+          limit: 25,
+          offset: 50,
+          query: 'Beta',
+          status: 'Active',
+        });
       });
     });
 

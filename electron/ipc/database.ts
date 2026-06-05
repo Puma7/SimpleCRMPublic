@@ -3,6 +3,7 @@ import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import {
   getAllCustomers,
+  getCustomersPage,
   getCustomerById,
   createCustomer,
   updateCustomer,
@@ -46,17 +47,47 @@ function parseSearchPayload(payload: unknown, explicitLimit?: number, defaultLim
   };
 }
 
+function parseCustomerListPayload(payload: unknown): {
+  includeCustomFields: boolean;
+  paginated: boolean;
+  limit?: number;
+  offset?: number;
+  query?: string;
+  status?: string | null;
+} {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const input = payload as Record<string, unknown>;
+    return {
+      includeCustomFields: Boolean(input.includeCustomFields),
+      paginated: Boolean(input.paginated ?? true),
+      limit: typeof input.limit === 'number' ? input.limit : undefined,
+      offset: typeof input.offset === 'number' ? input.offset : undefined,
+      query: typeof input.query === 'string' ? input.query : undefined,
+      status: typeof input.status === 'string' ? input.status : null,
+    };
+  }
+
+  return {
+    includeCustomFields: Boolean(payload),
+    paginated: false,
+  };
+}
+
 export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   const { logger, isDevelopment } = options;
   const disposers: Disposer[] = [];
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Db.GetCustomers, async (_event: IpcMainInvokeEvent, includeCustomFields?: boolean) => {
+    registerIpcHandler(IPCChannels.Db.GetCustomers, async (_event: IpcMainInvokeEvent, payload?: unknown) => {
       try {
+        const params = parseCustomerListPayload(payload);
         if (isDevelopment) {
-          logger.debug('[IPC] db:get-customers', { includeCustomFields });
+          logger.debug('[IPC] db:get-customers', params);
         }
-        return getAllCustomers(Boolean(includeCustomFields));
+        if (params.paginated) {
+          return getCustomersPage(params);
+        }
+        return getAllCustomers(params.includeCustomFields);
       } catch (error) {
         logger.error('IPC Error getting customers:', error);
         throw error;
