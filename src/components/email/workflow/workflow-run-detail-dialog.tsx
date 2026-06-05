@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { hasElectron, invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 
 type StepRow = {
@@ -38,10 +38,10 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
-    if (!hasElectron() || runId == null || !open) return
+    if (runId == null || !open) return
     setLoading(true)
     try {
-      const s = await invokeIpc<StepRow[]>(IPCChannels.Email.ListWorkflowRunSteps, runId)
+      const s = await invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as StepRow[]
       setSteps(s ?? [])
     } catch {
       setSteps([])

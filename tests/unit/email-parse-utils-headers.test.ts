@@ -2,7 +2,7 @@ import {
   formatMailparserHeaderValue,
   isCorruptRawHeaders,
   rawHeadersFromParsed,
-} from '../../electron/email/email-parse-utils';
+} from '../../packages/core/src/email';
 
 describe('formatMailparserHeaderValue', () => {
   it('formats address objects with text', () => {

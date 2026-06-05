@@ -1,4 +1,4 @@
-import { hashPassword, verifyPassword } from '../../electron/auth/password-hash';
+import { hashPassword, verifyPassword } from '../../packages/core/src/auth';
 
 describe('password-hash', () => {
   test('verify accepts correct passphrase', () => {

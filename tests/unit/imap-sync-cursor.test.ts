@@ -1,4 +1,4 @@
-import { canAdvanceImapSyncCursor } from '../../electron/email/imap-sync-cursor';
+import { canAdvanceImapSyncCursor } from '../../packages/core/src/email';
 
 describe('canAdvanceImapSyncCursor', () => {
   it('advances on next contiguous uid', () => {

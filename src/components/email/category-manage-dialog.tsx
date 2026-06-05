@@ -22,7 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { invokeIpc, type CategoryRow } from "./types"
+import type { CategoryRow } from "./types"
+import { invokeRenderer } from "@/services/transport"
 import { CategorySortableList } from "./category-sortable-list"
 import { flattenCategoryTree } from "./category-tree-utils"
 
@@ -49,10 +50,10 @@ export function CategoryManageDialog({ open, onOpenChange, categories, onChanged
     setBusy(true)
     try {
       const parentId = newParentId === "none" ? null : parseInt(newParentId, 10)
-      const r = await invokeIpc<{ success: boolean; error?: string; id?: number }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.CreateCategory,
         { name, parentId: Number.isFinite(parentId) ? parentId : null },
-      )
+      ) as { success: boolean; error?: string; id?: number }
       if (!r.success) {
         toast.error(r.error ?? "Kategorie konnte nicht angelegt werden")
         return
@@ -72,10 +73,10 @@ export function CategoryManageDialog({ open, onOpenChange, categories, onChanged
     if (!name) return
     setBusy(true)
     try {
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.UpdateCategory,
         { categoryId: editingId, name },
-      )
+      ) as { success: boolean; error?: string }
       if (!r.success) {
         toast.error(r.error ?? "Speichern fehlgeschlagen")
         return
@@ -91,10 +92,10 @@ export function CategoryManageDialog({ open, onOpenChange, categories, onChanged
   const handleDelete = async (id: number) => {
     setBusy(true)
     try {
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.DeleteCategory,
         id,
-      )
+      ) as { success: boolean; error?: string }
       if (!r.success) {
         toast.error(r.error ?? "Löschen fehlgeschlagen")
         return
@@ -112,10 +113,10 @@ export function CategoryManageDialog({ open, onOpenChange, categories, onChanged
   ) => {
     setBusy(true)
     try {
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.ReorderCategories,
         { updates },
-      )
+      ) as { success: boolean; error?: string }
       if (!r.success) {
         toast.error(r.error ?? "Sortieren fehlgeschlagen")
         return

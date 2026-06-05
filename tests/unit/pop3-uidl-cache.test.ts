@@ -2,7 +2,7 @@ import {
   POP3_UIDL_PERSIST_MAX,
   parseLegacyPop3UidlStr,
   serializePop3ServerUidls,
-} from '../../electron/email/pop3-uidl-cache';
+} from '../../packages/core/src/email';
 
 describe('pop3-uidl-cache', () => {
   it('serializes current server UIDLs sorted and deduped', () => {

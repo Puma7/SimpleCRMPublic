@@ -3,7 +3,7 @@ import {
   storedUidValidityString,
   uidValidityAsOptionalNumber,
   uidValidityMismatch,
-} from '../../electron/email/email-uidvalidity';
+} from '../../packages/core/src/email';
 
 describe('email-uidvalidity', () => {
   test('serverUidValidityToString', () => {

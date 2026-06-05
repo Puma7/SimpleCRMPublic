@@ -55,6 +55,17 @@
 | [SECURITY_AUTOMATION_API.md](SECURITY_AUTOMATION_API.md) | Auth, scopes, hardening |
 | [EXTERNAL_AUTOMATION_API_PLAN.md](EXTERNAL_AUTOMATION_API_PLAN.md) | Phase plan (A/B) |
 
+## Server edition
+
+| Document | Purpose |
+|----------|---------|
+| [SERVER_EDITION_IMPLEMENTATION.md](SERVER_EDITION_IMPLEMENTATION.md) | Server-based rebuild status and verification |
+| [SETUP_LOCAL.md](SETUP_LOCAL.md) | Local/standalone and browser server-client setup |
+| [SETUP_SERVER.md](SETUP_SERVER.md) | Docker server setup with Caddy/PostgreSQL/API |
+| [MIGRATION_STANDALONE_TO_SERVER.md](MIGRATION_STANDALONE_TO_SERVER.md) | Standalone PostgreSQL to server migration primitive |
+| [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) | Backup, restore, restore-drill, and doctor operations |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | Server-edition trust boundaries, RLS, secrets, and residual risks |
+
 ## Setup
 
 | Document | Purpose |

@@ -3,19 +3,15 @@
 import { useEffect, useMemo, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { WorkflowNodeCatalogEntry } from "@shared/workflow-types"
-import { hasElectron, invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 
 export function useWorkflowNodeCatalog() {
   const [catalog, setCatalog] = useState<WorkflowNodeCatalogEntry[]>([])
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    if (!hasElectron()) {
-      setLoaded(true)
-      return
-    }
-    void invokeIpc<WorkflowNodeCatalogEntry[]>(IPCChannels.Email.ListWorkflowNodeCatalog)
-      .then((entries) => setCatalog(entries))
+    void invokeRenderer(IPCChannels.Email.ListWorkflowNodeCatalog)
+      .then((entries) => setCatalog(entries as WorkflowNodeCatalogEntry[]))
       .catch(() => setCatalog([]))
       .finally(() => setLoaded(true))
   }, [])

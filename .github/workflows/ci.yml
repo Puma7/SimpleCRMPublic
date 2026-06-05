@@ -32,7 +32,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -52,3 +52,88 @@ jobs:
 
       - name: Build (renderer)
         run: pnpm run build
+
+  server-compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      VERSION: ci-smoke
+      PUBLIC_DOMAIN: localhost
+      CADDY_HTTP_PORT: "8080"
+      CADDY_HTTPS_PORT: "8443"
+      PUBLIC_BASE_URL: https://localhost:8443
+      PG_ADMIN_PASSWORD: ci-smoke-admin-password
+      PG_PASSWORD: ci-smoke-password
+      ATTACHMENTS_DIR: /app/data/attachments
+      AUDIT_ARCHIVE_DIR: /app/data/audit-archive
+      JOB_WORKER_ENABLED: "false"
+      JOB_WORKER_MAIL_ACCOUNT_COUNT: "0"
+      JOB_WORKER_AI_CONCURRENCY: "5"
+      JOB_WORKER_MIGRATE_ON_START: "false"
+      JOB_WEBHOOK_ALLOWLIST: ""
+      DOCTOR_REQUIRE_BACKUP: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate smoke secrets
+        shell: bash
+        run: |
+          {
+            printf 'MASTER_KEY=%s\n' "$(openssl rand -base64 32)"
+            printf 'ACCESS_TOKEN_SECRET=%s\n' "$(openssl rand -base64 32)"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate Docker Compose config
+        run: docker compose -f docker/docker-compose.yml config
+
+      - name: Start PostgreSQL, migrate, API, Caddy, backup, and restore drill
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="simplecrm-ci-smoke"
+          cleanup() {
+            docker compose -p "$project" -f docker/docker-compose.yml down -v --remove-orphans || true
+          }
+          trap cleanup EXIT
+
+          docker compose -p "$project" -f docker/docker-compose.yml up -d --build postgres migrate api caddy
+
+          healthy=false
+          for _ in {1..60}; do
+            health="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${project}-api-1" 2>/dev/null || true)"
+            if [ "$health" = "healthy" ]; then
+              healthy=true
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$healthy" != "true" ]; then
+            docker compose -p "$project" -f docker/docker-compose.yml ps || true
+            docker compose -p "$project" -f docker/docker-compose.yml logs --no-color --tail=120 api migrate postgres caddy || true
+            exit 1
+          fi
+
+          caddy_healthy=false
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error --insecure "https://localhost:${CADDY_HTTPS_PORT}/health" | grep -q '"api":"simplecrm-server"'; then
+              caddy_healthy=true
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$caddy_healthy" != "true" ]; then
+            docker compose -p "$project" -f docker/docker-compose.yml ps || true
+            docker compose -p "$project" -f docker/docker-compose.yml logs --no-color --tail=120 caddy api || true
+            exit 1
+          fi
+
+          docker compose -p "$project" -f docker/docker-compose.yml ps
+          docker compose -p "$project" -f docker/docker-compose.yml --profile backup run --rm backup
+          docker compose -p "$project" -f docker/docker-compose.yml --profile doctor run --rm doctor
+          docker compose -p "$project" -f docker/docker-compose.yml --profile restore-drill run --rm restore-drill
+          docker compose -p "$project" -f docker/docker-compose.yml ps

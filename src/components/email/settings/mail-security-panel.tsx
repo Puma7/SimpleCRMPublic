@@ -8,7 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { hasElectron, invokeIpc } from "../types"
+import {
+  invokeRenderer,
+  isMailSpamListRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 type MailSecuritySettings = {
   mailauthEnabled: boolean
@@ -50,15 +54,11 @@ export function MailSecurityPanel() {
   const [newNote, setNewNote] = useState("")
 
   const load = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoading(false)
-      return
-    }
     setLoading(true)
     try {
       const [settings, list] = await Promise.all([
-        invokeIpc<MailSecuritySettings>(IPCChannels.Email.GetMailSecuritySettings),
-        invokeIpc<SpamListEntry[]>(IPCChannels.Email.ListSpamListEntries, "all"),
+        invokeRenderer(IPCChannels.Email.GetMailSecuritySettings) as Promise<MailSecuritySettings>,
+        invokeRenderer(IPCChannels.Email.ListSpamListEntries, "all") as Promise<SpamListEntry[]>,
       ])
       setS(settings)
       setEntries(list)
@@ -74,14 +74,25 @@ export function MailSecurityPanel() {
     void load()
   }, [load])
 
+  useEffect(() => {
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailSpamListRefreshEvent(event)) {
+          void load()
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [load])
+
   const patch = (partial: Partial<MailSecuritySettings>) => {
     setS((prev) => (prev ? { ...prev, ...partial } : prev))
   }
 
   const save = async () => {
-    if (!hasElectron() || !s) return
+    if (!s) return
     try {
-      await invokeIpc(IPCChannels.Email.SetMailSecuritySettings, s)
+      await invokeRenderer(IPCChannels.Email.SetMailSecuritySettings, s)
       toast.success("Mail-Sicherheit gespeichert.")
       await load()
     } catch (e) {
@@ -92,14 +103,12 @@ export function MailSecurityPanel() {
 
   const addEntry = async () => {
     const pattern = newPattern.trim()
-    if (!hasElectron() || !pattern) return
-    const result = await invokeIpc<
-      { success: true; entry: SpamListEntry } | { success: false; error?: string }
-    >(IPCChannels.Email.SaveSpamListEntry, {
+    if (!pattern) return
+    const result = await invokeRenderer(IPCChannels.Email.SaveSpamListEntry, {
       listType: newListType,
       pattern,
       note: newNote.trim() || null,
-    })
+    }) as { success: true; entry: SpamListEntry } | { success: false; error?: string }
     if (!result.success) {
       toast.error(result.error ?? "Eintrag konnte nicht gespeichert werden.")
       return
@@ -111,9 +120,8 @@ export function MailSecurityPanel() {
   }
 
   const deleteEntry = async (id: number) => {
-    if (!hasElectron()) return
     try {
-      const result = await invokeIpc<{ success: boolean; error?: string }>(IPCChannels.Email.DeleteSpamListEntry, id)
+      const result = await invokeRenderer(IPCChannels.Email.DeleteSpamListEntry, id) as { success: boolean; error?: string }
       if (!result.success) {
         toast.error(result.error ?? "Listen-Eintrag konnte nicht geloescht werden.")
         return
@@ -127,13 +135,13 @@ export function MailSecurityPanel() {
   }
 
   const testRspamd = async () => {
-    if (!hasElectron() || !s) return
+    if (!s) return
     setTestingRspamd(true)
     try {
-      const r = await invokeIpc<{ success: boolean; message?: string; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.TestRspamdConnection,
         { rspamdUrl: s.rspamdUrl, rspamdTimeoutMs: s.rspamdTimeoutMs },
-      )
+      ) as { success: boolean; message?: string; error?: string }
       if (r.success) toast.success(r.message ?? "Rspamd OK")
       else toast.error(r.error ?? "Rspamd nicht erreichbar")
     } finally {
@@ -150,7 +158,7 @@ export function MailSecurityPanel() {
       <div>
         <h3 className="text-base font-semibold">Mail-Sicherheit</h3>
         <p className="text-sm text-muted-foreground">
-          SPF, DKIM, DMARC, ARC, Rspamd und die lokale Spam-Engine laufen vor eingehenden Workflows.
+          SPF, DKIM, DMARC, ARC, Rspamd und die SimpleCRM-Spam-Engine laufen vor eingehenden Workflows.
           Workflows entscheiden danach, ob eine Mail sauber bleibt, in Spam pruefen landet oder als Spam markiert wird.
         </p>
       </div>
@@ -164,7 +172,7 @@ export function MailSecurityPanel() {
       </div>
 
       <div className="space-y-3 rounded-lg border p-4">
-        <h4 className="text-sm font-medium">Lokale Spam-Engine</h4>
+        <h4 className="text-sm font-medium">SimpleCRM-Spam-Engine</h4>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Engine aktiv</Label>
           <Switch checked={s.spamEngineEnabled} onCheckedChange={(on) => patch({ spamEngineEnabled: on })} />
@@ -198,11 +206,11 @@ export function MailSecurityPanel() {
           </div>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <Label className="text-sm">Lokales Lernen aus Korrekturen</Label>
+          <Label className="text-sm">Lernen aus Korrekturen</Label>
           <Switch checked={s.localLearningEnabled} onCheckedChange={(on) => patch({ localLearningEnabled: on })} />
         </div>
         <div className="flex items-center justify-between gap-2">
-          <Label className="text-sm">Rspamd-Score in lokalen Score einrechnen</Label>
+          <Label className="text-sm">Rspamd-Score in SimpleCRM-Score einrechnen</Label>
           <Switch
             checked={s.rspamdContributionEnabled}
             onCheckedChange={(on) => patch({ rspamdContributionEnabled: on })}
@@ -215,6 +223,13 @@ export function MailSecurityPanel() {
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Rspamd-Check aktiv</Label>
           <Switch checked={s.rspamdEnabled} onCheckedChange={(on) => patch({ rspamdEnabled: on })} />
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <Label className="text-sm">Rspamd aus Korrekturen lernen lassen</Label>
+          <Switch
+            checked={s.rspamdLearningEnabled}
+            onCheckedChange={(on) => patch({ rspamdLearningEnabled: on })}
+          />
         </div>
         <div className="grid gap-2">
           <Label className="text-xs">Controller-URL</Label>

@@ -7,7 +7,7 @@ import {
   addressJson,
   addressesFromRecipientJson,
   normalizeAddressJson,
-} from '../../electron/email/email-parse-utils';
+} from '../../packages/core/src/email';
 
 describe('email recipient mapping', () => {
   it('recipientJsonFromField parses display names', () => {

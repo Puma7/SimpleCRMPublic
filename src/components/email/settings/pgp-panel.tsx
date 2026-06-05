@@ -7,7 +7,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "sonner"
-import { hasElectron, invokeIpc } from "@/components/email/types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isMailPgpKeyRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 type Identity = {
   id: number
@@ -31,11 +36,14 @@ export function PgpPanel() {
   const [genEmail, setGenEmail] = useState("")
   const [genPass, setGenPass] = useState("")
   const [importArmor, setImportArmor] = useState("")
+  const [rotationIdentityId, setRotationIdentityId] = useState<number | null>(null)
+  const [rotationCurrentPassphrase, setRotationCurrentPassphrase] = useState("")
+  const [rotationNextPassphrase, setRotationNextPassphrase] = useState("")
+  const serverClientMode = getRendererTransport().kind === "http"
 
   const reload = useCallback(async () => {
-    if (!hasElectron()) return
-    const ids = await invokeIpc(IPCChannels.Pgp.ListIdentities, undefined)
-    const pk = await invokeIpc(IPCChannels.Pgp.ListPeerKeys, undefined)
+    const ids = await invokeRenderer(IPCChannels.Pgp.ListIdentities, undefined)
+    const pk = await invokeRenderer(IPCChannels.Pgp.ListPeerKeys, undefined)
     if (Array.isArray(ids)) setIdentities(ids as Identity[])
     if (Array.isArray(pk)) setPeers(pk as PeerKey[])
   }, [])
@@ -43,6 +51,16 @@ export function PgpPanel() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  useEffect(() => {
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailPgpKeyRefreshEvent(event)) void reload()
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [reload, serverClientMode])
 
   return (
     <div className="space-y-8">
@@ -75,10 +93,11 @@ export function PgpPanel() {
           size="sm"
           onClick={async () => {
             try {
-              await invokeIpc(IPCChannels.Pgp.GenerateIdentity, {
+              await invokeRenderer(IPCChannels.Pgp.GenerateIdentity, {
                 email: genEmail.trim(),
                 passphrase: genPass,
               })
+              setGenPass("")
               toast.success("Identität erzeugt")
               void reload()
             } catch (e) {
@@ -96,6 +115,87 @@ export function PgpPanel() {
             </li>
           ))}
         </ul>
+        {serverClientMode && identities.some((i) => i.has_private_key) ? (
+          <div className="grid gap-2 border-t pt-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+            <div>
+              <Label htmlFor="pgp-rotation-identity">Identitaet</Label>
+              <select
+                id="pgp-rotation-identity"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                value={rotationIdentityId ?? ""}
+                onChange={(event) => {
+                  const value = Number(event.target.value)
+                  setRotationIdentityId(Number.isFinite(value) && value !== 0 ? value : null)
+                  setRotationCurrentPassphrase("")
+                  setRotationNextPassphrase("")
+                }}
+              >
+                <option value="">Auswaehlen</option>
+                {identities.filter((identity) => identity.has_private_key).map((identity) => (
+                  <option key={identity.id} value={identity.id}>
+                    {identity.email}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="pgp-current-pass">Aktuelle Passphrase</Label>
+              <Input
+                id="pgp-current-pass"
+                type="password"
+                value={rotationCurrentPassphrase}
+                onChange={(event) => setRotationCurrentPassphrase(event.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="pgp-next-pass">Neue Passphrase</Label>
+              <Input
+                id="pgp-next-pass"
+                type="password"
+                value={rotationNextPassphrase}
+                onChange={(event) => setRotationNextPassphrase(event.target.value)}
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                disabled={rotationIdentityId === null}
+                onClick={async () => {
+                  if (rotationIdentityId === null) return
+                  try {
+                    await invokeRenderer(IPCChannels.Pgp.RotateIdentityPassphrase, {
+                      id: rotationIdentityId,
+                      currentPassphrase: rotationCurrentPassphrase,
+                      nextPassphrase: rotationNextPassphrase,
+                    })
+                    toast.success("Passphrase aktualisiert")
+                    setRotationIdentityId(null)
+                    setRotationCurrentPassphrase("")
+                    setRotationNextPassphrase("")
+                    void reload()
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Rotation fehlgeschlagen")
+                  }
+                }}
+              >
+                Aktualisieren
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setRotationIdentityId(null)
+                  setRotationCurrentPassphrase("")
+                  setRotationNextPassphrase("")
+                }}
+              >
+                Leeren
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="space-y-3 rounded-lg border p-4">
@@ -112,7 +212,7 @@ export function PgpPanel() {
           variant="outline"
           onClick={async () => {
             try {
-              await invokeIpc(IPCChannels.Pgp.ImportPeerKey, { armored: importArmor })
+              await invokeRenderer(IPCChannels.Pgp.ImportPeerKey, { armored: importArmor })
               toast.success("Schlüssel importiert")
               setImportArmor("")
               void reload()
@@ -134,7 +234,7 @@ export function PgpPanel() {
                 size="sm"
                 variant="ghost"
                 onClick={async () => {
-                  await invokeIpc(IPCChannels.Pgp.DeletePeerKey, { id: p.id })
+                  await invokeRenderer(IPCChannels.Pgp.DeletePeerKey, { id: p.id })
                   void reload()
                 }}
               >

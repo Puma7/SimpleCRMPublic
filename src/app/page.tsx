@@ -1,12 +1,17 @@
 "use client";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, BarChart3, TrendingUp, Clock, Users, Loader2, Rocket } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { dashboardService, DashboardStats, RecentCustomer, UpcomingTask } from "@/services/data/dashboardService";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  getRendererTransport,
+  isDashboardRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport";
 
 export default function Home() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -16,36 +21,50 @@ export default function Home() {
   const [loadingCustomers, setLoadingCustomers] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [serverEventRefresh, setServerEventRefresh] = useState(0);
+  const serverClientMode = getRendererTransport().kind === "http";
+
+  const fetchData = useCallback(async () => {
+    try {
+      setLoadingStats(true);
+      setLoadingCustomers(true);
+      setLoadingTasks(true);
+      setError(null);
+
+      const [statsData, customersData, tasksData] = await Promise.all([
+        dashboardService.getDashboardStats(),
+        dashboardService.getRecentCustomers(5),
+        dashboardService.getUpcomingTasks(5),
+      ]);
+
+      setStats(statsData);
+      setRecentCustomers(customersData);
+      setUpcomingTasks(tasksData);
+    } catch (err) {
+      console.error("Failed to load dashboard data:", err);
+      setError("Fehler beim Laden der Dashboard-Daten.");
+    } finally {
+      setLoadingStats(false);
+      setLoadingCustomers(false);
+      setLoadingTasks(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoadingStats(true);
-        setLoadingCustomers(true);
-        setLoadingTasks(true);
-        setError(null);
+    if (!serverClientMode) return;
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isDashboardRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1);
+        }
+      },
+    });
+    return () => subscription.unsubscribe();
+  }, [serverClientMode]);
 
-        const [statsData, customersData, tasksData] = await Promise.all([
-          dashboardService.getDashboardStats(),
-          dashboardService.getRecentCustomers(5),
-          dashboardService.getUpcomingTasks(5),
-        ]);
-
-        setStats(statsData);
-        setRecentCustomers(customersData);
-        setUpcomingTasks(tasksData);
-      } catch (err) {
-        console.error("Failed to load dashboard data:", err);
-        setError("Fehler beim Laden der Dashboard-Daten.");
-      } finally {
-        setLoadingStats(false);
-        setLoadingCustomers(false);
-        setLoadingTasks(false);
-      }
-    };
-
-    fetchData();
-  }, []);
+  useEffect(() => {
+    void fetchData();
+  }, [fetchData, serverEventRefresh]);
 
   const isOnboarding =
     !loadingStats && !loadingCustomers && !loadingTasks &&
@@ -69,7 +88,7 @@ export default function Home() {
           <div className="flex flex-col items-center justify-center h-64 gap-4 text-center">
             <p className="text-muted-foreground">{error}</p>
             <div className="flex gap-2">
-              <Button variant="outline" onClick={() => window.location.reload()}>Erneut versuchen</Button>
+              <Button variant="outline" onClick={() => void fetchData()}>Erneut versuchen</Button>
               <Button variant="ghost" asChild>
                 <Link to="/settings">Einstellungen öffnen</Link>
               </Button>
@@ -277,4 +296,3 @@ export default function Home() {
     </main>
   );
 }
-

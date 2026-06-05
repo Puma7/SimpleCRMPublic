@@ -1,65 +1,41 @@
 import type { WorkflowGraphDocument, WorkflowGraphEdge } from '../../shared/email-workflow-graph';
+import {
+  outgoing as coreOutgoing,
+  parseGraphDocument as coreParseGraphDocument,
+  pickEdge as corePickEdge,
+  resolveResumeNodeAfter as coreResolveResumeNodeAfter,
+  type WorkflowGraphDocument as CoreWorkflowGraphDocument,
+  type WorkflowGraphEdge as CoreWorkflowGraphEdge,
+} from '../../packages/core/src/workflow';
+
+function toCoreDocument(doc: WorkflowGraphDocument): CoreWorkflowGraphDocument {
+  return doc as unknown as CoreWorkflowGraphDocument;
+}
+
+function toCoreEdges(edges: WorkflowGraphEdge[]): CoreWorkflowGraphEdge[] {
+  return edges as unknown as CoreWorkflowGraphEdge[];
+}
 
 export function outgoing(edges: WorkflowGraphEdge[], sourceId: string): WorkflowGraphEdge[] {
-  return edges.filter((e) => e.source === sourceId).sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function edgeIsYes(e: WorkflowGraphEdge): boolean {
-  const l = (e.label ?? '').toLowerCase();
-  return !l || l === 'yes' || l === 'ja' || l === 'true' || l === 'success';
-}
-
-function edgeIsNo(e: WorkflowGraphEdge): boolean {
-  const l = (e.label ?? '').toLowerCase();
-  return l === 'no' || l === 'nein' || l === 'false' || l === 'error';
-}
-
-function edgeIsDone(e: WorkflowGraphEdge): boolean {
-  const l = (e.label ?? '').toLowerCase();
-  return l === 'done' || l === 'fertig' || l === 'end';
-}
-
-function edgeIsEach(e: WorkflowGraphEdge): boolean {
-  const l = (e.label ?? '').toLowerCase();
-  return l === 'each' || l === 'je' || l === 'loop';
+  return coreOutgoing(toCoreEdges(edges), sourceId) as unknown as WorkflowGraphEdge[];
 }
 
 export function pickEdge(
   edges: WorkflowGraphEdge[],
   port: 'yes' | 'no' | 'default' | string,
 ): WorkflowGraphEdge | undefined {
-  if (edges.length === 0) return undefined;
-  if (typeof port === 'string' && port !== 'yes' && port !== 'no' && port !== 'default') {
-    const lower = port.toLowerCase();
-    const byLabel = edges.find((e) => (e.label ?? '').toLowerCase() === lower);
-    if (byLabel) return byLabel;
-  }
-  if (port === 'yes') return edges.find((e) => edgeIsYes(e));
-  // Do not fall back to the first/yes edge when the condition failed — that caused
-  // inbound workflows to archive every message when only a "ja" branch was wired.
-  if (port === 'no') return edges.find((e) => edgeIsNo(e));
-  if (port === 'done') return edges.find((e) => edgeIsDone(e)) ?? undefined;
-  if (port === 'each') return edges.find((e) => edgeIsEach(e)) ?? edges[0];
-  return edges[0];
+  return corePickEdge(toCoreEdges(edges), port) as unknown as WorkflowGraphEdge | undefined;
 }
 
 export function parseGraphDocument(json: string | null): WorkflowGraphDocument | null {
-  if (!json?.trim()) return null;
-  try {
-    const doc = JSON.parse(json) as WorkflowGraphDocument;
-    if (doc.version !== 1 || !Array.isArray(doc.nodes)) return null;
-    return doc;
-  } catch {
-    return null;
-  }
+  return coreParseGraphDocument(json) as unknown as WorkflowGraphDocument | null;
 }
 
-/** Resolve next node id after a delay node for job scheduling */
 export function resolveResumeNodeAfter(
   doc: WorkflowGraphDocument,
   nodeId: string,
 ): string | null {
-  const outs = outgoing(doc.edges, nodeId);
-  const next = pickEdge(outs, 'default');
-  return next?.target ?? null;
+  return coreResolveResumeNodeAfter(toCoreDocument(doc), nodeId);
 }
+
+export type { WorkflowGraphDocument, WorkflowGraphEdge };

@@ -22,7 +22,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { hasElectron, invokeIpc } from "@/components/email/types"
+import { invokeRenderer } from "@/services/transport"
 
 export type { SnoozePresetId }
 
@@ -49,9 +49,8 @@ export function SnoozePopover({
   const [customLocal, setCustomLocal] = useState(() => defaultCustomSnoozeLocalValue())
 
   const loadSettings = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const s = await invokeIpc<SnoozeSettings>(IPCChannels.Email.GetSnoozeSettings)
+      const s = await invokeRenderer(IPCChannels.Email.GetSnoozeSettings) as SnoozeSettings
       setSettings(s)
     } catch {
       setSettings(DEFAULT_SNOOZE_SETTINGS)

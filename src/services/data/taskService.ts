@@ -2,6 +2,7 @@
 import { Task } from './types';
 import { IPCChannels } from '@shared/ipc/channels';
 import { calendarService } from './calendarService';
+import { invokeRenderer } from '@/services/transport';
 
 interface FilterOptions {
   completed?: boolean;
@@ -22,7 +23,7 @@ export const taskService = {
     filter: FilterOptions = {}
   ): Promise<Task[]> {
     try {
-      const tasks = await window.electronAPI.invoke(
+      const tasks = await invokeRenderer(
         IPCChannels.Tasks.GetAll,
         { limit, offset, filter }
       ) as any[];
@@ -45,7 +46,7 @@ export const taskService = {
    */
   async getTaskById(taskId: number | string): Promise<Task | null> {
     try {
-      const task = await window.electronAPI.invoke(
+      const task = await invokeRenderer(
         IPCChannels.Tasks.GetById,
         Number(taskId)
       ) as any;
@@ -69,7 +70,7 @@ export const taskService = {
    */
   async createTask(taskData: Omit<Task, 'id'>): Promise<{ success: boolean; id?: number; error?: string }> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.Tasks.Create,
         taskData
       );
@@ -90,7 +91,7 @@ export const taskService = {
     const { syncCalendar = true } = options;
 
     try {
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Tasks.Update,
         {
           id: Number(taskId),
@@ -156,7 +157,7 @@ export const taskService = {
     completed: boolean
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.Tasks.ToggleCompletion,
         {
           taskId: Number(taskId),
@@ -184,7 +185,7 @@ export const taskService = {
         }
       }
 
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.Tasks.Delete,
         Number(taskId)
       );
@@ -199,7 +200,7 @@ export const taskService = {
    */
   async getTasksForCustomer(customerId: number | string): Promise<Task[]> {
     try {
-      const tasks = await window.electronAPI.invoke(
+      const tasks = await invokeRenderer(
         IPCChannels.Db.GetTasksForCustomer,
         Number(customerId)
       ) as any[];

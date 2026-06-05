@@ -1,0 +1,321 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    image: simplecrm/api:${VERSION:-dev}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
+      SIMPLECRM_MASTER_KEY: ${MASTER_KEY}
+      ACCESS_TOKEN_SECRET: ${ACCESS_TOKEN_SECRET}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      AUTH_INVITE_FROM: ${AUTH_INVITE_FROM:-}
+      AUTH_INVITE_SMTP_HOST: ${AUTH_INVITE_SMTP_HOST:-}
+      AUTH_INVITE_SMTP_PORT: ${AUTH_INVITE_SMTP_PORT:-587}
+      AUTH_INVITE_SMTP_TLS: ${AUTH_INVITE_SMTP_TLS:-true}
+      AUTH_INVITE_SMTP_USER: ${AUTH_INVITE_SMTP_USER:-}
+      AUTH_INVITE_SMTP_PASSWORD: ${AUTH_INVITE_SMTP_PASSWORD:-}
+      AUTH_INVITE_SMTP_TIMEOUT_MS: ${AUTH_INVITE_SMTP_TIMEOUT_MS:-90000}
+      ATTACHMENTS_DIR: ${ATTACHMENTS_DIR:-/app/data/attachments}
+      AUDIT_ARCHIVE_DIR: ${AUDIT_ARCHIVE_DIR:-/app/data/audit-archive}
+      JOB_WORKER_ENABLED: ${JOB_WORKER_ENABLED:-false}
+      JOB_WORKER_MAIL_ACCOUNT_COUNT: ${JOB_WORKER_MAIL_ACCOUNT_COUNT:-0}
+      JOB_WORKER_AI_CONCURRENCY: ${JOB_WORKER_AI_CONCURRENCY:-5}
+      JOB_WORKER_MIGRATE_ON_START: ${JOB_WORKER_MIGRATE_ON_START:-false}
+      JOB_WEBHOOK_ALLOWLIST: ${JOB_WEBHOOK_ALLOWLIST:-}
+      PORT: 3000
+    volumes:
+      - attachments:/app/data/attachments
+      - audit_archives:/app/data/audit-archive
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: simplecrm
+      POSTGRES_USER: simplecrm_admin
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD}
+      PG_APP_USER: simplecrm_app
+      PG_APP_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simplecrm_app -d simplecrm"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    image: simplecrm/api:${VERSION:-dev}
+    command: ["node", "packages/server/dist/cli/migrate.js"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backup:
+    image: postgres:18-alpine
+    profiles: ["backup"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      ATTACHMENTS_DIR: /data/attachments
+      AUDIT_ARCHIVE_DIR: /data/audit-archive
+      BACKUP_RETENTION_DAILY: ${BACKUP_RETENTION_DAILY:-7}
+      BACKUP_RETENTION_WEEKLY: ${BACKUP_RETENTION_WEEKLY:-4}
+      BACKUP_RETENTION_MONTHLY: ${BACKUP_RETENTION_MONTHLY:-12}
+    command: ["sh", "/app/backup.sh"]
+    volumes:
+      - ./backup.sh:/app/backup.sh:ro
+      - ./backup-retention.sh:/app/backup-retention.sh:ro
+      - ./restore.sh:/app/restore.sh:ro
+      - ./doctor.sh:/app/doctor.sh:ro
+      - attachments:/data/attachments:ro
+      - audit_archives:/data/audit-archive:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backup-scheduler:
+    image: postgres:18-alpine
+    profiles: ["backup-scheduler"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      ATTACHMENTS_DIR: /data/attachments
+      AUDIT_ARCHIVE_DIR: /data/audit-archive
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RUN_ON_START: ${BACKUP_RUN_ON_START:-true}
+      BACKUP_RETENTION_DAILY: ${BACKUP_RETENTION_DAILY:-7}
+      BACKUP_RETENTION_WEEKLY: ${BACKUP_RETENTION_WEEKLY:-4}
+      BACKUP_RETENTION_MONTHLY: ${BACKUP_RETENTION_MONTHLY:-12}
+    command: ["sh", "/app/backup-scheduler.sh"]
+    volumes:
+      - ./backup.sh:/app/backup.sh:ro
+      - ./backup-retention.sh:/app/backup-retention.sh:ro
+      - ./backup-scheduler.sh:/app/backup-scheduler.sh:ro
+      - attachments:/data/attachments:ro
+      - audit_archives:/data/audit-archive:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  restore:
+    image: postgres:18-alpine
+    profiles: ["restore"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      PG_RESTORE_ROLE: simplecrm_app
+      ATTACHMENTS_DIR: /data/attachments
+      AUDIT_ARCHIVE_DIR: /data/audit-archive
+      RESTORE_DUMP_PATH: ${RESTORE_DUMP_PATH:-}
+      RESTORE_ATTACHMENTS_PATH: ${RESTORE_ATTACHMENTS_PATH:-}
+      RESTORE_AUDIT_ARCHIVE_PATH: ${RESTORE_AUDIT_ARCHIVE_PATH:-}
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        dump="$${RESTORE_DUMP_PATH:-$$(ls -1t /backups/db-*.dump | head -n 1)}"
+        attachments="$${RESTORE_ATTACHMENTS_PATH:-}"
+        audit_archive="$${RESTORE_AUDIT_ARCHIVE_PATH:-}"
+        dump_dir="$$(dirname "$$dump")"
+        dump_file="$$(basename "$$dump")"
+        case "$$dump_file" in
+          db-*.dump)
+            stamp="$${dump_file#db-}"
+            stamp="$${stamp%.dump}"
+            if [ -z "$$attachments" ] && [ -f "$$dump_dir/attachments-$$stamp.tar" ]; then
+              attachments="$$dump_dir/attachments-$$stamp.tar"
+            fi
+            if [ -z "$$audit_archive" ] && [ -f "$$dump_dir/audit-archive-$$stamp.tar" ]; then
+              audit_archive="$$dump_dir/audit-archive-$$stamp.tar"
+            fi
+            ;;
+        esac
+        if [ -n "$$audit_archive" ]; then
+          exec sh /app/restore.sh "$$dump" "$$attachments" "$$audit_archive"
+        fi
+        if [ -n "$$attachments" ]; then
+          exec sh /app/restore.sh "$$dump" "$$attachments"
+        fi
+        exec sh /app/restore.sh "$$dump"
+    volumes:
+      - ./restore.sh:/app/restore.sh:ro
+      - backups:/backups:ro
+      - attachments:/data/attachments
+      - audit_archives:/data/audit-archive
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  doctor:
+    image: postgres:18-alpine
+    profiles: ["doctor"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      BACKUP_DIR: /backups
+      DOCTOR_REQUIRE_BACKUP: ${DOCTOR_REQUIRE_BACKUP:-false}
+    command: ["sh", "/app/doctor.sh"]
+    volumes:
+      - ./doctor.sh:/app/doctor.sh:ro
+      - backups:/backups:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  restore-drill:
+    image: postgres:18-alpine
+    profiles: ["restore-drill"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      PG_APP_USER: simplecrm_app
+      PG_RESTORE_ROLE: simplecrm_app
+      RESTORE_DRILL_DB_NAME: ${RESTORE_DRILL_DB_NAME:-}
+      RESTORE_DRILL_DUMP_PATH: ${RESTORE_DRILL_DUMP_PATH:-}
+      RESTORE_DRILL_ATTACHMENTS_PATH: ${RESTORE_DRILL_ATTACHMENTS_PATH:-}
+      RESTORE_DRILL_AUDIT_ARCHIVE_PATH: ${RESTORE_DRILL_AUDIT_ARCHIVE_PATH:-}
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        dump="$${RESTORE_DRILL_DUMP_PATH:-$$(ls -1t /backups/db-*.dump | head -n 1)}"
+        attachments="$${RESTORE_DRILL_ATTACHMENTS_PATH:-}"
+        audit_archive="$${RESTORE_DRILL_AUDIT_ARCHIVE_PATH:-}"
+        dump_dir="$$(dirname "$$dump")"
+        dump_file="$$(basename "$$dump")"
+        case "$$dump_file" in
+          db-*.dump)
+            stamp="$${dump_file#db-}"
+            stamp="$${stamp%.dump}"
+            if [ -z "$$attachments" ] && [ -f "$$dump_dir/attachments-$$stamp.tar" ]; then
+              attachments="$$dump_dir/attachments-$$stamp.tar"
+            fi
+            if [ -z "$$audit_archive" ] && [ -f "$$dump_dir/audit-archive-$$stamp.tar" ]; then
+              audit_archive="$$dump_dir/audit-archive-$$stamp.tar"
+            fi
+            ;;
+        esac
+        if [ -n "$$audit_archive" ]; then
+          exec sh /app/restore-drill.sh "$$dump" "$$attachments" "$$audit_archive"
+        fi
+        if [ -n "$$attachments" ]; then
+          exec sh /app/restore-drill.sh "$$dump" "$$attachments"
+        fi
+        exec sh /app/restore-drill.sh "$$dump"
+    volumes:
+      - ./restore-drill.sh:/app/restore-drill.sh:ro
+      - backups:/backups:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  minio:
+    image: minio/minio:latest
+    profiles: ["minio"]
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-simplecrm}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_minio_root_password}
+    ports:
+      - "${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+
+  monitor:
+    image: louislam/uptime-kuma:1
+    profiles: ["monitor"]
+    restart: unless-stopped
+    ports:
+      - "${UPTIME_KUMA_BIND:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    profiles: ["pgadmin"]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-CHANGE_ME_pgadmin_password}
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "True"
+    ports:
+      - "${PGADMIN_BIND:-127.0.0.1}:${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  attachments:
+  audit_archives:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+  backups:
+  minio_data:
+  uptime_kuma_data:
+  pgadmin_data:

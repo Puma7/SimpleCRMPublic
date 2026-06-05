@@ -7,7 +7,8 @@ import { CheckCircle2, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import type { EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { AccountForm } from "./account-form"
 import { SmtpPanel } from "./smtp-panel"
@@ -33,6 +34,7 @@ function accountInitials(a: EmailAccount): string {
 
 /** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI pro Postfach. */
 export function AccountsMasterDetailSettings() {
+  const serverClientMode = getRendererTransport().kind === "http"
   const { bumpAccountsRevision, setSettingsAccountId, accountsRevision } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -41,9 +43,8 @@ export function AccountsMasterDetailSettings() {
   const [creating, setCreating] = useState(false)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
+      const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
       if (list.length > 0 && selectedId == null) {
         setSelectedId(list[0]!.id)
@@ -123,7 +124,9 @@ export function AccountsMasterDetailSettings() {
         <div className="space-y-2 border-t p-3">
           <AccountsShippingHint />
           <p className="text-[10px] leading-relaxed text-muted-foreground">
-            Passwörter liegen im OS-Schlüsselbund (Keytar), nicht in der Datenbank.
+            {serverClientMode
+              ? "Passwörter liegen verschlüsselt im Server-Secret-Store und werden nicht an den Client zurückgegeben."
+              : "Passwörter liegen im OS-Schlüsselbund (Keytar), nicht in der Datenbank."}
           </p>
         </div>
       </div>

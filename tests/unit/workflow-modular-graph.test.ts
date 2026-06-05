@@ -3,8 +3,8 @@ import { definitionToGraphDocument } from '../../electron/workflow/definition-to
 import {
   buildBlankWorkflowGraph,
   buildDefaultInboundGraph,
-} from '../../electron/workflow/graph-presets';
-import { graphHasRunnableNodes } from '../../electron/workflow/graph-presets';
+  graphHasRunnableNodes,
+} from '../../packages/core/src/workflow';
 
 describe('modular workflow graphs', () => {
   test('blank graph is trigger-only modular canvas', () => {

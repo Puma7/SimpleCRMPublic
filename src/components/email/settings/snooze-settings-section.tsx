@@ -17,7 +17,7 @@ import {
   DEFAULT_SNOOZE_SETTINGS,
   type SnoozeSettings,
 } from "@shared/snooze-settings"
-import { hasElectron, invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 
 const WEEKDAYS = [
   { value: "1", label: "Montag" },
@@ -47,9 +47,8 @@ export function SnoozeSettingsSection() {
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const s = await invokeIpc<SnoozeSettings>(IPCChannels.Email.GetSnoozeSettings)
+      const s = await invokeRenderer(IPCChannels.Email.GetSnoozeSettings) as SnoozeSettings
       setSettings(s)
     } catch {
       toast.error("Snooze-Einstellungen konnten nicht geladen werden.")
@@ -61,13 +60,12 @@ export function SnoozeSettingsSection() {
   }, [load])
 
   const save = async () => {
-    if (!hasElectron()) return
     setSaving(true)
     try {
-      const r = await invokeIpc<{ success: boolean }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.SetSnoozeSettings,
         settings,
-      )
+      ) as { success: boolean }
       if (r.success) toast.success("Snooze-Zeiten gespeichert")
       else toast.error("Speichern fehlgeschlagen")
     } catch {

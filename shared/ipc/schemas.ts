@@ -22,6 +22,55 @@ const successResponse = z.object({ success: z.literal(true) }).passthrough();
 const failureResponse = z.object({ success: z.literal(false), error: z.string().optional() }).passthrough();
 const standardResult = z.union([successResponse, failureResponse]);
 
+const deployModeSchema = z.union([
+  z.literal('standalone'),
+  z.literal('server-client'),
+  z.literal('server-install'),
+]);
+const deployServerConfigSchema = z.object({
+  baseUrl: z.string().trim().url().refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'server.baseUrl must use http or https'),
+  lastLoginUsername: z.string().optional(),
+});
+const deployServerInstallConfigSchema = z.object({
+  composeProjectName: z.string().optional(),
+  installDir: z.string().optional(),
+});
+const deployConfigSchema = z.object({
+  version: z.literal(1),
+  mode: deployModeSchema,
+  selectedAt: z.string(),
+  server: deployServerConfigSchema.optional(),
+  serverInstall: deployServerInstallConfigSchema.optional(),
+});
+
+baseSchemaMap.set(IPCChannels.Setup.GetDeployConfig, {
+  payload: z.undefined(),
+  result: z.union([
+    z.object({ status: z.literal('missing') }),
+    z.object({ status: z.literal('invalid'), error: z.string() }),
+    z.object({ status: z.literal('ok'), config: deployConfigSchema }),
+  ]),
+});
+
+baseSchemaMap.set(IPCChannels.Setup.SaveDeployConfig, {
+  payload: z.object({
+    mode: deployModeSchema,
+    server: deployServerConfigSchema.optional(),
+    serverInstall: deployServerInstallConfigSchema.optional(),
+  }),
+  result: z.union([
+    z.object({ success: z.literal(true), config: deployConfigSchema }),
+    failureResponse,
+  ]),
+});
+
 // --- Deals ---
 const dealProductIdentifier = z.object({
   dealProductId: z.number().int().positive().optional(),
@@ -381,13 +430,146 @@ baseSchemaMap.set(IPCChannels.Sync.GetStatus, {
 });
 
 baseSchemaMap.set(IPCChannels.Sync.GetInfo, {
-  payload: z.undefined(),
-  result: z.any(),
+  payload: z.string().min(1),
+  result: z.string().nullable(),
 });
 
 baseSchemaMap.set(IPCChannels.Sync.SetInfo, {
-  payload: z.any(),
+  payload: z.object({
+    key: z.string().min(1),
+    value: z.any().optional(),
+  }).passthrough(),
   result: z.any(),
+});
+
+// --- PGP ---
+const pgpMessageAttachmentPayload = z.object({
+  filename: z.string().trim().min(1).max(260),
+  contentType: z.string().trim().max(200).optional(),
+  contentBase64: z.string().trim().min(1).max(70_000_000)
+    .refine((value) => value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(value), 'contentBase64 must be valid Base64'),
+});
+
+const pgpPreparedAttachmentResult = z.object({
+  filename: z.string(),
+  contentType: z.string().optional(),
+  contentBase64: z.string(),
+}).passthrough();
+
+const pgpArmoredMessageResult = z.object({
+  armored: z.string(),
+  attachments: z.array(pgpPreparedAttachmentResult).optional(),
+}).passthrough();
+const pgpSourceIdPayload = z.object({
+  id: z.number().int().optional(),
+  sourceId: z.number().int().optional(),
+}).passthrough().refine((value) => value.id !== undefined || value.sourceId !== undefined, {
+  message: 'id or sourceId is required',
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.ListIdentities, {
+  payload: z.undefined(),
+  result: z.array(z.any()),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.GenerateIdentity, {
+  payload: z.object({
+    userId: z.string().optional(),
+    name: z.string().optional(),
+    email: z.string().email().optional(),
+    passphrase: z.string(),
+  }).passthrough(),
+  result: z.object({ fingerprint: z.string() }).passthrough(),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.DeleteIdentity, {
+  payload: z.union([
+    z.number().int(),
+    pgpSourceIdPayload,
+  ]),
+  result: standardResult,
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.RotateIdentityPassphrase, {
+  payload: pgpSourceIdPayload.and(z.object({
+    currentPassphrase: z.string(),
+    nextPassphrase: z.string(),
+  }).passthrough()),
+  result: z.record(z.string(), z.unknown()),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.ListPeerKeys, {
+  payload: z.undefined(),
+  result: z.array(z.any()),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.ImportPeerKey, {
+  payload: z.object({
+    armored: z.string().min(1),
+  }).passthrough(),
+  result: z.object({ fingerprint: z.string() }).passthrough(),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.DeletePeerKey, {
+  payload: z.union([
+    z.number().int(),
+    pgpSourceIdPayload,
+  ]),
+  result: standardResult,
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.CheckRecipientKeys, {
+  payload: z.object({
+    emails: z.array(z.string()).max(200),
+  }).passthrough(),
+  result: z.array(z.any()),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.EncryptMessage, {
+  payload: z.object({
+    plaintext: z.string(),
+    recipientEmails: z.array(z.string()).min(1).max(200),
+    attachments: z.array(pgpMessageAttachmentPayload).max(20).optional(),
+  }).passthrough(),
+  result: pgpArmoredMessageResult,
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.SignMessage, {
+  payload: z.object({
+    plaintext: z.string(),
+    passphrase: z.string(),
+    attachments: z.array(pgpMessageAttachmentPayload).max(20).optional(),
+  }).passthrough(),
+  result: pgpArmoredMessageResult,
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.DecryptMessage, {
+  payload: z.object({
+    messageId: z.number().int(),
+    passphrase: z.string(),
+  }).passthrough(),
+  result: z.object({
+    text: z.string().optional(),
+    status: z.string().optional(),
+  }).passthrough(),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.DetectInbound, {
+  payload: z.object({
+    messageId: z.number().int(),
+  }).passthrough(),
+  result: z.object({ success: z.boolean() }).passthrough(),
+});
+
+baseSchemaMap.set(IPCChannels.Pgp.VerifyMessage, {
+  payload: z.object({
+    messageId: z.number().int(),
+  }).passthrough(),
+  result: z.object({
+    valid: z.boolean().optional(),
+    status: z.string().optional(),
+    fingerprint: z.string().optional(),
+  }).passthrough(),
 });
 
 // --- Window ---

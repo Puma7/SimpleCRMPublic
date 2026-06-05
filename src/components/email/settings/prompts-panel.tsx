@@ -25,7 +25,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { hasElectron, invokeIpc, type AiPrompt } from "../types"
+import { type AiPrompt } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isMailComposeAuxDataRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 type SortMode = "manual" | "label-asc" | "label-desc" | "newest"
 
@@ -64,13 +70,10 @@ export function PromptsPanel() {
   const [saving, setSaving] = useState(false)
 
   const loadProfiles = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const s = await invokeIpc<{ profiles?: AiProfileOption[] }>(
-        IPCChannels.Email.GetAiSettings,
-      )
+      const profiles = await invokeRenderer(IPCChannels.Email.ListAiProfiles) as AiProfileOption[]
       setAiProfiles(
-        (s.profiles ?? []).map((p) => ({
+        profiles.map((p) => ({
           id: p.id,
           label: p.label,
           isDefault: p.isDefault,
@@ -82,14 +85,10 @@ export function PromptsPanel() {
   }, [])
 
   const load = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoading(false)
-      return
-    }
     setLoading(true)
     try {
       await loadProfiles()
-      const rows = await invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts)
+      const rows = await invokeRenderer(IPCChannels.Email.ListAiPrompts) as AiPrompt[]
       setPrompts(rows)
       return rows
     } catch (e) {
@@ -103,6 +102,16 @@ export function PromptsPanel() {
 
   useEffect(() => {
     void load()
+  }, [load])
+
+  useEffect(() => {
+    if (getRendererTransport().kind !== "http") return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailComposeAuxDataRefreshEvent(event)) void load()
+      },
+    })
+    return () => subscription.unsubscribe()
   }, [load])
 
   const filteredSorted = useMemo(() => {
@@ -165,7 +174,7 @@ export function PromptsPanel() {
     }
     setSaving(true)
     try {
-      await invokeIpc(IPCChannels.Email.SaveAiPrompt, {
+      await invokeRenderer(IPCChannels.Email.SaveAiPrompt, {
         id: selectedId,
         label: label.trim(),
         userTemplate,
@@ -186,10 +195,10 @@ export function PromptsPanel() {
 
   const createNew = async () => {
     try {
-      const r = await invokeIpc<{ success: boolean; id?: number }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.SaveAiPrompt,
         { label: "Neuer Prompt", userTemplate: "{{text}}" },
-      )
+      ) as { success: boolean; id?: number }
       const rows = await load()
       const id = r.id ?? rows?.[rows.length - 1]?.id
       const created = rows?.find((p) => p.id === id) ?? rows?.[0]
@@ -209,7 +218,7 @@ export function PromptsPanel() {
     if (selectedId == null || !selected) return
     if (!window.confirm(`Prompt „${selected.label}" wirklich löschen?`)) return
     try {
-      await invokeIpc(IPCChannels.Email.DeleteAiPrompt, selectedId)
+      await invokeRenderer(IPCChannels.Email.DeleteAiPrompt, selectedId)
       toast.success("Prompt gelöscht.")
       const rows = await load()
       const next = rows?.[0]
@@ -228,10 +237,10 @@ export function PromptsPanel() {
   const duplicateCurrent = async () => {
     if (!selected) return
     try {
-      const r = await invokeIpc<{ id?: number }>(IPCChannels.Email.SaveAiPrompt, {
+      const r = await invokeRenderer(IPCChannels.Email.SaveAiPrompt, {
         label: `${selected.label} (Kopie)`,
         userTemplate: userTemplate,
-      })
+      }) as { id?: number }
       const rows = await load()
       const copy = rows?.find((p) => p.id === r.id)
       if (copy) selectPrompt(copy)
@@ -245,10 +254,10 @@ export function PromptsPanel() {
   const move = async (direction: "up" | "down") => {
     if (selectedId == null || sortMode !== "manual") return
     try {
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.ReorderAiPrompt,
         { id: selectedId, direction },
-      )
+      ) as { success: boolean; error?: string }
       if (!r.success) {
         toast.error(r.error ?? "Verschieben nicht möglich.")
         return

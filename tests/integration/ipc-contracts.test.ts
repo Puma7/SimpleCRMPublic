@@ -5,7 +5,38 @@ describe('IPC contracts', () => {
   test('contains key invoke channels', () => {
     expect(AllowedInvokeChannels).toContain(IPCChannels.Deals.AddProduct);
     expect(AllowedInvokeChannels).toContain(IPCChannels.Mssql.TestConnection);
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Setup.GetDeployConfig);
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Setup.SaveDeployConfig);
     expect(DeprecatedInvokeChannels).toContain(IPCChannels.Deals.UpdateProductQuantityLegacy);
+  });
+
+  test('Setup deploy config schemas validate first-start wizard IPC', () => {
+    expect(() =>
+      getResultSchema(IPCChannels.Setup.GetDeployConfig).parse({ status: 'missing' })
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Setup.GetDeployConfig).parse({
+        status: 'ok',
+        config: {
+          version: 1,
+          mode: 'server-client',
+          selectedAt: '2026-06-03T12:00:00.000Z',
+          server: { baseUrl: 'https://crm.example.com' },
+        },
+      })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Setup.SaveDeployConfig).parse({
+        mode: 'server-client',
+        server: { baseUrl: 'https://crm.example.com' },
+      })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Setup.SaveDeployConfig).parse({
+        mode: 'server-client',
+        server: { baseUrl: 'file:///tmp/simplecrm' },
+      })
+    ).toThrow();
   });
 
   test('validates deal payload schemas', () => {
@@ -69,6 +100,68 @@ describe('IPC contracts', () => {
     ).not.toThrow();
     expect(() =>
       getPayloadSchema(IPCChannels.FollowUp.CreateSavedView).parse({ name: 'My View' })
+    ).toThrow();
+  });
+
+  test('PGP channels have registered payload and result schemas', () => {
+    const pgpChannels = Object.values(IPCChannels.Pgp);
+    for (const channel of pgpChannels) {
+      expect(() => getPayloadSchema(channel as any)).not.toThrow();
+      expect(() => getResultSchema(channel as any)).not.toThrow();
+    }
+  });
+
+  test('PGP plaintext schemas accept optional Base64 attachment payloads', () => {
+    expect(() =>
+      getPayloadSchema(IPCChannels.Pgp.EncryptMessage).parse({
+        plaintext: 'Hello',
+        recipientEmails: ['peer@example.com'],
+        attachments: [{
+          filename: 'invoice.pdf',
+          contentType: 'application/pdf',
+          contentBase64: 'aW52b2ljZQ==',
+        }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Pgp.SignMessage).parse({
+        plaintext: 'Hello',
+        passphrase: ' passphrase ',
+        attachments: [{
+          filename: 'note.txt',
+          contentBase64: 'bm90ZQ==',
+        }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Pgp.EncryptMessage).parse({
+        armored: '-----BEGIN PGP MESSAGE-----',
+        attachments: [{
+          filename: 'invoice.pdf.pgp',
+          contentType: 'application/pgp-encrypted',
+          contentBase64: 'ZW5jcnlwdGVk',
+        }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Pgp.EncryptMessage).parse({
+        plaintext: 'Hello',
+        recipientEmails: ['peer@example.com'],
+        attachments: [{
+          filename: '',
+          contentBase64: 'aW52b2ljZQ==',
+        }],
+      }),
+    ).toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Pgp.EncryptMessage).parse({
+        plaintext: 'Hello',
+        recipientEmails: ['peer@example.com'],
+        attachments: [{
+          filename: 'invoice.pdf',
+          contentBase64: 'not base64',
+        }],
+      }),
     ).toThrow();
   });
 

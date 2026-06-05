@@ -1,7 +1,8 @@
 "use client"
 
-import { useCallback, useEffect } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useDefaultLayout } from "react-resizable-panels"
+import { toast } from "sonner"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -21,9 +22,26 @@ import { useMessageMetadata } from "./hooks/use-message-metadata"
 import { useMailAuxData } from "./hooks/use-mail-aux-data"
 import { UidValidityNoticeBanner } from "./uid-validity-notice-banner"
 import { ImapAuthNoticeBanner } from "./imap-auth-notice-banner"
-import type { MailView } from "./types"
+import { useConversationLocks } from "./use-conversation-locks"
+import type { ConversationLockReason, EmailMessage, MailView } from "./types"
+import {
+  getRendererTransport,
+  isMailAccountDataRefreshEvent,
+  isMailComposeAuxDataRefreshEvent,
+  isMailListRefreshEvent,
+  isMailMetadataRefreshEvent,
+  isMailRemoteContentPolicyRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
+type MailEventRefreshRequest = {
+  accounts: boolean
+  composeAux: boolean
+  list: boolean
+  metadata: boolean
+  remotePolicy: boolean
+}
 
 function MailShellInner() {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -35,6 +53,7 @@ function MailShellInner() {
     selectedAccountId,
     selectedMessage,
     setMetadataPanelOpen,
+    bumpAccountsRevision,
     bumpMailMetricsRevision,
   } = useMailWorkspace()
 
@@ -64,6 +83,7 @@ function MailShellInner() {
     hasMore,
     loadingMore,
   } = useEmailMessages()
+  const { acquireConversationLock } = useConversationLocks(messages)
 
   const advanceSelectionAfterMessageRemoved = useCallback(
     async (removedId: number) => {
@@ -137,7 +157,156 @@ function MailShellInner() {
 
   const { messageTags, internalNotes, messageAttachments, reloadNotes, reloadTags } =
     useMessageMetadata()
-  const { cannedList, aiPrompts } = useMailAuxData()
+  const { cannedList, aiPrompts, reloadCanned, reloadPrompts } = useMailAuxData()
+  const serverClientMode = getRendererTransport().kind === "http"
+  const mailEventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mailEventRefreshRequestRef = useRef<MailEventRefreshRequest>({
+    accounts: false,
+    composeAux: false,
+    list: false,
+    metadata: false,
+    remotePolicy: false,
+  })
+  const [remoteContentPolicyRefreshKey, setRemoteContentPolicyRefreshKey] = useState(0)
+  const mailEventHandlersRef = useRef({
+    refreshList,
+    refreshCurrentMessage,
+    reloadNotes,
+    reloadTags,
+    reloadCanned,
+    reloadPrompts,
+    bumpAccountsRevision,
+    invalidateMailMetrics,
+  })
+
+  useEffect(() => {
+    mailEventHandlersRef.current = {
+      refreshList,
+      refreshCurrentMessage,
+      reloadNotes,
+      reloadTags,
+      reloadCanned,
+      reloadPrompts,
+      bumpAccountsRevision,
+      invalidateMailMetrics,
+    }
+  }, [
+    refreshList,
+    refreshCurrentMessage,
+    reloadNotes,
+    reloadTags,
+    reloadCanned,
+    reloadPrompts,
+    bumpAccountsRevision,
+    invalidateMailMetrics,
+  ])
+
+  useEffect(() => {
+    if (!serverClientMode) return
+
+    const scheduleRefresh = (request: Partial<MailEventRefreshRequest>) => {
+      mailEventRefreshRequestRef.current = {
+        accounts: mailEventRefreshRequestRef.current.accounts || request.accounts === true,
+        composeAux: mailEventRefreshRequestRef.current.composeAux || request.composeAux === true,
+        list: mailEventRefreshRequestRef.current.list || request.list === true,
+        metadata: mailEventRefreshRequestRef.current.metadata || request.metadata === true,
+        remotePolicy: mailEventRefreshRequestRef.current.remotePolicy || request.remotePolicy === true,
+      }
+      if (mailEventRefreshTimerRef.current !== null) {
+        clearTimeout(mailEventRefreshTimerRef.current)
+      }
+      mailEventRefreshTimerRef.current = setTimeout(() => {
+        mailEventRefreshTimerRef.current = null
+        const refreshRequest = mailEventRefreshRequestRef.current
+        mailEventRefreshRequestRef.current = {
+          accounts: false,
+          composeAux: false,
+          list: false,
+          metadata: false,
+          remotePolicy: false,
+        }
+        const handlers = mailEventHandlersRef.current
+
+        if (refreshRequest.accounts) {
+          handlers.bumpAccountsRevision()
+        }
+        if (refreshRequest.composeAux) {
+          void handlers.reloadCanned()
+          void handlers.reloadPrompts()
+        }
+        if (refreshRequest.list) {
+          void handlers.refreshList({ preserveSelection: true })
+        }
+        if (refreshRequest.metadata) {
+          void handlers.refreshCurrentMessage()
+          void handlers.reloadNotes()
+          void handlers.reloadTags()
+        }
+        if (refreshRequest.remotePolicy) {
+          setRemoteContentPolicyRefreshKey((value) => value + 1)
+        }
+      }, 250)
+    }
+
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        const refreshListFromEvent = isMailListRefreshEvent(event)
+        const refreshMetadataFromEvent = isMailMetadataRefreshEvent(event)
+        const refreshAccountsFromEvent = isMailAccountDataRefreshEvent(event)
+        const refreshComposeAuxFromEvent = isMailComposeAuxDataRefreshEvent(event)
+        const refreshRemotePolicyFromEvent = isMailRemoteContentPolicyRefreshEvent(event)
+        if (
+          !refreshListFromEvent
+          && !refreshMetadataFromEvent
+          && !refreshAccountsFromEvent
+          && !refreshComposeAuxFromEvent
+          && !refreshRemotePolicyFromEvent
+        ) {
+          return
+        }
+        scheduleRefresh({
+          accounts: refreshAccountsFromEvent,
+          composeAux: refreshComposeAuxFromEvent,
+          list: refreshListFromEvent,
+          metadata: refreshMetadataFromEvent,
+          remotePolicy: refreshRemotePolicyFromEvent,
+        })
+      },
+    })
+
+    return () => {
+      if (mailEventRefreshTimerRef.current !== null) {
+        clearTimeout(mailEventRefreshTimerRef.current)
+        mailEventRefreshTimerRef.current = null
+      }
+      mailEventRefreshRequestRef.current = {
+        accounts: false,
+        composeAux: false,
+        list: false,
+        metadata: false,
+        remotePolicy: false,
+      }
+      subscription.unsubscribe()
+    }
+  }, [serverClientMode])
+
+  const startLockedCompose = useCallback(async (
+    mode: "reply" | "reply-all" | "forward",
+    message: EmailMessage,
+    initialReplyHtml?: string,
+  ) => {
+    const reason: ConversationLockReason = mode === "forward" ? "forward" : "reply"
+    const lock = await acquireConversationLock(message.id, reason)
+    if (!lock.ok) {
+      toast.warning(lock.message)
+      return
+    }
+    if (mode === "forward") {
+      setComposeIntent({ mode, message })
+    } else {
+      setComposeIntent({ mode, message, initialReplyHtml })
+    }
+  }, [acquireConversationLock, setComposeIntent])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
@@ -205,14 +374,11 @@ function MailShellInner() {
             refreshCurrentMessage={refreshCurrentMessage}
             refreshList={refreshList}
             advanceSelectionAfterMessageRemoved={advanceSelectionAfterMessageRemoved}
-            onReply={(m, initialReplyHtml) =>
-              setComposeIntent({ mode: "reply", message: m, initialReplyHtml })
-            }
-            onReplyAll={(m, initialReplyHtml) =>
-              setComposeIntent({ mode: "reply-all", message: m, initialReplyHtml })
-            }
-            onForward={(m) => setComposeIntent({ mode: "forward", message: m })}
+            onReply={(m, initialReplyHtml) => void startLockedCompose("reply", m, initialReplyHtml)}
+            onReplyAll={(m, initialReplyHtml) => void startLockedCompose("reply-all", m, initialReplyHtml)}
+            onForward={(m) => void startLockedCompose("forward", m)}
             metadataPlacement="external"
+            remoteContentPolicyRefreshKey={remoteContentPolicyRefreshKey}
           />
         </ResizablePanel>
         <ResizableHandle />

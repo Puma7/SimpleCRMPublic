@@ -7,10 +7,11 @@ import type { MessageListSortMode } from "@shared/email-list-options"
 import type { MessageListFilter } from "@shared/email-list-filters"
 import { formatEmailSyncError } from "@shared/email-sync-error-hint"
 import type { MailAccountScope } from "../account-scope"
-import { hasElectron, invokeIpc, type EmailMessage, type MailView } from "../types"
+import type { EmailMessage, MailView } from "../types"
 import { logError } from "../log"
 import { pickAdjacentMessageId } from "../select-adjacent-message"
 import { useMailWorkspace } from "../workspace-context"
+import { invokeRenderer } from "@/services/transport"
 
 const PAGE_SIZE = 100
 
@@ -76,7 +77,6 @@ export function useEmailMessages() {
         advanceFromRemovedId?: number
       },
     ) => {
-      if (!hasElectron()) return
       const append = opts?.append ?? false
       const offset = append ? offsetRef.current : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
@@ -86,11 +86,7 @@ export function useEmailMessages() {
         let list: EmailMessage[]
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
         if (query.trim() && view !== "trash") {
-          const res = await invokeIpc<{
-            messages: EmailMessage[]
-            searchMode: "fts" | "like" | "regex"
-            hasMore?: boolean
-          }>(IPCChannels.Email.SearchMessages, {
+          const res = await invokeRenderer(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
             limit: PAGE_SIZE,
@@ -98,7 +94,11 @@ export function useEmailMessages() {
             view,
             categoryId: view === "inbox" ? catId : null,
             doneFilter,
-          })
+          }) as {
+            messages: EmailMessage[]
+            searchMode: "fts" | "like" | "regex"
+            hasMore?: boolean
+          }
           list = res.messages
           if (res.searchMode === "like") {
             toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
@@ -110,7 +110,7 @@ export function useEmailMessages() {
           }
           setHasMore(Boolean(res.hasMore))
         } else {
-          list = await invokeIpc<EmailMessage[]>(IPCChannels.Email.ListMessagesByView, {
+          list = await invokeRenderer(IPCChannels.Email.ListMessagesByView, {
             accountId: accountScope,
             view,
             limit: PAGE_SIZE,
@@ -119,7 +119,7 @@ export function useEmailMessages() {
             sort,
             listFilter: listFilter === "all" ? undefined : listFilter,
             doneFilter,
-          })
+          }) as EmailMessage[]
           setHasMore(list.length >= PAGE_SIZE)
         }
         if (append) {
@@ -144,10 +144,10 @@ export function useEmailMessages() {
             const row = list.find((m) => m.id === targetId)
             if (row) {
               try {
-                const full = await invokeIpc<EmailMessage | null>(
+                const full = await invokeRenderer(
                   IPCChannels.Email.GetMessage,
                   row.id,
-                )
+                ) as EmailMessage | null
                 setSelectedMessage(full ?? row)
               } catch {
                 setSelectedMessage(row)
@@ -267,12 +267,11 @@ export function useEmailMessages() {
 
   const moveMessageToView = useCallback(
     async (messageId: number, targetView: MailView) => {
-      if (!hasElectron()) return false
       try {
-        const r = await invokeIpc<{ success: boolean; error?: string }>(
+        const r = await invokeRenderer(
           IPCChannels.Email.MoveMessageToView,
           { messageId, view: targetView },
-        )
+        ) as { success: boolean; error?: string }
         if (!r.success) {
           toast.error(r.error ?? "Verschieben fehlgeschlagen")
           return false
@@ -304,24 +303,32 @@ export function useEmailMessages() {
 
   const handleSync = useCallback(
     async (opts?: HandleSyncOptions) => {
-      if (!hasElectron() || selectedAccountId == null) return
+      if (selectedAccountId == null) return
       setSyncing(true)
       try {
         const accountIds =
           selectedAccountId === "all"
-            ? (await invokeIpc<{ id: number }[]>(IPCChannels.Email.ListAccounts)).map((a) => a.id)
+            ? ((await invokeRenderer(IPCChannels.Email.ListAccounts) as { id: number }[]).map((a) => a.id))
             : [selectedAccountId]
         let totalFetched = 0
+        let completedCount = 0
+        let queuedCount = 0
         let hadError = false
         for (const accountId of accountIds) {
-          const result = await invokeIpc<{
+          const result = await invokeRenderer(IPCChannels.Email.SyncAccount, accountId) as {
             success: boolean
             fetched?: number
+            queued?: boolean
             error?: string
-          }>(IPCChannels.Email.SyncAccount, accountId)
+          }
           if (result.success) {
-            totalFetched += result.fetched ?? 0
-            if (opts?.onAfterSync) await opts.onAfterSync(accountId)
+            if (result.queued) {
+              queuedCount += 1
+            } else {
+              completedCount += 1
+              totalFetched += result.fetched ?? 0
+              if (opts?.onAfterSync) await opts.onAfterSync(accountId)
+            }
           } else {
             hadError = true
             toast.error(
@@ -333,11 +340,19 @@ export function useEmailMessages() {
           }
         }
         if (!hadError) {
-          toast.success(
-            `Synchronisation abgeschlossen (${totalFetched} neue/aktualisierte Nachrichten).`,
-          )
+          if (queuedCount > 0 && completedCount === 0) {
+            toast.success(`${queuedCount} Synchronisations-Job${queuedCount === 1 ? "" : "s"} eingereiht.`)
+          } else if (queuedCount > 0) {
+            toast.success(
+              `Synchronisation abgeschlossen (${totalFetched} neue/aktualisierte Nachrichten, ${queuedCount} Job${queuedCount === 1 ? "" : "s"} eingereiht).`,
+            )
+          } else {
+            toast.success(
+              `Synchronisation abgeschlossen (${totalFetched} neue/aktualisierte Nachrichten).`,
+            )
+          }
         }
-        await refreshList({ preserveSelection: true })
+        if (completedCount > 0) await refreshList({ preserveSelection: true })
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Sync fehlgeschlagen.")
       } finally {
@@ -349,15 +364,11 @@ export function useEmailMessages() {
 
   const openMessage = useCallback(
     async (m: EmailMessage) => {
-      if (!hasElectron()) {
-        setSelectedMessage(m)
-        return
-      }
       try {
-        const full = await invokeIpc<EmailMessage | null>(IPCChannels.Email.GetMessage, m.id)
+        const full = await invokeRenderer(IPCChannels.Email.GetMessage, m.id) as EmailMessage | null
         setSelectedMessage(full ?? m)
         if (!m.seen_local && m.uid >= 0) {
-          await invokeIpc(IPCChannels.Email.SetMessageSeen, { messageId: m.id, seen: true })
+          await invokeRenderer(IPCChannels.Email.SetMessageSeen, { messageId: m.id, seen: true })
           setMessages((prev) =>
             prev.map((row) => (row.id === m.id ? { ...row, seen_local: 1 } : row)),
           )
@@ -371,12 +382,12 @@ export function useEmailMessages() {
   )
 
   const refreshCurrentMessage = useCallback(async () => {
-    if (!selectedMessage || !hasElectron()) return
+    if (!selectedMessage) return
     try {
-      const full = await invokeIpc<EmailMessage | null>(
+      const full = await invokeRenderer(
         IPCChannels.Email.GetMessage,
         selectedMessage.id,
-      )
+      ) as EmailMessage | null
       setSelectedMessage(full ?? selectedMessage)
     } catch (e) {
       logError("use-email-messages: refresh current", e)
@@ -385,9 +396,8 @@ export function useEmailMessages() {
 
   const assignMessageCategory = useCallback(
     async (messageId: number, categoryId: number) => {
-      if (!hasElectron()) return false
       try {
-        await invokeIpc(IPCChannels.Email.SetMessageCategory, {
+        await invokeRenderer(IPCChannels.Email.SetMessageCategory, {
           messageId,
           categoryId,
         })
@@ -407,12 +417,11 @@ export function useEmailMessages() {
 
   const snoozeMessageUntilTomorrow = useCallback(
     async (messageId: number) => {
-      if (!hasElectron()) return false
       const until = new Date()
       until.setDate(until.getDate() + 1)
       until.setHours(8, 0, 0, 0)
       try {
-        await invokeIpc(IPCChannels.Email.SnoozeMessage, {
+        await invokeRenderer(IPCChannels.Email.SnoozeMessage, {
           messageId,
           until: until.toISOString(),
         })

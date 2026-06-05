@@ -4,12 +4,13 @@ import fs from 'fs';
 import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
-import { getCustomerById, getDb } from '../sqlite-service';
 import {
   resolveAuthContext,
   requireAuthSession,
   requireRealAuthSession,
 } from '../auth/current-user';
+import { canAccessLocalAccount } from '../auth/auth-store';
+import type { AccountAccessLevel } from '../auth/account-access';
 import type { MailScopeSession } from '../email/email-store';
 
 function mailScopeSessionFromEvent(event: IpcMainInvokeEvent): MailScopeSession {
@@ -17,7 +18,21 @@ function mailScopeSessionFromEvent(event: IpcMainInvokeEvent): MailScopeSession 
   if (!session) throw new Error('Nicht angemeldet');
   return { userId: session.userId, role: session.role };
 }
-import { canAccessAccount } from '../auth/account-access';
+
+function canAccessEmailAccount(
+  event: IpcMainInvokeEvent,
+  accountId: number,
+  access: AccountAccessLevel,
+): boolean {
+  const session = requireRealAuthSession(event);
+  return canAccessLocalAccount({
+    userId: session.userId,
+    accountId,
+    access,
+    role: session.role,
+  });
+}
+
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
@@ -114,9 +129,21 @@ import {
 } from '../email/email-message-features';
 import { fireWebhookWorkflows } from '../email/email-webhook';
 import { clearEmailAccountSyncLock } from '../email/email-sync-mutex';
-import { getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { readSyncInfo, writeSyncInfo } from '../sync-info-store';
 import { getSnoozeSettings, setSnoozeSettings } from '../snooze-settings';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
+import {
+  getEmailAiCustomerTemplateContext,
+  type EmailAiCustomerTemplateContext,
+} from '../email/email-ai-customer-context-store';
+import {
+  consumeAllowedOnceRemoteContentLocal,
+  setLocalRemoteContentPolicy,
+} from '../email/email-remote-content-store';
+import {
+  getLocalReadReceiptSettings,
+  logLocalReadReceiptDeclined,
+} from '../email/email-read-receipt-store';
 import {
   ensureReplySuggestion,
   generateAndStoreReplySuggestion,
@@ -979,8 +1006,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async () => {
       return {
-        webhookSecret: getSyncInfo('email_webhook_secret') ?? '',
-        maxAttachmentMb: getSyncInfo('email_max_attachment_mb') ?? '25',
+        webhookSecret: readSyncInfo('email_webhook_secret') ?? '',
+        maxAttachmentMb: readSyncInfo('email_max_attachment_mb') ?? '25',
       };
     }, { logger }),
   );
@@ -1100,10 +1127,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         payload: { webhookSecret?: string; maxAttachmentMb?: number },
       ) => {
         if (payload.webhookSecret !== undefined) {
-          setSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
+          writeSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
         }
         if (payload.maxAttachmentMb !== undefined) {
-          setSyncInfo('email_max_attachment_mb', String(payload.maxAttachmentMb));
+          writeSyncInfo('email_max_attachment_mb', String(payload.maxAttachmentMb));
         }
         return { success: true as const };
       },
@@ -1708,12 +1735,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const p = prompts.find((x) => x.id === payload.promptId);
         if (!p) return { success: false as const, error: 'Prompt nicht gefunden' };
         let user = p.user_template.replace(/\{\{text\}\}/g, payload.text);
-        let cust: { name?: string; firstName?: string; email?: string } | null = null;
+        let cust: EmailAiCustomerTemplateContext | null = null;
         if (payload.customerId) {
-          const row = getCustomerById(payload.customerId);
-          if (row) {
-            cust = { name: row.name, firstName: row.firstName, email: row.email };
-          }
+          cust = getEmailAiCustomerTemplateContext(payload.customerId);
         }
         if (cust) {
           user = user
@@ -2627,16 +2651,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.GetRemoteContentPolicy,
       async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
-        const db = getDb();
-        if (!db) throw new Error('Database not initialized');
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { policy: 'blocked' as const, allowRemote: false };
-        const session = requireRealAuthSession(event);
-        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
           throw new Error('Kein Zugriff');
         }
-        const { consumeAllowedOnceRemoteContent } = await import('../email/email-remote-content');
-        return consumeAllowedOnceRemoteContent(db, payload.messageId);
+        return consumeAllowedOnceRemoteContentLocal(payload.messageId);
       },
       { logger, requireAuth: true, requireRealSession: true },
     ),
@@ -2654,15 +2674,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           rememberDomain?: boolean;
         },
       ) => {
-        const db = getDb();
-        if (!db) throw new Error('Database not initialized');
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        const session = requireRealAuthSession(event);
-        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
-        const { setRemoteContentPolicy } = await import('../email/email-remote-content');
         let remember: { scope: 'sender' | 'domain'; value: string } | undefined;
         if (payload.rememberSender || payload.rememberDomain) {
           try {
@@ -2679,7 +2695,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             /* ignore */
           }
         }
-        setRemoteContentPolicy(db, payload.messageId, payload.policy, remember);
+        setLocalRemoteContentPolicy(payload.messageId, payload.policy, remember);
         return { success: true as const };
       },
       { logger, requireAuth: true, requireRealSession: true },
@@ -2692,14 +2708,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        const db = getDb();
-        if (!db) throw new Error('Database not initialized');
-        const session = requireRealAuthSession(event);
-        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
-        const { getReadReceiptSettings } = await import('../email/email-read-receipt');
-        const settings = getReadReceiptSettings(db, row.account_id);
+        const settings = getLocalReadReceiptSettings(row.account_id);
         return {
           success: true as const,
           requested: (row as { read_receipt_requested?: number }).read_receipt_requested === 1,
@@ -2715,17 +2727,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.RespondReadReceipt,
       async (event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
-        const db = getDb();
-        if (!db) throw new Error('Database not initialized');
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        const session = requireRealAuthSession(event);
-        if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         if (payload.action === 'send') {
-          const { getReadReceiptSettings, domainTrusted } = await import('../email/email-read-receipt');
-          const settings = getReadReceiptSettings(db, row.account_id);
+          const { domainTrusted } = await import('../email/email-read-receipt');
+          const settings = getLocalReadReceiptSettings(row.account_id);
           if (settings.respond === 'never') {
             return { success: false as const, error: 'Lesebestätigungen sind deaktiviert' };
           }
@@ -2746,8 +2755,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           if (!r.ok) return { success: false as const, error: r.error };
           return { success: true as const };
         }
-        const { logReadReceiptAction } = await import('../email/email-read-receipt');
-        logReadReceiptAction(db, payload.messageId, 'declined');
+        logLocalReadReceiptDeclined(payload.messageId);
         return { success: true as const };
       },
       { logger, requireAuth: true, requireRealSession: true },
@@ -2772,10 +2780,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         event: IpcMainInvokeEvent,
         payload: { aliasThreadId: string; canonicalThreadId: string; accountId: number },
       ) => {
-        const session = requireRealAuthSession(event);
-        const db = getDb();
-        if (!db) throw new Error('Database not initialized');
-        if (!canAccessAccount(db, session.userId, payload.accountId, 'rw', session.role)) {
+        if (!canAccessEmailAccount(event, payload.accountId, 'rw')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         const { mergeThreads } = await import('../email/email-thread-admin');

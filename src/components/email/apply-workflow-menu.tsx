@@ -6,6 +6,7 @@ import { filterWorkflowsForMessage } from "@shared/workflow-applicable-for-messa
 import { toast } from "sonner"
 import { Loader2, Workflow } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,7 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
-import { hasElectron, invokeIpc, type EmailMessage } from "./types"
+import { hasLocalIpc, type EmailMessage } from "./types"
 import { workflowTriggerLabel } from "./workflow/trigger-labels"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 
@@ -33,6 +34,7 @@ type WorkflowRow = {
 type ExecuteResult = {
   success: boolean
   status?: string
+  queued?: boolean
   blocked?: boolean
   blockReason?: string | null
   runId?: number
@@ -63,10 +65,9 @@ export function ApplyWorkflowMenu({
   const [runDetailOpen, setRunDetailOpen] = useState(false)
 
   const loadWorkflows = useCallback(async () => {
-    if (!hasElectron()) return
     setLoadingList(true)
     try {
-      const list = await invokeIpc<WorkflowRow[]>(IPCChannels.Email.ListWorkflows)
+      const list = await invokeRenderer(IPCChannels.Email.ListWorkflows) as WorkflowRow[]
       setWorkflows(list)
     } catch {
       toast.error("Workflows konnten nicht geladen werden.")
@@ -88,14 +89,14 @@ export function ApplyWorkflowMenu({
   )
 
   const runWorkflow = async (workflowId: number, dryRun: boolean) => {
-    if (!hasElectron() || runningId != null) return
+    if (runningId != null) return
     setRunningId(workflowId)
     try {
       if (dryRun) {
-        const r = await invokeIpc<{ success: boolean; log?: string[]; error?: string }>(
+        const r = await invokeRenderer(
           IPCChannels.Email.TestWorkflowOnMessage,
           { workflowId, messageId: message.id, dryRun: true },
-        )
+        ) as { success: boolean; log?: string[]; error?: string }
         if (r.success) {
           toast.success(`Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ") || "fertig"}`)
         } else {
@@ -104,13 +105,17 @@ export function ApplyWorkflowMenu({
         return
       }
 
-      const r = await invokeIpc<ExecuteResult>(IPCChannels.Email.ExecuteWorkflowNow, {
+      const r = await invokeRenderer(IPCChannels.Email.ExecuteWorkflowNow, {
         workflowId,
         messageId: message.id,
         dryRun: false,
-      })
+      }) as ExecuteResult
       if (!r.success) {
         toast.error(r.error ?? "Workflow konnte nicht ausgeführt werden.")
+        return
+      }
+      if (r.queued) {
+        toast.success("Workflow-Job eingereiht.")
         return
       }
       if (r.blocked) {
@@ -142,7 +147,7 @@ export function ApplyWorkflowMenu({
     }
   }
 
-  if (!hasElectron()) return null
+  const dryRunAvailable = hasLocalIpc() || getRendererTransport().kind === "http"
 
   return (
     <>
@@ -190,13 +195,17 @@ export function ApplyWorkflowMenu({
                 >
                   Jetzt ausführen
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => void runWorkflow(w.id, true)}
-                  disabled={runningId != null}
-                >
-                  Dry-Run (ohne Änderungen)
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
+                {dryRunAvailable ? (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => void runWorkflow(w.id, true)}
+                      disabled={runningId != null}
+                    >
+                      Dry-Run (ohne Änderungen)
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                ) : null}
                 <DropdownMenuItem disabled className="text-xs text-muted-foreground">
                   {workflowTriggerLabel(w.trigger)}
                 </DropdownMenuItem>

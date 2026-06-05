@@ -1,0 +1,12 @@
+{$PUBLIC_DOMAIN:localhost} {
+  reverse_proxy api:3000 {
+    header_up -x-simplecrm-user-id
+    header_up -x-simplecrm-workspace-id
+    header_up -x-simplecrm-role
+  }
+  encode gzip zstd
+  log {
+    output file /var/log/access.log
+    format json
+  }
+}

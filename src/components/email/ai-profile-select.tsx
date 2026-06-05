@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { hasElectron, invokeIpc } from "./types"
+import { invokeRenderer } from "@/services/transport"
 
 export const DEFAULT_AI_PROFILE_VALUE = "__default__"
 
@@ -40,13 +40,10 @@ export function AiProfileSelect({
   const [profiles, setProfiles] = useState<AiProfileOption[]>([])
 
   const loadProfiles = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const s = await invokeIpc<{ profiles?: AiProfileOption[] }>(
-        IPCChannels.Email.GetAiSettings,
-      )
+      const profiles = await invokeRenderer(IPCChannels.Email.ListAiProfiles) as AiProfileOption[]
       setProfiles(
-        (s.profiles ?? []).map((p) => ({
+        profiles.map((p) => ({
           id: p.id,
           label: p.label,
           isDefault: p.isDefault,

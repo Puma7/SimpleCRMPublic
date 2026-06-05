@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import { BarChart3, Loader2 } from "lucide-react"
-import { hasElectron, invokeIpc } from "@/components/email/types"
+import { invokeRenderer } from "@/services/transport"
 
 type AccountRow = { id: number; display_name: string; email_address: string; protocol?: string }
 
@@ -32,13 +32,12 @@ export default function EmailReportingPage() {
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     setLoading(true)
     try {
-      const r = await invokeIpc<{ success: boolean; data?: Snapshot }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.EmailReporting,
         filter === "all" ? null : filter,
-      )
+      ) as { success: boolean; data?: Snapshot }
       if (r.success && r.data) setData(r.data)
       else toast.error("Reporting konnte nicht geladen werden.")
     } catch {
@@ -53,24 +52,15 @@ export default function EmailReportingPage() {
   }, [load])
 
   useEffect(() => {
-    if (!hasElectron()) return
     void (async () => {
       try {
-        const acc = await invokeIpc<AccountRow[]>(IPCChannels.Email.ListAccounts)
+        const acc = await invokeRenderer(IPCChannels.Email.ListAccounts) as AccountRow[]
         setAccountList(acc)
       } catch {
         setAccountList([])
       }
     })()
   }, [])
-
-  if (!hasElectron()) {
-    return (
-      <div className="container py-10">
-        <p className="text-sm text-muted-foreground">Nur in der Desktop-App verfügbar.</p>
-      </div>
-    )
-  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto">

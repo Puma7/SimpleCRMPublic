@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { Copy, KeyRound, Loader2, Trash2 } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { AutomationApiSettings, AutomationScope } from "@shared/automation-api"
 import { AUTOMATION_SCOPES } from "@shared/automation-api"
@@ -10,9 +11,31 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Checkbox } from "@/components/ui/checkbox"
-import { hasElectron, invokeIpc } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isAutomationApiKeyRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
+import { hasLocalIpc, invokeIpc } from "../types"
+
+type ServerAutomationApiKey = {
+  id: string
+  label: string
+  scopes: AutomationScope[]
+  lastUsedAt?: string | null
+  revokedAt?: string | null
+  createdAt?: string | null
+  secretConfigured?: boolean | null
+}
+
+type ServerAutomationApiSettings = AutomationApiSettings & {
+  keys?: ServerAutomationApiKey[]
+}
 
 export function AutomationPanel() {
+  const rendererTransport = getRendererTransport()
+  const serverClientMode = rendererTransport.kind === "http"
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
@@ -20,41 +43,70 @@ export function AutomationPanel() {
   const [apiPort, setApiPort] = useState("3847")
   const [apiBindLan, setApiBindLan] = useState(false)
   const [apiScopes, setApiScopes] = useState<AutomationScope[]>([...AUTOMATION_SCOPES])
+  const [serverKeyLabel, setServerKeyLabel] = useState("n8n / Make")
+  const [serverKeys, setServerKeys] = useState<ServerAutomationApiKey[]>([])
+  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null)
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoading(false)
-      return
-    }
     setLoading(true)
     try {
-      const wf = await invokeIpc<{
+      if (!serverClientMode && !hasLocalIpc()) {
+        setApiSettings(null)
+        setServerKeys([])
+        return
+      }
+
+      const wf = await invokeRenderer(IPCChannels.Email.GetWorkflowAutomationSettings) as {
         imapDeleteOptIn: boolean
         httpAllowlist: string
-      }>(IPCChannels.Email.GetWorkflowAutomationSettings)
+      }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
       setHttpAllowlist(wf.httpAllowlist)
 
-      const api = await invokeIpc<AutomationApiSettings>(IPCChannels.Automation.GetSettings)
-      setApiSettings(api)
-      setApiEnabled(api.enabled)
-      setApiPort(String(api.port))
-      setApiBindLan(api.bindLan)
-      if (api.scopes.length) setApiScopes(api.scopes)
+      if (serverClientMode) {
+        const api = await invokeRenderer(
+          IPCChannels.Automation.GetSettings,
+        ) as ServerAutomationApiSettings
+        setApiSettings(api)
+        setServerKeys(api.keys ?? [])
+        setApiEnabled(api.enabled)
+        if (api.scopes.length) setApiScopes(api.scopes)
+      } else if (hasLocalIpc()) {
+        const api = await invokeIpc<AutomationApiSettings>(IPCChannels.Automation.GetSettings)
+        setApiSettings(api)
+        setServerKeys([])
+        setApiEnabled(api.enabled)
+        setApiPort(String(api.port))
+        setApiBindLan(api.bindLan)
+        if (api.scopes.length) setApiScopes(api.scopes)
+      } else {
+        setApiSettings(null)
+        setServerKeys([])
+      }
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [serverClientMode])
 
   useEffect(() => {
     void load()
   }, [load])
 
+  useEffect(() => {
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isAutomationApiKeyRefreshEvent(event)) void load()
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [load, serverClientMode])
+
   const saveWorkflowOpts = async () => {
-    if (!hasElectron()) return
-    await invokeIpc(IPCChannels.Email.SetWorkflowAutomationSettings, {
+    if (!serverClientMode && !hasLocalIpc()) return
+    await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, {
       imapDeleteOptIn,
       httpAllowlist,
     })
@@ -62,7 +114,7 @@ export function AutomationPanel() {
   }
 
   const saveApiOpts = async () => {
-    if (!hasElectron()) return
+    if (!hasLocalIpc()) return
     const port = parseInt(apiPort, 10)
     await invokeIpc(IPCChannels.Automation.SetSettings, {
       enabled: apiEnabled,
@@ -74,11 +126,33 @@ export function AutomationPanel() {
   }
 
   const generateKey = async () => {
-    if (!hasElectron()) return
     if (apiScopes.length === 0) {
       toast.error("Mindestens einen Scope auswählen.")
       return
     }
+    if (serverClientMode) {
+      const label = serverKeyLabel.trim()
+      if (!label) {
+        toast.error("Bitte einen Namen für den Server-Key angeben.")
+        return
+      }
+      const res = await invokeRenderer(IPCChannels.Automation.GenerateApiKey, {
+        label,
+        scopes: apiScopes,
+      }) as { success: boolean; key?: string; error?: string }
+      if (!res.success) {
+        toast.error(res.error ?? "API-Key konnte nicht erzeugt werden.")
+        return
+      }
+      if (res.key) {
+        setGeneratedKey(res.key)
+        toast.success("Neuer Server-API-Key erzeugt.")
+        await load()
+      }
+      return
+    }
+
+    if (!hasLocalIpc()) return
     const res = await invokeIpc<{ success: boolean; key?: string; error?: string }>(
       IPCChannels.Automation.GenerateApiKey,
       { scopes: apiScopes },
@@ -94,13 +168,34 @@ export function AutomationPanel() {
     }
   }
 
-  const revokeKey = async () => {
-    if (!hasElectron()) return
+  const revokeKey = async (key?: ServerAutomationApiKey) => {
+    if (serverClientMode) {
+      if (!key) return
+      if (!window.confirm(`API-Key "${key.label}" wirklich widerrufen? Externe Tools verlieren den Zugriff.`)) return
+      setRevokingKeyId(key.id)
+      try {
+        await invokeRenderer(IPCChannels.Automation.RevokeApiKey, { id: key.id })
+        setGeneratedKey(null)
+        toast.success("Server-API-Key widerrufen.")
+        await load()
+      } finally {
+        setRevokingKeyId(null)
+      }
+      return
+    }
+
+    if (!hasLocalIpc()) return
     if (!window.confirm("API-Key wirklich widerrufen? Externe Tools verlieren den Zugriff.")) return
     await invokeIpc(IPCChannels.Automation.RevokeApiKey)
     setGeneratedKey(null)
     toast.success("API-Key widerrufen.")
     await load()
+  }
+
+  const copyGeneratedKey = async () => {
+    if (!generatedKey || typeof navigator === "undefined" || !navigator.clipboard) return
+    await navigator.clipboard.writeText(generatedKey)
+    toast.success("API-Key kopiert.")
   }
 
   const toggleScope = (scope: AutomationScope, checked: boolean) => {
@@ -110,8 +205,11 @@ export function AutomationPanel() {
     })
   }
 
+  const serverBaseUrl = serverClientMode && rendererTransport.serverBaseUrl
+    ? `${rendererTransport.serverBaseUrl}/api/v1`
+    : ""
   const baseUrl =
-    apiEnabled && apiPort
+    !serverClientMode && apiEnabled && apiPort
       ? `http://${apiBindLan ? "0.0.0.0" : "127.0.0.1"}:${apiPort}/api/v1`
       : ""
 
@@ -121,55 +219,91 @@ export function AutomationPanel() {
         <div>
           <h3 className="text-base font-semibold">Externe API (n8n, Make, Skripte)</h3>
           <p className="text-sm text-muted-foreground">
-            Lokale REST-API im Electron-Main-Prozess. Standard nur{" "}
-            <code className="rounded bg-muted px-1">127.0.0.1</code> — für n8n auf dem gleichen
-            Rechner.
+            {serverClientMode
+              ? "Server-REST-API für externe Automationen. API-Keys gelten für den aktuellen Workspace."
+              : "Lokale REST-API im Electron-Main-Prozess. Standard nur 127.0.0.1 für n8n auf dem gleichen Rechner."}
           </p>
         </div>
 
-        <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
-          <div className="space-y-1">
-            <Label htmlFor="api-enabled">Automation-API aktiv</Label>
-            <p className="text-xs text-muted-foreground">
-              Ohne Aktivierung antwortet der Server nicht (außer Health-Check).
-            </p>
+        {serverClientMode ? (
+          <div className="space-y-2 rounded-lg border p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <Label>Server-API aktiv</Label>
+                <p className="text-xs text-muted-foreground">
+                  Die Automation-Routen laufen über die verbundene SimpleCRM-Serverinstanz.
+                </p>
+              </div>
+              <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">
+                Servermodus
+              </span>
+            </div>
+            {serverBaseUrl ? (
+              <p className="text-xs text-muted-foreground">
+                Basis-URL: <code className="rounded bg-muted px-1">{serverBaseUrl}</code>
+              </p>
+            ) : null}
           </div>
-          <Switch
-            id="api-enabled"
-            checked={apiEnabled}
-            disabled={loading}
-            onCheckedChange={setApiEnabled}
-          />
-        </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="api-enabled">Automation-API aktiv</Label>
+                <p className="text-xs text-muted-foreground">
+                  Ohne Aktivierung antwortet der Server nicht (außer Health-Check).
+                </p>
+              </div>
+              <Switch
+                id="api-enabled"
+                checked={apiEnabled}
+                disabled={loading}
+                onCheckedChange={setApiEnabled}
+              />
+            </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="api-port">Port</Label>
+                <Input
+                  id="api-port"
+                  value={apiPort}
+                  disabled={loading}
+                  onChange={(e) => setApiPort(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-2 pt-6">
+                <Switch
+                  id="api-bind-lan"
+                  checked={apiBindLan}
+                  disabled={loading}
+                  onCheckedChange={setApiBindLan}
+                />
+                <Label htmlFor="api-bind-lan" className="text-sm font-normal">
+                  LAN-Bindung (0.0.0.0) — nur mit Firewall absichern
+                </Label>
+              </div>
+            </div>
+
+            {baseUrl ? (
+              <p className="text-xs text-muted-foreground">
+                Basis-URL: <code className="rounded bg-muted px-1">{baseUrl}</code> · OpenAPI:{" "}
+                <code className="rounded bg-muted px-1">{baseUrl}/openapi.json</code>
+              </p>
+            ) : null}
+          </>
+        )}
+
+        {serverClientMode ? (
           <div className="space-y-1.5">
-            <Label htmlFor="api-port">Port</Label>
+            <Label htmlFor="server-api-key-label">Key-Name</Label>
             <Input
-              id="api-port"
-              value={apiPort}
+              id="server-api-key-label"
+              value={serverKeyLabel}
               disabled={loading}
-              onChange={(e) => setApiPort(e.target.value)}
+              onChange={(event) => setServerKeyLabel(event.target.value)}
+              placeholder="n8n Produktion"
             />
           </div>
-          <div className="flex items-center gap-2 pt-6">
-            <Switch
-              id="api-bind-lan"
-              checked={apiBindLan}
-              disabled={loading}
-              onCheckedChange={setApiBindLan}
-            />
-            <Label htmlFor="api-bind-lan" className="text-sm font-normal">
-              LAN-Bindung (0.0.0.0) — nur mit Firewall absichern
-            </Label>
-          </div>
-        </div>
-
-        {baseUrl ? (
-          <p className="text-xs text-muted-foreground">
-            Basis-URL: <code className="rounded bg-muted px-1">{baseUrl}</code> · OpenAPI:{" "}
-            <code className="rounded bg-muted px-1">{baseUrl}/openapi.json</code>
-          </p>
         ) : null}
 
         <div className="space-y-2 rounded-lg border p-4">
@@ -190,22 +324,85 @@ export function AutomationPanel() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={() => void saveApiOpts()} disabled={loading}>
-            API-Einstellungen speichern
-          </Button>
+          {!serverClientMode ? (
+            <Button type="button" variant="outline" onClick={() => void saveApiOpts()} disabled={loading}>
+              API-Einstellungen speichern
+            </Button>
+          ) : null}
           <Button type="button" onClick={() => void generateKey()} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
             API-Key erzeugen
           </Button>
-          {apiSettings?.hasApiKey ? (
+          {!serverClientMode && apiSettings?.hasApiKey ? (
             <Button type="button" variant="destructive" onClick={() => void revokeKey()}>
               Key widerrufen ({apiSettings.keyPreview})
             </Button>
           ) : null}
         </div>
 
+        {serverClientMode ? (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Aktive Server-Keys
+            </p>
+            {serverKeys.length ? (
+              <div className="divide-y rounded-lg border">
+                {serverKeys.map((key) => (
+                  <div key={key.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate text-sm font-medium">{key.label}</p>
+                        <code className="rounded bg-muted px-1 text-[11px] text-muted-foreground">
+                          {key.id.slice(0, 8)}
+                        </code>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {key.scopes.map((scope) => (
+                          <span key={scope} className="rounded-md border px-2 py-0.5 text-[11px] text-muted-foreground">
+                            {scope}
+                          </span>
+                        ))}
+                      </div>
+                      {key.createdAt ? (
+                        <p className="text-xs text-muted-foreground">
+                          Erstellt: {new Date(key.createdAt).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => void revokeKey(key)}
+                      disabled={loading || revokingKeyId === key.id}
+                    >
+                      {revokingKeyId === key.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                      Widerrufen
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                Noch kein aktiver API-Key.
+              </p>
+            )}
+          </div>
+        ) : null}
+
         {generatedKey ? (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-            <p className="font-medium text-amber-800 dark:text-amber-200">Neuer Key (einmalig)</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-medium text-amber-800 dark:text-amber-200">Neuer Key (einmalig)</p>
+              <Button type="button" variant="outline" size="sm" onClick={() => void copyGeneratedKey()}>
+                <Copy className="h-4 w-4" />
+                Kopieren
+              </Button>
+            </div>
             <code className="mt-1 block break-all text-xs">{generatedKey}</code>
             <p className="mt-2 text-xs text-muted-foreground">
               In n8n: HTTP Request → Authentication → Header Auth →{" "}

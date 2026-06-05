@@ -69,9 +69,9 @@ Legende: **stabil** · **teilweise** · **geplant**
 
 ## Noch geplant / begrenzt
 
-| Funktion | Status |
-|----------|--------|
+| Funktion | Status | Hinweis |
+|----------|--------|---------|
 | IMAP Multi-Folder (Sent / Archiv / Spam) | stabil | Opt-in pro Konto unter SMTP/IMAP-Einstellungen |
-| PGP-Entschlüsselung | geplant |
+| PGP | begrenzt | Eingehende Klassifikation/Entschlüsselung, Cleartext-Signaturprüfung, serverseitige Private-Key-Passphrase-Rotation sowie Plaintext-/Compose-Sign/Encrypt lokal und serverseitig; Detached-/Anhang-Signaturen, Anhänge und HTML-Encryption-Ausbau offen |
 | Open/Click-Tracking | geplant |
 | Abwesenheitsantwort pro Konto | stabil | Einstellungen → Konten bearbeiten |

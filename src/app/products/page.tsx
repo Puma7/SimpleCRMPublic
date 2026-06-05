@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { PlusCircle, Package, AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,21 +8,26 @@ import { ProductTable } from '@/components/product/product-table';
 import { CreateProductDialog } from '@/components/product/create-product-dialog';
 import { Product } from '@/types'; // Assuming Product type will be defined in src/types/index.ts
 import { IPCChannels } from '@shared/ipc/channels';
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isProductListRefreshEvent,
+  subscribeServerEvents,
+} from '@/services/transport';
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isCreateDialogOpen, setCreateDialogOpen] = useState(false);
+  const [serverEventRefresh, setServerEventRefresh] = useState(0);
+  const serverClientMode = getRendererTransport().kind === "http";
 
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      if (!window.electronAPI?.invoke) {
-        throw new Error('Electron API nicht verfügbar. Bitte starten Sie die Anwendung neu.');
-      }
-      const fetchedProducts = await window.electronAPI.invoke(
+      const fetchedProducts = await invokeRenderer(
         IPCChannels.Products.GetAll
       ) as Product[];
       // Ensure isActive is boolean (it comes as 0/1 from SQLite)
@@ -37,22 +42,34 @@ export default function ProductsPage() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchProducts();
   }, []);
 
+  useEffect(() => {
+    if (!serverClientMode) return;
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isProductListRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1);
+        }
+      },
+    });
+    return () => subscription.unsubscribe();
+  }, [serverClientMode]);
+
+  useEffect(() => {
+    void fetchProducts();
+  }, [fetchProducts, serverEventRefresh]);
+
   const handleProductCreated = () => {
-    fetchProducts(); // Refetch products after creation
+    void fetchProducts(); // Refetch products after creation
   };
 
   const handleProductUpdated = () => {
-    fetchProducts(); // Refetch products after update
+    void fetchProducts(); // Refetch products after update
   };
 
   const handleProductDeleted = () => {
-    fetchProducts(); // Refetch products after deletion
+    void fetchProducts(); // Refetch products after deletion
   };
 
 
@@ -82,7 +99,7 @@ export default function ProductsPage() {
               <CardDescription>{error}</CardDescription>
             </CardHeader>
             <CardContent>
-              <Button variant="outline" onClick={fetchProducts}>
+              <Button variant="outline" onClick={() => void fetchProducts()}>
                 <RefreshCw className="mr-2 h-4 w-4" />
                 Erneut versuchen
               </Button>

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
-import { hasElectron, invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 
 type Props = {
   accountId: number
@@ -67,10 +67,10 @@ export function OAuthAccountLinkPanel({ accountId, emailAddress }: Props) {
           variant="outline"
           size="sm"
           onClick={async () => {
-            const r = await invokeIpc<{ success: boolean; url?: string; error?: string }>(
+            const r = await invokeRenderer(
               IPCChannels.Email.BuildGoogleOAuthUrl,
               googleRedirect.trim(),
-            )
+            ) as { success: boolean; url?: string; error?: string }
             if (r.success && r.url) {
               await navigator.clipboard.writeText(r.url)
               toast.success("Autorisierungs-URL kopiert — im Browser öffnen und Code hier einfügen")
@@ -91,15 +91,14 @@ export function OAuthAccountLinkPanel({ accountId, emailAddress }: Props) {
           type="button"
           size="sm"
           onClick={async () => {
-            if (!hasElectron()) return
-            const r = await invokeIpc<{ success: boolean; error?: string }>(
+            const r = await invokeRenderer(
               IPCChannels.Email.FinishGoogleOAuth,
               {
                 accountId,
                 redirectUri: googleRedirect.trim(),
                 code: googleCode.trim(),
               },
-            )
+            ) as { success: boolean; error?: string }
             if (r.success) {
               toast.success("Google-Token für dieses Postfach gespeichert")
               setGoogleCode("")
@@ -123,10 +122,10 @@ export function OAuthAccountLinkPanel({ accountId, emailAddress }: Props) {
           variant="outline"
           size="sm"
           onClick={async () => {
-            const r = await invokeIpc<{ success: boolean; url?: string; error?: string }>(
+            const r = await invokeRenderer(
               IPCChannels.Email.BuildMicrosoftOAuthUrl,
               msRedirect.trim(),
-            )
+            ) as { success: boolean; url?: string; error?: string }
             if (r.success && r.url) {
               await navigator.clipboard.writeText(r.url)
               toast.success("Microsoft-Auth-URL kopiert")
@@ -143,15 +142,14 @@ export function OAuthAccountLinkPanel({ accountId, emailAddress }: Props) {
           type="button"
           size="sm"
           onClick={async () => {
-            if (!hasElectron()) return
-            const r = await invokeIpc<{ success: boolean; error?: string }>(
+            const r = await invokeRenderer(
               IPCChannels.Email.FinishMicrosoftOAuth,
               {
                 accountId,
                 redirectUri: msRedirect.trim(),
                 code: msCode.trim(),
               },
-            )
+            ) as { success: boolean; error?: string }
             if (r.success) {
               toast.success("Microsoft-Token für dieses Postfach gespeichert")
               setMsCode("")

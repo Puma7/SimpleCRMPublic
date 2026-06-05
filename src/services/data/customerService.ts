@@ -1,5 +1,6 @@
 import { Customer } from './types';
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from '@/services/transport';
 
 const isDevelopment = import.meta.env.DEV;
 
@@ -16,7 +17,7 @@ export const customerService = {
         console.debug(`🔍 [Frontend] customerService.getAllCustomers() called with includeCustomFields=${includeCustomFields}`);
       }
       
-      const customers = await window.electronAPI.invoke(
+      const customers = await invokeRenderer(
         IPCChannels.Db.GetCustomers,
         includeCustomFields
       ) as any[];
@@ -45,7 +46,7 @@ export const customerService = {
    */
   async getCustomerById(customerId: number | string): Promise<Customer | null> {
     try {
-      const customer = await window.electronAPI.invoke(
+      const customer = await invokeRenderer(
         IPCChannels.Db.GetCustomer,
         Number(customerId)
       );

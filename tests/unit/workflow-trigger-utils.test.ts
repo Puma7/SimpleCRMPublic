@@ -1,7 +1,7 @@
 import {
   workflowDirectionForTrigger,
   workflowTriggerNeedsMessage,
-} from '../../electron/workflow/workflow-trigger-utils';
+} from '../../packages/core/src/workflow';
 
 describe('workflow-trigger-utils', () => {
   test('workflowDirectionForTrigger maps CRM triggers to crm_event', () => {

@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
-import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { hasLocalIpc, type EmailAccount } from "../types"
 
 type Props = {
   onCreated: () => void
@@ -18,6 +19,8 @@ type Props = {
 }
 
 export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
+  const serverClientMode = getRendererTransport().kind === "http"
+  const vacationTestAvailable = serverClientMode || hasLocalIpc()
   const [protocol, setProtocol] = useState<"imap" | "pop3">("imap")
   const [displayName, setDisplayName] = useState("")
   const [emailAddress, setEmailAddress] = useState("")
@@ -62,7 +65,6 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   }, [editAccount])
 
   const handleTestImap = async () => {
-    if (!hasElectron()) return
     if (!imapHost.trim() || !imapUsername.trim()) {
       const msg = "Bitte IMAP-Host und Benutzername ausfüllen."
       setTestFeedback(msg)
@@ -79,7 +81,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setTestFeedback("IMAP-Verbindung wird getestet …")
     const loadingId = toast.loading("IMAP-Verbindung wird getestet …")
     try {
-      const result = await invokeIpc<{ success: boolean; error?: string }>(
+      const result = await invokeRenderer(
         IPCChannels.Email.TestImap,
         {
           ...(isEdit && editAccount ? { accountId: editAccount.id } : {}),
@@ -89,7 +91,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           imapUsername: imapUsername.trim(),
           imapPassword,
         },
-      )
+      ) as { success: boolean; error?: string }
       if (result.success) {
         const msg = "IMAP-Verbindung erfolgreich."
         setTestFeedback(msg)
@@ -109,7 +111,6 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   }
 
   const handleTestPop3 = async () => {
-    if (!hasElectron()) return
     const host = pop3Host.trim() || imapHost.trim()
     if (!host || !imapUsername.trim()) {
       const msg = "POP3-Host und Benutzer ausfüllen."
@@ -127,7 +128,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setTestFeedback("POP3-Verbindung wird getestet …")
     const loadingId = toast.loading("POP3-Verbindung wird getestet …")
     try {
-      const result = await invokeIpc<{ success: boolean; error?: string }>(
+      const result = await invokeRenderer(
         IPCChannels.Email.TestPop3,
         {
           ...(isEdit && editAccount ? { accountId: editAccount.id } : {}),
@@ -137,7 +138,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           user: imapUsername.trim(),
           password: imapPassword,
         },
-      )
+      ) as { success: boolean; error?: string }
       if (result.success) {
         const msg = "POP3-Verbindung erfolgreich."
         setTestFeedback(msg)
@@ -157,7 +158,6 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   }
 
   const handleSaveAccount = async () => {
-    if (!hasElectron()) return
     if (
       !displayName.trim() ||
       !emailAddress.trim() ||
@@ -175,7 +175,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setSaving(true)
     try {
       if (isEdit && editAccount) {
-        await invokeIpc(IPCChannels.Email.UpdateAccount, {
+        await invokeRenderer(IPCChannels.Email.UpdateAccount, {
           id: editAccount.id,
           displayName: displayName.trim(),
           emailAddress: emailAddress.trim(),
@@ -199,7 +199,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
         onCreated()
         onCancelEdit?.()
       } else {
-        const res = await invokeIpc<{ id?: number }>(IPCChannels.Email.CreateAccount, {
+        const res = await invokeRenderer(IPCChannels.Email.CreateAccount, {
           displayName: displayName.trim(),
           emailAddress: emailAddress.trim(),
           imapHost: imapHost.trim(),
@@ -212,7 +212,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
           imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
-        })
+        }) as { id?: number }
         if (res.id != null) {
           toast.success("Konto gespeichert.")
           setImapPassword("")
@@ -233,7 +233,8 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
           {isEdit ? "Konto bearbeiten" : "Neues Konto anlegen"}
         </h4>
         <p className="text-xs text-muted-foreground">
-          IMAP oder POP3. Zugangsdaten werden im System-Schlüsselbund gespeichert.
+          IMAP oder POP3. Zugangsdaten werden{" "}
+          {serverClientMode ? "verschlüsselt in der Serverdatenbank" : "im System-Schlüsselbund"} gespeichert.
           {isEdit ? " Passwort leer lassen, um es nicht zu ändern." : null}
         </p>
       </div>
@@ -358,8 +359,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
         </div>
       ) : (
         <p className="text-[11px] text-muted-foreground">
-          POP3 hat keinen Gelesen-Status auf dem Server — nur die lokale Anzeige in
-          SimpleCRM.
+          POP3 hat keinen Gelesen-Status auf dem Server; SimpleCRM zeigt den Status intern an.
         </p>
       )}
 
@@ -445,15 +445,16 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={testingVacation}
+                  disabled={testingVacation || !vacationTestAvailable}
                   onClick={() => {
+                    if (!vacationTestAvailable) return
                     void (async () => {
                       setTestingVacation(true)
                       try {
-                        const r = await invokeIpc<{ success: boolean; error?: string }>(
+                        const r = await invokeRenderer(
                           IPCChannels.Email.TestVacationAutoReply,
                           editAccount.id,
-                        )
+                        ) as { success: boolean; error?: string }
                         if (r.success) {
                           toast.success(
                             `Testmail an ${editAccount.email_address} gesendet (siehe Aktivitätslog).`,

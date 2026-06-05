@@ -1,0 +1,93 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-simplecrm}"
+
+usage() {
+  cat <<'USAGE'
+usage: simplecrm <command> [args]
+
+Commands:
+  up                         Build and start the standard server stack.
+  ps                         Show Compose service status.
+  logs [service ...]          Show recent Compose logs.
+  backup                     Run one backup set now.
+  backup-scheduler           Start the backup scheduler profile.
+  doctor                     Run the container doctor.
+  restore [dump [att [audit]]] Restore through restore-compose orchestration.
+  restore-drill [dump [att [audit]]] Verify a backup in a temporary database.
+
+Paths for restore and restore-drill are container paths inside the backups
+volume, for example /backups/db-2026-06-05T10-00-00Z.dump.
+
+Optional env:
+  COMPOSE_PROJECT_NAME=simplecrm
+  COMPOSE_FILE=/path/to/docker-compose.yml
+  RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health
+  RESTORE_CADDY_INSECURE=true
+USAGE
+}
+
+compose() {
+  docker compose -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
+}
+
+restore_drill() {
+  if [ "$#" -gt 3 ]; then
+    usage
+    exit 2
+  fi
+  if [ -n "${1:-}" ]; then
+    export RESTORE_DRILL_DUMP_PATH="$1"
+  fi
+  if [ -n "${2:-}" ]; then
+    export RESTORE_DRILL_ATTACHMENTS_PATH="$2"
+  fi
+  if [ -n "${3:-}" ]; then
+    export RESTORE_DRILL_AUDIT_ARCHIVE_PATH="$3"
+  fi
+
+  compose --profile restore-drill run --rm restore-drill
+}
+
+command="${1:-}"
+if [ -n "$command" ]; then
+  shift
+fi
+
+case "$command" in
+  up)
+    compose up -d --build
+    ;;
+  ps)
+    compose ps "$@"
+    ;;
+  logs)
+    compose logs --no-color --tail="${SIMPLECRM_LOG_TAIL:-120}" "$@"
+    ;;
+  backup)
+    compose --profile backup run --rm backup
+    ;;
+  backup-scheduler)
+    compose --profile backup-scheduler up -d backup-scheduler
+    ;;
+  doctor)
+    compose --profile doctor run --rm doctor
+    ;;
+  restore)
+    sh "$SCRIPT_DIR/restore-compose.sh" "$@"
+    ;;
+  restore-drill)
+    restore_drill "$@"
+    ;;
+  -h|--help|help|'')
+    usage
+    ;;
+  *)
+    echo "unknown command: $command" >&2
+    usage
+    exit 2
+    ;;
+esac

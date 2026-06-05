@@ -1,28 +1,16 @@
-export type SpamStatus = 'clean' | 'review' | 'spam';
-export type SpamListType = 'allow' | 'block';
-export type SpamPatternType = 'email' | 'domain';
-export type SpamTrainingLabel = 'spam' | 'ham';
+import type {
+  SpamListType,
+  SpamPatternType,
+} from '../../packages/core/src/email';
 
-export type SpamScoreReason = {
-  code: string;
-  label: string;
-  points: number;
-};
-
-export type SpamScoreBreakdown = {
-  score: number;
-  status: SpamStatus;
-  source: string;
-  reasons: SpamScoreReason[];
-  featureKeys: string[];
-  listMatch?: {
-    listType: SpamListType;
-    patternType: SpamPatternType;
-    pattern: string;
-    specificity: number;
-  };
-  modelVersion: number;
-};
+export type {
+  SpamListType,
+  SpamPatternType,
+  SpamScoreBreakdown,
+  SpamScoreReason,
+  SpamStatus,
+  SpamTrainingLabel,
+} from '../../packages/core/src/email';
 
 export type SpamListEntry = {
   id: number;

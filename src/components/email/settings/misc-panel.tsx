@@ -15,7 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { invokeRenderer } from "@/services/transport"
+import { type EmailAccount } from "../types"
 import { logError } from "../log"
 import { SnoozeSettingsSection } from "./snooze-settings-section"
 
@@ -36,9 +37,8 @@ export function MiscPanel() {
   const [restoring, setRestoring] = useState(false)
 
   const loadAccounts = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
+      const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
       if (list.length > 0 && accountId == null) {
         setAccountId(list[0]!.id)
@@ -60,14 +60,16 @@ export function MiscPanel() {
   }
 
   const runPreview = async () => {
-    if (!hasElectron() || accountId == null) return
+    if (accountId == null) return
     setLoadingPreview(true)
     resetConfirmation()
     try {
-      const r = await invokeIpc<
+      const r = await invokeRenderer(
+        IPCChannels.Email.PreviewRestoreInboxFromArchive,
+        accountId,
+      ) as
         | ({ success: true } & RecoveryPreview)
         | { success: false; error?: string }
-      >(IPCChannels.Email.PreviewRestoreInboxFromArchive, accountId)
       if (!r.success) {
         toast.error(r.error ?? "Vorschau fehlgeschlagen.")
         return
@@ -90,7 +92,7 @@ export function MiscPanel() {
   }
 
   const runRestore = async () => {
-    if (!hasElectron() || !preview || accountId == null) return
+    if (!preview || accountId == null) return
     if (!acknowledged) {
       toast.error("Bitte die Risiken bestätigen.")
       return
@@ -101,13 +103,15 @@ export function MiscPanel() {
     }
     setRestoring(true)
     try {
-      const r = await invokeIpc<
+      const r = await invokeRenderer(
+        IPCChannels.Email.RestoreInboxFromArchive,
+        {
+          accountId: preview.accountId,
+          expectedCount: preview.count,
+          confirmPhrase: confirmPhrase.trim(),
+        },
+      ) as
         { success: true; restored: number } | { success: false; error?: string }
-      >(IPCChannels.Email.RestoreInboxFromArchive, {
-        accountId: preview.accountId,
-        expectedCount: preview.count,
-        confirmPhrase: confirmPhrase.trim(),
-      })
       if (!r.success) {
         toast.error(r.error ?? "Wiederherstellung fehlgeschlagen.")
         return
@@ -143,11 +147,11 @@ export function MiscPanel() {
           <div className="space-y-1">
             <p className="text-sm font-medium">Archivierte Posteingangs-Mails zurückholen</p>
             <p className="text-xs text-muted-foreground">
-              Setzt bei <strong>einem Konto</strong> lokale Nachrichten von{" "}
+              Setzt bei <strong>einem Konto</strong> SimpleCRM-interne Nachrichten von{" "}
               <code className="text-[10px]">archiviert</code> auf Posteingang zurück, wenn sie
               ursprünglich zum Posteingang gehörten (z. B. nach fehlerhafter Workflow-Archivierung).
               Betrifft <strong>nicht</strong> Papierkorb, Spam oder bewusst archivierte Sendungen
-              aus anderen Ordnern. Änderung nur lokal in SimpleCRM — nicht automatisch auf dem
+              aus anderen Ordnern. Die Änderung bleibt in SimpleCRM — nicht automatisch auf dem
               IMAP-Server.
             </p>
           </div>
@@ -252,12 +256,12 @@ function MiscAdvancedSettings() {
   const [testSecret, setTestSecret] = useState("")
 
   useEffect(() => {
-    if (!hasElectron()) return
-    void invokeIpc<{ webhookSecret: string; maxAttachmentMb: string }>(
+    void invokeRenderer(
       IPCChannels.Email.GetEmailMiscSettings,
     ).then((s) => {
-      setWebhookSecret(s.webhookSecret ?? "")
-      setMaxMb(s.maxAttachmentMb ?? "25")
+      const settings = s as { webhookSecret: string; maxAttachmentMb: string }
+      setWebhookSecret(settings.webhookSecret ?? "")
+      setMaxMb(settings.maxAttachmentMb ?? "25")
     })
   }, [])
 
@@ -281,7 +285,7 @@ function MiscAdvancedSettings() {
         type="button"
         size="sm"
         onClick={() => {
-          void invokeIpc(IPCChannels.Email.SetEmailMiscSettings, {
+          void invokeRenderer(IPCChannels.Email.SetEmailMiscSettings, {
             webhookSecret,
             maxAttachmentMb: parseInt(maxMb, 10) || 25,
           }).then(() => toast.success("Gespeichert"))
@@ -295,10 +299,13 @@ function MiscAdvancedSettings() {
           size="sm"
           variant="secondary"
           onClick={() => {
-            void invokeIpc<{ success: boolean; count: number }>(
+            void invokeRenderer(
               IPCChannels.Email.BackfillCustomerLinks,
               { limit: 500 },
-            ).then((r) => toast.success(`${r.count} Verknüpfungen gesetzt`))
+            ).then((r) => {
+              const result = r as { count: number }
+              toast.success(`${result.count} Verknüpfungen gesetzt`)
+            })
           }}
         >
           Kunden-Links nachziehen
@@ -314,12 +321,13 @@ function MiscAdvancedSettings() {
           size="sm"
           variant="outline"
           onClick={() => {
-            void invokeIpc<{ success: boolean; fired: number; error?: string }>(
+            void invokeRenderer(
               IPCChannels.Email.FireWebhookWorkflow,
               { secret: testSecret, body: { test: true } },
             ).then((r) => {
-              if (r.success) toast.success(`${r.fired} Workflow(s) ausgelöst`)
-              else toast.error(r.error ?? "Webhook fehlgeschlagen")
+              const result = r as { success: boolean; fired: number; error?: string }
+              if (result.success) toast.success(`${result.fired} Workflow(s) ausgelöst`)
+              else toast.error(result.error ?? "Webhook fehlgeschlagen")
             })
           }}
         >

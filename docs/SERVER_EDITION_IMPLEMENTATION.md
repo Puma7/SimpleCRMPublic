@@ -1,0 +1,601 @@
+# SimpleCRM Server Edition Implementation
+
+This document tracks the server-based rebuild from the attached implementation plan. It is intentionally evidence-based: checked items must have code, tests, or runnable artifacts in this repository.
+
+## Current Scope On This Branch
+
+Branch: `codex/server-edition-foundation`
+
+Implemented foundation:
+
+- pnpm/npm workspace boundary for `packages/core`, `packages/server`, and `packages/desktop`.
+- `packages/core` contains Electron-free runtime ports for paths, dialogs, secrets, and logging.
+- `packages/core` now also owns reusable Electron-free auth/mail/workflow domain helpers for legacy scrypt password hashing, IMAP cursor advancement, IMAP sent-folder candidate resolution, POP3 UIDL cache capping, UIDVALIDITY normalization, address/header parsing, read-receipt MDN header/trusted-domain guards, scheduled-send sync-info state helpers, RFC822 compose MIME building with attachments, local-backup ZIP path safety, outbound warning parsing, outbound threading headers, ticket subject tagging, spam feature extraction/scoring, workflow graph walking/presets/import-export/static templates, AI spam-score prompt formatting, and sender-list matching. The old Electron import paths remain as thin compatibility wrappers where desktop code still depends on SQLite-specific surrounding behavior.
+- Shared workflow graph routing now treats `default` as an explicit fallback/unlabeled branch only, so condition/switch nodes no longer fall through to an explicit `yes` or case branch when no matching default edge exists.
+- `packages/server` contains PostgreSQL 18 foundation migrations as SQL artifacts:
+  - `workspaces`
+  - `users`
+  - `user_account_access`
+  - `refresh_tokens`
+  - `job_queue`
+  - `conversation_locks`
+  - `secrets`
+  - `auth_login_failures`
+  - `audit_events`
+  - `server_events`
+  - `sqlite_import_runs`
+  - `sqlite_import_table_checkpoints`
+  - `sqlite_import_rows`
+  - `sync_info`
+  - `customers`
+  - `products`
+  - `deals`
+  - `tasks`
+  - `deal_products`
+  - `calendar_events`
+  - `customer_custom_fields`
+  - `customer_custom_field_values`
+  - `activity_log`
+  - `saved_views`
+  - `jtl_firmen`
+  - `jtl_warenlager`
+  - `jtl_zahlungsarten`
+  - `jtl_versandarten`
+  - `email_accounts`
+  - `email_folders`
+  - `email_team_members`
+  - `email_threads`
+  - `email_messages`
+  - `email_message_attachments`
+  - `email_message_tags`
+  - `email_categories`
+  - `email_message_categories`
+  - `email_internal_notes`
+  - `email_canned_responses`
+  - `email_account_signatures`
+  - `email_remote_content_allowlist`
+  - `email_read_receipt_log`
+  - `email_thread_edges`
+  - `email_thread_aliases`
+  - `email_ai_profiles`
+  - `email_ai_prompts`
+  - `email_workflows`
+  - `email_workflow_versions`
+  - `email_workflow_runs`
+  - `email_workflow_run_steps`
+  - `email_message_workflow_applied`
+  - `email_workflow_forward_dedup`
+  - `workflow_knowledge_bases`
+  - `workflow_knowledge_chunks`
+  - `workflow_delayed_jobs`
+  - `email_spam_list_entries`
+  - `email_spam_learning_events`
+  - `email_spam_feature_stats`
+  - `email_spam_decisions`
+  - `pgp_identities`
+  - `pgp_peer_keys`
+  - `automation_api_keys`
+  - workspace RLS policies through `app.current_workspace_id()`
+- Server security utilities:
+  - master-key validation
+  - libsodium XChaCha20-Poly1305 secret envelope encryption/decryption
+  - associated-data binding for workspace/kind/name
+  - key rotation by decrypting with the current key and re-encrypting with the next key
+  - PGP private-key envelope helper derives a per-user DEK from a passphrase with Argon2id and encrypts the private key with XChaCha20-Poly1305, binding workspace/user/identity/fingerprint as associated data.
+  - PGP private-key passphrase rotation decrypts with the current passphrase and re-encrypts with a new per-user DEK without exposing plaintext in result metadata.
+  - constant-time byte comparison
+  - refresh-token hashing
+- Access-token foundation:
+  - HMAC-signed compact access tokens with `userId`, `workspaceId`, `role`, `iat`, and `exp` claims.
+  - Access tokens can carry a `sessionId` claim tied to the issuing `refresh_tokens` row.
+  - Bearer-token principal resolution for Fastify.
+  - DB-backed Fastify principal resolution validates access-token sessions against persistent, non-revoked, non-expired refresh-token rows and rejects disabled users before requests reach the API layer.
+  - Invalid Authorization headers do not fall back to test/server principal headers.
+- Auth routes can write audit events for known-user login failure, login success, refresh-token rotation, and logout without storing passwords or token values in audit metadata.
+- Migration execution foundation:
+  - `simplecrm_schema_migrations` metadata table
+  - SHA-256 checksums for applied migrations
+  - prefix-order validation to reject partial/out-of-order histories
+  - idempotent pending-migration execution through a transport-neutral SQL port
+  - `pg`-compatible adapter for clients exposing `query(sql, params)`
+  - `pg`-backed CLI apply/check modes using `DATABASE_URL`
+  - offline `--sql` and `--manifest` modes for review and diagnostics
+- Conversation-lock SQL command builders cover acquire, read, heartbeat, release, stale cleanup, and admin force-takeover semantics.
+- Admin force-takeover through the shared API layer records a `conversation_lock.force_takeover` audit event when an audit port is configured.
+- PostgreSQL audit-port foundation writes chained SHA-256 event hashes over stable event fields and preserves the previous event hash per workspace.
+- Audit writes now run inside a workspace-scoped Kysely transaction and take a per-workspace PostgreSQL advisory transaction lock before reading the previous hash, so concurrent audit writes cannot silently fork the hash chain; `tests/unit/server-edition-foundation.test.ts` pins the session -> advisory lock -> previous-hash read -> insert order and a concurrent two-writer chain for the `record` path.
+- Audit event hashing now canonicalizes JSON metadata before hashing so hashes can be recomputed after `jsonb` round trips.
+- The default `audit.retention` maintenance handler verifies the selected audit hash-chain segment before deletion, optionally writes the exact deletion batch as workspace-scoped JSONL when `AUDIT_ARCHIVE_DIR` is configured, and preserves a boundary audit event so retained rows still have a verifiable predecessor hash.
+- Login brute-force policy models the planned 30s -> 5min -> 1h -> 24h -> permanent escalation and keeps counters persistent by design.
+- Standalone Auth/PGP IPC and session boundaries now keep direct SQLite reads/writes behind `electron/auth/auth-store.ts` or dedicated domain stores; `tests/unit/server-edition-foundation.test.ts` pins that `electron/ipc/auth.ts`, `electron/ipc/pgp.ts`, `electron/ipc/register.ts`, and `electron/auth/current-user.ts` no longer import `sqlite-service` or call `getDb()` directly, that E-mail IPC account-scope checks use the shared Auth store helper instead of importing `canAccessAccount` directly, that Deal-Product table lookups live behind `electron/deals/deal-products-store.ts` instead of inside `electron/ipc/deals.ts`, and that Email IPC imports no direct `sqlite-service` dependency because AI customer context plus Remote-Content/Read-Receipt DB handles live behind dedicated Email stores.
+- IPC SyncInfo reads/writes for generic sync info, workflow automation settings, and email misc settings now go through `electron/sync-info-store.ts`; `tests/unit/server-edition-foundation.test.ts` pins that `electron/ipc/sync.ts`, `electron/ipc/workflow.ts`, and `electron/ipc/email.ts` no longer call `getSyncInfo`/`setSyncInfo` directly.
+- Transport-neutral server API foundation:
+  - `GET /api/v1/health`
+  - `GET /api/v1/openapi.json`
+  - `GET /api/v1/auth/setup-state`
+  - `POST /api/v1/auth/initial-setup`
+  - `POST /api/v1/auth/login`
+  - `POST /api/v1/auth/refresh`
+  - `POST /api/v1/auth/logout`
+  - `POST /api/v1/auth/invitations`
+  - `GET /api/v1/auth/invitations/:token`
+  - `POST /api/v1/auth/invitations/:token/accept`
+  - `GET /api/v1/auth/users`
+  - `POST /api/v1/auth/users`
+  - `PATCH /api/v1/auth/users/:id`
+  - `GET /api/v1/auth/audit-log`
+  - `GET /api/v1/auth/audit-chain/verify`
+  - `GET /api/v1/automation/api-keys`
+  - `POST /api/v1/automation/api-keys`
+  - `GET /api/v1/automation/api-keys/:id`
+  - `DELETE /api/v1/automation/api-keys/:id`
+  - `GET /api/v1/ai/profiles`
+  - `POST /api/v1/ai/profiles`
+  - `GET /api/v1/ai/profiles/:id`
+  - `PATCH /api/v1/ai/profiles/:id`
+  - `DELETE /api/v1/ai/profiles/:id`
+  - `GET /api/v1/ai/prompts`
+  - `POST /api/v1/ai/prompts`
+  - `GET /api/v1/ai/prompts/:id`
+  - `PATCH /api/v1/ai/prompts/:id`
+  - `DELETE /api/v1/ai/prompts/:id`
+  - `POST /api/v1/ai/transform-text`
+  - `GET /api/v1/customers`
+  - `POST /api/v1/customers`
+  - `GET /api/v1/customers/:id`
+  - `PATCH /api/v1/customers/:id`
+  - `DELETE /api/v1/customers/:id`
+  - `GET /api/v1/products`
+  - `POST /api/v1/products`
+  - `GET /api/v1/products/:id`
+  - `PATCH /api/v1/products/:id`
+  - `DELETE /api/v1/products/:id`
+  - `GET /api/v1/deals`
+  - `POST /api/v1/deals`
+  - `GET /api/v1/deals/:id`
+  - `GET /api/v1/deals/:id/tasks`
+  - `GET /api/v1/deals/:id/products`
+  - `POST /api/v1/deals/:id/products`
+  - `PATCH /api/v1/deals/:id/products/:dealProductId`
+  - `DELETE /api/v1/deals/:id/products/:dealProductId`
+  - `PATCH /api/v1/deal-products/:dealProductId`
+  - `DELETE /api/v1/deal-products/:dealProductId`
+  - `PATCH /api/v1/deals/:id`
+  - `POST /api/v1/deals/:id/stage`
+  - `DELETE /api/v1/deals/:id`
+  - `GET /api/v1/tasks`
+  - `POST /api/v1/tasks`
+  - `GET /api/v1/tasks/:id`
+  - `PATCH /api/v1/tasks/:id`
+  - `POST /api/v1/tasks/:id/toggle`
+  - `DELETE /api/v1/tasks/:id`
+  - `GET /api/v1/activity-log`
+  - `POST /api/v1/activity-log`
+  - `GET /api/v1/activity-log/:id`
+  - `GET /api/v1/calendar-events`
+  - `POST /api/v1/calendar-events`
+  - `GET /api/v1/calendar-events/:id`
+  - `PATCH /api/v1/calendar-events/:id`
+  - `DELETE /api/v1/calendar-events/:id`
+  - `GET /api/v1/customer-custom-fields`
+  - `POST /api/v1/customer-custom-fields`
+  - `GET /api/v1/customer-custom-fields/:id`
+  - `PATCH /api/v1/customer-custom-fields/:id`
+  - `DELETE /api/v1/customer-custom-fields/:id`
+  - `GET /api/v1/customer-custom-field-values`
+  - `POST /api/v1/customer-custom-field-values`
+  - `GET /api/v1/customer-custom-field-values/:id`
+  - `PATCH /api/v1/customer-custom-field-values/:id`
+  - `DELETE /api/v1/customer-custom-field-values/:id`
+  - `DELETE /api/v1/customers/:customerId/custom-field-values/:fieldId`
+  - `GET /api/v1/dashboard/stats`
+  - `GET /api/v1/dashboard/recent-customers`
+  - `GET /api/v1/dashboard/upcoming-tasks`
+  - `GET /api/v1/follow-up/queue-counts`
+  - `GET /api/v1/follow-up/items`
+  - `PATCH /api/v1/follow-up/tasks/:id/snooze`
+  - `GET /api/v1/saved-views`
+  - `POST /api/v1/saved-views`
+  - `GET /api/v1/saved-views/:id`
+  - `PATCH /api/v1/saved-views/:id`
+  - `DELETE /api/v1/saved-views/:id`
+  - `GET /api/v1/jtl/firmen`
+  - `POST /api/v1/jtl/firmen`
+  - `GET /api/v1/jtl/firmen/:sourceSqliteId`
+  - `PATCH /api/v1/jtl/firmen/:sourceSqliteId`
+  - `DELETE /api/v1/jtl/firmen/:sourceSqliteId`
+  - `GET /api/v1/jtl/warenlager`
+  - `POST /api/v1/jtl/warenlager`
+  - `GET /api/v1/jtl/warenlager/:sourceSqliteId`
+  - `PATCH /api/v1/jtl/warenlager/:sourceSqliteId`
+  - `DELETE /api/v1/jtl/warenlager/:sourceSqliteId`
+  - `GET /api/v1/jtl/zahlungsarten`
+  - `POST /api/v1/jtl/zahlungsarten`
+  - `GET /api/v1/jtl/zahlungsarten/:sourceSqliteId`
+  - `PATCH /api/v1/jtl/zahlungsarten/:sourceSqliteId`
+  - `DELETE /api/v1/jtl/zahlungsarten/:sourceSqliteId`
+  - `GET /api/v1/jtl/versandarten`
+  - `POST /api/v1/jtl/versandarten`
+  - `GET /api/v1/jtl/versandarten/:sourceSqliteId`
+  - `PATCH /api/v1/jtl/versandarten/:sourceSqliteId`
+  - `DELETE /api/v1/jtl/versandarten/:sourceSqliteId`
+  - `POST /api/v1/jtl/orders`
+  - `GET /api/v1/workflow/node-catalog`
+  - `GET /api/v1/workflow/plugins`
+  - `GET /api/v1/workflow/templates`
+  - `POST /api/v1/workflows/compile-graph`
+  - `GET /api/v1/workflows`
+  - `POST /api/v1/workflows`
+  - `GET /api/v1/workflows/:id`
+  - `PATCH /api/v1/workflows/:id`
+  - `DELETE /api/v1/workflows/:id`
+  - `POST /api/v1/workflows/:id/execute`
+  - `POST /api/v1/workflows/webhook/incoming` (Workspace-Secret im Body oder `Authorization: Bearer` Automation-API-Key mit `workflows`/`write` Scope)
+  - `POST /api/v1/webhooks/incoming` (Alias fuer eingehende Workflow-Webhooks)
+  - `GET /api/v1/workflows/by-source/:sourceSqliteId`
+  - `PATCH /api/v1/workflows/by-source/:sourceSqliteId`
+  - `DELETE /api/v1/workflows/by-source/:sourceSqliteId`
+  - `POST /api/v1/workflows/by-source/:sourceSqliteId/execute`
+  - `GET /api/v1/workflows/:id/runs`
+  - `GET /api/v1/workflows/by-source/:sourceSqliteId/runs`
+  - `GET /api/v1/workflows/:id/versions`
+  - `POST /api/v1/workflows/:id/versions`
+  - `GET /api/v1/workflows/by-source/:sourceSqliteId/versions`
+  - `POST /api/v1/workflows/by-source/:sourceSqliteId/versions/snapshot`
+  - `GET /api/v1/workflow-delayed-jobs`
+  - `POST /api/v1/workflow-delayed-jobs`
+  - `GET /api/v1/workflow-delayed-jobs/:id`
+  - `PATCH /api/v1/workflow-delayed-jobs/:id`
+  - `DELETE /api/v1/workflow-delayed-jobs/:id`
+  - `GET /api/v1/workflow-forward-dedup`
+  - `GET /api/v1/workflow-forward-dedup/:id`
+  - `GET /api/v1/workflow-knowledge-bases`
+  - `POST /api/v1/workflow-knowledge-bases`
+  - `GET /api/v1/workflow-knowledge-bases/:id`
+  - `PATCH /api/v1/workflow-knowledge-bases/:id`
+  - `DELETE /api/v1/workflow-knowledge-bases/:id`
+  - `GET /api/v1/workflow-knowledge-chunks`
+  - `POST /api/v1/workflow-knowledge-chunks`
+  - `GET /api/v1/workflow-knowledge-chunks/:id`
+  - `PATCH /api/v1/workflow-knowledge-chunks/:id`
+  - `DELETE /api/v1/workflow-knowledge-chunks/:id`
+  - `GET /api/v1/workflow-message-applied`
+  - `GET /api/v1/workflow-message-applied/:id`
+  - `GET /api/v1/workflow-runs`
+  - `GET /api/v1/workflow-runs/:id`
+  - `GET /api/v1/workflow-runs/:id/steps`
+  - `GET /api/v1/workflow-runs/by-source/:sourceSqliteId/steps`
+  - `GET /api/v1/workflow-run-steps`
+  - `GET /api/v1/workflow-run-steps/:id`
+  - `GET /api/v1/workflow-versions`
+  - `POST /api/v1/workflow-versions`
+  - `GET /api/v1/workflow-versions/:id`
+  - `PATCH /api/v1/workflow-versions/:id`
+  - `DELETE /api/v1/workflow-versions/:id`
+  - `POST /api/v1/workflow-versions/by-source/:sourceSqliteId/restore`
+  - `GET/PATCH /api/v1/workflow/settings/automation`
+  - `GET/PATCH /api/v1/sync-info/:key`
+  - `GET /api/v1/email/accounts`
+  - `POST /api/v1/email/accounts`
+  - `GET /api/v1/email/accounts/:id`
+  - `PATCH /api/v1/email/accounts/:id`
+  - `DELETE /api/v1/email/accounts/:id`
+  - `POST /api/v1/email/accounts/test-imap`
+  - `POST /api/v1/email/accounts/test-pop3`
+  - `POST /api/v1/email/accounts/test-smtp`
+  - `POST /api/v1/email/accounts/:id/vacation-test`
+  - `POST /api/v1/email/accounts/:id/sync`
+  - `DELETE /api/v1/email/accounts/:id/sync-lock`
+  - `GET /api/v1/email/folder-counts`
+  - `GET /api/v1/email/diagnostics`
+  - `GET /api/v1/email/reporting`
+  - `GET /api/v1/email/gdpr-export`
+  - `POST /api/v1/email/messages/backfill-customer-links`
+  - `POST /api/v1/email/compose-drafts`
+  - `POST /api/v1/email/compose/validate-outbound`
+  - `GET/PATCH /api/v1/email/oauth/google/app`
+  - `POST /api/v1/email/oauth/google/authorize-url`
+  - `POST /api/v1/email/oauth/google/finish`
+  - `GET/PATCH /api/v1/email/oauth/microsoft/app`
+  - `POST /api/v1/email/oauth/microsoft/authorize-url`
+  - `POST /api/v1/email/oauth/microsoft/finish`
+  - `GET /api/v1/email/account-signatures`
+  - `POST /api/v1/email/account-signatures`
+  - `POST /api/v1/email/account-signatures/by-account/:accountId/upsert`
+  - `GET /api/v1/email/account-signatures/:sourceSqliteId`
+  - `PATCH /api/v1/email/account-signatures/:sourceSqliteId`
+  - `DELETE /api/v1/email/account-signatures/:sourceSqliteId`
+  - `GET /api/v1/email/attachments/:id`
+  - `GET /api/v1/email/attachments/:id/content`
+  - `GET /api/v1/email/canned-responses`
+  - `POST /api/v1/email/canned-responses`
+  - `GET /api/v1/email/canned-responses/:id`
+  - `PATCH /api/v1/email/canned-responses/:id`
+  - `DELETE /api/v1/email/canned-responses/:id`
+  - `GET /api/v1/email/categories`
+  - `POST /api/v1/email/categories`
+  - `GET /api/v1/email/categories/:id`
+  - `PATCH /api/v1/email/categories/:id`
+  - `DELETE /api/v1/email/categories/:id`
+  - `GET /api/v1/email/category-counts`
+  - `GET /api/v1/email/folders`
+  - `GET /api/v1/email/folders/:id`
+  - `GET /api/v1/email/internal-notes`
+  - `POST /api/v1/email/internal-notes`
+  - `GET /api/v1/email/internal-notes/:id`
+  - `PATCH /api/v1/email/internal-notes/:id`
+  - `DELETE /api/v1/email/internal-notes/:id`
+  - `GET /api/v1/email/message-categories`
+  - `POST /api/v1/email/message-categories`
+  - `GET /api/v1/email/message-categories/:id`
+  - `DELETE /api/v1/email/message-categories/:id`
+  - `GET /api/v1/email/messages`
+  - `GET /api/v1/email/messages/:id`
+  - `PATCH /api/v1/email/messages/:id/compose-draft`
+  - `GET /api/v1/email/messages/:id/compose-draft-recovery-state`
+  - `GET /api/v1/email/messages/:id/read-receipt-state`
+  - `POST /api/v1/email/messages/:id/read-receipt-response`
+  - `POST /api/v1/email/messages/:id/remote-content-policy/consume`
+  - `PATCH /api/v1/email/messages/:id/remote-content-policy`
+  - `PATCH /api/v1/email/messages/:id/move`
+  - `PATCH /api/v1/email/messages/:id/scheduled-send`
+  - `GET /api/v1/email/messages/:id/scheduled-send-state`
+  - `DELETE /api/v1/email/messages/:id/scheduled-send-failure`
+  - `PATCH /api/v1/email/messages/:id/scheduled-send/retry`
+  - `POST /api/v1/email/messages/:id/spam-decision`
+  - `POST /api/v1/email/messages/:id/security/check`
+  - `PATCH /api/v1/email/messages/:id/spam-status`
+  - `GET /api/v1/email/messages/:id/reply-suggestion`
+  - `POST /api/v1/email/messages/:id/reply-suggestion/ensure`
+  - `POST /api/v1/email/messages/:id/reply-draft`
+  - `GET /api/v1/email/messages/:id/attachments`
+  - `GET /api/v1/email/messages/:id/categories`
+  - `POST /api/v1/email/messages/:id/categories`
+  - `GET /api/v1/email/messages/:id/internal-notes`
+  - `POST /api/v1/email/messages/:id/internal-notes`
+  - `GET /api/v1/email/messages/:id/tags`
+  - `POST /api/v1/email/messages/:id/tags`
+  - `DELETE /api/v1/email/messages/:id/tags?tag=<tag>`
+  - `GET /api/v1/email/messages/:id/workflow-runs`
+  - `GET/DELETE /api/v1/email/notices/imap-auth`
+  - `GET/DELETE /api/v1/email/notices/uid-validity`
+  - `GET /api/v1/email/read-receipts`
+  - `POST /api/v1/email/read-receipts`
+  - `GET /api/v1/email/read-receipts/:id`
+  - `GET /api/v1/email/remote-content-allowlist`
+  - `POST /api/v1/email/remote-content-allowlist`
+  - `GET /api/v1/email/remote-content-allowlist/:id`
+  - `PATCH /api/v1/email/remote-content-allowlist/:id`
+  - `DELETE /api/v1/email/remote-content-allowlist/:id`
+  - `GET /api/v1/email/tags`
+  - `POST /api/v1/email/tags`
+  - `GET /api/v1/email/tags/:id`
+  - `DELETE /api/v1/email/tags/:id`
+  - `GET /api/v1/email/team-members`
+  - `POST /api/v1/email/team-members`
+  - `GET /api/v1/email/team-members/:id`
+  - `POST /api/v1/email/team-members/:id/upsert`
+  - `PATCH /api/v1/email/team-members/:id`
+  - `DELETE /api/v1/email/team-members/:id`
+  - `GET /api/v1/email/thread-aliases`
+  - `POST /api/v1/email/thread-aliases`
+  - `GET /api/v1/email/thread-aliases/:id`
+  - `PATCH /api/v1/email/thread-aliases/:id`
+  - `DELETE /api/v1/email/thread-aliases/:id`
+  - `GET /api/v1/email/thread-alias-warnings`
+  - `POST /api/v1/email/threads/merge`
+  - `POST /api/v1/email/threads/split-message`
+  - `GET /api/v1/email/thread-edges`
+  - `POST /api/v1/email/thread-edges`
+  - `GET /api/v1/email/thread-edges/:id`
+  - `DELETE /api/v1/email/thread-edges/:id`
+  - `GET /api/v1/email/threads`
+  - `GET /api/v1/email/threads/:id`
+  - `GET/PATCH /api/v1/email/settings/misc`
+  - `GET/PATCH /api/v1/email/settings/security`
+  - `POST /api/v1/email/settings/security/test-rspamd`
+  - `GET/PATCH /api/v1/email/settings/snooze`
+  - `GET/PATCH /api/v1/email/settings/reply-suggestion`
+  - `GET /api/v1/pgp/identities`
+  - `POST /api/v1/pgp/identities`
+  - `POST /api/v1/pgp/identities/generate`
+  - `GET /api/v1/pgp/identities/by-source/:sourceSqliteId`
+  - `PATCH /api/v1/pgp/identities/by-source/:sourceSqliteId`
+  - `DELETE /api/v1/pgp/identities/by-source/:sourceSqliteId`
+  - `GET /api/v1/pgp/identities/:id`
+  - `PATCH /api/v1/pgp/identities/:id`
+  - `DELETE /api/v1/pgp/identities/:id`
+  - `GET /api/v1/pgp/recipient-key-status`
+  - `GET /api/v1/pgp/peer-keys`
+  - `POST /api/v1/pgp/peer-keys`
+  - `POST /api/v1/pgp/peer-keys/import`
+  - `GET /api/v1/pgp/peer-keys/by-source/:sourceSqliteId`
+  - `PATCH /api/v1/pgp/peer-keys/by-source/:sourceSqliteId`
+  - `DELETE /api/v1/pgp/peer-keys/by-source/:sourceSqliteId`
+  - `GET /api/v1/pgp/peer-keys/:id`
+  - `PATCH /api/v1/pgp/peer-keys/:id`
+  - `DELETE /api/v1/pgp/peer-keys/:id`
+  - `GET /api/v1/spam/list-entries`
+  - `POST /api/v1/spam/list-entries`
+  - `POST /api/v1/spam/list-entries/upsert`
+  - `GET /api/v1/spam/list-entries/:id`
+  - `PATCH /api/v1/spam/list-entries/:id`
+  - `DELETE /api/v1/spam/list-entries/:id`
+  - `GET /api/v1/spam/learning-events`
+  - `POST /api/v1/spam/learning-events`
+  - `GET /api/v1/spam/learning-events/:id`
+  - `GET /api/v1/spam/decisions`
+  - `POST /api/v1/spam/decisions`
+  - `GET /api/v1/spam/decisions/:id`
+  - `PATCH /api/v1/spam/decisions/:id`
+  - `DELETE /api/v1/spam/decisions/:id`
+  - `GET /api/v1/spam/feature-stats`
+  - `GET /api/v1/spam/feature-stats/:featureKey`
+  - `GET/POST/DELETE /api/v1/locks/:messageId`
+  - `PATCH /api/v1/locks/:messageId/heartbeat`
+  - `POST /api/v1/locks/:messageId/takeover`
+  - Lock routes publish transport-neutral server events for acquire, heartbeat, release, and force-takeover.
+  - Conversation-lock thin-client wiring now includes batch lock reads for visible messages, renderer HTTP mappings for acquire/get/heartbeat/release/takeover, a browser WebSocket event client authenticated via a dedicated access-token subprotocol, live lock-state updates, reply/forward fail-closed acquire handling, heartbeat/release while compose is open, list lock markers, and detail-view lock banners with admin takeover.
+  - Customer, product, deal, deal-product link, task, calendar-event, custom-field, saved-view, activity-log, JTL reference, AI profile/prompt, workflow/version/knowledge-base/knowledge-chunk/delayed-job, PGP identity/peer-key, spam list-entry/learning-event/decision, automation API-key, email message spam-status/spam-decision, email tag/category/message-category/internal-note/canned-response/remote-allowlist/team-member/thread-edge/thread-alias/thread-merge/thread-split/account-signature/read-receipt mutation routes publish transport-neutral server events after the mutation path succeeds.
+- Event foundation:
+  - typed `ServerEvent` contract for conversation-lock plus core CRM, calendar-event, custom-field, saved-view, activity-log, JTL reference, AI profile/prompt, workflow/version/knowledge-base/knowledge-chunk/delayed-job, PGP identity/peer-key, spam list-entry/learning-event/decision, automation API-key, email message spam-status/spam-decision, and email tag/category/message-category/internal-note/canned-response/remote-allowlist/team-member/thread-edge/thread-alias/thread-merge/thread-split/account-signature/read-receipt mutation events
+  - in-memory event bus with subscribe/unsubscribe and bounded sequence replay history
+  - Fastify WebSocket endpoint `GET /api/v1/events` authenticates with the same bearer-token resolver and forwards only events from the client's workspace.
+  - Event reconnect foundation: clients can pass `?since=<sequence>` to replay missed workspace events from the bounded in-memory history.
+  - Server-mode PostgreSQL event port persists `server_events` with RLS and replays by `(workspace_id, sequence)` while still supporting local subscribers in the active API process.
+  - PostgreSQL `LISTEN/NOTIFY` notification channel foundation fans out persisted event sequences across API processes; receivers load the canonical event row from `server_events` before forwarding to WebSocket subscribers.
+- HTTP server foundation:
+  - Node HTTP adapter and smoke server route health through the shared API layer.
+  - Fastify 5 adapter routes the shared API layer.
+  - Pino-backed Fastify server entry is available at `packages/server/dist/server.js`.
+  - Principal handoff supports signed Bearer access tokens; explicit server headers remain only as an interim fallback when no Authorization header is present.
+  - `startServer()` now fails closed when `DATABASE_URL` is configured without `ACCESS_TOKEN_SECRET`, creates DB-backed Auth/Lock/Audit/Event ports when production DB config is present, and closes PostgreSQL resources on server shutdown.
+- Kysely/PostgreSQL DB foundation:
+  - Typed `ServerDatabase` schema model for secrets, users, refresh tokens, login failures, conversation locks, queued jobs, core CRM tables, extended CRM/JTL tables, core mail tables, AI/workflow tables, spam tables, PGP tables, and automation API keys.
+  - `pg`/Kysely database factory.
+  - Workspace-session helper validates UUID context and applies `set_config('app.workspace_id'|'app.user_id'|'app.role'|'app.cross_workspace_access', ..., true)` before workspace-scoped work inside Kysely transactions.
+  - RLS policies route through `app.can_access_workspace(uuid)`: normal traffic is workspace-bound, while explicit cross-workspace tooling requires `app.cross_workspace_access = on` and role `owner`, `admin`, or `system`.
+  - All RLS-enabled migration tables also use `FORCE ROW LEVEL SECURITY` so the application/table-owner role is covered by tenant policies.
+  - Postgres lock, secret, audit, maintenance, and workspace-known job-queue operations use the workspace transaction helper where a workspace ID is available.
+  - `npm run test:server-rls` runs a live PostgreSQL RLS probe against `DATABASE_URL` after the server package is built. The checker creates two workspaces in a transaction, verifies own reads, cross-workspace invisible reads, RLS-rejected cross writes, admin cross-workspace flag semantics, and rolls all probe data back.
+  - The live RLS checker also verifies every expected RLS table has row security enabled, `FORCE ROW LEVEL SECURITY`, and the expected workspace-isolation policy shape.
+  - Postgres auth port for user lookup, password verification, refresh-token persistence/rotation/revocation, and login-failure counters.
+  - Postgres customer API port for paginated, workspace-scoped `GET /api/v1/customers` and `GET /api/v1/customers/:id` responses plus audited `POST`, `PATCH`, and `DELETE` customer mutations. Server-created customers use negative `source_sqlite_id` values to avoid collisions with imported SQLite source IDs.
+  - Postgres product API port for paginated, workspace-scoped `GET /api/v1/products` and `GET /api/v1/products/:id` responses plus audited `POST`, `PATCH`, and `DELETE` product mutations. Server-created products use negative `source_sqlite_id` values to avoid collisions with imported SQLite source IDs.
+  - Postgres deal and task API ports for paginated, workspace-scoped read responses plus audited `POST`, `PATCH`, and `DELETE` mutations. Deal/task create requires an existing workspace-local `customerId`; the Postgres ports resolve both `customer_id` and `customer_source_sqlite_id` inside the same workspace transaction. Server-created deals and tasks use negative `source_sqlite_id` values to avoid collisions with imported SQLite source IDs.
+  - Postgres calendar event API port for workspace-scoped read responses plus audited `POST`, `PATCH`, and `DELETE` mutations. Calendar-event create/update can link to an existing workspace-local `taskId`, stores both `task_id` and `task_source_sqlite_id`, defends date ranges, and uses negative `source_sqlite_id` values for server-created rows.
+  - Postgres customer custom field/value API ports for workspace-scoped read responses plus audited `POST`, `PATCH`, and `DELETE` mutations. Custom field definitions enforce workspace-local unique names; custom field values resolve both `customer_id`/`customer_source_sqlite_id` and `field_id`/`field_source_sqlite_id`, reject duplicate customer-field pairs, and use negative `source_sqlite_id` values for server-created rows.
+  - Postgres saved view API port for workspace-scoped read responses plus audited `POST`, `PATCH`, and `DELETE` mutations. The route accepts historical JSON-string filters or native JSON filter objects, stores JSONB, and uses negative `source_sqlite_id` values for server-created rows.
+  - Postgres activity log API port for workspace-scoped read responses plus audited append-only `POST` creation. Activity-log create can link to existing workspace-local customer/deal/task rows, stores corresponding source SQLite IDs, accepts JSON-string or native JSON metadata, and returns metadata only where explicitly requested or directly created.
+  - Postgres dashboard API port for workspace-scoped stats, recent customers, and upcoming tasks over HTTP. The renderer HTTP registry maps the dashboard IPC channels to these routes while preserving the legacy service response shapes.
+  - Postgres `sync_info` API port for workspace-scoped key/value reads, prefix scans, upserts, and deletes. Server settings routes now expose workflow automation options, email misc settings, mail-security settings, Snooze defaults, and reply-suggestion trigger/filter settings over `sync_info`-backed HTTP endpoints with normalized legacy response shapes and audit records that contain setting keys, not secret values. Server notice routes expose imported/runtime UIDVALIDITY reset notices and IMAP/POP3/OAuth auth notices from the same `sync_info` store and support audited dismiss actions.
+  - Postgres follow-up API port for workspace-scoped queue counts, queue items, and task snoozing over HTTP. The renderer HTTP registry maps `GetQueueCounts`, `GetItems`, and `SnoozeTask` to these routes with legacy `snake_case` item shapes for the existing Follow-up UI.
+  - Postgres extended CRM/JTL read ports for workspace-scoped JTL reference tables plus audited `POST`, `PATCH`, and `DELETE` JTL reference mutations. JTL mutation routes use negative server-created `source_sqlite_id` values from a dedicated sequence, and JTL list/get/update/delete paths accept positive imported and negative server-created `sourceSqliteId` values. Responses omit `source_row` plus import-run metadata.
+- Postgres mail read ports for workspace-scoped `GET /api/v1/email/accounts`, audited `PATCH`/`DELETE /api/v1/email/accounts/:id`, server-side IMAP/POP3/SMTP account connection tests, server-side account-sync enqueueing through `POST /api/v1/email/accounts/:id/sync`, stale account-sync lock release through `DELETE /api/v1/email/accounts/:id/sync-lock`, `GET /api/v1/email/messages`, compose-draft create/update/recovery-state, browser compose-attachment upload through `POST /api/v1/email/messages/:id/compose-attachments`, text/html compose SMTP send/finalize with server-stored attachment MIME payloads plus IMAP Sent-copy APPEND for IMAP sends, scheduled-send metadata schedule/state/retry/clear routes, attachment-metadata responses, safe attachment-file downloads, remote-content policy consume/update routes, AI reply-suggestion status/ensure/direct-draft routes, audited `PATCH /api/v1/email/messages/:id/spam-status`, audited `POST /api/v1/email/messages/:id/spam-decision`, and audited `POST /api/v1/email/messages/:id/security/check` for server-side mailauth/Rspamd reruns followed by the existing spam-score decision path. Account responses expose only configured-secret booleans, not Keytar keys or Postgres secret IDs; account update preserves desktop account-setting fields, writes non-empty IMAP/SMTP password changes through the encrypted Postgres secret port, treats empty password fields as unchanged, and keeps plaintext secrets out of responses, audit metadata, and server events. IMAP/POP3 test routes accept unsaved form settings and, for existing accounts with an empty password field, can use the encrypted server IMAP-password secret without returning secret material. SMTP test and compose-send routes accept or resolve server-side SMTP auth from encrypted SMTP/IMAP password secrets, and can refresh server-side Google/Microsoft OAuth tokens for XOAUTH2 probes/sends; compose-send Sent-copy APPEND resolves encrypted IMAP password or OAuth refresh-token secrets for IMAP/XOAUTH2. Account-sync enqueueing validates the workspace account, chooses `mail.sync.imap` or `mail.sync.pop3` from the account protocol, and sends the typed payload to the server job queue without invoking Electron IPC. Sync-lock release validates the workspace account and only clears stale locked IMAP/POP3 sync jobs for that account, so an active worker is not interrupted or duplicated. The default worker wiring now includes a Postgres mail-sync adapter that resolves encrypted IMAP/OAuth account auth, imports IMAP messages incrementally by UID/UIDVALIDITY with reset notices, local metadata backup, and Message-ID based tag/category/workflow/spam/assignment restore, imports POP3 messages by stable UIDL with negative local UIDs, stores parsed message metadata plus raw RFC822, extracts bounded attachment payloads into `ATTACHMENTS_DIR` with metadata rows, updates folder cursors, and returns newly synced Inbox IDs to the post-sync queue path. Message lists omit body/raw content while `GET /api/v1/email/messages/:id?includeBody=true` can return rendered body fields. Compose-draft routes persist local negative-UID draft rows, BCC recipient JSON, reply-parent links, draft attachment path JSON, `scheduled_send_at`, scheduled-send failure metadata, and the SMTP-committed recovery flag; the compose-send and validate-outbound routes apply the server outbound-workflow guard, queue bounded `workflow.execute` runs/jobs, return the draft to hold with a warning when active outbound workflows exist, and clear stale outbound hold when no active workflow applies. Compose-attachment upload accepts bounded JSON/Base64 browser uploads only for local drafts, stores files under workspace/draft-scoped relative paths inside `ATTACHMENTS_DIR`, and returns the relative path for draft metadata. Compose-send additionally reuses the committed flag for crash recovery, applies ticket/thread headers, resolves compose attachment paths only inside the configured `ATTACHMENTS_DIR` root with bounded per-file/total size checks, sends multipart RFC822 over the server SMTP sender, attempts server IMAP APPEND into a resolved Sent mailbox, marks the draft sent, clears `sent_imap_sync_failed` on APPEND success, and keeps a bounded warning when POP3 or IMAP APPEND cannot store the server copy. Reply suggestions are persisted on `email_messages`, use encrypted server AI profile API-key secrets, honor open/inbound auto-trigger and category settings for queued ensures, and expose the existing renderer IPC calls over HTTP. Remote-content policy resolution mirrors the desktop behavior from message override, account default, and sender/domain allowlist, including one-shot `allowed_once` consumption back to `blocked` and audited allowlist remember writes for sender/domain. The spam-status mutation mirrors the desktop status semantics, can append local training events when local learning is enabled, increments feature stats for supplied feature keys, optionally sends stored RFC822 messages best-effort to Rspamd `/learnspam` or `/learnham` after the DB mutation succeeds, and publishes sanitized `email_message.updated` events. The spam-decision mutation runs the shared core spam-scoring engine against Postgres message/list/stat/settings data, stores the score and decision row, optionally applies the computed spam status, and keeps feature keys/breakdown content out of audit metadata and server-event payloads. Attachment metadata responses expose filename/content-type/size/hash metadata, not internal storage paths; `GET /api/v1/email/attachments/:id/content` resolves the stored path only inside the configured `ATTACHMENTS_DIR` root and streams bytes with download headers.
+  - Postgres workflow IMAP action port executes guarded `email.move_imap`, `email.delete_server`, `email.mark_spam(moveImap)`, and best-effort `email.mark_seen` IMAP side effects from the `workflow.execute` worker. It validates IMAP-only accounts and remote UIDs, resolves encrypted IMAP password or OAuth refresh-token auth from the server secret store, locks the source mailbox, performs UID-based move/delete/`\Seen` updates via IMAP, requires `workflow_imap_delete_opt_in` for server deletes, and updates local message state for Spam/Archive/Inbox/Trash targets with restore snapshots where applicable.
+  - The server-client single-message seen route now accepts the IPC-compatible optional `syncToServer` flag. If omitted, the Postgres mail port follows the account `imap_sync_seen_on_open` setting, then uses the same guarded IMAP action port to set or clear `\Seen` best-effort after the local DB update.
+  - The documented Automation-style `POST /api/v1/email/messages/:id/actions` route now exists on the server API and delegates `archive`, `unarchive`, `mark_seen`, `mark_unseen`, `spam`, `spam_review`, `not_spam`, `link_customer`, `assign`, and `add_tag` to the existing audited/safe message mutation handlers.
+  - Server `PATCH /api/v1/email/messages/:id/move` accepts `inbox`, `archived`, `trash`, `spam_review`, and `spam`; spam moves reuse the same local flag semantics as the spam-status mutation.
+  - Server `GET /api/v1/email/messages` accepts `folderPath` in addition to normalized message views, so the legacy `email:list-messages` folder IPC channel now maps to HTTP without losing arbitrary IMAP-folder path filtering.
+  - Server `GET /api/v1/email/threads` accepts `accountId`, `view`, `limit`, and `offset`; the renderer HTTP registry maps the legacy `email:list-threads-by-view` channel to this route while preserving the existing thread-list result shape.
+  - The renderer HTTP registry now also maps the legacy AI settings read channel to the server AI-profile list and reconstructs the legacy `baseUrl`/`model`/`embeddingModel` aggregate from the default server-side profile plus shared provider presets.
+  - The legacy global AI settings write channels (`email:set-ai-settings`, `email:set-ai-api-key`, `email:clear-ai-api-key`) now map to the server AI-profile API by updating the default profile or creating a default `custom` profile when only a legacy key write exists.
+  - `POST /api/v1/workflows/compile-graph` exposes the Electron-free workflow graph compiler from `packages/core`, and the renderer HTTP registry maps the legacy `email:compile-workflow-graph` channel to that route with the same `{ success, definitionJson, registryOnly }` result shape. `GET /api/v1/workflow/plugins` returns the authenticated server plugin manifest list; until a server-side plugin runtime is introduced it returns an empty list, so the legacy `workflow:list-plugins` channel no longer depends on an Electron user-data directory in server-client mode.
+  - Remaining legacy email/workflow IPC channels without HTTP registry entries are intentionally local desktop affordances at this stage: browser/Electron file pickers, local ZIP backup/restore helpers, attachment save/open dialogs, and native workflow/knowledge file-dialog variants. The ZIP-stream GDPR export is now a typed renderer HTTP mapping that handles the non-JSON Blob response while preserving API error parsing. `tests/unit/renderer-transport.test.ts` now verifies that every invoke channel either has an HTTP registry entry or is explicitly allowlisted as local/native or handled by the dedicated server-auth/setup flow.
+  - The JSON-only workflow bundle channels (`workflow:export-bundle`, `workflow:import-bundle`) now map to server workflow read/create routes and reuse the browser-safe shared bundle parser/exporter; file-picker variants remain desktop-only.
+  - Mail-sync attachment extraction now removes already written attachment files when the follow-up metadata replacement transaction fails, preventing orphaned files under `ATTACHMENTS_DIR` for that failure path.
+  - Postgres mail metadata read ports for workspace-scoped folders, team members, threads, message tags/categories/internal notes, canned responses, account signatures, remote-content allowlist entries, read-receipt logs, thread edges, thread aliases, and cross-account thread-alias warning reads. Email message tags, message-category assignments, thread edges, and read receipts support audited append/create or create/delete mutations; email team members, categories, canned responses, account signatures, remote-content allowlist entries, internal notes, and thread aliases support audited create/update/delete mutations. Category reorder uses a dedicated bulk route/port that validates all parent references and cycles before writing. The thread-merge mutation mirrors the desktop support action by inserting/updating the alias row, moving account-scoped messages to the canonical thread, deleting the alias thread when orphaned, and rebuilding canonical thread edges plus aggregate metadata. The thread-split mutation mirrors the desktop support action by generating a new ticket/thread, moving one message into it, rebuilding the new thread edges, and refreshing the old canonical thread aggregate. Category mutations validate parent references, thread-edge/read-receipt mutations resolve message references, account-signature mutations resolve account references and reject duplicate account signatures, account-signature list/get/update/delete paths accept positive imported and negative server-created `sourceSqliteId` values, remote-content allowlist and thread-alias mutations reject duplicate relationship pairs, team-member creates reject duplicate workspace-local IDs, and server-created mail metadata rows resolve workspace-local references where needed and use negative `source_sqlite_id` values where the table has a SQLite source ID. Metadata responses expose imported domain fields only, not `source_row`, import-run metadata, attachment storage paths, or credential handles.
+  - Postgres AI/workflow ports for workspace-scoped AI profile/prompt read/mutation routes and workflow definition read/mutation routes plus workflow-execution enqueue routes. AI profile create/update/delete supports optional encrypted API-key write/clear/delete through the Postgres secret port, keeps profile responses to `apiKeyConfigured` only, and preserves secret handles out of responses/audit/events. AI prompt create/update validates optional profile references, supports null profile unlinking, and has a dedicated bulk reorder route/port for `sortOrder` swaps. Workflow create/update validates optional schedule-account references inside the workspace and supports null account unlinking. Workflow execution enqueueing validates the workspace workflow, optionally validates a workspace message, and queues a `workflow.execute` job with a manual trigger payload. Workflow Dry-Run uses the same graph evaluator in side-effect-guard mode: it evaluates routing/read-only nodes, returns the log to the renderer, and skips persisted runs/steps, job queue inserts, IMAP actions, HTTP requests, draft creation, CRM writes, and mail mutations.
+  - Postgres spam ports now include audited spam decision create/update/delete. Decision mutations validate workspace-local account/message references, enforce message/account consistency, use server-created negative `source_sqlite_id` values, and keep `breakdown` content out of audit metadata and server-event payloads. Spam feature stats remain read-only.
+  - Postgres workflow-runtime ports for workspace-scoped workflow versions, knowledge bases, knowledge chunks, and delayed workflow jobs with read/mutation routes, plus workflow runs, run steps, and message-applied/dedup rows. Workflow-version create/update validates workspace-local workflow references and supports both scoped `/workflows/:id/versions` creation and direct `/workflow-versions` creation. Knowledge-base, knowledge-chunk, and delayed-job create/update/delete use negative server-created source IDs and preserve import metadata out of responses; chunk create/update validates workspace-local knowledge-base references, clears stale embeddings when content changes, and keeps chunk content out of audit metadata and server events. Delayed-job create/update validates workspace-local workflow/message references and keeps `context` out of default responses, audit metadata, and server events. List responses gate large or sensitive runtime details (`log`, step `detail`, chunk `content`, delayed-job `context`) behind explicit include flags and never expose `source_row` or import-run metadata.
+- Postgres PGP ports for workspace-scoped identities, peer keys, server-side incoming-message classification/decrypt, cleartext signed-message verification, plaintext sign/encrypt, stored inbound attachment decrypt/verify, and server-side private-key passphrase rotation. Identities support audited create/update/delete with fingerprint conflict checks, optional private-key writes encrypted through the per-user PGP private-key envelope helper before linking the encrypted secret, primary-identity clearing per user, fingerprint-change protection when an existing private-key secret would need re-binding, and `POST /api/v1/pgp/identities/:id/private-key/passphrase` / by-source rotation that decrypts the existing private-key envelope with the current passphrase and re-encrypts it with the new passphrase without logging or returning either secret. Identity responses expose public-key metadata and `privateKeyConfigured`, not private-key material, passphrases, secret IDs, or legacy Keytar handles. Peer keys support audited create/update/delete with fingerprint conflict checks; `verifiedByUserId` is set server-side from the actor when `verifiedAt` is set, not accepted from payload. `POST /api/v1/pgp/messages/:id/detect` mirrors the Electron inbound armor classifier, setting `encrypted_unread` or `signed_unknown_key` without persisting plaintext. `POST /api/v1/pgp/messages/:id/decrypt` resolves only the actor's encrypted private-key secret, preserves the passphrase as submitted, decrypts in-memory without persisting plaintext, and returns only the transient decrypted text/status to the requester. `POST /api/v1/pgp/messages/:id/verify` verifies cleartext signed PGP blocks with workspace peer keys, writes `pgp_status`/`pgp_signer_fingerprint`, and returns only signature status metadata. `POST /api/v1/pgp/attachments/:id/decrypt` reads the stored attachment through the safe attachment-content port, enforces bounded size, resolves only the actor's private-key secret, and returns transient Base64 bytes without persisting plaintext. `POST /api/v1/pgp/attachments/:id/verify` verifies stored attachment bytes against either a stored detached signature attachment or a direct Base64 signature, inferring the signer from the mail sender when no explicit signer is supplied. `POST /api/v1/pgp/messages/encrypt` and `/sign` expose the same plaintext plus optional JSON/Base64 attachment preparation used by compose send through legacy-compatible `{ armored }` responses and optional prepared attachment payloads.
+  - Postgres spam ports for workspace-scoped list entries, learning events, feature stats, and decisions. Spam list entries support audited create/update/delete with account-reference validation and duplicate relationship checks; spam learning events support audited append-only create with account/message-reference validation. Spam decisions support audited create/update/delete with account/message-reference validation and sanitized event payloads. Feature stats remain read-only over HTTP but are incremented by the server-side spam-status training path when local learning is enabled and feature keys are supplied; optional Rspamd learning sends the stored RFC822 message best-effort to `/learnspam` or `/learnham` after the local DB mutation commits. On-demand server spam scoring/reclassification exists through the mail spam-decision route, a `mail.spam.score` job handler can execute the same path for one message or request the full mailauth/Rspamd security-check path first, the Postgres mail-sync post-processor now enqueues that full security/spam pass automatically for synced Inbox messages with `applyStatus: true`, and workflow `ai.spam_score` nodes synchronously reuse the same core engine when no stored score exists so threshold branches can run immediately without mutating the message row.
+  - Postgres automation API-key port for workspace-scoped key metadata plus audited create/revoke mutations. Create stores only a SHA-256 key hash and encrypted secret reference, returns the plaintext key once in the response, and keeps keys, hashes, and secret IDs out of follow-up responses, audit metadata, and server events. Revoke clears the encrypted secret reference and marks the key revoked instead of hard-deleting metadata.
+  - Postgres conversation-lock port for acquire/get/heartbeat/release/admin-takeover.
+  - Postgres secret port for encrypted read/write/delete/key-rotation.
+  - Legacy credential import runner can read desktop Keytar values through a transport-neutral source port, write them to the encrypted Postgres secret port, and link mail account IMAP/SMTP/OAuth secrets, AI profile API keys, and PGP private keys to their server rows without exposing plaintext in results.
+- Job queue foundation:
+  - typed `JobQueuePort`
+  - Postgres enqueue/claim/complete/fail/stale-lock-release implementation
+  - deterministic exponential retry policy capped at 1h
+  - worker single-run execution with handler registry and missing-handler failure recording
+  - AP-7 server job type constants for `mail.sync.imap`, `mail.sync.pop3`, `mail.spam.score`, `mail.vacation.auto_reply`, `mail.send.scheduled`, `ai.reply_suggestion`, `workflow.execute`, `webhook.fire`, `lock.cleanup`, and `audit.retention`
+  - sync-pool sizing helper for `min(50, 2 * accountCount)`, AI concurrency validation with default 5, and parameterized account sync advisory-lock SQL
+  - `graphile-worker` runtime foundation with job-spec mapping, per-account sync queue names/job keys, dedicated AI/spam/webhook queues, spam-score message dedupe, optional webhook `dedupeKey` support, validated server job types, optional schema migration on startup, task-list bridging from the existing handler registry, and a guarded stale account-sync lock release path for the legacy `email:clear-account-sync-lock` channel.
+  - Server bootstrap can open an API-side Graphile queue port for enqueue routes with Graphile schema migration enabled for fresh DBs, start the Graphile worker runtime from env/config (`JOB_WORKER_*`), run optional worker-side Graphile schema migration with release in `finally`, map mail/AI concurrency, and release/stop queue plus worker resources on Fastify shutdown.
+  - Maintenance, spam-scoring, and webhook job handlers are registered by default when the server creates a PostgreSQL DB connection:
+    - `lock.cleanup` removes stale conversation locks for a workspace in bounded batches.
+    - `audit.retention` removes old audit events for a workspace in bounded batches and can archive the exact deletion batch to workspace-scoped JSONL before deleting when `AUDIT_ARCHIVE_DIR` is configured.
+    - `mail.sync.imap` and `mail.sync.pop3` validate workspace/account payloads and delegate through a server-side Postgres mail-sync port, giving Graphile a typed execution surface without importing Electron sync services. The adapter resolves encrypted server account secrets or OAuth refresh-token auth, uses `imapflow` plus bounded first-sync windows for IMAP, uses a server POP3 UIDL client for POP3, stores parsed metadata and raw RFC822 into the PG mail schema, extracts bounded attachments into `ATTACHMENTS_DIR`, updates folder cursors, and returns explicit new Inbox message IDs. When a queue port is available, a Postgres post-sync processor can enqueue inbound `mail.spam.score` jobs that run mailauth/Rspamd, apply configured DMARC/SPF/Rspamd auto-spam tags/status, and delayed guarded `workflow.execute`, `ai.reply_suggestion`, and `mail.vacation.auto_reply` jobs either from explicit sync result message IDs or from recently updated Inbox rows for the synced account. The guarded workflow jobs skip messages that the security/spam pass has already moved into spam or review.
+    - `mail.send.scheduled` validates bounded due-send payloads and now has a Postgres scheduled-send adapter that lists due local drafts, reconstructs compose fields plus stored draft attachment paths from JSON, delegates sends, the server outbound-workflow hold guard, server-stored attachment handling, and IMAP Sent-copy APPEND to the server compose sender, clears success metadata, and records bounded retry/final-failure state in `sync_info`.
+    - `ai.reply_suggestion` validates message/profile/prompt/trigger payloads and delegates through the Postgres AI reply-suggestion port, which reads AI profile secrets from the encrypted secret store and persists pending/ready/failed/skipped state on the message row.
+    - `workflow.execute` validates workflow/message/run/delayed-job payloads and delegates through a workflow execution port. The default PostgreSQL port loads workflow/message/delayed-job state, persists run and step status, exposes stored mail-security variables (`auth.*`, `rspamd.*`, `spam.*`) and customer references, enforces the same inbound prior-condition gate as the desktop graph runner for side-effect nodes unless a node explicitly sets `runOnEveryInbound`, executes server-safe graph control nodes (trigger, condition, stop, delay/resume, merge pass-through, `logic.loop` iteration over configured items/string variables with `each`/`done` ports, set-variable, threshold including the `workflow_spam_score_threshold` global setting, switch, stored-result `email.auth_check`, DB-backed `email.sender_filter` over global sender settings plus spam allow/block list entries, stored-or-synchronously-computed `ai.spam_score`, and outbound hold), applies mail metadata nodes (`email.tag`, `email.tag_attachment_meta`, `email.set_category`, `email.set_priority`, local plus best-effort IMAP `\Seen` sync for `email.mark_seen`, `email.archive`, `email.assign`, `email.set_spam_status`, DB-only `email.mark_spam` including optional local spam/ham training events and feature-stat updates, and local `email.create_draft` via the shared Postgres compose-draft path), links messages to workspace customers by normalized sender through `crm.link_customer`, creates workspace-validated CRM follow-up tasks through `crm.create_task`, logs workspace-validated customer activity through `crm.log_activity`, updates workspace-validated deals through `crm.update_deal` including idempotent stage-change activity entries, runs DB-only `ai.agent_tool` helpers for knowledge search/canned-response lookup/echo, enqueues `sync.run` as typed per-account IMAP/POP3 sync jobs, runs `jtl.lookup` as a workspace-scoped DB-only lookup over imported JTL reference tables with bounded result variables, enqueues `workflow.subflow` and delayed resumes as `workflow.execute` jobs with carried event context, enqueues `email.forward_copy` as a deduped async `workflow.forward_copy` SMTP job that resumes with `forward_copy.*` variables and stays fail-closed while outbound workflows are active, enqueues `http.request` as allowlisted/DNS-guarded async `workflow.http_request` jobs that resume with `http.status` and `http.body`, enqueues `ai.reply_suggestion` nodes as AI jobs with workflow-local `force`/`skipIfReady` semantics, pauses `ai.agent` nodes into AI jobs that use the configured profile and optional knowledge base, optionally create local reply drafts, and resume the graph with `ai.agent.response` plus `draft.id`, pauses `ai.review` and `ai.outbound_review` nodes into AI jobs that either resume on OK or persist outbound holds/inbound review tags on BLOCK, pauses `ai.classify` nodes into AI jobs that tag messages and resume the graph with `ai.class`, pauses `ai.transform_text` nodes into AI jobs that resume the graph with the configured target variable, executes guarded IMAP move/delete/Spam/Seen side effects through the workflow IMAP action port when account/settings constraints allow it, and records remaining unsupported side-effect nodes as blocked runs without retrying.
+    - MSSQL settings now have server REST routes plus renderer HTTP transport mappings for get/save/test/clear-password. The server stores non-secret MSSQL settings in workspace `sync_info`, stores the password in the encrypted Postgres secret store, exposes JTL sync status/run through `/api/v1/jtl/sync/status` and `/api/v1/jtl/sync/run`, upserts MSSQL-sourced customers/products/JTL references into PostgreSQL with server-side sync status persistence, and `mssql.query` executes bounded read-only `SELECT`/`WITH` statements from workflow jobs through the configured MSSQL port with `mssql.rows`/`mssql.row_count` variables.
+    - `mail.spam.score` runs the shared spam-scoring engine for one message through the DB-backed mail port, can optionally run the server mailauth/Rspamd security check first, applies configured auto-spam rules when the full check is requested, and can optionally apply the computed spam status.
+    - `mail.vacation.auto_reply` runs the server-side vacation responder after inbound sync. The Postgres adapter reloads the message/account, skips disabled accounts, non-syncable local drafts, spam/review/archive/deleted/non-Inbox messages, own sender, and auto-response headers, resolves encrypted SMTP/IMAP/OAuth auth, sends a plaintext auto-reply with `Auto-Submitted: auto-replied`, deduplicates per account/sender for 24h in `sync_info`, records one-hour SMTP failure suppression keys, and writes success/failure `activity_log` rows.
+    - `webhook.fire` dispatches a validated GET/POST HTTP request through a server-side webhook port. The default fetch dispatcher is enabled only when `JOB_WEBHOOK_ALLOWLIST` is configured, blocks local/private hosts, verifies DNS results before fetching, and fails closed otherwise.
+    - Explicit production handlers can override the defaults without changing the worker bootstrap.
+- SQLite-to-PostgreSQL import foundation:
+  - server-side manifest for the current Electron SQLite table set, ordered by key domain dependencies
+  - required CRM foundation tables and optional mail/workflow/auth/security tables
+  - transport-neutral source and target ports with no Electron or `better-sqlite3` runtime dependency in `packages/server`
+  - readonly SQLite database source adapter for live `.sqlite` files; the native `better-sqlite3` module is loaded only by the optional file adapter, while the import engine itself remains port-based.
+  - resumable batch-copy engine with per-table checkpoints, last source primary key tracking, dry-run mode, skip handling, and reporter callbacks
+  - PostgreSQL metadata tables and RLS policies for import runs, table checkpoints, and lossless JSONB row staging
+  - `pg`-compatible PostgreSQL target port for import-run upsert, checkpoint resume, parameterized JSONB row upserts, and source-vs-staging validation.
+  - SQLite import staging stores a deterministic SHA-256 hash for every normalized source row and validates per-table source row count plus aggregate table hash against live PostgreSQL `sqlite_import_rows` before marking a table succeeded.
+  - Optional SQLite attachment copy during staging via `npm run migrate:sqlite -- --copy-attachments ...`; copied attachment rows are rewritten to relative `ATTACHMENTS_DIR` storage paths before hashing and final-table import.
+  - Final-table mapping runner for the classic CRM/JTL slice from `sqlite_import_rows` into `sync_info`, `customers`, `products`, `deals`, `tasks`, `deal_products`, `calendar_events`, custom fields, activity log, saved views, and JTL reference tables, using ordered parameterized `ON CONFLICT` upserts and source SQLite IDs for relationship reconciliation
+  - Core mail PostgreSQL schema and mapping runner for accounts, folders, team members, threads, messages, attachments, tags, categories, notes, canned responses, account signatures, remote-content allowlist, read-receipt log, thread edges, and aliases. The message schema now carries BCC JSON, local draft attachment path JSON, reply-parent references, post-process state, scheduled-send timestamps, and AI reply-suggestion state for server-side compose and assistant persistence.
+  - `email_accounts` keeps legacy Keytar references for migration traceability and now has nullable Postgres secret references for IMAP password, SMTP password, and OAuth refresh token material.
+  - `email_messages` has a stored `tsvector` search column with a GIN index plus the main workspace/account/folder/date and active/spam indexes. A follow-up migration adds `snoozed_until` and expands the search vector to include sender/recipient JSON and ticket codes so server-side message views and search match the renderer's list semantics more closely.
+  - Workflow/security PostgreSQL schema and mapping runner for AI profiles/prompts, workflow definitions/versions/runs/steps, workflow-message dedup tables, knowledge bases/chunks, delayed workflow jobs, spam lists/learning/features/decisions, and PGP identities/peer keys.
+  - Legacy user references from SQLite mail assignment, workflow, and PGP rows are preserved as text columns instead of blindly casting unknown desktop IDs to PostgreSQL UUIDs.
+  - `automation_api_keys` schema exists with RLS and encrypted-secret linkage, create/revoke metadata routes, hashed Bearer-key verification, `last_used_at` tracking, and scoped incoming-workflow-webhook authentication; no matching legacy SQLite source table has been found in the current Electron schema, so no source-row mapping is implemented for it.
+  - The SQLite import manifest now uses real source primary keys for non-`id` tables such as `email_threads`, `email_account_signatures`, `email_message_categories`, thread edges, and aliases.
+  - Final-table import orchestration runs the available CRM/JTL, mail, and workflow/security mappers in dependency order after staging.
+  - `npm run migrate:sqlite -- ...` provides a server-side SQLite import CLI with full, stage-only, and finalize-only modes. It sets the PostgreSQL workspace session before touching RLS-protected staging/final tables, can fingerprint the SQLite file with SHA-256, can copy attachment files into `ATTACHMENTS_DIR`, and can restrict finalization to selected domains.
+- `docker/` contains a first server-mode Compose/Caddy/API image skeleton pinned to PostgreSQL 18 with the data volume mounted at the PostgreSQL 18-compatible `/var/lib/postgresql` root. The `migrate` service now invokes the real server migration CLI against the Compose PostgreSQL service, and the API service has persistent volumes for attachments plus optional audit-retention JSONL archives.
+- Auth invitations can now be delivered by the server through explicit `AUTH_INVITE_*` SMTP configuration. `POST /api/v1/auth/invitations` still returns the manual accept path/token, stores only the hashed token, audits only non-secret metadata, and reports `delivery.status` as `sent`, `not_configured`, or `failed` so browser clients keep a copyable-link fallback when SMTP is absent or rejects the message.
+- Docker maintenance scripts cover `pg_dump -Fc` backups, attachment tar snapshots, audit-retention archive tar snapshots, SHA-256 backup-set manifests, retention cleanup, checksum-verified `pg_restore` restore, a restartable `backup-scheduler` Compose profile, restore drills into temporary PostgreSQL databases that auto-detect matching attachment/audit archives for validation, a host-side `restore-compose.sh` runbook that stops Caddy/API, runs restore, reruns migrations, restarts services, and checks API/Caddy health, plus a Docker `doctor` profile for DB reachability, DB size, applied/latest migration, ready job count, queue lag, stale lock count, and latest-backup checksum verification.
+- `packages/desktop` contains the AP-8 embedded-PostgreSQL lifecycle foundation for standalone mode: a PG 18 manager with deterministic user-data layout, per-user secret generation hooks, Keytar-backed Electron secret-store adapter, local port allocation, runtime loader for the optional `embedded-postgres` package, startup health probing, idempotent start, graceful-stop timeout with kill fallback, and an Electron app/env bootstrap adapter for standalone vs. server-client mode. The foundation is deliberately engine/secret-store port-based so tests and later installer services do not need to start real binaries.
+- AP-10 first-start wizard foundation now spans desktop, browser, and renderer code: `packages/desktop` defines the deploy-mode config model, Electron exposes public `setup:get-deploy-config` / `setup:save-deploy-config` IPC with Zod schemas and atomic `userData/config.json` writes, and the React root renders a setup gate before the normal app shell. The gate can persist `standalone`, `server-client`, and `server-install` choices, activates the HTTP transport and renders the app shell immediately for `server-client`, keeps `server-install` in a pending installer state, and surfaces invalid persisted config back to the wizard.
+- AP-13 thin-client transport foundation now exists in the renderer: `src/services/transport` provides IPC and HTTP `invoke` transports behind one compatibility API, a channel-to-REST registry for the covered CRM/calendar/JTL-reference/JTL-order/JTL-sync/custom-field/saved-view/activity-log/dashboard/follow-up queue/workspace settings/auth invite creation+delivery/user list/create/update/auth audit-log+hash-chain/mail-account create/list/update/delete/test-imap/test-pop3/test-smtp/sync-enqueue/mail-OAuth app/link/mail-message-list/search/detail/security/raw-header display/reply-suggestion status/ensure/direct-draft/read-receipt state/response/remote-content policy/conversation/thread-messages/thread-alias-warning/thread-merge/thread-split/bulk-select-ids/bulk-status/spam-training mutations/local-draft delete/compose SMTP send with server-stored attachments/mail-diagnostics/mail-reporting/mail-GDPR-export/mail-tag/internal-note/attachment-metadata/content browser open+download/canned-response/team-member/AI-profile/AI-prompt/text-transform/spam-list-entry/email-category/category-count/account-signature/workflow template/node-catalog/definition/version/execute-enqueue/inbound-backfill/webhook-incoming enqueue/run-history/knowledge-base document/PGP keyring plus plaintext/attachment sign/encrypt, incoming-message classify/decrypt, cleartext signed-message verify, stored attachment decrypt/verify helpers, and private-key passphrase rotation slices, bearer-token header injection, server `data` envelope/error handling, and legacy response-shape mapping for existing renderer services. The setup gate configures the transport from Electron deploy config, browser `localStorage`, or `?simplecrmServer=` / `?serverUrl=` URL bootstrap parameters; browser bootstrap persists the server URL without any Electron setup IPC. The central data services plus covered product/deal/deal-product/calendar combobox/page surfaces now call the transport instead of hard-coding `window.electronAPI.invoke`. E-mail context actions that create CRM/calendar records now use the same renderer transport for Deal, Task, and Calendar mutations, and mail account create/list/update/delete/OAuth app/OAuth account-link/IMAP+POP3+SMTP connection-test/sync-enqueue actions, workflow automation settings, email misc settings, incoming webhook workflow test enqueueing, mail-security settings plus Rspamd connection test, Snooze defaults, reply-suggestion trigger/filter settings plus the message-level suggestion panel/status/ensure/direct-draft flow, UIDVALIDITY/IMAP auth notice list+dismiss actions, message list/search reads with view/category/sort/list/done filters, filtered bulk-select message ID reads, single-message detail reads with body inclusion, message-security reads plus manual server mailauth/Rspamd reruns and spam-score checks, raw-header/EML display and browser `.eml` download reads backed by `raw_rfc822_b64` or DB-only reconstruction without local attachment embedding, read-receipt state reads and audited response handling with server-side decline logging plus password- and OAuth-backed SMTP MDN send/log/clear semantics, remote-content policy consume/update actions, conversation/thread message reads, cross-account thread-alias warning reads, thread-merge and thread-split support actions, safe bulk archive/done/soft-delete/snooze status mutations, bulk spam/ham training mutations, local draft deletes guarded by `uid < 0`, customer-link backfill, workflow template and node-catalog reads, workflow definition list/create/get/update/delete reads and mutations, workflow version list/snapshot/restore actions, workflow immediate execution enqueueing, workflow inbound backfill, workflow run/step history reads, latest message workflow-run lookup, workflow knowledge-base list/create/delete, knowledge chunk append, Markdown document load/save against server chunks, mail message tag, message assignment/customer-link, message-category assignment get/set, internal-note, attachment metadata/content browser open+download plus PGP decrypt/download and detached-signature verify actions, message spam-status/manual spam scoring, canned-response, team-member list/add/update/remove, AI profile CRUD/API-key clear, AI prompt list/save/delete/reorder/text-transform, spam allow/block list list/save/delete, category list/create/update/delete/reorder/counts, account-signature list/save actions, mail diagnostics/reporting/GDPR ZIP export, and PGP identity/peer-key list/generate/import/delete/passphrase-rotate plus recipient-key checks, message sign/encrypt/detect/decrypt, and message verify now map to the server API while the remaining mail actions and local file picker/save-dialog actions stay on the existing IPC path until their HTTP client slices are completed. Category and AI prompt reordering now use dedicated server bulk-reorder routes instead of sequential `PATCH` calls. Server-client auth now has a renderer session/client foundation for `/api/v1/auth/setup-state`, `/api/v1/auth/initial-setup`, `/api/v1/auth/login`, `/api/v1/auth/refresh`, `/api/v1/auth/logout`, public invitation lookup/acceptance, configured invite SMTP delivery with manual link fallback, and admin user management; `AuthProvider`, `AuthGate`, and the Login page use that flow when the active transport is HTTP, fail closed when an HTTP transport has no server base URL, schedule refresh before access-token expiry, and keep standalone mode on the existing IPC auth path. Server-client Settings, follow-up, and deal-detail surfaces now also refresh AI-profile, PGP identity/peer-key, automation API-key lists, spam allow/block list entries, workflow list/version/knowledge data, follow-up saved views/timelines, JTL reference dropdowns, and selected-message remote-content policy after matching server-published events.
+- The E-mail route layout now treats an active HTTP renderer transport as available, so browser server-client mode can enter the mail module without an Electron preload while unconfigured browsers still get the setup/availability hint.
+- The Automation settings panel is now transport-aware: server-client mode lists, creates, and revokes workspace server API keys through `/api/v1/automation/api-keys`, while standalone/Electron mode keeps local port, LAN binding, and single-key management on IPC.
+- The Compose dialog now uses the renderer transport for server-client-safe draft bootstrap, account signature lookup, draft create/update/autosave/delete, context message reload, scheduled-send state, compose recovery-state reads, schedule, retry, failure-clear paths, server-client browser attachment upload into `ATTACHMENTS_DIR`, manual outbound validation through `POST /api/v1/email/compose/validate-outbound`, AI text transform through `POST /api/v1/ai/transform-text`, and SMTP send/finalize with a server-side outbound-workflow fail-closed enqueue/hold guard, server-stored attachment MIME payloads, and IMAP Sent-copy APPEND. Compose recovery copy labels interrupted finalization as server-side in HTTP mode and local in IPC mode. PGP compose send is supported for plaintext bodies, HTML drafts reduced to encrypted text-only payloads, and server-stored attachments: server-side sign/encrypt resolves the actor's encrypted private-key secret and trusted recipient peer keys, keeps PGP passphrases untrimmed, writes prepared PGP armor back to the draft, replaces encrypted attachments with in-memory `.pgp` parts, adds detached `.asc` signature parts for sign-only attachment sends, and sends PGP-encrypted mail without an unencrypted HTML part. Full production outbound workflow side-effect parity remains Electron-only until its server adapters are implemented.
+- The Knowledge settings panel now keeps list/create/delete/document load/save on the renderer transport, labels server-client knowledge documents as server-side Markdown, and supports server-client Markdown export/import through browser download/upload while standalone/Electron keeps the native file-dialog IPC path. The Workflow shell follows the same split for workflow JSON bundles: server-client mode exports/imports through browser download/upload and the existing workflow CRUD transport, while standalone keeps the native file-dialog IPC path.
+- The Email export settings panel now supports server-client GDPR ZIP downloads through the central `email:gdpr-export` renderer HTTP transport mapping to `GET /api/v1/email/gdpr-export`; the server export streams redacted accounts, message metadata JSONL, internal notes, workflow metadata/run samples, and workspace-scoped attachments resolved inside `ATTACHMENTS_DIR`, while standalone/Electron keeps the native save-dialog IPC export. HTTP export now fails closed when no server base URL is configured instead of falling back to local IPC, the transport preserves server `Content-Disposition` filenames and API error details for ZIP responses, and the visible export copy refers to omitted password/secret entries instead of local Keytar storage.
+- Mail auxiliary/settings data loaders no longer block server-client mode for already mapped list reads: account/team/signature/canned-response/AI-profile/AI-prompt/category data plus folder/category badge counts, Diagnose JSON, and mail reporting now use the renderer transport without an Electron presence check. Account, diagnostics, mail-security, knowledge, POP3 status, and recovery-tool panels now label server-client secrets/backups/scoring/status/recovery data as server-side or SimpleCRM-internal instead of implying local Keytar/SQLite storage. Manual account sync, IMAP/POP3/SMTP account connection tests, vacation auto-reply test sends plus sync-triggered server auto-replies, manual outbound validation, manual mailauth/Rspamd security reruns with spam-score refresh, text/html SMTP compose send with server-stored attachments plus outbound-workflow enqueue/hold guard and Sent-copy APPEND, and the guarded archived-inbox recovery tool now map to server routes; local backup/restore, concrete outbound workflow execution/side-effect parity, and local file-picker/save-dialog actions remain IPC-gated until dedicated server equivalents exist.
+- IPC-only local runtime/file actions now check the active renderer transport, not just Electron preload presence, so server-client mode cannot accidentally route backup/restore, local attachment file, or local test actions through the legacy local IPC path. JTL sync status/run controls now route through the server action in HTTP mode and keep the local IPC path in standalone mode. Existing message attachments in server-client mode open/download through the server attachment-content route instead of local attachment IPC and can use server-side PGP attachment decrypt/download plus detached-signature verify actions when PGP data is detected. Incoming PGP message classify/decrypt, cleartext signed-message verify, and server-side PGP private-key passphrase rotation now go through the renderer transport when server-side private-key secrets are configured. External mail links keep their confirmation dialog and use a browser noopener/noreferrer anchor fallback in server-client mode instead of depending on Electron's `OpenExternalUrl` IPC.
+- The Workflow shell no longer hides the mapped workflow list/create/update/delete and prompt/profile selection surfaces in server-client mode. The graph compiler is now shared pure code, so workflow save can compile locally in the renderer and persist through the server transport. Workflow JSON bundle import/export is available in server-client browsers through download/upload against the existing workflow CRUD routes. Immediate execution, inbound backfill, and incoming webhook workflow tests now map to server-side `workflow.execute` enqueueing; Dry-Run uses the server graph evaluator in side-effect-guard mode and is available from the workflow shell and message-level workflow menu in HTTP transport. Message-level workflow menus execute mapped workflows through the server route even when an Electron preload is present.
+  - The server workflow node catalog filters local `code.javascript`, `code.python`, and `plugin.custom` nodes so server-client users cannot add runtime-local code/plugin nodes that the server executor would later block. Existing imported workflows containing those nodes still fail closed during server execution.
+- Customer list bulk delete, customer detail reads, related deal/task reads, customer update/delete, customer-scoped deal/task creation, task calendar-event create/update/delete synchronization, and Deal-detail JTL order creation now use the shared renderer transport. JTL order creation uses `POST /api/v1/jtl/orders`, validates the workspace customer/JTL customer mapping server-side, resolves MSSQL credentials from the server secret store, and writes an audit event on successful creation.
+- Safe single-message mail status actions now use the server transport for soft-delete, restore from trash with persisted `trash_prev_*` snapshots, archive/unarchive, read/unread, done/open, full message refresh/open, move-to inbox/archive/trash, and the guarded archived-inbox recovery preview/restore flow for one account.
+- `packages/desktop` contains an AP-9 standalone-to-server migration primitive and CLI (`npm run migrate:standalone-to-server -- ...`) that builds a non-shell `pg_dump -Fc` / `pg_restore --clean --if-exists --no-owner` plan, redacts database URLs in dry-run output, supports optional local-copy or `rsync` attachment sync, and exposes a port-based executor for tests and later Electron/installer orchestration.
+- Docker Compose config validates with `.env.example`, and a local Compose smoke on June 3, 2026 started PostgreSQL 18, ran the migration service, started the API service, started Caddy, reached the API healthcheck directly and through Caddy HTTPS, then ran backup plus restore-drill with isolated temporary keys and volumes. Caddy is env-driven through `PUBLIC_DOMAIN` plus configurable host ports for local/CI TLS drills, serves gzip/zstd compression, and writes JSON access logs to the persistent `caddy_logs` volume.
+- Docker Compose now includes the plan's opt-in `minio`, `monitor`, and `pgadmin` profiles with localhost-bound default ports and persistent profile volumes, while the standard stack remains limited to PostgreSQL, migration, API, and Caddy.
+- `docker/simplecrm` provides a small host-side operator wrapper for the plan's `simplecrm` commands: standard stack start/status/logs, one-shot backup, backup scheduler, doctor, restore orchestration, and restore drill. It delegates restore work to `restore-compose.sh` instead of duplicating restore logic.
+- GitHub Actions CI now uses Node 22 for the main build/test job and includes a separate Docker Compose smoke job that validates Compose config, builds the API image, starts PostgreSQL 18, runs migrations, starts API plus Caddy, verifies the Caddy HTTPS reverse-proxy route to `/health`, runs a Compose backup, validates the backup checksum through the Docker doctor profile, validates the backup through the restore-drill profile, and tears down isolated smoke volumes.
+- `packages/server/src/cli/doctor.ts` provides the server-side `doctor` CLI foundation with JSON/text output, DB size, migration status, ready job count, queue lag, stale lock count, and latest backup verification including optional attachment and audit-archive tar files. Root script: `npm run doctor:server`. The Docker `doctor` profile now exposes the same core operator counters as key-value output: database size, applied/latest migration, ready jobs, queue lag, stale locks, latest backup, and checksum state.
+- AP-12 operator documentation now exists for the current implementation state: `docs/SETUP_LOCAL.md`, `docs/SETUP_SERVER.md`, `docs/MIGRATION_STANDALONE_TO_SERVER.md`, `docs/BACKUP_AND_RESTORE.md`, and `docs/THREAT_MODEL.md`. `docker/.env.example` documents required server variables, including 32-byte Base64 `MASTER_KEY` and at-least-32-byte Base64 `ACCESS_TOKEN_SECRET`. The docs describe the current one-shot backup, scheduler, restore, restore-drill, doctor, and server setup flows, including Docker backup retention by 7 daily, 4 weekly, and 12 monthly generations.
+- Tests assert the plan-critical invariants for the foundation.
+
+## Not Yet Complete
+
+The attached plan describes a multi-month v2 rebuild. The following remain open and must not be claimed as done:
+
+- Moving the remaining existing Electron mail/workflow/auth logic into `packages/core`. This branch now starts that migration with reusable auth/mail/workflow helpers, but most production mail/workflow/auth services still live under `electron/`.
+- Replacing all SQLite stores with async Kysely/PostgreSQL stores.
+- Completing domain behavior and mutation/store integration for full workflow runtime execution, auth, automation runtime use, and the remaining automatic spam scoring/reclassification behavior. The current branch contains schema plus staged-row mapping and read-only workflow-run/runtime-state foundations plus automation-key create/revoke and incoming-webhook Bearer verification, AI profile/prompt CRUD, workflow definition/version/knowledge-base/knowledge-chunk/delayed-job CRUD, PGP identity/peer-key CRUD, server-side private-key passphrase rotation, incoming-message classification/decrypt, cleartext signed-message verify, stored inbound attachment decrypt/verify, plaintext plus optional JSON/Base64 attachment sign/encrypt, plaintext/HTML-as-text compose sign/encrypt with server-stored attachment encryption/signature preparation, spam list/learning/decision mutations, core spam feature extraction/scoring, a mail spam-status training mutation with local-feature and optional Rspamd spam/ham learning, an on-demand server spam-decision mutation, a manual mailauth/Rspamd security-check mutation that feeds the same spam-decision path, a one-message `mail.spam.score` handler, sync-triggered mailauth/Rspamd plus spam-score enqueueing with configured auto-spam tags/status before guarded inbound workflows, sync-triggered vacation auto-replies with dedup/failure suppression, stored mail-security/spam variables for workflow thresholds, workspace-validated CRM task creation from workflows, a conservative PostgreSQL workflow executor for server-safe graph control nodes, delay/resume, DB-only mail metadata actions plus guarded IMAP move/delete side effects, fail-closed blocking for remaining unsupported side effects, and a fail-closed allowlisted `webhook.fire` handler, but not production workflow side-effect parity or synchronous LLM spam/classification execution inside the workflow executor.
+- Bulk message mutations now have dedicated server equivalents for soft-delete, archive/unarchive, done/open, spam/ham training/status, and local draft delete. Local draft delete and compose-draft create/update/recovery-state now have server equivalents guarded by local draft semantics, scheduled-send metadata can be scheduled, inspected, retried, and cleared over HTTP, and text/html SMTP compose send can include server-stored attachments, finalize drafts, and store an IMAP Sent-copy APPEND through the server. PGP compose sign/encrypt now prepares PGP armor server-side before SMTP, reduces HTML drafts to encrypted text-only payloads, and server-stored attachment payloads can be encrypted into `.pgp` parts or paired with detached `.asc` signatures for sign-only sends. Raw-header display and browser `.eml` download now have DB-only server equivalents; reconstructed server EML intentionally omits local attachment-file embedding. The archived-inbox recovery tool now has a server route with the same preview-count and account-email confirmation guard, supports renderer legacy account IDs, and restores only syncable non-spam inbox messages. Compose sends now have a server fail-closed outbound-workflow enqueue/hold guard, and `workflow.execute` can persist server-safe graph-control execution, delay/resume jobs, apply mail metadata/spam-status actions including best-effort IMAP `\Seen` sync plus local/Rspamd spam-ham training, run guarded IMAP move/delete side effects, or block remaining unsupported side-effect nodes. The server mail-sync post-processor now queues enabled inbound workflows for newly synced messages after spam scoring and before reply suggestions. Inbound workflow backfill now has `POST /api/v1/workflows/inbound/backfill`, clears selected Applied markers, queues forced `workflow.execute` jobs, and the executor marks/skips Applied workflow/message pairs for normal inbound runs. Full workflow side-effect parity beyond guarded IMAP move/delete/seen-flag updates remains IPC-only/open.
+- Read-receipt state reads and `RespondReadReceipt` response handling now have server routes and renderer transport mapping. `decline` writes the audited server read-receipt log, and `send` uses a server MDN responder with message/account guards, trusted-domain enforcement, fail-closed outbound-workflow review queueing before SMTP, password-backed SMTP DATA delivery, OAuth-backed XOAUTH2 token refresh for Google/Microsoft account links, sent-back logging, audit/event publish, and `read_receipt_requested` clearing.
+- Reworking `email_messages` into the plan's production partitioning target (`RANGE (date_received)` plus workspace-aware strategy/maintenance) once the FK model and live workload validation are in place.
+- Broad DB-backed Fastify REST/WebSocket API beyond the current auth, core-CRM/extended-CRM/JTL/mail/AI/workflow/PGP/spam/automation, lock, audit, event, settings, and health foundation. Customer/product/deal/deal-product-link/task/calendar-event/custom-field/saved-view/JTL-reference/spam-list-entry/PGP-identity/PGP-peer-key/AI-profile/AI-prompt/workflow/workflow-version/workflow-knowledge-base/workflow-knowledge-chunk/workflow-delayed-job create/update/delete, JTL order create, JTL sync status/run, automation API-key create/revoke, sync-info backed workflow/email settings, email account update/delete/sync enqueue, workflow execute enqueue, email tag/category/message-category/message assignment/customer-link/internal-note/canned-response/remote-allowlist/team-member/thread-edge/thread-alias/thread-merge/thread-split/account-signature mutations, email read-receipt, email message compose-draft/scheduled-send metadata/send mutations including browser attachment upload, outbound-workflow enqueue/hold guarding, and server-stored attachment MIME send, email message spam-status/spam-decision/security-check, spam-learning-event append create, spam-decision create/update/delete, plus activity-log append create now exist as audited or validated mutation slices; the remaining mail execution/key-management/training behavior, PGP/concrete outbound-workflow side-effect send slices, and mail-sync live-volume/performance plus UIDVALIDITY restore drills remain open.
+- Broad WebSocket API coverage beyond lock and core CRM mutation events, production hardening of multi-instance reconnect behavior, and client-side subscriptions beyond conversation locks plus customer/calendar/product/deal/task/dashboard/mail-list refresh. This branch now has bounded in-memory sequence replay, PostgreSQL-persisted server events replayed by `GET /api/v1/events?since=<sequence>`, a PostgreSQL `LISTEN/NOTIFY` fanout foundation, conversation-lock UI subscriptions, customer-list reloads on `customer.created`/`customer.updated`/`customer.deleted`, customer-detail reloads for the current customer on matching customer/deal/task/custom-field-value events plus global custom-field definition events, calendar reloads on `calendar_event.created`/`calendar_event.updated`/`calendar_event.deleted`, product-list reloads on `product.created`/`product.updated`/`product.deleted`, deal-list reloads on `deal.created`/`deal.updated`/`deal.deleted` plus `deal_product.created`/`deal_product.updated`/`deal_product.deleted`, deal-detail reloads for the current deal on matching deal/deal-product events, task-list/follow-up queue reloads on `task.created`/`task.updated`/`task.deleted`, dashboard reloads on customer/deal/deal-product/task mutation events, mail-list plus selected-message metadata reloads on email message/tag/category/message-category/read-receipt/thread/internal-note mutation events, account/team/signature refresh on account/team/signature events, and compose auxiliary reloads on canned-response/AI-prompt events in server-client mode.
+- Full AP-5 hardening: exhaustive per-table data mutation scenarios and performance bench. This branch now has the transaction helper, workspace-scoped port usage, forced RLS, an explicit admin/system cross-workspace session flag, live RLS policy coverage for every expected RLS table, a migration-vs-checker drift guard for all RLS-enabled tables, and representative workspace/customer/secret isolation plus controlled cross-tenant access probes.
+- Wiring Electron/keytar-stored credential families through production UI/API flows. This branch now includes the encrypted Postgres secret port, mail-account secret references, server-side mail OAuth app/link routes that store new refresh tokens in the server secret store, server MDN, SMTP connection-test, compose-send paths with server-stored attachments, server IMAP Sent-copy APPEND, server IMAP/POP3 sync paths, guarded workflow IMAP move/delete paths, MSSQL settings/JTL order execution plus JTL sync, Automation API keys, AI profiles/prompts, and PGP identity private keys backed by server secrets, plus a transport-neutral legacy credential import runner for mail, AI profile, and PGP credentials. IMAP move/delete still needs production mailbox stress drills.
+- Registering mail sync and workflow side-effect production adapters against the PG-backed worker. This branch now has default maintenance, one-message spam/security scoring, allowlisted webhook dispatch handlers, scheduled-send draft metadata routes, a concrete Postgres scheduled-send adapter for compose sends with server-stored attachments including the outbound-workflow enqueue/hold guard and Sent-copy APPEND, a concrete Postgres IMAP/POP3 mail-sync adapter with bounded attachment extraction plus post-sync mailauth/Rspamd/spam, guarded workflow, reply-suggestion, and vacation-auto-reply enqueueing, a concrete Postgres AI reply-suggestion adapter with server-secret backed generation, a concrete Postgres vacation auto-reply adapter with SMTP secret/OAuth resolution plus activity/sync-info logging, a conservative PostgreSQL `workflow.execute` adapter for server-safe graph-control execution, delay/resume, mail metadata/spam-status actions including best-effort IMAP `\Seen` sync, guarded IMAP move/delete side effects, `ai.reply_suggestion` workflow-node enqueueing, synchronous server spam scoring for `ai.spam_score`, and fail-closed unsupported-node blocking, and port-backed handler wiring plus strict payload validation for mail sync, scheduled send, AI reply suggestion, vacation auto-reply, and workflow execution; production mailbox stress drills and the full outbound side-effect set remain open.
+- Fully switching production job execution to the new `graphile-worker` runtime by completing live PostgreSQL handler validation, hardening the new mail-sync adapter under production mailboxes, and enabling the worker by default after those drills.
+- Production policy and retention/backfill drills for the audit-retention archive target. The default server worker now supports pre-delete JSONL export when `AUDIT_ARCHIVE_DIR` is configured, and Docker backup/restore/doctor wiring includes the resulting audit-archive tar files.
+- Embedded PostgreSQL standalone mode beyond the lifecycle foundation: real Electron startup/shutdown wiring, installer-bundled binary validation, pg_upgrade drills, crash recovery checks, and packaged-app E2E coverage.
+- Installer setup wizard beyond the current first-start UI foundation: Windows/macOS/Linux installer integration, Linux server-install execution, mode switching UX, and packaged E2E coverage.
+- Standalone-to-server migration beyond the CLI primitive: read-only/stop coordination for the running standalone app, authenticated target-server provisioning, master-key transfer flow, live 100k-mail drill, remote attachment integrity verification, and idempotent re-run markers on the target server.
+- Remaining SQLite-to-PostgreSQL migration work: live-volume throughput/drill coverage for large attachment copy jobs and final-table adapters for any legacy table family discovered outside the current manifest. This branch now has a live SQLite source adapter, staged-row CLI wiring with source-vs-staging row-count/hash validation, optional attachment copy into `ATTACHMENTS_DIR`, dependency-ordered final-table orchestration for the currently mapped CRM/JTL, mail, and workflow/security families, plus DB-backed attachment metadata reads and safe server-side attachment downloads from `ATTACHMENTS_DIR`.
+- Production-grade backup/restore policy hardening beyond the new Docker/doctor primitives, including retention/backfill policy drills and operator documentation for production restore decisions. This branch now writes SHA-256 manifests for Docker backup sets, verifies DB/attachment/audit-archive files in restore scripts, validates the latest backup set from `doctor`, provides a restartable `backup-scheduler` profile, provides a host-side restore orchestration script with API/Caddy stop/start plus health checks, and provides a Compose `restore-drill` profile that restores a verified dump into a temporary PostgreSQL database and checks the core schema while validating matching filesystem archives when present.
+- Thin-client/browser client beyond the new renderer transport/auth foundation: full route coverage for mail/workflow and remaining mutation channels, WebSocket subscriptions beyond conversation locks/customer-list/detail/calendar/product/deal/task/dashboard/mail-list refresh, and end-to-end server-client validation remain open. Dashboard reads, Follow-up queue reads/task snooze, Compose draft autosave/scheduled-send metadata, browser compose-attachment upload, compose send with server-stored attachments and outbound-workflow enqueue/hold guarding plus IMAP Sent-copy APPEND, direct browser server bootstrap via URL/localStorage, initial server Owner setup, invite-link creation/public acceptance/configured SMTP delivery, admin user list/create/update, customer-list/detail event refresh, calendar event refresh, product-list event refresh, deal-list/detail event refresh, task-list event refresh, follow-up queue event refresh, dashboard event refresh, mail-list/selected-metadata/account-data/compose-aux/AI-profile/PGP-key/automation-key event refresh, and conversation-lock acquire/heartbeat/release/takeover UI flows are now covered by HTTP routes and renderer transport mappings; the renderer now schedules auth refresh before access-token expiry in server-client mode.
+
+## Verification Commands
+
+```powershell
+npm run build:packages
+npm run test:server-edition
+npm run build
+npm run lint
+npm test -- --runInBand
+npm run migrate:standalone-to-server -- --help
+npm run migrate:sqlite -- --help
+npm run test:server-rls
+```
+
+`test:server-rls` requires `DATABASE_URL` pointing at an already migrated PostgreSQL test database and intentionally rolls back its probe fixtures.

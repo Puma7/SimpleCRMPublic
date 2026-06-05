@@ -24,7 +24,8 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { hasElectron, invokeIpc, type EmailMessage } from "./types"
+import { invokeRenderer } from "@/services/transport"
+import { type EmailMessage } from "./types"
 
 const ADVERTISING_TAG = "Werbung"
 
@@ -85,12 +86,12 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
   )
 
   const tagAdvertising = async () => {
-    if (!hasElectron() || hasAdvertisingTag) return
+    if (hasAdvertisingTag) return
     const messageId = message.id
     setMenuOpen(false)
     setBusy("tag")
     try {
-      await invokeIpc(IPCChannels.Email.AddMessageTag, {
+      await invokeRenderer(IPCChannels.Email.AddMessageTag, {
         messageId,
         tag: ADVERTISING_TAG,
       })
@@ -116,14 +117,14 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
   }
 
   const createDeal = async () => {
-    if (!hasElectron() || !dealName.trim()) return
+    if (!dealName.trim()) return
     if (!dealContext || dealContext.messageId !== message.id) {
       toast.error("Mail gewechselt — bitte „Deal anlegen“ erneut öffnen.")
       return
     }
     setSavingDeal(true)
     try {
-      const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Deals.Create,
         {
           name: dealName.trim(),
@@ -132,7 +133,7 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
           value_calculation_method: "static",
           stage: "Interessent",
         },
-      )
+      ) as { success: boolean; id?: number; error?: string }
       if (dealContext.messageId !== message.id) return
       if (r.success && r.id) {
         toast.success("Deal angelegt.")
@@ -149,7 +150,6 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
   }
 
   const suggestAppointment = async () => {
-    if (!hasElectron()) return
     const appointmentContext = {
       messageId: message.id,
       customerId:
@@ -161,7 +161,7 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
     setBusy("termin")
     try {
       if (appointmentContext.customerId != null) {
-        const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
+        const r = await invokeRenderer(
           IPCChannels.Tasks.Create,
           {
             customer_id: appointmentContext.customerId,
@@ -173,7 +173,7 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
             priority: "Medium",
             completed: false,
           },
-        )
+        ) as { success: boolean; id?: number; error?: string }
         if (appointmentContext.messageId !== message.id) return
         if (r.success) {
           toast.success("Aufgabe für Termin angelegt (Fällig in 3 Tagen).")
@@ -189,12 +189,7 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
       start.setHours(14, 0, 0, 0)
       const end = new Date(start)
       end.setHours(15, 0, 0, 0)
-      const cal = await invokeIpc<{
-        success?: boolean
-        id?: number
-        lastInsertRowid?: number | bigint
-        error?: string
-      }>(IPCChannels.Calendar.AddCalendarEvent, {
+      const cal = await invokeRenderer(IPCChannels.Calendar.AddCalendarEvent, {
         title: appointmentContext.taskTitle,
         description: `Aus E-Mail #${appointmentContext.messageId} (ohne Kundenverknüpfung)`,
         start_date: start.toISOString(),
@@ -203,7 +198,12 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
         color_code: "#3174ad",
         event_type: "email",
         recurrence_rule: null,
-      })
+      }) as {
+        success?: boolean
+        id?: number
+        lastInsertRowid?: number | bigint
+        error?: string
+      }
       if (appointmentContext.messageId !== message.id) return
       if (cal.success === false) {
         toast.error(cal.error ?? "Kalendertermin konnte nicht angelegt werden.")
@@ -222,8 +222,6 @@ export function MessageMoreActionsMenu({ message, messageTags, onTagsChanged }: 
       setBusy(null)
     }
   }
-
-  if (!hasElectron()) return null
 
   return (
     <>

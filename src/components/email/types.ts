@@ -1,3 +1,5 @@
+import { getRendererTransport } from "@/services/transport"
+
 export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed"
 
 export type EmailAccount = {
@@ -39,6 +41,20 @@ export type TeamMember = {
   display_name: string
   role: string
   signature_html?: string | null
+}
+
+export type ConversationLockReason = "reply" | "forward" | "edit"
+
+export type ConversationLockRecord = {
+  messageId: number
+  userId: string
+  workspaceId: string
+  acquiredAt: string
+  lastHeartbeatAt: string
+  reason: ConversationLockReason
+  takeoverCount: number
+  displayName?: string
+  email?: string
 }
 
 export type AccountSignature = {
@@ -141,6 +157,8 @@ function getElectronInvoke(): ElectronInvoke | null {
 }
 
 export const hasElectron = (): boolean => getElectronInvoke() != null
+
+export const hasLocalIpc = (): boolean => hasElectron() && getRendererTransport().kind === "ipc"
 
 export const invokeIpc = <T,>(channel: string, ...args: unknown[]): Promise<T> => {
   const invoke = getElectronInvoke()

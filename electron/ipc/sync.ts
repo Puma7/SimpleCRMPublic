@@ -2,7 +2,7 @@ import { IPCChannels } from '../../shared/ipc/channels';
 import { BrowserWindow } from 'electron';
 import { registerIpcHandler } from './register';
 import { runSync, getLastSyncStatus } from '../sync-service';
-import { getSyncInfo, setSyncInfo } from '../sqlite-service';
+import { readSyncInfo, writeSyncInfo } from '../sync-info-store';
 
 interface SyncHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -36,7 +36,7 @@ export function registerSyncHandlers(options: SyncHandlersOptions) {
 
   disposers.push(registerIpcHandler(IPCChannels.Sync.GetInfo, async (_event, key: string) => {
     try {
-      return getSyncInfo(key);
+      return readSyncInfo(key);
     } catch (error) {
       logger.error('IPC Error getting sync info:', error);
       return null;
@@ -46,7 +46,7 @@ export function registerSyncHandlers(options: SyncHandlersOptions) {
   disposers.push(registerIpcHandler(IPCChannels.Sync.SetInfo, async (_event, payload: any) => {
     try {
       const { key, value } = payload ?? {};
-      setSyncInfo(key, value);
+      writeSyncInfo(key, value);
       return { success: true };
     } catch (error) {
       logger.error('IPC Error setting sync info:', error);

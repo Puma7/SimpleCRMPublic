@@ -7,18 +7,33 @@ import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { hasElectron, invokeIpc, type CannedResponse } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isMailComposeAuxDataRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
+import type { CannedResponse } from "../types"
 
 export function CannedPanel() {
   const [items, setItems] = useState<CannedResponse[]>([])
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
-    setItems(await invokeIpc<CannedResponse[]>(IPCChannels.Email.ListCannedResponses))
+    setItems(await invokeRenderer(IPCChannels.Email.ListCannedResponses) as CannedResponse[])
   }, [])
 
   useEffect(() => {
     void load()
+  }, [load])
+
+  useEffect(() => {
+    if (getRendererTransport().kind !== "http") return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailComposeAuxDataRefreshEvent(event)) void load()
+      },
+    })
+    return () => subscription.unsubscribe()
   }, [load])
 
   return (
@@ -39,7 +54,7 @@ export function CannedPanel() {
                 const body = (
                   document.getElementById(`cb-${c.id}`) as HTMLTextAreaElement
                 ).value
-                await invokeIpc(IPCChannels.Email.SaveCannedResponse, {
+                await invokeRenderer(IPCChannels.Email.SaveCannedResponse, {
                   id: c.id,
                   title: e.target.value,
                   body,
@@ -59,7 +74,7 @@ export function CannedPanel() {
         variant="secondary"
         size="sm"
         onClick={async () => {
-          await invokeIpc(IPCChannels.Email.SaveCannedResponse, { title: "Neu", body: "" })
+          await invokeRenderer(IPCChannels.Email.SaveCannedResponse, { title: "Neu", body: "" })
           await load()
           toast.success("Baustein angelegt")
         }}

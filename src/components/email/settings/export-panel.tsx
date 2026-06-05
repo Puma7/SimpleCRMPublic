@@ -5,17 +5,53 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { hasElectron, invokeIpc } from "../types"
+import { getRendererTransport } from "@/services/transport"
+import { hasLocalIpc, invokeIpc } from "../types"
 
 type ExportResult = { ok: true; path: string } | { ok: false; error: string }
+type ServerExportResult = { ok: true; blob: Blob; filename: string; contentType?: string | null }
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+function exportErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Export fehlgeschlagen"
+}
 
 export function ExportPanel() {
   const [running, setRunning] = useState(false)
 
   const run = async (skipAttachments: boolean) => {
-    if (!hasElectron()) return
+    const transport = getRendererTransport()
+    if (!hasLocalIpc() && transport.kind !== "http") return
     setRunning(true)
     try {
+      if (transport.kind === "http" && transport.serverBaseUrl) {
+        const result = await transport.invoke(
+          IPCChannels.Email.EmailGdprExport,
+          skipAttachments ? { skipAttachments: true } : undefined,
+        ) as ServerExportResult
+        downloadBlob(
+          result.blob,
+          result.filename,
+        )
+        toast.success(skipAttachments ? "Export ohne Anhaenge heruntergeladen." : "Export heruntergeladen.")
+        return
+      }
+
+      if (transport.kind === "http") {
+        toast.error("Server-URL fehlt. Export wurde nicht gestartet.")
+        return
+      }
+
       const r = await invokeIpc<ExportResult>(
         IPCChannels.Email.EmailGdprExport,
         skipAttachments ? { skipAttachments: true } : undefined,
@@ -27,6 +63,8 @@ export function ExportPanel() {
       } else if (r.error !== "Abgebrochen") {
         toast.error(r.error ?? "Export fehlgeschlagen")
       }
+    } catch (error) {
+      toast.error(exportErrorMessage(error))
     } finally {
       setRunning(false)
     }
@@ -37,8 +75,8 @@ export function ExportPanel() {
       <div>
         <h3 className="text-base font-semibold">Datenexport (DSGVO-Hilfe)</h3>
         <p className="text-sm text-muted-foreground">
-          ZIP mit Metadaten (ohne Passwörter/Keytar-Einträge). Der Ordner „attachments" enthält gespeicherte Anhänge.
-          Kein vollständiges Rohmail-Archiv. Für ein technisches Vollbackup (SQLite + Anhänge) siehe Tab{" "}
+          ZIP mit Metadaten (ohne Passwörter/Secret-Einträge). Der Ordner „attachments" enthält gespeicherte Anhänge.
+          Kein vollständiges Rohmail-Archiv. Technische Vollbackups laufen im Standalone-Modus lokal und im Servermodus über den Serverbetrieb. Siehe Tab{" "}
           <strong>Diagnose</strong>.
         </p>
       </div>

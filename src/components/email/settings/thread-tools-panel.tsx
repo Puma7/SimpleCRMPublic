@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
-import { hasElectron, invokeIpc } from "@/components/email/types"
+import { invokeRenderer } from "@/services/transport"
 
 type Warning = {
   messageId: number
@@ -24,8 +24,7 @@ export function ThreadToolsPanel() {
   const [splitMsgId, setSplitMsgId] = useState("")
 
   const reload = useCallback(async () => {
-    if (!hasElectron()) return
-    const w = await invokeIpc(IPCChannels.Email.ListThreadAliasWarnings, undefined)
+    const w = await invokeRenderer(IPCChannels.Email.ListThreadAliasWarnings)
     if (Array.isArray(w)) setWarnings(w as Warning[])
   }, [])
 
@@ -67,7 +66,7 @@ export function ThreadToolsPanel() {
               toast.error("Konto-ID erforderlich")
               return
             }
-            const r = await invokeIpc(IPCChannels.Email.MergeThreads, {
+            const r = await invokeRenderer(IPCChannels.Email.MergeThreads, {
               aliasThreadId: aliasId.trim(),
               canonicalThreadId: canonId.trim(),
               accountId,
@@ -95,7 +94,7 @@ export function ThreadToolsPanel() {
           onClick={async () => {
             const id = parseInt(splitMsgId, 10)
             if (!Number.isFinite(id)) return
-            const r = await invokeIpc(IPCChannels.Email.SplitMessageThread, { messageId: id })
+            const r = await invokeRenderer(IPCChannels.Email.SplitMessageThread, { messageId: id })
             if (r && typeof r === "object" && "success" in r && (r as { success: boolean }).success) {
               toast.success("Abgetrennt")
             }

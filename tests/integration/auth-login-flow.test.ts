@@ -4,7 +4,7 @@ import {
   clearLoginFailures,
   reloadLoginFailuresFromDb,
 } from '../../electron/auth/login-guard';
-import { hashPassword, verifyPassword } from '../../electron/auth/password-hash';
+import { hashPassword, verifyPassword } from '../../packages/core/src/auth';
 
 describe('auth login flow (unit slice)', () => {
   it('password hash roundtrip', () => {

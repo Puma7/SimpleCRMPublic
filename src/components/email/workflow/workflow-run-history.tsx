@@ -6,7 +6,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { resolveRunStepNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 
 type RunRow = {
@@ -46,7 +46,7 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
     }
     setLoading(true)
     try {
-      const list = await invokeIpc<RunRow[]>(IPCChannels.Email.ListWorkflowRuns, workflowId)
+      const list = await invokeRenderer(IPCChannels.Email.ListWorkflowRuns, workflowId) as RunRow[]
       setRuns(list)
     } finally {
       setLoading(false)
@@ -61,7 +61,7 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
 
   const loadSteps = async (runId: number) => {
     setSelectedRunId(runId)
-    const s = await invokeIpc<StepRow[]>(IPCChannels.Email.ListWorkflowRunSteps, runId)
+    const s = await invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as StepRow[]
     setSteps(s)
   }
 

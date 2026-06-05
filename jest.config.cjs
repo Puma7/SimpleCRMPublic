@@ -65,7 +65,10 @@ module.exports = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@shared/(.*)$': '<rootDir>/shared/$1',
+    '^@simplecrm/core$': '<rootDir>/packages/core/src',
+    '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
+    '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
   },
   projects: [
     {
@@ -76,7 +79,10 @@ module.exports = {
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
         '^@shared/(.*)$': '<rootDir>/shared/$1',
+        '^@simplecrm/core$': '<rootDir>/packages/core/src',
+        '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
         '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
+        '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
       },
       testMatch: ['<rootDir>/tests/unit/**/*.test.(ts|tsx)'],
       setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
@@ -100,7 +106,10 @@ module.exports = {
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
         '^@shared/(.*)$': '<rootDir>/shared/$1',
+        '^@simplecrm/core$': '<rootDir>/packages/core/src',
+        '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
         '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
+        '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
       },
       testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],
       setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],

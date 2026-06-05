@@ -6,11 +6,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { EmailSubNav } from "@/components/email/email-sub-nav"
 import { MailWorkspaceProvider } from "@/components/email/workspace-context"
 import { useHasElectron } from "@/components/email/use-has-electron"
+import { getRendererTransport } from "@/services/transport"
 
 export default function EmailModuleLayout() {
   const electronReady = useHasElectron()
+  const serverClientMode =
+    typeof window !== "undefined" && getRendererTransport().kind === "http"
 
-  if (!electronReady) {
+  if (!electronReady && !serverClientMode) {
     return (
       <div className="container max-w-2xl py-10">
         <Card>
@@ -20,9 +23,10 @@ export default function EmailModuleLayout() {
               E-Mail
             </CardTitle>
             <CardDescription>
-              Das E-Mail-Modul ist nur in der Desktop-App (Electron) verfügbar. Bitte starten Sie
-              SimpleCRM mit{" "}
-              <code className="rounded bg-muted px-1">npm run electron:dev</code>.
+              Das E-Mail-Modul benoetigt die Desktop-App oder eine verbundene
+              SimpleCRM-Serverinstanz. Bitte starten Sie SimpleCRM mit{" "}
+              <code className="rounded bg-muted px-1">npm run electron:dev</code> oder verbinden
+              Sie den Browser mit dem Server-Client-Modus.
             </CardDescription>
           </CardHeader>
           <CardContent />

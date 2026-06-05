@@ -5,7 +5,7 @@ import { AlertTriangle, X } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { hasElectron, invokeIpc } from "./types"
+import { invokeRenderer } from "@/services/transport"
 
 type Notice = {
   id: string
@@ -22,9 +22,8 @@ export function UidValidityNoticeBanner() {
   const [notices, setNotices] = useState<Notice[]>([])
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const rows = await invokeIpc<Notice[]>(IPCChannels.Email.ListUidValidityNotices)
+      const rows = await invokeRenderer(IPCChannels.Email.ListUidValidityNotices)
       setNotices(rows ?? [])
     } catch {
       setNotices([])
@@ -36,9 +35,8 @@ export function UidValidityNoticeBanner() {
   }, [load])
 
   const dismiss = async (noticeId: string) => {
-    if (!hasElectron()) return
     try {
-      await invokeIpc(IPCChannels.Email.DismissUidValidityNotice, { noticeId })
+      await invokeRenderer(IPCChannels.Email.DismissUidValidityNotice, { noticeId })
       setNotices((prev) => prev.filter((n) => n.id !== noticeId))
     } catch {
       /* ignore */

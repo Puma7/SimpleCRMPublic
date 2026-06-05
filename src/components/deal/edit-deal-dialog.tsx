@@ -12,6 +12,7 @@ import { Trash2, PlusCircle } from "lucide-react";
 import { Deal, DealStage } from "@/types/deal";
 import { Product } from "@/types";
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from "@/services/transport";
 
 interface DealProductLink extends Product {
   deal_product_id: number;
@@ -60,7 +61,7 @@ export function EditDealDialog({ deal, isOpen, onClose, onSave }: EditDealDialog
     setIsLoading(true);
     setError(null);
     try {
-      const fetched = await window.electronAPI.invoke(
+      const fetched = await invokeRenderer(
         IPCChannels.Deals.GetProducts,
         dealId
       );
@@ -99,7 +100,7 @@ export function EditDealDialog({ deal, isOpen, onClose, onSave }: EditDealDialog
       // Fetch product details to set price
       const fetchProductPrice = async () => {
         try {
-          const product = await window.electronAPI.invoke(
+          const product = await invokeRenderer(
             IPCChannels.Products.GetById,
             Number(selectedProductId)
           ) as Product;
@@ -123,7 +124,7 @@ export function EditDealDialog({ deal, isOpen, onClose, onSave }: EditDealDialog
     }
     
     try {
-      const productToAdd = await window.electronAPI.invoke(
+      const productToAdd = await invokeRenderer(
         IPCChannels.Products.GetById,
         Number(selectedProductId)
       ) as Product;
@@ -195,7 +196,7 @@ export function EditDealDialog({ deal, isOpen, onClose, onSave }: EditDealDialog
 
       productsToAdd.forEach(p => {
         console.log(`Adding product ${p.id} to deal ${deal.id}`);
-        promises.push(window.electronAPI.invoke(
+        promises.push(invokeRenderer(
           IPCChannels.Deals.AddProduct,
           {
             dealId: deal.id,
@@ -208,7 +209,7 @@ export function EditDealDialog({ deal, isOpen, onClose, onSave }: EditDealDialog
 
       productsToRemove.forEach(p => {
           console.log(`Removing product ${p.id} from deal ${deal.id}`);
-          promises.push(window.electronAPI.invoke(
+          promises.push(invokeRenderer(
             IPCChannels.Deals.RemoveProduct,
             { dealProductId: p.deal_product_id, dealId: deal.id, productId: p.id }
           ));
@@ -216,7 +217,7 @@ export function EditDealDialog({ deal, isOpen, onClose, onSave }: EditDealDialog
 
        productsToUpdate.forEach(p => {
           console.log(`Updating quantity for product link ${p.deal_product_id} in deal ${deal.id} to ${p.quantity}`);
-          promises.push(window.electronAPI.invoke(
+          promises.push(invokeRenderer(
             IPCChannels.Deals.UpdateProduct,
             {
               dealProductId: p.deal_product_id,

@@ -4,26 +4,14 @@ import {
   EMAIL_MESSAGES_TABLE,
   EMAIL_READ_RECEIPT_LOG_TABLE,
 } from '../database-schema';
+import { parseDispositionNotificationTo } from '../../packages/core/src/email';
+
+export {
+  domainTrusted,
+  parseDispositionNotificationTo,
+} from '../../packages/core/src/email';
 
 export type RespondToReadReceipts = 'never' | 'ask' | 'always_trusted';
-
-export function parseDispositionNotificationTo(rawHeaders: string | null): string | null {
-  if (!rawHeaders) return null;
-  const lines = rawHeaders.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const m = line.match(/^Disposition-Notification-To:\s*(.*)/i);
-    if (m) {
-      let val = m[1]!.trim();
-      while (i + 1 < lines.length && /^\s+/.test(lines[i + 1]!)) {
-        i++;
-        val += ` ${lines[i]!.trim()}`;
-      }
-      return val || null;
-    }
-  }
-  return null;
-}
 
 export function detectAndFlagReadReceiptRequest(
   db: Database.Database,
@@ -37,12 +25,6 @@ export function detectAndFlagReadReceiptRequest(
     `INSERT INTO ${EMAIL_READ_RECEIPT_LOG_TABLE} (message_id, direction, recipient) VALUES (?, 'received_in', ?)`,
   ).run(messageId, dnt);
   return true;
-}
-
-export function domainTrusted(trustedCsv: string | null, senderDomain: string): boolean {
-  if (!trustedCsv?.trim()) return false;
-  const list = trustedCsv.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
-  return list.includes(senderDomain.toLowerCase());
 }
 
 export function getReadReceiptSettings(

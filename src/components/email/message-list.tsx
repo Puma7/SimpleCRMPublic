@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
-import { ChevronDown, Loader2, Paperclip, Search } from "lucide-react"
+import { ChevronDown, Loader2, Lock, Paperclip, Search } from "lucide-react"
 import { toast } from "sonner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -37,8 +37,6 @@ import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
 import {
   formatFrom,
-  hasElectron,
-  invokeIpc,
   type EmailAccount,
   type EmailMessage,
   type MailView,
@@ -48,6 +46,7 @@ import { setMailDragData } from "./mail-drag"
 import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
 import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
+import { invokeRenderer } from "@/services/transport"
 
 type Props = {
   messages: EmailMessage[]
@@ -106,6 +105,7 @@ export function MessageList({
     setListSortMode,
     listDisplayMode,
     setListDisplayMode,
+    conversationLocks,
   } = useMailWorkspace()
   const visibleMessages = useMemo(() => {
     if (listDisplayMode !== "thread") return messages
@@ -213,14 +213,13 @@ export function MessageList({
   }, [allSelected, selectableIds])
 
   const requestSelectAllInView = useCallback(async () => {
-    if (!hasElectron()) return
     if (selectedAccountId == null) {
       toast.error("Bitte zuerst ein Konto wählen")
       return
     }
     setBulkBusy(true)
     try {
-      const ids = await invokeIpc<number[]>(IPCChannels.Email.ListMessageIdsByView, {
+      const ids = await invokeRenderer(IPCChannels.Email.ListMessageIdsByView, {
         accountId: selectedAccountId,
         view: mailView,
         categoryId: categoryFilterId,
@@ -228,7 +227,7 @@ export function MessageList({
         doneFilter:
           mailView === "inbox" && messageDoneFilter !== "all" ? messageDoneFilter : undefined,
         limit: 500,
-      })
+      }) as number[]
       if (ids.length === 0) {
         toast.message("Keine auswählbaren Nachrichten in dieser Ansicht")
         return
@@ -269,14 +268,14 @@ export function MessageList({
 
   const runBulk = useCallback(
     async (action: BulkAction) => {
-      if (!hasElectron() || selectedIds.size === 0) return
+      if (selectedIds.size === 0) return
       setBulkBusy(true)
       try {
         const ids = [...selectedIds]
         if (action === "delete-drafts") {
-          const r = await invokeIpc<
-            { success: true; count: number } | { success: false; error?: string }
-          >(IPCChannels.Email.BulkDeleteComposeDrafts, { messageIds: ids })
+          const r = await invokeRenderer(IPCChannels.Email.BulkDeleteComposeDrafts, { messageIds: ids }) as
+            | { success: true; count: number }
+            | { success: false; error?: string }
           if (!r.success) {
             toast.error(r.error ?? "Entwürfe konnten nicht gelöscht werden")
             return
@@ -287,10 +286,7 @@ export function MessageList({
         } else if (action === "restore") {
           let restored = 0
           for (const id of ids) {
-            const r = await invokeIpc<{ success: boolean }>(
-              IPCChannels.Email.RestoreMessage,
-              id,
-            )
+            const r = await invokeRenderer(IPCChannels.Email.RestoreMessage, id) as { success: boolean }
             if (r.success) restored += 1
           }
           toast.success(
@@ -300,19 +296,17 @@ export function MessageList({
           )
         } else if (action === "unsnooze") {
           for (const id of ids) {
-            await invokeIpc(IPCChannels.Email.SnoozeMessage, { messageId: id, until: null })
+            await invokeRenderer(IPCChannels.Email.SnoozeMessage, { messageId: id, until: null })
           }
           toast.success(
             ids.length === 1 ? "1 Nachricht wieder im Posteingang" : `${ids.length} Nachrichten wieder im Posteingang`,
           )
         } else if (action === "archive" || action === "unarchive") {
-          const r = await invokeIpc<
-            { success: true; count: number } | { success: false; error?: string }
-          >(IPCChannels.Email.BulkSetMessagesArchived, {
+          const r = await invokeRenderer(IPCChannels.Email.BulkSetMessagesArchived, {
             messageIds: ids,
             archived: action === "archive",
             accountId: bulkAccountId,
-          })
+          }) as { success: true; count: number } | { success: false; error?: string }
           if (!r.success) {
             toast.error(r.error ?? "Archivieren fehlgeschlagen")
             return
@@ -327,13 +321,11 @@ export function MessageList({
                 : `${r.count} Nachrichten aus dem Archiv geholt`,
           )
         } else if (action === "mark-done" || action === "mark-open") {
-          const r = await invokeIpc<
-            { success: true; count: number } | { success: false; error?: string }
-          >(IPCChannels.Email.BulkSetMessageDone, {
+          const r = await invokeRenderer(IPCChannels.Email.BulkSetMessageDone, {
             messageIds: ids,
             done: action === "mark-done",
             accountId: bulkAccountId,
-          })
+          }) as { success: true; count: number } | { success: false; error?: string }
           if (!r.success) {
             toast.error(r.error ?? "Erledigt-Status konnte nicht gesetzt werden")
             return
@@ -348,13 +340,11 @@ export function MessageList({
                 : `${r.count} Nachrichten wieder offen`,
           )
         } else if (action === "spam" || action === "not-spam") {
-          const r = await invokeIpc<
-            { success: true; count: number } | { success: false; error?: string }
-          >(IPCChannels.Email.BulkSetMessageSpam, {
+          const r = await invokeRenderer(IPCChannels.Email.BulkSetMessageSpam, {
             messageIds: ids,
             spam: action === "spam",
             accountId: bulkAccountId,
-          })
+          }) as { success: true; count: number } | { success: false; error?: string }
           if (!r.success) {
             toast.error(r.error ?? "Aktion fehlgeschlagen")
             return
@@ -369,12 +359,10 @@ export function MessageList({
                 : `${r.count} Nachrichten als kein Spam markiert`,
           )
         } else {
-          const r = await invokeIpc<
-            { success: true; count: number } | { success: false; error?: string }
-          >(IPCChannels.Email.BulkSoftDeleteMessages, {
+          const r = await invokeRenderer(IPCChannels.Email.BulkSoftDeleteMessages, {
             messageIds: ids,
             accountId: bulkAccountId,
-          })
+          }) as { success: true; count: number } | { success: false; error?: string }
           if (!r.success) {
             toast.error(r.error ?? "Löschen fehlgeschlagen")
             return
@@ -597,6 +585,8 @@ export function MessageList({
               const isThreadRoot = listDisplayMode === "thread" && threadIdForExpand.length > 0
               const expanded = expandedThreads.has(tKey)
               const children = threadChildren[tKey] ?? []
+              const lock = conversationLocks[m.id]
+              const lockOwner = lock?.displayName?.trim() || lock?.email?.trim() || lock?.userId
               return (
                 <li key={m.id}>
                   <div
@@ -617,8 +607,8 @@ export function MessageList({
                           if (expanded) next.delete(tKey)
                           else {
                             next.add(tKey)
-                            if (!threadChildren[tKey] && hasElectron() && threadIdForExpand) {
-                              const rows = await invokeIpc(IPCChannels.Email.ListThreadMessages, {
+                            if (!threadChildren[tKey] && threadIdForExpand) {
+                              const rows = await invokeRenderer(IPCChannels.Email.ListThreadMessages, {
                                 threadId: threadIdForExpand,
                                 limit: 50,
                               })
@@ -704,7 +694,13 @@ export function MessageList({
                                 : "Entwurf"
                               : formatFrom(m.from_json)}
                           </span>
-                          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                          <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
+                            {lock ? (
+                              <Lock
+                                className="h-3 w-3 text-amber-600 dark:text-amber-300"
+                                aria-label={`Gesperrt durch ${lockOwner}`}
+                              />
+                            ) : null}
                             {formatListDateTime(m.date_received)}
                           </span>
                           <span

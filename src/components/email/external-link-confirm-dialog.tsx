@@ -14,7 +14,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { hasElectron, invokeIpc } from "./types"
+import { openExternalUrlInBrowser } from "./external-link-open"
+import { hasLocalIpc, invokeIpc } from "./types"
 
 export function useExternalLinkConfirm() {
   const [pendingUrl, setPendingUrl] = useState<string | null>(null)
@@ -44,12 +45,12 @@ export function useExternalLinkConfirm() {
   const confirmOpen = useCallback(async () => {
     if (!pendingUrl) return
     try {
-      if (hasElectron()) {
+      if (hasLocalIpc()) {
         await invokeIpc<{ success: boolean }>(IPCChannels.Update.OpenExternalUrl, {
           url: pendingUrl,
         })
       } else {
-        window.open(pendingUrl, "_blank", "noopener,noreferrer")
+        openExternalUrlInBrowser(pendingUrl)
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Link konnte nicht geöffnet werden.")

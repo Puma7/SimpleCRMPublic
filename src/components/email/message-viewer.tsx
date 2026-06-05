@@ -16,6 +16,7 @@ import {
   Eye,
   Forward,
   Clock,
+  Lock,
   Printer,
   Mail,
   MailOpen,
@@ -62,10 +63,11 @@ import { MessageAddressesBlock } from "./message-addresses-block"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   firstAddress,
-  hasElectron,
+  hasLocalIpc,
   invokeIpc,
   stripHtmlToText,
   type CategoryRow,
+  type ConversationLockRecord,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -79,6 +81,15 @@ import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
 import { ApplyWorkflowMenu } from "./apply-workflow-menu"
 import { useExternalLinkConfirm } from "./external-link-confirm-dialog"
+import {
+  decryptServerPgpAttachment,
+  getRendererTransport,
+  getServerAccessToken,
+  invokeRenderer,
+  verifyServerPgpAttachment,
+} from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
+import { lockOwnerLabel } from "./use-conversation-locks"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -100,6 +111,72 @@ type Props = {
   onForward: (m: EmailMessage) => void
   /** Beta layout: Metadaten in eigener Spalte. */
   metadataPlacement?: "inline" | "external"
+  remoteContentPolicyRefreshKey?: number
+}
+
+type ExportMessageEmlResult =
+  | { success: true; path?: string | null; rawEml?: string | null; emlSource?: string | null }
+  | { success: false; error?: string }
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = objectUrl
+  link.download = fileName
+  link.rel = "noopener"
+  document.body.appendChild(link)
+  try {
+    link.click()
+  } finally {
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+  }
+}
+
+function blobFromBase64(base64: string, contentType: string | null | undefined): Blob {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return new Blob([bytes], { type: contentType || "application/octet-stream" })
+}
+
+function isPgpEncryptedAttachment(att: MessageAttachment): boolean {
+  const filename = att.filename_display.toLowerCase()
+  const contentType = (att.content_type ?? "").toLowerCase()
+  return contentType.includes("pgp-encrypted") || /\.(?:pgp|gpg)$/i.test(filename)
+}
+
+function isPgpSignatureAttachment(att: MessageAttachment): boolean {
+  const filename = att.filename_display.toLowerCase()
+  const contentType = (att.content_type ?? "").toLowerCase()
+  return contentType.includes("pgp-signature") || /\.asc$/i.test(filename)
+}
+
+function findDetachedSignatureAttachment(
+  attachments: readonly MessageAttachment[],
+  target: MessageAttachment,
+): MessageAttachment | undefined {
+  const expected = `${target.filename_display}.asc`.toLowerCase()
+  const encryptedBase = target.filename_display.replace(/\.(?:pgp|gpg)$/i, "")
+  const expectedForEncryptedBase = `${encryptedBase}.asc`.toLowerCase()
+  return attachments.find((att) => (
+    att.id !== target.id
+    && isPgpSignatureAttachment(att)
+    && (
+      att.filename_display.toLowerCase() === expected
+      || att.filename_display.toLowerCase() === expectedForEncryptedBase
+    )
+  ))
+}
+
+function safeEmlFileName(message: EmailMessage): string {
+  const subject = (message.subject ?? "").trim() || `message-${message.id}`
+  const safeBase = subject
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+  return `${safeBase || `message-${message.id}`}.eml`
 }
 
 export function MessageViewer(props: Props) {
@@ -118,6 +195,7 @@ export function MessageViewer(props: Props) {
     onReplyAll,
     onForward,
     metadataPlacement = "inline",
+    remoteContentPolicyRefreshKey = 0,
   } = props
   const {
     selectedMessage,
@@ -127,7 +205,14 @@ export function MessageViewer(props: Props) {
     mailView,
     messageDoneFilter,
     setComposeIntent,
+    conversationLocks,
+    upsertConversationLock,
   } = useMailWorkspace()
+  const { user } = useAuth()
+  const rendererTransport = getRendererTransport()
+  const serverClientMode = rendererTransport.kind === "http"
+  const serverAttachmentBaseUrl =
+    serverClientMode ? rendererTransport.serverBaseUrl ?? null : null
 
   const [rawHeadersOpen, setRawHeadersOpen] = useState(false)
   const [rawHeadersText, setRawHeadersText] = useState<string | null>(null)
@@ -143,6 +228,11 @@ export function MessageViewer(props: Props) {
   const [pgpPassphrase, setPgpPassphrase] = useState("")
   const [threadAliasHint, setThreadAliasHint] = useState<string | null>(null)
   const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
+  const localIpcAvailable = !serverClientMode && hasLocalIpc()
+  const selectedLock = selectedMessage ? conversationLocks[selectedMessage.id] : undefined
+  const selectedLockOwner = selectedLock ? lockOwnerLabel(selectedLock) : ""
+  const lockedByOther = Boolean(selectedLock && user?.id && selectedLock.userId !== user.id)
+  const canTakeoverLock = lockedByOther && (user?.role === "owner" || user?.role === "admin")
 
   useEffect(() => {
     setHtmlView(false)
@@ -153,10 +243,10 @@ export function MessageViewer(props: Props) {
   }, [selectedMessage?.id])
 
   useEffect(() => {
-    if (!selectedMessage?.id || !hasElectron()) return
+    if (!selectedMessage?.id) return
     const messageId = selectedMessage.id
     void (async () => {
-      const w = await invokeIpc(IPCChannels.Email.ListThreadAliasWarnings, undefined)
+      const w = await invokeRenderer(IPCChannels.Email.ListThreadAliasWarnings)
       if (!Array.isArray(w)) return
       const hit = (w as { messageId: number }[]).find((x) => x.messageId === messageId)
       if (hit && selectedMessage?.id === messageId) {
@@ -165,14 +255,14 @@ export function MessageViewer(props: Props) {
         )
       }
     })()
-  }, [selectedMessage?.id])
+  }, [remoteContentPolicyRefreshKey, selectedMessage?.id])
 
   useEffect(() => {
-    if (!selectedMessage?.id || !hasElectron()) return
+    if (!selectedMessage?.id) return
     const messageId = selectedMessage.id
     void (async () => {
       try {
-        const policy = await invokeIpc(IPCChannels.Email.GetRemoteContentPolicy, {
+        const policy = await invokeRenderer(IPCChannels.Email.GetRemoteContentPolicy, {
           messageId,
         })
         if (policy && typeof policy === "object" && "allowRemote" in policy) {
@@ -181,11 +271,11 @@ export function MessageViewer(props: Props) {
             return Boolean((policy as { allowRemote: boolean }).allowRemote)
           })
         }
-        const rr = await invokeIpc(IPCChannels.Email.GetReadReceiptState, { messageId })
+        const rr = await invokeRenderer(IPCChannels.Email.GetReadReceiptState, { messageId })
         if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
           const s = rr as unknown as { requested: boolean; respond: string }
           if (selectedMessage?.id !== messageId) return
-          setReadReceiptRequested(s.requested)
+          setReadReceiptRequested(Boolean(s.requested))
           setReadReceiptRespond(s.respond)
         }
       } catch {
@@ -231,6 +321,94 @@ export function MessageViewer(props: Props) {
     }
   })()
 
+  const fetchServerAttachmentBlob = async (att: MessageAttachment): Promise<Blob> => {
+    if (!serverAttachmentBaseUrl) throw new Error("Server-Anhang nicht verfuegbar")
+    const url = new URL(
+      `/api/v1/email/attachments/${att.id}/content`,
+      serverAttachmentBaseUrl,
+    )
+    const token = getServerAccessToken()
+    const response = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (!response.ok) {
+      throw new Error(`Download fehlgeschlagen (${response.status})`)
+    }
+    return response.blob()
+  }
+
+  const downloadServerAttachment = async (att: MessageAttachment) => {
+    const blob = await fetchServerAttachmentBlob(att)
+    downloadBlob(blob, att.filename_display || `attachment-${att.id}`)
+  }
+
+  const openServerAttachment = async (att: MessageAttachment) => {
+    const blob = await fetchServerAttachmentBlob(att)
+    const objectUrl = URL.createObjectURL(blob)
+    const opened = window.open(objectUrl, "_blank")
+    if (!opened) {
+      URL.revokeObjectURL(objectUrl)
+      throw new Error("Anhang konnte nicht geoeffnet werden. Popup-Blocker pruefen.")
+    }
+    opened.opener = null
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+  }
+
+  const decryptPgpAttachment = async (att: MessageAttachment) => {
+    if (!pgpPassphrase) {
+      toast.info("PGP-Passphrase erforderlich")
+      return
+    }
+    const result = await decryptServerPgpAttachment({
+      attachmentId: att.id,
+      passphrase: pgpPassphrase,
+    })
+    downloadBlob(
+      blobFromBase64(result.contentBase64, result.contentType),
+      result.filename || att.filename_display.replace(/\.(?:pgp|gpg|asc)$/i, "") || `attachment-${att.id}`,
+    )
+    toast.success("PGP-Anhang entschluesselt")
+  }
+
+  const verifyPgpAttachmentSignature = async (att: MessageAttachment, signature: MessageAttachment) => {
+    const result = await verifyServerPgpAttachment({
+      attachmentId: att.id,
+      signatureAttachmentId: signature.id,
+    })
+    if (result.valid) {
+      toast.success(result.fingerprint
+        ? `Signatur gueltig: ${result.fingerprint.slice(0, 16)}...`
+        : "Signatur gueltig")
+      return
+    }
+    toast.warning(`Signatur nicht gueltig: ${result.status}`)
+  }
+
+  const exportMessageEml = async () => {
+    if (!selectedMessage) return
+    const result = await invokeRenderer(
+      IPCChannels.Email.ExportMessageEml,
+      selectedMessage.id,
+    ) as ExportMessageEmlResult
+    if (!result.success) {
+      if (result.error && result.error !== "Abgebrochen") toast.error(result.error)
+      return
+    }
+    if (result.path) {
+      toast.success(`Gespeichert: ${result.path}`)
+      return
+    }
+    if (result.rawEml) {
+      downloadBlob(
+        new Blob([result.rawEml], { type: "message/rfc822;charset=utf-8" }),
+        safeEmlFileName(selectedMessage),
+      )
+      toast.success("EML heruntergeladen.")
+      return
+    }
+    toast.error("EML-Export lieferte keine Rohdaten.")
+  }
+
   const isOutboundHeld =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
@@ -246,7 +424,7 @@ export function MessageViewer(props: Props) {
 
   const handleSnoozeMessage = async (until: string | null) => {
     if (!selectedMessage) return
-    await invokeIpc(IPCChannels.Email.SnoozeMessage, {
+    await invokeRenderer(IPCChannels.Email.SnoozeMessage, {
       messageId: selectedMessage.id,
       until,
     })
@@ -275,16 +453,16 @@ export function MessageViewer(props: Props) {
   }
 
   const handleSoftDelete = async () => {
-    await invokeIpc(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
+    await invokeRenderer(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
     toast.success("In den Papierkorb verschoben")
     await advanceSelectionAfterMessageRemoved(selectedMessage.id)
   }
 
   const handleDeleteLocalDraft = async () => {
-    const r = await invokeIpc<{ success: boolean; error?: string }>(
+    const r = await invokeRenderer(
       IPCChannels.Email.DeleteComposeDraft,
       selectedMessage.id,
-    )
+    ) as { success: boolean; error?: string }
     if (!r.success) {
       toast.error(r.error ?? "Entwurf konnte nicht gelöscht werden")
       return
@@ -295,7 +473,7 @@ export function MessageViewer(props: Props) {
   }
 
   const handleRestore = async () => {
-    await invokeIpc(IPCChannels.Email.RestoreMessage, selectedMessage.id)
+    await invokeRenderer(IPCChannels.Email.RestoreMessage, selectedMessage.id)
     toast.success("Wiederhergestellt (vorheriger Ordner)")
     await refreshCurrentMessage()
     await refreshList({ preserveSelection: true })
@@ -303,7 +481,7 @@ export function MessageViewer(props: Props) {
 
   const handleArchive = async () => {
     const wasArchived = !!selectedMessage.archived
-    await invokeIpc(IPCChannels.Email.SetMessageArchived, {
+    await invokeRenderer(IPCChannels.Email.SetMessageArchived, {
       messageId: selectedMessage.id,
       archived: !wasArchived,
     })
@@ -318,7 +496,7 @@ export function MessageViewer(props: Props) {
 
   const handleToggleSeen = async () => {
     const seen = !!selectedMessage.seen_local
-    await invokeIpc(IPCChannels.Email.SetMessageSeen, {
+    await invokeRenderer(IPCChannels.Email.SetMessageSeen, {
       messageId: selectedMessage.id,
       seen: !seen,
     })
@@ -329,7 +507,7 @@ export function MessageViewer(props: Props) {
 
   const handleToggleDone = async () => {
     const done = !!selectedMessage.done_local
-    await invokeIpc(IPCChannels.Email.SetMessageDone, {
+    await invokeRenderer(IPCChannels.Email.SetMessageDone, {
       messageId: selectedMessage.id,
       done: !done,
     })
@@ -345,14 +523,14 @@ export function MessageViewer(props: Props) {
 
   const handleSetSpamStatus = async (status: "clean" | "review" | "spam") => {
     try {
-      const result = await invokeIpc<{ success: boolean; error?: string }>(
+      const result = await invokeRenderer(
         IPCChannels.Email.SetMessageSpamStatus,
         {
           messageId: selectedMessage.id,
           status,
           train: true,
         },
-      )
+      ) as { success: boolean; error?: string }
       if (!result.success) {
         toast.error(result.error ?? "Spam-Status konnte nicht gesetzt werden.")
         return
@@ -376,6 +554,19 @@ export function MessageViewer(props: Props) {
 
   // Text-only rendering — prefer the richer source (blocked compose drafts often store
   // only the warning banner in body_text while the letter lives in body_html).
+  const handleTakeoverConversationLock = async () => {
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.TakeoverConversationLock, {
+        messageId: selectedMessage.id,
+        reason: "reply",
+      }) as { lock?: ConversationLockRecord }
+      if (result.lock) upsertConversationLock(result.lock)
+      toast.success("Conversation Lock uebernommen.")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Conversation Lock konnte nicht uebernommen werden.")
+    }
+  }
+
   const bodyFromText = selectedMessage.body_text?.trim() ?? ""
   const bodyFromHtml = selectedMessage.body_html
     ? stripHtmlToText(selectedMessage.body_html)
@@ -385,7 +576,12 @@ export function MessageViewer(props: Props) {
       ? bodyFromHtml
       : bodyFromText || bodyFromHtml || selectedMessage.snippet || "—"
 
+  const isSignedPgpMessage =
+    selectedMessage.pgp_status?.startsWith("signed_") ||
+    bodyText.startsWith("-----BEGIN PGP SIGNED MESSAGE-----")
   const isSyncableMail = selectedMessage.uid >= 0 || Boolean(selectedMessage.pop3_uidl)
+  const hasServerPgpEncryptedAttachment =
+    serverClientMode && messageAttachments.some(isPgpEncryptedAttachment)
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -456,6 +652,8 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
+                  disabled={lockedByOther}
+                  title={lockedByOther ? `Gesperrt durch ${selectedLockOwner}` : undefined}
                   onClick={() => onReply(selectedMessage)}
                   className="gap-2 bg-sky-500/12 text-sky-900 hover:bg-sky-500/20 dark:text-sky-100"
                 >
@@ -466,6 +664,8 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
+                  disabled={lockedByOther}
+                  title={lockedByOther ? `Gesperrt durch ${selectedLockOwner}` : undefined}
                   onClick={() => onReplyAll(selectedMessage)}
                   className="gap-2 bg-sky-500/8 text-sky-800 hover:bg-sky-500/16 dark:text-sky-200"
                 >
@@ -476,6 +676,8 @@ export function MessageViewer(props: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
+                  disabled={lockedByOther}
+                  title={lockedByOther ? `Gesperrt durch ${selectedLockOwner}` : undefined}
                   onClick={() => onForward(selectedMessage)}
                   className="gap-2 bg-indigo-500/12 text-indigo-900 hover:bg-indigo-500/20 dark:text-indigo-100"
                 >
@@ -548,19 +750,24 @@ export function MessageViewer(props: Props) {
                   variant="ghost"
                   className="gap-1.5 bg-violet-500/10 text-violet-900 hover:bg-violet-500/18 dark:text-violet-100"
                   onClick={() => {
-                    if (!hasElectron()) return
                     setRawHeadersOpen(true)
                     setRawHeadersLoading(true)
                     setRawHeadersText(null)
-                    void invokeIpc<{
+                    void (invokeRenderer(IPCChannels.Email.GetMessageRawHeaders, selectedMessage.id) as Promise<{
                       success: boolean
                       rawEml?: string
                       emlSource?: "original" | "reconstructed"
                       error?: string
-                    }>(IPCChannels.Email.GetMessageRawHeaders, selectedMessage.id)
+                    }>)
                       .then((r) => {
-                        if (!r.success) {
-                          toast.error(r.error ?? "Rohdaten konnten nicht geladen werden.")
+                        const result = r as {
+                          success: boolean
+                          rawEml?: string
+                          emlSource?: "original" | "reconstructed"
+                          error?: string
+                        }
+                        if (!result.success) {
+                          toast.error(result.error ?? "Rohdaten konnten nicht geladen werden.")
                           return
                         }
                         setRawHeadersText(r.rawEml ?? "—")
@@ -641,6 +848,39 @@ export function MessageViewer(props: Props) {
           </div>
         </div>
 
+        {selectedLock ? (
+          <div
+            className={cn(
+              "flex shrink-0 items-center justify-between gap-3 border-b px-4 py-2 text-sm",
+              lockedByOther
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-100"
+                : "border-emerald-500/25 bg-emerald-500/10 text-emerald-950 dark:text-emerald-100",
+            )}
+            role={lockedByOther ? "alert" : "status"}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <Lock className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 truncate">
+                {lockedByOther
+                  ? `Bearbeitung gesperrt durch ${selectedLockOwner}.`
+                  : "Sie bearbeiten diese Nachricht."}
+              </span>
+            </div>
+            {canTakeoverLock ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 shrink-0 gap-1.5 text-xs"
+                onClick={() => void handleTakeoverConversationLock()}
+              >
+                <ShieldAlert className="h-3.5 w-3.5" />
+                Uebernehmen
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* Body + metadata split */}
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
@@ -682,13 +922,12 @@ export function MessageViewer(props: Props) {
                         className="mt-2 h-7 text-xs"
                         onClick={() => {
                           void (async () => {
-                            if (!hasElectron()) return
                             try {
-                              const run = await invokeIpc<{
-                                id: number
-                              } | null>(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
+                              const run = await invokeRenderer(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
                                 messageId: selectedMessage.id,
-                              })
+                              }) as {
+                                id: number
+                              } | null
                               if (run?.id) {
                                 setWorkflowRunDetailId(run.id)
                                 setWorkflowRunDetailOpen(true)
@@ -749,11 +988,24 @@ export function MessageViewer(props: Props) {
 
                 {messageAttachments.length > 0 || omittedAttachments.length > 0 ? (
                   <div className="space-y-1.5">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       Anhänge
-                    </p>
+                      </p>
+                      {hasServerPgpEncryptedAttachment ? (
+                        <Input
+                          type="password"
+                          placeholder="PGP-Passphrase"
+                          className="h-7 max-w-[180px] text-xs"
+                          value={pgpPassphrase}
+                          onChange={(e) => setPgpPassphrase(e.target.value)}
+                        />
+                      ) : null}
+                    </div>
                     <ul className="space-y-1">
-                      {messageAttachments.map((att) => (
+                      {messageAttachments.map((att) => {
+                        const detachedSignature = findDetachedSignatureAttachment(messageAttachments, att)
+                        return (
                         <li
                           key={att.id}
                           className="flex flex-wrap items-center gap-2 rounded border bg-background px-3 py-2 text-xs"
@@ -770,6 +1022,14 @@ export function MessageViewer(props: Props) {
                             variant="secondary"
                             className="h-7 text-xs"
                             onClick={async () => {
+                              if (!localIpcAvailable) {
+                                try {
+                                  await openServerAttachment(att)
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "Oeffnen fehlgeschlagen")
+                                }
+                                return
+                              }
                               type OpenAtt =
                                 | { success: true }
                                 | {
@@ -805,6 +1065,7 @@ export function MessageViewer(props: Props) {
                                 toast.error(msg)
                               }
                             }}
+                            disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
                           >
                             Öffnen
                           </Button>
@@ -814,21 +1075,65 @@ export function MessageViewer(props: Props) {
                             variant="outline"
                             className="h-7 text-xs"
                             onClick={async () => {
-                              if (!hasElectron()) return
-                              const r = await invokeIpc<{
-                                success: boolean
-                                error?: string
-                              }>(IPCChannels.Email.SaveAttachmentToDisk, {
-                                attachmentId: att.id,
-                              })
-                              if (r.success) toast.success("Gespeichert")
-                              else toast.error(r.error ?? "Speichern fehlgeschlagen")
+                              if (localIpcAvailable) {
+                                const r = await invokeIpc<{
+                                  success: boolean
+                                  error?: string
+                                }>(IPCChannels.Email.SaveAttachmentToDisk, {
+                                  attachmentId: att.id,
+                                })
+                                if (r.success) toast.success("Gespeichert")
+                                else toast.error(r.error ?? "Speichern fehlgeschlagen")
+                                return
+                              }
+                              try {
+                                await downloadServerAttachment(att)
+                              } catch (e) {
+                                toast.error(e instanceof Error ? e.message : "Download fehlgeschlagen")
+                              }
                             }}
+                            disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
                           >
                             Speichern…
                           </Button>
+                          {serverClientMode && isPgpEncryptedAttachment(att) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={async () => {
+                                try {
+                                  await decryptPgpAttachment(att)
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "PGP-Anhang konnte nicht entschluesselt werden")
+                                }
+                              }}
+                              disabled={!pgpPassphrase}
+                            >
+                              Entschl.
+                            </Button>
+                          ) : null}
+                          {serverClientMode && detachedSignature && !isPgpSignatureAttachment(att) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={async () => {
+                                try {
+                                  await verifyPgpAttachmentSignature(att, detachedSignature)
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "PGP-Anhangsignatur konnte nicht geprueft werden")
+                                }
+                              }}
+                            >
+                              Signatur
+                            </Button>
+                          ) : null}
                         </li>
-                      ))}
+                        )
+                      })}
                       {omittedAttachments.map((om, i) => (
                         <li
                           key={`omitted-${i}-${om.name}`}
@@ -887,15 +1192,11 @@ export function MessageViewer(props: Props) {
                         variant="outline"
                         className="h-8 gap-1.5 text-xs"
                         onClick={() => {
-                          void invokeIpc<{ success: boolean; path?: string; error?: string }>(
-                            IPCChannels.Email.ExportMessageEml,
-                            selectedMessage.id,
-                          ).then((r) => {
-                            if (r.success && r.path) toast.success(`Gespeichert: ${r.path}`)
-                            else if (!r.success && r.error && r.error !== "Abgebrochen")
-                              toast.error(r.error)
+                          void exportMessageEml().catch((e) => {
+                            toast.error(e instanceof Error ? e.message : "EML-Export fehlgeschlagen.")
                           })
                         }}
+                        disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
                       >
                         <Download className="h-3.5 w-3.5" />
                         Als .eml
@@ -936,10 +1237,10 @@ export function MessageViewer(props: Props) {
                       variant="outline"
                       className="h-7 text-xs"
                       onClick={async () => {
-                        if (!selectedMessage || !hasElectron() || !pgpPassphrase) return
+                        if (!selectedMessage || !pgpPassphrase) return
                         const pass = pgpPassphrase
                         try {
-                          const res = await invokeIpc(IPCChannels.Pgp.DecryptMessage, {
+                          const res = await invokeRenderer(IPCChannels.Pgp.DecryptMessage, {
                             messageId: selectedMessage.id,
                             passphrase: pass,
                           })
@@ -953,6 +1254,36 @@ export function MessageViewer(props: Props) {
                       }}
                     >
                       Entschlüsseln
+                    </Button>
+                  </div>
+                ) : null}
+                {isSignedPgpMessage ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted px-3 py-2 text-xs text-muted-foreground">
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    <span>PGP-Signatur</span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={async () => {
+                        if (!selectedMessage) return
+                        try {
+                          const res = await invokeRenderer(IPCChannels.Pgp.VerifyMessage, {
+                            messageId: selectedMessage.id,
+                          })
+                          const status = res && typeof res === "object" && "status" in res
+                            ? String((res as { status?: string }).status ?? "")
+                            : ""
+                          toast.success(status ? `Signatur geprueft: ${status}` : "Signatur geprueft")
+                          await refreshCurrentMessage()
+                          await refreshList({ preserveSelection: true })
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "Signaturpruefung fehlgeschlagen")
+                        }
+                      }}
+                    >
+                      Pruefen
                     </Button>
                   </div>
                 ) : null}
@@ -992,7 +1323,7 @@ export function MessageViewer(props: Props) {
                           className="h-7 text-xs"
                           onClick={async () => {
                             if (!selectedMessage) return
-                            await invokeIpc(IPCChannels.Email.SetRemoteContentPolicy, {
+                            await invokeRenderer(IPCChannels.Email.SetRemoteContentPolicy, {
                               messageId: selectedMessage.id,
                               policy: "allowed_sender",
                               rememberSender: true,
@@ -1019,15 +1350,19 @@ export function MessageViewer(props: Props) {
                           className="h-7 text-xs"
                           onClick={async () => {
                             if (!selectedMessage) return
-                            const r = await invokeIpc(IPCChannels.Email.RespondReadReceipt, {
-                              messageId: selectedMessage.id,
-                              action: "send",
-                            })
-                            if (r && typeof r === "object" && "success" in r && (r as { success: boolean }).success) {
-                              toast.success("Lesebestätigung gesendet")
-                              setReadReceiptRequested(false)
-                            } else {
-                              toast.error("MDN konnte nicht gesendet werden")
+                            try {
+                              const r = await invokeRenderer(IPCChannels.Email.RespondReadReceipt, {
+                                messageId: selectedMessage.id,
+                                action: "send",
+                              }) as { success?: boolean; error?: string }
+                              if (r?.success) {
+                                toast.success("Lesebestätigung gesendet")
+                                setReadReceiptRequested(false)
+                              } else {
+                                toast.error(r?.error ?? "MDN konnte nicht gesendet werden")
+                              }
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : "MDN konnte nicht gesendet werden")
                             }
                           }}
                         >
@@ -1040,11 +1375,19 @@ export function MessageViewer(props: Props) {
                           className="h-7 text-xs"
                           onClick={async () => {
                             if (!selectedMessage) return
-                            await invokeIpc(IPCChannels.Email.RespondReadReceipt, {
-                              messageId: selectedMessage.id,
-                              action: "decline",
-                            })
-                            setReadReceiptRequested(false)
+                            try {
+                              const r = await invokeRenderer(IPCChannels.Email.RespondReadReceipt, {
+                                messageId: selectedMessage.id,
+                                action: "decline",
+                              }) as { success?: boolean; error?: string }
+                              if (r?.success) {
+                                setReadReceiptRequested(false)
+                              } else {
+                                toast.error(r?.error ?? "Lesebestätigung konnte nicht ignoriert werden")
+                              }
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : "Lesebestätigung konnte nicht ignoriert werden")
+                            }
                           }}
                         >
                           Ignorieren
@@ -1085,9 +1428,9 @@ export function MessageViewer(props: Props) {
           <DialogHeader className="shrink-0">
             <DialogTitle>E-Mail-Rohdaten (.eml)</DialogTitle>
             <DialogDescription>
-              Vollständige Nachricht im RFC822-Format (wie eine .eml-Datei): Header, Body und — bei
-              Sync ab dieser Version — die Original-Rohmail. Anhänge sind eingebettet, wenn sie lokal
-              vorliegen; sonst siehe Hinweis am Ende.
+              {serverClientMode
+                ? "Vollstaendige Nachricht im RFC822-Format. Serverseitig gespeicherte Rohmails werden direkt ausgegeben; rekonstruierte EML-Dateien enthalten keine lokalen Dateianhaenge."
+                : "Vollstaendige Nachricht im RFC822-Format (wie eine .eml-Datei): Header, Body und - bei Sync ab dieser Version - die Original-Rohmail. Anhaenge sind eingebettet, wenn sie lokal vorliegen; sonst siehe Hinweis am Ende."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex shrink-0 justify-end gap-2">
@@ -1125,8 +1468,9 @@ export function MessageViewer(props: Props) {
           <AlertDialogHeader>
             <AlertDialogTitle>Entwurf endgültig löschen?</AlertDialogTitle>
             <AlertDialogDescription>
-              Der lokale Entwurf wird unwiderruflich entfernt (inkl. leerer Entwürfe aus
-              fehlgeschlagenem Verfassen). Dies ersetzt keinen Server-Entwurf auf dem Mailserver.
+              {serverClientMode
+                ? "Der SimpleCRM-Entwurf wird unwiderruflich entfernt (inkl. leerer Entwuerfe aus fehlgeschlagenem Verfassen). Dies ersetzt keinen Server-Entwurf auf dem Mailserver."
+                : "Der lokale Entwurf wird unwiderruflich entfernt (inkl. leerer Entwuerfe aus fehlgeschlagenem Verfassen). Dies ersetzt keinen Server-Entwurf auf dem Mailserver."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

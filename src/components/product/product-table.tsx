@@ -6,6 +6,7 @@ import { DataTable } from "@/components/ui/data-table" // Assuming generic DataT
 import { columns } from "./product-columns"
 import { EditProductDialog } from "./edit-product-dialog" // Import Edit dialog
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from "@/services/transport"
 
 interface ProductTableProps {
   data: Product[];
@@ -28,7 +29,7 @@ export function ProductTable({ data, actions, onProductUpdated, onProductDeleted
   const handleDelete = async (productId: number) => {
     try {
       console.log(`Invoking products:delete for ID: ${productId}`);
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Products.Delete,
         productId
       ) as { success: boolean, error?: string };

@@ -1,16 +1,16 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { hasElectron } from "./types"
+import { hasLocalIpc } from "./types"
 
-/** Re-check after mount so layout gates see preload even if the first paint was early. */
+/** Re-check after mount so local IPC gates see preload even if the first paint was early. */
 export function useHasElectron(): boolean {
   const [available, setAvailable] = useState(() =>
-    typeof window !== "undefined" ? hasElectron() : false,
+    typeof window !== "undefined" ? hasLocalIpc() : false,
   )
 
   useEffect(() => {
-    if (!available && hasElectron()) {
+    if (!available && hasLocalIpc()) {
       setAvailable(true)
     }
   }, [available])

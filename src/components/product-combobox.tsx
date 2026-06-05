@@ -4,6 +4,7 @@ import * as React from "react"
 import { Check, ChevronsUpDown, Loader2, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from "@/services/transport"
 import { Button } from "@/components/ui/button"
 import {
   Command,
@@ -64,7 +65,7 @@ export function ProductCombobox({
       setLoading(true)
       try {
         console.log(`🔍 [ProductCombobox] Calling products:search with query: "${searchQuery}", limit: 50`);
-        const results = await window.electronAPI.invoke(
+        const results = await invokeRenderer(
           IPCChannels.Products.Search,
           searchQuery,
           50
@@ -86,7 +87,7 @@ export function ProductCombobox({
         // Fallback to get-all if search doesn't exist
         try {
           console.log(`🔍 [ProductCombobox] Falling back to products:get-all`);
-          const allProducts = await window.electronAPI.invoke(IPCChannels.Products.GetAll) as Product[]
+          const allProducts = await invokeRenderer(IPCChannels.Products.GetAll) as Product[]
           const normalizedQuery = searchQuery.toLowerCase();
           const filteredProducts: Product[] = allProducts
             .filter(p => (p as any).isActive !== false)
@@ -139,7 +140,7 @@ export function ProductCombobox({
         const startTime = Date.now();
         try {
           console.log(`🔍 [ProductCombobox] Calling products:get-by-id for ID: ${value}`);
-          const product = await window.electronAPI.invoke(
+          const product = await invokeRenderer(
             IPCChannels.Products.GetById,
             value
           ) as any

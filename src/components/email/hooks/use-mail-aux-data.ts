@@ -1,15 +1,14 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import {
-  hasElectron,
-  invokeIpc,
   type AiPrompt,
   type CannedResponse,
 } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
+import { invokeRenderer } from "@/services/transport"
 
 /**
  * Shared lookup data for the compose dialog (canned responses, AI prompts).
@@ -24,18 +23,18 @@ export function useMailAuxData() {
   // (parity with old page.tsx:286-297).
   const composeOpen = composeIntent.mode !== "closed"
   useEffect(() => {
-    if (!hasElectron() || !composeOpen) return
+    if (!composeOpen) return
     void (async () => {
       try {
         setCannedList(
-          await invokeIpc<CannedResponse[]>(IPCChannels.Email.ListCannedResponses),
+          await invokeRenderer(IPCChannels.Email.ListCannedResponses) as CannedResponse[],
         )
       } catch (e) {
         logError("use-mail-aux-data: load canned", e)
         setCannedList([])
       }
       try {
-        setAiPrompts(await invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts))
+        setAiPrompts(await invokeRenderer(IPCChannels.Email.ListAiPrompts) as AiPrompt[])
       } catch (e) {
         logError("use-mail-aux-data: load prompts", e)
         setAiPrompts([])
@@ -43,25 +42,23 @@ export function useMailAuxData() {
     })()
   }, [composeOpen])
 
-  const reloadCanned = async () => {
-    if (!hasElectron()) return
+  const reloadCanned = useCallback(async () => {
     try {
       setCannedList(
-        await invokeIpc<CannedResponse[]>(IPCChannels.Email.ListCannedResponses),
+        await invokeRenderer(IPCChannels.Email.ListCannedResponses) as CannedResponse[],
       )
     } catch (e) {
       logError("use-mail-aux-data: reload canned", e)
     }
-  }
+  }, [])
 
-  const reloadPrompts = async () => {
-    if (!hasElectron()) return
+  const reloadPrompts = useCallback(async () => {
     try {
-      setAiPrompts(await invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts))
+      setAiPrompts(await invokeRenderer(IPCChannels.Email.ListAiPrompts) as AiPrompt[])
     } catch (e) {
       logError("use-mail-aux-data: reload prompts", e)
     }
-  }
+  }, [])
 
   return { cannedList, aiPrompts, reloadCanned, reloadPrompts }
 }

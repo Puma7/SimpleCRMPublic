@@ -44,6 +44,13 @@ import {
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { IPCChannels } from '@shared/ipc/channels';
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isDealDetailRefreshEvent,
+  isJtlReferenceRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"; // Added for CustomerDetails
 import { Badge } from "@/components/ui/badge";
@@ -90,79 +97,116 @@ export default function DealDetailPage() {
   const [isSubmittingJtlOrder, setIsSubmittingJtlOrder] = useState(false);
   const [dealTasks, setDealTasks] = useState<any[]>([]);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+  const [serverEventRefresh, setServerEventRefresh] = useState(0);
+  const serverClientMode = getRendererTransport().kind === "http";
 
-  useEffect(() => {
-    const fetchDealAndCustomer = async () => {
-      setIsLoading(true);
+  const fetchDealAndCustomer = useCallback(async () => {
+    if (!routeDealId) return;
+    setIsLoading(true);
+    setDeal(null);
+    setCustomerForOrder(null);
+    try {
+      const dealData = await invokeRenderer(
+        IPCChannels.Deals.GetById,
+        dealId
+      ) as Deal | null;
+      setDeal(dealData);
+      if (dealData?.customer_id) {
+        const customerData = await invokeRenderer(
+          IPCChannels.Db.GetCustomer,
+          dealData.customer_id
+        ) as Customer | null;
+        setCustomerForOrder(customerData);
+      }
+    } catch (error: any) {
+      console.error("Error fetching deal or customer:", error);
       setDeal(null);
       setCustomerForOrder(null);
-      try {
-        if (window.electronAPI?.invoke) {
-          const dealData = await window.electronAPI.invoke(
-            IPCChannels.Deals.GetById,
-            dealId
-          ) as Deal | null;
-          setDeal(dealData);
-          if (dealData?.customer_id) {
-            const customerData = await window.electronAPI.invoke(
-              IPCChannels.Db.GetCustomer,
-              dealData.customer_id
-            ) as Customer | null;
-            setCustomerForOrder(customerData);
-          }
-        } else {
-          console.error("window.electronAPI or invoke method not found.");
-          setDeal(null);
-          setCustomerForOrder(null);
-        }
-      } catch (error: any) {
-        console.error("Error fetching deal or customer:", error);
-        setDeal(null);
-        setCustomerForOrder(null);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    if (routeDealId) { // Use routeDealId for dependency
-      fetchDealAndCustomer();
+    } finally {
+      setIsLoading(false);
     }
   }, [routeDealId, dealId]);
 
+  useEffect(() => {
+    void fetchDealAndCustomer();
+  }, [fetchDealAndCustomer, serverEventRefresh]);
+
+  const fetchJtlEntities = useCallback(async () => {
+    setIsLoadingJtlData(true);
+    try {
+      const [firmen, warenlager, zahlungsarten, versandarten] = await Promise.all([
+        invokeRenderer(IPCChannels.Jtl.GetFirmen) as Promise<JtlFirma[]>,
+        invokeRenderer(IPCChannels.Jtl.GetWarenlager) as Promise<JtlWarenlager[]>,
+        invokeRenderer(IPCChannels.Jtl.GetZahlungsarten) as Promise<JtlZahlungsart[]>,
+        invokeRenderer(IPCChannels.Jtl.GetVersandarten) as Promise<JtlVersandart[]>,
+      ]);
+      setJtlFirmen(firmen || []);
+      setJtlWarenlager(warenlager || []);
+      setJtlZahlungsarten(zahlungsarten || []);
+      setJtlVersandarten(versandarten || []);
+    } catch (error) {
+      console.error("Error fetching JTL entities:", error);
+      toast({ variant: "destructive", title: "Fehler", description: "JTL-Auswahllisten konnten nicht geladen werden." });
+    } finally {
+      setIsLoadingJtlData(false);
+    }
+  }, [toast]);
+
   // Function to update deal value when products change (for dynamic calculation)
   const handleProductsChange = useCallback((products: DealProductLink[]) => {
-    if (deal?.value_calculation_method === 'dynamic' && products.length > 0) {
-      // Calculate total value from products
-      const totalValue = products.reduce((sum, product) => {
-        return sum + (product.quantity * product.price_at_time_of_adding);
-      }, 0);
+    const totalValue = products.reduce((sum, product) => {
+      return sum + (product.quantity * product.price_at_time_of_adding);
+    }, 0);
+    const nextValue = totalValue.toString();
 
-      // Update the deal in the UI with the new calculated value
-      if (deal) {
-        setDeal({
-          ...deal,
-          value: totalValue.toString()
-        });
-      }
-    }
-  }, [deal]);
+    setDeal((currentDeal) => {
+      if (currentDeal?.value_calculation_method !== 'dynamic' || products.length === 0) return currentDeal;
+      return currentDeal.value === nextValue
+        ? currentDeal
+        : {
+            ...currentDeal,
+            value: nextValue
+          };
+    });
+  }, []);
 
   // Initialize the useDealProducts hook
   const {
     dealProducts,
     isProductsLoading,
     productsError,
-    // fetchDealProducts, // Not directly called from here anymore, hook handles its own fetching
+    fetchDealProducts,
     handleAddProductToDeal,
     handleUpdateDealProduct,
     handleRemoveDealProduct
   } = useDealProducts(deal?.id, handleProductsChange);
 
   useEffect(() => {
+    if (!serverClientMode) return;
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isDealDetailRefreshEvent(event, dealId)) {
+          setServerEventRefresh((value) => value + 1);
+        }
+        if (isJtlReferenceRefreshEvent(event)) {
+          void fetchJtlEntities();
+        }
+      },
+    });
+    return () => subscription.unsubscribe();
+  }, [dealId, fetchJtlEntities, serverClientMode]);
+
+  useEffect(() => {
+    if (serverEventRefresh === 0) return;
+    void fetchDealProducts();
+  }, [fetchDealProducts, serverEventRefresh]);
+
+  useEffect(() => {
     const fetchDealTasks = async () => {
-      if (!dealId || !window.electronAPI?.invoke) return;
+      if (!dealId) return;
       setIsLoadingTasks(true);
       try {
-        const tasks = await window.electronAPI.invoke(IPCChannels.Deals.GetTasks, dealId) as any[];
+        const tasks = await invokeRenderer(IPCChannels.Deals.GetTasks, dealId) as any[];
         setDealTasks(tasks || []);
       } catch (error) {
         console.error('Error fetching deal tasks:', error);
@@ -174,39 +218,15 @@ export default function DealDetailPage() {
   }, [dealId]);
 
   useEffect(() => {
-    const fetchJtlEntities = async () => {
-      if (!window.electronAPI?.invoke) return;
-      setIsLoadingJtlData(true);
-      try {
-        const [firmen, warenlager, zahlungsarten, versandarten] = await Promise.all([
-          window.electronAPI.invoke(IPCChannels.Jtl.GetFirmen) as Promise<JtlFirma[]>,
-          window.electronAPI.invoke(IPCChannels.Jtl.GetWarenlager) as Promise<JtlWarenlager[]>,
-          window.electronAPI.invoke(IPCChannels.Jtl.GetZahlungsarten) as Promise<JtlZahlungsart[]>,
-          window.electronAPI.invoke(IPCChannels.Jtl.GetVersandarten) as Promise<JtlVersandart[]>,
-        ]);
-        setJtlFirmen(firmen || []);
-        setJtlWarenlager(warenlager || []);
-        setJtlZahlungsarten(zahlungsarten || []);
-        setJtlVersandarten(versandarten || []);
-      } catch (error) {
-        console.error("Error fetching JTL entities:", error);
-        toast({ variant: "destructive", title: "Fehler", description: "JTL-Auswahllisten konnten nicht geladen werden." });
-      } finally {
-        setIsLoadingJtlData(false);
-      }
-    };
-    fetchJtlEntities();
-    }, []);
+    void fetchJtlEntities();
+  }, [fetchJtlEntities]);
 
   // The useEffect that previously called fetchDealProducts is now handled within the useDealProducts hook.
 
   const handleEditDeal = async (updatedDealData: Deal): Promise<boolean> => {
     setIsLoading(true);
     try {
-      if (!window.electronAPI?.invoke) {
-        throw new Error("API not available for saving.");
-      }
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Deals.Update,
         { id: dealId, dealData: updatedDealData }
       ) as { success: boolean; error?: string };
@@ -215,7 +235,7 @@ export default function DealDetailPage() {
         // This type represents the object structure returned by 'deals:get-by-id'
         type DealResponseFromService = Omit<Deal, 'customer'> & { customer_name: string };
 
-        const response = await window.electronAPI.invoke(
+        const response = await invokeRenderer(
           IPCChannels.Deals.GetById,
           dealId
         ) as DealResponseFromService | null;
@@ -250,8 +270,7 @@ export default function DealDetailPage() {
     if (!deal) return;
     setIsLoading(true);
     try {
-      if (!window.electronAPI?.invoke) throw new Error("API not available.");
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Deals.Delete,
         dealId
       ) as { success: boolean; error?: string };
@@ -358,9 +377,7 @@ export default function DealDetailPage() {
     };
 
     try {
-      if (!window.electronAPI?.invoke) throw new Error("Electron API not available");
-      // Explicitly type the result of the invoke call
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Jtl.CreateOrder,
         orderInput
       ) as JtlOrderCreationResponse;
@@ -824,7 +841,7 @@ export default function DealDetailPage() {
       setSelectedProductId(productIdString);
       if (productIdString) {
         try {
-          const selectedProduct = await window.electronAPI?.invoke('products:get-by-id', Number(productIdString)) as Product;
+          const selectedProduct = await invokeRenderer(IPCChannels.Products.GetById, Number(productIdString)) as Product;
           if (selectedProduct) {
             setPrice(selectedProduct.price || 0);
           } else {

@@ -7,7 +7,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
-import { hasElectron, invokeIpc } from "./types"
+import { invokeRenderer } from "@/services/transport"
 
 type Notice = {
   accountId: number
@@ -20,9 +20,8 @@ export function ImapAuthNoticeBanner() {
   const [notices, setNotices] = useState<Notice[]>([])
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const rows = await invokeIpc<Notice[]>(IPCChannels.Email.ListImapAuthNotices)
+      const rows = await invokeRenderer(IPCChannels.Email.ListImapAuthNotices)
       setNotices(rows ?? [])
     } catch {
       setNotices([])
@@ -36,9 +35,8 @@ export function ImapAuthNoticeBanner() {
   }, [load])
 
   const dismiss = async (accountId: number) => {
-    if (!hasElectron()) return
     try {
-      await invokeIpc(IPCChannels.Email.DismissImapAuthNotice, { accountId })
+      await invokeRenderer(IPCChannels.Email.DismissImapAuthNotice, { accountId })
       setNotices((prev) => prev.filter((n) => n.accountId !== accountId))
     } catch {
       /* ignore */

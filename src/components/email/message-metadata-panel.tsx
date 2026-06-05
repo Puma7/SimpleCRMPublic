@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { invokeRenderer } from "@/services/transport"
 import {
   Select,
   SelectContent,
@@ -18,8 +19,6 @@ import {
 } from "@/components/ui/select"
 import { CustomerCombobox } from "@/components/customer-combobox"
 import {
-  hasElectron,
-  invokeIpc,
   type CategoryRow,
   type EmailMessage,
   type InternalNote,
@@ -41,6 +40,50 @@ type Props = {
   refreshCurrentMessage: () => void | Promise<void>
   /** Fills resizable column (Postfach); default fixed w-72 for inline viewer split. */
   fillWidth?: boolean
+}
+
+type MessageSecurityState = {
+  authSpf: string | null
+  authDkim: string | null
+  authDmarc: string | null
+  authArc: string | null
+  rspamdScore: number | null
+  rspamdAction: string | null
+  rspamdSymbols: string | null
+  securityCheckedAt: string | null
+  authError: string | null
+  rspamdError: string | null
+  spamStatus: string | null
+  spamScore: number | null
+  spamScoreLabel: string | null
+  spamDecisionSource: string | null
+  spamScoreBreakdownJson: string | null
+  spamDecidedAt: string | null
+}
+
+type MessageSecurityResponse = Partial<MessageSecurityState> & {
+  success: boolean
+}
+
+function messageSecurityStateFromResponse(response: MessageSecurityResponse): MessageSecurityState {
+  return {
+    authSpf: response.authSpf ?? null,
+    authDkim: response.authDkim ?? null,
+    authDmarc: response.authDmarc ?? null,
+    authArc: response.authArc ?? null,
+    rspamdScore: response.rspamdScore ?? null,
+    rspamdAction: response.rspamdAction ?? null,
+    rspamdSymbols: response.rspamdSymbols ?? null,
+    securityCheckedAt: response.securityCheckedAt ?? null,
+    authError: response.authError ?? null,
+    rspamdError: response.rspamdError ?? null,
+    spamStatus: response.spamStatus ?? null,
+    spamScore: response.spamScore ?? null,
+    spamScoreLabel: response.spamScoreLabel ?? null,
+    spamDecisionSource: response.spamDecisionSource ?? null,
+    spamScoreBreakdownJson: response.spamScoreBreakdownJson ?? null,
+    spamDecidedAt: response.spamDecidedAt ?? null,
+  }
 }
 
 function spamReasonLabels(raw: string | null | undefined): string[] {
@@ -89,85 +132,32 @@ export function MessageMetadataPanel({
   const [newTag, setNewTag] = useState("")
   const [messageCategoryId, setMessageCategoryId] = useState<number | null>(null)
   const [conversation, setConversation] = useState<EmailMessage[]>([])
-  const [security, setSecurity] = useState<{
-    authSpf: string | null
-    authDkim: string | null
-    authDmarc: string | null
-    authArc: string | null
-    rspamdScore: number | null
-    rspamdAction: string | null
-    rspamdSymbols: string | null
-    securityCheckedAt: string | null
-    authError: string | null
-    rspamdError: string | null
-    spamStatus: string | null
-    spamScore: number | null
-    spamScoreLabel: string | null
-    spamDecisionSource: string | null
-    spamScoreBreakdownJson: string | null
-    spamDecidedAt: string | null
-  } | null>(null)
+  const [security, setSecurity] = useState<MessageSecurityState | null>(null)
   const [securityLoading, setSecurityLoading] = useState(false)
 
   useEffect(() => {
-    if (!selectedMessage || !hasElectron()) {
+    if (!selectedMessage) {
       setMessageCategoryId(null)
       return
     }
-    void invokeIpc<{ categoryId: number | null }>(
+    void invokeRenderer(
       IPCChannels.Email.GetMessageCategory,
       selectedMessage.id,
     )
-      .then((r) => setMessageCategoryId(r.categoryId))
+      .then((r) => setMessageCategoryId((r as { categoryId: number | null }).categoryId))
       .catch(() => setMessageCategoryId(null))
   }, [selectedMessage?.id])
 
   useEffect(() => {
-    if (!selectedMessage || !hasElectron()) {
+    if (!selectedMessage) {
       setSecurity(null)
       return
     }
     setSecurityLoading(true)
-    void invokeIpc<{
-      success: boolean
-      authSpf?: string | null
-      authDkim?: string | null
-      authDmarc?: string | null
-      authArc?: string | null
-      rspamdScore?: number | null
-      rspamdAction?: string | null
-      rspamdSymbols?: string | null
-      securityCheckedAt?: string | null
-      authError?: string | null
-      rspamdError?: string | null
-      spamStatus?: string | null
-      spamScore?: number | null
-      spamScoreLabel?: string | null
-      spamDecisionSource?: string | null
-      spamScoreBreakdownJson?: string | null
-      spamDecidedAt?: string | null
-    }>(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
+    void invokeRenderer(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
       .then((r) => {
-        if (r.success) {
-          setSecurity({
-            authSpf: r.authSpf ?? null,
-            authDkim: r.authDkim ?? null,
-            authDmarc: r.authDmarc ?? null,
-            authArc: r.authArc ?? null,
-            rspamdScore: r.rspamdScore ?? null,
-            rspamdAction: r.rspamdAction ?? null,
-            rspamdSymbols: r.rspamdSymbols ?? null,
-            securityCheckedAt: r.securityCheckedAt ?? null,
-            authError: r.authError ?? null,
-            rspamdError: r.rspamdError ?? null,
-            spamStatus: r.spamStatus ?? null,
-            spamScore: r.spamScore ?? null,
-            spamScoreLabel: r.spamScoreLabel ?? null,
-            spamDecisionSource: r.spamDecisionSource ?? null,
-            spamScoreBreakdownJson: r.spamScoreBreakdownJson ?? null,
-            spamDecidedAt: r.spamDecidedAt ?? null,
-          })
-        } else setSecurity(null)
+        const response = r as MessageSecurityResponse
+        setSecurity(response.success ? messageSecurityStateFromResponse(response) : null)
       })
       .catch(() => setSecurity(null))
       .finally(() => setSecurityLoading(false))
@@ -194,7 +184,7 @@ export function MessageMetadataPanel({
         ? selectedAccountId
         : selectedMessage.account_id
 
-    void invokeIpc<EmailMessage[]>(IPCChannels.Email.ListConversationMessages, {
+    void invokeRenderer(IPCChannels.Email.ListConversationMessages, {
       accountId: accountScope,
       messageId: selectedMessage.id,
       correspondentEmail: correspondentEmail ?? undefined,
@@ -202,7 +192,7 @@ export function MessageMetadataPanel({
       customerId: correspondentEmail ? undefined : selectedMessage.customer_id,
       limit: 50,
     })
-      .then(setConversation)
+      .then((rows) => setConversation(Array.isArray(rows) ? (rows as EmailMessage[]) : []))
       .catch(() => setConversation([]))
   }, [
     selectedMessage?.id,
@@ -216,6 +206,18 @@ export function MessageMetadataPanel({
   if (!selectedMessage) return null
 
   const assignedMember = teamMembers.find((t) => t.id === selectedMessage.assigned_to)
+  const hasSecurityDetails = security != null && (
+    security.securityCheckedAt != null ||
+    security.authSpf != null ||
+    security.authDkim != null ||
+    security.authDmarc != null ||
+    security.authArc != null ||
+    security.rspamdScore != null ||
+    security.spamScore != null ||
+    security.spamStatus != null ||
+    security.spamDecisionSource != null ||
+    security.spamDecidedAt != null
+  )
 
   return (
     <aside
@@ -264,7 +266,7 @@ export function MessageMetadataPanel({
               value={selectedMessage.assigned_to ?? "none"}
               onValueChange={async (v) => {
                 const tid = v === "none" ? null : v
-                await invokeIpc(IPCChannels.Email.AssignMessage, {
+                await invokeRenderer(IPCChannels.Email.AssignMessage, {
                   messageId: selectedMessage.id,
                   teamMemberId: tid,
                 })
@@ -303,7 +305,7 @@ export function MessageMetadataPanel({
               value={messageCategoryId != null ? String(messageCategoryId) : "none"}
               onValueChange={async (v) => {
                 const categoryId = v === "none" ? null : parseInt(v, 10)
-                await invokeIpc(IPCChannels.Email.SetMessageCategory, {
+                await invokeRenderer(IPCChannels.Email.SetMessageCategory, {
                   messageId: selectedMessage.id,
                   categoryId: Number.isFinite(categoryId) ? categoryId : null,
                 })
@@ -339,7 +341,7 @@ export function MessageMetadataPanel({
               placeholder="Kunde suchen…"
               onValueChange={async (v) => {
                 const cid = v ? parseInt(v, 10) : null
-                await invokeIpc(IPCChannels.Email.LinkCustomer, {
+                await invokeRenderer(IPCChannels.Email.LinkCustomer, {
                   messageId: selectedMessage.id,
                   customerId: Number.isFinite(cid) ? cid : null,
                 })
@@ -354,7 +356,7 @@ export function MessageMetadataPanel({
                 size="sm"
                 className="h-7 px-0 text-xs text-muted-foreground"
                 onClick={async () => {
-                  await invokeIpc(IPCChannels.Email.LinkCustomer, {
+                  await invokeRenderer(IPCChannels.Email.LinkCustomer, {
                     messageId: selectedMessage.id,
                     customerId: null,
                   })
@@ -393,7 +395,7 @@ export function MessageMetadataPanel({
                       className="rounded-full p-0.5 hover:bg-primary/20"
                       aria-label={`Tag ${t} entfernen`}
                       onClick={async () => {
-                        await invokeIpc(IPCChannels.Email.RemoveMessageTag, {
+                        await invokeRenderer(IPCChannels.Email.RemoveMessageTag, {
                           messageId: selectedMessage.id,
                           tag: t,
                         })
@@ -418,7 +420,7 @@ export function MessageMetadataPanel({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && newTag.trim()) {
                     void (async () => {
-                      await invokeIpc(IPCChannels.Email.AddMessageTag, {
+                      await invokeRenderer(IPCChannels.Email.AddMessageTag, {
                         messageId: selectedMessage.id,
                         tag: newTag.trim(),
                       })
@@ -436,7 +438,7 @@ export function MessageMetadataPanel({
                 className="h-8 shrink-0"
                 disabled={!newTag.trim()}
                 onClick={async () => {
-                  await invokeIpc(IPCChannels.Email.AddMessageTag, {
+                  await invokeRenderer(IPCChannels.Email.AddMessageTag, {
                     messageId: selectedMessage.id,
                     tag: newTag.trim(),
                   })
@@ -464,47 +466,16 @@ export function MessageMetadataPanel({
                   void (async () => {
                     setSecurityLoading(true)
                     try {
-                      await invokeIpc(IPCChannels.Email.RunMailSecurityCheck, selectedMessage.id)
-                      const r = await invokeIpc<{
-                        success: boolean
-                        authSpf?: string | null
-                        authDkim?: string | null
-                        authDmarc?: string | null
-                        authArc?: string | null
-                        rspamdScore?: number | null
-                        rspamdAction?: string | null
-                        rspamdSymbols?: string | null
-                        securityCheckedAt?: string | null
-                        authError?: string | null
-                        rspamdError?: string | null
-                        spamStatus?: string | null
-                        spamScore?: number | null
-                        spamScoreLabel?: string | null
-                        spamDecisionSource?: string | null
-                        spamScoreBreakdownJson?: string | null
-                        spamDecidedAt?: string | null
-                      }>(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
-                      if (r.success) {
-                        setSecurity({
-                          authSpf: r.authSpf ?? null,
-                          authDkim: r.authDkim ?? null,
-                          authDmarc: r.authDmarc ?? null,
-                          authArc: r.authArc ?? null,
-                          rspamdScore: r.rspamdScore ?? null,
-                          rspamdAction: r.rspamdAction ?? null,
-                          rspamdSymbols: r.rspamdSymbols ?? null,
-                          securityCheckedAt: r.securityCheckedAt ?? null,
-                          authError: r.authError ?? null,
-                          rspamdError: r.rspamdError ?? null,
-                          spamStatus: r.spamStatus ?? null,
-                          spamScore: r.spamScore ?? null,
-                          spamScoreLabel: r.spamScoreLabel ?? null,
-                          spamDecisionSource: r.spamDecisionSource ?? null,
-                          spamScoreBreakdownJson: r.spamScoreBreakdownJson ?? null,
-                          spamDecidedAt: r.spamDecidedAt ?? null,
-                        })
-                      }
-                      toast.success("Prüfung abgeschlossen")
+                      const result = await invokeRenderer(
+                        IPCChannels.Email.RunMailSecurityCheck,
+                        selectedMessage.id,
+                      ) as { success?: boolean; queued?: boolean }
+                      const r = await invokeRenderer(
+                        IPCChannels.Email.GetMessageSecurity,
+                        selectedMessage.id,
+                      ) as MessageSecurityResponse
+                      if (r.success) setSecurity(messageSecurityStateFromResponse(r))
+                      toast.success(result.queued ? "Prüfung eingereiht" : "Prüfung abgeschlossen")
                     } catch {
                       toast.error("Sicherheitsprüfung fehlgeschlagen")
                     } finally {
@@ -518,7 +489,7 @@ export function MessageMetadataPanel({
             </div>
             {securityLoading && !security ? (
               <p className="text-[10px] text-muted-foreground">Lädt…</p>
-            ) : security?.securityCheckedAt ? (
+            ) : hasSecurityDetails ? (
               <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
                 <dt className="text-muted-foreground">SPF</dt>
                 <dd className="font-mono">{security.authSpf ?? "—"}</dd>
@@ -686,10 +657,10 @@ export function MessageMetadataPanel({
                             size="sm"
                             className="h-7 flex-1"
                             onClick={async () => {
-                              const r = await invokeIpc<{ success: boolean; error?: string }>(
+                              const r = await invokeRenderer(
                                 IPCChannels.Email.UpdateInternalNote,
                                 { noteId: n.id, body: editingNoteBody },
-                              )
+                              ) as { success: boolean; error?: string }
                               if (!r.success) {
                                 toast.error(r.error ?? "Speichern fehlgeschlagen")
                                 return
@@ -736,7 +707,7 @@ export function MessageMetadataPanel({
                             className="h-6 w-6 text-destructive"
                             aria-label="Notiz löschen"
                             onClick={async () => {
-                              await invokeIpc(IPCChannels.Email.DeleteInternalNote, n.id)
+                              await invokeRenderer(IPCChannels.Email.DeleteInternalNote, n.id)
                               await reloadNotes()
                               toast.success("Notiz gelöscht")
                             }}
@@ -762,7 +733,7 @@ export function MessageMetadataPanel({
               className="w-full"
               onClick={async () => {
                 if (!newNote.trim()) return
-                await invokeIpc(IPCChannels.Email.AddInternalNote, {
+                await invokeRenderer(IPCChannels.Email.AddInternalNote, {
                   messageId: selectedMessage.id,
                   body: newNote,
                 })
