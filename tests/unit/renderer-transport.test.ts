@@ -478,6 +478,77 @@ describe('renderer transport', () => {
     ]);
   });
 
+  test('maps paginated customer IPC calls without treating offsets as cursors', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            {
+              id: 42,
+              sourceSqliteId: 7,
+              customerNumber: 'K-7',
+              name: 'Meyer',
+              email: 'meyer@example.com',
+              zipCode: '10115',
+              status: 'Lead',
+              updatedAt: '2026-06-03T10:00:00.000Z',
+            },
+          ],
+          nextCursor: 42,
+          total: 3,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            {
+              id: 43,
+              sourceSqliteId: 8,
+              customerNumber: 'K-8',
+              name: 'Schulz',
+              email: 'schulz@example.com',
+              zipCode: '50667',
+              status: 'Active',
+              updatedAt: '2026-06-03T11:00:00.000Z',
+            },
+          ],
+          nextCursor: 43,
+          total: 3,
+        },
+      }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+      getAccessToken: () => 'token-1',
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      limit: 1,
+      offset: 1,
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/customers?limit=1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/customers?limit=1&cursor=42',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(result).toEqual({
+      items: [expect.objectContaining({
+        id: 43,
+        jtl_kKunde: 8,
+        zip: '50667',
+      })],
+      total: 3,
+    });
+  });
+
   test('maps customer updates with custom fields to server HTTP routes', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
@@ -635,6 +706,43 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       4,
+      'https://crm.example.com/api/v1/products?limit=100&search=ABC&cursor=13',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('collects product search payloads above the server page limit', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 13, sourceSqliteId: 103, sku: 'ABC-1', name: 'Suchprodukt 1', price: '9.99', isActive: true }],
+          nextCursor: 13,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 14, sourceSqliteId: 104, sku: 'ABC-2', name: 'Suchprodukt 2', price: '19.99', isActive: false }],
+          nextCursor: null,
+        },
+      }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Products.Search, { query: 'ABC', limit: 200 })).resolves.toEqual([
+      expect.objectContaining({ id: 13, jtl_kArtikel: 103, sku: 'ABC-1' }),
+      expect.objectContaining({ id: 14, jtl_kArtikel: 104, sku: 'ABC-2' }),
+    ]);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/products?limit=100&search=ABC',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
       'https://crm.example.com/api/v1/products?limit=100&search=ABC&cursor=13',
       expect.objectContaining({ method: 'GET' }),
     );

@@ -1443,7 +1443,7 @@ export function getCustomersPage(options: CustomerPageOptions = {}): CustomerPag
         : 'ORDER BY name ASC';
     const columns = `
         id, jtl_kKunde, customerNumber, name, firstName, company, email,
-        phone, mobile, street, zip, city, country, status, notes, affiliateLink,
+        phone, mobile, street, COALESCE(zipCode, '') AS zip, city, country, status, notes, affiliateLink,
         jtl_dateCreated
     `;
 
@@ -1824,7 +1824,7 @@ export function getProductById(id: number): Product | null {
 
 export function searchProducts(query: string = '', limit: number = 20): Product[] {
     const startTime = Date.now();
-    const safeLimit = normalizeListLimit(limit, 20, 100);
+    const safeLimit = normalizeListLimit(limit, 20, 500);
 
     const trimmedQuery = query.trim();
     const lowerQuery = trimmedQuery.toLowerCase();

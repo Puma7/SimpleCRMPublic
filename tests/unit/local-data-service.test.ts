@@ -36,6 +36,23 @@ describe('localDataService', () => {
     }));
   });
 
+  test('warns when getCustomers returns a truncated legacy customer list', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    invoke.mockResolvedValueOnce({
+      items: [{ id: 15, name: 'Meyer', status: 'Active' }],
+      total: 650,
+    });
+
+    try {
+      const customers = await localDataService.getCustomers();
+
+      expect(customers).toHaveLength(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('returned 1 of 650 customers'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test('returns null when customer fetch fails', async () => {
     invoke.mockRejectedValueOnce(new Error('fail'));
     await expect(localDataService.getCustomer('5')).resolves.toBeNull();

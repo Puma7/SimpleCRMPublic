@@ -70,9 +70,12 @@ export const getCustomersPage = async ({
     }) as { items?: any[]; total?: number };
 
     const items = Array.isArray(response?.items) ? response.items : [];
+    const total = typeof response?.total === 'number' && Number.isFinite(response.total)
+      ? response.total
+      : items.length;
     return {
       customers: items.map(mapDbCustomerToApp),
-      total: Number(response?.total ?? items.length),
+      total,
     };
   } catch (error) {
     console.error("Error invoking paginated 'db:get-customers':", error);
@@ -83,7 +86,10 @@ export const getCustomersPage = async ({
 export const localDataService: DataService = {
   async getCustomers(): Promise<Customer[]> {
     try {
-      const { customers } = await getCustomersPage({ limit: 500 });
+      const { customers, total } = await getCustomersPage({ limit: 500 });
+      if (total > customers.length) {
+        console.warn(`localDataService.getCustomers() returned ${customers.length} of ${total} customers. Use getCustomersPage() for complete pagination.`);
+      }
       return customers;
     } catch (error) {
         console.error("Error invoking 'db:get-customers':", error);
@@ -165,7 +171,10 @@ export const getLocalCustomers = async (): Promise<Customer[]> => {
         console.debug("localDataService: getLocalCustomers called");
     }
     try {
-        const { customers } = await getCustomersPage({ limit: 500 });
+        const { customers, total } = await getCustomersPage({ limit: 500 });
+        if (total > customers.length) {
+            console.warn(`getLocalCustomers() returned ${customers.length} of ${total} customers. Use getCustomersPage() for complete pagination.`);
+        }
         if (import.meta.env.DEV) {
             console.debug("localDataService: Received customers from main", { count: customers.length });
         }

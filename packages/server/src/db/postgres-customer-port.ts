@@ -52,6 +52,10 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
             .where('workspace_id', '=', input.workspaceId)
             .orderBy('id', 'asc')
             .limit(limit + 1);
+          let countQuery = trx
+            .selectFrom('customers')
+            .select((eb) => eb.fn.countAll<number>().as('count'))
+            .where('workspace_id', '=', input.workspaceId);
 
           if (input.cursor !== undefined) {
             query = query.where('id', '>', input.cursor);
@@ -65,13 +69,24 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               eb('company', 'ilike', pattern),
               eb('email', 'ilike', pattern),
             ]));
+            countQuery = countQuery.where((eb) => eb.or([
+              eb('name', 'ilike', pattern),
+              eb('first_name', 'ilike', pattern),
+              eb('company', 'ilike', pattern),
+              eb('email', 'ilike', pattern),
+            ]));
           }
 
-          const rows = await query.execute();
+          const [rows, countRow] = await Promise.all([
+            query.execute(),
+            countQuery.executeTakeFirstOrThrow(),
+          ]);
           const pageRows = rows.slice(0, limit);
+          const total = Number(countRow.count ?? 0);
           return {
             items: pageRows.map(mapCustomerRow),
             nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+            total: Number.isFinite(total) ? total : 0,
           };
         },
         { applySession: options.applyWorkspaceSession },
