@@ -19,6 +19,7 @@ yarn-error.log*
 
 # env files
 .env*
+!docker/.env.example
 
 # vercel
 .vercel
@@ -32,6 +33,7 @@ next-env.d.ts
 /dist-build/
 /dist/
 /dist-electron/
+packages/*/dist/
 # Generated type artifacts
 src/types/index.js
 src/types/index.js.map
@@ -77,6 +79,12 @@ src/.DS_Store
 !docs/MAIL_TRACKING_PRIVACY.md
 !docs/MAIL_AUTH_THREAT_MODEL.md
 !docs/MAIL_PGP_THREAT_MODEL.md
+!docs/SERVER_EDITION_IMPLEMENTATION.md
+!docs/SETUP_LOCAL.md
+!docs/SETUP_SERVER.md
+!docs/MIGRATION_STANDALONE_TO_SERVER.md
+!docs/BACKUP_AND_RESTORE.md
+!docs/THREAT_MODEL.md
 !AGENTS.md
 
 coverage/

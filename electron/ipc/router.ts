@@ -16,6 +16,7 @@ import { registerFollowUpHandlers } from './followup';
 import { registerAutomationHandlers } from './automation';
 import { registerAuthHandlers } from './auth';
 import { registerPgpHandlers } from './pgp';
+import { registerSetupHandlers } from './setup';
 
 interface IpcRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -30,6 +31,7 @@ export function registerAllIpcHandlers(options: IpcRouterOptions) {
   const disposers: Disposer[] = [];
 
   disposers.push(registerWindowHandlers({ getMainWindow, logger }));
+  disposers.push(registerSetupHandlers({ logger }));
   disposers.push(registerDatabaseHandlers({ logger, isDevelopment }));
   disposers.push(registerDealHandlers({ logger, isDevelopment }));
   disposers.push(registerTaskHandlers({ logger }));

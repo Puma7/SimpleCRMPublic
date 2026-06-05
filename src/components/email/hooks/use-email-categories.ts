@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { MailAccountScope } from "../account-scope"
-import { hasElectron, invokeIpc, type CategoryRow, type CatCount } from "../types"
+import type { CategoryRow, CatCount } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
+import { invokeRenderer } from "@/services/transport"
 
 export function useEmailCategories() {
   const { selectedAccountId, mailMetricsRevision } = useMailWorkspace()
@@ -13,15 +14,19 @@ export function useEmailCategories() {
   const [catCounts, setCatCounts] = useState<CatCount[]>([])
 
   const loadCategories = useCallback(async (accountScope: MailAccountScope) => {
-    if (!hasElectron()) return
     try {
-      const cats = await invokeIpc<CategoryRow[]>(IPCChannels.Email.ListCategories)
+      const cats = await invokeRenderer(IPCChannels.Email.ListCategories) as CategoryRow[]
       setCategories(cats)
-      const counts = await invokeIpc<CatCount[]>(
-        IPCChannels.Email.CategoryCounts,
-        accountScope,
-      )
-      setCatCounts(counts)
+      try {
+        const counts = await invokeRenderer(
+          IPCChannels.Email.CategoryCounts,
+          accountScope,
+        ) as CatCount[]
+        setCatCounts(counts)
+      } catch (e) {
+        logError("use-email-categories: counts", e)
+        setCatCounts([])
+      }
     } catch (e) {
       logError("use-email-categories: load", e)
       setCategories([])

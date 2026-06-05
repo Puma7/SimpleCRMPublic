@@ -8,6 +8,13 @@ import { InstantDetailPanel } from "@/components/followup/instant-detail-panel"
 import { LogActivityDialog } from "@/components/followup/log-activity-dialog"
 import { followUpService } from "@/services/data/followUpService"
 import { taskService } from "@/services/data/taskService"
+import {
+  getRendererTransport,
+  isFollowUpSavedViewRefreshEvent,
+  isFollowUpTimelineRefreshEvent,
+  isTaskListRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 import type { FollowUpItem, ActivityLogEntry, QueueCounts, SavedView } from "@/services/data/types"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -35,6 +42,8 @@ export default function FollowUpPage() {
   const [priorityFilter, setPriorityFilter] = useState('all')
   const [logDialogOpen, setLogDialogOpen] = useState(false)
   const [logDialogType, setLogDialogType] = useState<'call' | 'email' | 'note'>('note')
+  const [serverEventRefresh, setServerEventRefresh] = useState(0)
+  const serverClientMode = getRendererTransport().kind === "http"
 
   // Load queue counts
   const loadCounts = useCallback(async () => {
@@ -68,14 +77,41 @@ export default function FollowUpPage() {
 
   // Initial load
   useEffect(() => {
-    loadCounts()
     loadSavedViews()
-  }, [loadCounts, loadSavedViews])
+  }, [loadSavedViews])
+
+  useEffect(() => {
+    loadCounts()
+  }, [loadCounts, serverEventRefresh])
+
+  useEffect(() => {
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isTaskListRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1)
+        }
+        if (isFollowUpSavedViewRefreshEvent(event)) {
+          void loadSavedViews()
+        }
+        if (isFollowUpTimelineRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1)
+        }
+        if (
+          selectedItem?.customer_id
+          && isFollowUpTimelineRefreshEvent(event, selectedItem.customer_id)
+        ) {
+          void loadTimeline(selectedItem.customer_id, timelineFilter)
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [loadSavedViews, loadTimeline, selectedItem?.customer_id, serverClientMode, timelineFilter])
 
   // Reload items when queue/filters change
   useEffect(() => {
     loadItems()
-  }, [loadItems])
+  }, [loadItems, serverEventRefresh])
 
   // Load timeline when selected item changes
   useEffect(() => {

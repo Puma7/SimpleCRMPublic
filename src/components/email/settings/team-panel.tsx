@@ -7,7 +7,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { hasElectron, invokeIpc, type TeamMember } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isMailAccountDataRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
+import type { TeamMember } from "../types"
 import { AccountSignaturesSection } from "./account-signatures-section"
 
 export function TeamPanel() {
@@ -21,12 +27,21 @@ export function TeamPanel() {
   const [editSignature, setEditSignature] = useState("")
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
-    setTeam(await invokeIpc<TeamMember[]>(IPCChannels.Email.ListTeamMembers))
+    setTeam(await invokeRenderer(IPCChannels.Email.ListTeamMembers) as TeamMember[])
   }, [])
 
   useEffect(() => {
     void load()
+  }, [load])
+
+  useEffect(() => {
+    if (getRendererTransport().kind !== "http") return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailAccountDataRefreshEvent(event)) void load()
+      },
+    })
+    return () => subscription.unsubscribe()
   }, [load])
 
   const saveMember = async (payload: {
@@ -34,7 +49,7 @@ export function TeamPanel() {
     displayName: string
     signatureHtml?: string | null
   }) => {
-    await invokeIpc(IPCChannels.Email.SaveTeamMember, {
+    await invokeRenderer(IPCChannels.Email.SaveTeamMember, {
       id: payload.id,
       displayName: payload.displayName,
       signatureHtml: payload.signatureHtml,
@@ -80,7 +95,7 @@ export function TeamPanel() {
                     variant="ghost"
                     size="sm"
                     onClick={async () => {
-                      await invokeIpc(IPCChannels.Email.DeleteTeamMember, t.id)
+                      await invokeRenderer(IPCChannels.Email.DeleteTeamMember, t.id)
                       await load()
                     }}
                   >

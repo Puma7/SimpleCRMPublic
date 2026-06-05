@@ -16,6 +16,6 @@ describe('workflow-plugin-path', () => {
 
   test('resolves safe plugin path under root', () => {
     const p = resolveWorkflowPluginModulePath(root, 'my_plugin', 'handler');
-    expect(p).toBe(path.join(root, 'my_plugin', 'handler.js'));
+    expect(p).toBe(path.resolve(root, 'my_plugin', 'handler.js'));
   });
 });

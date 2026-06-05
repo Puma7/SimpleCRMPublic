@@ -53,6 +53,13 @@ import { CustomFieldsForm } from "@/components/custom-fields-form";
 // Import the specific route definition
 import { customerDetailRoute } from "@/router"
 import { getPrimaryPhone, getFormattedPhone } from "@/lib/contact-utils"
+import { IPCChannels } from "@shared/ipc/channels"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isCustomerDetailRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 // Update interface to match route params - TanStack Router typically uses $paramName for file routes
 // Removed RouteParams interface as it's not strictly needed when not using 'from' in useParams
@@ -66,6 +73,7 @@ export default function CustomerDetailPage() {
   const params = useParams({ strict: false })
   // Access the parameter using the name defined in router.tsx: customerId
   const customerId = params.customerId as string // Cast as string since customerId is guaranteed to exist
+  const numericCustomerId = Number(customerId)
 
   const navigate = useNavigate()
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -84,6 +92,8 @@ export default function CustomerDetailPage() {
   const [newTaskDueDate, setNewTaskDueDate] = useState('')
   const [newTaskPriority, setNewTaskPriority] = useState('Medium')
   const [isSubmittingTask, setIsSubmittingTask] = useState(false)
+  const [serverEventRefresh, setServerEventRefresh] = useState(0)
+  const serverClientMode = getRendererTransport().kind === "http"
   // Initialize with empty or default values based on the Customer type
   const [editedCustomer, setEditedCustomer] = useState<Partial<Customer>>({
     customerNumber: "", // JTL customer number (read-only)
@@ -104,9 +114,26 @@ export default function CustomerDetailPage() {
   })
 
   useEffect(() => {
+    if (!serverClientMode || !Number.isInteger(numericCustomerId) || numericCustomerId <= 0) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isCustomerDetailRefreshEvent(event, numericCustomerId)) {
+          setServerEventRefresh((value) => value + 1)
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [numericCustomerId, serverClientMode])
+
+  useEffect(() => {
     const fetchCustomer = async () => {
       // Check if customerId is valid before proceeding
-      if (!customerId || customerId === 'undefined') {
+      if (
+        !customerId ||
+        customerId === 'undefined' ||
+        !Number.isInteger(numericCustomerId) ||
+        numericCustomerId <= 0
+      ) {
         console.error("Customer ID is missing or invalid.");
         toast.error("Ungültige Kunden-ID.");
         navigate({ to: "/customers" });
@@ -116,9 +143,10 @@ export default function CustomerDetailPage() {
       setIsLoading(true);
 
       try {
-        // Pass customerId string directly to the service
-        const api = window.electronAPI as any; // Type assertion for direct invoke access
-        const dbCustomer = await api.invoke('db:get-customer', customerId);
+        const dbCustomer = await invokeRenderer(
+          IPCChannels.Db.GetCustomer,
+          numericCustomerId,
+        ) as Customer | null;
         console.log('Fetched customer data in component:', dbCustomer); // Log fetched data
 
         if (dbCustomer) {
@@ -155,24 +183,21 @@ export default function CustomerDetailPage() {
     };
 
     fetchCustomer();
-  }, [customerId, navigate]);
+  }, [customerId, numericCustomerId, navigate, serverEventRefresh]);
 
   // Add a new useEffect to fetch deals and tasks
   useEffect(() => {
     const fetchRelatedItems = async () => {
-      if (!customerId) return;
+      if (!Number.isInteger(numericCustomerId) || numericCustomerId <= 0) return;
 
       setIsLoadingRelated(true);
 
       try {
-        const api = window.electronAPI as any;
-
-        // Fetch deals for this customer
-        const customerDeals = await api.invoke('db:get-deals-for-customer', customerId);
+        const [customerDeals, customerTasks] = await Promise.all([
+          invokeRenderer(IPCChannels.Db.GetDealsForCustomer, numericCustomerId) as Promise<Deal[]>,
+          invokeRenderer(IPCChannels.Db.GetTasksForCustomer, numericCustomerId) as Promise<Task[]>,
+        ]);
         setDeals(customerDeals || []);
-
-        // Fetch tasks for this customer
-        const customerTasks = await api.invoke('db:get-tasks-for-customer', customerId);
         setTasks(customerTasks || []);
       } catch (error) {
         console.error('Failed to fetch related items:', error);
@@ -183,7 +208,7 @@ export default function CustomerDetailPage() {
     };
 
     fetchRelatedItems();
-  }, [customerId]);
+  }, [numericCustomerId, serverEventRefresh]);
 
   // Show loading state
   if (isLoading) {
@@ -211,12 +236,17 @@ export default function CustomerDetailPage() {
         lastModifiedLocally: new Date().toISOString() // Update modification timestamp
       };
 
-      // Use window.electronAPI directly
-      const api = window.electronAPI as any;
-      await api.invoke('db:update-customer', updatedCustomer);
+      const result = await invokeRenderer(
+        IPCChannels.Db.UpdateCustomer,
+        { id: Number(customer.id), customerData: updatedCustomer },
+      ) as { success?: boolean; customer?: Customer; error?: string };
+
+      if (result.success === false) {
+        throw new Error(result.error || "Customer update failed");
+      }
 
       // Update local state
-      setCustomer(updatedCustomer);
+      setCustomer(result.customer ?? updatedCustomer);
       setIsEditOpen(false);
       toast.success("Kunde erfolgreich aktualisiert.");
     } catch (error) {
@@ -229,9 +259,14 @@ export default function CustomerDetailPage() {
     if (!customer) return;
 
     try {
-      // Use window.electronAPI directly
-      const api = window.electronAPI as any;
-      await api.invoke('db:delete-customer', customer.id);
+      const result = await invokeRenderer(
+        IPCChannels.Db.DeleteCustomer,
+        Number(customer.id),
+      ) as { success?: boolean; error?: string };
+
+      if (result.success === false) {
+        throw new Error(result.error || "Customer delete failed");
+      }
 
       toast.success(`Kunde ${customer.name} gelöscht.`);
       navigate({ to: "/customers" });
@@ -245,21 +280,23 @@ export default function CustomerDetailPage() {
     if (!newDealName.trim()) return;
     setIsSubmittingDeal(true);
     try {
-      const api = window.electronAPI as any;
-      const result = await api.invoke('deals:create', {
+      const result = await invokeRenderer(IPCChannels.Deals.Create, {
         name: newDealName,
-        customer_id: customerId,
+        customer_id: numericCustomerId,
         value: parseFloat(newDealValue) || 0,
         stage: newDealStage,
         value_calculation_method: 'static',
-      });
+      }) as { success?: boolean; error?: string };
       if (result.success) {
         toast.success('Deal erstellt');
         setIsAddDealOpen(false);
         setNewDealName('');
         setNewDealValue('');
         setNewDealStage('Interessent');
-        const customerDeals = await api.invoke('db:get-deals-for-customer', customerId);
+        const customerDeals = await invokeRenderer(
+          IPCChannels.Db.GetDealsForCustomer,
+          numericCustomerId,
+        ) as Deal[];
         setDeals(customerDeals || []);
       } else {
         toast.error('Fehler beim Erstellen des Deals');
@@ -275,21 +312,23 @@ export default function CustomerDetailPage() {
     if (!newTaskTitle.trim()) return;
     setIsSubmittingTask(true);
     try {
-      const api = window.electronAPI as any;
-      const result = await api.invoke('tasks:create', {
-        customer_id: customerId,
+      const result = await invokeRenderer(IPCChannels.Tasks.Create, {
+        customer_id: numericCustomerId,
         title: newTaskTitle,
         due_date: newTaskDueDate || null,
         priority: newTaskPriority,
         completed: false,
-      });
+      }) as { success?: boolean; error?: string };
       if (result.success) {
         toast.success('Aufgabe erstellt');
         setIsAddTaskOpen(false);
         setNewTaskTitle('');
         setNewTaskDueDate('');
         setNewTaskPriority('Medium');
-        const customerTasks = await api.invoke('db:get-tasks-for-customer', customerId);
+        const customerTasks = await invokeRenderer(
+          IPCChannels.Db.GetTasksForCustomer,
+          numericCustomerId,
+        ) as Task[];
         setTasks(customerTasks || []);
       } else {
         toast.error('Fehler beim Erstellen der Aufgabe');

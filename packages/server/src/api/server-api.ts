@@ -1,0 +1,87 @@
+import { handleAuthRoute } from './auth-routes';
+import { handleAutomationReadRoute } from './automation-routes';
+import { handleCoreCrmReadRoute } from './core-crm-routes';
+import { handleCustomerRoute } from './customer-routes';
+import { handleDashboardRoute } from './dashboard-routes';
+import { handleExtendedCrmReadRoute } from './extended-crm-routes';
+import { handleFollowUpRoute } from './follow-up-routes';
+import { handleLockRoute } from './lock-routes';
+import { handleMailReadRoute } from './mail-routes';
+import { handleNoticeRoute } from './notice-routes';
+import { handlePgpReadRoute } from './pgp-routes';
+import { handleSpamReadRoute } from './spam-routes';
+import { handleSettingsRoute } from './settings-routes';
+import { handleWorkflowReadRoute } from './workflow-routes';
+import { getServerOpenApiSpec } from './openapi';
+import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import { data, error } from './types';
+
+export type ServerApi = {
+  handle(req: ApiRequest): Promise<ApiResponse>;
+};
+
+export function createServerApi(ports: ServerApiPorts): ServerApi {
+  return {
+    async handle(req: ApiRequest): Promise<ApiResponse> {
+      if (req.path === '/health' || req.path === '/api/v1/health') {
+        if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+        return data(200, {
+          status: 'ok',
+          api: 'simplecrm-server',
+          version: 1,
+        });
+      }
+      if (req.path === '/openapi.json' || req.path === '/api/v1/openapi.json') {
+        if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+        return {
+          status: 200,
+          body: getServerOpenApiSpec(),
+        };
+      }
+
+      const auth = await handleAuthRoute(req, ports);
+      if (auth) return auth;
+
+      const automation = await handleAutomationReadRoute(req, ports);
+      if (automation) return automation;
+
+      const customers = await handleCustomerRoute(req, ports);
+      if (customers) return customers;
+
+      const coreCrm = await handleCoreCrmReadRoute(req, ports);
+      if (coreCrm) return coreCrm;
+
+      const dashboard = await handleDashboardRoute(req, ports);
+      if (dashboard) return dashboard;
+
+      const extendedCrm = await handleExtendedCrmReadRoute(req, ports);
+      if (extendedCrm) return extendedCrm;
+
+      const followUp = await handleFollowUpRoute(req, ports);
+      if (followUp) return followUp;
+
+      const settings = await handleSettingsRoute(req, ports);
+      if (settings) return settings;
+
+      const mail = await handleMailReadRoute(req, ports);
+      if (mail) return mail;
+
+      const notices = await handleNoticeRoute(req, ports);
+      if (notices) return notices;
+
+      const workflow = await handleWorkflowReadRoute(req, ports);
+      if (workflow) return workflow;
+
+      const pgp = await handlePgpReadRoute(req, ports);
+      if (pgp) return pgp;
+
+      const spam = await handleSpamReadRoute(req, ports);
+      if (spam) return spam;
+
+      const locks = await handleLockRoute(req, ports);
+      if (locks) return locks;
+
+      return error(404, 'not_found', 'Route nicht gefunden');
+    },
+  };
+}

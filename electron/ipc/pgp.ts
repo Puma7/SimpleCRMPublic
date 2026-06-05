@@ -2,9 +2,8 @@ import type { IpcMainInvokeEvent } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import { requireRealAuthSession } from '../auth/current-user';
-import { canAccessAccount } from '../auth/account-access';
+import { canAccessLocalAccount } from '../auth/auth-store';
 import { getEmailMessageById } from '../email/email-store';
-import { getDb } from '../sqlite-service';
 import {
   listPgpIdentities,
   generatePgpIdentity,
@@ -22,11 +21,14 @@ import {
 
 function requireMessageAccountAccess(event: IpcMainInvokeEvent, messageId: number) {
   const session = requireRealAuthSession(event);
-  const db = getDb();
-  if (!db) throw new Error('Database not initialized');
   const row = getEmailMessageById(messageId);
   if (!row) throw new Error('Nachricht nicht gefunden');
-  if (!canAccessAccount(db, session.userId, row.account_id, 'ro', session.role)) {
+  if (!canAccessLocalAccount({
+    userId: session.userId,
+    accountId: row.account_id,
+    access: 'ro',
+    role: session.role,
+  })) {
     throw new Error('Kein Zugriff');
   }
   return session;

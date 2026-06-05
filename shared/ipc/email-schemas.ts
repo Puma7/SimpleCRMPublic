@@ -32,6 +32,18 @@ const accountMailViewSchema = z.enum([
 
 const recordArray = z.array(z.record(z.string(), z.unknown()));
 const nullableRecord = z.record(z.string(), z.unknown()).nullable();
+const conversationLockReason = z.enum(['reply', 'forward', 'edit']);
+const conversationLockRecord = z.object({
+  messageId: positiveInt,
+  userId: nonEmptyString,
+  workspaceId: nonEmptyString,
+  acquiredAt: nonEmptyString,
+  lastHeartbeatAt: nonEmptyString,
+  reason: conversationLockReason,
+  takeoverCount: z.number().int().nonnegative(),
+  displayName: z.string().optional(),
+  email: z.string().optional(),
+}).passthrough();
 
 /** Register Zod payload/result schemas for every `IPCChannels.Email` invoke channel. */
 export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void {
@@ -709,6 +721,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       inReplyToMessageId: z.number().int().positive().nullable().optional(),
       attachmentPaths: z.array(z.string()).optional(),
       markReplyParentDone: z.boolean().optional(),
+      requestReadReceipt: z.boolean().optional(),
+      pgpEncrypt: z.boolean().optional(),
+      pgpSign: z.boolean().optional(),
+      pgpPassphrase: z.string().optional(),
     }),
     result: z.union([
       z.object({
@@ -718,6 +734,41 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       }),
       failResult,
     ]),
+  });
+  set(IPCChannels.Email.ListConversationLocks, {
+    payload: z.object({
+      messageIds: z.array(positiveInt).max(500),
+    }),
+    result: z.object({ locks: z.array(conversationLockRecord) }),
+  });
+  set(IPCChannels.Email.GetConversationLock, {
+    payload: positiveInt,
+    result: z.object({ lock: conversationLockRecord.nullable() }),
+  });
+  set(IPCChannels.Email.AcquireConversationLock, {
+    payload: z.object({
+      messageId: positiveInt,
+      reason: conversationLockReason.optional(),
+    }),
+    result: z.object({ lock: conversationLockRecord }),
+  });
+  set(IPCChannels.Email.HeartbeatConversationLock, {
+    payload: positiveInt,
+    result: z.object({ lock: conversationLockRecord }),
+  });
+  set(IPCChannels.Email.ReleaseConversationLock, {
+    payload: positiveInt,
+    result: z.object({
+      released: z.boolean(),
+      lock: conversationLockRecord,
+    }),
+  });
+  set(IPCChannels.Email.TakeoverConversationLock, {
+    payload: z.object({
+      messageId: positiveInt,
+      reason: conversationLockReason.optional(),
+    }),
+    result: z.object({ lock: conversationLockRecord }),
   });
   set(IPCChannels.Email.BulkSoftDeleteMessages, {
     payload: z.object({
@@ -1093,8 +1144,18 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.DeleteWorkflow, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.BackfillInboundWorkflows, {
-    payload: voidPayload,
-    result: z.object({ success: z.literal(true), processed: z.number().int() }),
+    payload: z
+      .object({
+        limit: z.number().int().positive().optional(),
+        clearApplied: z.boolean().optional(),
+      })
+      .optional(),
+    result: z.object({
+      success: z.literal(true),
+      processed: z.number().int().nonnegative(),
+      queued: z.number().int().nonnegative().optional(),
+      clearedApplied: z.number().int().nonnegative().optional(),
+    }),
   });
   set(IPCChannels.Email.CompileWorkflowGraph, {
     payload: compileWorkflowGraphPayloadSchema,

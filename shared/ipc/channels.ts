@@ -11,6 +11,11 @@ const UpdateChannels = literal({
   OpenExternalUrl: 'app:open-external-url',
 });
 
+const SetupChannels = literal({
+  GetDeployConfig: 'setup:get-deploy-config',
+  SaveDeployConfig: 'setup:save-deploy-config',
+});
+
 // DB related invoke channels
 const DbChannels = literal({
   GetCustomers: 'db:get-customers',
@@ -92,6 +97,7 @@ const AuthChannels = literal({
   GetSession: 'auth:get-session',
   ListUsers: 'auth:list-users',
   SaveUser: 'auth:save-user',
+  CreateInvite: 'auth:create-invite',
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
   SetInitialPassword: 'auth:set-initial-password',
   GetSetupState: 'auth:get-setup-state',
@@ -112,6 +118,7 @@ const PgpChannels = literal({
   DeletePeerKey: 'pgp:delete-peer-key',
   CheckRecipientKeys: 'pgp:check-recipient-keys',
   DeleteIdentity: 'pgp:delete-identity',
+  RotateIdentityPassphrase: 'pgp:rotate-identity-passphrase',
 });
 
 const AutomationChannels = literal({
@@ -321,11 +328,18 @@ const EmailChannels = literal({
   MergeThreads: 'email:merge-threads',
   SplitMessageThread: 'email:split-message-thread',
   ListThreadAliasWarnings: 'email:list-thread-alias-warnings',
+  ListConversationLocks: 'email:list-conversation-locks',
+  GetConversationLock: 'email:get-conversation-lock',
+  AcquireConversationLock: 'email:acquire-conversation-lock',
+  HeartbeatConversationLock: 'email:heartbeat-conversation-lock',
+  ReleaseConversationLock: 'email:release-conversation-lock',
+  TakeoverConversationLock: 'email:takeover-conversation-lock',
 });
 
 export const IPCChannels = {
   Window: WindowChannels,
   Update: UpdateChannels,
+  Setup: SetupChannels,
   Db: DbChannels,
   Calendar: CalendarChannels,
   Products: ProductChannels,
@@ -347,6 +361,7 @@ export const IPCChannels = {
 export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Window),
   ...Object.values(IPCChannels.Update),
+  ...Object.values(IPCChannels.Setup),
   ...Object.values(IPCChannels.Db),
   ...Object.values(IPCChannels.Calendar),
   ...Object.values(IPCChannels.Products),

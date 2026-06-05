@@ -1,5 +1,6 @@
 import { FollowUpItem, ActivityLogEntry, QueueCounts, SavedView } from './types';
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from '@/services/transport';
 
 export const followUpService = {
   async getItems(
@@ -9,7 +10,7 @@ export const followUpService = {
     offset: number = 0
   ): Promise<FollowUpItem[]> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.GetItems,
         { queue, filters, limit, offset }
       ) as FollowUpItem[];
@@ -21,7 +22,7 @@ export const followUpService = {
 
   async getQueueCounts(): Promise<QueueCounts> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.GetQueueCounts
       ) as QueueCounts;
     } catch (error) {
@@ -39,7 +40,7 @@ export const followUpService = {
 
   async snoozeTask(taskId: number, snoozedUntil: string): Promise<{ success: boolean; error?: string }> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.SnoozeTask,
         { taskId, snoozedUntil }
       ) as { success: boolean; error?: string };
@@ -58,7 +59,7 @@ export const followUpService = {
     description?: string;
   }): Promise<{ success: boolean; id?: number; error?: string }> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.LogActivity,
         data
       ) as { success: boolean; id?: number; error?: string };
@@ -75,7 +76,7 @@ export const followUpService = {
     offset: number = 0
   ): Promise<ActivityLogEntry[]> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.GetTimeline,
         { customerId, filter, limit, offset }
       ) as ActivityLogEntry[];
@@ -87,7 +88,7 @@ export const followUpService = {
 
   async getSavedViews(): Promise<SavedView[]> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.GetSavedViews
       ) as SavedView[];
     } catch (error) {
@@ -98,7 +99,7 @@ export const followUpService = {
 
   async createSavedView(data: { name: string; filters: string }): Promise<{ success: boolean; id?: number; error?: string }> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.CreateSavedView,
         data
       ) as { success: boolean; id?: number; error?: string };
@@ -110,7 +111,7 @@ export const followUpService = {
 
   async deleteSavedView(id: number): Promise<{ success: boolean; error?: string }> {
     try {
-      return await window.electronAPI.invoke(
+      return await invokeRenderer(
         IPCChannels.FollowUp.DeleteSavedView,
         id
       ) as { success: boolean; error?: string };

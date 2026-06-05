@@ -1,15 +1,31 @@
 import { IPCChannels } from '@shared/ipc/channels';
 import { calendarService, TASK_EVENT_COMPLETED_COLOR, TASK_EVENT_DEFAULT_COLOR } from '@/services/data/calendarService';
+import {
+  configureRendererTransport,
+  createHttpRendererTransport,
+  resetRendererTransportForTests,
+} from '@/services/transport';
+
+const jsonResponse = (body: unknown, status = 200): Response => ({
+  ok: status >= 200 && status < 300,
+  status,
+  text: async () => JSON.stringify(body),
+}) as Response;
 
 describe('calendarService', () => {
   const invoke = jest.fn();
 
   beforeEach(() => {
     invoke.mockReset();
+    resetRendererTransportForTests();
     Object.defineProperty(window, 'electronAPI', {
       configurable: true,
       value: { invoke },
     });
+  });
+
+  afterEach(() => {
+    resetRendererTransportForTests();
   });
 
   test('adds task event with sqlite-compatible payload', async () => {
@@ -31,6 +47,50 @@ describe('calendarService', () => {
         event_type: 'task',
       })
     );
+  });
+
+  test('adds task event through http transport without Electron API', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: undefined,
+    });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        id: 77,
+        title: 'Server task',
+        startDate: '2026-03-12T00:00:00.000Z',
+        endDate: '2026-03-13T00:00:00.000Z',
+        allDay: true,
+      },
+    }, 201));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    }));
+
+    const result = await calendarService.addTaskEvent({
+      title: 'Server task',
+      dueDate: '2026-03-12',
+    });
+
+    expect(result).toEqual({ success: true, id: 77 });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/calendar-events',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.any(String),
+      }),
+    );
+    const requestInit = fetchImpl.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(requestInit.body))).toEqual(
+      expect.objectContaining({
+        title: 'Server task',
+        allDay: true,
+        colorCode: TASK_EVENT_DEFAULT_COLOR,
+        eventType: 'task',
+      }),
+    );
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   test('throws for invalid due date', async () => {

@@ -10,6 +10,8 @@ module.exports = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@shared/(.*)$': '<rootDir>/shared/$1',
+    '^@simplecrm/core$': '<rootDir>/packages/core/src',
+    '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
   },
   testMatch: [

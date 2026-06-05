@@ -5,28 +5,10 @@ import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { generateOutboundMessageId } from './email-outbound-threading';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
-
-function extractEmailAddress(dnt: string): string | null {
-  const m = dnt.match(/<([^>]+)>/) ?? dnt.match(/([\w.+-]+@[\w.-]+\.\w+)/);
-  return m ? m[1]!.trim().toLowerCase() : null;
-}
-
-function senderEmailFromJson(fromJson: string | null): string {
-  if (!fromJson) return '';
-  try {
-    const p = JSON.parse(fromJson) as { value?: { address?: string }[] };
-    return (p.value?.[0]?.address ?? '').trim().toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-function dispositionMatchesSender(dnt: string, fromJson: string | null): boolean {
-  const dntAddr = extractEmailAddress(dnt);
-  const fromAddr = senderEmailFromJson(fromJson);
-  if (!dntAddr || !fromAddr) return false;
-  return dntAddr === fromAddr;
-}
+import {
+  dispositionNotificationMatchesSender,
+  extractDispositionNotificationEmail,
+} from '../../packages/core/src/email';
 
 /**
  * Send RFC 3798-style read receipt (MDN) for an inbound message.
@@ -45,14 +27,14 @@ export async function sendReadReceiptMdn(messageId: number): Promise<{ ok: true 
   const dnt = parseDispositionNotificationTo(row.raw_headers ?? null);
   if (!dnt) return { ok: false, error: 'Keine MDN-Anfrage in dieser Nachricht' };
 
-  if (!dispositionMatchesSender(dnt, row.from_json)) {
+  if (!dispositionNotificationMatchesSender(dnt, row.from_json)) {
     return {
       ok: false,
       error: 'MDN-Empfänger stimmt nicht mit dem Absender überein (RFC 8098)',
     };
   }
 
-  const recipient = extractEmailAddress(dnt);
+  const recipient = extractDispositionNotificationEmail(dnt);
   if (!recipient) return { ok: false, error: 'MDN-Empfänger nicht parsebar' };
 
   const acc = getEmailAccountById(row.account_id);

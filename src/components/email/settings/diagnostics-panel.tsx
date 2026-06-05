@@ -6,7 +6,9 @@ import { toast } from "sonner"
 import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
 import { RestoreWizardPanel } from "./restore-wizard-panel"
 import { Button } from "@/components/ui/button"
-import { hasElectron, invokeIpc } from "../types"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { invokeIpc } from "../types"
+import { useHasElectron } from "../use-has-electron"
 
 type DiagnosticsReport = {
   collectedAt: string
@@ -49,16 +51,18 @@ function formatBytes(n: number | null): string {
 }
 
 export function DiagnosticsPanel() {
+  const electronAvailable = useHasElectron()
+  const serverClientMode = getRendererTransport().kind === "http"
+  const localBackupAvailable = electronAvailable && !serverClientMode
   const [report, setReport] = useState<DiagnosticsReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [backupRunning, setBackupRunning] = useState(false)
   const [verifyRunning, setVerifyRunning] = useState(false)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     setLoading(true)
     try {
-      const r = await invokeIpc<DiagnosticsReport>(IPCChannels.Email.GetMailDiagnostics)
+      const r = await invokeRenderer(IPCChannels.Email.GetMailDiagnostics) as DiagnosticsReport
       setReport(r)
     } catch {
       toast.error("Diagnose konnte nicht geladen werden.")
@@ -83,7 +87,7 @@ export function DiagnosticsPanel() {
   }
 
   const runVerify = async () => {
-    if (!hasElectron()) return
+    if (!localBackupAvailable) return
     setVerifyRunning(true)
     try {
       const r = await invokeIpc<
@@ -118,7 +122,7 @@ export function DiagnosticsPanel() {
   }
 
   const runBackup = async () => {
-    if (!hasElectron()) return
+    if (!localBackupAvailable) return
     setBackupRunning(true)
     try {
       const r = await invokeIpc<{ ok: true; path: string } | { ok: false; error: string }>(
@@ -139,10 +143,19 @@ export function DiagnosticsPanel() {
       <div>
         <h3 className="text-base font-semibold">Diagnose & Backup</h3>
         <p className="text-sm text-muted-foreground">
-          Support-Übersicht für Sync, Datenbank und Workflows. Vollbackup enthält{" "}
-          <code className="text-xs">database.sqlite</code> und Anhänge —{" "}
-          <strong>ohne</strong> Passwörter/OAuth aus dem Schlüsselbund. Restore: siehe{" "}
-          <code className="text-xs">docs/MAIL_BETA_PHASE3_PLAN.md</code>.
+          {serverClientMode ? (
+            <>
+              Support-Übersicht für serverseitige Mail-, Sync- und Workflow-Daten. Technische
+              Vollbackups werden serverseitig erstellt und geprüft.
+            </>
+          ) : (
+            <>
+              Support-Übersicht für Sync, Datenbank und Workflows. Vollbackup enthält{" "}
+              <code className="text-xs">database.sqlite</code> und Anhänge —{" "}
+              <strong>ohne</strong> Passwörter/OAuth aus dem Schlüsselbund. Restore: siehe{" "}
+              <code className="text-xs">docs/MAIL_BETA_PHASE3_PLAN.md</code>.
+            </>
+          )}
         </p>
       </div>
 
@@ -165,7 +178,7 @@ export function DiagnosticsPanel() {
           type="button"
           variant="outline"
           size="sm"
-          disabled={backupRunning}
+          disabled={!localBackupAvailable || backupRunning}
           onClick={() => void runBackup()}
         >
           {backupRunning ? (
@@ -179,7 +192,7 @@ export function DiagnosticsPanel() {
           type="button"
           variant="outline"
           size="sm"
-          disabled={verifyRunning}
+          disabled={!localBackupAvailable || verifyRunning}
           onClick={() => void runVerify()}
         >
           {verifyRunning ? (
@@ -191,7 +204,7 @@ export function DiagnosticsPanel() {
         </Button>
       </div>
 
-      <RestoreWizardPanel />
+      {localBackupAvailable ? <RestoreWizardPanel /> : null}
 
       {!report && !loading ? (
         <p className="text-sm text-muted-foreground">Keine Diagnosedaten.</p>

@@ -13,7 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { hasElectron, invokeIpc, type AccountSignature } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isMailAccountDataRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
+import type { AccountSignature } from "../types"
 
 export function AccountSignaturesSection() {
   const [rows, setRows] = useState<AccountSignature[]>([])
@@ -21,8 +27,7 @@ export function AccountSignaturesSection() {
   const [html, setHtml] = useState("")
 
   const load = useCallback(async (keepAccountId?: string) => {
-    if (!hasElectron()) return
-    const list = await invokeIpc<AccountSignature[]>(IPCChannels.Email.ListAccountSignatures)
+    const list = await invokeRenderer(IPCChannels.Email.ListAccountSignatures) as AccountSignature[]
     setRows(list)
     if (list.length === 0) {
       setSelectedId("")
@@ -41,6 +46,16 @@ export function AccountSignaturesSection() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (getRendererTransport().kind !== "http") return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailAccountDataRefreshEvent(event)) void load(selectedId || undefined)
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [load, selectedId])
 
   const onSelectAccount = (id: string) => {
     setSelectedId(id)
@@ -93,7 +108,7 @@ export function AccountSignaturesSection() {
         onClick={async () => {
           const accountId = parseInt(selectedId, 10)
           if (!Number.isFinite(accountId)) return
-          await invokeIpc(IPCChannels.Email.SaveAccountSignature, {
+          await invokeRenderer(IPCChannels.Email.SaveAccountSignature, {
             accountId,
             signatureHtml: html.trim() || null,
           })

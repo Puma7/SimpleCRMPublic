@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 import { useEffect, useState } from "react"
 
 type Props = {
@@ -25,7 +25,9 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
 
   useEffect(() => {
     if (!open) return
-    void invokeIpc<WorkflowTemplateDto[]>(IPCChannels.Email.ListWorkflowTemplates).then(setTemplates)
+    void invokeRenderer(IPCChannels.Email.ListWorkflowTemplates).then((items) => {
+      setTemplates(items as WorkflowTemplateDto[])
+    })
   }, [open])
 
   return (

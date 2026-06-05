@@ -4,6 +4,7 @@ import {
   extractSenderEmail,
   BUILTIN_TRUSTED_SENDER_ENTRIES,
 } from '../../electron/workflow/sender-filter';
+import { evaluateSenderFilterFromLists } from '../../packages/core/src/workflow';
 
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: jest.fn((key: string) => {
@@ -39,5 +40,15 @@ describe('workflow sender filter', () => {
 
   test('unknown sender is default', () => {
     expect(evaluateSenderFilter('Someone <random@unknown.org>')).toBe('default');
+  });
+
+  test('core evaluator works from explicit lists without sqlite globals', () => {
+    expect(
+      evaluateSenderFilterFromLists('Ops <ops@example.test>', {
+        whitelist: ['example.test'],
+        blacklist: ['blocked.example'],
+        useBuiltinTrusted: false,
+      }),
+    ).toBe('whitelist');
   });
 });

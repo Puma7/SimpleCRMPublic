@@ -9,12 +9,14 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { type EmailAccount } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
 import { AccountForm } from "./account-form"
 
 export function AccountsPanel() {
+  const serverClientMode = getRendererTransport().kind === "http"
   const { accountsRevision, bumpAccountsRevision, setSettingsAccountId } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -23,17 +25,11 @@ export function AccountsPanel() {
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoading(false)
-      return
-    }
     setLoading(true)
     try {
-      const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
+      const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
-      const wf = await invokeIpc<{ imapDeleteOptIn: boolean }>(
-        IPCChannels.Email.GetWorkflowAutomationSettings,
-      )
+      const wf = await invokeRenderer(IPCChannels.Email.GetWorkflowAutomationSettings) as { imapDeleteOptIn: boolean }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
     } catch (e) {
       logError("accounts-panel: load", e)
@@ -48,13 +44,13 @@ export function AccountsPanel() {
   }, [load, accountsRevision])
 
   const handleDelete = async (account: EmailAccount) => {
-    if (!hasElectron()) return
+    const scopeLabel = serverClientMode ? "serverseitigen" : "lokalen"
     const ok = window.confirm(
-      `Konto „${account.display_name}“ (${account.email_address}) wirklich löschen? Alle lokalen Nachrichten dieses Kontos werden entfernt.`,
+      `Konto „${account.display_name}“ (${account.email_address}) wirklich löschen? Alle ${scopeLabel} Nachrichten dieses Kontos werden entfernt.`,
     )
     if (!ok) return
     try {
-      await invokeIpc(IPCChannels.Email.DeleteAccount, account.id)
+      await invokeRenderer(IPCChannels.Email.DeleteAccount, account.id)
       toast.success("Konto gelöscht.")
       if (selectedId === account.id) {
         setSelectedId(null)
@@ -82,7 +78,7 @@ export function AccountsPanel() {
           <Label htmlFor="imap-delete-opt-in">IMAP-Löschung auf dem Server (Workflows)</Label>
           <p className="text-xs text-muted-foreground">
             Erlaubt dem Workflow-Knoten „Auf Server löschen“. Der Papierkorb im Postfach ist davon
-            unabhängig (nur lokale Ausblendung).
+            unabhängig (nur SimpleCRM-interne Ausblendung).
           </p>
         </div>
         <Switch
@@ -90,7 +86,7 @@ export function AccountsPanel() {
           checked={imapDeleteOptIn}
           onCheckedChange={(v) => {
             setImapDeleteOptIn(v)
-            void invokeIpc(IPCChannels.Email.SetWorkflowAutomationSettings, {
+            void invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, {
               imapDeleteOptIn: v,
             }).then(() => toast.success("Gespeichert"))
           }}

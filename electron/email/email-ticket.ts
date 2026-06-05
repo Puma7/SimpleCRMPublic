@@ -1,24 +1,17 @@
 import { randomBytes } from 'crypto';
 import { getDb } from '../sqlite-service';
 import { EMAIL_THREADS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
+import {
+  ensureTicketInSubject,
+  extractTicketFromSubject,
+  generateTicketCode,
+} from '../../packages/core/src/email';
 
-const TICKET_PREFIX = 'SCR';
-
-export function generateTicketCode(): string {
-  const part = randomBytes(5).toString('hex').toUpperCase();
-  return `${TICKET_PREFIX}-${part}`;
-}
-
-export function extractTicketFromSubject(subject: string | null): string | null {
-  if (!subject) return null;
-  const m = subject.match(/\[SCR-([A-F0-9]{6,10})\]/i);
-  return m ? `${TICKET_PREFIX}-${m[1]!.toUpperCase()}` : null;
-}
-
-export function ensureTicketInSubject(subject: string, ticketCode: string): string {
-  if (subject.includes(`[${ticketCode}]`)) return subject;
-  return `[${ticketCode}] ${subject}`.trim();
-}
+export {
+  ensureTicketInSubject,
+  extractTicketFromSubject,
+  generateTicketCode,
+};
 
 export function getOrCreateThreadForTicket(ticketCode: string): string {
   const existing = getDb()

@@ -1,0 +1,1217 @@
+import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+
+import type {
+  DealApiPort,
+  DealProductApiPort,
+  DealProductDeletePortResult,
+  DealProductMutationInput,
+  DealProductMutationPortResult,
+  DealProductRecord,
+  DealListResult,
+  DealMutationInput,
+  DealMutationPortResult,
+  DealRecord,
+  ProductApiPort,
+  ProductListResult,
+  ProductMutationInput,
+  ProductRecord,
+  TaskApiPort,
+  TaskListResult,
+  TaskMutationInput,
+  TaskMutationPortResult,
+  TaskRecord,
+} from '../api/types';
+import type {
+  DealProductsTable,
+  DealsTable,
+  ProductsTable,
+  ServerDatabase,
+  TasksTable,
+} from './schema';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './workspace-context';
+
+export type PostgresCoreCrmReadPortOptions = Readonly<{
+  db: Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+}>;
+
+type ProductRow = Selectable<ProductsTable>;
+type DealRow = Selectable<DealsTable>;
+type DealProductRow = Selectable<DealProductsTable>;
+type TaskRow = Selectable<TasksTable>;
+type CustomerReference = Readonly<{
+  id: number;
+  sourceSqliteId: number;
+}>;
+type DealReference = Readonly<{
+  id: number;
+  sourceSqliteId: number;
+  valueCalculationMethod: 'static' | 'dynamic';
+}>;
+type ProductReference = Readonly<{
+  id: number;
+  sourceSqliteId: number;
+}>;
+
+type DealProductJoinedRow = Readonly<{
+  deal_product_id: number;
+  deal_product_source_sqlite_id: number;
+  deal_source_sqlite_id: number;
+  product_source_sqlite_id: number;
+  deal_id: number | null;
+  linked_product_id: number | null;
+  quantity: number;
+  price_at_time_of_adding: string;
+  date_added: Date | string | null;
+  product_id: number;
+  product_row_source_sqlite_id: number;
+  jtl_kartikel: number | null;
+  product_name: string;
+  sku: string | null;
+  description: string | null;
+  product_price: string;
+  is_active: boolean;
+  product_updated_at: Date | string;
+}>;
+
+const productSelectColumns = [
+  'id',
+  'source_sqlite_id',
+  'jtl_kartikel',
+  'name',
+  'sku',
+  'description',
+  'price',
+  'is_active',
+  'updated_at',
+] as const;
+
+const dealSelectColumns = [
+  'id',
+  'source_sqlite_id',
+  'customer_source_sqlite_id',
+  'customer_id',
+  'name',
+  'value',
+  'value_calculation_method',
+  'stage',
+  'notes',
+  'created_date',
+  'expected_close_date',
+  'updated_at',
+] as const;
+
+const taskSelectColumns = [
+  'id',
+  'source_sqlite_id',
+  'customer_source_sqlite_id',
+  'customer_id',
+  'title',
+  'description',
+  'due_date',
+  'priority',
+  'completed',
+  'snoozed_until',
+  'updated_at',
+] as const;
+
+export function createPostgresProductReadPort(options: PostgresCoreCrmReadPortOptions): ProductApiPort {
+  return {
+    async list(input): Promise<ProductListResult> {
+      const limit = normalizeLimit(input.limit, 'product');
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          let query = trx
+            .selectFrom('products')
+            .select(productSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .orderBy('id', 'asc')
+            .limit(limit + 1);
+
+          if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+          const search = input.search?.trim();
+          if (search) {
+            const pattern = `%${search}%`;
+            query = query.where((eb) => eb.or([
+              eb('name', 'ilike', pattern),
+              eb('sku', 'ilike', pattern),
+              eb('description', 'ilike', pattern),
+            ]));
+          }
+
+          const rows = await query.execute();
+          const pageRows = rows.slice(0, limit);
+          return {
+            items: pageRows.map(mapProductRow),
+            nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+          };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async get(input): Promise<ProductRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const row = await trx
+            .selectFrom('products')
+            .select(productSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .executeTakeFirst();
+          return row ? mapProductRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async create(input): Promise<ProductRecord> {
+      const values = normalizeProductMutation(input.values, {
+        requireAtLeastOneField: true,
+        requireName: true,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const now = new Date();
+          const row = await trx
+            .insertInto('products')
+            .values({
+              workspace_id: input.workspaceId,
+              source_sqlite_id: serverCreatedProductSourceSqliteId(),
+              name: values.name ?? '',
+              sku: values.sku ?? null,
+              description: values.description ?? null,
+              price: values.price ?? '0.00',
+              is_active: values.isActive ?? true,
+              date_created: now,
+              last_modified: now,
+              last_modified_locally: now,
+              source_row: serverApiSourceRow(),
+              updated_at: now,
+            })
+            .returning(productSelectColumns)
+            .executeTakeFirstOrThrow();
+          return mapProductRow(row);
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async update(input): Promise<ProductRecord | null> {
+      const values = normalizeProductMutation(input.values, {
+        requireAtLeastOneField: true,
+        requireName: false,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const now = new Date();
+          const row = await trx
+            .updateTable('products')
+            .set({
+              ...mutationToProductPatch(values),
+              last_modified: now,
+              last_modified_locally: now,
+              updated_at: now,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .returning(productSelectColumns)
+            .executeTakeFirst();
+          return row ? mapProductRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async delete(input): Promise<ProductRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const row = await trx
+            .deleteFrom('products')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .returning(productSelectColumns)
+            .executeTakeFirst();
+          return row ? mapProductRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+export function createPostgresDealReadPort(options: PostgresCoreCrmReadPortOptions): DealApiPort {
+  return {
+    async list(input): Promise<DealListResult> {
+      const limit = normalizeLimit(input.limit, 'deal');
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          let query = trx
+            .selectFrom('deals')
+            .select(dealSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .orderBy('id', 'asc')
+            .limit(limit + 1);
+
+          if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+          if (input.customerId !== undefined) query = query.where('customer_id', '=', input.customerId);
+          const stage = input.stage?.trim();
+          if (stage) query = query.where('stage', '=', stage);
+          const search = input.search?.trim();
+          if (search) {
+            const pattern = `%${search}%`;
+            query = query.where((eb) => eb.or([
+              eb('name', 'ilike', pattern),
+              eb('stage', 'ilike', pattern),
+              eb('notes', 'ilike', pattern),
+            ]));
+          }
+
+          const rows = await query.execute();
+          const pageRows = rows.slice(0, limit);
+          return {
+            items: pageRows.map(mapDealRow),
+            nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+          };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async get(input): Promise<DealRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const row = await trx
+            .selectFrom('deals')
+            .select(dealSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .executeTakeFirst();
+          return row ? mapDealRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async create(input): Promise<DealMutationPortResult> {
+      const values = normalizeDealMutation(input.values, {
+        requireAtLeastOneField: true,
+        requireName: true,
+        requireCustomer: true,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const customer = await resolveCustomerReference(trx, input.workspaceId, values.customerId);
+          if (!customer) return { ok: false, code: 'customer_not_found' };
+
+          const now = new Date();
+          const row = await trx
+            .insertInto('deals')
+            .values({
+              workspace_id: input.workspaceId,
+              source_sqlite_id: serverCreatedDealSourceSqliteId(),
+              customer_source_sqlite_id: customer.sourceSqliteId,
+              customer_id: customer.id,
+              name: values.name ?? '',
+              value: values.value ?? '0.00',
+              value_calculation_method: values.valueCalculationMethod ?? 'static',
+              stage: values.stage ?? 'New',
+              notes: values.notes ?? null,
+              created_date: values.createdDate ?? now,
+              expected_close_date: values.expectedCloseDate ?? null,
+              last_modified: now,
+              source_row: serverApiSourceRow(),
+              updated_at: now,
+            })
+            .returning(dealSelectColumns)
+            .executeTakeFirstOrThrow();
+          return { ok: true, deal: mapDealRow(row) };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async update(input): Promise<DealMutationPortResult | null> {
+      const values = normalizeDealMutation(input.values, {
+        requireAtLeastOneField: true,
+        requireName: false,
+        requireCustomer: false,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const customer = values.customerId === undefined
+            ? undefined
+            : await resolveCustomerReference(trx, input.workspaceId, values.customerId);
+          if (customer === null) return { ok: false, code: 'customer_not_found' };
+
+          const now = new Date();
+          const row = await trx
+            .updateTable('deals')
+            .set({
+              ...mutationToDealPatch(values, customer),
+              last_modified: now,
+              updated_at: now,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .returning(dealSelectColumns)
+            .executeTakeFirst();
+          return row ? { ok: true, deal: mapDealRow(row) } : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async delete(input): Promise<DealRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const row = await trx
+            .deleteFrom('deals')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .returning(dealSelectColumns)
+            .executeTakeFirst();
+          return row ? mapDealRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+export function createPostgresDealProductPort(options: PostgresCoreCrmReadPortOptions): DealProductApiPort {
+  return {
+    async list(input): Promise<readonly DealProductRecord[] | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const deal = await resolveDealReference(trx, input.workspaceId, input.dealId);
+          if (!deal) return null;
+          return listDealProductsForDeal(trx, input.workspaceId, deal.id);
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async add(input): Promise<DealProductMutationPortResult> {
+      const values = normalizeDealProductMutation(input.values, {
+        requireDeal: true,
+        requireProduct: true,
+        requireQuantity: true,
+        requirePrice: true,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const deal = await resolveDealReference(trx, input.workspaceId, values.dealId);
+          if (!deal) return { ok: false, code: 'deal_not_found' };
+          const product = await resolveProductReference(trx, input.workspaceId, values.productId);
+          if (!product) return { ok: false, code: 'product_not_found' };
+
+          const now = new Date();
+          const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+          const existing = await trx
+            .updateTable('deal_products')
+            .set({
+              quantity: kyselySql<number>`quantity + ${values.quantity}`,
+              price_at_time_of_adding: values.price,
+              updated_at: now,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('deal_id', '=', deal.id)
+            .where('product_id', '=', product.id)
+            .returning(['id', 'deal_id'])
+            .executeTakeFirst();
+
+          const row = existing ?? await trx
+            .insertInto('deal_products')
+            .values({
+              workspace_id: input.workspaceId,
+              source_sqlite_id: serverCreatedDealProductSourceSqliteId(),
+              deal_source_sqlite_id: deal.sourceSqliteId,
+              product_source_sqlite_id: product.sourceSqliteId,
+              deal_id: deal.id,
+              product_id: product.id,
+              quantity: values.quantity ?? 1,
+              price_at_time_of_adding: values.price ?? '0.00',
+              date_added: now,
+              source_row: serverApiSourceRow(),
+              updated_at: now,
+            })
+            .returning(['id', 'deal_id'])
+            .executeTakeFirstOrThrow();
+
+          await updateDealValueFromProductsIfDynamic(trx, input.workspaceId, row.deal_id);
+          const dealProduct = await getDealProductById(trx, input.workspaceId, Number(row.id));
+          return dealProduct
+            ? { ok: true, dealProduct }
+            : { ok: false, code: 'deal_product_not_found' };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async update(input): Promise<DealProductMutationPortResult> {
+      const values = normalizeDealProductMutation(input.values, {
+        requireDeal: false,
+        requireProduct: false,
+        requireQuantity: true,
+        requirePrice: false,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const target = await findDealProductTarget(trx, input.workspaceId, values);
+          if (!target) return { ok: false, code: 'deal_product_not_found' };
+
+          const now = new Date();
+          const row = await trx
+            .updateTable('deal_products')
+            .set({
+              quantity: values.quantity,
+              ...(values.price === undefined ? {} : { price_at_time_of_adding: values.price }),
+              updated_at: now,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', target.id)
+            .returning(['id', 'deal_id'])
+            .executeTakeFirst();
+          if (!row) return { ok: false, code: 'deal_product_not_found' };
+
+          await updateDealValueFromProductsIfDynamic(trx, input.workspaceId, row.deal_id);
+          const dealProduct = await getDealProductById(trx, input.workspaceId, Number(row.id));
+          return dealProduct
+            ? { ok: true, dealProduct }
+            : { ok: false, code: 'deal_product_not_found' };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async delete(input): Promise<DealProductDeletePortResult> {
+      const values = normalizeDealProductMutation(input.values, {
+        requireDeal: false,
+        requireProduct: false,
+        requireQuantity: false,
+        requirePrice: false,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const target = await findDealProductTarget(trx, input.workspaceId, values);
+          if (!target) return { ok: false, code: 'deal_product_not_found' };
+          const dealProduct = await getDealProductById(trx, input.workspaceId, target.id);
+          if (!dealProduct) return { ok: false, code: 'deal_product_not_found' };
+
+          const deleted = await trx
+            .deleteFrom('deal_products')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', target.id)
+            .returning(['id', 'deal_id'])
+            .executeTakeFirst();
+          if (!deleted) return { ok: false, code: 'deal_product_not_found' };
+
+          await updateDealValueFromProductsIfDynamic(trx, input.workspaceId, deleted.deal_id);
+          return { ok: true, dealProduct };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptions): TaskApiPort {
+  return {
+    async list(input): Promise<TaskListResult> {
+      const limit = normalizeLimit(input.limit, 'task');
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          let query = trx
+            .selectFrom('tasks')
+            .select(taskSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .orderBy('id', 'asc')
+            .limit(limit + 1);
+
+          if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+          if (input.customerId !== undefined) query = query.where('customer_id', '=', input.customerId);
+          if (input.completed !== undefined) query = query.where('completed', '=', input.completed);
+          const search = input.search?.trim();
+          if (search) {
+            const pattern = `%${search}%`;
+            query = query.where((eb) => eb.or([
+              eb('title', 'ilike', pattern),
+              eb('description', 'ilike', pattern),
+              eb('priority', 'ilike', pattern),
+            ]));
+          }
+
+          const rows = await query.execute();
+          const pageRows = rows.slice(0, limit);
+          return {
+            items: pageRows.map(mapTaskRow),
+            nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+          };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async get(input): Promise<TaskRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const row = await trx
+            .selectFrom('tasks')
+            .select(taskSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .executeTakeFirst();
+          return row ? mapTaskRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async create(input): Promise<TaskMutationPortResult> {
+      const values = normalizeTaskMutation(input.values, {
+        requireAtLeastOneField: true,
+        requireTitle: true,
+        requireCustomer: true,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const customer = await resolveCustomerReference(trx, input.workspaceId, values.customerId);
+          if (!customer) return { ok: false, code: 'customer_not_found' };
+
+          const now = new Date();
+          const row = await trx
+            .insertInto('tasks')
+            .values({
+              workspace_id: input.workspaceId,
+              source_sqlite_id: serverCreatedTaskSourceSqliteId(),
+              customer_source_sqlite_id: customer.sourceSqliteId,
+              customer_id: customer.id,
+              title: values.title ?? '',
+              description: values.description ?? null,
+              due_date: values.dueDate ?? null,
+              priority: values.priority ?? 'Medium',
+              completed: values.completed ?? false,
+              snoozed_until: values.snoozedUntil ?? null,
+              created_date: now,
+              last_modified: now,
+              source_row: serverApiSourceRow(),
+              updated_at: now,
+            })
+            .returning(taskSelectColumns)
+            .executeTakeFirstOrThrow();
+          return { ok: true, task: mapTaskRow(row) };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async update(input): Promise<TaskMutationPortResult | null> {
+      const values = normalizeTaskMutation(input.values, {
+        requireAtLeastOneField: true,
+        requireTitle: false,
+        requireCustomer: false,
+      });
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const customer = values.customerId === undefined
+            ? undefined
+            : await resolveCustomerReference(trx, input.workspaceId, values.customerId);
+          if (customer === null) return { ok: false, code: 'customer_not_found' };
+
+          const now = new Date();
+          const row = await trx
+            .updateTable('tasks')
+            .set({
+              ...mutationToTaskPatch(values, customer),
+              last_modified: now,
+              updated_at: now,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .returning(taskSelectColumns)
+            .executeTakeFirst();
+          return row ? { ok: true, task: mapTaskRow(row) } : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async delete(input): Promise<TaskRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const row = await trx
+            .deleteFrom('tasks')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .returning(taskSelectColumns)
+            .executeTakeFirst();
+          return row ? mapTaskRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+async function listDealProductsForDeal(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  dealId: number,
+): Promise<readonly DealProductRecord[]> {
+  const rows = await trx
+    .selectFrom('deal_products')
+    .innerJoin('products', 'products.id', 'deal_products.product_id')
+    .select([
+      'deal_products.id as deal_product_id',
+      'deal_products.source_sqlite_id as deal_product_source_sqlite_id',
+      'deal_products.deal_source_sqlite_id',
+      'deal_products.product_source_sqlite_id',
+      'deal_products.deal_id',
+      'deal_products.product_id as linked_product_id',
+      'deal_products.quantity',
+      'deal_products.price_at_time_of_adding',
+      'deal_products.date_added',
+      'products.id as product_id',
+      'products.source_sqlite_id as product_row_source_sqlite_id',
+      'products.jtl_kartikel',
+      'products.name as product_name',
+      'products.sku',
+      'products.description',
+      'products.price as product_price',
+      'products.is_active',
+      'products.updated_at as product_updated_at',
+    ])
+    .where('deal_products.workspace_id', '=', workspaceId)
+    .where('deal_products.deal_id', '=', dealId)
+    .orderBy('products.name', 'asc')
+    .execute() as readonly DealProductJoinedRow[];
+
+  return rows.map(mapDealProductJoinedRow);
+}
+
+async function getDealProductById(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  id: number,
+): Promise<DealProductRecord | null> {
+  const row = await trx
+    .selectFrom('deal_products')
+    .innerJoin('products', 'products.id', 'deal_products.product_id')
+    .select([
+      'deal_products.id as deal_product_id',
+      'deal_products.source_sqlite_id as deal_product_source_sqlite_id',
+      'deal_products.deal_source_sqlite_id',
+      'deal_products.product_source_sqlite_id',
+      'deal_products.deal_id',
+      'deal_products.product_id as linked_product_id',
+      'deal_products.quantity',
+      'deal_products.price_at_time_of_adding',
+      'deal_products.date_added',
+      'products.id as product_id',
+      'products.source_sqlite_id as product_row_source_sqlite_id',
+      'products.jtl_kartikel',
+      'products.name as product_name',
+      'products.sku',
+      'products.description',
+      'products.price as product_price',
+      'products.is_active',
+      'products.updated_at as product_updated_at',
+    ])
+    .where('deal_products.workspace_id', '=', workspaceId)
+    .where('deal_products.id', '=', id)
+    .executeTakeFirst() as DealProductJoinedRow | undefined;
+
+  return row ? mapDealProductJoinedRow(row) : null;
+}
+
+async function findDealProductTarget(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  values: DealProductMutationInput,
+): Promise<Pick<DealProductRow, 'id' | 'deal_id'> | null> {
+  let query = trx
+    .selectFrom('deal_products')
+    .select(['id', 'deal_id'])
+    .where('workspace_id', '=', workspaceId);
+
+  if (values.dealProductId !== undefined) {
+    query = query.where('id', '=', values.dealProductId);
+    if (values.dealId !== undefined) query = query.where('deal_id', '=', values.dealId);
+    if (values.productId !== undefined) query = query.where('product_id', '=', values.productId);
+  } else if (values.dealId !== undefined && values.productId !== undefined) {
+    query = query
+      .where('deal_id', '=', values.dealId)
+      .where('product_id', '=', values.productId);
+  } else {
+    return null;
+  }
+
+  return await query.executeTakeFirst() ?? null;
+}
+
+function mapDealProductJoinedRow(row: DealProductJoinedRow): DealProductRecord {
+  return {
+    id: Number(row.deal_product_id),
+    sourceSqliteId: Number(row.deal_product_source_sqlite_id),
+    dealSourceSqliteId: Number(row.deal_source_sqlite_id),
+    productSourceSqliteId: Number(row.product_source_sqlite_id),
+    dealId: row.deal_id === null ? null : Number(row.deal_id),
+    productId: row.linked_product_id === null ? null : Number(row.linked_product_id),
+    quantity: Number(row.quantity),
+    priceAtTimeOfAdding: row.price_at_time_of_adding,
+    dateAdded: timestampToIsoOrNull(row.date_added),
+    product: {
+      id: Number(row.product_id),
+      sourceSqliteId: Number(row.product_row_source_sqlite_id),
+      jtlKartikel: row.jtl_kartikel === null ? null : Number(row.jtl_kartikel),
+      name: row.product_name,
+      sku: row.sku,
+      description: row.description,
+      price: row.product_price,
+      isActive: row.is_active,
+      updatedAt: timestampToIso(row.product_updated_at),
+    },
+  };
+}
+
+function normalizeLimit(limit: number, resource: string): number {
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 100) {
+    throw new Error(`${resource} list limit must be between 1 and 100`);
+  }
+  return limit;
+}
+
+function mapProductRow(row: Pick<ProductRow, typeof productSelectColumns[number]>): ProductRecord {
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    jtlKartikel: row.jtl_kartikel === null ? null : Number(row.jtl_kartikel),
+    name: row.name,
+    sku: row.sku,
+    description: row.description,
+    price: row.price,
+    isActive: row.is_active,
+    updatedAt: timestampToIso(row.updated_at),
+  };
+}
+
+function normalizeProductMutation(
+  values: ProductMutationInput,
+  options: {
+    requireAtLeastOneField: boolean;
+    requireName: boolean;
+  },
+): ProductMutationInput {
+  const normalized = { ...values };
+  if (options.requireAtLeastOneField && Object.keys(normalized).length === 0) {
+    throw new Error('product mutation must include at least one field');
+  }
+  if (options.requireName && !normalized.name) {
+    throw new Error('product name is required');
+  }
+  if (normalized.name !== undefined && normalized.name.trim() === '') {
+    throw new Error('product name must not be empty');
+  }
+  if (normalized.price !== undefined && !/^\d{1,12}(?:\.\d{1,2})?$/.test(normalized.price)) {
+    throw new Error('product price must be a decimal with at most two fraction digits');
+  }
+  return normalized;
+}
+
+function mutationToProductPatch(values: ProductMutationInput): Partial<Updateable<ProductsTable>> {
+  return {
+    ...(values.name === undefined ? {} : { name: values.name }),
+    ...(values.sku === undefined ? {} : { sku: values.sku }),
+    ...(values.description === undefined ? {} : { description: values.description }),
+    ...(values.price === undefined ? {} : { price: values.price }),
+    ...(values.isActive === undefined ? {} : { is_active: values.isActive }),
+  };
+}
+
+function serverCreatedProductSourceSqliteId(): RawBuilder<number> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  return kyselySql<number>`-nextval(pg_get_serial_sequence('products', 'id'))`;
+}
+
+function serverApiSourceRow(): RawBuilder<unknown> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  return kyselySql`jsonb_build_object('origin', 'server_api')`;
+}
+
+function normalizeDealMutation(
+  values: DealMutationInput,
+  options: {
+    requireAtLeastOneField: boolean;
+    requireName: boolean;
+    requireCustomer: boolean;
+  },
+): DealMutationInput {
+  const normalized = { ...values };
+  if (options.requireAtLeastOneField && Object.keys(normalized).length === 0) {
+    throw new Error('deal mutation must include at least one field');
+  }
+  if (options.requireName && !normalized.name) {
+    throw new Error('deal name is required');
+  }
+  if (options.requireCustomer && normalized.customerId === undefined) {
+    throw new Error('deal customerId is required');
+  }
+  if (normalized.customerId !== undefined && (!Number.isSafeInteger(normalized.customerId) || normalized.customerId <= 0)) {
+    throw new Error('deal customerId must be a positive integer');
+  }
+  if (normalized.name !== undefined && normalized.name.trim() === '') {
+    throw new Error('deal name must not be empty');
+  }
+  if (normalized.value !== undefined && !/^\d{1,12}(?:\.\d{1,2})?$/.test(normalized.value)) {
+    throw new Error('deal value must be a decimal with at most two fraction digits');
+  }
+  if (
+    normalized.valueCalculationMethod !== undefined
+    && normalized.valueCalculationMethod !== 'static'
+    && normalized.valueCalculationMethod !== 'dynamic'
+  ) {
+    throw new Error('deal valueCalculationMethod must be static or dynamic');
+  }
+  return normalized;
+}
+
+function normalizeDealProductMutation(
+  values: DealProductMutationInput,
+  options: {
+    requireDeal: boolean;
+    requireProduct: boolean;
+    requireQuantity: boolean;
+    requirePrice: boolean;
+  },
+): DealProductMutationInput {
+  const normalized = { ...values };
+  if (normalized.dealProductId !== undefined && !isPositiveSafeInteger(normalized.dealProductId)) {
+    throw new Error('dealProductId must be a positive integer');
+  }
+  if (normalized.dealId !== undefined && !isPositiveSafeInteger(normalized.dealId)) {
+    throw new Error('dealId must be a positive integer');
+  }
+  if (normalized.productId !== undefined && !isPositiveSafeInteger(normalized.productId)) {
+    throw new Error('productId must be a positive integer');
+  }
+  if (options.requireDeal && normalized.dealId === undefined) {
+    throw new Error('dealId is required');
+  }
+  if (options.requireProduct && normalized.productId === undefined) {
+    throw new Error('productId is required');
+  }
+  if (options.requireQuantity && !isPositiveSafeInteger(normalized.quantity)) {
+    throw new Error('quantity must be a positive integer');
+  }
+  if (normalized.quantity !== undefined && !isPositiveSafeInteger(normalized.quantity)) {
+    throw new Error('quantity must be a positive integer');
+  }
+  if (options.requirePrice && normalized.price === undefined) {
+    throw new Error('price is required');
+  }
+  if (normalized.price !== undefined && !/^\d{1,12}(?:\.\d{1,2})?$/.test(normalized.price)) {
+    throw new Error('price must be a decimal with at most two fraction digits');
+  }
+  if (
+    normalized.dealProductId === undefined
+    && (normalized.dealId === undefined || normalized.productId === undefined)
+  ) {
+    throw new Error('dealProductId or dealId/productId is required');
+  }
+  return normalized;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function normalizeTaskMutation(
+  values: TaskMutationInput,
+  options: {
+    requireAtLeastOneField: boolean;
+    requireTitle: boolean;
+    requireCustomer: boolean;
+  },
+): TaskMutationInput {
+  const normalized = { ...values };
+  if (options.requireAtLeastOneField && Object.keys(normalized).length === 0) {
+    throw new Error('task mutation must include at least one field');
+  }
+  if (options.requireTitle && !normalized.title) {
+    throw new Error('task title is required');
+  }
+  if (options.requireCustomer && normalized.customerId === undefined) {
+    throw new Error('task customerId is required');
+  }
+  if (normalized.customerId !== undefined && (!Number.isSafeInteger(normalized.customerId) || normalized.customerId <= 0)) {
+    throw new Error('task customerId must be a positive integer');
+  }
+  if (normalized.title !== undefined && normalized.title.trim() === '') {
+    throw new Error('task title must not be empty');
+  }
+  return normalized;
+}
+
+function mutationToDealPatch(
+  values: DealMutationInput,
+  customer: CustomerReference | undefined,
+): Partial<Updateable<DealsTable>> {
+  return {
+    ...(customer === undefined ? {} : {
+      customer_source_sqlite_id: customer.sourceSqliteId,
+      customer_id: customer.id,
+    }),
+    ...(values.name === undefined ? {} : { name: values.name }),
+    ...(values.value === undefined ? {} : { value: values.value }),
+    ...(values.valueCalculationMethod === undefined ? {} : { value_calculation_method: values.valueCalculationMethod }),
+    ...(values.stage === undefined ? {} : { stage: values.stage }),
+    ...(values.notes === undefined ? {} : { notes: values.notes }),
+    ...(values.createdDate === undefined ? {} : { created_date: values.createdDate }),
+    ...(values.expectedCloseDate === undefined ? {} : { expected_close_date: values.expectedCloseDate }),
+  };
+}
+
+function mutationToTaskPatch(
+  values: TaskMutationInput,
+  customer: CustomerReference | undefined,
+): Partial<Updateable<TasksTable>> {
+  return {
+    ...(customer === undefined ? {} : {
+      customer_source_sqlite_id: customer.sourceSqliteId,
+      customer_id: customer.id,
+    }),
+    ...(values.title === undefined ? {} : { title: values.title }),
+    ...(values.description === undefined ? {} : { description: values.description }),
+    ...(values.dueDate === undefined ? {} : { due_date: values.dueDate }),
+    ...(values.priority === undefined ? {} : { priority: values.priority }),
+    ...(values.completed === undefined ? {} : { completed: values.completed }),
+    ...(values.snoozedUntil === undefined ? {} : { snoozed_until: values.snoozedUntil }),
+  };
+}
+
+async function resolveCustomerReference(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  customerId: number | undefined,
+): Promise<CustomerReference | null> {
+  if (customerId === undefined) return null;
+  const row = await trx
+    .selectFrom('customers')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', customerId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+  };
+}
+
+async function resolveDealReference(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  dealId: number | undefined,
+): Promise<DealReference | null> {
+  if (dealId === undefined) return null;
+  const row = await trx
+    .selectFrom('deals')
+    .select(['id', 'source_sqlite_id', 'value_calculation_method'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', dealId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    valueCalculationMethod: row.value_calculation_method,
+  };
+}
+
+async function resolveProductReference(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  productId: number | undefined,
+): Promise<ProductReference | null> {
+  if (productId === undefined) return null;
+  const row = await trx
+    .selectFrom('products')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', productId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+  };
+}
+
+function serverCreatedDealSourceSqliteId(): RawBuilder<number> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  return kyselySql<number>`-nextval(pg_get_serial_sequence('deals', 'id'))`;
+}
+
+function serverCreatedDealProductSourceSqliteId(): RawBuilder<number> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  return kyselySql<number>`-nextval(pg_get_serial_sequence('deal_products', 'id'))`;
+}
+
+function serverCreatedTaskSourceSqliteId(): RawBuilder<number> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  return kyselySql<number>`-nextval(pg_get_serial_sequence('tasks', 'id'))`;
+}
+
+async function updateDealValueFromProductsIfDynamic(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  dealId: number | string | null,
+): Promise<void> {
+  if (dealId === null) return;
+  const resolvedDealId = Number(dealId);
+  if (!Number.isSafeInteger(resolvedDealId) || resolvedDealId <= 0) return;
+
+  const deal = await trx
+    .selectFrom('deals')
+    .select(['value_calculation_method'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', resolvedDealId)
+    .executeTakeFirst();
+  if (!deal || deal.value_calculation_method !== 'dynamic') return;
+
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  const total = await trx
+    .selectFrom('deal_products')
+    .select(kyselySql<string>`coalesce(sum(quantity * price_at_time_of_adding), 0)::numeric(14,2)`.as('value'))
+    .where('workspace_id', '=', workspaceId)
+    .where('deal_id', '=', resolvedDealId)
+    .executeTakeFirst();
+  const now = new Date();
+  await trx
+    .updateTable('deals')
+    .set({
+      value: String(total?.value ?? '0.00'),
+      last_modified: now,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', resolvedDealId)
+    .execute();
+}
+
+function mapDealRow(row: Pick<DealRow, typeof dealSelectColumns[number]>): DealRecord {
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    customerSourceSqliteId: Number(row.customer_source_sqlite_id),
+    customerId: row.customer_id === null ? null : Number(row.customer_id),
+    name: row.name,
+    value: row.value,
+    valueCalculationMethod: row.value_calculation_method,
+    stage: row.stage,
+    notes: row.notes,
+    createdDate: timestampToIsoOrNull(row.created_date),
+    expectedCloseDate: timestampToIsoOrNull(row.expected_close_date),
+    updatedAt: timestampToIso(row.updated_at),
+  };
+}
+
+function mapTaskRow(row: Pick<TaskRow, typeof taskSelectColumns[number]>): TaskRecord {
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    customerSourceSqliteId: Number(row.customer_source_sqlite_id),
+    customerId: row.customer_id === null ? null : Number(row.customer_id),
+    title: row.title,
+    description: row.description,
+    dueDate: timestampToIsoOrNull(row.due_date),
+    priority: row.priority,
+    completed: row.completed,
+    snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
+    updatedAt: timestampToIso(row.updated_at),
+  };
+}
+
+function timestampToIsoOrNull(value: Date | string | null): string | null {
+  return value === null ? null : timestampToIso(value);
+}
+
+function timestampToIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}

@@ -26,6 +26,11 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { localDataService } from "@/services/data/localDataService"
 import { customFieldService } from "@/services/data/customFieldService"
+import {
+  getRendererTransport,
+  isCustomerListRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 import type { Customer } from "@/services/data/types"
 import { AddCustomerDialog } from "@/components/add-customer-dialog"
 import { getPrimaryPhone, getPrimaryContact } from "@/lib/contact-utils"
@@ -221,7 +226,9 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [serverEventRefresh, setServerEventRefresh] = useState(0)
   const navigate = useNavigate()
+  const serverClientMode = getRendererTransport().kind === "http"
 
   // Grouping state
   const [isGrouped, setIsGrouped] = useState(false)
@@ -274,6 +281,18 @@ export default function CustomersPage() {
   }, []);
 
   useEffect(() => {
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isCustomerListRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1)
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [serverClientMode])
+
+  useEffect(() => {
     const fetchCustomersWithCustomFields = async () => {
       setIsLoading(true)
       try {
@@ -308,14 +327,14 @@ export default function CustomersPage() {
         setCustomers(customersWithFields);
       } catch (error) {
         console.error("Failed to fetch customers:", error)
-        toast.error("Kunden konnten nicht aus der lokalen Datenbank geladen werden.")
+        toast.error("Kunden konnten nicht geladen werden.")
         setCustomers([])
       } finally {
         setIsLoading(false)
       }
     }
     fetchCustomersWithCustomFields()
-  }, [])
+  }, [serverEventRefresh])
 
   const table = useReactTable({
     data: customers,
@@ -364,12 +383,8 @@ export default function CustomersPage() {
 
     try {
       setIsLoading(true); // Indicate processing
-      // Call the actual API
-      const api = window.electronAPI as any;
-
-      // Delete each customer
       for (const id of selectedIds) {
-        await api.invoke('db:delete-customer', id);
+        await localDataService.deleteCustomer(String(id));
       }
 
       // Update state after successful deletion
@@ -608,4 +623,3 @@ export default function CustomersPage() {
     </main>
   )
 }
-

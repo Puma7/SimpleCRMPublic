@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog"
 import { ProductForm } from "./product-form"
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from "@/services/transport"
 
 interface CreateProductDialogProps {
   isOpen: boolean;
@@ -35,7 +36,7 @@ export function CreateProductDialog({ isOpen, onOpenChange, onProductCreated }: 
         sku: values.sku || null, 
         description: values.description || null,
       };
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Products.Create,
         dataToSend
       ) as { success: boolean, error?: string };

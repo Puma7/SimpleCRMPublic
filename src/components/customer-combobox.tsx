@@ -4,6 +4,7 @@ import * as React from "react"
 import { Check, ChevronsUpDown, Loader2, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from "@/services/transport"
 import { Button } from "@/components/ui/button"
 import {
   Command,
@@ -51,7 +52,7 @@ export function CustomerCombobox({
     const searchCustomers = async () => {
       setLoading(true)
       try {
-        const results = await window.electronAPI.invoke(
+        const results = await invokeRenderer(
           IPCChannels.Db.SearchCustomers,
           searchQuery
         ) as CustomerOption[]
@@ -76,7 +77,7 @@ export function CustomerCombobox({
     if (value && !selectedCustomer) {
       const loadCustomer = async () => {
         try {
-          const customer = await window.electronAPI.invoke(
+          const customer = await invokeRenderer(
             IPCChannels.Db.GetCustomer,
             value
           ) as any

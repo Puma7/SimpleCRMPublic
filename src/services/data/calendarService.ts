@@ -1,4 +1,5 @@
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from '@/services/transport';
 
 interface AddTaskEventOptions {
   title: string;
@@ -59,10 +60,6 @@ export const calendarService = {
     customerName,
     colorCode,
   }: AddTaskEventOptions): Promise<AddTaskEventResult> {
-    if (!window.electronAPI?.invoke) {
-      throw new Error('Electron API nicht verfügbar. Kalender-Ereignis kann nicht erstellt werden.');
-    }
-
     const { start, end } = parseDueDate(dueDate);
 
     const sqliteCompatibleEvent = {
@@ -76,7 +73,7 @@ export const calendarService = {
       recurrence_rule: null,
     };
 
-    const result = await window.electronAPI.invoke(
+    const result = await invokeRenderer(
       IPCChannels.Calendar.AddCalendarEvent,
       sqliteCompatibleEvent,
     ) as { success?: boolean; id?: number; lastInsertRowid?: number };
@@ -109,10 +106,6 @@ export const calendarService = {
       colorCode,
     }: UpdateTaskEventOptions
   ): Promise<void> {
-    if (!window.electronAPI?.invoke) {
-      throw new Error('Electron API nicht verfügbar. Kalender-Ereignis kann nicht aktualisiert werden.');
-    }
-
     if (!eventId || Number.isNaN(Number(eventId))) {
       throw new Error('Ungültige Kalender-Ereignis-ID.');
     }
@@ -146,7 +139,7 @@ export const calendarService = {
       return;
     }
 
-    await window.electronAPI.invoke(
+    await invokeRenderer(
       IPCChannels.Calendar.UpdateCalendarEvent,
       {
         id: eventId,
@@ -156,15 +149,11 @@ export const calendarService = {
   },
 
   async deleteTaskEvent(eventId: number): Promise<void> {
-    if (!window.electronAPI?.invoke) {
-      throw new Error('Electron API nicht verfügbar. Kalender-Ereignis kann nicht gelöscht werden.');
-    }
-
     if (!eventId || Number.isNaN(Number(eventId))) {
       throw new Error('Ungültige Kalender-Ereignis-ID.');
     }
 
-    await window.electronAPI.invoke(
+    await invokeRenderer(
       IPCChannels.Calendar.DeleteCalendarEvent,
       eventId
     );

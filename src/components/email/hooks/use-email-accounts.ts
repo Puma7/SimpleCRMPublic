@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { hasElectron, invokeIpc, type EmailAccount, type TeamMember } from "../types"
+import type { EmailAccount, TeamMember } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
+import { invokeRenderer } from "@/services/transport"
 
 export function useEmailAccounts() {
   const { setSelectedAccountId, accountsRevision } = useMailWorkspace()
@@ -14,13 +15,9 @@ export function useEmailAccounts() {
   const [loadingAccounts, setLoadingAccounts] = useState(true)
 
   const loadAccounts = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoadingAccounts(false)
-      return
-    }
     setLoadingAccounts(true)
     try {
-      const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
+      const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
       // Functional update avoids stale-closure: only initialise to list[0] when
       // the user has not picked an account yet. Preserves existing selection
@@ -33,7 +30,9 @@ export function useEmailAccounts() {
         return list[0]!.id
       })
       try {
-        setTeamMembers(await invokeIpc<TeamMember[]>(IPCChannels.Email.ListTeamMembers))
+        setTeamMembers(
+          await invokeRenderer(IPCChannels.Email.ListTeamMembers) as TeamMember[],
+        )
       } catch (e) {
         logError("use-email-accounts: list team members", e)
         setTeamMembers([])

@@ -1,5 +1,8 @@
-import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
-import { pickEdge, resolveResumeNodeAfter } from '../../electron/workflow/graph-walk-utils';
+import {
+  pickEdge,
+  resolveResumeNodeAfter,
+  type WorkflowGraphDocument,
+} from '../../packages/core/src/workflow';
 
 function graph(
   nodes: WorkflowGraphDocument['nodes'],
@@ -45,5 +48,23 @@ describe('pickEdge (logic.switch)', () => {
     ];
     expect(pickEdge(edges, 'a')?.target).toBe('a');
     expect(pickEdge(edges, 'b')?.target).toBe('b');
+  });
+
+  it('does not follow a case branch when the switch falls back to default', () => {
+    const edges = [
+      { id: 'e1', source: 'sw', target: 'case-yes', label: 'yes' },
+    ];
+    expect(pickEdge(edges, 'default')).toBeUndefined();
+  });
+
+  it('follows explicit or unlabeled default branches', () => {
+    expect(pickEdge([
+      { id: 'e1', source: 'sw', target: 'case-yes', label: 'yes' },
+      { id: 'e2', source: 'sw', target: 'fallback', label: 'default' },
+    ], 'default')?.target).toBe('fallback');
+
+    expect(pickEdge([
+      { id: 'e1', source: 'node', target: 'next' },
+    ], 'default')?.target).toBe('next');
   });
 });

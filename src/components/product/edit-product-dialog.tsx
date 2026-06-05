@@ -13,6 +13,7 @@ import {
 import { ProductForm } from "./product-form"
 import { Product } from "@/types"
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from "@/services/transport"
 
 interface EditProductDialogProps {
   product: Product | null;
@@ -38,7 +39,7 @@ export function EditProductDialog({ product, isOpen, onOpenChange, onProductUpda
         sku: values.sku || null,
         description: values.description || null,
       };
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Products.Update,
         { id: product.id, productData: dataToSend }
       ) as { success: boolean, error?: string };

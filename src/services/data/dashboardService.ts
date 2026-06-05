@@ -1,5 +1,6 @@
 import type { Customer, Task } from './types';
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from '@/services/transport';
 
 export interface DashboardStats {
   totalCustomers: number;
@@ -23,10 +24,7 @@ export interface UpcomingTask extends Pick<Task, 'id' | 'title' | 'priority' | '
 export const dashboardService = {
   async getDashboardStats(): Promise<DashboardStats> {
     try {
-      if (!window.electronAPI) {
-        throw new Error("Electron API not available for 'dashboard:get-stats'");
-      }
-      const stats = await window.electronAPI.invoke(
+      const stats = await invokeRenderer(
         IPCChannels.Dashboard.GetStats
       );
       // Add any necessary mapping or default values here
@@ -48,10 +46,7 @@ export const dashboardService = {
 
   async getRecentCustomers(limit: number = 5): Promise<RecentCustomer[]> {
     try {
-      if (!window.electronAPI) {
-        throw new Error("Electron API not available for 'dashboard:get-recent-customers'");
-      }
-      const rawCustomers = await window.electronAPI.invoke(
+      const rawCustomers = await invokeRenderer(
         IPCChannels.Dashboard.GetRecentCustomers,
         limit
       ) as any[];
@@ -71,10 +66,7 @@ export const dashboardService = {
 
   async getUpcomingTasks(limit: number = 5): Promise<UpcomingTask[]> {
     try {
-      if (!window.electronAPI) {
-        throw new Error("Electron API not available for 'dashboard:get-upcoming-tasks'");
-      }
-      const rawTasks = await window.electronAPI.invoke(
+      const rawTasks = await invokeRenderer(
         IPCChannels.Dashboard.GetUpcomingTasks,
         limit
       ) as any[];

@@ -16,9 +16,13 @@ import {
   updateDeal,
   updateDealStage,
   deleteDeal,
-  getDb,
 } from '../sqlite-service';
-import { DEAL_PRODUCTS_TABLE } from '../database-schema';
+import {
+  findDealProductId,
+  getDealIdForDealProduct,
+  getDealProductPriceAndDealId,
+  updateDealProductStoredPrice,
+} from '../deals/deal-products-store';
 
 interface DealsHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -164,11 +168,7 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
       try {
         const { dealProductId, dealId, productId } = payload;
         if (typeof dealProductId === 'number') {
-          const getDealIdStmt = getDb().prepare(
-            `SELECT deal_id FROM ${DEAL_PRODUCTS_TABLE} WHERE id = ?`
-          );
-          const dealIdResult = getDealIdStmt.get(dealProductId) as { deal_id?: number } | undefined;
-          const resolvedDealId = dealIdResult?.deal_id;
+          const resolvedDealId = getDealIdForDealProduct(dealProductId);
 
           const result = removeProductFromDealById(dealProductId);
           if (resolvedDealId) {
@@ -202,11 +202,7 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
 
         let targetDealProductId = dealProductId as number | undefined;
         if (typeof targetDealProductId !== 'number' && typeof dealId === 'number' && typeof productId === 'number') {
-          const lookupStmt = getDb().prepare(
-            `SELECT id FROM ${DEAL_PRODUCTS_TABLE} WHERE deal_id = ? AND product_id = ?`
-          );
-          const match = lookupStmt.get(dealId, productId) as { id?: number } | undefined;
-          targetDealProductId = match?.id;
+          targetDealProductId = findDealProductId(dealId, productId);
         }
 
         if (typeof targetDealProductId !== 'number') {
@@ -215,10 +211,7 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
 
         let finalPrice = typeof price === 'number' ? price : priceAtTime;
         if (typeof finalPrice !== 'number') {
-          const priceStmt = getDb().prepare(
-            `SELECT price_at_time_of_adding FROM ${DEAL_PRODUCTS_TABLE} WHERE id = ?`
-          );
-          const existing = priceStmt.get(targetDealProductId) as { price_at_time_of_adding?: number } | undefined;
+          const existing = getDealProductPriceAndDealId(targetDealProductId);
           finalPrice = existing?.price_at_time_of_adding;
         }
 
@@ -227,12 +220,9 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
         }
 
         const result = updateDealProduct(targetDealProductId, quantity, finalPrice);
-        const getDealIdStmt = getDb().prepare(
-          `SELECT deal_id FROM ${DEAL_PRODUCTS_TABLE} WHERE id = ?`
-        );
-        const dealIdResult = getDealIdStmt.get(targetDealProductId) as { deal_id?: number } | undefined;
-        if (dealIdResult?.deal_id) {
-          updateDealValueBasedOnCalculationMethod(dealIdResult.deal_id);
+        const resolvedDealId = getDealIdForDealProduct(targetDealProductId);
+        if (resolvedDealId) {
+          updateDealValueBasedOnCalculationMethod(resolvedDealId);
         }
 
         return { success: true, changes: result.changes };
@@ -256,12 +246,9 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
         const resolvedPrice = typeof price === 'number' ? price : priceAtTime;
 
         if (typeof dealProductId === 'number') {
+          const existing = getDealProductPriceAndDealId(dealProductId);
           let finalPrice = resolvedPrice;
           if (typeof finalPrice !== 'number') {
-            const priceStmt = getDb().prepare(
-              `SELECT price_at_time_of_adding, deal_id FROM ${DEAL_PRODUCTS_TABLE} WHERE id = ?`
-            );
-            const existing = priceStmt.get(dealProductId) as { price_at_time_of_adding?: number; deal_id?: number } | undefined;
             finalPrice = existing?.price_at_time_of_adding;
           }
 
@@ -270,11 +257,8 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
           }
 
           const updateResult = updateDealProduct(dealProductId, resolvedQuantity, finalPrice);
-          const dealLookup = getDb().prepare(
-            `SELECT deal_id FROM ${DEAL_PRODUCTS_TABLE} WHERE id = ?`
-          ).get(dealProductId) as { deal_id?: number } | undefined;
-          if (dealLookup?.deal_id) {
-            updateDealValueBasedOnCalculationMethod(dealLookup.deal_id);
+          if (existing?.deal_id) {
+            updateDealValueBasedOnCalculationMethod(existing.deal_id);
           }
           return { success: updateResult.changes > 0, changes: updateResult.changes };
         }
@@ -282,12 +266,7 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
         if (typeof dealId === 'number' && typeof productId === 'number') {
           const updateResult = updateProductQuantityInDeal(dealId, productId, resolvedQuantity);
           if (typeof resolvedPrice === 'number') {
-            const priceStmt = getDb().prepare(
-              `UPDATE ${DEAL_PRODUCTS_TABLE}
-               SET price_at_time_of_adding = @price
-               WHERE deal_id = @dealId AND product_id = @productId`
-            );
-            priceStmt.run({ price: resolvedPrice, dealId, productId });
+            updateDealProductStoredPrice({ dealId, productId, price: resolvedPrice });
           }
           updateDealValueBasedOnCalculationMethod(dealId);
           return { success: updateResult.changes > 0, changes: updateResult.changes };

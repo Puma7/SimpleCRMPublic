@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
-import { hasElectron, invokeIpc } from "@/components/email/types"
+import { invokeRenderer } from "@/services/transport"
 
 type AuditRow = {
   id: number
@@ -21,8 +21,7 @@ export function AuditLogPanel() {
   const [chainOk, setChainOk] = useState<boolean | null>(null)
 
   const reload = useCallback(async () => {
-    if (!hasElectron()) return
-    const list = await invokeIpc(IPCChannels.Auth.ListAuditLog, { limit: 100 })
+    const list = await invokeRenderer(IPCChannels.Auth.ListAuditLog, { limit: 100 })
     if (Array.isArray(list)) setRows(list as AuditRow[])
   }, [])
 
@@ -46,7 +45,7 @@ export function AuditLogPanel() {
           type="button"
           size="sm"
           onClick={async () => {
-            const r = await invokeIpc(IPCChannels.Auth.VerifyAuditChain, undefined)
+            const r = await invokeRenderer(IPCChannels.Auth.VerifyAuditChain, undefined)
             if (r && typeof r === "object" && "valid" in r) {
               const v = (r as { valid: boolean }).valid
               setChainOk(v)

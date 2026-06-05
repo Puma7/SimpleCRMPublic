@@ -2,12 +2,21 @@
   "name": "simplecrm",
   "version": "0.1.7",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/server",
+    "packages/desktop"
+  ],
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
+    "build:packages": "tsc -b packages/core packages/server packages/desktop",
     "build:web": "tsc && vite build",
     "build:electron:main": "tsc -p tsconfig.electron.json",
-    "build": "npm run build:web && npm run build:electron:main",
+    "build": "npm run build:packages && npm run build:web && npm run build:electron:main",
     "build:watch": "tsc && vite build --watch",
     "build:electron": "vite build && tsc -p tsconfig.electron.json",
     "build:electron:watch": "vite build --watch",
@@ -29,6 +38,11 @@
     "cleanup-db:dry": "cross-env NODE_ENV=development ts-node --project scripts/tsconfig.json scripts/cleanup-database.ts --dry-run",
     "test:performance": "node scripts/performance-test-deals.js",
     "test:performance:simple": "node scripts/performance-test-deals-simple.js",
+    "doctor:server": "node packages/server/dist/cli/doctor.js",
+    "migrate:standalone-to-server": "node packages/desktop/dist/cli/migrate-to-server.js",
+    "migrate:sqlite": "node packages/server/dist/cli/migrate-from-sqlite.js",
+    "migrate:server": "node packages/server/dist/cli/migrate.js",
+    "test:server-rls": "node packages/server/dist/cli/rls-check.js",
     "check:dangerous-defaults": "node scripts/check-dangerous-defaults.js",
     "electron:dev:debug": "npm run build:electron && cross-env NODE_ENV=development electron dist-electron/main.js",
     "electron:test:devtools": "npm run build && cross-env NODE_ENV=production electron dist-electron/main.js",
@@ -42,6 +56,7 @@
     "test:mail": "jest --config jest.mail.config.cjs --coverageThreshold='{}'",
     "test:mail:coverage": "jest --config jest.mail.config.cjs",
     "test:mail:coverage:update-baseline": "npm run test:mail:coverage && node scripts/check-mail-coverage-ratchet.mjs --update-baseline",
+    "test:server-edition": "jest --runTestsByPath tests/unit/server-edition-foundation.test.ts tests/integration/server-edition-foundation.test.ts --runInBand",
     "test:electron": "jest --testMatch='**/__tests__/electron/**/*.test.ts'",
     "test:frontend": "jest --testMatch='**/__tests__/frontend/**/*.test.tsx'"
   },
@@ -116,7 +131,6 @@
     "monaco-editor": "^0.55.1",
     "mssql": "^12.2.0",
     "next-themes": "^0.4.6",
-    "node": "^23.11.1",
     "node-cron": "^4.2.1",
     "node-pop3": "^0.11.0",
     "nodemailer": "^6.10.1",

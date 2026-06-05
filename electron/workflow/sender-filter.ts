@@ -2,102 +2,49 @@ import type { EmailMessageRow } from '../email/email-store';
 import { addressesFromRecipientJson } from '../email/email-parse-utils';
 import { getSyncInfo } from '../sqlite-service';
 import { listSpamListEntries } from '../email/email-spam-store';
+import {
+  evaluateSenderFilterFromLists as evaluateCoreSenderFilterFromLists,
+  parseSenderList as parseCoreSenderList,
+  type SenderFilterResult as CoreSenderFilterResult,
+} from '../../packages/core/src/workflow';
 
-/** Domains commonly used for transactional mail (PayPal, Amazon, …) — pre-filter before KI. */
-export const BUILTIN_TRUSTED_SENDER_ENTRIES = [
-  'paypal.com',
-  'paypal.de',
-  'amazon.com',
-  'amazon.de',
-  'amazon.co.uk',
-  'amazon.fr',
-  'notifications.amazon.com',
-  'email.amazon.com',
-  'lidl.com',
-  'lidl.de',
-  'noreply@lidl.de',
-  'stripe.com',
-  'google.com',
-  'microsoft.com',
-  'outlook.com',
-  'dhl.de',
-  'dhl.com',
-  'fedex.com',
-  'ups.com',
-];
+export {
+  BUILTIN_TRUSTED_SENDER_ENTRIES,
+  extractSenderDomain,
+  extractSenderEmail,
+  matchSenderList,
+  parseSenderList,
+  type SenderFilterResult,
+} from '../../packages/core/src/workflow';
 
 const WHITELIST_KEY = 'workflow_sender_whitelist';
 const BLACKLIST_KEY = 'workflow_sender_blacklist';
 
-export function parseSenderList(raw: string | null | undefined): string[] {
-  return (raw ?? '')
-    .split(/[,;\n]+/)
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-export function extractSenderEmail(fromAddress: string): string {
-  const trimmed = fromAddress.trim();
-  const angle = /<([^>]+)>/.exec(trimmed);
-  if (angle?.[1]) return angle[1].trim().toLowerCase();
-  const plain = /[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.exec(trimmed);
-  return (plain?.[0] ?? trimmed).toLowerCase();
-}
-
-export function extractSenderDomain(email: string): string {
-  const at = email.lastIndexOf('@');
-  return at >= 0 ? email.slice(at + 1) : email;
-}
-
-/** Match full e-mail, @domain suffix, or bare domain (incl. subdomains). */
-export function matchSenderList(fromAddress: string, entries: string[]): boolean {
-  if (!fromAddress.trim() || entries.length === 0) return false;
-  const email = extractSenderEmail(fromAddress);
-  const domain = extractSenderDomain(email);
-  for (const entry of entries) {
-    const e = entry.trim().toLowerCase();
-    if (!e) continue;
-    if (e.startsWith('@')) {
-      const dom = e.slice(1);
-      if (email.endsWith(e) || domain === dom || domain.endsWith(`.${dom}`)) return true;
-      continue;
-    }
-    if (e.includes('@')) {
-      if (email === e) return true;
-      continue;
-    }
-    if (domain === e || domain.endsWith(`.${e}`)) return true;
-  }
-  return false;
-}
-
 export function getGlobalSenderWhitelist(): string[] {
   try {
     return [
-      ...parseSenderList(getSyncInfo(WHITELIST_KEY)),
+      ...parseCoreSenderList(getSyncInfo(WHITELIST_KEY)),
       ...listSpamListEntries('all')
-        .filter((e) => e.list_type === 'allow' && e.account_id == null)
-        .map((e) => e.pattern),
+        .filter((entry) => entry.list_type === 'allow' && entry.account_id == null)
+        .map((entry) => entry.pattern),
     ];
   } catch {
-    return parseSenderList(getSyncInfo(WHITELIST_KEY));
+    return parseCoreSenderList(getSyncInfo(WHITELIST_KEY));
   }
 }
 
 export function getGlobalSenderBlacklist(): string[] {
   try {
     return [
-      ...parseSenderList(getSyncInfo(BLACKLIST_KEY)),
+      ...parseCoreSenderList(getSyncInfo(BLACKLIST_KEY)),
       ...listSpamListEntries('all')
-        .filter((e) => e.list_type === 'block' && e.account_id == null)
-        .map((e) => e.pattern),
+        .filter((entry) => entry.list_type === 'block' && entry.account_id == null)
+        .map((entry) => entry.pattern),
     ];
   } catch {
-    return parseSenderList(getSyncInfo(BLACKLIST_KEY));
+    return parseCoreSenderList(getSyncInfo(BLACKLIST_KEY));
   }
 }
-
-export type SenderFilterResult = 'whitelist' | 'blacklist' | 'default';
 
 export function evaluateSenderFilter(
   fromAddress: string,
@@ -107,32 +54,22 @@ export function evaluateSenderFilter(
     extraWhitelist?: string;
     extraBlacklist?: string;
   } = {},
-): SenderFilterResult {
+): CoreSenderFilterResult {
   const from = fromAddress.trim();
   if (!from) return 'default';
 
   const useGlobal = opts.useGlobalLists !== false;
-  const whitelist = [
-    ...(useGlobal ? getGlobalSenderWhitelist() : []),
-    ...parseSenderList(opts.extraWhitelist),
-  ];
-  const blacklist = [
-    ...(useGlobal ? getGlobalSenderBlacklist() : []),
-    ...parseSenderList(opts.extraBlacklist),
-  ];
-
-  if (whitelist.length > 0 && matchSenderList(from, whitelist)) return 'whitelist';
-  if (blacklist.length > 0 && matchSenderList(from, blacklist)) return 'blacklist';
-
-  if (opts.useBuiltinTrusted !== false && matchSenderList(from, BUILTIN_TRUSTED_SENDER_ENTRIES)) {
-    return 'whitelist';
-  }
-
-  return 'default';
+  return evaluateCoreSenderFilterFromLists(from, {
+    whitelist: useGlobal ? getGlobalSenderWhitelist() : [],
+    blacklist: useGlobal ? getGlobalSenderBlacklist() : [],
+    extraWhitelist: opts.extraWhitelist,
+    extraBlacklist: opts.extraBlacklist,
+    useBuiltinTrusted: opts.useBuiltinTrusted,
+  });
 }
 
-/** Global lists only — for pre-workflow mail security (no builtin trusted bypass). */
-export function classifySenderForMessage(row: EmailMessageRow): SenderFilterResult {
+/** Global lists only, for pre-workflow mail security without builtin trusted bypass. */
+export function classifySenderForMessage(row: EmailMessageRow): CoreSenderFilterResult {
   const from = addressesFromRecipientJson(row.from_json);
   return evaluateSenderFilter(from, { useBuiltinTrusted: false });
 }

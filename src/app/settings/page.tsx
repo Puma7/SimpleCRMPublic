@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
 import { CheckCircle, XCircle, AlertCircle } from "lucide-react"
+import { IPCChannels } from "@shared/ipc/channels"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
 
 const settingsSchema = z.object({
   server: z.string().min(1, "Server ist erforderlich"),
@@ -45,6 +47,12 @@ const settingsSchema = z.object({
 type SettingsForm = z.infer<typeof settingsSchema>
 
 export default function SettingsPage() {
+  const serverClientMode = getRendererTransport().kind === "http"
+  const localSyncAvailable =
+    !serverClientMode &&
+    typeof window !== "undefined" &&
+    Boolean(window.electronAPI && (window.electronAPI as any).invoke)
+  const syncAvailable = serverClientMode || localSyncAvailable
   const [isTesting, setIsTesting] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
@@ -78,36 +86,27 @@ export default function SettingsPage() {
   // Fetch settings and connection status on load
   useEffect(() => {
     const fetchSettings = async () => {
-      if (window.electronAPI && (window.electronAPI as any).invoke) {
-        try {
-          const settingsFromIPC = await (window.electronAPI as any).invoke('mssql:get-settings');
-          if (settingsFromIPC) {
-            // For form reset, ensure password field is an empty string if password is undefined
-            // and provide a default for forcePort if it's not in stored settings (for backward compatibility)
-            const formValues = { 
-              ...settingsFromIPC, 
-              password: settingsFromIPC.password || "",
-              forcePort: settingsFromIPC.forcePort || false 
-            };
-            form.reset(formValues);
+      try {
+        const settingsFromIPC = await invokeRenderer(IPCChannels.Mssql.GetSettings);
+        if (settingsFromIPC) {
+          const formValues = {
+            ...settingsFromIPC,
+            password: settingsFromIPC.password || "",
+            forcePort: settingsFromIPC.forcePort || false,
+          };
+          form.reset(formValues);
 
-            // Test connection with settings as obtained from IPC.
-            // If settingsFromIPC.password is undefined, testConnectionWithKeytar will try to use the stored password.
-            try {
-              const testResult = await (window.electronAPI as any).invoke('mssql:test-connection', settingsFromIPC);
-              setConnectionStatus(testResult.success ? 'success' : 'error');
-            } catch (error) {
-              console.error("Error testing connection on load:", error);
-              setConnectionStatus('error');
-            }
+          try {
+            const testResult = await invokeRenderer(IPCChannels.Mssql.TestConnection, settingsFromIPC);
+            setConnectionStatus(testResult.success ? 'success' : 'error');
+          } catch (error) {
+            console.error("Error testing connection on load:", error);
+            setConnectionStatus('error');
           }
-        } catch (error) {
-          console.error("Error fetching settings:", error)
-          toast.error("Fehler", { description: "Konnte die MSSQL-Einstellungen nicht laden." })
         }
-      } else {
-        console.warn("Electron API or invoke method not available.")
-        toast("Einrichtung", { description: "Electron API nicht verfügbar. Kann Einstellungen nicht laden." })
+      } catch (error) {
+        console.error("Error fetching settings:", error)
+        toast.error("Fehler", { description: "Konnte die MSSQL-Einstellungen nicht laden." })
       }
     }
     fetchSettings()
@@ -116,40 +115,33 @@ export default function SettingsPage() {
   // Fetch sync status
   useEffect(() => {
     const fetchSyncStatus = async () => {
-      if (window.electronAPI && (window.electronAPI as any).invoke) {
-        try {
-          const syncStatus = await (window.electronAPI as any).invoke('sync:get-status')
-          if (syncStatus && syncStatus.status === 'Success' && syncStatus.timestamp) {
-            setLastSyncTimestamp(syncStatus.timestamp)
-            setSyncStatusMessage(syncStatus.message || null)
-          }
-        } catch (error) {
-          console.error("Error fetching sync status:", error)
+      if (!syncAvailable) return
+      try {
+        const syncStatus = await invokeRenderer(IPCChannels.Sync.GetStatus)
+        if (syncStatus && syncStatus.status === 'Success' && syncStatus.timestamp) {
+          setLastSyncTimestamp(syncStatus.timestamp)
+          setSyncStatusMessage(syncStatus.message || null)
         }
+      } catch (error) {
+        console.error("Error fetching sync status:", error)
       }
     }
     fetchSyncStatus()
-  }, [])
+  }, [syncAvailable])
 
   const testAndSaveConnection = async (dataForTest: SettingsForm, dataForSave: Partial<SettingsForm>) => {
     setIsTesting(true)
 
-    if (!window.electronAPI || !(window.electronAPI as any).invoke) {
-      toast.error("Fehler", { description: "Electron API ist nicht verfügbar." })
-      setIsTesting(false)
-      return
-    }
-
     try {
-      const testResult: { success: boolean; error?: string; errorDetails?: any } = await (window.electronAPI as any).invoke('mssql:test-connection', dataForTest)
+      const testResult: { success: boolean; error?: string; errorDetails?: any } = await invokeRenderer(IPCChannels.Mssql.TestConnection, dataForTest)
       setConnectionStatus(testResult.success ? 'success' : 'error')
 
       if (testResult.success) {
-        const saveResult: { success: boolean; error?: string } = await (window.electronAPI as any).invoke('mssql:save-settings', dataForSave)
+        const saveResult: { success: boolean; error?: string } = await invokeRenderer(IPCChannels.Mssql.SaveSettings, dataForSave)
 
         if (saveResult.success) {
           toast.success("Einstellungen gespeichert", { description: "Verbindung erfolgreich und Einstellungen gespeichert." })
-          const newSettings = await (window.electronAPI as any).invoke('mssql:get-settings');
+          const newSettings = await invokeRenderer(IPCChannels.Mssql.GetSettings);
           if (newSettings) {
             form.reset({ ...newSettings, password: newSettings.password || "" });
           }
@@ -196,13 +188,8 @@ export default function SettingsPage() {
 
   const handleClearPassword = async () => {
     setIsClearingPassword(true);
-    if (!window.electronAPI || !(window.electronAPI as any).invoke) {
-      toast({ variant: "destructive", title: "Fehler", description: "Electron API ist nicht verfügbar." });
-      setIsClearingPassword(false);
-      return;
-    }
     try {
-      const result: { success: boolean; message: string } = await (window.electronAPI as any).invoke('mssql:clear-password');
+      const result: { success: boolean; message: string } = await invokeRenderer(IPCChannels.Mssql.ClearPassword);
       if (result.success) {
         let germanMessage = "Das Passwort wurde erfolgreich gelöscht."; // Default success message
         // You can customize the message further based on specific success scenarios if needed:
@@ -235,13 +222,8 @@ export default function SettingsPage() {
         delete dataToTest.password; // Don't send empty password for testing if not changed
     }
 
-    if (!window.electronAPI || !(window.electronAPI as any).invoke) {
-      toast.error("Fehler", { description: "Electron API ist nicht verfügbar." })
-      setIsConnecting(false)
-      return
-    }
     try {
-      const testResult: { success: boolean; error?: string; errorDetails?: any } = await (window.electronAPI as any).invoke('mssql:test-connection', dataToTest)
+      const testResult: { success: boolean; error?: string; errorDetails?: any } = await invokeRenderer(IPCChannels.Mssql.TestConnection, dataToTest)
       setConnectionStatus(testResult.success ? 'success' : 'error')
       if (testResult.success) {
         toast.success("Verbindung erfolgreich.")
@@ -263,9 +245,16 @@ export default function SettingsPage() {
   }
 
   const handleSync = async () => {
+    if (!syncAvailable) {
+      toast.error("Sync nicht verfuegbar", {
+        description: "JTL Sync ist in dieser Laufzeit nicht verfuegbar.",
+      })
+      setSyncStatusMessage("Fehler: JTL Sync ist nicht verfuegbar.")
+      return
+    }
     setIsSyncing(true)
     setSyncStatusMessage("Starte Synchronisation...")
-    if (!window.electronAPI || !(window.electronAPI as any).invoke) {
+    if (!serverClientMode && (!window.electronAPI || !(window.electronAPI as any).invoke)) {
       toast.error("Fehler", { description: "Electron API ist nicht verfügbar." })
       setSyncStatusMessage("Fehler: Electron API nicht verfügbar.")
       setIsSyncing(false)
@@ -273,7 +262,7 @@ export default function SettingsPage() {
     }
     try {
       const result: { success: boolean; message: string; details?: { found?: number; synced?: number } } = 
-        await (window.electronAPI as any).invoke('sync:run')
+        await invokeRenderer(IPCChannels.Sync.Run)
       
       if (result.success) {
         let feedback = result.message || "Sync erfolgreich.";
@@ -289,7 +278,7 @@ export default function SettingsPage() {
         
         // Fetch updated sync status to get the new timestamp
         try {
-          const syncStatus = await (window.electronAPI as any).invoke('sync:get-status')
+          const syncStatus = await invokeRenderer(IPCChannels.Sync.GetStatus)
           if (syncStatus && syncStatus.timestamp) {
             setLastSyncTimestamp(syncStatus.timestamp)
           }
@@ -597,7 +586,8 @@ export default function SettingsPage() {
                     type="button"
                     variant="secondary"
                     onClick={handleSync}
-                    disabled={isTesting || isConnecting || isSyncing || isClearingPassword}
+                    disabled={isTesting || isConnecting || isSyncing || isClearingPassword || !syncAvailable}
+                    title={!syncAvailable ? "JTL Sync ist in dieser Laufzeit nicht verfuegbar." : undefined}
                   >
                     {isSyncing ? "Synchronisiere..." : "Synchronisation starten"}
                   </Button>

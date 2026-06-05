@@ -37,7 +37,7 @@ describe('computeSnoozeUntil', () => {
     const iso = parseLocalDatetimeInput(local);
     expect(iso).toBeTruthy();
     expect(validateSnoozeUntil(iso!, now).ok).toBe(true);
-    expect(validateSnoozeUntil('2026-05-24T09:00:00.000Z', now).ok).toBe(false);
+    expect(validateSnoozeUntil(new Date(now.getTime() - 60 * 60 * 1000).toISOString(), now).ok).toBe(false);
   });
 
   it('formats wake label for toast', () => {

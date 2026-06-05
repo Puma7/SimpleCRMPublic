@@ -1,4 +1,4 @@
-import { parseSpamScore, clampScore, formatMetadataForSpamPrompt } from '../../electron/workflow/ai-score';
+import { parseSpamScore, clampScore, formatMetadataForSpamPrompt } from '../../packages/core/src/workflow';
 
 describe('workflow ai score', () => {
   test('parseSpamScore extracts first number', () => {

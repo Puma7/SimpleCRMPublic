@@ -9,22 +9,67 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useAuth } from "@/components/auth/auth-context"
 import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc } from "@/components/email/types"
+import { createServerAuthClient, getRendererTransport, type ServerAuthClient, type ServerAuthInvitation } from "@/services/transport"
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const { login } = useAuth()
+  const { login, refresh } = useAuth()
   const [username, setUsername] = useState("")
   const [passphrase, setPassphrase] = useState("")
   const [setupPass, setSetupPass] = useState("")
   const [setupPass2, setSetupPass2] = useState("")
   const [setupToken, setSetupToken] = useState("")
   const [setupUsername, setSetupUsername] = useState("")
+  const [inviteToken, setInviteToken] = useState("")
+  const [invite, setInvite] = useState<ServerAuthInvitation | null>(null)
+  const [invitePass, setInvitePass] = useState("")
+  const [invitePass2, setInvitePass2] = useState("")
   const [needsSetup, setNeedsSetup] = useState(false)
+  const [serverSetupMode, setServerSetupMode] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isFetchingSetupToken, setIsFetchingSetupToken] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    const httpTransportActive = getRendererTransport().kind === "http"
+    const serverAuth = getActiveServerAuthClient()
+    const pendingInviteToken = getInviteTokenFromLocation()
+    if (pendingInviteToken) {
+      setInviteToken(pendingInviteToken)
+      if (httpTransportActive) setServerSetupMode(true)
+      if (!serverAuth) {
+        setError("Einladungen koennen nur mit konfigurierter Server-URL angenommen werden")
+        return
+      }
+      setServerSetupMode(true)
+      void (async () => {
+        try {
+          const invitation = await serverAuth.getInvitation(pendingInviteToken)
+          setInvite(invitation)
+          setUsername(invitation.email)
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Einladung konnte nicht gelesen werden")
+        }
+      })()
+      return
+    }
+    if (httpTransportActive && !serverAuth) {
+      setServerSetupMode(true)
+      setError("Server-URL fehlt. Anmeldung wurde nicht gestartet.")
+      return
+    }
+    if (serverAuth) {
+      setServerSetupMode(true)
+      void (async () => {
+        try {
+          const res = await serverAuth.getSetupState()
+          setNeedsSetup(res.needsInitialSetup)
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Setup-Status konnte nicht gelesen werden")
+        }
+      })()
+      return
+    }
     if (!hasElectron()) return
     void (async () => {
       const res = await invokeIpc(IPCChannels.Auth.GetSetupState, undefined)
@@ -38,6 +83,30 @@ export default function LoginPage() {
     })()
   }, [])
 
+  async function handleAcceptInvite(e: React.FormEvent) {
+    e.preventDefault()
+    if (invitePass !== invitePass2) {
+      setError("Passwoerter stimmen nicht ueberein")
+      return
+    }
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth || !inviteToken) {
+      setError("Einladung kann in diesem Client nicht angenommen werden")
+      return
+    }
+    setIsLoading(true)
+    setError(null)
+    try {
+      await serverAuth.acceptInvitation(inviteToken, { password: invitePass })
+      await refresh()
+      navigate({ to: "/" })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Einladung konnte nicht angenommen werden")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   async function handleSetup(e: React.FormEvent) {
     e.preventDefault()
     if (setupPass !== setupPass2) {
@@ -49,13 +118,26 @@ export default function LoginPage() {
       setError("Benutzername erforderlich")
       return
     }
-    if (!setupToken.trim()) {
+    if (!serverSetupMode && !setupToken.trim()) {
       setError("Setup-Token erforderlich (Einmal-Passwort abrufen)")
       return
     }
     setIsLoading(true)
     setError(null)
     try {
+      const serverAuth = getActiveServerAuthClient()
+      if (serverAuth) {
+        await serverAuth.createInitialOwner({
+          email: normalizedSetupUsername,
+          password: setupPass,
+          displayName: normalizedSetupUsername,
+        })
+        await refresh()
+        setNeedsSetup(false)
+        setError(null)
+        navigate({ to: "/" })
+        return
+      }
       const res = await invokeIpc(IPCChannels.Auth.SetInitialPassword, {
         passphrase: setupPass,
         setupToken: setupToken.trim(),
@@ -125,6 +207,59 @@ export default function LoginPage() {
     }
   }
 
+  if (inviteToken) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Einladung annehmen</CardTitle>
+            <CardDescription>
+              Setzen Sie Ihr Passwort fuer {invite?.displayName ?? invite?.email ?? "dieses Konto"}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleAcceptInvite} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="invite-email">E-Mail</Label>
+                <Input id="invite-email" value={invite?.email ?? ""} readOnly />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="invite-pass">Passwort</Label>
+                <Input
+                  id="invite-pass"
+                  type="password"
+                  autoComplete="new-password"
+                  value={invitePass}
+                  onChange={(e) => setInvitePass(e.target.value)}
+                  required
+                  minLength={10}
+                  disabled={!invite}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="invite-pass2">Passwort wiederholen</Label>
+                <Input
+                  id="invite-pass2"
+                  type="password"
+                  autoComplete="new-password"
+                  value={invitePass2}
+                  onChange={(e) => setInvitePass2(e.target.value)}
+                  required
+                  minLength={10}
+                  disabled={!invite}
+                />
+              </div>
+              {error ? <p className="text-sm text-destructive">{error}</p> : null}
+              <Button type="submit" className="w-full" disabled={isLoading || !invite}>
+                {isLoading ? "..." : "Konto aktivieren"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   if (needsSetup) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
@@ -132,13 +267,15 @@ export default function LoginPage() {
           <CardHeader>
             <CardTitle>Ersteinrichtung</CardTitle>
             <CardDescription>
-              Legen Sie Ihr lokales Administratorkonto an. Das Passwort brauchen Sie später zum Anmelden.
+              {serverSetupMode
+                ? "Legen Sie den ersten Server-Owner an. Das Passwort brauchen Sie spaeter zum Anmelden."
+                : "Legen Sie Ihr lokales Administratorkonto an. Das Passwort brauchen Sie spaeter zum Anmelden."}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSetup} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="setup-username">Benutzername</Label>
+                <Label htmlFor="setup-username">{serverSetupMode ? "E-Mail" : "Benutzername"}</Label>
                 <Input
                   id="setup-username"
                   autoComplete="username"
@@ -148,7 +285,9 @@ export default function LoginPage() {
                   maxLength={80}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Diesen Namen verwenden Sie später zusammen mit Ihrem Passwort zur Anmeldung.
+                  {serverSetupMode
+                    ? "Diese E-Mail verwenden Sie spaeter zusammen mit Ihrem Passwort zur Anmeldung am Server."
+                    : "Diesen Namen verwenden Sie spaeter zusammen mit Ihrem Passwort zur Anmeldung."}
                 </p>
               </div>
               <div className="space-y-2">
@@ -175,8 +314,9 @@ export default function LoginPage() {
                   minLength={10}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="setup-token">Setup-Token</Label>
+              {!serverSetupMode ? (
+                <div className="space-y-2">
+                  <Label htmlFor="setup-token">Setup-Token</Label>
                 <Input
                   id="setup-token"
                   type="password"
@@ -195,7 +335,8 @@ export default function LoginPage() {
                 <p className="text-xs text-muted-foreground">
                   Das Token bestätigt nur diese erste Einrichtung und wird über den Button lokal abgerufen.
                 </p>
-              </div>
+                </div>
+              ) : null}
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "…" : "Passwort setzen"}
@@ -213,13 +354,15 @@ export default function LoginPage() {
         <CardHeader>
           <CardTitle>Anmelden</CardTitle>
           <CardDescription>
-            Melden Sie sich mit dem Benutzernamen und Passwort aus der Ersteinrichtung an.
+            {serverSetupMode
+              ? "Melden Sie sich mit E-Mail und Passwort am SimpleCRM-Server an."
+              : "Melden Sie sich mit dem Benutzernamen und Passwort aus der Ersteinrichtung an."}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">Benutzername</Label>
+              <Label htmlFor="username">{serverSetupMode ? "E-Mail" : "Benutzername"}</Label>
               <Input
                 id="username"
                 autoComplete="username"
@@ -248,4 +391,18 @@ export default function LoginPage() {
       </Card>
     </div>
   )
+}
+
+function getInviteTokenFromLocation(): string {
+  if (typeof window === "undefined") return ""
+  return new URLSearchParams(window.location.search).get("invite")?.trim() ?? ""
+}
+
+function getActiveServerAuthClient(): ServerAuthClient | null {
+  const transport = getRendererTransport()
+  if (transport.kind !== "http" || !transport.serverBaseUrl) return null
+  return createServerAuthClient({
+    baseUrl: transport.serverBaseUrl,
+    device: "simplecrm-renderer",
+  })
 }

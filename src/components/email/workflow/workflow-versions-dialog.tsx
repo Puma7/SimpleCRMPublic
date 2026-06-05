@@ -12,7 +12,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { invokeIpc } from "../types"
+import {
+  invokeRenderer,
+  isWorkflowVersionRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 type VersionRow = {
   id: number
@@ -44,10 +48,10 @@ export function WorkflowVersionsDialog({
     }
     setLoading(true)
     try {
-      const list = await invokeIpc<VersionRow[]>(
+      const list = await invokeRenderer(
         IPCChannels.Email.ListWorkflowVersions,
         workflowId,
-      )
+      ) as VersionRow[]
       setRows(list)
     } finally {
       setLoading(false)
@@ -58,11 +62,23 @@ export function WorkflowVersionsDialog({
     if (open) void load()
   }, [open, load])
 
+  useEffect(() => {
+    if (!open || workflowId == null) return undefined
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isWorkflowVersionRefreshEvent(event, workflowId)) {
+          void load()
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [load, open, workflowId])
+
   const restore = async (versionId: number) => {
-    const r = await invokeIpc<{ success: boolean; error?: string }>(
+    const r = await invokeRenderer(
       IPCChannels.Email.RestoreWorkflowVersion,
       { versionId, ...(workflowId != null ? { workflowId } : {}) },
-    )
+    ) as { success: boolean; error?: string }
     if (r.success) {
       toast.success("Version wiederhergestellt.")
       onRestored()
@@ -74,7 +90,7 @@ export function WorkflowVersionsDialog({
 
   const snapshot = async () => {
     if (workflowId == null) return
-    await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, { workflowId })
+    await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, { workflowId })
     toast.success("Version gespeichert.")
     void load()
   }

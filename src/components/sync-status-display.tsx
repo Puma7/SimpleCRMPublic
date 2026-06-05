@@ -4,8 +4,16 @@ import { ArrowDownUp, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistance } from "date-fns";
 import { de } from "date-fns/locale";
+import { IPCChannels } from "@shared/ipc/channels";
+import { getRendererTransport, invokeRenderer } from "@/services/transport";
 
 export function SyncStatusDisplay() {
+  const serverClientMode = getRendererTransport().kind === "http";
+  const localSyncAvailable =
+    !serverClientMode &&
+    typeof window !== "undefined" &&
+    Boolean(window.electronAPI && (window.electronAPI as any).invoke);
+  const syncAvailable = serverClientMode || localSyncAvailable;
   const [syncStatus, setSyncStatus] = useState({
     status: 'Unknown',
     timestamp: '',
@@ -15,11 +23,16 @@ export function SyncStatusDisplay() {
   const [isSyncing, setIsSyncing] = useState(false);
 
   useEffect(() => {
+    if (!syncAvailable) {
+      setSyncStatus({ status: 'Unavailable', timestamp: '', message: '' });
+      setIsLoading(false);
+      return;
+    }
     fetchSyncStatus();
 
     // Set up listener for sync status updates
     const api = window.electronAPI as any;
-    if (api && api.receive) {
+    if (localSyncAvailable && api && api.receive) {
       const cleanup = api.receive('sync:status-update', (data: any) => {
         setSyncStatus({
           status: data.status,
@@ -34,17 +47,16 @@ export function SyncStatusDisplay() {
 
       return cleanup;
     }
-  }, []);
+  }, [localSyncAvailable, syncAvailable]);
 
   const fetchSyncStatus = async () => {
     setIsLoading(true);
     try {
-      const api = window.electronAPI as any;
-      if (!api || !api.invoke) {
-        throw new Error("Electron API not available");
+      if (!syncAvailable) {
+        setSyncStatus({ status: 'Unavailable', timestamp: '', message: '' });
+        return;
       }
-      
-      const result = await api.invoke('sync:get-status');
+      const result = await invokeRenderer(IPCChannels.Sync.GetStatus);
       if (result) {
         setSyncStatus({
           status: result.status || 'Never',
@@ -61,16 +73,15 @@ export function SyncStatusDisplay() {
 
   const handleSyncClick = async () => {
     if (isSyncing) return;
+    if (!syncAvailable) {
+      toast.info("JTL Sync ist in dieser Laufzeit nicht verfuegbar.");
+      return;
+    }
     
     setIsSyncing(true);
     try {
-      const api = window.electronAPI as any;
-      if (!api || !api.invoke) {
-        throw new Error("Electron API not available");
-      }
-      
       toast.info("JTL Sync gestartet...");
-      const result = await api.invoke('sync:run');
+      const result = await invokeRenderer(IPCChannels.Sync.Run);
       
       if (result.success) {
         toast.success("JTL Sync erfolgreich abgeschlossen");
@@ -118,6 +129,8 @@ export function SyncStatusDisplay() {
       prefix = "Läuft seit ";
     } else if (syncStatus.status === 'Never') {
       return <span className="text-sm text-muted-foreground">Nie</span>;
+    } else if (syncStatus.status === 'Unavailable') {
+      return <span className="text-sm text-muted-foreground">Nicht verfuegbar</span>;
     }
     
     return (
@@ -137,7 +150,8 @@ export function SyncStatusDisplay() {
         variant="outline"
         size="sm"
         onClick={handleSyncClick}
-        disabled={isSyncing}
+        disabled={isSyncing || !syncAvailable}
+        title={!syncAvailable ? "JTL Sync ist in dieser Laufzeit nicht verfuegbar." : undefined}
         className="h-10 whitespace-nowrap"
       >
         {isSyncing ? (
@@ -148,4 +162,4 @@ export function SyncStatusDisplay() {
       </Button>
     </div>
   );
-} 
+}

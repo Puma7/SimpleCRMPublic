@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { hasElectron, invokeIpc } from "../types"
+import { hasLocalIpc, invokeIpc } from "../types"
 
 const CONFIRM_PHRASE = "WIEDERHERSTELLEN"
 
@@ -35,7 +35,7 @@ export function RestoreWizardPanel() {
   const [restoring, setRestoring] = useState(false)
 
   const pickZip = async () => {
-    if (!hasElectron()) return
+    if (!hasLocalIpc()) return
     setPicking(true)
     try {
       const r = await invokeIpc<{ ok: true; path: string } | { ok: false; error: string }>(
@@ -55,7 +55,7 @@ export function RestoreWizardPanel() {
   }
 
   const runPreview = async () => {
-    if (!hasElectron() || !zipPath) return
+    if (!hasLocalIpc() || !zipPath) return
     setPreviewing(true)
     setPreview(null)
     try {
@@ -84,7 +84,7 @@ export function RestoreWizardPanel() {
   }
 
   const runRestore = async () => {
-    if (!hasElectron() || !preview || !zipPath) return
+    if (!hasLocalIpc() || !preview || !zipPath) return
     if (!acknowledged) {
       toast.error("Bitte die Risiken bestätigen.")
       return

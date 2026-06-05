@@ -9,7 +9,8 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
-import { hasElectron, invokeIpc, type EmailMessage } from "./types"
+import { invokeRenderer } from "@/services/transport"
+import type { EmailMessage } from "./types"
 import { MessageMoreActionsMenu } from "./message-more-actions-menu"
 
 type SuggestionState = {
@@ -55,13 +56,12 @@ export function MessageAiSuggestions({
   }, [message.id])
 
   const loadSuggestion = useCallback(async () => {
-    if (!hasElectron()) return
     const requestId = message.id
     try {
-      const row = await invokeIpc<SuggestionState & { updatedAt: string | null }>(
+      const row = await invokeRenderer(
         IPCChannels.Email.GetReplySuggestion,
         requestId,
-      )
+      ) as SuggestionState & { updatedAt: string | null }
       if (activeMessageIdRef.current !== requestId) return
       setSuggestion({
         status: row.status,
@@ -75,8 +75,7 @@ export function MessageAiSuggestions({
   }, [message.id])
 
   useEffect(() => {
-    if (!hasElectron()) return
-    void invokeIpc(IPCChannels.Email.EnsureReplySuggestion, {
+    void invokeRenderer(IPCChannels.Email.EnsureReplySuggestion, {
       messageId: message.id,
       trigger: "open",
     })
@@ -101,22 +100,18 @@ export function MessageAiSuggestions({
       openReplyWithText(suggestion.text)
       return
     }
-    if (!hasElectron()) {
-      onDraftReply?.()
-      return
-    }
     const requestId = message.id
     setGenerating(true)
     void (async () => {
       try {
-        const r = await invokeIpc<{
+        const r = await invokeRenderer(IPCChannels.Email.GenerateReplyDraft, {
+          messageId: requestId,
+          customerId: message.customer_id ?? null,
+        }) as {
           success: boolean
           text?: string
           error?: string
-        }>(IPCChannels.Email.GenerateReplyDraft, {
-          messageId: requestId,
-          customerId: message.customer_id ?? null,
-        })
+        }
         if (activeMessageIdRef.current !== requestId) return
         if (r.success && r.text?.trim()) {
           openReplyWithText(r.text)

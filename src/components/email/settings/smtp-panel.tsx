@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { hasElectron, invokeIpc, type EmailAccount } from "../types"
+import { invokeRenderer } from "@/services/transport"
+import { type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
 type SmtpPanelProps = {
@@ -42,9 +43,8 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [testing, setTesting] = useState(false)
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const list = await invokeIpc<EmailAccount[]>(IPCChannels.Email.ListAccounts)
+      const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
     } catch (e) {
       // silent — handled centrally via AccountsPanel's toast on list failure
@@ -75,10 +75,10 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   }, [accId, accounts])
 
   const saveSmtp = async () => {
-    if (!hasElectron() || accId == null) return
+    if (accId == null) return
     setSaving(true)
     try {
-      await invokeIpc(IPCChannels.Email.UpdateAccount, {
+      await invokeRenderer(IPCChannels.Email.UpdateAccount, {
         id: accId,
         smtpHost: smtpHost.trim() || null,
         smtpPort: parseInt(smtpPort, 10) || 587,
@@ -106,7 +106,6 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   }
 
   const testSmtp = async () => {
-    if (!hasElectron()) return
     const user = smtpImapAuth
       ? accounts.find((x) => x.id === accId)?.imap_username || ""
       : smtpUser
@@ -116,7 +115,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
     }
     setTesting(true)
     try {
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.TestSmtp,
         {
           ...(accId != null ? { accountId: accId } : {}),
@@ -127,7 +126,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
           password: smtpPass || undefined,
           smtpUseImapAuth: smtpImapAuth,
         },
-      )
+      ) as { success: boolean; error?: string }
       if (r.success) toast.success("SMTP OK")
       else toast.error(r.error ?? "Fehler")
     } finally {

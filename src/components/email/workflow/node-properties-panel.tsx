@@ -31,7 +31,8 @@ import {
   AiProfileSelect,
   profileIdFromConfig,
 } from "../ai-profile-select"
-import { hasElectron, invokeIpc, type AiPrompt } from "../types"
+import type { AiPrompt } from "../types"
+import { invokeRenderer } from "@/services/transport"
 import {
   edgeLabelOptionsForSource,
   edgeSourceHandleFromLabel,
@@ -520,7 +521,7 @@ function usePersistDefaultPromptId(
   prompts: AiPrompt[],
 ) {
   useEffect(() => {
-    if (!hasElectron() || prompts.length === 0) return
+    if (prompts.length === 0) return
     const resolved = effectivePromptId(config, prompts)
     const current = Number(config.promptId ?? 0)
     if (resolved != null && current !== resolved) {
@@ -733,8 +734,9 @@ function OutboundReviewFields({
 }) {
   const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
   useEffect(() => {
-    if (!hasElectron()) return
-    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+    void invokeRenderer(IPCChannels.Email.ListAiPrompts)
+      .then((rows) => setAiPrompts(rows as AiPrompt[]))
+      .catch(() => {})
   }, [])
 
   return (
@@ -852,8 +854,9 @@ function TransformTextFields({
 }) {
   const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
   useEffect(() => {
-    if (!hasElectron()) return
-    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+    void invokeRenderer(IPCChannels.Email.ListAiPrompts)
+      .then((rows) => setAiPrompts(rows as AiPrompt[]))
+      .catch(() => {})
   }, [])
 
   usePersistDefaultPromptId(config, patch, aiPrompts)
@@ -1151,8 +1154,9 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
 function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
   const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
   useEffect(() => {
-    if (!hasElectron()) return
-    void invokeIpc<AiPrompt[]>(IPCChannels.Email.ListAiPrompts).then(setAiPrompts).catch(() => {})
+    void invokeRenderer(IPCChannels.Email.ListAiPrompts)
+      .then((rows) => setAiPrompts(rows as AiPrompt[]))
+      .catch(() => {})
   }, [])
 
   const d = node.data as {
@@ -1167,7 +1171,7 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
   const t = d.actionType ?? "tag"
 
   useEffect(() => {
-    if (t !== "ai_review" || !hasElectron() || aiPrompts.length === 0) return
+    if (t !== "ai_review" || aiPrompts.length === 0) return
     const current = Number(d.promptId ?? 0)
     if (current > 0 && aiPrompts.some((p) => p.id === current)) return
     const first = aiPrompts[0]?.id

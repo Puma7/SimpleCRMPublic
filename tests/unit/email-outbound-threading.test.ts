@@ -2,7 +2,7 @@ import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
   normalizeMessageIdHeader,
-} from '../../electron/email/email-outbound-threading';
+} from '../../packages/core/src/email';
 
 describe('email outbound threading', () => {
   test('generateOutboundMessageId uses sender domain', () => {

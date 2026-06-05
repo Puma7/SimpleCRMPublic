@@ -1,50 +1,37 @@
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
+import {
+  parseScheduledSendDraftStateFromValues,
+  scheduledSendFailuresKey,
+  scheduledSendLastErrorKey,
+  scheduledSendStatusKey,
+  scheduledSendSyncInfoKeys,
+  truncateScheduledSendError,
+  type ScheduledSendDraftState,
+} from '../../packages/core/src/email';
 
-export type ScheduledSendDraftState = {
-  failureCount: number;
-  status: 'ok' | 'pending' | 'failed';
-  lastError: string | null;
-};
-
-function failuresKey(draftId: number): string {
-  return `scheduled_send_failures:${draftId}`;
-}
-
-function statusKey(draftId: number): string {
-  return `scheduled_send_status:${draftId}`;
-}
-
-function errorKey(draftId: number): string {
-  return `scheduled_send_last_error:${draftId}`;
-}
+export type { ScheduledSendDraftState } from '../../packages/core/src/email';
 
 export function clearScheduledSendDraftMeta(draftId: number): void {
-  setSyncInfo(failuresKey(draftId), '0');
-  setSyncInfo(statusKey(draftId), '');
-  setSyncInfo(errorKey(draftId), '');
+  setSyncInfo(scheduledSendFailuresKey(draftId), '0');
+  setSyncInfo(scheduledSendStatusKey(draftId), '');
+  setSyncInfo(scheduledSendLastErrorKey(draftId), '');
 }
 
 export function recordScheduledSendAttemptFailure(draftId: number, error: string): number {
-  const fails = parseInt(getSyncInfo(failuresKey(draftId)) ?? '0', 10) + 1;
-  setSyncInfo(failuresKey(draftId), String(fails));
-  setSyncInfo(errorKey(draftId), error.slice(0, 2000));
-  setSyncInfo(statusKey(draftId), 'pending');
+  const fails = parseInt(getSyncInfo(scheduledSendFailuresKey(draftId)) ?? '0', 10) + 1;
+  setSyncInfo(scheduledSendFailuresKey(draftId), String(fails));
+  setSyncInfo(scheduledSendLastErrorKey(draftId), truncateScheduledSendError(error));
+  setSyncInfo(scheduledSendStatusKey(draftId), 'pending');
   return fails;
 }
 
 export function markScheduledSendDraftFailed(draftId: number, error: string): void {
-  setSyncInfo(errorKey(draftId), error.slice(0, 2000));
-  setSyncInfo(statusKey(draftId), 'failed');
-  setSyncInfo(failuresKey(draftId), '0');
+  setSyncInfo(scheduledSendLastErrorKey(draftId), truncateScheduledSendError(error));
+  setSyncInfo(scheduledSendStatusKey(draftId), 'failed');
+  setSyncInfo(scheduledSendFailuresKey(draftId), '0');
 }
 
 export function getScheduledSendDraftState(draftId: number): ScheduledSendDraftState {
-  const statusRaw = getSyncInfo(statusKey(draftId));
-  const status: ScheduledSendDraftState['status'] =
-    statusRaw === 'failed' ? 'failed' : statusRaw === 'pending' ? 'pending' : 'ok';
-  return {
-    failureCount: parseInt(getSyncInfo(failuresKey(draftId)) ?? '0', 10) || 0,
-    status,
-    lastError: getSyncInfo(errorKey(draftId)) || null,
-  };
+  const values = new Map(scheduledSendSyncInfoKeys(draftId).map((key) => [key, getSyncInfo(key)]));
+  return parseScheduledSendDraftStateFromValues(values, draftId);
 }

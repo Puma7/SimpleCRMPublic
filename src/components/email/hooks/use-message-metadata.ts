@@ -1,10 +1,11 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
-import { hasElectron, invokeIpc, type InternalNote, type MessageAttachment } from "../types"
+import type { InternalNote, MessageAttachment } from "../types"
 import { logError } from "../log"
 import { useMailWorkspace } from "../workspace-context"
+import { invokeRenderer } from "@/services/transport"
 
 export function useMessageMetadata() {
   const { selectedMessage } = useMailWorkspace()
@@ -13,7 +14,7 @@ export function useMessageMetadata() {
   const [messageAttachments, setMessageAttachments] = useState<MessageAttachment[]>([])
 
   useEffect(() => {
-    if (!hasElectron() || !selectedMessage) {
+    if (!selectedMessage) {
       setMessageTags([])
       setInternalNotes([])
       setMessageAttachments([])
@@ -22,19 +23,19 @@ export function useMessageMetadata() {
     void (async () => {
       try {
         setMessageTags(
-          await invokeIpc<string[]>(IPCChannels.Email.ListMessageTags, selectedMessage.id),
+          await invokeRenderer(IPCChannels.Email.ListMessageTags, selectedMessage.id) as string[],
         )
         setInternalNotes(
-          await invokeIpc<InternalNote[]>(
+          await invokeRenderer(
             IPCChannels.Email.ListInternalNotes,
             selectedMessage.id,
-          ),
+          ) as InternalNote[],
         )
         setMessageAttachments(
-          await invokeIpc<MessageAttachment[]>(
+          await invokeRenderer(
             IPCChannels.Email.ListMessageAttachments,
             selectedMessage.id,
-          ),
+          ) as MessageAttachment[],
         )
       } catch (e) {
         logError("use-message-metadata: load", e)
@@ -45,19 +46,27 @@ export function useMessageMetadata() {
     })()
   }, [selectedMessage])
 
-  const reloadNotes = async () => {
-    if (!selectedMessage || !hasElectron()) return
-    setInternalNotes(
-      await invokeIpc<InternalNote[]>(IPCChannels.Email.ListInternalNotes, selectedMessage.id),
-    )
-  }
+  const reloadNotes = useCallback(async () => {
+    if (!selectedMessage) return
+    try {
+      setInternalNotes(
+        await invokeRenderer(IPCChannels.Email.ListInternalNotes, selectedMessage.id) as InternalNote[],
+      )
+    } catch (e) {
+      logError("use-message-metadata: reload notes", e)
+    }
+  }, [selectedMessage])
 
-  const reloadTags = async () => {
-    if (!selectedMessage || !hasElectron()) return
-    setMessageTags(
-      await invokeIpc<string[]>(IPCChannels.Email.ListMessageTags, selectedMessage.id),
-    )
-  }
+  const reloadTags = useCallback(async () => {
+    if (!selectedMessage) return
+    try {
+      setMessageTags(
+        await invokeRenderer(IPCChannels.Email.ListMessageTags, selectedMessage.id) as string[],
+      )
+    } catch (e) {
+      logError("use-message-metadata: reload tags", e)
+    }
+  }, [selectedMessage])
 
   return {
     messageTags,

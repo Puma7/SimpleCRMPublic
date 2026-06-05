@@ -65,6 +65,8 @@ module.exports = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@shared/(.*)$': '<rootDir>/shared/$1',
+    '^@simplecrm/core$': '<rootDir>/packages/core/src',
+    '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
   },
   projects: [
@@ -76,6 +78,8 @@ module.exports = {
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
         '^@shared/(.*)$': '<rootDir>/shared/$1',
+        '^@simplecrm/core$': '<rootDir>/packages/core/src',
+        '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
         '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
       },
       testMatch: ['<rootDir>/tests/unit/**/*.test.(ts|tsx)'],
@@ -100,6 +104,8 @@ module.exports = {
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
         '^@shared/(.*)$': '<rootDir>/shared/$1',
+        '^@simplecrm/core$': '<rootDir>/packages/core/src',
+        '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
         '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
       },
       testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],

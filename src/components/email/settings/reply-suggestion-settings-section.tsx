@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { hasElectron, invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 
 type CategoryRow = { id: number; name: string }
 
@@ -32,17 +32,13 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
   const perAccount = accountId != null
 
   const load = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoading(false)
-      return
-    }
     setLoading(true)
     try {
       const [s, cats] = await Promise.all([
-        invokeIpc<ReplySuggestionSettings>(IPCChannels.Email.GetReplySuggestionSettings, {
+        invokeRenderer(IPCChannels.Email.GetReplySuggestionSettings, {
           accountId,
-        }),
-        invokeIpc<CategoryRow[]>(IPCChannels.Email.ListCategories),
+        }) as Promise<ReplySuggestionSettings>,
+        invokeRenderer(IPCChannels.Email.ListCategories) as Promise<CategoryRow[]>,
       ])
       setSettings(s)
       setCategories(cats ?? [])
@@ -73,13 +69,13 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
   }
 
   const save = async () => {
-    if (!hasElectron() || !settings || saving) return
+    if (!settings || saving) return
     setSaving(true)
     try {
-      const saved = await invokeIpc<ReplySuggestionSettings>(
+      const saved = await invokeRenderer(
         IPCChannels.Email.SetReplySuggestionSettings,
         { ...settings, accountId },
-      )
+      ) as ReplySuggestionSettings
       setSettings(saved)
       toast.success(
         perAccount

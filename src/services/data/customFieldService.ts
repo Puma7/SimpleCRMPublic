@@ -1,5 +1,6 @@
 import { CustomField, CustomFieldValue, CustomFieldOption } from './types';
 import { IPCChannels } from '@shared/ipc/channels';
+import { invokeRenderer } from '@/services/transport';
 
 // Define interfaces for IPC responses
 interface SuccessResponse {
@@ -20,7 +21,7 @@ export const customFieldService = {
    */
   async getAllCustomFields(): Promise<CustomField[]> {
     try {
-      const fields = await window.electronAPI.invoke(
+      const fields = await invokeRenderer(
         IPCChannels.CustomFields.GetAll
       ) as CustomField[];
       return fields.map(field => ({
@@ -39,7 +40,7 @@ export const customFieldService = {
    */
   async getActiveCustomFields(): Promise<CustomField[]> {
     try {
-      const fields = await window.electronAPI.invoke(
+      const fields = await invokeRenderer(
         IPCChannels.CustomFields.GetActive
       ) as CustomField[];
       return fields.map(field => ({
@@ -58,7 +59,7 @@ export const customFieldService = {
    */
   async getCustomFieldById(fieldId: number): Promise<CustomField | null> {
     try {
-      const field = await window.electronAPI.invoke(
+      const field = await invokeRenderer(
         IPCChannels.CustomFields.GetById,
         fieldId
       ) as CustomField;
@@ -80,7 +81,7 @@ export const customFieldService = {
    */
   async createCustomField(fieldData: Omit<CustomField, 'id' | 'created_at' | 'updated_at'>): Promise<CustomField | null> {
     try {
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.CustomFields.Create,
         fieldData
       ) as CustomFieldResponse;
@@ -99,7 +100,7 @@ export const customFieldService = {
    */
   async updateCustomField(fieldId: number, fieldData: Partial<CustomField>): Promise<CustomField | null> {
     try {
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.CustomFields.Update,
         { id: fieldId, fieldData }
       ) as CustomFieldResponse;
@@ -118,7 +119,7 @@ export const customFieldService = {
    */
   async deleteCustomField(fieldId: number): Promise<boolean> {
     try {
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.CustomFields.Delete,
         fieldId
       ) as SuccessResponse;
@@ -134,7 +135,7 @@ export const customFieldService = {
    */
   async getCustomFieldValuesForCustomer(customerId: number): Promise<CustomFieldValue[]> {
     try {
-      const values = await window.electronAPI.invoke(
+      const values = await invokeRenderer(
         IPCChannels.CustomFields.GetValuesForCustomer,
         customerId
       ) as CustomFieldValue[];
@@ -150,7 +151,7 @@ export const customFieldService = {
    */
   async setCustomFieldValue(customerId: number, fieldId: number, value: any): Promise<boolean> {
     try {
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.CustomFields.SetValue,
         { customerId, fieldId, value }
       ) as SuccessResponse;
@@ -166,7 +167,7 @@ export const customFieldService = {
    */
   async deleteCustomFieldValue(customerId: number, fieldId: number): Promise<boolean> {
     try {
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.CustomFields.DeleteValue,
         { customerId, fieldId }
       ) as SuccessResponse;

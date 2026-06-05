@@ -5,6 +5,7 @@ import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { useAuth } from "./auth-context"
 import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc } from "@/components/email/types"
+import { createServerAuthClient, getRendererTransport } from "@/services/transport"
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { loading, authenticated, authRequired } = useAuth()
@@ -13,6 +14,29 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [needsSetup, setNeedsSetup] = useState(false)
 
   useEffect(() => {
+    const transport = getRendererTransport()
+    if (transport.kind === "http") {
+      if (!transport.serverBaseUrl) {
+        setNeedsSetup(false)
+        return
+      }
+      let cancelled = false
+      const authClient = createServerAuthClient({
+        baseUrl: transport.serverBaseUrl,
+        device: "simplecrm-renderer",
+      })
+      void (async () => {
+        try {
+          const res = await authClient.getSetupState()
+          if (!cancelled) setNeedsSetup(res.needsInitialSetup)
+        } catch {
+          if (!cancelled) setNeedsSetup(false)
+        }
+      })()
+      return () => {
+        cancelled = true
+      }
+    }
     if (!hasElectron()) return
     void (async () => {
       const res = await invokeIpc(IPCChannels.Auth.GetSetupState, undefined)

@@ -1,9 +1,18 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { ChangeEvent } from "react"
 import { Link } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { WorkflowGraphDocument } from "@shared/email-workflow-graph"
+import {
+  compileGraphToDefinition,
+  definitionToJson,
+} from "@shared/email-workflow-graph-compile"
+import {
+  exportWorkflowBundle,
+  parseWorkflowImport,
+} from "@shared/workflow-export-import"
 import { toast } from "sonner"
 import { validateWorkflowCronExpr } from "@shared/cron-validate"
 import {
@@ -22,7 +31,6 @@ import {
 import { cn } from "@/lib/utils"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -44,7 +52,13 @@ import {
 } from "@/components/ui/tooltip"
 import { useDefaultLayout } from "react-resizable-panels"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
-import { hasElectron, invokeIpc } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isWorkflowListRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
+import { invokeIpc } from "../types"
 import { useHasElectron } from "../use-has-electron"
 import { logError } from "../log"
 import { WorkflowList, type WorkflowRow } from "./workflow-list"
@@ -86,6 +100,26 @@ const EMPTY_DEF = `{"version":1,"rules":[]}`
 
 const WORKFLOW_PANE_IDS = ["workflow-list", "workflow-canvas", "workflow-props"] as const
 
+function safeWorkflowFileName(name: string): string {
+  const cleaned = name
+    .trim()
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80)
+  return `${cleaned || "workflow"}.json`
+}
+
+function downloadWorkflowJson(filename: string, content: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: "application/json;charset=utf-8" }))
+  const anchor = document.createElement("a")
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 function triggerFromGraph(doc: WorkflowGraphDocument): string {
   const t = doc.nodes.find((n) => n.type === "trigger")
   if (t && t.data && typeof t.data === "object" && "kind" in t.data) {
@@ -96,6 +130,10 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 
 export function WorkflowShell() {
   const electronReady = useHasElectron()
+  const serverClientMode = getRendererTransport().kind === "http"
+  const workflowFileTransferAvailable = electronReady || serverClientMode
+  const workflowBackfillAvailable = electronReady || serverClientMode
+  const workflowDryRunAvailable = electronReady || serverClientMode
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "email-workflow-panes",
     panelIds: [...WORKFLOW_PANE_IDS],
@@ -122,6 +160,7 @@ export function WorkflowShell() {
   const [triggerFilter, setTriggerFilter] = useState<
     "all" | "inbound" | "outbound" | "other"
   >("all")
+  const browserImportInputRef = useRef<HTMLInputElement | null>(null)
 
   const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
@@ -146,15 +185,11 @@ export function WorkflowShell() {
   }, [graphNodes])
 
   const load = useCallback(async () => {
-    if (!hasElectron()) {
-      setLoading(false)
-      return
-    }
     setLoading(true)
     try {
-      const list = await invokeIpc<FullWorkflowRow[]>(IPCChannels.Email.ListWorkflows)
+      const list = await invokeRenderer(IPCChannels.Email.ListWorkflows) as FullWorkflowRow[]
       setRows(list)
-      const acc = await invokeIpc<AccountOpt[]>(IPCChannels.Email.ListAccounts)
+      const acc = await invokeRenderer(IPCChannels.Email.ListAccounts) as AccountOpt[]
       setAccounts(acc.map((a) => ({ id: a.id, display_name: a.display_name })))
     } catch (e) {
       logError("workflow-shell: load", e)
@@ -167,6 +202,21 @@ export function WorkflowShell() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (!isWorkflowListRefreshEvent(event)) return
+        if (selectedId != null && event.type === "workflow.deleted" && event.entityId === String(selectedId)) {
+          setSelectedId(null)
+          setSelectedNodeId(null)
+          setSelectedEdgeId(null)
+        }
+        void load()
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [load, selectedId])
 
   const applyRow = (w: FullWorkflowRow) => {
     setSelectedId(w.id)
@@ -209,9 +259,8 @@ export function WorkflowShell() {
   }
 
   const handleCreate = async () => {
-    if (!hasElectron()) return
     try {
-      const res = await invokeIpc<{ success: boolean; id?: number }>(
+      const res = await invokeRenderer(
         IPCChannels.Email.CreateWorkflow,
         {
           name: "Neuer Workflow",
@@ -221,14 +270,14 @@ export function WorkflowShell() {
           graphJson: JSON.stringify(BLANK_INBOUND_GRAPH),
           enabled: true,
         },
-      )
+      ) as { success: boolean; id?: number }
       if (res.id != null) {
         toast.success("Workflow angelegt.")
         await load()
-        const created = await invokeIpc<FullWorkflowRow | null>(
+        const created = await invokeRenderer(
           IPCChannels.Email.GetWorkflow,
           res.id,
-        )
+        ) as FullWorkflowRow | null
         if (created) {
           // Apply the freshly fetched row directly instead of looking it up in
           // the `rows` state — that closure is still the pre-load snapshot.
@@ -242,20 +291,12 @@ export function WorkflowShell() {
   }
 
   const handleSave = async () => {
-    if (!hasElectron() || selectedId == null) return
+    if (selectedId == null) return
     setSaving(true)
     try {
       const graphDoc = useWorkflowEditorStore.getState().toGraphDocument()
       const hasNodes = graphDoc.nodes.length > 0
-      const compiled = await invokeIpc<{
-        success: boolean
-        definitionJson?: string
-        error?: string
-        registryOnly?: boolean
-      }>(IPCChannels.Email.CompileWorkflowGraph, graphDoc)
-      if (!compiled.success) {
-        throw new Error(compiled.error ?? "Graph-Compiler fehlgeschlagen")
-      }
+      const definitionJson = definitionToJson(compileGraphToDefinition(graphDoc))
       if (!hasNodes) {
         throw new Error("Workflow braucht mindestens einen Trigger-Knoten.")
       }
@@ -267,7 +308,7 @@ export function WorkflowShell() {
         )
       }
       if (selectedId != null) {
-        await invokeIpc(IPCChannels.Email.SaveWorkflowVersion, {
+        await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {
           workflowId: selectedId,
           label: "Vor Speichern",
         })
@@ -281,18 +322,18 @@ export function WorkflowShell() {
           return
         }
       }
-      await invokeIpc(IPCChannels.Email.UpdateWorkflow, {
+      await invokeRenderer(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
         trigger: trig,
         priority: parseInt(editPriority, 10) || 100,
-        definitionJson: compiled.definitionJson ?? EMPTY_DEF,
+        definitionJson,
         graphJson: JSON.stringify(graphDoc),
         cronExpr: cronTrim || null,
         scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
         enabled: editEnabled,
       })
-      setEditJson(compiled.definitionJson ?? EMPTY_DEF)
+      setEditJson(definitionJson)
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
@@ -305,10 +346,10 @@ export function WorkflowShell() {
   }
 
   const handleDelete = async () => {
-    if (!hasElectron() || selectedId == null) return
+    if (selectedId == null) return
     if (!window.confirm("Workflow wirklich löschen?")) return
     try {
-      await invokeIpc(IPCChannels.Email.DeleteWorkflow, selectedId)
+      await invokeRenderer(IPCChannels.Email.DeleteWorkflow, selectedId)
       toast.success("Gelöscht.")
       setSelectedId(null)
       setSelectedNodeId(null)
@@ -321,8 +362,26 @@ export function WorkflowShell() {
   }
 
   const handleExportFile = async () => {
-    if (!hasElectron() || selectedId == null) return
+    if (!workflowFileTransferAvailable || selectedId == null) return
     try {
+      if (serverClientMode) {
+        const row = await invokeRenderer(
+          IPCChannels.Email.GetWorkflow,
+          selectedId,
+        ) as FullWorkflowRow | null
+        if (!row) {
+          toast.error("Workflow nicht gefunden.")
+          return
+        }
+        const bundle = exportWorkflowBundle(row)
+        downloadWorkflowJson(
+          safeWorkflowFileName(row.name),
+          JSON.stringify(bundle, null, 2),
+        )
+        toast.success("Workflow exportiert.")
+        return
+      }
+
       const res = await invokeIpc<{ success: boolean; error?: string; path?: string }>(
         IPCChannels.Email.ExportWorkflowBundleToFile,
         selectedId,
@@ -338,8 +397,54 @@ export function WorkflowShell() {
     }
   }
 
+  const importWorkflowBundleJson = async (json: string) => {
+    const bundle = parseWorkflowImport(json)
+    const w = bundle.workflow
+    const graphJson = w.graph_json ? JSON.stringify(w.graph_json) : null
+    const definitionJson = w.graph_json
+      ? definitionToJson(compileGraphToDefinition(w.graph_json))
+      : w.definition_json
+    const res = await invokeRenderer(IPCChannels.Email.CreateWorkflow, {
+      name: `${w.name} (Import)`,
+      trigger: w.trigger,
+      priority: w.priority,
+      definitionJson,
+      graphJson,
+      cronExpr: w.cron_expr,
+      scheduleAccountId: w.schedule_account_id,
+      enabled: w.enabled,
+      executionMode: w.execution_mode ?? "graph",
+      engineVersion: w.engine_version ?? 1,
+    }) as { success: boolean; id?: number | null }
+    toast.success("Workflow importiert.")
+    await load()
+    if (res.id != null) {
+      const imported = await invokeRenderer(
+        IPCChannels.Email.GetWorkflow,
+        res.id,
+      ) as FullWorkflowRow | null
+      if (imported) applyRow(imported)
+    }
+  }
+
+  const handleBrowserImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ""
+    if (!file) return
+    try {
+      await importWorkflowBundleJson(await file.text())
+    } catch (e) {
+      logError("workflow-shell: import browser file", e)
+      toast.error(e instanceof Error ? e.message : "Import fehlgeschlagen.")
+    }
+  }
+
   const handleImportFile = async () => {
-    if (!hasElectron()) return
+    if (!workflowFileTransferAvailable) return
+    if (serverClientMode) {
+      browserImportInputRef.current?.click()
+      return
+    }
     try {
       const res = await invokeIpc<{
         success: boolean
@@ -350,10 +455,10 @@ export function WorkflowShell() {
       if (res.id != null) {
         toast.success("Workflow importiert.")
         await load()
-        const imported = await invokeIpc<FullWorkflowRow | null>(
+        const imported = await invokeRenderer(
           IPCChannels.Email.GetWorkflow,
           res.id,
-        )
+        ) as FullWorkflowRow | null
         if (imported) applyRow(imported)
       }
     } catch (e) {
@@ -363,14 +468,16 @@ export function WorkflowShell() {
   }
 
   const handleBackfill = async () => {
-    if (!hasElectron()) return
+    if (!workflowBackfillAvailable) return
     setBackfilling(true)
     try {
-      const res = await invokeIpc<{ success: boolean; processed?: number }>(
-        IPCChannels.Email.BackfillInboundWorkflows,
-      )
+      const res = await invokeRenderer(IPCChannels.Email.BackfillInboundWorkflows) as {
+        success: boolean
+        processed?: number
+        queued?: number
+      }
       toast.success(
-        `Inbound-Workflows auf ${res.processed ?? 0} Nachrichten erneut ausgewertet (Weiterleitungen werden nicht doppelt gesendet).`,
+        `Inbound-Workflows auf ${res.processed ?? 0} Nachrichten erneut ausgewertet (${res.queued ?? 0} Jobs eingereiht; Weiterleitungen werden nicht doppelt gesendet).`,
       )
       await load()
     } catch (e) {
@@ -379,20 +486,6 @@ export function WorkflowShell() {
     } finally {
       setBackfilling(false)
     }
-  }
-
-  if (!electronReady) {
-    return (
-      <div className="container max-w-2xl py-10">
-        <Card>
-          <CardHeader>
-            <CardTitle>E-Mail-Workflows</CardTitle>
-            <CardDescription>Nur in der Desktop-App verfügbar.</CardDescription>
-          </CardHeader>
-          <CardContent />
-        </Card>
-      </div>
-    )
   }
 
   return (
@@ -405,10 +498,18 @@ export function WorkflowShell() {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <input
+              ref={browserImportInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(event) => void handleBrowserImportFile(event)}
+            />
             <Button
               type="button"
               size="sm"
               variant="outline"
+              disabled={!workflowFileTransferAvailable}
               onClick={() => void handleImportFile()}
               className="gap-2"
             >
@@ -419,7 +520,7 @@ export function WorkflowShell() {
               type="button"
               size="sm"
               variant="outline"
-              disabled={selectedId == null}
+              disabled={!workflowFileTransferAvailable || selectedId == null}
               onClick={() => void handleExportFile()}
               className="gap-2"
             >
@@ -608,18 +709,21 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="secondary"
-                        disabled={!idValid}
+                        disabled={!workflowDryRunAvailable || !idValid}
                         onClick={async () => {
                           if (!Number.isFinite(parsedId) || selectedId == null) return
-                          const r = await invokeIpc<{
+                          const r = await invokeRenderer(
+                            IPCChannels.Email.TestWorkflowOnMessage,
+                            {
+                              workflowId: selectedId,
+                              messageId: parsedId,
+                              dryRun: true,
+                            },
+                          ) as {
                             success: boolean
                             log?: string[]
                             error?: string
-                          }>(IPCChannels.Email.TestWorkflowOnMessage, {
-                            workflowId: selectedId,
-                            messageId: parsedId,
-                            dryRun: true,
-                          })
+                          }
                           if (r.success) {
                             toast.success(
                               `Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`,
@@ -650,20 +754,25 @@ export function WorkflowShell() {
                         disabled={selectedId == null || !msgOk}
                         onClick={async () => {
                           if (selectedId == null) return
-                          const r = await invokeIpc<{
+                          const r = await invokeRenderer(IPCChannels.Email.ExecuteWorkflowNow, {
+                            workflowId: selectedId,
+                            messageId: needsMsg ? parsedId : undefined,
+                            dryRun: false,
+                          }) as {
                             success: boolean
                             status?: string
+                            queued?: boolean
                             blocked?: boolean
                             blockReason?: string | null
                             log?: string[]
                             error?: string
-                          }>(IPCChannels.Email.ExecuteWorkflowNow, {
-                            workflowId: selectedId,
-                            messageId: needsMsg ? parsedId : undefined,
-                            dryRun: false,
-                          })
+                          }
                           if (!r.success) {
                             toast.error(r.error ?? "Ausführung fehlgeschlagen")
+                            return
+                          }
+                          if (r.queued) {
+                            toast.success("Workflow-Job eingereiht.")
                             return
                           }
                           if (r.blocked) {
@@ -683,7 +792,7 @@ export function WorkflowShell() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={backfilling}
+                    disabled={!workflowBackfillAvailable || backfilling}
                     onClick={() => void handleBackfill()}
                     className="gap-2"
                   >

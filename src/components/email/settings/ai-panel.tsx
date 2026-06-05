@@ -19,7 +19,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { hasElectron, invokeIpc } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isMailAiProfileRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
 
 type AiProfile = {
@@ -61,6 +66,7 @@ export function AiPanel() {
   )
   const [apiKey, setApiKey] = useState("")
   const [saving, setSaving] = useState(false)
+  const serverClientMode = getRendererTransport().kind === "http"
 
   const applyPreset = useCallback(
     (p: AiProviderPresetId, presetMap: Record<string, ProviderPreset>) => {
@@ -80,15 +86,10 @@ export function AiPanel() {
   )
 
   const load = useCallback(async (preferProfileId?: number | null) => {
-    if (!hasElectron()) return
     try {
-      const s = await invokeIpc<{
-        profiles?: AiProfile[]
-        providerPresets?: Record<string, ProviderPreset>
-      }>(IPCChannels.Email.GetAiSettings)
-      const merged = mergePresets(s.providerPresets)
+      const merged = mergePresets()
       setPresets(merged)
-      const list = s.profiles ?? []
+      const list = await invokeRenderer(IPCChannels.Email.ListAiProfiles) as AiProfile[]
       setProfiles(list)
       const active =
         (preferProfileId != null
@@ -119,6 +120,16 @@ export function AiPanel() {
     void load()
   }, [load])
 
+  useEffect(() => {
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isMailAiProfileRefreshEvent(event)) void load(selectedId)
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [load, selectedId, serverClientMode])
+
   const selectedProfile = profiles.find((p) => p.id === selectedId)
 
   const selectProfile = (p: AiProfile) => {
@@ -133,7 +144,7 @@ export function AiPanel() {
 
   const save = async () => {
     if (saving) return
-    if (!hasElectron() || !label.trim()) {
+    if (!label.trim()) {
       toast.error("Bitte eine Bezeichnung eingeben.")
       return
     }
@@ -144,7 +155,7 @@ export function AiPanel() {
     const isNew = selectedId == null
     setSaving(true)
     try {
-      const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
+      const r = await invokeRenderer(
         IPCChannels.Email.SaveAiProfile,
         {
           id: selectedId ?? undefined,
@@ -158,7 +169,7 @@ export function AiPanel() {
             Boolean(profiles.find((p) => p.id === selectedId)?.isDefault),
           apiKey: apiKey.trim() || undefined,
         },
-      )
+      ) as { success: boolean; id?: number; error?: string }
       if (r && "success" in r && r.success === false) {
         toast.error(r.error ?? "Speichern fehlgeschlagen.")
         return
@@ -313,7 +324,7 @@ export function AiPanel() {
               type="button"
               variant="outline"
               onClick={() =>
-                void invokeIpc(IPCChannels.Email.ClearAiProfileApiKey, selectedId)
+                void invokeRenderer(IPCChannels.Email.ClearAiProfileApiKey, selectedId)
                   .then(() => toast.success("API-Key des Profils entfernt"))
                   .catch(() => toast.error("API-Key konnte nicht entfernt werden."))
               }
@@ -326,7 +337,7 @@ export function AiPanel() {
               type="button"
               variant="destructive"
               onClick={() =>
-                void invokeIpc(IPCChannels.Email.DeleteAiProfile, selectedId)
+                void invokeRenderer(IPCChannels.Email.DeleteAiProfile, selectedId)
                   .then(async () => {
                     toast.success("Profil gelöscht")
                     await load()

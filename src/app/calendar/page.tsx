@@ -36,6 +36,12 @@ import { CalendarEvent, CalendarRBCEvent, RecurrenceRule, OnEventResizeArgs, OnE
 import { calendarService, TASK_EVENT_COMPLETED_COLOR, TASK_EVENT_DEFAULT_COLOR } from '@/services/data/calendarService';
 import { taskService } from '@/services/data/taskService';
 import { IPCChannels } from '@shared/ipc/channels';
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isCalendarEventRefreshEvent,
+  subscribeServerEvents,
+} from '@/services/transport';
 import { CalendarEventDetails } from './components/event-details';
 import { CalendarEventForm } from './components/event-form';
 import type { EventFormData, EventFormSubmitPayload, TaskFormState } from './types';
@@ -187,7 +193,9 @@ export default function CalendarPage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [eventFormData, setEventFormData] = useState<EventFormData | null>(null);
   const [formTaskData, setFormTaskData] = useState<TaskFormState | null>(null);
+  const [serverEventRefresh, setServerEventRefresh] = useState(0);
   const [currentView, setCurrentView] = useState<View>(Views.MONTH); // Initialize with a default view
+  const serverClientMode = getRendererTransport().kind === "http";
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -244,14 +252,7 @@ export default function CalendarPage() {
   const dbApi: DatabaseAPI = useMemo(() => ({
     getCalendarEvents: async () => {
       try {
-        // Add check for electronAPI existence
-        if (!window.electronAPI?.invoke) {
-          console.error("Electron API is not available.");
-          // Decide how to handle this: throw error, return empty array, etc.
-          // Throwing an error might be appropriate if the API is essential.
-          throw new Error("Electron API not found. Cannot fetch calendar events.");
-        }
-        return await window.electronAPI.invoke(
+        return await invokeRenderer(
           IPCChannels.Calendar.GetCalendarEvents
         );
       } catch (error) {
@@ -294,7 +295,7 @@ export default function CalendarPage() {
 
         console.log('Converted SQLite-compatible event:', JSON.stringify(sqliteCompatibleEvent, null, 2));
 
-        const result = await window.electronAPI.invoke(
+        const result = await invokeRenderer(
           IPCChannels.Calendar.AddCalendarEvent,
           sqliteCompatibleEvent
         );
@@ -334,7 +335,7 @@ export default function CalendarPage() {
 
         console.log('Converted SQLite-compatible event for update:', JSON.stringify(sqliteCompatibleEvent, null, 2));
 
-        await window.electronAPI.invoke(
+        await invokeRenderer(
           IPCChannels.Calendar.UpdateCalendarEvent,
           sqliteCompatibleEvent
         );
@@ -345,7 +346,7 @@ export default function CalendarPage() {
     },
     deleteCalendarEvent: async (id) => {
       try {
-        await window.electronAPI.invoke(
+        await invokeRenderer(
           IPCChannels.Calendar.DeleteCalendarEvent,
           id
         );
@@ -355,6 +356,18 @@ export default function CalendarPage() {
       }
     }
   }), [toast]); // Add toast to dependency array if used inside useMemo
+
+  useEffect(() => {
+    if (!serverClientMode) return;
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isCalendarEventRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1);
+        }
+      },
+    });
+    return () => subscription.unsubscribe();
+  }, [serverClientMode]);
 
   useEffect(() => {
     let timeoutId: NodeJS.Timeout | null = null;
@@ -412,7 +425,7 @@ export default function CalendarPage() {
         clearTimeout(timeoutId);
       }
     };
-  }, [dbApi]);
+  }, [dbApi, serverEventRefresh]);
 
   const handleSelectEvent = useCallback((event: CalendarRBCEvent) => {
     // Ensure dates are properly converted

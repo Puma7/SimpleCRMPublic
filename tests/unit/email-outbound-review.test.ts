@@ -3,7 +3,7 @@ import {
   buildOutboundWarningBanner,
   extractDraftBodyForOutboundBlock,
   parseOutboundReviewResponse,
-} from '../../electron/email/email-outbound-review-parse';
+} from '../../packages/core/src/email';
 
 describe('email outbound review', () => {
   test('parseOutboundReviewResponse accepts STATUS: OK', () => {

@@ -31,6 +31,11 @@ import { ToastAction } from "@/components/ui/toast"
 import { CustomerCombobox, type CustomerOption } from "@/components/customer-combobox"
 import { taskService } from "@/services/data/taskService"
 import { calendarService, TASK_EVENT_DEFAULT_COLOR, TASK_EVENT_COMPLETED_COLOR } from "@/services/data/calendarService"
+import {
+  getRendererTransport,
+  isTaskListRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 import { useToast } from "@/components/ui/use-toast"
 import { Task } from "@/services/data/types"
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination"
@@ -89,6 +94,8 @@ export default function TasksPage() {
   const [calendarToggleTouched, setCalendarToggleTouched] = useState(false)
   const [selectedCustomerName, setSelectedCustomerName] = useState<string | null>(null)
   const [taskMarkedForDelete, setTaskMarkedForDelete] = useState<TaskDisplay | null>(null)
+  const [serverEventRefresh, setServerEventRefresh] = useState(0)
+  const serverClientMode = getRendererTransport().kind === "http"
 
   const navigate = useNavigate()
 
@@ -130,7 +137,19 @@ export default function TasksPage() {
   // Load tasks from database
   useEffect(() => {
     loadTasks()
-  }, [currentPage, statusFilter, priorityFilter, searchQuery])
+  }, [currentPage, statusFilter, priorityFilter, searchQuery, serverEventRefresh])
+
+  useEffect(() => {
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isTaskListRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1)
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [serverClientMode])
 
 
   const loadTasks = async () => {

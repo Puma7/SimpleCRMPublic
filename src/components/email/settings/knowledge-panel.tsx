@@ -1,18 +1,52 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Download, Loader2, Trash2, Upload } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { hasElectron, invokeIpc } from "../types"
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isWorkflowKnowledgeRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
+import { hasLocalIpc, invokeIpc } from "../types"
 import { KnowledgeMarkdownEditor } from "./knowledge-markdown-editor"
 
 type Kb = { id: number; name: string; description: string | null }
 
+function safeMarkdownFileName(fileName: string, fallback: string): string {
+  const base = (fileName.trim() || fallback)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+  const safe = base || fallback
+  return safe.toLowerCase().endsWith(".md") ? safe : `${safe}.md`
+}
+
+function downloadMarkdown(content: string, fileName: string): void {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" })
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = objectUrl
+  link.download = fileName
+  link.rel = "noopener"
+  document.body.appendChild(link)
+  try {
+    link.click()
+  } finally {
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+  }
+}
+
 export function KnowledgePanel() {
+  const serverClientMode = getRendererTransport().kind === "http"
+  const browserImportInputRef = useRef<HTMLInputElement | null>(null)
   const [list, setList] = useState<Kb[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [newName, setNewName] = useState("")
@@ -23,9 +57,8 @@ export function KnowledgePanel() {
   const [saving, setSaving] = useState(false)
 
   const loadList = useCallback(async () => {
-    if (!hasElectron()) return
     try {
-      const rows = await invokeIpc<Kb[]>(IPCChannels.Email.ListKnowledgeBases)
+      const rows = await invokeRenderer(IPCChannels.Email.ListKnowledgeBases) as Kb[]
       setList(rows)
     } catch (e) {
       console.error(e)
@@ -34,13 +67,14 @@ export function KnowledgePanel() {
   }, [])
 
   const loadDocument = useCallback(async (kbId: number) => {
-    if (!hasElectron()) return
     setLoadingDoc(true)
     try {
-      const r = await invokeIpc<
+      const r = (await invokeRenderer(
+        IPCChannels.Email.GetKnowledgeBaseDocument,
+        kbId,
+      )) as
         | { success: true; content: string; fileName: string }
         | { success: false; error?: string }
-      >(IPCChannels.Email.GetKnowledgeBaseDocument, kbId)
       if (!r.success) {
         toast.error(r.error ?? "Dokument konnte nicht geladen werden.")
         return
@@ -61,6 +95,28 @@ export function KnowledgePanel() {
   }, [loadList])
 
   useEffect(() => {
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (!isWorkflowKnowledgeRefreshEvent(event)) return
+        void loadList()
+        if (selectedId == null) return
+        if (
+          event.entityType === "workflow_knowledge_base"
+          && event.type === "workflow_knowledge_base.deleted"
+          && event.entityId === String(selectedId)
+        ) {
+          setSelectedId(null)
+          return
+        }
+        if (!dirty && isWorkflowKnowledgeRefreshEvent(event, selectedId)) {
+          void loadDocument(selectedId)
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [dirty, loadDocument, loadList, selectedId])
+
+  useEffect(() => {
     if (selectedId != null) {
       void loadDocument(selectedId)
     } else {
@@ -76,10 +132,10 @@ export function KnowledgePanel() {
       return
     }
     try {
-      const r = await invokeIpc<{ success: boolean; id?: number; error?: string }>(
+      const r = (await invokeRenderer(
         IPCChannels.Email.CreateKnowledgeBase,
         { name: newName.trim() },
-      )
+      )) as { success: boolean; id?: number; error?: string }
       if (r && "success" in r && r.success === false) {
         toast.error(r.error ?? "Anlegen fehlgeschlagen.")
         return
@@ -98,10 +154,10 @@ export function KnowledgePanel() {
     if (selectedId == null) return
     setSaving(true)
     try {
-      const r = await invokeIpc<{ success: boolean; error?: string }>(
+      const r = (await invokeRenderer(
         IPCChannels.Email.SaveKnowledgeBaseDocument,
         { knowledgeBaseId: selectedId, content: markdown },
-      )
+      )) as { success: boolean; error?: string }
       if (!r.success) {
         toast.error(r.error ?? "Speichern fehlgeschlagen.")
         return
@@ -122,6 +178,15 @@ export function KnowledgePanel() {
     if (dirty) {
       const ok = window.confirm("Ungespeicherte Änderungen. Zuerst speichern?")
       if (ok) await saveDocument()
+    }
+    if (!hasLocalIpc()) {
+      const current = list.find((kb) => kb.id === selectedId)
+      downloadMarkdown(
+        markdown,
+        safeMarkdownFileName(fileName, current?.name ?? `knowledge-base-${selectedId}`),
+      )
+      toast.success("Markdown heruntergeladen.")
+      return
     }
     try {
       const r = await invokeIpc<
@@ -144,6 +209,10 @@ export function KnowledgePanel() {
       "Die hochgeladene Datei überschreibt den gesamten Inhalt dieser Wissensbasis. Fortfahren?",
     )
     if (!ok) return
+    if (!hasLocalIpc()) {
+      browserImportInputRef.current?.click()
+      return
+    }
     try {
       const r = await invokeIpc<{ success: boolean; id: number | null; error?: string }>(
         IPCChannels.Email.ImportKnowledgeFile,
@@ -162,11 +231,33 @@ export function KnowledgePanel() {
     }
   }
 
+  const handleBrowserImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0] ?? null
+    event.currentTarget.value = ""
+    if (!file || selectedId == null) return
+    try {
+      const content = await file.text()
+      const r = await invokeRenderer(
+        IPCChannels.Email.SaveKnowledgeBaseDocument,
+        { knowledgeBaseId: selectedId, content },
+      ) as { success: boolean; error?: string }
+      if (!r.success) {
+        toast.error(r.error ?? "Import fehlgeschlagen.")
+        return
+      }
+      toast.success("Markdown-Datei importiert und ueberschrieben.")
+      await loadDocument(selectedId)
+    } catch (e) {
+      console.error(e)
+      toast.error(e instanceof Error ? e.message : "Import fehlgeschlagen.")
+    }
+  }
+
   const deleteKb = async (id: number, name: string) => {
     const ok = window.confirm(`Wissensbasis „${name}" inkl. Markdown-Datei wirklich löschen?`)
     if (!ok) return
     try {
-      await invokeIpc(IPCChannels.Email.DeleteKnowledgeBase, id)
+      await invokeRenderer(IPCChannels.Email.DeleteKnowledgeBase, id)
       if (selectedId === id) setSelectedId(null)
       toast.success("Wissensbasis gelöscht.")
       await loadList()
@@ -181,10 +272,20 @@ export function KnowledgePanel() {
       <div>
         <h3 className="text-base font-semibold">KI-Wissensbasis</h3>
         <p className="text-sm text-muted-foreground">
-          Jeder Bereich ist eine <strong>Markdown-Datei</strong> (lokal unter{" "}
-          <code className="text-xs">workflow-knowledge/</code>). Bearbeiten im Editor, exportieren,
-          extern ändern und wieder importieren (überschreibt den Inhalt). Für Workflow-Agenten wird
-          der Text indexiert (Stichwort + Embedding).
+          {serverClientMode ? (
+            <>
+              Jeder Bereich ist ein serverseitiges Markdown-Dokument. Bearbeiten im Editor,
+              herunterladen, extern ändern und wieder hochladen (überschreibt den Inhalt). Für
+              Workflow-Agenten wird der Text indexiert (Stichwort + Embedding).
+            </>
+          ) : (
+            <>
+              Jeder Bereich ist eine <strong>Markdown-Datei</strong> (lokal unter{" "}
+              <code className="text-xs">workflow-knowledge/</code>). Bearbeiten im Editor, exportieren,
+              extern ändern und wieder importieren (überschreibt den Inhalt). Für Workflow-Agenten wird
+              der Text indexiert (Stichwort + Embedding).
+            </>
+          )}
         </p>
       </div>
 
@@ -242,6 +343,13 @@ export function KnowledgePanel() {
               <p className="text-xs text-muted-foreground font-mono">{fileName}</p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <input
+                ref={browserImportInputRef}
+                type="file"
+                accept=".md,text/markdown,text/plain"
+                className="hidden"
+                onChange={(event) => void handleBrowserImportFile(event)}
+              />
               <Button type="button" variant="outline" size="sm" onClick={() => void exportMd()}>
                 <Download className="mr-1 h-3.5 w-3.5" />
                 .md speichern

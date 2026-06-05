@@ -1,0 +1,31 @@
+{
+  "name": "@simplecrm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/server.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@simplecrm/core": "0.1.0",
+    "@fastify/websocket": "^11.2.0",
+    "archiver": "^7.0.1",
+    "fastify": "^5.8.5",
+    "graphile-worker": "^0.16.6",
+    "imapflow": "^1.2.16",
+    "kysely": "^0.29.2",
+    "libsodium-wrappers-sumo": "^0.8.4",
+    "mailparser": "^3.9.4",
+    "mssql": "^12.2.0",
+    "openpgp": "^6.3.0",
+    "pg": "^8.21.0",
+    "pino": "^10.3.1",
+    "safe-regex": "^2.1.1"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.9",
+    "@types/pg": "^8.20.0"
+  }
+}

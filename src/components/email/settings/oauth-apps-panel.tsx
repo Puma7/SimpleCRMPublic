@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
-import { hasElectron, invokeIpc } from "../types"
+import { invokeRenderer } from "@/services/transport"
 
 /** Globale OAuth-App-Registrierung (Client-ID/Secret) — einmal pro Provider. */
 export function OAuthAppsPanel() {
@@ -19,15 +19,14 @@ export function OAuthAppsPanel() {
   const [msRedirect, setMsRedirect] = useState("http://127.0.0.1:1")
 
   const load = useCallback(async () => {
-    if (!hasElectron()) return
-    const g = await invokeIpc<{ clientId?: string; clientSecret?: string }>(
+    const g = await invokeRenderer(
       IPCChannels.Email.GetGoogleOAuthApp,
-    )
+    ) as { clientId?: string; clientSecret?: string }
     setGoogleClientId(g.clientId ?? "")
     setGoogleClientSecret(g.clientSecret ?? "")
-    const m = await invokeIpc<{ clientId?: string; clientSecret?: string }>(
+    const m = await invokeRenderer(
       IPCChannels.Email.GetMicrosoftOAuthApp,
-    )
+    ) as { clientId?: string; clientSecret?: string }
     setMsClientId(m.clientId ?? "")
     setMsClientSecret(m.clientSecret ?? "")
   }, [])
@@ -73,7 +72,7 @@ export function OAuthAppsPanel() {
           variant="secondary"
           size="sm"
           onClick={async () => {
-            await invokeIpc(IPCChannels.Email.SetGoogleOAuthApp, {
+            await invokeRenderer(IPCChannels.Email.SetGoogleOAuthApp, {
               clientId: googleClientId,
               clientSecret: googleClientSecret,
             })
@@ -91,10 +90,10 @@ export function OAuthAppsPanel() {
           variant="outline"
           size="sm"
           onClick={async () => {
-            const r = await invokeIpc<{ success: boolean; url?: string; error?: string }>(
+            const r = await invokeRenderer(
               IPCChannels.Email.BuildGoogleOAuthUrl,
               googleRedirect.trim(),
-            )
+            ) as { success: boolean; url?: string; error?: string }
             if (r.success && r.url) {
               await navigator.clipboard.writeText(r.url)
               toast.success("Google-Autorisierungs-URL kopiert")
@@ -126,7 +125,7 @@ export function OAuthAppsPanel() {
           variant="secondary"
           size="sm"
           onClick={async () => {
-            await invokeIpc(IPCChannels.Email.SetMicrosoftOAuthApp, {
+            await invokeRenderer(IPCChannels.Email.SetMicrosoftOAuthApp, {
               clientId: msClientId,
               clientSecret: msClientSecret,
             })
@@ -144,10 +143,10 @@ export function OAuthAppsPanel() {
           variant="outline"
           size="sm"
           onClick={async () => {
-            const r = await invokeIpc<{ success: boolean; url?: string; error?: string }>(
+            const r = await invokeRenderer(
               IPCChannels.Email.BuildMicrosoftOAuthUrl,
               msRedirect.trim(),
-            )
+            ) as { success: boolean; url?: string; error?: string }
             if (r.success && r.url) {
               await navigator.clipboard.writeText(r.url)
               toast.success("Microsoft-Auth-URL kopiert")

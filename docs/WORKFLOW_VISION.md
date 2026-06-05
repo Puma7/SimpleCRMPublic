@@ -57,7 +57,7 @@ graph_json  →  execution_mode = graph  →  electron/workflow/runtime.ts (Inte
 | `draft_created` | Lokaler Entwurf angelegt |
 | `schedule` | Cron; optional Sync eines Kontos |
 
-**Registry-Knoten (Auszug, siehe Palette):** `ai.agent`, `ai.classify`, `code.javascript`, `crm.create_task`, `http.request`, `logic.delay`, … — vollständige Liste per IPC `ListWorkflowNodeCatalog`.
+**Registry-Knoten (Auszug, siehe Palette):** `ai.agent`, `ai.classify`, `code.javascript`, `crm.create_task`, `http.request`, `logic.delay`, … — vollständige Liste per Renderer-Transport `ListWorkflowNodeCatalog`.
 
 **Bereits umgesetzt:** If/Else, Postfach-Lücken, Graph-Runtime, Run-Steps, Wissensbasis (Keyword-RAG), Code/Plugins, Import/Export, Dry-Run-Test.
 

@@ -43,6 +43,12 @@ import { GroupSelector, GroupOption } from "@/components/grouping/group-selector
 import { GroupedList } from "@/components/grouping/grouped-list"
 import { dealGroupingFields, groupItemsByField } from "@/lib/grouping"
 import { IPCChannels } from '@shared/ipc/channels';
+import {
+  getRendererTransport,
+  invokeRenderer,
+  isDealListRefreshEvent,
+  subscribeServerEvents,
+} from "@/services/transport"
 
 import { EmptyState } from "@/components/empty-state"
 
@@ -122,6 +128,8 @@ export default function DealsPage() {
   const [isGrouped, setIsGrouped] = useState(false)
   const [selectedGrouping, setSelectedGrouping] = useState<string | null>(null)
   const [groupingOptions, setGroupingOptions] = useState<GroupOption[]>([])
+  const [serverEventRefresh, setServerEventRefresh] = useState(0)
+  const serverClientMode = getRendererTransport().kind === "http"
   const [newDeal, setNewDeal] = useState({
     name: "",
     customer: "",
@@ -152,7 +160,7 @@ export default function DealsPage() {
         filter.query = searchQuery
       }
 
-      const apiDeals = await window.electronAPI.invoke(
+      const apiDeals = await invokeRenderer(
         IPCChannels.Deals.GetAll,
         { limit: 10000, offset: 0, filter }
       )
@@ -172,8 +180,20 @@ export default function DealsPage() {
   }, [activeFilter, searchQuery])
 
   useEffect(() => {
-    loadDeals()
-  }, [loadDeals])
+    if (!serverClientMode) return
+    const subscription = subscribeServerEvents({
+      onEvent(event) {
+        if (isDealListRefreshEvent(event)) {
+          setServerEventRefresh((value) => value + 1)
+        }
+      },
+    })
+    return () => subscription.unsubscribe()
+  }, [serverClientMode])
+
+  useEffect(() => {
+    void loadDeals()
+  }, [loadDeals, serverEventRefresh])
 
   useEffect(() => {
     const options = dealGroupingFields.map(field => ({
@@ -216,7 +236,7 @@ export default function DealsPage() {
         expected_close_date: newDeal.expectedCloseDate || null
       }
 
-      const result = await window.electronAPI.invoke(
+      const result = await invokeRenderer(
         IPCChannels.Deals.Create,
         dealData
       ) as { success: boolean; id?: number; error?: string }
@@ -276,7 +296,7 @@ export default function DealsPage() {
 
       // Persist the change to the database
       try {
-        const result = await window.electronAPI.invoke(
+        const result = await invokeRenderer(
           IPCChannels.Deals.UpdateStage,
           {
             dealId,
@@ -307,7 +327,7 @@ export default function DealsPage() {
   const handleKanbanStageChange = async (dealId: number, newStage: string) => {
     setAllDeals(current => current.map(d => d.id === dealId ? { ...d, stage: newStage } : d));
     try {
-      const result = await window.electronAPI.invoke(IPCChannels.Deals.UpdateStage, { dealId, newStage }) as { success: boolean; error?: string };
+      const result = await invokeRenderer(IPCChannels.Deals.UpdateStage, { dealId, newStage }) as { success: boolean; error?: string };
       if (!result.success) throw new Error(result.error);
       toast.success("Deal aktualisiert", { description: `Deal wurde auf "${newStage}" aktualisiert` });
     } catch (error) {

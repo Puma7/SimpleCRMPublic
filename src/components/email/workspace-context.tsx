@@ -18,7 +18,7 @@ import {
   DEFAULT_MESSAGE_DONE_FILTER,
   type MessageDoneFilter,
 } from "@shared/email-done-filter"
-import type { EmailMessage, MailView } from "./types"
+import type { ConversationLockRecord, EmailMessage, MailView } from "./types"
 
 export type ComposeIntent =
   | { mode: "closed" }
@@ -61,6 +61,10 @@ type MailWorkspaceState = {
   setCategoryFilterId: Dispatch<SetStateAction<number | null>>
   selectedMessage: EmailMessage | null
   setSelectedMessage: Dispatch<SetStateAction<EmailMessage | null>>
+  conversationLocks: Record<number, ConversationLockRecord>
+  setConversationLocks: Dispatch<SetStateAction<Record<number, ConversationLockRecord>>>
+  upsertConversationLock: (lock: ConversationLockRecord) => void
+  removeConversationLock: (messageId: number) => void
   searchQuery: string
   setSearchQuery: Dispatch<SetStateAction<string>>
   messageListFilter: MessageListFilter
@@ -198,6 +202,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   )
   const [categoryFilterId, setCategoryFilterId] = useState<number | null>(null)
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
+  const [conversationLocks, setConversationLocks] = useState<Record<number, ConversationLockRecord>>({})
   const [searchQuery, setSearchQuery] = useState("")
   const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
   const [messageDoneFilter, setMessageDoneFilter] = useState<MessageDoneFilter>(() =>
@@ -242,6 +247,19 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
     setMailMetricsRevision((v) => v + 1)
   }, [])
 
+  const upsertConversationLock = useCallback((lock: ConversationLockRecord) => {
+    setConversationLocks((prev) => ({ ...prev, [lock.messageId]: lock }))
+  }, [])
+
+  const removeConversationLock = useCallback((messageId: number) => {
+    setConversationLocks((prev) => {
+      if (!(messageId in prev)) return prev
+      const next = { ...prev }
+      delete next[messageId]
+      return next
+    })
+  }, [])
+
   // Persist the few slices that deserve it.
   useEffect(() => {
     writeLS(LS_KEYS.selectedAccountId, selectedAccountScope)
@@ -278,6 +296,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setCategoryFilterId,
       selectedMessage,
       setSelectedMessage,
+      conversationLocks,
+      setConversationLocks,
+      upsertConversationLock,
+      removeConversationLock,
       searchQuery,
       setSearchQuery,
       messageListFilter,
@@ -306,6 +328,9 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       mailView,
       categoryFilterId,
       selectedMessage,
+      conversationLocks,
+      upsertConversationLock,
+      removeConversationLock,
       searchQuery,
       messageListFilter,
       messageDoneFilter,

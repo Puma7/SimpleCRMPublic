@@ -5,8 +5,8 @@ import { getPayloadSchema, getResultSchema, isDeprecatedChannel } from '../../sh
 import { getSessionFromEvent, touchSessionActivity } from '../auth/session-store';
 import { resolveAuthContext } from '../auth/current-user';
 import type { SessionRole } from '../auth/session-store';
-import { getDb } from '../sqlite-service';
-import { canAccessAccount, type AccountAccessLevel } from '../auth/account-access';
+import { canAccessLocalAccount } from '../auth/auth-store';
+import type { AccountAccessLevel } from '../auth/account-access';
 import { ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
 import { resolveEmailChannelAccountId } from './ipc-account-scope';
 
@@ -83,9 +83,12 @@ export function registerIpcHandler<C extends InvokeChannel>(
         const accountId =
           accountScope?.(parsedPayload) ?? resolveEmailChannelAccountId(channel, parsedPayload);
         if (accountId != null) {
-          const db = getDb();
-          if (!db) throw new Error('Database not initialized');
-          if (!canAccessAccount(db, session.userId, accountId, accountAccess, session.role)) {
+          if (!canAccessLocalAccount({
+            userId: session.userId,
+            accountId,
+            access: accountAccess,
+            role: session.role,
+          })) {
             throw new Error('Kein Zugriff auf dieses Konto');
           }
         }
