@@ -531,6 +531,7 @@ export type CustomerApiPort = {
     sortBy?: string;
     sortDirection?: 'asc' | 'desc';
     cursor?: number;
+    offset?: number;
     limit: number;
   }): Promise<CustomerListResult>;
   get(input: {

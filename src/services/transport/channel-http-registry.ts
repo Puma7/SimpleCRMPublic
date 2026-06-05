@@ -947,6 +947,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     const sortBy = paginatedPayload && typeof paginatedPayload.sortBy === "string" ? paginatedPayload.sortBy : ""
     const sortDirection = paginatedPayload?.sortDirection === "desc" ? "desc" : "asc"
     const baseQuery: Record<string, string | number | boolean | null | undefined> = { limit }
+    if (offset > 0) baseQuery.offset = offset
     if (search) baseQuery.search = search
     if (status) baseQuery.status = status
     if (sortBy) {
@@ -961,15 +962,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: async (body, context) => {
       if (paginatedPayload && paginatedPayload.paginated !== false) {
         const page = listResult<CustomerRecord>(body)
-        const records = await collectPagedListItems<CustomerRecord>(body, context, {
+        const records = await collectOffsetListItems<CustomerRecord>(body, context, {
           method: "GET",
           path: "/api/v1/customers",
           query: baseQuery,
-        }, offset + requestedLimit)
-        const pageRecords = records.slice(offset, offset + requestedLimit)
+        }, offset, requestedLimit)
+        const pageRecords = records.slice(0, requestedLimit)
         const customers = pageRecords.map(mapCustomerRecord)
         const items = includeCustomFields
-          ? customers.map((customer) => ({ ...customer, customFields: {} }))
+          ? await attachCustomerCustomFields(context, customers)
           : customers
         return {
           items,
@@ -984,7 +985,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       })
       const customers = items.map(mapCustomerRecord)
       if (!includeCustomFields) return customers
-      return customers.map((customer) => ({ ...customer, customFields: {} }))
+      return attachCustomerCustomFields(context, customers)
     },
     }
   }],
@@ -3565,6 +3566,34 @@ async function collectPagedListItems<T>(
   }
 }
 
+async function collectOffsetListItems<T>(
+  firstPageBody: unknown,
+  context: HttpInvocationContext,
+  request: HttpRequestSpec,
+  startOffset: number,
+  maxItems: number,
+): Promise<T[]> {
+  const items: T[] = []
+  let page = listResult<T>(firstPageBody)
+  let nextOffset = startOffset
+
+  for (;;) {
+    items.push(...page.items)
+    if (items.length >= maxItems) return items.slice(0, maxItems)
+    if ((page.nextCursor ?? null) === null || page.items.length === 0) return items
+    nextOffset += page.items.length
+    const body = await context.fetchJson({
+      ...request,
+      query: {
+        ...request.query,
+        limit: request.query?.limit ?? DEFAULT_LIST_LIMIT,
+        offset: nextOffset,
+      },
+    })
+    page = listResult<T>(body)
+  }
+}
+
 function mapAuditEventRecord(record: AuditEventRecord) {
   return {
     id: Number(record.id ?? 0),
@@ -3828,6 +3857,38 @@ async function persistCustomerCustomFields(
       },
     })
   }
+}
+
+async function attachCustomerCustomFields<T extends { id: number }>(
+  context: HttpInvocationContext,
+  customers: T[],
+): Promise<Array<T & { customFields: Record<string, string> }>> {
+  if (customers.length === 0) return customers.map((customer) => ({ ...customer, customFields: {} }))
+
+  const fields = await fetchAllCustomerCustomFields(context)
+  const fieldNamesById = new Map(fields.map((field) => [field.id, field.name ?? ""]))
+  const customFieldsByCustomerId = new Map<number, Record<string, string>>()
+
+  await Promise.all(customers.map(async (customer) => {
+    const body = await context.fetchJson({
+      method: "GET",
+      path: "/api/v1/customer-custom-field-values",
+      query: { limit: DEFAULT_LIST_LIMIT, customerId: customer.id },
+    })
+    const values = listItems<CustomFieldValueRecord>(body)
+    const customFields: Record<string, string> = {}
+    for (const value of values) {
+      const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
+      if (!fieldName) continue
+      customFields[fieldName] = value.value ?? ""
+    }
+    customFieldsByCustomerId.set(customer.id, customFields)
+  }))
+
+  return customers.map((customer) => ({
+    ...customer,
+    customFields: customFieldsByCustomerId.get(customer.id) ?? {},
+  }))
 }
 
 async function fetchAllCustomerCustomFields(context: HttpInvocationContext): Promise<CustomFieldRecord[]> {

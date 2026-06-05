@@ -484,24 +484,6 @@ describe('renderer transport', () => {
         data: {
           items: [
             {
-              id: 42,
-              sourceSqliteId: 7,
-              customerNumber: 'K-7',
-              name: 'Meyer',
-              email: 'meyer@example.com',
-              zipCode: '10115',
-              status: 'Lead',
-              updatedAt: '2026-06-03T10:00:00.000Z',
-            },
-          ],
-          nextCursor: 42,
-          total: 3,
-        },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        data: {
-          items: [
-            {
               id: 43,
               sourceSqliteId: 8,
               customerNumber: 'K-8',
@@ -534,14 +516,10 @@ describe('renderer transport', () => {
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      'https://crm.example.com/api/v1/customers?limit=1&status=Lead&sortBy=fullName&sortDirection=desc',
+      'https://crm.example.com/api/v1/customers?limit=1&offset=1&status=Lead&sortBy=fullName&sortDirection=desc',
       expect.objectContaining({ method: 'GET' }),
     );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
-      'https://crm.example.com/api/v1/customers?limit=1&status=Lead&sortBy=fullName&sortDirection=desc&cursor=42',
-      expect.objectContaining({ method: 'GET' }),
-    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       items: [expect.objectContaining({
         id: 43,
@@ -550,6 +528,102 @@ describe('renderer transport', () => {
       })],
       total: 3,
     });
+  });
+
+  test('collects large paginated customer IPC calls with offset pages', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      sourceSqliteId: index + 1,
+      name: `Kunde ${index + 1}`,
+      status: 'Active',
+    }));
+    const secondPage = Array.from({ length: 20 }, (_, index) => ({
+      id: index + 101,
+      sourceSqliteId: index + 101,
+      name: `Kunde ${index + 101}`,
+      status: 'Active',
+    }));
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: firstPage, nextCursor: 100, total: 150 } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: secondPage, nextCursor: 120, total: 150 } }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      limit: 120,
+      offset: 0,
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/customers?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/customers?limit=100&offset=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    const pageResult = result as { items: unknown[]; total: number };
+    expect(pageResult).toEqual({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: 1 }),
+        expect.objectContaining({ id: 120 }),
+      ]),
+      total: 150,
+    });
+    expect(pageResult.items).toHaveLength(120);
+  });
+
+  test('loads custom field values for paginated customer IPC calls when requested', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 42, sourceSqliteId: 7, name: 'Meyer', status: 'Lead' }],
+          nextCursor: null,
+          total: 1,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 9, name: 'vip_status', label: 'VIP', active: true }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 99, customerId: 42, fieldId: 9, value: 'Gold' }],
+          nextCursor: null,
+        },
+      }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      includeCustomFields: true,
+      limit: 50,
+      offset: 0,
+    }) as { items: Array<{ customFields?: Record<string, string> }> };
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/customer-custom-fields?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerId=42',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(result.items[0].customFields).toEqual({ vip_status: 'Gold' });
   });
 
   test('maps customer updates with custom fields to server HTTP routes', async () => {

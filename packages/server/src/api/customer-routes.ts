@@ -57,6 +57,12 @@ export async function handleCustomerRoute(
     const cursor = parseOptionalPositiveInt(req.query?.cursor);
     if (cursor === null) return error(400, 'invalid_cursor', 'cursor muss eine positive Ganzzahl sein');
 
+    const offset = parseOptionalNonnegativeInt(req.query?.offset);
+    if (offset === null) return error(400, 'invalid_offset', 'offset muss eine nicht-negative Ganzzahl sein');
+    if (cursor !== undefined && offset !== undefined) {
+      return error(400, 'ambiguous_pagination', 'cursor und offset duerfen nicht gemeinsam gesetzt werden');
+    }
+
     const search = normalizeSearch(req.query?.search);
     if (search === null) return error(400, 'invalid_search', 'search darf maximal 200 Zeichen haben');
 
@@ -75,6 +81,7 @@ export async function handleCustomerRoute(
       workspaceId: principal.workspaceId,
       limit,
       ...(cursor === undefined ? {} : { cursor }),
+      ...(offset === undefined ? {} : { offset }),
       ...(search === undefined ? {} : { search }),
       ...(status === undefined ? {} : { status }),
       ...(sortBy === undefined ? {} : { sortBy }),
@@ -248,6 +255,13 @@ function parseLimit(value: string | undefined): number | null {
 function parseOptionalPositiveInt(value: string | undefined): number | undefined | null {
   if (value === undefined || value === '') return undefined;
   return parsePositiveInt(value);
+}
+
+function parseOptionalNonnegativeInt(value: string | undefined): number | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function parsePositiveInt(value: string): number | null {

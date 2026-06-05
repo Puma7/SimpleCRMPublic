@@ -287,13 +287,14 @@ export default function CustomersPage() {
   const loadCustomers = useCallback(async () => {
     setIsLoading(true)
     const activeSort = sorting[0]
+    const includeCustomFields = Boolean(isGrouped && selectedGrouping?.startsWith('custom_'))
     try {
       const { customers: fetchedCustomers, total } = await getCustomersPage({
         limit: pagination.pageSize,
         offset: pagination.pageIndex * pagination.pageSize,
         query: debouncedSearch,
         status: statusFilter ?? null,
-        includeCustomFields: false,
+        includeCustomFields,
         sortBy: activeSort?.id,
         sortDirection: activeSort?.desc ? 'desc' : 'asc',
       })
@@ -308,7 +309,7 @@ export default function CustomersPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [debouncedSearch, pagination.pageIndex, pagination.pageSize, sorting, statusFilter])
+  }, [debouncedSearch, isGrouped, pagination.pageIndex, pagination.pageSize, selectedGrouping, sorting, statusFilter])
 
   useEffect(() => {
     void loadCustomers()

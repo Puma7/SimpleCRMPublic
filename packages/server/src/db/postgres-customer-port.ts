@@ -55,23 +55,32 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
             .select((eb) => eb.fn.countAll<number>().as('count'))
             .where('workspace_id', '=', input.workspaceId);
 
-          if (input.cursor !== undefined) {
+          if (input.cursor !== undefined && input.offset === undefined) {
             query = query.where('id', '>', input.cursor);
           }
           const search = input.search?.trim();
           if (search) {
+            const { sql: kyselySql } = require('kysely') as typeof import('kysely');
             const pattern = `%${search}%`;
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('first_name', 'ilike', pattern),
               eb('company', 'ilike', pattern),
               eb('email', 'ilike', pattern),
+              eb('customer_number', 'ilike', pattern),
+              eb('phone', 'ilike', pattern),
+              eb('mobile', 'ilike', pattern),
+              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
             ]));
             countQuery = countQuery.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('first_name', 'ilike', pattern),
               eb('company', 'ilike', pattern),
               eb('email', 'ilike', pattern),
+              eb('customer_number', 'ilike', pattern),
+              eb('phone', 'ilike', pattern),
+              eb('mobile', 'ilike', pattern),
+              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
             ]));
           }
 
@@ -107,6 +116,10 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
             default:
               query = query.orderBy('id', 'asc');
               break;
+          }
+
+          if (input.offset !== undefined) {
+            query = query.offset(input.offset);
           }
 
           query = query.limit(limit + 1);
