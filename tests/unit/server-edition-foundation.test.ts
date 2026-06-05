@@ -1103,7 +1103,7 @@ describe('server edition foundation', () => {
 
       expect(() => parseServerEditionConfig({
         DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
-        SIMPLECRM_MASTER_KEY: Buffer.alloc(32, 7).toString('base64'),
+        SIMPLECRM_MASTER_KEY: Buffer.alloc(32, 8).toString('base64'),
         ACCESS_TOKEN_SECRET: KNOWN_WEAK_CI_ACCESS_TOKEN_SECRET,
         PUBLIC_BASE_URL: 'https://crm.example.com/',
       })).toThrow('ACCESS_TOKEN_SECRET uses a known weak CI-only value');
@@ -11661,7 +11661,7 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(login.body)).not.toContain('passwordHash');
     expect((login.body as any).data.user.email).toBe('owner@example.com');
     expect((login.body as any).data.tokens.accessToken).toBe('access-token');
-    expect((login.body as any).data.resetFailureCounter).toBe(false);
+    expect((login.body as any).data.resetFailureCounter).toBe(true);
 
     const refresh = await api.handle({
       method: 'POST',
@@ -12150,13 +12150,13 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/auth/login',
       ip: '127.0.0.1',
-      body: { email: 'owner@example.com', password: 'wrong' },
+      body: { email: 'owner@example.com', password: 'correct', device: 'desktop' },
     });
     await api.handle({
       method: 'POST',
       path: '/api/v1/auth/login',
       ip: '127.0.0.1',
-      body: { email: 'owner@example.com', password: 'correct', device: 'desktop' },
+      body: { email: 'owner@example.com', password: 'wrong' },
     });
     await api.handle({
       method: 'POST',
@@ -12171,12 +12171,17 @@ describe('server edition foundation', () => {
     });
 
     expect(auditEvents.map((event) => event.action)).toEqual([
-      'auth.login_failed',
       'auth.login_succeeded',
+      'auth.login_failed',
       'auth.refresh_rotated',
       'auth.logout',
     ]);
-    expect(auditEvents[0]).toMatchObject({
+    expect(auditEvents[0].metadata).toEqual({
+      email: 'owner@example.com',
+      ip: '127.0.0.1',
+      device: 'desktop',
+    });
+    expect(auditEvents[1]).toMatchObject({
       workspaceId: 'workspace-a',
       actorUserId: 'user-a',
       entityType: 'user',
@@ -12186,11 +12191,6 @@ describe('server edition foundation', () => {
         failedAttempts: 1,
         penaltyKind: 'temporary',
       },
-    });
-    expect(auditEvents[1].metadata).toEqual({
-      email: 'owner@example.com',
-      ip: '127.0.0.1',
-      device: 'desktop',
     });
     expect(JSON.stringify(auditEvents)).not.toContain('correct');
     expect(JSON.stringify(auditEvents)).not.toContain('refresh-token');
@@ -31315,10 +31315,23 @@ function makeServerApiPorts(input: {
     passwordHash: 'hash',
   };
 
-  let failedAttempts = 0;
-  let lockUntil: Date | null = null;
-  let penaltyKind: 'none' | 'temporary' | 'permanent' = 'none';
+  const loginFailureState = new Map<string, {
+    failedAttempts: number;
+    lockUntil: Date | null;
+    penaltyKind: 'none' | 'temporary' | 'permanent';
+  }>();
   let initialSetupNeeded = input.initialSetupNeeded ?? false;
+
+  const loginFailureKey = (email: string, ip: string) => `${email}\0${ip}`;
+  const getLoginFailureState = (email: string, ip: string) => {
+    const key = loginFailureKey(email, ip);
+    let state = loginFailureState.get(key);
+    if (!state) {
+      state = { failedAttempts: 0, lockUntil: null, penaltyKind: 'none' };
+      loginFailureState.set(key, state);
+    }
+    return state;
+  };
   let userSequence = 1;
   let invitationSequence = 1;
   let authUsers: AuthUserAdminRecord[] = input.authUsers ? [...input.authUsers] : [{
@@ -31499,29 +31512,29 @@ function makeServerApiPorts(input: {
       async verifyPassword(password) {
         return password === 'correct';
       },
-      async checkLoginLock() {
-        if (penaltyKind === 'permanent') return { kind: 'permanent' };
-        if (lockUntil && lockUntil.getTime() > Date.now()) {
-          return calculateLoginPenalty(failedAttempts);
+      async checkLoginLock({ email, ip }) {
+        const state = getLoginFailureState(email, ip);
+        if (state.penaltyKind === 'permanent') return { kind: 'permanent' };
+        if (state.lockUntil && state.lockUntil.getTime() > Date.now()) {
+          return calculateLoginPenalty(state.failedAttempts);
         }
         return null;
       },
-      async recordFailedLogin() {
-        failedAttempts += 1;
-        const penalty = calculateLoginPenalty(failedAttempts);
+      async recordFailedLogin({ email, ip }) {
+        const state = getLoginFailureState(email, ip);
+        state.failedAttempts += 1;
+        const penalty = calculateLoginPenalty(state.failedAttempts);
         if (penalty.kind === 'temporary') {
-          lockUntil = new Date(Date.now() + penalty.lockSeconds * 1000);
-          penaltyKind = 'temporary';
+          state.lockUntil = new Date(Date.now() + penalty.lockSeconds * 1000);
+          state.penaltyKind = 'temporary';
         } else if (penalty.kind === 'permanent') {
-          lockUntil = null;
-          penaltyKind = 'permanent';
+          state.lockUntil = null;
+          state.penaltyKind = 'permanent';
         }
-        return failedAttempts;
+        return state.failedAttempts;
       },
-      async recordSuccessfulLogin() {
-        failedAttempts = 0;
-        lockUntil = null;
-        penaltyKind = 'none';
+      async recordSuccessfulLogin({ email, ip }) {
+        loginFailureState.delete(loginFailureKey(email, ip));
         return undefined;
       },
       async issueTokenPair() {
