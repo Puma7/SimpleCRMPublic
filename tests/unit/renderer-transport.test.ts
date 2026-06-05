@@ -398,23 +398,41 @@ describe('renderer transport', () => {
   });
 
   test('maps customer IPC calls to server HTTP routes', async () => {
-    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
-      data: {
-        items: [
-          {
-            id: 42,
-            sourceSqliteId: 7,
-            customerNumber: 'K-7',
-            name: 'Meyer',
-            email: 'meyer@example.com',
-            zipCode: '10115',
-            status: 'Lead',
-            updatedAt: '2026-06-03T10:00:00.000Z',
-          },
-        ],
-        nextCursor: null,
-      },
-    }));
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            {
+              id: 42,
+              sourceSqliteId: 7,
+              customerNumber: 'K-7',
+              name: 'Meyer',
+              email: 'meyer@example.com',
+              zipCode: '10115',
+              status: 'Lead',
+              updatedAt: '2026-06-03T10:00:00.000Z',
+            },
+          ],
+          nextCursor: 42,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            {
+              id: 43,
+              sourceSqliteId: 8,
+              customerNumber: 'K-8',
+              name: 'Schulz',
+              email: 'schulz@example.com',
+              zipCode: '50667',
+              status: 'Active',
+              updatedAt: '2026-06-03T11:00:00.000Z',
+            },
+          ],
+          nextCursor: null,
+        },
+      }));
 
     const transport = createHttpRendererTransport({
       baseUrl: 'https://crm.example.com/',
@@ -434,6 +452,10 @@ describe('renderer transport', () => {
         }),
       }),
     );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/customers?limit=100&cursor=42',
+      expect.objectContaining({ method: 'GET' }),
+    );
     expect(result).toEqual([
       expect.objectContaining({
         id: 42,
@@ -444,7 +466,115 @@ describe('renderer transport', () => {
         zip: '10115',
         status: 'Lead',
       }),
+      expect.objectContaining({
+        id: 43,
+        jtl_kKunde: 8,
+        customerNumber: 'K-8',
+        name: 'Schulz',
+        email: 'schulz@example.com',
+        zip: '50667',
+        status: 'Active',
+      }),
     ]);
+  });
+
+  test('maps customer updates with custom fields to server HTTP routes', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          id: 42,
+          sourceSqliteId: 7,
+          customerNumber: 'K-7',
+          name: 'Meyer GmbH',
+          email: 'meyer@example.com',
+          zipCode: '10115',
+          status: 'Active',
+          updatedAt: '2026-06-03T12:00:00.000Z',
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 9, name: 'vip', label: 'VIP', active: true }],
+          nextCursor: 9,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 10, name: 'score', label: 'Score', active: true }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { success: true } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { success: true } }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+      getAccessToken: () => 'token-1',
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.UpdateCustomer, {
+      id: 42,
+      customerData: {
+        name: 'Meyer GmbH',
+        zip: '10115',
+        customFields: {
+          vip: true,
+          score: 7,
+          unknown: 'ignored',
+        },
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/customers/42',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: 'Meyer GmbH',
+          zipCode: '10115',
+        }),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/customer-custom-fields?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/customer-custom-fields?limit=100&cursor=9',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/customer-custom-field-values',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ customerId: 42, fieldId: 9, value: 'true' }),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      5,
+      'https://crm.example.com/api/v1/customer-custom-field-values',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ customerId: 42, fieldId: 10, value: '7' }),
+      }),
+    );
+    expect(result).toEqual({
+      success: true,
+      customer: expect.objectContaining({
+        id: 42,
+        name: 'Meyer GmbH',
+        customFields: {
+          vip: true,
+          score: 7,
+          unknown: 'ignored',
+        },
+      }),
+    });
   });
 
   test('maps MSSQL settings IPC calls to server HTTP routes without returning password', async () => {

@@ -31,6 +31,7 @@ export const MAX_INVITATION_TTL_DAYS = 30;
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_DAYS = 30;
 const INITIAL_OWNER_SETUP_LOCK_KEY = 'simplecrm.initial_owner_setup';
+const AUTH_INVITATION_EMAIL_LOCK_PREFIX = 'simplecrm.auth_invitation.email';
 
 export type PostgresAuthPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -231,14 +232,17 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           role: 'admin',
         },
         async (trx) => {
+          await acquireInvitationEmailLock(trx, input.workspaceId, input.email);
+
           const existingUser = await selectUserByEmail(trx, input.workspaceId, input.email);
           if (existingUser) return { ok: false as const, code: 'duplicate_email' as const };
 
+          const { sql: kyselySql } = require('kysely') as typeof import('kysely');
           const openInvite = await trx
             .selectFrom('auth_invitations')
             .select(['id'])
             .where('workspace_id', '=', input.workspaceId)
-            .where('email', '=', input.email.toLowerCase())
+            .where(kyselySql<boolean>`lower(email) = ${normalizeAuthEmail(input.email)}`)
             .where('accepted_at', 'is', null)
             .where('revoked_at', 'is', null)
             .where('expires_at', '>', now())
@@ -711,6 +715,19 @@ async function acquireInitialSetupLock(db: Transaction<ServerDatabase>): Promise
   await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${INITIAL_OWNER_SETUP_LOCK_KEY}))`.execute(db);
 }
 
+async function acquireInvitationEmailLock(
+  db: Transaction<ServerDatabase>,
+  workspaceId: string,
+  email: string,
+): Promise<void> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${invitationEmailLockKey(workspaceId, email)}))`.execute(db);
+}
+
+function invitationEmailLockKey(workspaceId: string, email: string): string {
+  return `${AUTH_INVITATION_EMAIL_LOCK_PREFIX}:${workspaceId}:${normalizeAuthEmail(email)}`;
+}
+
 async function selectAnyUserAcrossWorkspaces(
   db: Kysely<ServerDatabase>,
   applyWorkspaceSession?: WorkspaceSessionApplier,
@@ -805,15 +822,20 @@ async function selectUserByEmail(
   email: string,
   exceptId?: string,
 ): Promise<{ id: string } | undefined> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = db
     .selectFrom('users')
     .select(['id'])
     .where('workspace_id', '=', workspaceId)
-    .where('email', '=', email.toLowerCase());
+    .where(kyselySql<boolean>`lower(email) = ${normalizeAuthEmail(email)}`);
   if (exceptId) {
     query = query.where('id', '!=', exceptId);
   }
   return query.executeTakeFirst();
+}
+
+function normalizeAuthEmail(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 async function countActiveOwners(

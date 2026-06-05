@@ -11839,6 +11839,20 @@ describe('server edition foundation', () => {
     expect(racedSelectIndex).toBeGreaterThan(lockIndex);
   });
 
+  test('postgres auth port serializes live invitation creation per workspace email', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-auth-port.ts'), 'utf8');
+    const lockIndex = source.indexOf('await acquireInvitationEmailLock(trx, input.workspaceId, input.email);');
+    const duplicateUserIndex = source.indexOf('const existingUser = await selectUserByEmail(trx, input.workspaceId, input.email);');
+    const duplicateInviteIndex = source.indexOf("selectFrom('auth_invitations')");
+
+    expect(source).toContain("const AUTH_INVITATION_EMAIL_LOCK_PREFIX = 'simplecrm.auth_invitation.email';");
+    expect(source).toContain('SELECT pg_advisory_xact_lock(hashtext(${invitationEmailLockKey(workspaceId, email)}))');
+    expect(source).toContain('lower(email) = ${normalizeAuthEmail(input.email)}');
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(duplicateUserIndex).toBeGreaterThan(lockIndex);
+    expect(duplicateInviteIndex).toBeGreaterThan(lockIndex);
+  });
+
   test('postgres activity log port supports newest-first timeline sorting', () => {
     const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-extended-crm-read-ports.ts'), 'utf8');
 

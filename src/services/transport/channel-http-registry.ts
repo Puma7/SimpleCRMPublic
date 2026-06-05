@@ -939,8 +939,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/customers",
     query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => {
-      const items = listItems<CustomerRecord>(body)
+    transform: async (body, context) => {
+      const items = await collectPagedListItems<CustomerRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/customers",
+        query: { limit: DEFAULT_LIST_LIMIT },
+      })
       const customers = items.map(mapCustomerRecord)
       if (!includeCustomFields) return customers
       return customers.map((customer) => ({ ...customer, customFields: {} }))
@@ -950,18 +954,33 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/customers",
     query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<CustomerRecord>(body).map((customer) => ({
-      id: customer.id,
-      name: customer.name ?? customer.company ?? "",
-      company: customer.company ?? "",
-      email: customer.email ?? "",
-    })),
+    transform: async (body, context) => {
+      const items = await collectPagedListItems<CustomerRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/customers",
+        query: { limit: DEFAULT_LIST_LIMIT },
+      })
+      return items.map((customer) => ({
+        id: customer.id,
+        name: customer.name ?? customer.company ?? "",
+        company: customer.company ?? "",
+        email: customer.email ?? "",
+      }))
+    },
   })],
   [IPCChannels.Db.SearchCustomers, ([query]) => ({
     method: "GET",
     path: "/api/v1/customers",
     query: { limit: DEFAULT_LIST_LIMIT, search: String(query ?? "") },
-    transform: (body) => listItems<CustomerRecord>(body).map(mapCustomerRecord),
+    transform: async (body, context) => {
+      const search = String(query ?? "")
+      const items = await collectPagedListItems<CustomerRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/customers",
+        query: { limit: DEFAULT_LIST_LIMIT, search },
+      })
+      return items.map(mapCustomerRecord)
+    },
   })],
   [IPCChannels.Db.GetCustomer, ([id]) => ({
     method: "GET",
@@ -976,11 +995,21 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   })],
   [IPCChannels.Db.UpdateCustomer, ([payload]) => {
     const update = objectPayload(payload, "customer update payload")
+    const customFields = customerCustomFieldsPayload(update.customerData)
     return {
       method: "PATCH",
       path: `/api/v1/customers/${positiveId(update.id, "customer id")}`,
       body: mapCustomerMutation(update.customerData),
-      transform: (body) => ({ success: true, customer: mapCustomerRecord(dataBody<CustomerRecord>(body)) }),
+      transform: async (body, context) => {
+        const customer = mapCustomerRecord(dataBody<CustomerRecord>(body))
+        if (customFields) {
+          await persistCustomerCustomFields(context, customer.id, customFields)
+        }
+        return {
+          success: true,
+          customer: customFields ? { ...customer, customFields } : customer,
+        }
+      },
     }
   }],
   [IPCChannels.Db.DeleteCustomer, ([id]) => ({
@@ -3434,6 +3463,33 @@ function listResult<T>(body: unknown): ListResult<T> {
   return { items: [], nextCursor: null }
 }
 
+async function collectPagedListItems<T>(
+  firstPageBody: unknown,
+  context: HttpInvocationContext,
+  request: HttpRequestSpec,
+): Promise<T[]> {
+  const items: T[] = []
+  const seenCursors = new Set<number>()
+  let page = listResult<T>(firstPageBody)
+
+  for (;;) {
+    items.push(...page.items)
+    const cursor = page.nextCursor ?? null
+    if (cursor === null) return items
+    if (seenCursors.has(cursor)) throw new Error("Invalid paged list cursor")
+    seenCursors.add(cursor)
+    const body = await context.fetchJson({
+      ...request,
+      query: {
+        ...request.query,
+        limit: request.query?.limit ?? DEFAULT_LIST_LIMIT,
+        cursor,
+      },
+    })
+    page = listResult<T>(body)
+  }
+}
+
 function mapAuditEventRecord(record: AuditEventRecord) {
   return {
     id: Number(record.id ?? 0),
@@ -3666,6 +3722,55 @@ function mapCustomerMutation(value: unknown): Record<string, unknown> {
     notes: input.notes,
     status: input.status,
   })
+}
+
+function customerCustomFieldsPayload(value: unknown): Record<string, unknown> | undefined {
+  const input = objectPayload(value ?? {}, "customer payload")
+  return isRecord(input.customFields) ? input.customFields : undefined
+}
+
+async function persistCustomerCustomFields(
+  context: HttpInvocationContext,
+  customerId: number,
+  customFields: Record<string, unknown>,
+): Promise<void> {
+  const entries = Object.entries(customFields)
+  if (entries.length === 0) return
+
+  const fields = await fetchAllCustomerCustomFields(context)
+  const fieldIdsByName = new Map(fields.map((field) => [field.name ?? "", field.id]))
+
+  for (const [fieldName, fieldValue] of entries) {
+    const fieldId = fieldIdsByName.get(fieldName)
+    if (fieldId === undefined) continue
+    await context.fetchJson({
+      method: "POST",
+      path: "/api/v1/customer-custom-field-values",
+      body: {
+        customerId,
+        fieldId,
+        value: customFieldValuePayload(fieldValue),
+      },
+    })
+  }
+}
+
+async function fetchAllCustomerCustomFields(context: HttpInvocationContext): Promise<CustomFieldRecord[]> {
+  const body = await context.fetchJson({
+    method: "GET",
+    path: "/api/v1/customer-custom-fields",
+    query: { limit: DEFAULT_LIST_LIMIT },
+  })
+  return collectPagedListItems<CustomFieldRecord>(body, context, {
+    method: "GET",
+    path: "/api/v1/customer-custom-fields",
+    query: { limit: DEFAULT_LIST_LIMIT },
+  })
+}
+
+function customFieldValuePayload(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  return typeof value === "object" ? JSON.stringify(value) : String(value)
 }
 
 function mapProductRecord(record: ProductRecord) {
