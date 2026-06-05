@@ -193,9 +193,9 @@ async function finalizeSentDraft(input: {
     return { sentAppendWarning: joinWarnings(warnings) };
   }
 
-  let rfc822: Buffer | undefined;
+  let builtRfc822: Buffer | undefined;
   try {
-    rfc822 = buildComposeRfc822({
+    builtRfc822 = buildComposeRfc822({
       ...appendInput,
       bcc: undefined,
     });
@@ -210,6 +210,13 @@ async function finalizeSentDraft(input: {
     setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
     return { sentAppendWarning: joinWarnings(warnings) };
   }
+  if (!builtRfc822) {
+    imapSyncFailed = true;
+    warnings.push('E-Mail wurde versendet und lokal unter "Gesendet" gespeichert. Server-Kopie konnte nicht vorbereitet werden.');
+    setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
+    return { sentAppendWarning: joinWarnings(warnings) };
+  }
+  const rfc822 = builtRfc822;
 
   try {
     const { appendSentToImap } = await import('./email-imap-append');
