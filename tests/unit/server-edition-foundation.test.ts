@@ -26538,6 +26538,7 @@ describe('server edition foundation', () => {
     const syncSetCalls: unknown[] = [];
     const workflowListCalls: unknown[] = [];
     const queueCalls: unknown[] = [];
+    const operationLog: string[] = [];
     const api = createServerApi(makeServerApiPorts({
       syncInfo: {
         async getMany(input) {
@@ -26554,6 +26555,7 @@ describe('server edition foundation', () => {
           return [];
         },
         async setMany(input) {
+          operationLog.push('dedupe');
           syncSetCalls.push(input);
           for (const [key, value] of Object.entries(input.values)) {
             syncStore.set(key, value);
@@ -26586,6 +26588,7 @@ describe('server edition foundation', () => {
       },
       jobQueue: {
         async enqueue(input) {
+          operationLog.push(`enqueue:${(input.payload as { workflowId?: unknown }).workflowId}`);
           queueCalls.push(input);
         },
       },
@@ -26655,6 +26658,7 @@ describe('server edition foundation', () => {
         },
       },
     ]);
+    expect(operationLog).toEqual(['enqueue:31', 'enqueue:32', 'dedupe']);
 
     const deduped = await api.handle({
       method: 'POST',
@@ -26741,6 +26745,73 @@ describe('server edition foundation', () => {
       { field: 'extra', message: 'Feld ist nicht erlaubt' },
       { field: 'body', message: 'body muss ein JSON-Objekt sein' },
     ]));
+  });
+
+  test('server incoming webhook workflow route does not dedupe when queue enqueue fails', async () => {
+    const activeWebhook = { ...makeWorkflowRecord(41), triggerName: 'webhook.incoming' };
+    const syncStore = new Map<string, string | null>([
+      ['email_webhook_secret', 'secret-1'],
+    ]);
+    const syncSetCalls: unknown[] = [];
+    const queueCalls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      syncInfo: {
+        async getMany(input) {
+          return input.keys
+            .filter((key) => syncStore.has(key))
+            .map((key) => ({
+              key,
+              value: syncStore.get(key) ?? null,
+              updatedAt: '2026-06-04T10:00:00.000Z',
+            }));
+        },
+        async getByPrefix() {
+          return [];
+        },
+        async setMany(input) {
+          syncSetCalls.push(input);
+          for (const [key, value] of Object.entries(input.values)) {
+            syncStore.set(key, value);
+          }
+          return Object.entries(input.values).map(([key, value]) => ({
+            key,
+            value,
+            updatedAt: '2026-06-04T10:01:00.000Z',
+          }));
+        },
+        async deleteMany() {
+          return 0;
+        },
+      },
+      workflows: {
+        async list() {
+          return {
+            items: [activeWebhook],
+            nextCursor: null,
+          };
+        },
+        async get() {
+          return null;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+          throw new Error('queue unavailable');
+        },
+      },
+    }));
+
+    await expect(api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/webhook/incoming',
+      body: { secret: 'secret-1', body: { orderId: 12, source: 'queue-fail' } },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' },
+    })).rejects.toThrow('queue unavailable');
+
+    expect(queueCalls).toHaveLength(1);
+    expect(syncSetCalls).toHaveLength(0);
+    expect([...syncStore.keys()].some((key) => key.startsWith('webhook_dedup:'))).toBe(false);
   });
 
   test('server workflow mutation routes reject unsafe payloads and invalid references', async () => {

@@ -510,11 +510,6 @@ async function handleWebhookIncomingRoute(
   if (!Number.isNaN(dedupeAt) && nowMs - dedupeAt < WEBHOOK_DEDUP_MS) {
     return data(200, { success: true, fired: 0, deduplicated: true });
   }
-  await ports.syncInfo.setMany({
-    workspaceId: principal.workspaceId,
-    values: { [dedupeKey]: String(nowMs) },
-  });
-
   let fired = 0;
   let cursor: number | undefined;
   do {
@@ -543,6 +538,11 @@ async function handleWebhookIncomingRoute(
     }
     cursor = result.nextCursor ?? undefined;
   } while (cursor !== undefined && fired < MAX_WEBHOOK_WORKFLOWS);
+
+  await ports.syncInfo.setMany({
+    workspaceId: principal.workspaceId,
+    values: { [dedupeKey]: String(Date.now()) },
+  });
 
   return data(202, {
     success: true,
