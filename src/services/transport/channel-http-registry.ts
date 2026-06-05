@@ -1034,13 +1034,28 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/products",
     query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<ProductRecord>(body).map(mapProductRecord),
+    transform: async (body, context) => {
+      const items = await collectPagedListItems<ProductRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/products",
+        query: { limit: DEFAULT_LIST_LIMIT },
+      })
+      return items.map(mapProductRecord)
+    },
   })],
   [IPCChannels.Products.Search, ([query]) => ({
     method: "GET",
     path: "/api/v1/products",
     query: { limit: DEFAULT_LIST_LIMIT, search: String(query ?? "") },
-    transform: (body) => listItems<ProductRecord>(body).map(mapProductRecord),
+    transform: async (body, context) => {
+      const search = String(query ?? "")
+      const items = await collectPagedListItems<ProductRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/products",
+        query: { limit: DEFAULT_LIST_LIMIT, search },
+      })
+      return items.map(mapProductRecord)
+    },
   })],
   [IPCChannels.Products.GetById, ([id]) => ({
     method: "GET",

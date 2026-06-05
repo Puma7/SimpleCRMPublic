@@ -577,6 +577,69 @@ describe('renderer transport', () => {
     });
   });
 
+  test('maps product list IPC calls across all server pages', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 11, sourceSqliteId: 101, sku: 'SKU-1', name: 'Produkt 1', price: '12.50', isActive: true }],
+          nextCursor: 11,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 12, sourceSqliteId: 102, sku: 'SKU-2', name: 'Produkt 2', price: '25.00', isActive: true }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 13, sourceSqliteId: 103, sku: 'ABC-1', name: 'Suchprodukt 1', price: '9.99', isActive: true }],
+          nextCursor: 13,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 14, sourceSqliteId: 104, sku: 'ABC-2', name: 'Suchprodukt 2', price: '19.99', isActive: false }],
+          nextCursor: null,
+        },
+      }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Products.GetAll)).resolves.toEqual([
+      expect.objectContaining({ id: 11, jtl_kArtikel: 101, sku: 'SKU-1', name: 'Produkt 1', price: 12.5 }),
+      expect.objectContaining({ id: 12, jtl_kArtikel: 102, sku: 'SKU-2', name: 'Produkt 2', price: 25 }),
+    ]);
+    await expect(transport.invoke(IPCChannels.Products.Search, 'ABC')).resolves.toEqual([
+      expect.objectContaining({ id: 13, jtl_kArtikel: 103, sku: 'ABC-1', name: 'Suchprodukt 1', price: 9.99 }),
+      expect.objectContaining({ id: 14, jtl_kArtikel: 104, sku: 'ABC-2', name: 'Suchprodukt 2', price: 19.99 }),
+    ]);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/products?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/products?limit=100&cursor=11',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/products?limit=100&search=ABC',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/products?limit=100&search=ABC&cursor=13',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps MSSQL settings IPC calls to server HTTP routes without returning password', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

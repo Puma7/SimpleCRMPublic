@@ -11853,6 +11853,21 @@ describe('server edition foundation', () => {
     expect(duplicateInviteIndex).toBeGreaterThan(lockIndex);
   });
 
+  test('postgres auth port conditionally revokes refresh tokens before rotation', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-auth-port.ts'), 'utf8');
+    const rotateIndex = source.indexOf('async rotateRefreshToken(input)');
+    const revokeIndex = source.indexOf('const revokeResult = await trx', rotateIndex);
+    const revokedNullIndex = source.indexOf(".where('revoked_at', 'is', null)", revokeIndex);
+    const guardIndex = source.indexOf('Number(revokeResult.numUpdatedRows) < 1', revokeIndex);
+    const issueIndex = source.indexOf('tokens: await issueTokenPair', revokeIndex);
+
+    expect(rotateIndex).toBeGreaterThanOrEqual(0);
+    expect(revokeIndex).toBeGreaterThan(rotateIndex);
+    expect(revokedNullIndex).toBeGreaterThan(revokeIndex);
+    expect(guardIndex).toBeGreaterThan(revokedNullIndex);
+    expect(issueIndex).toBeGreaterThan(guardIndex);
+  });
+
   test('postgres activity log port supports newest-first timeline sorting', () => {
     const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-extended-crm-read-ports.ts'), 'utf8');
 

@@ -498,11 +498,16 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           return null;
         }
 
-        await trx
+        const revokedAt = now();
+        const revokeResult = await trx
           .updateTable('refresh_tokens')
-          .set({ revoked_at: now() })
+          .set({ revoked_at: revokedAt })
           .where('id', '=', existing.token_id)
-          .execute();
+          .where('revoked_at', 'is', null)
+          .executeTakeFirst();
+        if (Number(revokeResult.numUpdatedRows) < 1) {
+          return null;
+        }
 
         const user: AuthUserRecord = {
           id: existing.user_id,
