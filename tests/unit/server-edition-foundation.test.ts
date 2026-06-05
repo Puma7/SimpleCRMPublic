@@ -11878,17 +11878,24 @@ describe('server edition foundation', () => {
 
   test('postgres mail message list uses sort-aligned composite cursors', () => {
     const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const listSection = source.slice(
+      source.indexOf('async list(input): Promise<EmailMessageListResult>'),
+      source.indexOf('async get(input): Promise<EmailMessageRecord | null>'),
+    );
 
-    expect(source).toContain('query = applyMessageCursor(query, input.workspaceId, input.cursor, input.sort, input.view);');
+    expect(listSection).toContain('const priorityCursor =');
+    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, input.cursor)');
+    expect(listSection).toContain('query = applyMessageCursor(');
     expect(source).toContain("if (view === 'snoozed')");
     expect(source).toContain("if (sort === 'date_asc')");
     expect(source).toContain("if (sort === 'priority')");
+    expect(source).toContain('messagePriorityRankSql');
     expect(source).toContain('coalesce(email_messages.date_received, email_messages.created_at)');
     expect(source).toContain('email_messages.id > cursor_message.id');
     expect(source).toContain('email_messages.id < cursor_message.id');
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
-    expect(source.indexOf('query = applyMessageCursor(query, input.workspaceId, input.cursor, input.sort, input.view);'))
-      .toBeLessThan(source.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
+    expect(listSection.indexOf('query = applyMessageCursor('))
+      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
   });
 
   test('server auth user admin routes list, create, update, and protect owners without secret leakage', async () => {
