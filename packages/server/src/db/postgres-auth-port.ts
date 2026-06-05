@@ -30,6 +30,7 @@ export const DEFAULT_INVITATION_TTL_DAYS = 7;
 export const MAX_INVITATION_TTL_DAYS = 30;
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_DAYS = 30;
+const INITIAL_OWNER_SETUP_LOCK_KEY = 'simplecrm.initial_owner_setup';
 
 export type PostgresAuthPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -59,6 +60,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         options.db,
         { workspaceId, role: 'system', crossWorkspaceAccess: true },
         async (trx) => {
+          await acquireInitialSetupLock(trx);
           const raced = await selectAnyUser(trx);
           if (raced) return { ok: false as const, code: 'already_configured' as const };
 
@@ -702,6 +704,11 @@ async function selectAnyUser(db: Kysely<ServerDatabase> | Transaction<ServerData
     .select(['id'])
     .limit(1)
     .executeTakeFirst();
+}
+
+async function acquireInitialSetupLock(db: Transaction<ServerDatabase>): Promise<void> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${INITIAL_OWNER_SETUP_LOCK_KEY}))`.execute(db);
 }
 
 async function selectAnyUserAcrossWorkspaces(

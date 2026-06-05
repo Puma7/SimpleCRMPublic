@@ -11799,6 +11799,17 @@ describe('server edition foundation', () => {
     expect((blocked.body as any).error.code).toBe('already_configured');
   });
 
+  test('postgres auth port serializes initial owner creation inside the setup transaction', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-auth-port.ts'), 'utf8');
+    const lockIndex = source.indexOf('await acquireInitialSetupLock(trx);');
+    const racedSelectIndex = source.indexOf('const raced = await selectAnyUser(trx);');
+
+    expect(source).toContain("const INITIAL_OWNER_SETUP_LOCK_KEY = 'simplecrm.initial_owner_setup';");
+    expect(source).toContain('SELECT pg_advisory_xact_lock(hashtext(${INITIAL_OWNER_SETUP_LOCK_KEY}))');
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(racedSelectIndex).toBeGreaterThan(lockIndex);
+  });
+
   test('server auth user admin routes list, create, update, and protect owners without secret leakage', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const ports = makeServerApiPorts({ auditEvents });
