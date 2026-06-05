@@ -178,6 +178,7 @@ export function createPostgresActivityLogReadPort(options: PostgresExtendedCrmRe
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.activityType !== undefined) query = query.where('activity_type', '=', input.activityType);
+          if (input.activityTypes?.length) query = query.where('activity_type', 'in', input.activityTypes);
           if (input.customerId !== undefined) query = query.where('customer_id', '=', input.customerId);
           if (input.dealId !== undefined) query = query.where('deal_id', '=', input.dealId);
           if (input.taskId !== undefined) query = query.where('task_id', '=', input.taskId);

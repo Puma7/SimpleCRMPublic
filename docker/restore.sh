@@ -8,6 +8,7 @@ ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
 ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-/data/attachments}"
 AUDIT_ARCHIVE_DIR="${AUDIT_ARCHIVE_DIR:-/data/audit-archive}"
+PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"
 
 if [ -z "$DUMP_PATH" ]; then
   echo "usage: restore.sh /path/to/db.dump [/path/to/attachments.tar] [/path/to/audit-archive.tar]" >&2
@@ -52,7 +53,11 @@ else
   echo "warning: checksum manifest not found; restoring without backup hash verification" >&2
 fi
 
-pg_restore --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
+if [ -n "$PG_RESTORE_ROLE" ]; then
+  pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
+else
+  pg_restore --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
+fi
 
 if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
   mkdir -p "$ATTACHMENTS_DIR"

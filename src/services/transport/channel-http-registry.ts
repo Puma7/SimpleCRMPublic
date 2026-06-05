@@ -3373,7 +3373,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       query: {
         limit: limitValue(input.limit),
         customerId: positiveId(input.customerId, "customer id"),
-        type: input.filter,
+        ...mapTimelineFilterQuery(input.filter),
       },
       transform: (body) => listItems<ActivityLogRecord>(body).map(mapActivityLogRecord),
     }
@@ -3948,6 +3948,15 @@ function mapActivityLogMutation(value: unknown): Record<string, unknown> {
     description: input.description,
     metadata: input.metadata,
   })
+}
+
+function mapTimelineFilterQuery(value: unknown): Record<string, unknown> {
+  const filter = typeof value === "string" ? value.trim() : undefined
+  if (!filter) return {}
+  if (filter === "tasks" || filter === "deals" || filter === "communication") {
+    return { timelineFilter: filter }
+  }
+  return { activityType: filter }
 }
 
 function mapActivityLogRecord(record: ActivityLogRecord) {

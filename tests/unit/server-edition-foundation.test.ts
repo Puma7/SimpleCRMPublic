@@ -132,6 +132,7 @@ import {
   createPostgresServerApiPorts,
   createPostgresServerEventPort,
   createPostgresServerEventNotificationChannel,
+  createPostgresJobQueuePort,
   createFetchWebhookDispatchPort,
   createProductionJobHandlers,
   createSpamScoringJobHandlers,
@@ -1683,6 +1684,39 @@ describe('server edition foundation', () => {
       sql: 'SELECT pg_advisory_xact_lock(hashtext($1));',
       params: ['account-42'],
     });
+  });
+
+  test('postgres job queue uses cross-workspace RLS context for global claims and stale-lock release', async () => {
+    const { db, rows, sessionCommands } = makeFakePostgresJobQueueDb();
+    rows.push(makeFakePostgresJobQueueRow({
+      id: 1,
+      run_after: new Date('2026-06-05T08:00:00.000Z'),
+      workspace_id: WORKSPACE_A_ID,
+    }));
+    const port = createPostgresJobQueuePort({
+      db,
+      now: () => new Date('2026-06-05T08:30:00.000Z'),
+      applyWorkspaceSession: async (_trx, command) => {
+        sessionCommands.push(command);
+      },
+    });
+
+    const claimed = await port.claimNext({
+      workerId: 'worker-a',
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+    expect(claimed?.id).toBe(1);
+    expect(claimed?.lockedBy).toBe('worker-a');
+
+    const released = await port.releaseStaleLocks({
+      staleBefore: new Date('2026-06-05T08:45:00.000Z'),
+      limit: 10,
+    });
+    expect(released.map((job) => job.id)).toEqual([1]);
+    expect(rows[0]?.locked_at).toBeNull();
+    expect(sessionCommands).toHaveLength(2);
+    expect(sessionCommands.map((command) => command.params[2])).toEqual(['system', 'system']);
+    expect(sessionCommands.map((command) => command.params[3])).toEqual(['on', 'on']);
   });
 
   test('job worker completes successful jobs and records failures for missing or throwing handlers', async () => {
@@ -15141,10 +15175,23 @@ describe('server edition foundation', () => {
     });
     expect(activityLog.status).toBe(200);
     expect((activityLog.body as any).data.items[0].metadata).toBeUndefined();
+    const groupedActivityLog = await api.handle({
+      method: 'GET',
+      path: '/api/v1/activity-log',
+      query: { timelineFilter: 'communication', customerId: '7' },
+      principal,
+    });
+    expect(groupedActivityLog.status).toBe(200);
     expect(activityLogCalls).toEqual([{
       workspaceId: WORKSPACE_A_ID,
       limit: 50,
       activityType: 'email',
+      customerId: 7,
+      includeMetadata: false,
+    }, {
+      workspaceId: WORKSPACE_A_ID,
+      limit: 50,
+      activityTypes: ['call', 'email', 'note'],
       customerId: 7,
       includeMetadata: false,
     }]);
@@ -32547,6 +32594,184 @@ function makeFakeNotificationClient() {
 
 function sha256Text(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+type FakePostgresJobQueueRow = {
+  id: number;
+  type: string;
+  payload: Record<string, unknown>;
+  run_after: Date;
+  attempts: number;
+  max_attempts: number;
+  locked_at: Date | null;
+  locked_by: string | null;
+  last_error: string | null;
+  workspace_id: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+function makeFakePostgresJobQueueDb(): {
+  db: Kysely<ServerDatabase>;
+  rows: FakePostgresJobQueueRow[];
+  sessionCommands: ReturnType<typeof buildWorkspaceSessionCommand>[];
+} {
+  const rows: FakePostgresJobQueueRow[] = [];
+  const sessionCommands: ReturnType<typeof buildWorkspaceSessionCommand>[] = [];
+  const db = {
+    selectFrom(table: string) {
+      if (table !== 'job_queue') throw new Error(`unexpected job queue select table: ${table}`);
+      return new FakePostgresJobQueueSelect(rows);
+    },
+    updateTable(table: string) {
+      if (table !== 'job_queue') throw new Error(`unexpected job queue update table: ${table}`);
+      return new FakePostgresJobQueueUpdate(rows);
+    },
+    transaction() {
+      return {
+        execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db),
+      };
+    },
+  } as unknown as Kysely<ServerDatabase>;
+
+  return { db, rows, sessionCommands };
+}
+
+function makeFakePostgresJobQueueRow(input: Partial<FakePostgresJobQueueRow> = {}): FakePostgresJobQueueRow {
+  const createdAt = new Date('2026-06-05T08:00:00.000Z');
+  return {
+    id: input.id ?? 1,
+    type: input.type ?? 'mail.sync.imap',
+    payload: input.payload ?? {},
+    run_after: input.run_after ?? createdAt,
+    attempts: input.attempts ?? 0,
+    max_attempts: input.max_attempts ?? 5,
+    locked_at: input.locked_at ?? null,
+    locked_by: input.locked_by ?? null,
+    last_error: input.last_error ?? null,
+    workspace_id: input.workspace_id ?? WORKSPACE_A_ID,
+    created_at: input.created_at ?? createdAt,
+    updated_at: input.updated_at ?? createdAt,
+  };
+}
+
+class FakePostgresJobQueueSelect {
+  private requireUnlocked = false;
+
+  private requireLocked = false;
+
+  private requireAttemptsRemaining = false;
+
+  private readyAt: Date | null = null;
+
+  private staleBefore: Date | null = null;
+
+  private rowLimit = Number.POSITIVE_INFINITY;
+
+  constructor(private readonly rows: FakePostgresJobQueueRow[]) {}
+
+  selectAll(): this {
+    return this;
+  }
+
+  select(): this {
+    return this;
+  }
+
+  where(column: string, operator: string, value: unknown): this {
+    if (column === 'locked_at' && operator === 'is') this.requireUnlocked = true;
+    if (column === 'locked_at' && operator === 'is not') this.requireLocked = true;
+    if (column === 'locked_at' && operator === '<') this.staleBefore = value as Date;
+    if (column === 'run_after' && operator === '<=') this.readyAt = value as Date;
+    return this;
+  }
+
+  whereRef(leftColumn: string, operator: string, rightColumn: string): this {
+    if (leftColumn === 'attempts' && operator === '<' && rightColumn === 'max_attempts') {
+      this.requireAttemptsRemaining = true;
+    }
+    return this;
+  }
+
+  orderBy(): this {
+    return this;
+  }
+
+  limit(value: number): this {
+    this.rowLimit = value;
+    return this;
+  }
+
+  async execute(): Promise<readonly FakePostgresJobQueueRow[]> {
+    return this.filteredRows().slice(0, this.rowLimit);
+  }
+
+  async executeTakeFirst(): Promise<FakePostgresJobQueueRow | undefined> {
+    return this.filteredRows()[0];
+  }
+
+  private filteredRows(): FakePostgresJobQueueRow[] {
+    return this.rows
+      .filter((row) => {
+        if (this.requireUnlocked && row.locked_at !== null) return false;
+        if (this.requireLocked && row.locked_at === null) return false;
+        if (this.requireAttemptsRemaining && row.attempts >= row.max_attempts) return false;
+        if (this.readyAt && row.run_after > this.readyAt) return false;
+        if (this.staleBefore && (!row.locked_at || row.locked_at >= this.staleBefore)) return false;
+        return true;
+      })
+      .sort((left, right) => (
+        left.run_after.getTime() - right.run_after.getTime()
+        || left.id - right.id
+      ));
+  }
+}
+
+class FakePostgresJobQueueUpdate {
+  private values: Partial<Pick<FakePostgresJobQueueRow, 'locked_at' | 'locked_by' | 'updated_at'>> = {};
+
+  private idEquals: number | null = null;
+
+  private idsIn: readonly number[] | null = null;
+
+  private requireUnlocked = false;
+
+  constructor(private readonly rows: FakePostgresJobQueueRow[]) {}
+
+  set(values: Partial<Pick<FakePostgresJobQueueRow, 'locked_at' | 'locked_by' | 'updated_at'>>): this {
+    this.values = values;
+    return this;
+  }
+
+  where(column: string, operator: string, value: unknown): this {
+    if (column === 'id' && operator === '=') this.idEquals = Number(value);
+    if (column === 'id' && operator === 'in') this.idsIn = value as readonly number[];
+    if (column === 'locked_at' && operator === 'is') this.requireUnlocked = true;
+    return this;
+  }
+
+  returningAll(): this {
+    return this;
+  }
+
+  async execute(): Promise<readonly FakePostgresJobQueueRow[]> {
+    const rows = this.matchingRows();
+    for (const row of rows) Object.assign(row, this.values);
+    return rows;
+  }
+
+  async executeTakeFirst(): Promise<FakePostgresJobQueueRow | undefined> {
+    return (await this.execute())[0];
+  }
+
+  private matchingRows(): FakePostgresJobQueueRow[] {
+    return this.rows.filter((row) => {
+      if (this.idEquals !== null && row.id !== this.idEquals) return false;
+      if (this.idsIn !== null && !this.idsIn.includes(row.id)) return false;
+      if (this.requireUnlocked && row.locked_at !== null) return false;
+      return true;
+    });
+  }
 }
 
 type PostgresAuthSessionFakeRow = {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Kysely, RawBuilder } from 'kysely';
 
 import {
@@ -11,12 +12,17 @@ import {
   type QueuedJob,
 } from '../jobs';
 import type { JobQueueRow, ServerDatabase } from './schema';
-import { withWorkspaceTransaction, type WorkspaceTransaction } from './workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './workspace-context';
 
 export type PostgresJobQueuePortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   now?: () => Date;
   claimRaceRetries?: number;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
 
 export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions): JobQueuePort {
@@ -28,37 +34,45 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
       return withWorkspaceTransaction(options.db, {
         workspaceId: input.workspaceId,
         role: 'system',
-      }, (db) => enqueueJob(db, input, now()));
+      }, (db) => enqueueJob(db, input, now()), { applySession: options.applyWorkspaceSession });
     },
 
     async claimNext(input) {
       const claimAt = input.now ?? now();
       for (let attempt = 0; attempt < claimRaceRetries; attempt += 1) {
-        const candidate = await options.db
-          .selectFrom('job_queue')
-          .selectAll()
-          .where('locked_at', 'is', null)
-          .where('run_after', '<=', claimAt)
-          .whereRef('attempts', '<', 'max_attempts')
-          .orderBy('run_after', 'asc')
-          .orderBy('id', 'asc')
-          .executeTakeFirst();
+        const claimed = await withCrossWorkspaceJobTransaction(
+          options.db,
+          options.applyWorkspaceSession,
+          async (db) => {
+            const candidate = await db
+              .selectFrom('job_queue')
+              .selectAll()
+              .where('locked_at', 'is', null)
+              .where('run_after', '<=', claimAt)
+              .whereRef('attempts', '<', 'max_attempts')
+              .orderBy('run_after', 'asc')
+              .orderBy('id', 'asc')
+              .executeTakeFirst();
 
-        if (!candidate) return null;
+            if (!candidate) return null;
 
-        const claimed = await options.db
-          .updateTable('job_queue')
-          .set({
-            locked_at: claimAt,
-            locked_by: input.workerId,
-            updated_at: claimAt,
-          })
-          .where('id', '=', candidate.id)
-          .where('locked_at', 'is', null)
-          .returningAll()
-          .executeTakeFirst();
+            const row = await db
+              .updateTable('job_queue')
+              .set({
+                locked_at: claimAt,
+                locked_by: input.workerId,
+                updated_at: claimAt,
+              })
+              .where('id', '=', candidate.id)
+              .where('locked_at', 'is', null)
+              .returningAll()
+              .executeTakeFirst();
 
-        if (claimed) return mapJob(claimed);
+            return row ? mapJob(row) : undefined;
+          },
+        );
+
+        if (claimed !== undefined) return claimed;
       }
       return null;
     },
@@ -71,7 +85,7 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
           .deleteFrom('job_queue')
           .where('id', '=', job.id)
           .where('locked_by', '=', job.lockedBy)
-          .executeTakeFirst());
+          .executeTakeFirst(), { applySession: options.applyWorkspaceSession });
 
       return Number(result.numDeletedRows) > 0;
     },
@@ -80,34 +94,36 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
       return withWorkspaceTransaction(options.db, {
         workspaceId: input.job.workspaceId,
         role: 'system',
-      }, (db) => failJob(db, input, input.now ?? now()));
+      }, (db) => failJob(db, input, input.now ?? now()), { applySession: options.applyWorkspaceSession });
     },
 
     async releaseStaleLocks(input) {
-      const rows = await options.db
-        .selectFrom('job_queue')
-        .select(['id'])
-        .where('locked_at', 'is not', null)
-        .where('locked_at', '<', input.staleBefore)
-        .orderBy('locked_at', 'asc')
-        .limit(input.limit ?? 100)
-        .execute();
+      return withCrossWorkspaceJobTransaction(options.db, options.applyWorkspaceSession, async (db) => {
+        const rows = await db
+          .selectFrom('job_queue')
+          .select(['id'])
+          .where('locked_at', 'is not', null)
+          .where('locked_at', '<', input.staleBefore)
+          .orderBy('locked_at', 'asc')
+          .limit(input.limit ?? 100)
+          .execute();
 
-      const ids = rows.map((row) => row.id);
-      if (ids.length === 0) return [];
+        const ids = rows.map((row) => row.id);
+        if (ids.length === 0) return [];
 
-      const released = await options.db
-        .updateTable('job_queue')
-        .set({
-          locked_at: null,
-          locked_by: null,
-          updated_at: now(),
-        })
-        .where('id', 'in', ids)
-        .returningAll()
-        .execute();
+        const released = await db
+          .updateTable('job_queue')
+          .set({
+            locked_at: null,
+            locked_by: null,
+            updated_at: now(),
+          })
+          .where('id', 'in', ids)
+          .returningAll()
+          .execute();
 
-      return released.map(mapJob);
+        return released.map(mapJob);
+      });
     },
 
     async releaseAccountSyncLocks(input) {
@@ -147,9 +163,22 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
           .execute();
 
         return released.map(mapJob);
-      });
+      }, { applySession: options.applyWorkspaceSession });
     },
   };
+}
+
+async function withCrossWorkspaceJobTransaction<T>(
+  db: Kysely<ServerDatabase>,
+  applyWorkspaceSession: WorkspaceSessionApplier | undefined,
+  run: (trx: WorkspaceTransaction) => Promise<T>,
+): Promise<T> {
+  return withWorkspaceTransaction(
+    db,
+    { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
+    run,
+    { applySession: applyWorkspaceSession },
+  );
 }
 
 async function enqueueJob(

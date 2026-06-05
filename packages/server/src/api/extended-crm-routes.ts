@@ -1388,6 +1388,7 @@ function parseJtlOrderProducts(
 
 function parseActivityLogFilters(req: ApiRequest): ParseResult<{
   activityType?: string;
+  activityTypes?: readonly string[];
   customerId?: number;
   dealId?: number;
   taskId?: number;
@@ -1396,6 +1397,13 @@ function parseActivityLogFilters(req: ApiRequest): ParseResult<{
 }> {
   const activityType = normalizeTextFilter(req.query?.activityType, 100);
   if (activityType === null) return parseError('invalid_activity_type', 'activityType darf maximal 100 Zeichen haben');
+  const timelineFilter = normalizeTextFilter(req.query?.timelineFilter, 100);
+  if (timelineFilter === null) return parseError('invalid_timeline_filter', 'timelineFilter darf maximal 100 Zeichen haben');
+  const activityTypes = timelineFilter === undefined ? undefined : activityTypesForTimelineFilter(timelineFilter);
+  if (activityTypes === null) return parseError('invalid_timeline_filter', 'timelineFilter ist ungueltig');
+  if (activityType !== undefined && activityTypes !== undefined) {
+    return parseError('invalid_activity_filter', 'activityType und timelineFilter duerfen nicht kombiniert werden');
+  }
   const customerId = parseOptionalPositiveInt(req.query?.customerId);
   if (customerId === null) return parseError('invalid_customer_id', 'customerId muss eine positive Ganzzahl sein');
   const dealId = parseOptionalPositiveInt(req.query?.dealId);
@@ -1406,7 +1414,20 @@ function parseActivityLogFilters(req: ApiRequest): ParseResult<{
   if (search === null) return parseError('invalid_search', 'search darf maximal 200 Zeichen haben');
   const includeMetadata = parseOptionalBoolean(req.query?.includeMetadata);
   if (includeMetadata === null) return parseError('invalid_include_metadata', 'includeMetadata muss true oder false sein');
-  return { ok: true, filters: omitUndefined({ activityType, customerId, dealId, taskId, search, includeMetadata: includeMetadata === true }) };
+  return { ok: true, filters: omitUndefined({ activityType, activityTypes, customerId, dealId, taskId, search, includeMetadata: includeMetadata === true }) };
+}
+
+function activityTypesForTimelineFilter(value: string): readonly string[] | null {
+  switch (value) {
+    case 'tasks':
+      return ['task_created', 'task_completed'];
+    case 'deals':
+      return ['stage_change', 'deal_created'];
+    case 'communication':
+      return ['call', 'email', 'note'];
+    default:
+      return null;
+  }
 }
 
 function parseActivityLogMutationBody(

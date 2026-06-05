@@ -141,14 +141,15 @@ The drill creates a temporary database, restores the dump, verifies the core sch
 Inside a PostgreSQL client environment:
 
 ```sh
-DATABASE_URL="postgres://simplecrm:password@postgres:5432/simplecrm" \
+DATABASE_URL="postgres://simplecrm_admin:admin-password@postgres:5432/simplecrm" \
+PG_RESTORE_ROLE="simplecrm_app" \
   sh docker/restore.sh /backups/db-STAMP.dump /backups/attachments-STAMP.tar /backups/audit-archive-STAMP.tar
 ```
 
 `restore.sh` uses:
 
 ```sh
-pg_restore --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
+pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
 ```
 
 ## Known Limits

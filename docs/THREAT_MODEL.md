@@ -68,7 +68,7 @@ Event and audit metadata must avoid plaintext passwords, tokens, PGP private key
 
 ## Operator Controls
 
-- Keep `MASTER_KEY`, `ACCESS_TOKEN_SECRET`, and `PG_PASSWORD` outside source control.
+- Keep `MASTER_KEY`, `ACCESS_TOKEN_SECRET`, `PG_ADMIN_PASSWORD`, and `PG_PASSWORD` outside source control.
 - Restrict host and Docker volume access.
 - Run `doctor` and restore drills regularly.
 - Keep backups encrypted at the storage layer if they leave the server host.

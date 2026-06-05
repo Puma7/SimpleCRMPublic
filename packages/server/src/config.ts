@@ -91,16 +91,16 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   };
 }
 
-function assertNoKnownWeakProductionSecrets(
+export function assertNoKnownWeakProductionSecrets(
   env: ServerEditionEnv,
-  masterKey: string,
-  accessTokenSecret: string,
+  masterKey: string | undefined,
+  accessTokenSecret: string | undefined,
 ): void {
   if (env.NODE_ENV?.trim() !== 'production' || env.CI?.trim() === 'true') return;
-  if (masterKey === CI_SMOKE_MASTER_KEY) {
+  if (masterKey?.trim() === CI_SMOKE_MASTER_KEY) {
     throw new Error('SIMPLECRM_MASTER_KEY uses the known weak CI smoke-test value');
   }
-  if (accessTokenSecret === CI_SMOKE_ACCESS_TOKEN_SECRET) {
+  if (accessTokenSecret?.trim() === CI_SMOKE_ACCESS_TOKEN_SECRET) {
     throw new Error('ACCESS_TOKEN_SECRET uses the known weak CI smoke-test value');
   }
 }

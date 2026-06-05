@@ -6,6 +6,7 @@ import {
   type ServerApiPorts,
 } from './api';
 import {
+  assertNoKnownWeakProductionSecrets,
   parseAuthInvitationMailConfig,
   parsePort,
   parseServerJobWorkerConfig,
@@ -179,6 +180,7 @@ export function createAppServer(
 
 export async function startServer(options: ServerListenOptions = {}): Promise<FastifyInstance> {
   const env = options.env ?? process.env;
+  assertNoKnownWeakProductionSecrets(env, env.SIMPLECRM_MASTER_KEY, env.ACCESS_TOKEN_SECRET);
   const port = options.port ?? parsePort(env.PORT ?? '3000');
   const host = options.host ?? env.HOST ?? '0.0.0.0';
   const accessTokenSigner = options.accessTokenSigner ?? accessTokenSignerFromEnv(env);

@@ -7141,6 +7141,19 @@ describe('renderer transport', () => {
         ],
       }))
       .mockResolvedValueOnce(jsonResponse({
+        data: [{
+          id: 11,
+          customerId: 3,
+          dealId: null,
+          taskId: null,
+          activityType: 'email',
+          title: 'Angebot gesendet',
+          description: null,
+          metadata: { imported: true },
+          createdAt: '2026-06-03T10:00:00.000Z',
+        }],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
         data: { success: true },
       }));
     const transport = createHttpRendererTransport({
@@ -7181,6 +7194,21 @@ describe('renderer transport', () => {
         completed: false,
       },
     ]);
+    await expect(transport.invoke(IPCChannels.FollowUp.GetTimeline, {
+      customerId: 3,
+      filter: 'communication',
+      limit: 10,
+    })).resolves.toEqual([{
+      id: 11,
+      customer_id: 3,
+      deal_id: undefined,
+      task_id: undefined,
+      activity_type: 'email',
+      title: 'Angebot gesendet',
+      description: undefined,
+      metadata: JSON.stringify({ imported: true }),
+      created_at: '2026-06-03T10:00:00.000Z',
+    }]);
     await expect(transport.invoke(IPCChannels.FollowUp.SnoozeTask, {
       taskId: 9,
       snoozedUntil: '2026-06-04T10:00:00.000Z',
@@ -7198,6 +7226,11 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
+      'https://crm.example.com/api/v1/activity-log?limit=10&customerId=3&timelineFilter=communication',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
       'https://crm.example.com/api/v1/follow-up/tasks/9/snooze',
       expect.objectContaining({
         method: 'PATCH',

@@ -53,7 +53,7 @@
     "test:all": "pnpm test:coverage && pnpm test:e2e",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage --selectProjects unit integration",
-    "test:mail": "jest --config jest.mail.config.cjs --coverageThreshold='{}'",
+    "test:mail": "jest --config=jest.mail.config.cjs --coverageThreshold={}",
     "test:mail:coverage": "jest --config jest.mail.config.cjs",
     "test:mail:coverage:update-baseline": "npm run test:mail:coverage && node scripts/check-mail-coverage-ratchet.mjs --update-baseline",
     "test:server-edition": "jest --runTestsByPath tests/unit/server-edition-foundation.test.ts tests/integration/server-edition-foundation.test.ts --runInBand",

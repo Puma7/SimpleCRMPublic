@@ -9,6 +9,8 @@ import {
   createAccessToken,
   createSmokeServer,
   createInMemoryServerEventBus,
+  CI_SMOKE_ACCESS_TOKEN_SECRET,
+  CI_SMOKE_MASTER_KEY,
   startServer,
   type AccessTokenSigner,
   type ActivityLogRecord,
@@ -104,7 +106,13 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('simplecrm/api');
     expect(compose).toContain('required: false');
     expect(compose).toContain('command: ["node", "packages/server/dist/cli/migrate.js"]');
-    expect(compose).toContain('DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm');
+    expect(compose).toContain('DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm');
+    expect(compose).toContain('POSTGRES_USER: simplecrm_admin');
+    expect(compose).toContain('POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD}');
+    expect(compose).toContain('PG_APP_USER: simplecrm_app');
+    expect(compose).toContain('PG_APP_PASSWORD: ${PG_PASSWORD}');
+    expect(compose).toContain('./postgres-init:/docker-entrypoint-initdb.d:ro');
+    expect(compose).toContain('pg_isready -U simplecrm_app -d simplecrm');
     expect(compose).toContain('ACCESS_TOKEN_SECRET: ${ACCESS_TOKEN_SECRET}');
     expect(compose).toContain('AUTH_INVITE_FROM: ${AUTH_INVITE_FROM:-}');
     expect(compose).toContain('AUTH_INVITE_SMTP_HOST: ${AUTH_INVITE_SMTP_HOST:-}');
@@ -128,7 +136,8 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('BACKUP_RETENTION_WEEKLY: ${BACKUP_RETENTION_WEEKLY:-4}');
     expect(compose).toContain('BACKUP_RETENTION_MONTHLY: ${BACKUP_RETENTION_MONTHLY:-12}');
     expect(compose).toContain('./backup-retention.sh:/app/backup-retention.sh:ro');
-    expect(compose).toContain('DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm');
+    expect(compose).toContain('DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm');
+    expect(compose).toContain('PG_RESTORE_ROLE: simplecrm_app');
     expect(compose).toContain('audit_archives:/app/data/audit-archive');
     expect(compose).toContain('caddy_logs:/var/log');
     expect(compose).toContain('audit_archives:/data/audit-archive:ro');
@@ -164,6 +173,7 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('pgadmin_data:');
     expect(ci).toContain('PUBLIC_DOMAIN: localhost');
     expect(ci).toContain('CADDY_HTTPS_PORT: "8443"');
+    expect(ci).toContain('PG_ADMIN_PASSWORD: ci-smoke-admin-password');
     expect(ci).toContain('up -d --build postgres migrate api caddy');
     expect(ci).toContain('https://localhost:${CADDY_HTTPS_PORT}/health');
     expect(ci).toContain('--profile backup run --rm backup');
@@ -180,6 +190,7 @@ describe('server edition repository boundaries', () => {
     const restore = readFileSync(join(dockerRoot, 'restore.sh'), 'utf8');
     const restoreCompose = readFileSync(join(dockerRoot, 'restore-compose.sh'), 'utf8');
     const restoreDrill = readFileSync(join(dockerRoot, 'restore-drill.sh'), 'utf8');
+    const postgresInit = readFileSync(join(dockerRoot, 'postgres-init', '001-create-app-role.sh'), 'utf8');
     const doctor = readFileSync(join(dockerRoot, 'doctor.sh'), 'utf8');
     const caddyfile = readFileSync(join(dockerRoot, 'Caddyfile'), 'utf8');
     const envExample = readFileSync(join(dockerRoot, '.env.example'), 'utf8');
@@ -214,7 +225,8 @@ describe('server edition repository boundaries', () => {
     expect(restore).toContain('verify_backup_file "$DUMP_PATH" "$CHECKSUM_MANIFEST"');
     expect(restore).toContain('verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"');
     expect(restore).toContain('checksum mismatch for $file_name');
-    expect(restore).toContain('pg_restore --clean --if-exists --no-owner');
+    expect(restore).toContain('PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"');
+    expect(restore).toContain('pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner');
     expect(restore).toContain('tar -C "$ATTACHMENTS_DIR" -xf "$ATTACHMENTS_ARCHIVE"');
     expect(restore).toContain('tar -C "$AUDIT_ARCHIVE_DIR" -xf "$AUDIT_ARCHIVE"');
     expect(restoreCompose).toContain('compose stop caddy api');
@@ -226,10 +238,13 @@ describe('server edition repository boundaries', () => {
     expect(restoreDrill).toContain('verify_backup_file "$DUMP_PATH" "$CHECKSUM_MANIFEST"');
     expect(restoreDrill).toContain('verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"');
     expect(restoreDrill).toContain('tar -tf "$AUDIT_ARCHIVE"');
-    expect(restoreDrill).toContain('CREATE DATABASE');
-    expect(restoreDrill).toContain('pg_restore --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
+    expect(restoreDrill).toContain('CREATE DATABASE \\"$DRILL_DB_SQL\\" OWNER \\"$PG_APP_USER_SQL\\"');
+    expect(restoreDrill).toContain('pg_restore --role="$PG_RESTORE_ROLE" --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
     expect(restoreDrill).toContain('DROP DATABASE IF EXISTS');
     expect(restoreDrill).toContain('SELECT count(*) FROM workspaces');
+    expect(postgresInit).toContain('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE');
+    expect(postgresInit).toContain('ALTER DATABASE %I OWNER TO %I');
+    expect(postgresInit).toContain('CREATE EXTENSION IF NOT EXISTS pgcrypto');
     expect(doctor).toContain('pg_isready -d "$DATABASE_URL"');
     expect(doctor).toContain("select 'applied_migrations=' || count(*) from simplecrm_schema_migrations");
     expect(doctor).toContain("select 'latest_migration=' || coalesce(max(id), 'none') from simplecrm_schema_migrations");
@@ -251,6 +266,8 @@ describe('server edition repository boundaries', () => {
     expect(envExample).toContain('PUBLIC_DOMAIN=localhost');
     expect(envExample).toContain('CADDY_HTTP_PORT=80');
     expect(envExample).toContain('CADDY_HTTPS_PORT=443');
+    expect(envExample).toContain('PG_ADMIN_PASSWORD=CHANGE_ME_postgres_admin_password');
+    expect(envExample).toContain('PG_PASSWORD=CHANGE_ME_postgres_app_password');
     expect(envExample).toContain('BACKUP_RETENTION_DAILY=7');
     expect(envExample).toContain('BACKUP_RETENTION_WEEKLY=4');
     expect(envExample).toContain('BACKUP_RETENTION_MONTHLY=12');
@@ -2023,6 +2040,19 @@ describe('server edition repository boundaries', () => {
   });
 
   test('startServer fails closed for incomplete production configuration', async () => {
+    await expect(startServer({
+      host: '127.0.0.1',
+      port: 0,
+      logger: false,
+      databaseUrl: 'postgres://simplecrm@postgres/simplecrm',
+      env: {
+        NODE_ENV: 'production',
+        SIMPLECRM_MASTER_KEY: CI_SMOKE_MASTER_KEY,
+        ACCESS_TOKEN_SECRET: CI_SMOKE_ACCESS_TOKEN_SECRET,
+        PUBLIC_BASE_URL: 'https://crm.example.com',
+      },
+    })).rejects.toThrow('known weak CI smoke-test value');
+
     await expect(startServer({
       host: '127.0.0.1',
       port: 0,

@@ -26,7 +26,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
       SIMPLECRM_MASTER_KEY: ${MASTER_KEY}
       ACCESS_TOKEN_SECRET: ${ACCESS_TOKEN_SECRET}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
@@ -64,12 +64,15 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: simplecrm
-      POSTGRES_USER: simplecrm
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_USER: simplecrm_admin
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD}
+      PG_APP_USER: simplecrm_app
+      PG_APP_PASSWORD: ${PG_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U simplecrm -d simplecrm"]
+      test: ["CMD-SHELL", "pg_isready -U simplecrm_app -d simplecrm"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -85,7 +88,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,7 +101,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       ATTACHMENTS_DIR: /data/attachments
       AUDIT_ARCHIVE_DIR: /data/audit-archive
       BACKUP_RETENTION_DAILY: ${BACKUP_RETENTION_DAILY:-7}
@@ -125,7 +128,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       ATTACHMENTS_DIR: /data/attachments
       AUDIT_ARCHIVE_DIR: /data/audit-archive
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
@@ -152,7 +155,8 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      PG_RESTORE_ROLE: simplecrm_app
       ATTACHMENTS_DIR: /data/attachments
       AUDIT_ARCHIVE_DIR: /data/audit-archive
       RESTORE_DUMP_PATH: ${RESTORE_DUMP_PATH:-}
@@ -203,7 +207,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       BACKUP_DIR: /backups
       DOCTOR_REQUIRE_BACKUP: ${DOCTOR_REQUIRE_BACKUP:-false}
     command: ["sh", "/app/doctor.sh"]
@@ -221,7 +225,9 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgres://simplecrm:${PG_PASSWORD}@postgres:5432/simplecrm
+      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      PG_APP_USER: simplecrm_app
+      PG_RESTORE_ROLE: simplecrm_app
       RESTORE_DRILL_DB_NAME: ${RESTORE_DRILL_DB_NAME:-}
       RESTORE_DRILL_DUMP_PATH: ${RESTORE_DRILL_DUMP_PATH:-}
       RESTORE_DRILL_ATTACHMENTS_PATH: ${RESTORE_DRILL_ATTACHMENTS_PATH:-}

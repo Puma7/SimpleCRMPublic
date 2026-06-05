@@ -26,7 +26,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Set these in `docker/.env`:
 
-- `PG_PASSWORD`: strong PostgreSQL password.
+- `PG_ADMIN_PASSWORD`: strong PostgreSQL admin password used only by bootstrap and maintenance profiles.
+- `PG_PASSWORD`: strong PostgreSQL password for the non-superuser `simplecrm_app` role used by API and migrations.
 - `MASTER_KEY`: Base64 value that decodes to exactly 32 bytes.
 - `ACCESS_TOKEN_SECRET`: Base64 value that decodes to at least 32 bytes.
 - `PUBLIC_DOMAIN`: domain for Caddy, for example `crm.example.com`.
@@ -114,7 +115,7 @@ Node CLI doctor after building packages:
 
 ```sh
 npm run build:packages
-$env:DATABASE_URL='postgres://simplecrm:password@localhost:5432/simplecrm'
+$env:DATABASE_URL='postgres://simplecrm_app:password@localhost:5432/simplecrm'
 npm run doctor:server -- --backup-dir C:\path\to\backups
 ```
 

@@ -1119,6 +1119,7 @@ export type ActivityLogApiPort = {
   list(input: {
     workspaceId: string;
     activityType?: string;
+    activityTypes?: readonly string[];
     customerId?: number;
     dealId?: number;
     taskId?: number;
