@@ -504,6 +504,7 @@ export type CustomerRecord = {
 export type CustomerListResult = {
   items: readonly CustomerRecord[];
   nextCursor: number | null;
+  total: number;
 };
 
 export type CustomerMutationInput = {

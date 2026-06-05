@@ -50,6 +50,7 @@ export interface CustomerPageRequest {
 export interface CustomerPageResult {
   customers: Customer[];
   total: number;
+  hasMore?: boolean;
 }
 
 export const getCustomersPage = async ({
@@ -67,12 +68,13 @@ export const getCustomersPage = async ({
       offset,
       query,
       status,
-    }) as { items?: any[]; total?: number };
+    }) as { items?: any[]; total?: number; hasMore?: boolean };
 
     const items = Array.isArray(response?.items) ? response.items : [];
     return {
       customers: items.map(mapDbCustomerToApp),
       total: Number(response?.total ?? items.length),
+      hasMore: response?.hasMore === true,
     };
   } catch (error) {
     console.error("Error invoking paginated 'db:get-customers':", error);

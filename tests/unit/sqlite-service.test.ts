@@ -77,6 +77,7 @@ import {
   deleteCustomField,
   getCustomFieldValuesForCustomer,
   deleteCustomFieldValue,
+  searchProducts,
 } from '../../electron/sqlite-service';
 
 describe('sqlite-service', () => {
@@ -293,6 +294,19 @@ describe('sqlite-service', () => {
 
       const result = getCustomFieldValuesForCustomer(10);
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('searchProducts', () => {
+    test('honors requested limit up to the server maximum', () => {
+      const products = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, name: `Product ${index + 1}` }));
+      const stmt = makeStmt(products);
+      mockDb.prepare.mockReturnValue(stmt);
+
+      const results = searchProducts('', 200);
+
+      expect(stmt.all).toHaveBeenCalledWith({ limit: 200 });
+      expect(results).toHaveLength(200);
     });
   });
 

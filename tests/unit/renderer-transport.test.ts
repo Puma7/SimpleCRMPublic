@@ -478,6 +478,90 @@ describe('renderer transport', () => {
     ]);
   });
 
+  test('maps paginated customer IPC calls to server totals from API response', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        items: [
+          {
+            id: 1,
+            sourceSqliteId: 1,
+            customerNumber: 'K-1',
+            name: 'Meyer',
+            email: 'meyer@example.com',
+            status: 'Lead',
+            updatedAt: '2026-06-03T10:00:00.000Z',
+          },
+        ],
+        nextCursor: 1,
+        total: 650000,
+      },
+    }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+      getAccessToken: () => 'token-1',
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      includeCustomFields: false,
+      limit: 50,
+      offset: 0,
+      query: '',
+      status: null,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/customers?limit=50',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(result).toEqual({
+      items: [expect.objectContaining({ id: 1, name: 'Meyer' })],
+      total: 650000,
+    });
+  });
+
+  test('marks paginated customer responses as hasMore when API total is missing', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        items: [
+          {
+            id: 1,
+            sourceSqliteId: 1,
+            customerNumber: 'K-1',
+            name: 'Meyer',
+            email: 'meyer@example.com',
+            status: 'Lead',
+            updatedAt: '2026-06-03T10:00:00.000Z',
+          },
+        ],
+        nextCursor: 1,
+      },
+    }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+      getAccessToken: () => 'token-1',
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      includeCustomFields: false,
+      limit: 50,
+      offset: 0,
+      query: '',
+      status: null,
+    });
+
+    expect(result).toEqual({
+      items: [expect.objectContaining({ id: 1, name: 'Meyer' })],
+      total: 1,
+      hasMore: true,
+    });
+  });
+
   test('maps customer updates with custom fields to server HTTP routes', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

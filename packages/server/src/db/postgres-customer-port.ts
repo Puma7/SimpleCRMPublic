@@ -46,20 +46,14 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          let query = trx
-            .selectFrom('customers')
-            .select(customerSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
-
-          if (input.cursor !== undefined) {
-            query = query.where('id', '>', input.cursor);
-          }
           const search = input.search?.trim();
+          let filteredQuery = trx
+            .selectFrom('customers')
+            .where('workspace_id', '=', input.workspaceId);
+
           if (search) {
             const pattern = `%${search}%`;
-            query = query.where((eb) => eb.or([
+            filteredQuery = filteredQuery.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('first_name', 'ilike', pattern),
               eb('company', 'ilike', pattern),
@@ -67,11 +61,26 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
             ]));
           }
 
-          const rows = await query.execute();
+          let listQuery = filteredQuery
+            .select(customerSelectColumns)
+            .orderBy('id', 'asc')
+            .limit(limit + 1);
+
+          if (input.cursor !== undefined) {
+            listQuery = listQuery.where('id', '>', input.cursor);
+          }
+
+          const [countRow, rows] = await Promise.all([
+            filteredQuery
+              .select((eb) => eb.fn.countAll<number>().as('count'))
+              .executeTakeFirst(),
+            listQuery.execute(),
+          ]);
           const pageRows = rows.slice(0, limit);
           return {
             items: pageRows.map(mapCustomerRow),
             nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+            total: Number(countRow?.count ?? 0),
           };
         },
         { applySession: options.applyWorkspaceSession },

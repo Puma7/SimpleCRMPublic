@@ -208,6 +208,7 @@ export default function CustomersPage() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [serverEventRefresh, setServerEventRefresh] = useState(0)
   const [totalCustomers, setTotalCustomers] = useState(0)
+  const [hasMoreCustomers, setHasMoreCustomers] = useState(false)
   const navigate = useNavigate()
   const serverClientMode = getRendererTransport().kind === "http"
 
@@ -288,7 +289,7 @@ export default function CustomersPage() {
   const loadCustomers = useCallback(async () => {
     setIsLoading(true)
     try {
-      const { customers: fetchedCustomers, total } = await getCustomersPage({
+      const { customers: fetchedCustomers, total, hasMore } = await getCustomersPage({
         limit: pagination.pageSize,
         offset: pagination.pageIndex * pagination.pageSize,
         query: debouncedSearch,
@@ -298,11 +299,13 @@ export default function CustomersPage() {
 
       setCustomers(fetchedCustomers)
       setTotalCustomers(total)
+      setHasMoreCustomers(hasMore === true)
     } catch (error) {
       console.error("Failed to fetch customers:", error)
       toast.error("Kunden konnten nicht geladen werden.")
       setCustomers([])
       setTotalCustomers(0)
+      setHasMoreCustomers(false)
     } finally {
       setIsLoading(false)
     }
@@ -326,7 +329,9 @@ export default function CustomersPage() {
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
     manualPagination: true,
-    rowCount: totalCustomers,
+    rowCount: hasMoreCustomers
+      ? pagination.pageIndex * pagination.pageSize + customers.length + 1
+      : totalCustomers,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -508,7 +513,7 @@ export default function CustomersPage() {
             <CardDescription>
               {isLoading
                 ? "Lade Kunden..."
-                : ` ${customers.length} von ${totalCustomers.toLocaleString("de-DE")} Kunden angezeigt${isGrouped && selectedGrouping ? ` (aktuelle Seite gruppiert nach: ${availableGroupingFields.find(f => f.value === selectedGrouping)?.label || selectedGrouping})` : ''}.`}
+                : ` ${customers.length} von ${hasMoreCustomers ? `${totalCustomers.toLocaleString("de-DE")}+` : totalCustomers.toLocaleString("de-DE")} Kunden angezeigt${isGrouped && selectedGrouping ? ` (aktuelle Seite gruppiert nach: ${availableGroupingFields.find(f => f.value === selectedGrouping)?.label || selectedGrouping})` : ''}.`}
             </CardDescription>
           </CardHeader>
           <CardContent>

@@ -12837,6 +12837,7 @@ describe('server edition foundation', () => {
           return {
             items: [makeCustomerRecord(7)],
             nextCursor: 7,
+            total: 42,
           };
         },
         async get(input) {

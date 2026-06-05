@@ -1824,7 +1824,7 @@ export function getProductById(id: number): Product | null {
 
 export function searchProducts(query: string = '', limit: number = 20): Product[] {
     const startTime = Date.now();
-    const safeLimit = normalizeListLimit(limit, 20, 100);
+    const safeLimit = normalizeListLimit(limit, 20, CUSTOMER_LIST_MAX_LIMIT);
 
     const trimmedQuery = query.trim();
     const lowerQuery = trimmedQuery.toLowerCase();

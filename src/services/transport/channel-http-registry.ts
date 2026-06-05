@@ -59,6 +59,7 @@ type AuthInvitationDelivery = {
 type ListResult<T> = {
   items: T[]
   nextCursor?: number | null
+  total?: number | null
 }
 
 type CustomerRecord = {
@@ -958,9 +959,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         const items = includeCustomFields
           ? customers.map((customer) => ({ ...customer, customFields: {} }))
           : customers
+        const hasMore = page.nextCursor != null
+        const knownTotal = typeof page.total === "number" ? page.total : undefined
         return {
           items,
-          total: page.nextCursor == null ? offset + items.length : offset + items.length + limit,
+          total: knownTotal ?? offset + items.length,
+          ...(knownTotal == null && hasMore ? { hasMore: true } : {}),
         }
       }
 
@@ -3510,7 +3514,8 @@ function listResult<T>(body: unknown): ListResult<T> {
   if (Array.isArray(data)) return { items: data, nextCursor: null }
   if (isRecord(data) && Array.isArray(data.items)) {
     const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : null
-    return { items: data.items as T[], nextCursor }
+    const total = typeof data.total === "number" ? data.total : undefined
+    return { items: data.items as T[], nextCursor, total }
   }
   return { items: [], nextCursor: null }
 }
