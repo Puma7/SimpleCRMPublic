@@ -2532,11 +2532,13 @@ const messagePriorityRankSql = kyselySql<number>`CASE
   WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:niedrig') THEN 2
   ELSE 3
 END`;
+const messageSortDateSql = kyselySql<Date | null>`coalesce(email_messages.date_received, email_messages.created_at)`;
+const cursorMessageSortDateSql = kyselySql<Date | null>`coalesce(cursor_message.date_received, cursor_message.created_at)`;
 
 type PriorityCursorAnchor = Readonly<{
   id: number;
   rank: number;
-  sortDate: Date;
+  sortDate: Date | null;
 }>;
 
 async function fetchPriorityCursorAnchor(
@@ -2548,7 +2550,7 @@ async function fetchPriorityCursorAnchor(
     .selectFrom('email_messages')
     .select([
       'id',
-      kyselySql<Date>`coalesce(date_received, created_at)`.as('sort_date'),
+      kyselySql<Date | null>`coalesce(date_received, created_at)`.as('sort_date'),
       messagePriorityRankSql.as('priority_rank'),
     ])
     .where('workspace_id', '=', workspaceId)
@@ -2594,11 +2596,19 @@ function applyMessageCursor(
       WHERE cursor_message.workspace_id = ${workspaceId}::uuid
         AND cursor_message.id = ${cursor}
         AND (
-          coalesce(email_messages.date_received, email_messages.created_at)
-            > coalesce(cursor_message.date_received, cursor_message.created_at)
+          (${cursorMessageSortDateSql} IS NOT NULL AND ${messageSortDateSql} IS NULL)
           OR (
-            coalesce(email_messages.date_received, email_messages.created_at)
-              = coalesce(cursor_message.date_received, cursor_message.created_at)
+            ${messageSortDateSql} IS NULL
+            AND ${cursorMessageSortDateSql} IS NULL
+            AND email_messages.id > cursor_message.id
+          )
+          OR (
+            ${cursorMessageSortDateSql} IS NOT NULL
+            AND ${messageSortDateSql} > ${cursorMessageSortDateSql}
+          )
+          OR (
+            ${cursorMessageSortDateSql} IS NOT NULL
+            AND ${messageSortDateSql} = ${cursorMessageSortDateSql}
             AND email_messages.id > cursor_message.id
           )
         )
@@ -2606,6 +2616,7 @@ function applyMessageCursor(
   }
   if (sort === 'priority') {
     if (!priorityCursor) return query.where(kyselySql<boolean>`false`);
+    const priorityCursorSortDate = kyselySql<Date | null>`${priorityCursor.sortDate}::timestamptz`;
     return query.where(kyselySql<boolean>`(
       ${messagePriorityRankSql}
       > ${priorityCursor.rank}
@@ -2613,11 +2624,19 @@ function applyMessageCursor(
         ${messagePriorityRankSql}
         = ${priorityCursor.rank}
         AND (
-          coalesce(email_messages.date_received, email_messages.created_at)
-            < ${priorityCursor.sortDate}
+          (${priorityCursorSortDate} IS NULL AND ${messageSortDateSql} IS NOT NULL)
           OR (
-            coalesce(email_messages.date_received, email_messages.created_at)
-              = ${priorityCursor.sortDate}
+            ${messageSortDateSql} IS NULL
+            AND ${priorityCursorSortDate} IS NULL
+            AND email_messages.id < ${priorityCursor.id}
+          )
+          OR (
+            ${priorityCursorSortDate} IS NOT NULL
+            AND ${messageSortDateSql} < ${priorityCursorSortDate}
+          )
+          OR (
+            ${priorityCursorSortDate} IS NOT NULL
+            AND ${messageSortDateSql} = ${priorityCursorSortDate}
             AND email_messages.id < ${priorityCursor.id}
           )
         )
@@ -2630,11 +2649,19 @@ function applyMessageCursor(
     WHERE cursor_message.workspace_id = ${workspaceId}::uuid
       AND cursor_message.id = ${cursor}
       AND (
-        coalesce(email_messages.date_received, email_messages.created_at)
-          < coalesce(cursor_message.date_received, cursor_message.created_at)
+        (${cursorMessageSortDateSql} IS NULL AND ${messageSortDateSql} IS NOT NULL)
         OR (
-          coalesce(email_messages.date_received, email_messages.created_at)
-            = coalesce(cursor_message.date_received, cursor_message.created_at)
+          ${messageSortDateSql} IS NULL
+          AND ${cursorMessageSortDateSql} IS NULL
+          AND email_messages.id < cursor_message.id
+        )
+        OR (
+          ${cursorMessageSortDateSql} IS NOT NULL
+          AND ${messageSortDateSql} < ${cursorMessageSortDateSql}
+        )
+        OR (
+          ${cursorMessageSortDateSql} IS NOT NULL
+          AND ${messageSortDateSql} = ${cursorMessageSortDateSql}
           AND email_messages.id < cursor_message.id
         )
       )

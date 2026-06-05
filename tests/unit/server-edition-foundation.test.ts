@@ -11890,7 +11890,11 @@ describe('server edition foundation', () => {
     expect(source).toContain("if (sort === 'date_asc')");
     expect(source).toContain("if (sort === 'priority')");
     expect(source).toContain('messagePriorityRankSql');
+    expect(source).toContain('cursorMessageSortDateSql');
     expect(source).toContain('coalesce(email_messages.date_received, email_messages.created_at)');
+    expect(source).toContain('sortDate: Date | null');
+    expect(source).toContain('IS NULL');
+    expect(source).toContain('IS NOT NULL');
     expect(source).toContain('email_messages.id > cursor_message.id');
     expect(source).toContain('email_messages.id < cursor_message.id');
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
