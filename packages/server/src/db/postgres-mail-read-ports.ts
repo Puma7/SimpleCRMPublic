@@ -685,7 +685,6 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .where('workspace_id', '=', input.workspaceId)
             .limit(limit + 1);
 
-          if (input.cursor !== undefined) query = query.where('id', '<', input.cursor);
           if (input.offset !== undefined) query = query.offset(input.offset);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
           if (input.folderPath !== undefined) {
@@ -707,6 +706,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           if (search) {
             query = applyMessageSearchFilter(query, search, searchMode ?? 'like');
           }
+          query = applyMessageCursor(query, input.workspaceId, input.cursor, input.sort, input.view);
           query = applyMessageListOrder(query, input.sort, input.view);
 
           const rows = await query.execute();
@@ -2513,6 +2513,111 @@ function applyMessageListFilter(
   if (filter === 'attachment') return query.where('has_attachments', '=', true);
   if (filter === 'customer') return query.where('customer_id', 'is not', null);
   return query.where(kyselySql<boolean>`(outbound_hold = true OR (ticket_code IS NOT NULL AND ticket_code <> ''))`);
+}
+
+function applyMessageCursor(
+  query: any,
+  workspaceId: string,
+  cursor: number | undefined,
+  sort: Parameters<EmailMessageApiPort['list']>[0]['sort'],
+  view: Parameters<EmailMessageApiPort['list']>[0]['view'],
+): any {
+  if (cursor === undefined) return query;
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  if (view === 'snoozed') {
+    return query.where(kyselySql<boolean>`EXISTS (
+      SELECT 1
+      FROM email_messages cursor_message
+      WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+        AND cursor_message.id = ${cursor}
+        AND (
+          email_messages.snoozed_until > cursor_message.snoozed_until
+          OR (
+            email_messages.snoozed_until = cursor_message.snoozed_until
+            AND email_messages.id < cursor_message.id
+          )
+        )
+    )`);
+  }
+  if (sort === 'date_asc') {
+    return query.where(kyselySql<boolean>`EXISTS (
+      SELECT 1
+      FROM email_messages cursor_message
+      WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+        AND cursor_message.id = ${cursor}
+        AND (
+          coalesce(email_messages.date_received, email_messages.created_at)
+            > coalesce(cursor_message.date_received, cursor_message.created_at)
+          OR (
+            coalesce(email_messages.date_received, email_messages.created_at)
+              = coalesce(cursor_message.date_received, cursor_message.created_at)
+            AND email_messages.id > cursor_message.id
+          )
+        )
+    )`);
+  }
+  if (sort === 'priority') {
+    return query.where(kyselySql<boolean>`EXISTS (
+      SELECT 1
+      FROM email_messages cursor_message
+      WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+        AND cursor_message.id = ${cursor}
+        AND (
+          CASE
+            WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:hoch') THEN 0
+            WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:mittel') THEN 1
+            WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:niedrig') THEN 2
+            ELSE 3
+          END
+          >
+          CASE
+            WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = cursor_message.id AND t.tag = 'priority:hoch') THEN 0
+            WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = cursor_message.id AND t.tag = 'priority:mittel') THEN 1
+            WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = cursor_message.id AND t.tag = 'priority:niedrig') THEN 2
+            ELSE 3
+          END
+          OR (
+            CASE
+              WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:hoch') THEN 0
+              WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:mittel') THEN 1
+              WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:niedrig') THEN 2
+              ELSE 3
+            END
+            =
+            CASE
+              WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = cursor_message.id AND t.tag = 'priority:hoch') THEN 0
+              WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = cursor_message.id AND t.tag = 'priority:mittel') THEN 1
+              WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = cursor_message.id AND t.tag = 'priority:niedrig') THEN 2
+              ELSE 3
+            END
+            AND (
+              coalesce(email_messages.date_received, email_messages.created_at)
+                < coalesce(cursor_message.date_received, cursor_message.created_at)
+              OR (
+                coalesce(email_messages.date_received, email_messages.created_at)
+                  = coalesce(cursor_message.date_received, cursor_message.created_at)
+                AND email_messages.id < cursor_message.id
+              )
+            )
+          )
+        )
+    )`);
+  }
+  return query.where(kyselySql<boolean>`EXISTS (
+    SELECT 1
+    FROM email_messages cursor_message
+    WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+      AND cursor_message.id = ${cursor}
+      AND (
+        coalesce(email_messages.date_received, email_messages.created_at)
+          < coalesce(cursor_message.date_received, cursor_message.created_at)
+        OR (
+          coalesce(email_messages.date_received, email_messages.created_at)
+            = coalesce(cursor_message.date_received, cursor_message.created_at)
+          AND email_messages.id < cursor_message.id
+        )
+      )
+  )`);
 }
 
 function applyMessageDoneFilter(

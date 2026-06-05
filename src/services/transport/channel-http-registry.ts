@@ -4267,7 +4267,8 @@ function mapEmailOAuthFinishPayload(value: unknown): Record<string, unknown> {
 
 function mapEmailAttachmentRecord(record: EmailAttachmentRecord) {
   return {
-    id: record.sourceSqliteId ?? record.id,
+    id: record.id,
+    source_sqlite_id: record.sourceSqliteId ?? undefined,
     filename_display: record.filename ?? "",
     size_bytes: record.sizeBytes ?? 0,
     content_type: record.contentType ?? null,

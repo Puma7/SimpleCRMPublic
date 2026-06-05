@@ -11876,6 +11876,21 @@ describe('server edition foundation', () => {
     expect(source).toContain("query.orderBy('id', 'asc')");
   });
 
+  test('postgres mail message list uses sort-aligned composite cursors', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+
+    expect(source).toContain('query = applyMessageCursor(query, input.workspaceId, input.cursor, input.sort, input.view);');
+    expect(source).toContain("if (view === 'snoozed')");
+    expect(source).toContain("if (sort === 'date_asc')");
+    expect(source).toContain("if (sort === 'priority')");
+    expect(source).toContain('coalesce(email_messages.date_received, email_messages.created_at)');
+    expect(source).toContain('email_messages.id > cursor_message.id');
+    expect(source).toContain('email_messages.id < cursor_message.id');
+    expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
+    expect(source.indexOf('query = applyMessageCursor(query, input.workspaceId, input.cursor, input.sort, input.view);'))
+      .toBeLessThan(source.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
+  });
+
   test('server auth user admin routes list, create, update, and protect owners without secret leakage', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const ports = makeServerApiPorts({ auditEvents });
