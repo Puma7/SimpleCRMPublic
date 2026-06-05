@@ -12931,6 +12931,14 @@ describe('server edition foundation', () => {
     });
     expect(ambiguousPagination.status).toBe(400);
 
+    const cursorWithSort = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customers',
+      query: { cursor: '1', sortBy: 'fullName' },
+      principal,
+    });
+    expect(cursorWithSort.status).toBe(400);
+
     const invalidId = await api.handle({
       method: 'GET',
       path: '/api/v1/customers/nope',

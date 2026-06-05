@@ -318,6 +318,7 @@ export default function CustomersPage() {
   const table = useReactTable({
     data: customers,
     columns,
+    getRowId: (row) => String(row.id),
     state: {
       sorting,
       columnVisibility,

@@ -74,6 +74,9 @@ export async function handleCustomerRoute(
 
     const sortDirection = parseSortDirection(req.query?.sortDirection);
     if (sortDirection === null) return error(400, 'invalid_sort_direction', 'sortDirection muss asc oder desc sein');
+    if (cursor !== undefined && sortBy !== undefined) {
+      return error(400, 'ambiguous_sort_pagination', 'sortierte Kundenlisten muessen offset statt cursor verwenden');
+    }
 
     if (!ports.customers) return error(503, 'customers_unavailable', 'Customer API nicht konfiguriert');
 
