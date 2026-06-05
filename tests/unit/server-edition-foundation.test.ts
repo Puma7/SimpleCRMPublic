@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { createHash } from 'crypto';
 import net from 'net';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { PassThrough } from 'stream';
 
 import type { Kysely } from 'kysely';
@@ -9678,8 +9678,14 @@ describe('server edition foundation', () => {
   test('jsonl audit retention archive port writes deterministic workspace-scoped exports', async () => {
     const mkdirCalls: unknown[] = [];
     const writes: Array<{ path: string; data: string }> = [];
+    const auditArchiveRoot = 'C:\\audit-archive';
+    const expectedWorkspaceDir = join(resolve(auditArchiveRoot), WORKSPACE_A_ID);
+    const expectedArchivePath = join(
+      expectedWorkspaceDir,
+      'audit-retention_2026-05-04T12_00_00.000Z_ids-7-8_count-2.jsonl',
+    );
     const port = createJsonlAuditRetentionArchivePort({
-      rootDir: 'C:\\audit-archive',
+      rootDir: auditArchiveRoot,
       mkdir: async (path, options) => {
         mkdirCalls.push({ path, options });
       },
@@ -9704,13 +9710,11 @@ describe('server edition foundation', () => {
       count: 2,
     })).toBe('audit-retention_2026-05-04T12_00_00.000Z_ids-7-8_count-2.jsonl');
     expect(mkdirCalls).toEqual([{
-      path: `C:\\audit-archive\\${WORKSPACE_A_ID}`,
+      path: expectedWorkspaceDir,
       options: { recursive: true },
     }]);
     expect(writes).toHaveLength(1);
-    expect(writes[0].path).toBe(
-      `C:\\audit-archive\\${WORKSPACE_A_ID}\\audit-retention_2026-05-04T12_00_00.000Z_ids-7-8_count-2.jsonl`,
-    );
+    expect(writes[0].path).toBe(expectedArchivePath);
     const lines = writes[0].data.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(lines.map((line) => line.id)).toEqual([7, 8]);
     expect(lines[0]).toMatchObject({
