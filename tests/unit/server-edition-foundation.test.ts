@@ -31159,6 +31159,14 @@ describe('server edition foundation', () => {
       entityType: 'customer',
       payload: { id: 44, sourceSqliteId: -44 },
     }));
+    await port.publish(makeServerEventForTest({
+      workspaceId: WORKSPACE_A_ID,
+      entityId: '45',
+      actorUserId: USER_A_ID,
+      type: 'deal_product.updated',
+      entityType: 'deal_product',
+      payload: { id: 45, dealId: 41, productId: 8 },
+    }));
 
     const replay = await port.replay({ workspaceId: WORKSPACE_A_ID, afterSequence: 1 });
 
@@ -31167,34 +31175,41 @@ describe('server edition foundation', () => {
       [2, WORKSPACE_B_ID, 'email_message', '42'],
       [3, WORKSPACE_A_ID, 'email_message', '43'],
       [4, WORKSPACE_A_ID, 'customer', '44'],
+      [5, WORKSPACE_A_ID, 'deal_product', '45'],
     ]);
     expect(receivedByOtherInstance.map((event) => [event.sequence, event.workspaceId, event.entityType, event.entityId])).toEqual([
       [1, WORKSPACE_A_ID, 'email_message', '41'],
       [2, WORKSPACE_B_ID, 'email_message', '42'],
       [3, WORKSPACE_A_ID, 'email_message', '43'],
       [4, WORKSPACE_A_ID, 'customer', '44'],
+      [5, WORKSPACE_A_ID, 'deal_product', '45'],
     ]);
     expect(replay.map((event) => [event.sequence, event.workspaceId, event.entityType, event.entityId])).toEqual([
       [3, WORKSPACE_A_ID, 'email_message', '43'],
       [4, WORKSPACE_A_ID, 'customer', '44'],
+      [5, WORKSPACE_A_ID, 'deal_product', '45'],
     ]);
     expect(notifications.sent).toEqual([
       { workspaceId: WORKSPACE_A_ID, sequence: 1 },
       { workspaceId: WORKSPACE_B_ID, sequence: 2 },
       { workspaceId: WORKSPACE_A_ID, sequence: 3 },
       { workspaceId: WORKSPACE_A_ID, sequence: 4 },
+      { workspaceId: WORKSPACE_A_ID, sequence: 5 },
     ]);
     expect(fake.rows.map((row) => row.payload)).toEqual([
       { messageId: 41 },
       { messageId: 42 },
       { messageId: 43 },
       { id: 44, sourceSqliteId: -44 },
+      { id: 45, dealId: 41, productId: 8 },
     ]);
     expect(fake.sessionCommands).toEqual([
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_B_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_B_ID, role: 'system' }),
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),

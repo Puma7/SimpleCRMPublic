@@ -273,6 +273,9 @@ function assertServerEventType(value: string): ServerEvent['type'] {
     || value === 'deal.created'
     || value === 'deal.updated'
     || value === 'deal.deleted'
+    || value === 'deal_product.created'
+    || value === 'deal_product.updated'
+    || value === 'deal_product.deleted'
     || value === 'task.created'
     || value === 'task.updated'
     || value === 'task.deleted'
@@ -372,6 +375,7 @@ function assertServerEventEntityType(value: string): ServerEvent['entityType'] {
   if (value === 'customer') return value;
   if (value === 'product') return value;
   if (value === 'deal') return value;
+  if (value === 'deal_product') return value;
   if (value === 'task') return value;
   if (value === 'calendar_event') return value;
   if (value === 'custom_field') return value;
