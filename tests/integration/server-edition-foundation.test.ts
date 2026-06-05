@@ -174,6 +174,10 @@ describe('server edition repository boundaries', () => {
     expect(ci).toContain('PUBLIC_DOMAIN: localhost');
     expect(ci).toContain('CADDY_HTTPS_PORT: "8443"');
     expect(ci).toContain('PG_ADMIN_PASSWORD: ci-smoke-admin-password');
+    expect(ci).toContain('Generate smoke secrets');
+    expect(ci).toContain("openssl rand -base64 32");
+    expect(ci).not.toContain('MASTER_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=');
+    expect(ci).not.toContain('ACCESS_TOKEN_SECRET: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXpBQkNERUY=');
     expect(ci).toContain('up -d --build postgres migrate api caddy');
     expect(ci).toContain('https://localhost:${CADDY_HTTPS_PORT}/health');
     expect(ci).toContain('--profile backup run --rm backup');

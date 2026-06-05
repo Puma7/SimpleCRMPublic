@@ -1100,6 +1100,8 @@ export type ActivityLogListResult = {
   nextCursor: number | null;
 };
 
+export type ActivityLogListSort = 'idAsc' | 'createdAtDesc';
+
 export type ActivityLogMutationInput = {
   customerId?: number | null;
   dealId?: number | null;
@@ -1127,6 +1129,7 @@ export type ActivityLogApiPort = {
     includeMetadata: boolean;
     cursor?: number;
     limit: number;
+    sort?: ActivityLogListSort;
   }): Promise<ActivityLogListResult>;
   get(input: {
     workspaceId: string;

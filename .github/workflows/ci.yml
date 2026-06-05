@@ -65,8 +65,6 @@ jobs:
       PUBLIC_BASE_URL: https://localhost:8443
       PG_ADMIN_PASSWORD: ci-smoke-admin-password
       PG_PASSWORD: ci-smoke-password
-      MASTER_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
-      ACCESS_TOKEN_SECRET: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXpBQkNERUY=
       ATTACHMENTS_DIR: /app/data/attachments
       AUDIT_ARCHIVE_DIR: /app/data/audit-archive
       JOB_WORKER_ENABLED: "false"
@@ -79,6 +77,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Generate smoke secrets
+        shell: bash
+        run: |
+          {
+            printf 'MASTER_KEY=%s\n' "$(openssl rand -base64 32)"
+            printf 'ACCESS_TOKEN_SECRET=%s\n' "$(openssl rand -base64 32)"
+          } >> "$GITHUB_ENV"
 
       - name: Validate Docker Compose config
         run: docker compose -f docker/docker-compose.yml config

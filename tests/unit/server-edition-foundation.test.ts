@@ -72,6 +72,8 @@ import {
   SERVER_POSTGRES_MAJOR,
   CI_SMOKE_ACCESS_TOKEN_SECRET,
   CI_SMOKE_MASTER_KEY,
+  KNOWN_WEAK_CI_SMOKE_ACCESS_TOKEN_SECRETS,
+  KNOWN_WEAK_CI_SMOKE_MASTER_KEYS,
   CONVERSATION_LOCK_HEARTBEAT_SECONDS,
   CONVERSATION_LOCK_TIMEOUT_SECONDS,
   buildCoreMailImportCommands,
@@ -1054,6 +1056,24 @@ describe('server edition foundation', () => {
       PUBLIC_BASE_URL: 'https://crm.example.com/',
       NODE_ENV: 'production',
     })).toThrow('known weak CI smoke-test value');
+    for (const weakMasterKey of KNOWN_WEAK_CI_SMOKE_MASTER_KEYS) {
+      expect(() => parseServerEditionConfig({
+        DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+        SIMPLECRM_MASTER_KEY: weakMasterKey,
+        ACCESS_TOKEN_SECRET: Buffer.alloc(32, 1).toString('base64'),
+        PUBLIC_BASE_URL: 'https://crm.example.com/',
+        NODE_ENV: 'production',
+      })).toThrow('SIMPLECRM_MASTER_KEY');
+    }
+    for (const weakAccessTokenSecret of KNOWN_WEAK_CI_SMOKE_ACCESS_TOKEN_SECRETS) {
+      expect(() => parseServerEditionConfig({
+        DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+        SIMPLECRM_MASTER_KEY: Buffer.alloc(32, 2).toString('base64'),
+        ACCESS_TOKEN_SECRET: weakAccessTokenSecret,
+        PUBLIC_BASE_URL: 'https://crm.example.com/',
+        NODE_ENV: 'production',
+      })).toThrow('ACCESS_TOKEN_SECRET');
+    }
     expect(parseServerEditionConfig({
       DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
       SIMPLECRM_MASTER_KEY: CI_SMOKE_MASTER_KEY,
@@ -11810,6 +11830,14 @@ describe('server edition foundation', () => {
     expect(racedSelectIndex).toBeGreaterThan(lockIndex);
   });
 
+  test('postgres activity log port supports newest-first timeline sorting', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-extended-crm-read-ports.ts'), 'utf8');
+
+    expect(source).toContain("input.sort === 'createdAtDesc'");
+    expect(source).toContain("query.orderBy('created_at', 'desc').orderBy('id', 'desc')");
+    expect(source).toContain("query.orderBy('id', 'asc')");
+  });
+
   test('server auth user admin routes list, create, update, and protect owners without secret leakage', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const ports = makeServerApiPorts({ auditEvents });
@@ -15189,7 +15217,7 @@ describe('server edition foundation', () => {
     const groupedActivityLog = await api.handle({
       method: 'GET',
       path: '/api/v1/activity-log',
-      query: { timelineFilter: 'communication', customerId: '7' },
+      query: { timelineFilter: 'communication', customerId: '7', sort: 'createdAtDesc' },
       principal,
     });
     expect(groupedActivityLog.status).toBe(200);
@@ -15205,6 +15233,7 @@ describe('server edition foundation', () => {
       activityTypes: ['call', 'email', 'note'],
       customerId: 7,
       includeMetadata: false,
+      sort: 'createdAtDesc',
     }]);
 
     const activityLogEntry = await api.handle({
@@ -15306,6 +15335,24 @@ describe('server edition foundation', () => {
     });
     expect(invalidIncludeMetadata.status).toBe(400);
     expect((invalidIncludeMetadata.body as any).error.code).toBe('invalid_include_metadata');
+
+    const invalidActivityLogSort = await api.handle({
+      method: 'GET',
+      path: '/api/v1/activity-log',
+      query: { sort: 'createdAtAsc' },
+      principal,
+    });
+    expect(invalidActivityLogSort.status).toBe(400);
+    expect((invalidActivityLogSort.body as any).error.code).toBe('invalid_activity_log_sort');
+
+    const invalidActivityLogCursor = await api.handle({
+      method: 'GET',
+      path: '/api/v1/activity-log',
+      query: { sort: 'createdAtDesc', cursor: '10' },
+      principal,
+    });
+    expect(invalidActivityLogCursor.status).toBe(400);
+    expect((invalidActivityLogCursor.body as any).error.code).toBe('invalid_activity_log_cursor');
 
     const invalidActive = await api.handle({
       method: 'GET',

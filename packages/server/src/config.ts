@@ -61,6 +61,14 @@ export const SERVER_POSTGRES_MAJOR = 18;
 export const SERVER_NODE_MAJOR = 22;
 export const CI_SMOKE_MASTER_KEY = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=';
 export const CI_SMOKE_ACCESS_TOKEN_SECRET = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=';
+export const KNOWN_WEAK_CI_SMOKE_MASTER_KEYS = [
+  CI_SMOKE_MASTER_KEY,
+  'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
+] as const;
+export const KNOWN_WEAK_CI_SMOKE_ACCESS_TOKEN_SECRETS = [
+  CI_SMOKE_ACCESS_TOKEN_SECRET,
+  'YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXpBQkNERUY=',
+] as const;
 
 export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionConfig {
   const databaseUrl = requireEnv(env, 'DATABASE_URL');
@@ -97,12 +105,16 @@ export function assertNoKnownWeakProductionSecrets(
   accessTokenSecret: string | undefined,
 ): void {
   if (env.NODE_ENV?.trim() !== 'production' || env.CI?.trim() === 'true') return;
-  if (masterKey?.trim() === CI_SMOKE_MASTER_KEY) {
+  if (isKnownWeakSecret(masterKey, KNOWN_WEAK_CI_SMOKE_MASTER_KEYS)) {
     throw new Error('SIMPLECRM_MASTER_KEY uses the known weak CI smoke-test value');
   }
-  if (accessTokenSecret?.trim() === CI_SMOKE_ACCESS_TOKEN_SECRET) {
+  if (isKnownWeakSecret(accessTokenSecret, KNOWN_WEAK_CI_SMOKE_ACCESS_TOKEN_SECRETS)) {
     throw new Error('ACCESS_TOKEN_SECRET uses the known weak CI smoke-test value');
   }
+}
+
+function isKnownWeakSecret(value: string | undefined, knownWeakValues: readonly string[]): boolean {
+  return value !== undefined && knownWeakValues.includes(value.trim());
 }
 
 export function parseAuthInvitationMailConfig(env: ServerEditionEnv): AuthInvitationMailConfig | undefined {

@@ -172,9 +172,7 @@ export function createPostgresActivityLogReadPort(options: PostgresExtendedCrmRe
           let query = trx
             .selectFrom('activity_log')
             .select(input.includeMetadata ? activityLogDetailColumns : activityLogSummaryColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.activityType !== undefined) query = query.where('activity_type', '=', input.activityType);
@@ -191,8 +189,13 @@ export function createPostgresActivityLogReadPort(options: PostgresExtendedCrmRe
               eb('activity_type', 'ilike', pattern),
             ]));
           }
+          if (input.sort === 'createdAtDesc') {
+            query = query.orderBy('created_at', 'desc').orderBy('id', 'desc');
+          } else {
+            query = query.orderBy('id', 'asc');
+          }
 
-          const rows = await query.execute();
+          const rows = await query.limit(limit + 1).execute();
           return pageNumeric(
             rows,
             limit,

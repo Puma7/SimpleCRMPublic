@@ -7226,7 +7226,7 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      'https://crm.example.com/api/v1/activity-log?limit=10&customerId=3&timelineFilter=communication',
+      'https://crm.example.com/api/v1/activity-log?limit=10&customerId=3&sort=createdAtDesc&timelineFilter=communication',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(

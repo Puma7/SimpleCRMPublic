@@ -1,4 +1,5 @@
 import type {
+  ActivityLogListSort,
   ActivityLogListResult,
   ActivityLogMutationInput,
   ActivityLogRecord,
@@ -233,6 +234,9 @@ async function handleNumericList(
     case 'activityLog': {
       const filters = parseActivityLogFilters(req);
       if (!filters.ok) return filters.response;
+      if (base.filters.cursor !== undefined && filters.filters.sort === 'createdAtDesc') {
+        return error(400, 'invalid_activity_log_cursor', 'cursor kann nicht mit createdAtDesc kombiniert werden');
+      }
       if (!ports.activityLog) return unavailable('activity_log_unavailable', 'Activity log API nicht konfiguriert');
       const includeMetadata = filters.filters.includeMetadata;
       const result = await ports.activityLog.list({
@@ -1394,6 +1398,7 @@ function parseActivityLogFilters(req: ApiRequest): ParseResult<{
   taskId?: number;
   search?: string;
   includeMetadata: boolean;
+  sort?: ActivityLogListSort;
 }> {
   const activityType = normalizeTextFilter(req.query?.activityType, 100);
   if (activityType === null) return parseError('invalid_activity_type', 'activityType darf maximal 100 Zeichen haben');
@@ -1414,7 +1419,27 @@ function parseActivityLogFilters(req: ApiRequest): ParseResult<{
   if (search === null) return parseError('invalid_search', 'search darf maximal 200 Zeichen haben');
   const includeMetadata = parseOptionalBoolean(req.query?.includeMetadata);
   if (includeMetadata === null) return parseError('invalid_include_metadata', 'includeMetadata muss true oder false sein');
-  return { ok: true, filters: omitUndefined({ activityType, activityTypes, customerId, dealId, taskId, search, includeMetadata: includeMetadata === true }) };
+  const sort = parseActivityLogSort(req.query?.sort);
+  if (sort === null) return parseError('invalid_activity_log_sort', 'sort ist ungueltig');
+  return {
+    ok: true,
+    filters: omitUndefined({
+      activityType,
+      activityTypes,
+      customerId,
+      dealId,
+      taskId,
+      search,
+      includeMetadata: includeMetadata === true,
+      sort,
+    }),
+  };
+}
+
+function parseActivityLogSort(value: string | undefined): ActivityLogListSort | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  if (value === 'idAsc' || value === 'createdAtDesc') return value;
+  return null;
 }
 
 function activityTypesForTimelineFilter(value: string): readonly string[] | null {

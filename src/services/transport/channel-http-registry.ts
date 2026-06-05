@@ -3373,6 +3373,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       query: {
         limit: limitValue(input.limit),
         customerId: positiveId(input.customerId, "customer id"),
+        sort: "createdAtDesc",
         ...mapTimelineFilterQuery(input.filter),
       },
       transform: (body) => listItems<ActivityLogRecord>(body).map(mapActivityLogRecord),
