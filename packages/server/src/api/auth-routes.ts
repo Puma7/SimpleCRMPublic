@@ -120,6 +120,17 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     return error(400, 'validation_error', 'email und password sind erforderlich');
   }
 
+  const existingLock = await ports.auth.checkLoginLock?.({ email, ip });
+  if (existingLock && existingLock.kind !== 'none') {
+    const locked = existingLock.kind === 'permanent';
+    return error(
+      locked ? 423 : 429,
+      locked ? 'account_locked' : 'rate_limited',
+      'Zu viele Fehlversuche',
+      { penalty: existingLock },
+    );
+  }
+
   const user = await ports.auth.findUserByEmail(email);
   if (user?.disabledAt) {
     return error(403, 'user_disabled', 'Benutzer ist deaktiviert');

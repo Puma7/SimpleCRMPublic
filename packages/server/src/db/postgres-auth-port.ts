@@ -19,7 +19,7 @@ import type {
   TokenPair,
 } from '../api';
 import type { AuthInvitationRow, ServerDatabase, UserRow } from './schema';
-import { withWorkspaceTransaction } from './workspace-context';
+import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './workspace-context';
 
 const scrypt = promisify(scryptCallback);
 
@@ -35,6 +35,7 @@ export type PostgresAuthPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   accessTokenSigner: AccessTokenSigner;
   now?: () => Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
 
 export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthApiPort {
@@ -42,14 +43,14 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
   return {
     async getInitialSetupState() {
-      const existing = await selectAnyUserAcrossWorkspaces(options.db);
+      const existing = await selectAnyUserAcrossWorkspaces(options.db, options.applyWorkspaceSession);
       return {
         needsInitialSetup: !existing,
       };
     },
 
     async createInitialOwner(input) {
-      const existing = await selectAnyUserAcrossWorkspaces(options.db);
+      const existing = await selectAnyUserAcrossWorkspaces(options.db, options.applyWorkspaceSession);
       if (existing) return { ok: false, code: 'already_configured' };
 
       const workspaceId = randomUUID();
@@ -106,6 +107,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             ),
           };
         },
+        { applySession: options.applyWorkspaceSession },
       );
     },
 
@@ -126,6 +128,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           ])
           .orderBy('email', 'asc')
           .execute(),
+        { applySession: options.applyWorkspaceSession },
       );
       return rows.map(mapAdminUser);
     },
@@ -205,6 +208,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           if (!updated) return { ok: false as const, code: 'not_found' as const };
           return { ok: true as const, user: mapAdminUser(updated) };
         },
+        { applySession: options.applyWorkspaceSession },
       );
     },
 
@@ -271,18 +275,19 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             token,
           };
         },
+        { applySession: options.applyWorkspaceSession },
       );
     },
 
     async getInvitationByToken(input) {
-      return withCrossWorkspaceAuthTransaction(options.db, async (trx) => {
+      return withCrossWorkspaceAuthTransaction(options.db, options.applyWorkspaceSession, async (trx) => {
         const invite = await selectInvitationByToken(trx, input.token);
         return invitationLookupResult(invite, now());
       });
     },
 
     async acceptInvitation(input) {
-      return withCrossWorkspaceAuthTransaction(options.db, async (trx) => {
+      return withCrossWorkspaceAuthTransaction(options.db, options.applyWorkspaceSession, async (trx) => {
         const invite = await selectInvitationByToken(trx, input.token);
         const lookup = invitationLookupResult(invite, now());
         if (!lookup.ok) return lookup;
@@ -339,21 +344,48 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
     },
 
     async resolveAccessTokenPrincipal(input) {
-      return resolveAccessTokenPrincipal(options.db, input.principal, now());
+      return withCrossWorkspaceAuthTransaction(options.db, options.applyWorkspaceSession, async (trx) => (
+        resolveAccessTokenPrincipal(trx as unknown as Kysely<ServerDatabase>, input.principal, now())
+      ));
     },
 
     async findUserByEmail(email) {
-      const user = await options.db
-        .selectFrom('users')
-        .selectAll()
-        .where('email', '=', email)
-        .executeTakeFirst();
+      const user = await withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => trx
+          .selectFrom('users')
+          .selectAll()
+          .where('email', '=', email)
+          .executeTakeFirst(),
+      );
 
       return user ? mapUser(user) : null;
     },
 
     async verifyPassword(password, passwordHash) {
       return verifyPasswordHash(password, passwordHash);
+    },
+
+    async checkLoginLock(input) {
+      const row = await options.db
+        .selectFrom('auth_login_failures')
+        .select(['failed_attempts', 'lock_until', 'penalty_kind'])
+        .where('email_normalized', '=', input.email.toLowerCase())
+        .where('ip_address', '=', input.ip)
+        .executeTakeFirst();
+
+      if (!row) return null;
+      if (row.penalty_kind === 'permanent') return { kind: 'permanent' };
+      if (!row.lock_until) return null;
+
+      const lockMs = toDate(row.lock_until).getTime() - now().getTime();
+      if (lockMs <= 0) return null;
+
+      return {
+        kind: 'temporary',
+        lockSeconds: Math.max(1, Math.ceil(lockMs / 1000)),
+      };
     },
 
     async recordFailedLogin(input) {
@@ -366,7 +398,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         .values({
           workspace_id: null,
           user_id: input.userId ?? null,
-          email_normalized: input.email,
+          email_normalized: input.email.toLowerCase(),
           ip_address: input.ip,
           failed_at: now(),
           failed_attempts: 1,
@@ -392,84 +424,115 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             ? new Date(now().getTime() + updatedPenalty.lockSeconds * 1000)
             : null,
         })
-        .where('email_normalized', '=', input.email)
+        .where('email_normalized', '=', input.email.toLowerCase())
         .where('ip_address', '=', input.ip)
         .execute();
 
       return failedAttempts;
     },
 
-    async recordSuccessfulLogin() {
-      return undefined;
+    async recordSuccessfulLogin(input) {
+      await options.db
+        .deleteFrom('auth_login_failures')
+        .where('email_normalized', '=', input.email.toLowerCase())
+        .where('ip_address', '=', input.ip)
+        .execute();
     },
 
     async issueTokenPair(input) {
-      return issueTokenPair(options.db, options.accessTokenSigner, input.user, input.device, now());
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.user.workspaceId,
+          userId: input.user.id,
+          role: input.user.role,
+        },
+        async (trx) => issueTokenPair(
+          trx as unknown as Kysely<ServerDatabase>,
+          options.accessTokenSigner,
+          input.user,
+          input.device,
+          now(),
+        ),
+        { applySession: options.applyWorkspaceSession },
+      );
     },
 
     async rotateRefreshToken(input) {
       const tokenHash = hashRefreshToken(input.refreshToken);
-      const existing = await options.db
-        .selectFrom('refresh_tokens')
-        .innerJoin('users', 'users.id', 'refresh_tokens.user_id')
-        .select([
-          'refresh_tokens.id as token_id',
-          'refresh_tokens.token_hash as token_hash',
-          'refresh_tokens.expires_at as expires_at',
-          'refresh_tokens.revoked_at as revoked_at',
-          'users.id as user_id',
-          'users.workspace_id as workspace_id',
-          'users.email as email',
-          'users.display_name as display_name',
-          'users.password_hash as password_hash',
-          'users.role as role',
-          'users.disabled_at as disabled_at',
-        ])
-        .where('refresh_tokens.token_hash', '=', tokenHash)
-        .executeTakeFirst();
+      return withCrossWorkspaceAuthTransaction(options.db, options.applyWorkspaceSession, async (trx) => {
+        const existing = await trx
+          .selectFrom('refresh_tokens')
+          .innerJoin('users', 'users.id', 'refresh_tokens.user_id')
+          .select([
+            'refresh_tokens.id as token_id',
+            'refresh_tokens.token_hash as token_hash',
+            'refresh_tokens.expires_at as expires_at',
+            'refresh_tokens.revoked_at as revoked_at',
+            'users.id as user_id',
+            'users.workspace_id as workspace_id',
+            'users.email as email',
+            'users.display_name as display_name',
+            'users.password_hash as password_hash',
+            'users.role as role',
+            'users.disabled_at as disabled_at',
+          ])
+          .where('refresh_tokens.token_hash', '=', tokenHash)
+          .executeTakeFirst();
 
-      if (
-        !existing
-        || existing.revoked_at
-        || existing.disabled_at
-        || toDate(existing.expires_at).getTime() <= now().getTime()
-      ) {
-        return null;
-      }
-      if (!verifyRefreshTokenHash(input.refreshToken, existing.token_hash)) {
-        return null;
-      }
+        if (
+          !existing
+          || existing.revoked_at
+          || existing.disabled_at
+          || toDate(existing.expires_at).getTime() <= now().getTime()
+        ) {
+          return null;
+        }
+        if (!verifyRefreshTokenHash(input.refreshToken, existing.token_hash)) {
+          return null;
+        }
 
-      await options.db
-        .updateTable('refresh_tokens')
-        .set({ revoked_at: now() })
-        .where('id', '=', existing.token_id)
-        .execute();
+        await trx
+          .updateTable('refresh_tokens')
+          .set({ revoked_at: now() })
+          .where('id', '=', existing.token_id)
+          .execute();
 
-      const user: AuthUserRecord = {
-        id: existing.user_id,
-        workspaceId: existing.workspace_id,
-        email: existing.email,
-        displayName: existing.display_name,
-        role: existing.role,
-        passwordHash: existing.password_hash,
-        disabledAt: existing.disabled_at ? toDate(existing.disabled_at).toISOString() : null,
-      };
+        const user: AuthUserRecord = {
+          id: existing.user_id,
+          workspaceId: existing.workspace_id,
+          email: existing.email,
+          displayName: existing.display_name,
+          role: existing.role,
+          passwordHash: existing.password_hash,
+          disabledAt: existing.disabled_at ? toDate(existing.disabled_at).toISOString() : null,
+        };
 
-      return {
-        user,
-        tokens: await issueTokenPair(options.db, options.accessTokenSigner, user, undefined, now()),
-      };
+        return {
+          user,
+          tokens: await issueTokenPair(
+            trx as unknown as Kysely<ServerDatabase>,
+            options.accessTokenSigner,
+            user,
+            undefined,
+            now(),
+          ),
+        };
+      });
     },
 
     async revokeRefreshToken(input) {
       const tokenHash = hashRefreshToken(input.refreshToken);
-      const result = await options.db
-        .updateTable('refresh_tokens')
-        .set({ revoked_at: now() })
-        .where('token_hash', '=', tokenHash)
-        .where('revoked_at', 'is', null)
-        .executeTakeFirst();
+      const result = await withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => trx
+          .updateTable('refresh_tokens')
+          .set({ revoked_at: now() })
+          .where('token_hash', '=', tokenHash)
+          .where('revoked_at', 'is', null)
+          .executeTakeFirst(),
+      );
 
       return Number(result.numUpdatedRows) > 0;
     },
@@ -641,22 +704,28 @@ async function selectAnyUser(db: Kysely<ServerDatabase> | Transaction<ServerData
     .executeTakeFirst();
 }
 
-async function selectAnyUserAcrossWorkspaces(db: Kysely<ServerDatabase>): Promise<{ id: string } | undefined> {
+async function selectAnyUserAcrossWorkspaces(
+  db: Kysely<ServerDatabase>,
+  applyWorkspaceSession?: WorkspaceSessionApplier,
+): Promise<{ id: string } | undefined> {
   return withWorkspaceTransaction(
     db,
     { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
     selectAnyUser,
+    { applySession: applyWorkspaceSession },
   );
 }
 
 async function withCrossWorkspaceAuthTransaction<T>(
   db: Kysely<ServerDatabase>,
+  applyWorkspaceSession: WorkspaceSessionApplier | undefined,
   run: (trx: Transaction<ServerDatabase>) => Promise<T>,
 ): Promise<T> {
   return withWorkspaceTransaction(
     db,
     { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
     run,
+    { applySession: applyWorkspaceSession },
   );
 }
 

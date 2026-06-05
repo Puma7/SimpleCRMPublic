@@ -61,7 +61,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     options.accessTokenSigner
       ? createBearerTokenPrincipalResolver(
         options.accessTokenSigner,
-        resolvePrincipalFromHeaders,
+        () => undefined,
         options.ports.auth.resolveAccessTokenPrincipal,
         createAutomationApiKeyPrincipalResolver(options.ports),
       )

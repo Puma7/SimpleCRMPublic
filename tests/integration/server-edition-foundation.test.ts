@@ -95,11 +95,12 @@ describe('server edition repository boundaries', () => {
     const compose = readFileSync(join(__dirname, '..', '..', 'docker', 'docker-compose.yml'), 'utf8');
     const ci = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(compose).toContain('postgres:18-alpine');
-    expect(compose).toContain('postgres_data:/var/lib/postgresql/data');
+    expect(compose).toContain('postgres_data:/var/lib/postgresql');
     expect(compose).toContain('caddy:2');
     expect(compose).toContain('"${CADDY_HTTP_PORT:-80}:80"');
     expect(compose).toContain('"${CADDY_HTTPS_PORT:-443}:443"');
     expect(compose).toContain('PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}');
+    expect(compose).toContain('start_period: 60s');
     expect(compose).toContain('simplecrm/api');
     expect(compose).toContain('required: false');
     expect(compose).toContain('command: ["node", "packages/server/dist/cli/migrate.js"]');
@@ -241,6 +242,9 @@ describe('server edition repository boundaries', () => {
     expect(doctor).toContain('backup_checksum=ok');
     expect(caddyfile).toContain('{$PUBLIC_DOMAIN:localhost}');
     expect(caddyfile).toContain('reverse_proxy api:3000');
+    expect(caddyfile).toContain('header_up -x-simplecrm-user-id');
+    expect(caddyfile).toContain('header_up -x-simplecrm-workspace-id');
+    expect(caddyfile).toContain('header_up -x-simplecrm-role');
     expect(caddyfile).toContain('encode gzip zstd');
     expect(caddyfile).toContain('output file /var/log/access.log');
     expect(caddyfile).toContain('format json');
@@ -1687,6 +1691,18 @@ describe('server edition repository boundaries', () => {
         payload: { reason: 'reply' },
       });
       expect(invalidBearerDoesNotUseHeaderFallback.statusCode).toBe(401);
+
+      const missingBearerDoesNotUseHeaderFallback = await app.inject({
+        method: 'POST',
+        url: '/api/v1/locks/44',
+        headers: {
+          'x-simplecrm-user-id': 'user-a',
+          'x-simplecrm-workspace-id': 'workspace-a',
+          'x-simplecrm-role': 'user',
+        },
+        payload: { reason: 'reply' },
+      });
+      expect(missingBearerDoesNotUseHeaderFallback.statusCode).toBe(401);
     } finally {
       await app.close();
     }

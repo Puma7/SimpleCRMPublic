@@ -4,6 +4,7 @@ import type { Readable } from 'node:stream';
 import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from '../jobs';
 import type { ConversationLockReason } from '../locks';
 import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
+import type { LoginPenalty } from '../auth';
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
@@ -165,6 +166,10 @@ export type AuthApiPort = {
   createInvitation?(input: AuthInvitationCreateInput): Promise<AuthInvitationCreateResult>;
   getInvitationByToken?(input: { token: string }): Promise<AuthInvitationLookupResult>;
   acceptInvitation?(input: AuthInvitationAcceptInput): Promise<AuthInvitationAcceptResult>;
+  checkLoginLock?(input: {
+    email: string;
+    ip: string;
+  }): Promise<LoginPenalty | null>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   verifyPassword(password: string, passwordHash: string): Promise<boolean>;
   recordFailedLogin(input: {

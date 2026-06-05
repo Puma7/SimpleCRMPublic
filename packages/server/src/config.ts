@@ -20,6 +20,8 @@ export type ServerEditionEnv = {
   JOB_WORKER_AI_CONCURRENCY?: string;
   JOB_WORKER_MIGRATE_ON_START?: string;
   JOB_WEBHOOK_ALLOWLIST?: string;
+  NODE_ENV?: string;
+  CI?: string;
 };
 
 export type ServerEditionConfig = {
@@ -57,11 +59,14 @@ export type AuthInvitationMailConfig = {
 
 export const SERVER_POSTGRES_MAJOR = 18;
 export const SERVER_NODE_MAJOR = 22;
+export const CI_SMOKE_MASTER_KEY = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=';
+export const CI_SMOKE_ACCESS_TOKEN_SECRET = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=';
 
 export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionConfig {
   const databaseUrl = requireEnv(env, 'DATABASE_URL');
   const masterKey = requireEnv(env, 'SIMPLECRM_MASTER_KEY');
   const accessTokenSecret = requireEnv(env, 'ACCESS_TOKEN_SECRET');
+  assertNoKnownWeakProductionSecrets(env, masterKey, accessTokenSecret);
   const accessTokenKeyId = env.ACCESS_TOKEN_KEY_ID?.trim() || 'default';
   const publicBaseUrl = normalizePublicBaseUrl(requireEnv(env, 'PUBLIC_BASE_URL'));
   const authInvitationMail = parseAuthInvitationMailConfig({ ...env, PUBLIC_BASE_URL: publicBaseUrl });
@@ -84,6 +89,20 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     port,
     jobWorker,
   };
+}
+
+function assertNoKnownWeakProductionSecrets(
+  env: ServerEditionEnv,
+  masterKey: string,
+  accessTokenSecret: string,
+): void {
+  if (env.NODE_ENV?.trim() !== 'production' || env.CI?.trim() === 'true') return;
+  if (masterKey === CI_SMOKE_MASTER_KEY) {
+    throw new Error('SIMPLECRM_MASTER_KEY uses the known weak CI smoke-test value');
+  }
+  if (accessTokenSecret === CI_SMOKE_ACCESS_TOKEN_SECRET) {
+    throw new Error('ACCESS_TOKEN_SECRET uses the known weak CI smoke-test value');
+  }
 }
 
 export function parseAuthInvitationMailConfig(env: ServerEditionEnv): AuthInvitationMailConfig | undefined {

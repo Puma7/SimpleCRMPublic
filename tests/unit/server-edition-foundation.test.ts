@@ -7,25 +7,6 @@ import { PassThrough } from 'stream';
 
 import type { Kysely } from 'kysely';
 
-jest.mock('kysely', () => ({
-  sql(sqlFragments: TemplateStringsArray, ...parameters: unknown[]) {
-    return {
-      async execute(executorProvider: {
-        getExecutor?: () => {
-          executeQuery?: (compiled: { sql: string; parameters: readonly unknown[] }) => Promise<unknown>;
-        };
-      }) {
-        const sql = Array.from(sqlFragments)
-          .map((fragment, index) => `${fragment}${index < parameters.length ? `$${index + 1}` : ''}`)
-          .join('');
-        const executor = executorProvider.getExecutor?.();
-        if (!executor?.executeQuery) throw new Error('missing fake Kysely executor');
-        return executor.executeQuery({ sql, parameters });
-      },
-    };
-  },
-}));
-
 import {
   SERVER_EDITION_DEPLOY_MODES,
   SERVER_EDITION_TARGETS,
@@ -89,6 +70,8 @@ import {
 } from '../../packages/server/src/cli/rls-check';
 import {
   SERVER_POSTGRES_MAJOR,
+  CI_SMOKE_ACCESS_TOKEN_SECRET,
+  CI_SMOKE_MASTER_KEY,
   CONVERSATION_LOCK_HEARTBEAT_SECONDS,
   CONVERSATION_LOCK_TIMEOUT_SECONDS,
   buildCoreMailImportCommands,
@@ -1063,6 +1046,23 @@ describe('server edition foundation', () => {
       AUTH_INVITE_FROM: 'crm@example.com',
       AUTH_INVITE_SMTP_HOST: 'smtp.example.com',
     })).toThrow('AUTH_INVITE_SMTP_PASSWORD');
+    expect(() => parseServerEditionConfig({
+      DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+      SIMPLECRM_MASTER_KEY: CI_SMOKE_MASTER_KEY,
+      ACCESS_TOKEN_SECRET: CI_SMOKE_ACCESS_TOKEN_SECRET,
+      PUBLIC_BASE_URL: 'https://crm.example.com/',
+      NODE_ENV: 'production',
+    })).toThrow('known weak CI smoke-test value');
+    expect(parseServerEditionConfig({
+      DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+      SIMPLECRM_MASTER_KEY: CI_SMOKE_MASTER_KEY,
+      ACCESS_TOKEN_SECRET: CI_SMOKE_ACCESS_TOKEN_SECRET,
+      PUBLIC_BASE_URL: 'https://crm.example.com/',
+      NODE_ENV: 'production',
+      CI: 'true',
+    })).toMatchObject({
+      databaseUrl: 'postgres://simplecrm@postgres/simplecrm',
+    });
     expect(parseServerEditionConfig({
       DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
       SIMPLECRM_MASTER_KEY: 'base64-master-key',
@@ -11161,7 +11161,7 @@ describe('server edition foundation', () => {
     });
   });
 
-  test('login brute-force policy escalates and keeps counters persistent', () => {
+  test('login brute-force policy escalates and resets counters after success', () => {
     expect(LOGIN_BACKOFF_SECONDS).toEqual([30, 300, 3600, 86400]);
     expect(LOGIN_PERMANENT_LOCK_AFTER_FAILURES).toBe(50);
     expect(calculateLoginPenalty(0)).toEqual({ kind: 'none' });
@@ -11171,7 +11171,7 @@ describe('server edition foundation', () => {
     expect(calculateLoginPenalty(4)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
     expect(calculateLoginPenalty(49)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
     expect(calculateLoginPenalty(50)).toEqual({ kind: 'permanent' });
-    expect(shouldResetFailureCounterAfterSuccess()).toBe(false);
+    expect(shouldResetFailureCounterAfterSuccess()).toBe(true);
     expect(() => calculateLoginPenalty(-1)).toThrow('non-negative integer');
   });
 
@@ -11501,15 +11501,21 @@ describe('server edition foundation', () => {
         };
         return builder;
       },
+      transaction() {
+        return {
+          execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db),
+        };
+      },
     } as unknown as Kysely<ServerDatabase>;
     const port = createPostgresAuthPort({
       db,
       accessTokenSigner: signer,
       now: () => now,
+      applyWorkspaceSession: async () => undefined,
     });
     const user: AuthUserRecord = {
-      id: 'user-a',
-      workspaceId: 'workspace-a',
+      id: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
       email: 'owner@example.com',
       displayName: 'Owner',
       role: 'owner',
@@ -11519,8 +11525,8 @@ describe('server edition foundation', () => {
     const tokens = await port.issueTokenPair({ user, device: 'desktop' });
 
     expect(insertedValues[0]).toMatchObject({
-      user_id: 'user-a',
-      workspace_id: 'workspace-a',
+      user_id: USER_A_ID,
+      workspace_id: WORKSPACE_A_ID,
       device: 'desktop',
     });
     expect(typeof insertedValues[0].token_hash).toBe('string');
@@ -11529,8 +11535,8 @@ describe('server edition foundation', () => {
       signer,
       now: new Date('2026-06-02T12:00:30.000Z'),
     })).toEqual({
-      userId: 'user-a',
-      workspaceId: 'workspace-a',
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
       role: 'owner',
       sessionId: 'session-created',
     });
@@ -11583,11 +11589,17 @@ describe('server edition foundation', () => {
         expect(table).toBe('refresh_tokens');
         return new FakePostgresAuthSessionSelect(rows);
       },
+      transaction() {
+        return {
+          execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db),
+        };
+      },
     } as unknown as Kysely<ServerDatabase>;
     const port = createPostgresAuthPort({
       db,
       accessTokenSigner: signer,
       now: () => new Date('2026-06-02T12:00:00.000Z'),
+      applyWorkspaceSession: async () => undefined,
     });
 
     await expect(port.resolveAccessTokenPrincipal?.({
@@ -11636,7 +11648,7 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(login.body)).not.toContain('passwordHash');
     expect((login.body as any).data.user.email).toBe('owner@example.com');
     expect((login.body as any).data.tokens.accessToken).toBe('access-token');
-    expect((login.body as any).data.resetFailureCounter).toBe(false);
+    expect((login.body as any).data.resetFailureCounter).toBe(true);
 
     const refresh = await api.handle({
       method: 'POST',
@@ -12091,6 +12103,27 @@ describe('server edition foundation', () => {
     expect((bad.body as any).error.code).toBe('invalid_credentials');
     expect((bad.body as any).error.details.failedAttempts).toBe(1);
     expect((bad.body as any).error.details.penalty).toEqual({ kind: 'temporary', lockSeconds: 30 });
+  });
+
+  test('server auth route enforces active login locks before password verification', async () => {
+    const ports = makeServerApiPorts();
+    const findUserByEmail = jest.spyOn(ports.auth, 'findUserByEmail');
+    const verifyPassword = jest.spyOn(ports.auth, 'verifyPassword');
+    ports.auth.checkLoginLock = async () => ({ kind: 'temporary', lockSeconds: 12 });
+    const api = createServerApi(ports);
+
+    const blocked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: { email: 'owner@example.com', password: 'correct' },
+    });
+
+    expect(blocked.status).toBe(429);
+    expect((blocked.body as any).error.code).toBe('rate_limited');
+    expect((blocked.body as any).error.details.penalty).toEqual({ kind: 'temporary', lockSeconds: 12 });
+    expect(findUserByEmail).not.toHaveBeenCalled();
+    expect(verifyPassword).not.toHaveBeenCalled();
   });
 
   test('server auth routes record audit events without password or token leakage', async () => {
@@ -31454,7 +31487,7 @@ function makeServerApiPorts(input: {
         return failedAttempts;
       },
       async recordSuccessfulLogin() {
-        return undefined;
+        failedAttempts = 0;
       },
       async issueTokenPair() {
         return {
