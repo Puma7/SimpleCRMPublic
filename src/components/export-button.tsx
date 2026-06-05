@@ -7,11 +7,12 @@ import { saveDataToDesktop, saveCSVToDesktop } from '@/lib/electron-utils';
 
 interface ExportButtonProps {
   data: any[];
+  getData?: () => Promise<any[]> | any[];
   fileName: string;
   children?: React.ReactNode;
 }
 
-export default function ExportButton({ data, fileName, children }: ExportButtonProps) {
+export default function ExportButton({ data, getData, fileName, children }: ExportButtonProps) {
   const [isExporting, setIsExporting] = useState(false);
 
   const baseName = fileName.replace(/\.[^.]+$/, '');
@@ -19,12 +20,13 @@ export default function ExportButton({ data, fileName, children }: ExportButtonP
   const handleExport = async (format: 'csv' | 'json') => {
     try {
       setIsExporting(true);
+      const exportData = getData ? await getData() : data;
       let success: boolean;
       if (format === 'csv') {
-        success = saveCSVToDesktop(data, `${baseName}.csv`);
+        success = saveCSVToDesktop(exportData, `${baseName}.csv`);
         if (success) toast.success('Als CSV exportiert');
       } else {
-        success = saveDataToDesktop(data, `${baseName}.json`);
+        success = saveDataToDesktop(exportData, `${baseName}.json`);
         if (success) toast.success('Als JSON exportiert');
       }
       if (!success) toast.error('Export fehlgeschlagen');

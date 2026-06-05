@@ -81,6 +81,19 @@ describe('ExportButton', () => {
     });
   });
 
+  test('uses async export data loader when provided', async () => {
+    const exportData = [{ id: 3, name: 'Clara', city: 'München' }];
+    const getData = jest.fn().mockResolvedValue(exportData);
+
+    render(<ExportButton data={sampleData} getData={getData} fileName="customers.json" />);
+    fireEvent.click(screen.getByText(/CSV exportieren/i));
+
+    await waitFor(() => {
+      expect(getData).toHaveBeenCalledTimes(1);
+      expect(saveCSVMock).toHaveBeenCalledWith(exportData, 'customers.csv');
+    });
+  });
+
   test('strips existing extension before applying new one', async () => {
     render(<ExportButton data={sampleData} fileName="export.csv" />);
     fireEvent.click(screen.getByText(/CSV exportieren/i));

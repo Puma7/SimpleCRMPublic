@@ -201,6 +201,8 @@ const columnDisplayNames: Record<string, string> = {
   'actions': 'Aktionen'
 };
 
+const CUSTOMER_EXPORT_PAGE_SIZE = 500
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -310,6 +312,32 @@ export default function CustomersPage() {
       setIsLoading(false)
     }
   }, [debouncedSearch, isGrouped, pagination.pageIndex, pagination.pageSize, selectedGrouping, sorting, statusFilter])
+
+  const loadExportCustomers = useCallback(async () => {
+    const activeSort = sorting[0]
+    const includeCustomFields = Boolean(isGrouped && selectedGrouping?.startsWith('custom_'))
+    const allCustomers: Customer[] = []
+    let offset = 0
+
+    for (;;) {
+      const { customers: fetchedCustomers, total } = await getCustomersPage({
+        limit: CUSTOMER_EXPORT_PAGE_SIZE,
+        offset,
+        query: debouncedSearch,
+        status: statusFilter ?? null,
+        includeCustomFields,
+        sortBy: activeSort?.id,
+        sortDirection: activeSort?.desc ? 'desc' : 'asc',
+      })
+
+      allCustomers.push(...fetchedCustomers)
+      offset += fetchedCustomers.length
+
+      if (fetchedCustomers.length === 0 || allCustomers.length >= total) {
+        return allCustomers
+      }
+    }
+  }, [debouncedSearch, isGrouped, selectedGrouping, sorting, statusFilter])
 
   useEffect(() => {
     void loadCustomers()
@@ -465,7 +493,7 @@ export default function CustomersPage() {
                 </DropdownMenuContent>
             </DropdownMenu>
 
-            <ExportButton data={customers} fileName="customers_export.json">
+            <ExportButton data={customers} getData={loadExportCustomers} fileName="customers_export.json">
               Exportieren
             </ExportButton>
             <AddCustomerDialog onCustomerAdded={handleCustomerAdded} />
