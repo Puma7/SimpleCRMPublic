@@ -52,10 +52,40 @@ describe('IPC contracts', () => {
     ).toThrow();
   });
 
+  test('accepts renderer payloads used by desktop CRM list and task flows', () => {
+    expect(() =>
+      getPayloadSchema(IPCChannels.Tasks.GetAll).parse({
+        limit: 10,
+        offset: 0,
+        filter: { completed: false, priority: 'High', query: 'kunde' },
+      })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Deals.GetAll).parse({
+        limit: 10,
+        offset: 0,
+        filter: { query: 'renewal', stage: 'Angebot', customer_id: 2 },
+      })
+    ).not.toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Db.GetCustomers).parse(false)).not.toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Calendar.GetCalendarEvents).parse(undefined)).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Tasks.ToggleCompletion).parse({ taskId: 1, completed: true })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.Deals.UpdateStage).parse({ dealId: 1, newStage: 'Gewonnen' })
+    ).not.toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Db.SearchCustomers).parse(['ACME', 20])).not.toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Products.Search).parse({ query: 'SKU', limit: 10 })).not.toThrow();
+  });
+
   test('marks deprecated channels and supports result schema', () => {
     expect(isDeprecatedChannel(IPCChannels.Deals.UpdateProductQuantityLegacy)).toBe(true);
     expect(() =>
       getResultSchema(IPCChannels.Mssql.TestConnection).parse({ success: false, error: 'boom' })
+    ).not.toThrow();
+    expect(() =>
+      getResultSchema(IPCChannels.Mssql.GetSettings).parse(null)
     ).not.toThrow();
   });
 

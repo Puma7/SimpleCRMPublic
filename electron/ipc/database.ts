@@ -26,6 +26,26 @@ interface DatabaseHandlersOptions {
 
 type Disposer = () => void;
 
+function parseSearchPayload(payload: unknown, explicitLimit?: number, defaultLimit = 20): { query: string; limit: number } {
+  if (Array.isArray(payload)) {
+    return {
+      query: String(payload[0] ?? ''),
+      limit: Number(payload[1] ?? defaultLimit),
+    };
+  }
+  if (payload && typeof payload === 'object') {
+    const input = payload as Record<string, unknown>;
+    return {
+      query: String(input.query ?? ''),
+      limit: Number(input.limit ?? defaultLimit),
+    };
+  }
+  return {
+    query: String(payload ?? ''),
+    limit: Number(explicitLimit ?? defaultLimit),
+  };
+}
+
 export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   const { logger, isDevelopment } = options;
   const disposers: Disposer[] = [];
@@ -59,13 +79,14 @@ export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Db.SearchCustomers, async (_event: IpcMainInvokeEvent, query: string, limit: number = 20) => {
+    registerIpcHandler(IPCChannels.Db.SearchCustomers, async (_event: IpcMainInvokeEvent, payload: unknown, limit?: number) => {
       try {
+        const { query, limit: resolvedLimit } = parseSearchPayload(payload, limit);
         if (isDevelopment) {
-          logger.debug('[IPC] db:search-customers', { query, limit });
+          logger.debug('[IPC] db:search-customers', { query, limit: resolvedLimit });
         }
         const startTime = Date.now();
-        const result = searchCustomers(query, limit);
+        const result = searchCustomers(query, resolvedLimit);
         if (isDevelopment) {
           logger.debug('[IPC] db:search-customers result', { count: result.length, duration: Date.now() - startTime });
         }
@@ -159,9 +180,10 @@ export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Products.Search, async (_event: IpcMainInvokeEvent, query: string = '', limit: number = 20) => {
+    registerIpcHandler(IPCChannels.Products.Search, async (_event: IpcMainInvokeEvent, payload: unknown = '', limit?: number) => {
       try {
-        return searchProducts(query, limit);
+        const { query, limit: resolvedLimit } = parseSearchPayload(payload, limit);
+        return searchProducts(query, resolvedLimit);
       } catch (error) {
         logger.error('IPC Error searching products:', error);
         return [];
