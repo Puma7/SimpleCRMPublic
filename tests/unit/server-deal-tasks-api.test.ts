@@ -132,6 +132,7 @@ function authPort(): AuthApiPort {
   return {
     findUserByEmail: async () => null,
     verifyPassword: async () => false,
+    checkLoginLock: async () => null,
     recordFailedLogin: async () => 1,
     recordSuccessfulLogin: async () => undefined,
     issueTokenPair: async () => ({

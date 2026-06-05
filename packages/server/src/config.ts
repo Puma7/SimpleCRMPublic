@@ -58,10 +58,14 @@ export type AuthInvitationMailConfig = {
 export const SERVER_POSTGRES_MAJOR = 18;
 export const SERVER_NODE_MAJOR = 22;
 
+export const KNOWN_WEAK_CI_MASTER_KEY = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=';
+export const KNOWN_WEAK_CI_ACCESS_TOKEN_SECRET = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=';
+
 export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionConfig {
   const databaseUrl = requireEnv(env, 'DATABASE_URL');
   const masterKey = requireEnv(env, 'SIMPLECRM_MASTER_KEY');
   const accessTokenSecret = requireEnv(env, 'ACCESS_TOKEN_SECRET');
+  rejectKnownWeakSecretsInProduction(masterKey, accessTokenSecret);
   const accessTokenKeyId = env.ACCESS_TOKEN_KEY_ID?.trim() || 'default';
   const publicBaseUrl = normalizePublicBaseUrl(requireEnv(env, 'PUBLIC_BASE_URL'));
   const authInvitationMail = parseAuthInvitationMailConfig({ ...env, PUBLIC_BASE_URL: publicBaseUrl });
@@ -118,6 +122,16 @@ export function parseAuthInvitationMailConfig(env: ServerEditionEnv): AuthInvita
     password,
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   };
+}
+
+function rejectKnownWeakSecretsInProduction(masterKey: string, accessTokenSecret: string): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (masterKey === KNOWN_WEAK_CI_MASTER_KEY) {
+    throw new Error('SIMPLECRM_MASTER_KEY uses a known weak CI-only value and cannot be used in production');
+  }
+  if (accessTokenSecret === KNOWN_WEAK_CI_ACCESS_TOKEN_SECRET) {
+    throw new Error('ACCESS_TOKEN_SECRET uses a known weak CI-only value and cannot be used in production');
+  }
 }
 
 function requireEnv(env: ServerEditionEnv, key: keyof ServerEditionEnv): string {

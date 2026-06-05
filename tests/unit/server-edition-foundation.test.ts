@@ -216,6 +216,8 @@ import {
   normalizePublicBaseUrl,
   parseAuthInvitationMailConfig,
   planServerMigrations,
+  KNOWN_WEAK_CI_ACCESS_TOKEN_SECRET,
+  KNOWN_WEAK_CI_MASTER_KEY,
   parseServerEditionConfig,
   parseServerJobWorkerConfig,
   parseBase64MasterKey,
@@ -1089,6 +1091,29 @@ describe('server edition foundation', () => {
         migrateOnStart: true,
       },
     });
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(() => parseServerEditionConfig({
+        DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+        SIMPLECRM_MASTER_KEY: KNOWN_WEAK_CI_MASTER_KEY,
+        ACCESS_TOKEN_SECRET: Buffer.alloc(32, 1).toString('base64'),
+        PUBLIC_BASE_URL: 'https://crm.example.com/',
+      })).toThrow('SIMPLECRM_MASTER_KEY uses a known weak CI-only value');
+
+      expect(() => parseServerEditionConfig({
+        DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+        SIMPLECRM_MASTER_KEY: Buffer.alloc(32, 7).toString('base64'),
+        ACCESS_TOKEN_SECRET: KNOWN_WEAK_CI_ACCESS_TOKEN_SECRET,
+        PUBLIC_BASE_URL: 'https://crm.example.com/',
+      })).toThrow('ACCESS_TOKEN_SECRET uses a known weak CI-only value');
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+    }
     expect(parseServerJobWorkerConfig({})).toEqual({
       enabled: false,
       mailAccountCount: 0,
@@ -11171,7 +11196,7 @@ describe('server edition foundation', () => {
     expect(calculateLoginPenalty(4)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
     expect(calculateLoginPenalty(49)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
     expect(calculateLoginPenalty(50)).toEqual({ kind: 'permanent' });
-    expect(shouldResetFailureCounterAfterSuccess()).toBe(false);
+    expect(shouldResetFailureCounterAfterSuccess()).toBe(true);
     expect(() => calculateLoginPenalty(-1)).toThrow('non-negative integer');
   });
 
@@ -12091,6 +12116,29 @@ describe('server edition foundation', () => {
     expect((bad.body as any).error.code).toBe('invalid_credentials');
     expect((bad.body as any).error.details.failedAttempts).toBe(1);
     expect((bad.body as any).error.details.penalty).toEqual({ kind: 'temporary', lockSeconds: 30 });
+  });
+
+  test('server auth route blocks login while temporary lock is active', async () => {
+    const ports = makeServerApiPorts();
+    const api = createServerApi(ports);
+
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: { email: 'owner@example.com', password: 'wrong' },
+    });
+
+    const blocked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: { email: 'owner@example.com', password: 'wrong' },
+    });
+
+    expect(blocked.status).toBe(429);
+    expect((blocked.body as any).error.code).toBe('rate_limited');
+    expect((blocked.body as any).error.details.penalty).toEqual({ kind: 'temporary', lockSeconds: 30 });
   });
 
   test('server auth routes record audit events without password or token leakage', async () => {
@@ -31268,6 +31316,8 @@ function makeServerApiPorts(input: {
   };
 
   let failedAttempts = 0;
+  let lockUntil: Date | null = null;
+  let penaltyKind: 'none' | 'temporary' | 'permanent' = 'none';
   let initialSetupNeeded = input.initialSetupNeeded ?? false;
   let userSequence = 1;
   let invitationSequence = 1;
@@ -31449,11 +31499,29 @@ function makeServerApiPorts(input: {
       async verifyPassword(password) {
         return password === 'correct';
       },
+      async checkLoginLock() {
+        if (penaltyKind === 'permanent') return { kind: 'permanent' };
+        if (lockUntil && lockUntil.getTime() > Date.now()) {
+          return calculateLoginPenalty(failedAttempts);
+        }
+        return null;
+      },
       async recordFailedLogin() {
         failedAttempts += 1;
+        const penalty = calculateLoginPenalty(failedAttempts);
+        if (penalty.kind === 'temporary') {
+          lockUntil = new Date(Date.now() + penalty.lockSeconds * 1000);
+          penaltyKind = 'temporary';
+        } else if (penalty.kind === 'permanent') {
+          lockUntil = null;
+          penaltyKind = 'permanent';
+        }
         return failedAttempts;
       },
       async recordSuccessfulLogin() {
+        failedAttempts = 0;
+        lockUntil = null;
+        penaltyKind = 'none';
         return undefined;
       },
       async issueTokenPair() {

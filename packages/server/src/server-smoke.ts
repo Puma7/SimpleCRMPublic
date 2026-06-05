@@ -32,6 +32,9 @@ export function createSmokePorts(): ServerApiPorts {
       async verifyPassword() {
         return false;
       },
+      async checkLoginLock() {
+        return null;
+      },
       async recordFailedLogin() {
         return 1;
       },

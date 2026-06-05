@@ -356,6 +356,21 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       return verifyPasswordHash(password, passwordHash);
     },
 
+    async checkLoginLock({ email, ip }) {
+      const row = await options.db
+        .selectFrom('auth_login_failures')
+        .select(['failed_attempts', 'lock_until', 'penalty_kind'])
+        .where('email_normalized', '=', email)
+        .where('ip_address', '=', ip)
+        .executeTakeFirst();
+      if (!row) return null;
+      if (row.penalty_kind === 'permanent') return { kind: 'permanent' };
+      if (row.lock_until && toDate(row.lock_until) > now()) {
+        return calculateLoginPenalty(row.failed_attempts);
+      }
+      return null;
+    },
+
     async recordFailedLogin(input) {
       const penalty = calculateLoginPenalty(1);
       const lockUntil = penalty.kind === 'temporary'
@@ -399,8 +414,12 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       return failedAttempts;
     },
 
-    async recordSuccessfulLogin() {
-      return undefined;
+    async recordSuccessfulLogin(input) {
+      await options.db
+        .deleteFrom('auth_login_failures')
+        .where('email_normalized', '=', input.email)
+        .where('ip_address', '=', input.ip)
+        .execute();
     },
 
     async issueTokenPair(input) {

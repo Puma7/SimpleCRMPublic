@@ -1,6 +1,7 @@
 import type { WorkflowNodeCatalogEntry, WorkflowTemplate } from '@simplecrm/core';
 import type { Readable } from 'node:stream';
 
+import type { LoginPenalty } from '../auth';
 import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from '../jobs';
 import type { ConversationLockReason } from '../locks';
 import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
@@ -167,6 +168,10 @@ export type AuthApiPort = {
   acceptInvitation?(input: AuthInvitationAcceptInput): Promise<AuthInvitationAcceptResult>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   verifyPassword(password: string, passwordHash: string): Promise<boolean>;
+  checkLoginLock?(input: {
+    email: string;
+    ip: string;
+  }): Promise<LoginPenalty | null>;
   recordFailedLogin(input: {
     email: string;
     ip: string;

@@ -23,6 +23,6 @@ export function calculateLoginPenalty(failedAttempts: number): LoginPenalty {
   return { kind: 'temporary', lockSeconds: LOGIN_BACKOFF_SECONDS[index] };
 }
 
-export function shouldResetFailureCounterAfterSuccess(): false {
-  return false;
+export function shouldResetFailureCounterAfterSuccess(): true {
+  return true;
 }

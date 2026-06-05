@@ -142,7 +142,7 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('./restore-drill.sh:/app/restore-drill.sh:ro');
     expect(compose).toContain('RESTORE_DRILL_DUMP_PATH');
     expect(compose).toContain('RESTORE_DRILL_AUDIT_ARCHIVE_PATH');
-    expect(compose).toContain('image: minio/minio:latest');
+    expect(compose).toContain('image: minio/minio:RELEASE.2025-04-22T22-12-26Z');
     expect(compose).toContain('profiles: ["minio"]');
     expect(compose).toContain('command: ["server", "/data", "--console-address", ":9001"]');
     expect(compose).toContain('"${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"');
@@ -241,6 +241,9 @@ describe('server edition repository boundaries', () => {
     expect(doctor).toContain('backup_checksum=ok');
     expect(caddyfile).toContain('{$PUBLIC_DOMAIN:localhost}');
     expect(caddyfile).toContain('reverse_proxy api:3000');
+    expect(caddyfile).toContain('header_up -x-simplecrm-user-id');
+    expect(caddyfile).toContain('header_up -x-simplecrm-workspace-id');
+    expect(caddyfile).toContain('header_up -x-simplecrm-role');
     expect(caddyfile).toContain('encode gzip zstd');
     expect(caddyfile).toContain('output file /var/log/access.log');
     expect(caddyfile).toContain('format json');
@@ -1687,6 +1690,17 @@ describe('server edition repository boundaries', () => {
         payload: { reason: 'reply' },
       });
       expect(invalidBearerDoesNotUseHeaderFallback.statusCode).toBe(401);
+
+      const headerOnlyPrincipalIsRejected = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/users',
+        headers: {
+          'x-simplecrm-user-id': 'user-a',
+          'x-simplecrm-workspace-id': 'workspace-a',
+          'x-simplecrm-role': 'owner',
+        },
+      });
+      expect(headerOnlyPrincipalIsRejected.statusCode).toBe(401);
     } finally {
       await app.close();
     }
@@ -2074,6 +2088,9 @@ function makeServerApiPorts(): ServerApiPorts {
       },
       async verifyPassword(password) {
         return password === 'correct';
+      },
+      async checkLoginLock() {
+        return null;
       },
       async recordFailedLogin() {
         return 1;
