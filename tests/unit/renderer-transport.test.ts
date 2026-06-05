@@ -2637,7 +2637,8 @@ describe('renderer transport', () => {
 
     await expect(transport.invoke(IPCChannels.Email.ListMessageAttachments, 11)).resolves.toEqual([
       {
-        id: 31,
+        id: 801,
+        source_sqlite_id: 31,
         filename_display: 'invoice.pdf',
         size_bytes: 12345,
         content_type: 'application/pdf',

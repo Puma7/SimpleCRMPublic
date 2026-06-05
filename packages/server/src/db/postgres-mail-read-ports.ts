@@ -20,7 +20,7 @@ import {
   type SpamScoreBreakdown,
   type SenderFilterResult,
 } from '@simplecrm/core';
-import type { Kysely, Selectable, Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type Selectable, type Updateable } from 'kysely';
 
 import type {
   EmailAttachmentContentApiPort,
@@ -685,7 +685,6 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .where('workspace_id', '=', input.workspaceId)
             .limit(limit + 1);
 
-          if (input.cursor !== undefined) query = query.where('id', '<', input.cursor);
           if (input.offset !== undefined) query = query.offset(input.offset);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
           if (input.folderPath !== undefined) {
@@ -707,6 +706,18 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           if (search) {
             query = applyMessageSearchFilter(query, search, searchMode ?? 'like');
           }
+          const priorityCursor =
+            input.cursor !== undefined && input.sort === 'priority'
+              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, input.cursor)
+              : undefined;
+          query = applyMessageCursor(
+            query,
+            input.workspaceId,
+            input.cursor,
+            input.sort,
+            input.view,
+            priorityCursor,
+          );
           query = applyMessageListOrder(query, input.sort, input.view);
 
           const rows = await query.execute();
@@ -2515,6 +2526,148 @@ function applyMessageListFilter(
   return query.where(kyselySql<boolean>`(outbound_hold = true OR (ticket_code IS NOT NULL AND ticket_code <> ''))`);
 }
 
+const messagePriorityRankSql = kyselySql<number>`CASE
+  WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:hoch') THEN 0
+  WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:mittel') THEN 1
+  WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:niedrig') THEN 2
+  ELSE 3
+END`;
+const messageSortDateSql = kyselySql<Date | null>`coalesce(email_messages.date_received, email_messages.created_at)`;
+const cursorMessageSortDateSql = kyselySql<Date | null>`coalesce(cursor_message.date_received, cursor_message.created_at)`;
+
+type PriorityCursorAnchor = Readonly<{
+  id: number;
+  rank: number;
+  sortDate: Date | null;
+}>;
+
+async function fetchPriorityCursorAnchor(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  cursor: number,
+): Promise<PriorityCursorAnchor | null> {
+  const row = await trx
+    .selectFrom('email_messages')
+    .select([
+      'id',
+      kyselySql<Date | null>`coalesce(date_received, created_at)`.as('sort_date'),
+      messagePriorityRankSql.as('priority_rank'),
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', cursor)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    id: row.id,
+    rank: Number(row.priority_rank),
+    sortDate: row.sort_date,
+  };
+}
+
+function applyMessageCursor(
+  query: any,
+  workspaceId: string,
+  cursor: number | undefined,
+  sort: Parameters<EmailMessageApiPort['list']>[0]['sort'],
+  view: Parameters<EmailMessageApiPort['list']>[0]['view'],
+  priorityCursor?: PriorityCursorAnchor | null,
+): any {
+  if (cursor === undefined) return query;
+  if (view === 'snoozed') {
+    // Must stay aligned with applyMessageListOrder: snoozed_until ASC, id DESC tie-break.
+    return query.where(kyselySql<boolean>`EXISTS (
+      SELECT 1
+      FROM email_messages cursor_message
+      WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+        AND cursor_message.id = ${cursor}
+        AND (
+          email_messages.snoozed_until > cursor_message.snoozed_until
+          OR (
+            email_messages.snoozed_until = cursor_message.snoozed_until
+            AND email_messages.id < cursor_message.id
+          )
+        )
+    )`);
+  }
+  if (sort === 'date_asc') {
+    return query.where(kyselySql<boolean>`EXISTS (
+      SELECT 1
+      FROM email_messages cursor_message
+      WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+        AND cursor_message.id = ${cursor}
+        AND (
+          (${cursorMessageSortDateSql} IS NOT NULL AND ${messageSortDateSql} IS NULL)
+          OR (
+            ${messageSortDateSql} IS NULL
+            AND ${cursorMessageSortDateSql} IS NULL
+            AND email_messages.id > cursor_message.id
+          )
+          OR (
+            ${cursorMessageSortDateSql} IS NOT NULL
+            AND ${messageSortDateSql} > ${cursorMessageSortDateSql}
+          )
+          OR (
+            ${cursorMessageSortDateSql} IS NOT NULL
+            AND ${messageSortDateSql} = ${cursorMessageSortDateSql}
+            AND email_messages.id > cursor_message.id
+          )
+        )
+    )`);
+  }
+  if (sort === 'priority') {
+    if (!priorityCursor) return query.where(kyselySql<boolean>`false`);
+    const priorityCursorSortDate = kyselySql<Date | null>`${priorityCursor.sortDate}::timestamptz`;
+    return query.where(kyselySql<boolean>`(
+      ${messagePriorityRankSql}
+      > ${priorityCursor.rank}
+      OR (
+        ${messagePriorityRankSql}
+        = ${priorityCursor.rank}
+        AND (
+          (${priorityCursorSortDate} IS NULL AND ${messageSortDateSql} IS NOT NULL)
+          OR (
+            ${messageSortDateSql} IS NULL
+            AND ${priorityCursorSortDate} IS NULL
+            AND email_messages.id < ${priorityCursor.id}
+          )
+          OR (
+            ${priorityCursorSortDate} IS NOT NULL
+            AND ${messageSortDateSql} < ${priorityCursorSortDate}
+          )
+          OR (
+            ${priorityCursorSortDate} IS NOT NULL
+            AND ${messageSortDateSql} = ${priorityCursorSortDate}
+            AND email_messages.id < ${priorityCursor.id}
+          )
+        )
+      )
+    )`);
+  }
+  return query.where(kyselySql<boolean>`EXISTS (
+    SELECT 1
+    FROM email_messages cursor_message
+    WHERE cursor_message.workspace_id = ${workspaceId}::uuid
+      AND cursor_message.id = ${cursor}
+      AND (
+        (${cursorMessageSortDateSql} IS NULL AND ${messageSortDateSql} IS NOT NULL)
+        OR (
+          ${messageSortDateSql} IS NULL
+          AND ${cursorMessageSortDateSql} IS NULL
+          AND email_messages.id < cursor_message.id
+        )
+        OR (
+          ${cursorMessageSortDateSql} IS NOT NULL
+          AND ${messageSortDateSql} < ${cursorMessageSortDateSql}
+        )
+        OR (
+          ${cursorMessageSortDateSql} IS NOT NULL
+          AND ${messageSortDateSql} = ${cursorMessageSortDateSql}
+          AND email_messages.id < cursor_message.id
+        )
+      )
+  )`);
+}
+
 function applyMessageDoneFilter(
   query: any,
   filter: Parameters<EmailMessageApiPort['list']>[0]['doneFilter'],
@@ -2572,16 +2725,10 @@ function applyMessageListOrder(
   sort: Parameters<EmailMessageApiPort['list']>[0]['sort'],
   view: Parameters<EmailMessageApiPort['list']>[0]['view'],
 ): any {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   if (view === 'snoozed') return query.orderBy('snoozed_until', 'asc').orderBy('id', 'desc');
   if (sort === 'priority') {
     return query
-      .orderBy(kyselySql<number>`CASE
-        WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:hoch') THEN 0
-        WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:mittel') THEN 1
-        WHEN EXISTS (SELECT 1 FROM email_message_tags t WHERE t.message_id = email_messages.id AND t.tag = 'priority:niedrig') THEN 2
-        ELSE 3
-      END`, 'asc')
+      .orderBy(messagePriorityRankSql, 'asc')
       .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')
       .orderBy('id', 'desc');
   }
