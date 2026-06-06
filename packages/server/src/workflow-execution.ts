@@ -999,6 +999,18 @@ async function walkGraph(
       && !input.inboundGate.conditionOk
     ) {
       input.log.push(`skip:${node.id}:no_prior_condition`);
+      // Record the skip as a run step so the run history shows *why* nothing
+      // happened (otherwise an inbound side-effect node is silently dropped and
+      // the run looks like an empty "OK").
+      if (!input.dryRun) {
+        await insertRunStep(trx, input.context, node, {
+          status: 'skipped',
+          port: 'blocked',
+          message: 'übersprungen: keine vorausgehende erfüllte Bedingung (Inbound-Schutz)',
+          durationMs: 0,
+          now: input.now,
+        });
+      }
       break;
     }
 

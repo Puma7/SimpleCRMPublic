@@ -4538,6 +4538,9 @@ describe('server edition foundation', () => {
     ]);
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['vip-safe', 'explicit-inbound']);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      // Workflow 40: side-effect node gated off (no prior condition) — now recorded
+      // as a visible "skipped" step instead of vanishing into an empty OK run.
+      ['tag-direct', 'email.tag', 'skipped', 'blocked'],
       ['cond-1', 'condition', 'ok', 'yes'],
       ['tag-safe', 'email.tag', 'ok', 'default'],
       ['tag-explicit', 'email.tag', 'ok', 'default'],
