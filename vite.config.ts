@@ -90,6 +90,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Skip the gzip-size report: it walks every chunk through gzip at the very
+    // end of the build, the peak-memory phase that OOM-kills `vite build` on
+    // small (4 GB) hosts. It only affects console output, not the artifacts.
+    reportCompressedSize: false,
     rollupOptions: {
       input: { main: './index.html' },
     },
