@@ -823,7 +823,9 @@ async function startOrReuseRun(
       message_id: input.message === null ? null : Number(input.message.id),
       direction: input.direction,
       status: 'running',
-      log_json: [],
+      // jsonb column: node-postgres serializes a JS array as a Postgres array
+      // literal ({...}), which is invalid JSON. Pass a JSON string instead.
+      log_json: JSON.stringify([] as string[]),
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       started_at: input.now,
@@ -846,7 +848,9 @@ async function finishExistingRun(
     .updateTable('email_workflow_runs')
     .set({
       status: input.status,
-      log_json: input.log,
+      // jsonb column: stringify the array so node-postgres sends valid JSON
+      // instead of a Postgres array literal ({...}) -> 22P02 invalid input.
+      log_json: JSON.stringify(input.log),
       finished_at: input.now,
       updated_at: input.now,
     })
@@ -3987,7 +3991,9 @@ async function trainWorkflowSpamStatus(
       account_id: message.account_id === null || message.account_id === undefined ? null : Number(message.account_id),
       label,
       source: 'workflow',
-      feature_keys_json: featureKeys.length > 0 ? [...featureKeys] : null,
+      // jsonb column: stringify the array (matches postgres-mail-read-ports);
+      // a raw JS array would serialize as a Postgres array literal and fail.
+      feature_keys_json: featureKeys.length > 0 ? JSON.stringify([...featureKeys]) : null,
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       created_at: now,

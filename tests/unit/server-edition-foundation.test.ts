@@ -34827,6 +34827,26 @@ function ilikeMatch(actual: unknown, pattern: unknown): boolean {
   return haystack.includes(needle);
 }
 
+// Emulates the Postgres jsonb round-trip. Production passes a JSON *string* for
+// these columns so node-postgres sends valid JSON instead of a Postgres array
+// literal ({...}); on read node-postgres returns the parsed value. The fake
+// store keeps the parsed value so reads (and assertions) match production.
+const JSONB_STRING_COLUMNS = ['log_json', 'feature_keys_json'] as const;
+function decodeJsonbStringColumns(value: Record<string, unknown>): Record<string, unknown> {
+  const decoded: Record<string, unknown> = { ...value };
+  for (const column of JSONB_STRING_COLUMNS) {
+    if (typeof decoded[column] === 'string') {
+      try {
+        decoded[column] = JSON.parse(decoded[column] as string);
+      } catch {
+        // Leave as-is: Postgres would reject invalid jsonb, which the dedicated
+        // workflow-execution-jsonb test guards against at the binding layer.
+      }
+    }
+  }
+  return decoded;
+}
+
 class FakeWorkflowExecutionInsert {
   private row: Record<string, unknown> | null = null;
 
@@ -34838,7 +34858,7 @@ class FakeWorkflowExecutionInsert {
   ) {}
 
   values(value: Record<string, unknown>) {
-    this.row = { ...value };
+    this.row = decodeJsonbStringColumns(value);
     return this;
   }
 
@@ -34908,7 +34928,7 @@ class FakeWorkflowExecutionUpdate {
   constructor(private readonly rows: Array<Record<string, unknown>>) {}
 
   set(value: Record<string, unknown>) {
-    this.patch = { ...value };
+    this.patch = decodeJsonbStringColumns(value);
     return this;
   }
 

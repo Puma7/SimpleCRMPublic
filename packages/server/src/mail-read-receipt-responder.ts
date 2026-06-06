@@ -461,7 +461,9 @@ export function createPostgresReadReceiptOutboundReviewPort(options: {
                 message_id: input.messageId,
                 direction: 'outbound',
                 status: 'queued',
-                log_json: ['queued:server_read_receipt_outbound_review'],
+                // jsonb column: stringify the array so node-postgres sends
+                // valid JSON instead of a Postgres array literal ({...}).
+                log_json: JSON.stringify(['queued:server_read_receipt_outbound_review']),
                 source_row: { origin: 'server_read_receipt_outbound_review' },
                 imported_in_run_id: null,
                 started_at: null,

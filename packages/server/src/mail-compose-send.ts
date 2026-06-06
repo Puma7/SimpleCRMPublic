@@ -617,7 +617,9 @@ export function createPostgresComposeOutboundReviewPort(options: {
                 message_id: input.draftMessageId,
                 direction: 'outbound',
                 status: 'queued',
-                log_json: ['queued:server_compose_outbound_review'],
+                // jsonb column: stringify the array so node-postgres sends
+                // valid JSON instead of a Postgres array literal ({...}).
+                log_json: JSON.stringify(['queued:server_compose_outbound_review']),
                 source_row: serverApiSourceRow(),
                 imported_in_run_id: null,
                 started_at: null,
