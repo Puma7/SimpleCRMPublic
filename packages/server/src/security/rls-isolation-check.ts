@@ -53,6 +53,8 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('products'),
   rlsPolicyTable('deals'),
   rlsPolicyTable('tasks'),
+  rlsPolicyTable('user_groups'),
+  rlsPolicyTable('user_group_members'),
   rlsPolicyTable('deal_products'),
   rlsPolicyTable('calendar_events'),
   rlsPolicyTable('customer_custom_fields'),

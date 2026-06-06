@@ -13,6 +13,7 @@ import { emailAccountServerSettingsMigration } from './0012_email_account_server
 import { emailComposeDraftFieldsMigration } from './0013_email_compose_draft_fields';
 import { emailReplySuggestionFieldsMigration } from './0014_email_reply_suggestion_fields';
 import { taskCustomerOptionalMigration } from './0015_task_customer_optional';
+import { taskAssignmentAndUserGroupsMigration } from './0016_task_assignment_and_user_groups';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -32,6 +33,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   emailComposeDraftFieldsMigration,
   emailReplySuggestionFieldsMigration,
   taskCustomerOptionalMigration,
+  taskAssignmentAndUserGroupsMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

@@ -18,6 +18,8 @@ export type ServerDatabase = {
   products: ProductsTable;
   deals: DealsTable;
   tasks: TasksTable;
+  user_groups: UserGroupsTable;
+  user_group_members: UserGroupMembersTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -280,6 +282,9 @@ export type TasksTable = {
   due_date: TimestampColumn | null;
   priority: string;
   completed: boolean;
+  assignment_scope: Generated<'global' | 'user' | 'group'>;
+  assigned_user_id: string | null;
+  assigned_group_id: number | null;
   calendar_event_source_sqlite_id: number | null;
   snoozed_until: TimestampColumn | null;
   created_date: TimestampColumn | null;
@@ -288,6 +293,22 @@ export type TasksTable = {
   imported_in_run_id: string | null;
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
+};
+
+export type UserGroupsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type UserGroupMembersTable = {
+  workspace_id: string;
+  group_id: number;
+  user_id: string;
+  created_at: TimestampColumn;
 };
 
 export type DealProductsTable = {
