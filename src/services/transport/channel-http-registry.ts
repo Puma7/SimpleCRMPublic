@@ -161,7 +161,7 @@ type UserGroupMemberRecord = {
 
 type ServerLogEntry = {
   time: string
-  level: "warn" | "error" | "fatal"
+  level: "info" | "warn" | "error" | "fatal"
   message: string
   source: string
 }
@@ -1393,6 +1393,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "POST",
     path: "/api/v1/diagnostics/server-logs/clear",
     transform: () => ({ success: true }),
+  })],
+  [IPCChannels.Diagnostics.SelfTestServerLogs, () => ({
+    method: "POST",
+    path: "/api/v1/diagnostics/server-logs/self-test",
+    transform: (body) => dataBody<{ written: number }>(body),
   })],
 
   [IPCChannels.Calendar.GetCalendarEvents, () => ({

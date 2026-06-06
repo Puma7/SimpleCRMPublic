@@ -8,7 +8,7 @@
  * Logging must never throw, so all I/O is best-effort.
  */
 
-export type ServerLogLevel = 'warn' | 'error' | 'fatal';
+export type ServerLogLevel = 'info' | 'warn' | 'error' | 'fatal';
 
 export type ServerLogEntry = {
   time: string;
@@ -20,6 +20,9 @@ export type ServerLogEntry = {
 export type ServerLogStore = {
   capture(input: { level: ServerLogLevel; message: string; source?: string; time?: Date }): void;
   recent(options?: { level?: ServerLogLevel; limit?: number }): ServerLogEntry[];
+  /** Writes one info/warn/error sample entry so operators can verify the
+   *  capture → persist → read → frontend pipeline end-to-end. Returns the count. */
+  selfTest(): number;
   clear(): void;
   count(): number;
 };
@@ -41,7 +44,7 @@ export type CreateServerLogStoreOptions = {
 };
 
 const DEFAULT_MAX_ENTRIES = 2000;
-const LEVEL_RANK: Record<ServerLogLevel, number> = { warn: 1, error: 2, fatal: 3 };
+const LEVEL_RANK: Record<ServerLogLevel, number> = { info: 0, warn: 1, error: 2, fatal: 3 };
 
 export function createServerLogStore(options: CreateServerLogStoreOptions = {}): ServerLogStore {
   const maxEntries = normalizeMaxEntries(options.maxEntries);
@@ -72,19 +75,32 @@ export function createServerLogStore(options: CreateServerLogStoreOptions = {}):
     }
   }
 
+  function captureEntry(input: { level: ServerLogLevel; message: string; source?: string; time?: Date }): void {
+    const message = redactSecrets(String(input.message ?? '').slice(0, 4000));
+    if (!message) return;
+    const entry: ServerLogEntry = {
+      time: (input.time ?? now()).toISOString(),
+      level: input.level,
+      message,
+      source: input.source?.trim() || 'app',
+    };
+    buffer.push(entry);
+    if (buffer.length > maxEntries) buffer.splice(0, buffer.length - maxEntries);
+    persist(entry);
+  }
+
   return {
-    capture(input) {
-      const message = redactSecrets(String(input.message ?? '').slice(0, 4000));
-      if (!message) return;
-      const entry: ServerLogEntry = {
-        time: (input.time ?? now()).toISOString(),
-        level: input.level,
-        message,
-        source: input.source?.trim() || 'app',
-      };
-      buffer.push(entry);
-      if (buffer.length > maxEntries) buffer.splice(0, buffer.length - maxEntries);
-      persist(entry);
+    capture: captureEntry,
+    selfTest() {
+      const levels: ServerLogLevel[] = ['info', 'warn', 'error'];
+      for (const level of levels) {
+        captureEntry({
+          level,
+          message: `Server-Log Selbsttest (${level}) – über Diagnose ausgelöst; bestätigt, dass das Logging funktioniert.`,
+          source: 'self-test',
+        });
+      }
+      return levels.length;
     },
     recent(opts) {
       const minRank = opts?.level ? LEVEL_RANK[opts.level] : LEVEL_RANK.warn;
@@ -142,7 +158,7 @@ function parseEntry(line: string): ServerLogEntry | null {
   try {
     const value = JSON.parse(line) as Partial<ServerLogEntry>;
     if (!value || typeof value.message !== 'string') return null;
-    if (value.level !== 'warn' && value.level !== 'error' && value.level !== 'fatal') return null;
+    if (value.level !== 'info' && value.level !== 'warn' && value.level !== 'error' && value.level !== 'fatal') return null;
     return {
       time: typeof value.time === 'string' ? value.time : new Date(0).toISOString(),
       level: value.level,

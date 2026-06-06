@@ -8,7 +8,11 @@ export async function handleDiagnosticsRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  if (req.path !== '/api/v1/diagnostics/server-logs' && req.path !== '/api/v1/diagnostics/server-logs/clear') {
+  if (
+    req.path !== '/api/v1/diagnostics/server-logs'
+    && req.path !== '/api/v1/diagnostics/server-logs/clear'
+    && req.path !== '/api/v1/diagnostics/server-logs/self-test'
+  ) {
     return null;
   }
 
@@ -23,10 +27,16 @@ export async function handleDiagnosticsRoute(
     return data(200, { cleared: true });
   }
 
+  if (req.path === '/api/v1/diagnostics/server-logs/self-test') {
+    if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    const written = ports.serverLogs.selfTest();
+    return data(200, { written });
+  }
+
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
 
   const level = parseLevel(req.query?.level);
-  if (level === null) return error(400, 'invalid_level', 'level muss warn, error oder fatal sein');
+  if (level === null) return error(400, 'invalid_level', 'level muss info, warn, error oder fatal sein');
   const limit = parseLimit(req.query?.limit);
   if (limit === null) return error(400, 'invalid_limit', `limit muss zwischen 1 und ${MAX_LOG_LIMIT} liegen`);
 
@@ -37,9 +47,9 @@ export async function handleDiagnosticsRoute(
   return data(200, { items, total: items.length });
 }
 
-function parseLevel(value: string | undefined): 'warn' | 'error' | 'fatal' | undefined | null {
+function parseLevel(value: string | undefined): 'info' | 'warn' | 'error' | 'fatal' | undefined | null {
   if (value === undefined || value === '') return undefined;
-  if (value === 'warn' || value === 'error' || value === 'fatal') return value;
+  if (value === 'info' || value === 'warn' || value === 'error' || value === 'fatal') return value;
   return null;
 }
 

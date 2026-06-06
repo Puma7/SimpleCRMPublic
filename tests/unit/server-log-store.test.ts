@@ -16,6 +16,17 @@ describe('server log store', () => {
     expect(store.recent()[0]).toMatchObject({ level: 'warn', source: 'pino', time: '2026-07-08T10:00:00.000Z' });
   });
 
+  test('selfTest writes info/warn/error sample entries through the capture pipeline', () => {
+    const store = createServerLogStore();
+    const written = store.selfTest();
+    expect(written).toBe(3);
+    // Default (warn+) view hides the info entry; the "all" (info) view shows it.
+    expect(store.recent().map((e) => e.level)).toEqual(['warn', 'error']);
+    const all = store.recent({ level: 'info' });
+    expect(all.map((e) => e.level)).toEqual(['info', 'warn', 'error']);
+    expect(all.every((e) => e.source === 'self-test')).toBe(true);
+  });
+
   test('respects the ring buffer cap and limit', () => {
     const store = createServerLogStore({ maxEntries: 3 });
     for (let i = 1; i <= 6; i++) store.capture({ level: 'warn', message: `m${i}` });

@@ -72,6 +72,7 @@ const TaskChannels = literal({
 const DiagnosticsChannels = literal({
   GetServerLogs: 'diagnostics:get-server-logs',
   ClearServerLogs: 'diagnostics:clear-server-logs',
+  SelfTestServerLogs: 'diagnostics:self-test-server-logs',
 });
 
 const UserGroupChannels = literal({

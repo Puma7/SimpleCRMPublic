@@ -4076,13 +4076,15 @@ export type HealthCheckApiPort = {
 
 export type ServerLogReadEntry = {
   time: string;
-  level: 'warn' | 'error' | 'fatal';
+  level: 'info' | 'warn' | 'error' | 'fatal';
   message: string;
   source: string;
 };
 
 export type ServerLogReadPort = {
-  recent(options?: { level?: 'warn' | 'error' | 'fatal'; limit?: number }): readonly ServerLogReadEntry[];
+  recent(options?: { level?: 'info' | 'warn' | 'error' | 'fatal'; limit?: number }): readonly ServerLogReadEntry[];
+  /** Emits sample info/warn/error entries so operators can verify the pipeline. */
+  selfTest(): number;
   clear(): void;
   count(): number;
 };
