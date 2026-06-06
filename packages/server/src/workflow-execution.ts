@@ -1305,6 +1305,11 @@ async function executeServerNode(
     if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
     return await scheduleAiAgentJob(trx, doc, context, node, config, createDraft.value, now);
   }
+  if (type === 'ai.pick_canned') {
+    const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
+    if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
+    return await scheduleAiPickCannedJob(trx, doc, context, node, config, createDraft.value, now);
+  }
   if (type === 'ai.agent_tool') {
     return await executeWorkflowAgentTool(trx, context, config);
   }
@@ -2196,6 +2201,66 @@ async function scheduleAiAgentJob(
     variables: {
       'ai.agent.status': 'pending',
       'ai.agent.job_id': jobId,
+    },
+  };
+}
+
+async function scheduleAiPickCannedJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  createDraft: boolean,
+  now: Date,
+): Promise<NodeResult> {
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+
+  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    createDraft,
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+  };
+  if (context.messageId !== null) payload.messageId = context.messageId;
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (resumeNodeId) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = resumeNodeId;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      resumeNodeId,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.pick_canned',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: Boolean(resumeNodeId),
+    deferred: Boolean(resumeNodeId),
+    message: `queued_ai_pick_canned:${jobId}`,
+    variables: {
+      'ai.canned.status': 'pending',
+      'ai.canned.job_id': jobId,
     },
   };
 }

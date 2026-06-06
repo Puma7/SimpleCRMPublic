@@ -160,6 +160,7 @@ import {
   createMaintenanceJobHandlers,
   createEmailComposeSenderPort,
   createPostgresAiAgentPort,
+  createPostgresAiPickCannedPort,
   createPostgresAiClassificationPort,
   createPostgresAiReviewPort,
   createPostgresAiTextTransformApiPort,
@@ -3797,6 +3798,80 @@ describe('server edition foundation', () => {
     expect((rows.jobs[1]?.payload as any).context.eventVariables).toMatchObject({
       'ai.agent.response': 'Antwort aus Agent',
       'draft.id': 15,
+    });
+  });
+
+  test('postgres AI pick-canned port chooses a canned response and resumes the workflow', async () => {
+    const now = new Date('2026-06-03T12:40:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      messages: [{
+        id: 60,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 600,
+        account_id: 7,
+        subject: 'Wo bleibt mein Paket',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Wo bleibt mein Paket?',
+        body_text: 'Wo bleibt mein Paket?',
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      cannedResponses: [
+        { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Versandstatus', body: 'Status zu {{subject}}: unterwegs.', sort_order: 0 },
+        { id: 102, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1020, title: 'Retoure', body: 'Retoure-Infos.', sort_order: 1 },
+      ],
+    });
+    const chatInputs: any[] = [];
+    const secrets = { async readSecret() { return Buffer.from('sk-test'); } } as any;
+    const port = createPostgresAiPickCannedPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion(input) {
+        chatInputs.push(input);
+        return '1';
+      },
+    });
+
+    await port.pickCanned({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 60,
+      profileId: 21,
+      createDraft: false,
+      continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'message.id': 60 } },
+    });
+
+    // The numbered canned list is shown to the model.
+    expect(chatInputs[0].user).toContain('1. Versandstatus');
+    expect(chatInputs[0].user).toContain('2. Retoure');
+    // Pick "1" -> chosen canned, placeholder filled, exposed in the resumed workflow.
+    expect((rows.jobs[0]?.payload as any).context.eventVariables).toMatchObject({
+      'message.id': 60,
+      'ai.canned.pick': 1,
+      'ai.canned.id': 101,
+      'ai.canned.title': 'Versandstatus',
+      'ai.canned.text': 'Status zu Wo bleibt mein Paket: unterwegs.',
     });
   });
 
@@ -34767,6 +34842,7 @@ type AiReplySuggestionFakeRows = {
   jobs: Array<Record<string, unknown>>;
   knowledgeChunks: Array<Record<string, unknown>>;
   activityLog: Array<Record<string, unknown>>;
+  cannedResponses: Array<Record<string, unknown>>;
 };
 
 function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
@@ -34786,6 +34862,7 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
     jobs: input.jobs ?? [],
     knowledgeChunks: input.knowledgeChunks ?? [],
     activityLog: input.activityLog ?? [],
+    cannedResponses: input.cannedResponses ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
@@ -34813,6 +34890,8 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
         return rows.knowledgeChunks;
       case 'activity_log':
         return rows.activityLog;
+      case 'email_canned_responses':
+        return rows.cannedResponses;
       default:
         throw new Error(`unexpected AI reply suggestion table: ${table}`);
     }

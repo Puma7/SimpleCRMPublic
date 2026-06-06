@@ -112,6 +112,7 @@ import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
 import { createPostgresAiReplySuggestionPort } from './ai-reply-suggestion';
 import {
   createPostgresAiAgentPort,
+  createPostgresAiPickCannedPort,
   createPostgresAiClassificationPort,
   createPostgresAiReviewPort,
   createPostgresAiTextTransformApiPort,
@@ -311,6 +312,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
             } : {}),
             ...(db ? {
               aiAgent: createPostgresAiAgentPort({ db, secrets }),
+              aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
               aiClassification: createPostgresAiClassificationPort({ db, secrets }),
               aiReview: createPostgresAiReviewPort({ db, secrets }),
               aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),

@@ -6,6 +6,8 @@ import type {
   AiAgentJobPort,
   AiClassificationJobPort,
   AiClassificationJobPlan,
+  AiPickCannedJobPlan,
+  AiPickCannedJobPort,
   AiReviewJobPlan,
   AiReviewJobPort,
   AiTransformTextJobPlan,
@@ -132,6 +134,7 @@ export type ProductionJobHandlersOptions = Readonly<{
   mailVacationAutoReply?: MailVacationAutoReplyJobPort;
   aiReplySuggestion?: AiReplySuggestionJobPort;
   aiAgent?: AiAgentJobPort;
+  aiPickCanned?: AiPickCannedJobPort;
   aiClassification?: AiClassificationJobPort;
   aiReview?: AiReviewJobPort;
   aiTransformText?: AiTransformTextJobPort;
@@ -177,6 +180,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'ai.agent': async (job) => {
       if (!options.aiAgent) throw new Error('AI agent job port is not configured');
       await options.aiAgent.runAgent(buildAiAgentJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.pick_canned': async (job) => {
+      if (!options.aiPickCanned) throw new Error('AI pick-canned job port is not configured');
+      await options.aiPickCanned.pickCanned(buildAiPickCannedJobPlan(job.payload, job.workspaceId));
     },
     'ai.classify': async (job) => {
       if (!options.aiClassification) throw new Error('AI classification job port is not configured');
@@ -308,6 +315,22 @@ export function buildAiAgentJobPlan(
       4000,
     ),
     ...optionalPositiveInteger(payload, 'knowledgeBaseId'),
+    createDraft: optionalBoolean(payload, 'createDraft', false),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload),
+  };
+}
+
+export function buildAiPickCannedJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiPickCannedJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'profileId'),
     createDraft: optionalBoolean(payload, 'createDraft', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),

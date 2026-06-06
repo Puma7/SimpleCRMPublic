@@ -59,14 +59,15 @@
 
 **Tiefe (später):** tatsächlichen SMTP-Auto-Versand hinter separatem „live"-Flag + Rate-Limit-Tabelle + `Auto-Submitted: auto-replied`-Header (RFC 3834) verdrahten; Tickettyp-/Absender-Whitelist; Audit-Eintrag; Eskalations-Routing.
 
-### P1-5 · KI-gestützte Textbaustein-Auswahl + Variablenfüllung  — Status: ⬜ (Design steht)
+### P1-5 · KI-gestützte Textbaustein-Auswahl + Variablenfüllung  — Status: 🟩 Basis steht
 **Ziel:** KI wählt aus Canned Responses den passenden Baustein und füllt Variablen (günstiger/rechtssicherer als Freitext).
 
-**Nächster Schritt (Code):**
-- [ ] Neuer AI-Port/Node `ai.pick_canned` analog `createPostgresAiAgentPort.runAgent` (`ai-classification.ts`): Canned-Liste laden (`email_canned_responses`), nummerierte Titel an das LLM („antworte nur mit der Nummer"), gewählten Baustein per `interpolateReplyTemplate`-Muster (`ai-reply-suggestion.ts:602`) mit Kunde/JTL-Variablen füllen → Draft via `createPostgresComposeDraftInTransaction`. Usage-Tracking über `runTrackedChatCompletion` (P0-1) gratis.
-- [ ] Tests: Auswahl + Platzhalterfüllung.
+**Basis (jetzt):**
+- [x] AI-Port `createPostgresAiPickCannedPort` + Node `ai.pick_canned`: lädt Canned-Liste (`email_canned_responses`), zeigt dem LLM nummerierte Titel („nur die Nummer, 0 = keiner"), füllt den gewählten Baustein per `interpolateWorkflowTemplate` und erstellt (optional) einen Draft (mit P2-9-Snapshot). Variablen `ai.canned.pick`/`id`/`title`/`text`; Usage-Tracking via `runTrackedChatCompletion` (P0-1).
+- [x] Worker-Handler `ai.pick_canned` + Plan-Builder + Server-Wiring + Workflow-Scheduling (`scheduleAiPickCannedJob`, async wie `ai.agent`).
+- [x] Test: Auswahl (Nummer→Baustein) + Platzhalterfüllung + Continuation-Variablen.
 
-**Tiefe (später):** Mehrsprachigkeit, A/B der Bausteine, Fallback auf Freitext bei „keiner passt".
+**Tiefe (später):** Kunden-/JTL-Platzhalter (`{{customer.*}}`) anreichern; Mehrsprachigkeit; Fallback auf Freitext-Agent bei „keiner passt" (pick 0); Editor-Palette.
 
 ### P1-6 · Modellwahl pro Tickettyp + native Provider  — Status: 🟩 Basis steht
 **Ziel:** Günstiges Modell für Standard, starkes für Reklamation; native Anthropic/Gemini zusätzlich zu OpenAI-kompatibel (lokal via `base_url` läuft bereits).
@@ -155,4 +156,10 @@
 | 2026-06-06 | P1-7 | 8 E-Commerce-Workflow-Vorlagen (`ecom-*`) | _dieser Commit_ |
 | 2026-06-06 | P1-8 | Quellen-Transparenz `ai.agent.sources` | _dieser Commit_ |
 | 2026-06-06 | P2-10 | SLA/Latenz-Basis (durch P0-1 abgedeckt) | d711ca5 |
-| 2026-06-06 | P1-4 | Auto-Antwort Policy-Gate `email.auto_reply` (ohne Versand) | _dieser Commit_ |
+| 2026-06-06 | P1-4 | Auto-Antwort Policy-Gate `email.auto_reply` (ohne Versand) | 2d011b7 |
+| 2026-06-06 | P2-11 | JTL-Aktions-Vorschlag `jtl.prepare_action` (read-only) | 30477cc |
+| 2026-06-06 | P1-6 | Native Anthropic/Gemini Provider-Adapter (`ai-providers.ts`) | 2bbb546 |
+| 2026-06-06 | P2-9 | Feedback-Lernen (`ai_reply_feedback` + Snapshot/Diff beim Senden) | 0a028a0 |
+| 2026-06-06 | P1-5 | `ai.pick_canned` (KI wählt Textbaustein, async Pipeline) | _dieser Commit_ |
+
+**Alle P0/P1/P2-Items: Basis steht ✅** — verbleibend sind nur noch als „Tiefe (später)" markierte Vertiefungen je Item.

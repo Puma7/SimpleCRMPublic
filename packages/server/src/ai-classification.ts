@@ -603,6 +603,151 @@ export function createPostgresAiAgentPort(
   };
 }
 
+export type AiPickCannedJobPlan = Readonly<{
+  workspaceId: string;
+  messageId?: number;
+  actorUserId?: string;
+  profileId?: number;
+  createDraft: boolean;
+  eventStrings?: JobPayload;
+  eventVariables?: JobPayload;
+  continuation?: AiClassificationContinuation;
+}>;
+
+export type AiPickCannedJobPort = Readonly<{
+  pickCanned(input: AiPickCannedJobPlan): Promise<void>;
+}>;
+
+type CannedRow = { id: number; title: string; body: string };
+
+/**
+ * P1-5: lets the KI pick the best-matching canned response for an inbound mail
+ * (instead of free-texting), fills its placeholders and creates a draft. Cheaper
+ * and more controllable than freeform generation; falls through (pick 0) when no
+ * canned response fits.
+ */
+export function createPostgresAiPickCannedPort(
+  options: PostgresAiClassificationPortOptions,
+): AiPickCannedJobPort {
+  const now = () => options.now?.() ?? new Date();
+  return {
+    async pickCanned(input): Promise<void> {
+      const context = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const message = input.messageId === undefined
+            ? null
+            : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
+          const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
+          const canned = await selectCannedResponses(trx, input.workspaceId);
+          return { message, profile, canned };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!context.profile) throw new Error('AI-Profil nicht gefunden');
+      if (context.canned.length === 0) throw new Error('Keine Textbausteine vorhanden');
+
+      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+      if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
+
+      const strings = {
+        ...stringsFromOptionalMessage(context.message),
+        ...stringPayload(input.eventStrings),
+      };
+      const list = context.canned.map((row, index) => `${index + 1}. ${row.title}`).join('\n');
+      const output = await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.pick_canned',
+          messageId: input.messageId ?? null,
+          actorUserId: input.actorUserId ?? null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: 'Du waehlst den am besten passenden Textbaustein fuer die Kundenmail. Antworte nur mit der Nummer des Bausteins, oder 0 wenn keiner passt.',
+          user: `Textbausteine:\n${list}\n\nKundenmail:\n${strings.combined_text ?? ''}`,
+        },
+      );
+      const pick = parseCannedPickNumber(output, context.canned.length);
+
+      const continuationVariables: JobPayload = { 'ai.canned.pick': pick };
+      let draftBody: string | null = null;
+      if (pick > 0) {
+        const chosen = context.canned[pick - 1]!;
+        continuationVariables['ai.canned.id'] = chosen.id;
+        continuationVariables['ai.canned.title'] = chosen.title;
+        draftBody = interpolateWorkflowTemplate(chosen.body, strings, variablePayload(input.eventVariables));
+        continuationVariables['ai.canned.text'] = draftBody.slice(0, 8000);
+      }
+
+      if (input.continuation || (input.createDraft && draftBody !== null)) {
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            if (input.createDraft && draftBody !== null && context.message) {
+              const draft = await createPostgresComposeDraftInTransaction(trx, {
+                workspaceId: input.workspaceId,
+                accountId: Number(context.message.account_id),
+                values: {
+                  accountId: Number(context.message.account_id),
+                  subject: replySubject(context.message.subject),
+                  bodyText: draftBody,
+                },
+              });
+              if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
+              continuationVariables['draft.id'] = draft.message.id;
+              await trx
+                .updateTable('email_messages')
+                .set({ ai_suggestion_snapshot: draftBody })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', Number(draft.message.id))
+                .execute();
+            }
+            if (input.continuation) {
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation,
+                variables: continuationVariables,
+                now: now(),
+              });
+            }
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
+    },
+  };
+}
+
+function parseCannedPickNumber(output: string, max: number): number {
+  const match = output.trim().match(/\d+/);
+  if (!match) return 0;
+  const value = Number(match[0]);
+  if (!Number.isFinite(value) || value < 1 || value > max) return 0;
+  return value;
+}
+
+async function selectCannedResponses(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<CannedRow[]> {
+  const rows = await trx
+    .selectFrom('email_canned_responses')
+    .select(['id', 'title', 'body'])
+    .where('workspace_id', '=', workspaceId)
+    .orderBy('sort_order', 'asc')
+    .limit(50)
+    .execute();
+  return rows.map((row) => ({ id: Number(row.id), title: String(row.title ?? ''), body: String(row.body ?? '') }));
+}
+
 async function selectClassificationMessage(
   trx: WorkspaceTransaction,
   workspaceId: string,
