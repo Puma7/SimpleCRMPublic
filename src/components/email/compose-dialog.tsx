@@ -171,16 +171,16 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   // Track which composeIntent the dialog has initialised for.
   // Re-init when the intent actually changes (user clicks Reply on another mail),
   // but NOT when unrelated context values (e.g. selectedAccountId) change while
-  // the dialog is open â€” that would clobber typed content.
+  // the dialog is open — that would clobber typed content.
   const initialisedDraftKeyRef = useRef<string | null>(null)
   // Guards against Radix firing onOpenChange(false) multiple times (e.g. rapid
   // ESC, or close-button double-click) which could otherwise kick off two
-  // parallel saveDraft â†’ closeDialog chains with stale closures.
+  // parallel saveDraft → closeDialog chains with stale closures.
   const closingRef = useRef(false)
   const editorRef = useRef<ComposeQuillEditorHandle>(null)
   const serverAttachmentInputRef = useRef<HTMLInputElement>(null)
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Bumped to re-run draft bootstrap (e.g. â€žVonâ€œ-Konto gewechselt) without stale-effect cancel. */
+  /** Bumped to re-run draft bootstrap (e.g. „Von“-Konto gewechselt) without stale-effect cancel. */
   const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
@@ -275,7 +275,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     if (initialisedDraftKeyRef.current === draftInitKey) return
     if (accountIdAtOpen == null) {
       toast.error(
-        "Bitte wÃ¤hlen Sie ein E-Mail-Konto in der Seitenleiste (nicht â€žAlle Kontenâ€œ, sofern mehrere Konten aktiv sind).",
+        "Bitte wählen Sie ein E-Mail-Konto in der Seitenleiste (nicht „Alle Konten“, sofern mehrere Konten aktiv sind).",
       )
       return
     }
@@ -483,7 +483,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     void (async () => {
       try {
         const ok = await saveDraft({ silent: true })
-        if (ok) toast.success("Entwurf in â€žEntwÃ¼rfeâ€œ gespeichert")
+        if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
         await finishComposeClose(contextId)
       } finally {
         closingRef.current = false
@@ -504,7 +504,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             draftId,
           ) as { success: boolean; error?: string }
           if (!r.success) {
-            toast.error(r.error ?? "Entwurf konnte nicht gelÃ¶scht werden.")
+            toast.error(r.error ?? "Entwurf konnte nicht gelöscht werden.")
             return
           }
         }
@@ -567,7 +567,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       const uploadedPaths: string[] = []
       for (const file of Array.from(files)) {
         if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
-          toast.error(`${file.name}: Anhang ist grÃ¶ÃŸer als 25 MB.`)
+          toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
           continue
         }
         const contentBase64 = await fileToBase64(file)
@@ -589,7 +589,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       toast.success(
         uploadedPaths.length === 1
           ? "Anhang hochgeladen"
-          : `${uploadedPaths.length} AnhÃ¤nge hochgeladen`,
+          : `${uploadedPaths.length} Anhänge hochgeladen`,
       )
     } catch (e) {
       logError("compose-dialog: upload server attachment", e)
@@ -637,7 +637,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       )
       if (outboundActive.length === 0) {
         toast.info(
-          "Keine aktiven Ausgangs-Workflows. Legen Sie unter Einstellungen â†’ Workflows einen Workflow mit AuslÃ¶ser â€žAusgangâ€œ an.",
+          "Keine aktiven Ausgangs-Workflows. Legen Sie unter Einstellungen → Workflows einen Workflow mit Auslöser „Ausgang“ an.",
         )
         return
       }
@@ -664,18 +664,18 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         },
       ) as { success: boolean; allowed?: boolean; reason?: string | null }
       if (!r.success) {
-        toast.error("AusgangsprÃ¼fung fehlgeschlagen")
+        toast.error("Ausgangsprüfung fehlgeschlagen")
         return
       }
       if (r.allowed) {
         toast.success(
-          `AusgangsprÃ¼fung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) â€” Versand erlaubt.`,
+          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand erlaubt.`,
         )
       } else {
-        toast.warning(r.reason ?? "AusgangsprÃ¼fung: Versand wÃ¼rde blockiert.")
+        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.")
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "PrÃ¼fung fehlgeschlagen.")
+      toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")
     } finally {
       setCheckingOutbound(false)
     }
@@ -736,7 +736,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         if (blocked) {
           const msg =
             r.error ??
-            "Versand blockiert â€” Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten)."
+            "Versand blockiert — Entwurf mit Ihrem Text liegt im Posteingang (Bearbeiten)."
           if (r.workflowRunId) {
             toast.warning(msg, {
               action: {
@@ -771,7 +771,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         return
       }
       if (r.recoveredSentAppend) {
-        toast.success("Nachricht wurde nachtrÃ¤glich in â€žGesendetâ€œ Ã¼bernommen.")
+        toast.success("Nachricht wurde nachträglich in „Gesendet“ übernommen.")
       } else if (r.warning) {
         toast.warning(r.warning)
       } else {
@@ -817,8 +817,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         <div
           role="separator"
           aria-orientation="horizontal"
-          aria-label="DialoghÃ¶he anpassen"
-          title="DialoghÃ¶he: am unteren Rand nach oben oder unten ziehen"
+          aria-label="Dialoghöhe anpassen"
+          title="Dialoghöhe: am unteren Rand nach oben oder unten ziehen"
           className="absolute bottom-0 left-0 right-0 z-10 h-2 cursor-ns-resize rounded-b-lg hover:bg-primary/10"
           onMouseDown={startComposeHeightResize}
         />
@@ -835,8 +835,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                     : "Neue Nachricht"}
           </DialogTitle>
           <DialogDescription>
-            Beim Ã–ffnen wird automatisch ein Entwurf angelegt und alle paar Sekunden gespeichert.
-            EmpfÃ¤nger und Betreff oben, Ihren Text im groÃŸen Feld darunter.
+            Beim Öffnen wird automatisch ein Entwurf angelegt und alle paar Sekunden gespeichert.
+            Empfänger und Betreff oben, Ihren Text im großen Feld darunter.
           </DialogDescription>
           {isReplyCompose && replyToId != null ? (
             <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-left text-sm">
@@ -849,7 +849,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 <span className="font-medium">Im Posteingang offen lassen</span>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
                   Standard: Ursprungsnachricht wird nach dem Senden als erledigt markiert. Aktivieren,
-                  wenn Sie sie als Erinnerung offen behalten mÃ¶chten.
+                  wenn Sie sie als Erinnerung offen behalten möchten.
                 </span>
               </span>
             </label>
@@ -864,8 +864,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             >
               <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
               {draftBootstrapping
-                ? "Entwurf wird vorbereitetâ€¦"
-                : "Entwurf konnte nicht geladen werden. Dialog schlieÃŸen und erneut â€žVerfassenâ€œ wÃ¤hlen."}
+                ? "Entwurf wird vorbereitet…"
+                : "Entwurf konnte nicht geladen werden. Dialog schließen und erneut „Verfassen“ wählen."}
             </div>
           ) : null}
           {composeRecovery?.needsResendFinalize ? (
@@ -918,11 +918,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       draftId,
                     ).then(() => {
                       setScheduledSendFailed(null)
-                      toast.success("Fehlerstatus zurÃ¼ckgesetzt â€” Versand erneut planen oder jetzt senden.")
+                      toast.success("Fehlerstatus zurückgesetzt — Versand erneut planen oder jetzt senden.")
                     })
                   }}
                 >
-                  Fehler zurÃ¼cksetzen
+                  Fehler zurücksetzen
                 </Button>
               </div>
             </div>
@@ -930,8 +930,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-3">
             <p className="text-xs font-medium text-foreground">Text-Hilfen</p>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              EinfÃ¼gen oder umformulieren oberhalb des Zitats â€” das Original bleibt darunter
-              unverÃ¤ndert.
+              Einfügen oder umformulieren oberhalb des Zitats — das Original bleibt darunter
+              unverändert.
             </p>
             <div className="flex flex-wrap items-end gap-4">
             <div className="space-y-1.5">
@@ -950,8 +950,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
-                    Fertigen Text aus Einstellungen â†’ E-Mail â†’ Textbausteine einfÃ¼gen. Platzhalter
-                    wie Kundenname werden ersetzt, wenn ein Kunde verknÃ¼pft ist.
+                    Fertigen Text aus Einstellungen → E-Mail → Textbausteine einfügen. Platzhalter
+                    wie Kundenname werden ersetzt, wenn ein Kunde verknüpft ist.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -986,7 +986,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               }}
             >
               <SelectTrigger id="compose-canned" className="h-8 w-[200px] text-xs">
-                <SelectValue placeholder="Baustein wÃ¤hlenâ€¦" />
+                <SelectValue placeholder="Baustein wählen…" />
               </SelectTrigger>
               <SelectContent>
                 {cannedList.map((c) => (
@@ -1014,7 +1014,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
                     Formuliert nur Ihren Antworttext (oberhalb des Zitats) mit einem Prompt aus
-                    Einstellungen â†’ E-Mail â†’ KI-Prompts. Zuerst kurz tippen, dann Prompt wÃ¤hlen.
+                    Einstellungen → E-Mail → KI-Prompts. Zuerst kurz tippen, dann Prompt wählen.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1030,7 +1030,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const src = stripHtmlToText(editableHtml)
                   if (!src.trim()) {
                     toast.error(
-                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben, dann einen KI-Prompt wÃ¤hlen.",
+                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben, dann einen KI-Prompt wählen.",
                     )
                     setAiPromptSelectKey((k) => k + 1)
                     return
@@ -1050,11 +1050,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                         plainTextToReplyHtml(r.text),
                       )
                       setBodyHtml(mergeComposeHtml(transformed, quotedHtml))
-                      toast.success("KI-Text eingefÃ¼gt (Zitat unverÃ¤ndert)")
+                      toast.success("KI-Text eingefügt (Zitat unverändert)")
                     } else {
                       toast.error(
                         r.error ??
-                          "KI-Antwort leer. PrÃ¼fen Sie Einstellungen â†’ E-Mail â†’ KI (API-SchlÃ¼ssel und Prompts).",
+                          "KI-Antwort leer. Prüfen Sie Einstellungen → E-Mail → KI (API-Schlüssel und Prompts).",
                       )
                     }
                   } catch (e) {
@@ -1068,7 +1068,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               <SelectTrigger id="compose-ai" className="h-8 w-[220px] text-xs">
                 <SelectValue
                   placeholder={
-                    aiPrompts.length === 0 ? "Keine KI-Prompts" : "Prompt wÃ¤hlenâ€¦"
+                    aiPrompts.length === 0 ? "Keine KI-Prompts" : "Prompt wählen…"
                   }
                 />
               </SelectTrigger>
@@ -1124,7 +1124,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
               value={to}
               onChange={(e) => setTo(e.target.value)}
               className="h-9"
-              placeholder="empfÃ¤nger@example.com"
+              placeholder="empfänger@example.com"
             />
             <Label className="justify-self-end text-xs text-muted-foreground">Cc</Label>
             <Input
@@ -1151,7 +1151,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
 
           <div
             className="compose-quill compose-editor-fill min-h-0 flex-1 rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
-            title="NachrichtenhÃ¶he: an der unteren Kante des Feldes nach oben oder unten ziehen"
+            title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
           >
             <ComposeQuillEditor
               ref={editorRef}
@@ -1165,7 +1165,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           <div className="flex flex-wrap items-center gap-4 text-xs">
             <label className="flex items-center gap-2">
               <Checkbox checked={pgpEncrypt} onCheckedChange={(v) => setPgpEncrypt(v === true)} />
-              PGP verschlÃ¼sseln
+              PGP verschlüsseln
             </label>
             <label className="flex items-center gap-2">
               <Checkbox checked={pgpSign} onCheckedChange={(v) => setPgpSign(v === true)} />
@@ -1199,13 +1199,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const missing = status.filter((s) => !s.hasKey).map((s) => s.email)
                   setRecipientKeyHint(
                     missing.length
-                      ? `Ohne SchlÃ¼ssel: ${missing.join(", ")}`
-                      : "Alle EmpfÃ¤nger haben SchlÃ¼ssel",
+                      ? `Ohne Schlüssel: ${missing.join(", ")}`
+                      : "Alle Empfänger haben Schlüssel",
                   )
                 }
               }}
             >
-              SchlÃ¼ssel prÃ¼fen
+              Schlüssel prüfen
             </Button>
             {recipientKeyHint ? (
               <span className="text-muted-foreground">{recipientKeyHint}</span>
@@ -1276,12 +1276,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 ) : (
                   <Paperclip className="h-4 w-4" />
                 )}
-                Anhang hinzufÃ¼gen
+                Anhang hinzufügen
               </Button>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button type="button" variant="ghost" onClick={requestClose}>
-                SchlieÃŸen
+                Schließen
               </Button>
               <Button
                 type="button"
@@ -1301,7 +1301,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 onClick={() => void handleCheckOutbound()}
               >
                 {checkingOutbound ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Ausgang prÃ¼fen
+                Ausgang prüfen
               </Button>
               <Input
                 type="datetime-local"
@@ -1323,13 +1323,13 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       messageId: draftId,
                       sendAt: iso,
                     })
-                    toast.success("Versand geplant â€” Entwurf bleibt gespeichert.")
+                    toast.success("Versand geplant — Entwurf bleibt gespeichert.")
                     const contextId = getComposeContextMessageId(composeIntent, replyToId)
                     void finishComposeClose(contextId)
                   })()
                 }}
               >
-                SpÃ¤ter senden
+                Später senden
               </Button>
               <Button
                 type="button"
@@ -1349,10 +1349,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     <AlertDialog open={closeConfirmOpen} onOpenChange={setCloseConfirmOpen}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Verfassen schlieÃŸen?</AlertDialogTitle>
+          <AlertDialogTitle>Verfassen schließen?</AlertDialogTitle>
           <AlertDialogDescription>
-            MÃ¶chten Sie den Entwurf in â€žEntwÃ¼rfeâ€œ behalten oder verwerfen? Bei â€žVerwerfenâ€œ wird der
-            Entwurf endgÃ¼ltig gelÃ¶scht.
+            Möchten Sie den Entwurf in „Entwürfe“ behalten oder verwerfen? Bei „Verwerfen“ wird der
+            Entwurf endgültig gelöscht.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
