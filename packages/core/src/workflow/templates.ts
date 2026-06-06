@@ -40,7 +40,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'outbound-quality-check',
     name: 'Ausgehend: KI-Qualitätsprüfung',
     description:
-      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. BLOCK hält den Entwurf zurück (Banner im Posteingang); OK gibt den Versand wieder frei (Sperre lösen).',
+      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. BLOCK hält den Entwurf zurück (Banner im Posteingang); OK gibt den Entwurf frei und sendet ihn automatisch über den scheduled-send-Worker.',
     trigger: 'outbound',
     graph: {
       version: 1,
@@ -54,13 +54,14 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { promptId: 0, checkReplyContext: true },
           },
         },
-        // OK-Pfad: Sperre lösen, damit der Entwurf beim nächsten Sende-Klick
-        // tatsächlich rausgeht. Ohne diesen Knoten bleibt jeder geprüfte Entwurf
-        // gesperrt — auch bei OK.
+        // OK-Pfad: Sperre lösen + autoSend = der scheduled-send-Worker greift
+        // sofort und schickt den Entwurf raus. reviewOutbound.review erkennt den
+        // Approval-Marker und lässt den nächsten Sende-Aufruf durch, statt eine
+        // erneute Prüfung einzureihen.
         {
           id: 'release',
           type: 'registry',
-          data: { nodeType: 'email.release_outbound', config: {} },
+          data: { nodeType: 'email.release_outbound', config: { autoSend: true } },
         },
       ],
       edges: [

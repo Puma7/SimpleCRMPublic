@@ -42,6 +42,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { outboundReviewApprovedKey } from './mail-compose-send';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -1343,7 +1344,7 @@ async function executeServerNode(
     };
   }
   if (type === 'email.release_outbound') {
-    return await releaseWorkflowOutboundHold(trx, context, now);
+    return await releaseWorkflowOutboundHold(trx, context, config, now);
   }
   if (type === 'email.tag' || type === 'tag') {
     const tag = String(config.tag ?? node.data.tag ?? '').trim();
@@ -3447,10 +3448,16 @@ async function updateWorkflowMessage(
  * current message. Counterpart to email.hold_outbound; intended for the OK path
  * after ai.outbound_review approved a draft — without it an approved review
  * could never actually release the draft. Outbound-only.
+ *
+ * With config.autoSend=true it also (a) writes an approval marker into sync_info
+ * so reviewOutbound.review bypasses the review on the *next* send call (avoiding
+ * a re-entry loop from the scheduled-send cron) and (b) sets scheduled_send_at
+ * = now so the scheduled-send job picks the draft up immediately.
  */
 async function releaseWorkflowOutboundHold(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
+  config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
   if (context.direction !== 'outbound') {
@@ -3459,17 +3466,48 @@ async function releaseWorkflowOutboundHold(
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
   }
+  const autoSend = config.autoSend === true;
+  const messagePatch: Record<string, unknown> = {
+    outbound_hold: false,
+    outbound_block_reason: null,
+    updated_at: now,
+  };
+  if (autoSend) messagePatch.scheduled_send_at = now;
   await trx
     .updateTable('email_messages')
-    .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+    .set(messagePatch)
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', context.messageId)
     .execute();
+
+  if (autoSend) {
+    const key = outboundReviewApprovedKey(context.messageId);
+    const isoNow = now.toISOString();
+    await trx
+      .insertInto('sync_info')
+      .values({
+        workspace_id: context.workspaceId,
+        key,
+        value: isoNow,
+        last_updated: now,
+        source_row: serverWorkerSourceRow(),
+        imported_in_run_id: null,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'key'])
+        .doUpdateSet({ value: isoNow, last_updated: now, updated_at: now }))
+      .execute();
+  }
+
   return {
     status: 'ok',
     port: 'default',
-    message: 'outbound_hold_released',
-    variables: { 'email.outbound_hold': false },
+    message: autoSend ? 'outbound_hold_released_auto_send' : 'outbound_hold_released',
+    variables: {
+      'email.outbound_hold': false,
+      'email.auto_send_scheduled': autoSend,
+    },
   };
 }
 

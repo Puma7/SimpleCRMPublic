@@ -9726,6 +9726,70 @@ describe('server edition foundation', () => {
     expect(rows.runs.map((run) => run.status)).toEqual(['ok']);
   });
 
+  test('postgres workflow execution job port arms auto-send via email.release_outbound autoSend=true', async () => {
+    const now = new Date('2026-07-04T11:00:35.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        trigger_name: 'outbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 72,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 720,
+        subject: 'Auto send',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'ok',
+        body_text: 'ok',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        outbound_hold: true,
+        outbound_block_reason: 'review',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 27,
+      messageId: 72,
+      triggerName: 'outbound',
+      context: { outbound: { messageId: 72, subject: 'Auto send', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    // (a) Hold released, scheduled_send_at primed so the cron picks it up now.
+    expect(rows.messages[0]).toMatchObject({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      scheduled_send_at: now,
+      updated_at: now,
+    });
+    // (b) Approval marker is written so reviewOutbound.review bypasses the
+    //     next review (otherwise the cron would loop).
+    const approval = rows.syncInfo.find((row) => row.key === 'outbound_review_approved:72');
+    expect(approval).toBeDefined();
+    expect(approval!.value).toBe(now.toISOString());
+    expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
+      ['email.release_outbound', 'default', 'outbound_hold_released_auto_send'],
+    ]);
+  });
+
   test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {
     const now = new Date('2026-07-04T11:00:45.000Z');
     const { db, rows } = makeWorkflowExecutionDb({

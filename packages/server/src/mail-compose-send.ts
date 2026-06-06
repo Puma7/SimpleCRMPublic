@@ -51,6 +51,14 @@ const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
 const COMPOSE_SEND_LOCK_PREFIX = 'email_compose_sending:';
 const COMPOSE_SMTP_COMMITTED_PREFIX = 'email_compose_smtp_ok:';
 const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
+/** Marker set by email.release_outbound (autoSend=true) after ai.outbound_review
+ *  returned OK. reviewOutbound.review honours it as "already approved, just send",
+ *  so the scheduled-send cron doesn't loop through the review again. */
+export const OUTBOUND_REVIEW_APPROVED_PREFIX = 'outbound_review_approved:';
+const OUTBOUND_REVIEW_APPROVED_TTL_MS = 24 * 60 * 60 * 1000;
+export function outboundReviewApprovedKey(draftId: number): string {
+  return `${OUTBOUND_REVIEW_APPROVED_PREFIX}${draftId}`;
+}
 const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
 const OUTBOUND_REVIEW_REASON =
   'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
@@ -529,6 +537,38 @@ export function createPostgresComposeOutboundReviewPort(options: {
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const now = options.now?.() ?? new Date();
+
+          // Approval-Bypass: if email.release_outbound (autoSend=true) recently
+          // approved this draft, skip the review entirely so the scheduled-send
+          // cron doesn't re-enter the review on its SMTP send call. The marker is
+          // consumed on use so a manual edit-then-resend goes through review again.
+          const approvalKey = outboundReviewApprovedKey(input.draftMessageId);
+          const approval = await trx
+            .selectFrom('sync_info')
+            .select('value')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', approvalKey)
+            .executeTakeFirst();
+          if (approval?.value) {
+            const approvedAt = new Date(approval.value);
+            const fresh = !Number.isNaN(approvedAt.getTime())
+              && now.getTime() - approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
+            await trx
+              .deleteFrom('sync_info')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', '=', approvalKey)
+              .execute();
+            if (fresh) {
+              await trx
+                .updateTable('email_messages')
+                .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', input.draftMessageId)
+                .execute();
+              return { allowed: true };
+            }
+          }
+
           const workflows = await trx
             .selectFrom('email_workflows')
             .select(['id', 'source_sqlite_id', 'name', 'priority'])
