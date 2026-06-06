@@ -43,6 +43,9 @@ type MailEventRefreshRequest = {
   remotePolicy: boolean
 }
 
+/** Minimum gap between actual IMAP polls when the refresh button is clicked. */
+const IMAP_SYNC_MIN_GAP_MS = 15_000
+
 function MailShellInner() {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "email-panes",
@@ -148,12 +151,23 @@ function MailShellInner() {
     [snoozeMessageUntilTomorrowBase, invalidateMailMetrics],
   )
 
+  // Refresh always reloads the list view from the DB (cheap, can be clicked
+  // often). The actual IMAP poll is throttled to at most once per 15s here (the
+  // server throttles too), so frequent clicks update the view without hammering
+  // the mail server.
+  const lastImapSyncRef = useRef(0)
   const handleSyncWithCategories = useCallback(() => {
     void (async () => {
-      await handleSync()
+      const now = Date.now()
+      if (now - lastImapSyncRef.current >= IMAP_SYNC_MIN_GAP_MS) {
+        lastImapSyncRef.current = now
+        await handleSync({ onAfterSync: () => refreshList({ preserveSelection: true }) })
+      } else {
+        await refreshList({ preserveSelection: true })
+      }
       invalidateMailMetrics()
     })()
-  }, [handleSync, invalidateMailMetrics])
+  }, [handleSync, refreshList, invalidateMailMetrics])
 
   const { messageTags, internalNotes, messageAttachments, reloadNotes, reloadTags } =
     useMessageMetadata()
