@@ -99,6 +99,7 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('pgp_identities'),
   rlsPolicyTable('pgp_peer_keys'),
   rlsPolicyTable('automation_api_keys'),
+  rlsPolicyTable('ai_usage_events'),
 ];
 
 export async function runRlsIsolationCheck(client: RlsCheckClient): Promise<RlsCheckResult> {

@@ -1699,6 +1699,16 @@ export type EmailDiagnosticsReport = {
     runsBlockedLast24h: number;
     runsErrorLast24h: number;
   };
+  aiUsage: {
+    events24h: number;
+    tokens24h: number;
+    costMicroUsd24h: number;
+    avgLatencyMs24h: number;
+    events30d: number;
+    tokens30d: number;
+    costMicroUsd30d: number;
+    byNodeType24h: Record<string, number>;
+  };
   notices: {
     imapAuth: number;
     uidValidity: number;

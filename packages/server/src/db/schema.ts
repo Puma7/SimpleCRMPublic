@@ -64,6 +64,24 @@ export type ServerDatabase = {
   pgp_identities: PgpIdentitiesTable;
   pgp_peer_keys: PgpPeerKeysTable;
   automation_api_keys: AutomationApiKeysTable;
+  ai_usage_events: AiUsageEventsTable;
+};
+
+export type AiUsageEventsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  ai_profile_id: number | null;
+  model: string | null;
+  node_type: string;
+  message_id: number | null;
+  run_id: number | null;
+  actor_user_id: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  est_cost_micro_usd: number | null;
+  latency_ms: number | null;
+  created_at: TimestampColumn;
 };
 
 export type WorkspacesTable = {

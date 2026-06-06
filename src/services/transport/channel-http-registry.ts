@@ -432,6 +432,16 @@ type EmailDiagnosticsRecord = {
     runsBlockedLast24h?: number | null
     runsErrorLast24h?: number | null
   } | null
+  aiUsage?: {
+    events24h?: number | null
+    tokens24h?: number | null
+    costMicroUsd24h?: number | null
+    avgLatencyMs24h?: number | null
+    events30d?: number | null
+    tokens30d?: number | null
+    costMicroUsd30d?: number | null
+    byNodeType24h?: Record<string, number | null> | null
+  } | null
   notices?: {
     imapAuth?: number | null
     uidValidity?: number | null
@@ -4598,6 +4608,7 @@ function mapMailFolderCounts(record: EmailMailFolderCountsRecord) {
 function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
   const messages = record.messages ?? {}
   const workflows = record.workflows ?? {}
+  const aiUsage = record.aiUsage ?? {}
   const notices = record.notices ?? {}
   const syncInfo = record.syncInfo ?? {}
   const background = record.background ?? {}
@@ -4620,6 +4631,16 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
       runsLast24h: countValue(workflows.runsLast24h),
       runsBlockedLast24h: countValue(workflows.runsBlockedLast24h),
       runsErrorLast24h: countValue(workflows.runsErrorLast24h),
+    },
+    aiUsage: {
+      events24h: countValue(aiUsage.events24h),
+      tokens24h: countValue(aiUsage.tokens24h),
+      costMicroUsd24h: countValue(aiUsage.costMicroUsd24h),
+      avgLatencyMs24h: countValue(aiUsage.avgLatencyMs24h),
+      events30d: countValue(aiUsage.events30d),
+      tokens30d: countValue(aiUsage.tokens30d),
+      costMicroUsd30d: countValue(aiUsage.costMicroUsd30d),
+      byNodeType24h: countMap(aiUsage.byNodeType24h),
     },
     notices: {
       imapAuth: countValue(notices.imapAuth),

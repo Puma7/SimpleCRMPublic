@@ -322,6 +322,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0014_email_reply_suggestion_fields',
   '0015_task_customer_optional',
   '0016_task_assignment_and_user_groups',
+  '0017_ai_usage_events',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -25403,6 +25404,16 @@ describe('server edition foundation', () => {
               runsBlockedLast24h: 1,
               runsErrorLast24h: 2,
             },
+            aiUsage: {
+              events24h: 3,
+              tokens24h: 1500,
+              costMicroUsd24h: 450,
+              avgLatencyMs24h: 1200,
+              events30d: 10,
+              tokens30d: 5000,
+              costMicroUsd30d: 1500,
+              byNodeType24h: { 'ai.classify': 2, 'ai.agent': 1 },
+            },
             notices: {
               imapAuth: 1,
               uidValidity: 0,
@@ -25459,6 +25470,16 @@ describe('server edition foundation', () => {
           sent: 3,
         },
       }),
+      aiUsage: {
+        events24h: 3,
+        tokens24h: 1500,
+        costMicroUsd24h: 450,
+        avgLatencyMs24h: 1200,
+        events30d: 10,
+        tokens30d: 5000,
+        costMicroUsd30d: 1500,
+        byNodeType24h: { 'ai.classify': 2, 'ai.agent': 1 },
+      },
       background: expect.objectContaining({
         cronScheduled: true,
         syncInFlightAccountIds: [7, 8],

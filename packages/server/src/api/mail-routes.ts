@@ -2657,6 +2657,16 @@ function sanitizeMailDiagnostics(report: EmailDiagnosticsReport): EmailDiagnosti
       runsBlockedLast24h: safeCount(report.workflows.runsBlockedLast24h),
       runsErrorLast24h: safeCount(report.workflows.runsErrorLast24h),
     },
+    aiUsage: {
+      events24h: safeCount(report.aiUsage.events24h),
+      tokens24h: safeCount(report.aiUsage.tokens24h),
+      costMicroUsd24h: safeCount(report.aiUsage.costMicroUsd24h),
+      avgLatencyMs24h: safeCount(report.aiUsage.avgLatencyMs24h),
+      events30d: safeCount(report.aiUsage.events30d),
+      tokens30d: safeCount(report.aiUsage.tokens30d),
+      costMicroUsd30d: safeCount(report.aiUsage.costMicroUsd30d),
+      byNodeType24h: sanitizeCountMap(report.aiUsage.byNodeType24h),
+    },
     notices: {
       imapAuth: safeCount(report.notices.imapAuth),
       uidValidity: safeCount(report.notices.uidValidity),

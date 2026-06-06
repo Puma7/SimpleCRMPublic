@@ -8,6 +8,7 @@ import type {
   EmailReplySuggestionTrigger,
 } from './api/types';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
+import { extractChatCompletionUsage, recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
 import type {
   CustomersTable,
   EmailAiProfilesTable,
@@ -42,6 +43,7 @@ type ChatCompletionInput = Readonly<{
   apiKey: string;
   system: string;
   user: string;
+  captureUsage?: (usage: AiTokenUsage | null) => void;
 }>;
 
 export type PostgresAiReplySuggestionPortOptions = Readonly<{
@@ -437,12 +439,27 @@ async function generateReplyDraftText(
   );
 
   try {
+    const started = Date.now();
+    let usage: AiTokenUsage | null = null;
     const text = (await (options.chatCompletion ?? defaultChatCompletion)({
       profile: context.profile!,
       apiKey,
       system: DEFAULT_REPLY_SYSTEM_PROMPT,
       user,
+      captureUsage: (value) => { usage = value; },
     })).trim();
+    await recordAiUsageSafe(
+      { db: options.db, applyWorkspaceSession: options.applyWorkspaceSession, now: options.now },
+      {
+        workspaceId: context.message.workspace_id,
+        aiProfileId: context.profile ? Number(context.profile.id) : null,
+        model: context.profile?.model ?? null,
+        nodeType: 'ai.reply_suggestion',
+        messageId: Number(context.message.id),
+        usage,
+        latencyMs: Date.now() - started,
+      },
+    );
     if (!text) return { success: false, error: 'KI-Antwort leer' };
     return { success: true, text };
   } catch (err) {
@@ -477,6 +494,7 @@ async function generateReplyDraftText(
         const detail = body.trim().slice(0, 500);
         throw new Error(`KI API HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
       }
+      input.captureUsage?.(extractChatCompletionUsage(body));
       return parseChatCompletionContent(body);
     } finally {
       clearTimeout(timeout);
