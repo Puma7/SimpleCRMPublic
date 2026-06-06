@@ -342,6 +342,50 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: { entity: 'firmen' },
   },
   {
+    type: 'jtl.order_context',
+    label: 'JTL Bestell-Kontext',
+    category: 'integration',
+    canvasType: 'registry',
+    description:
+      'Read-only-Query (MSSQL) mit {{email}}/{{orderNo}}; mappt die erste Zeile auf jtl.*-Variablen für KI-Nodes.',
+    defaultConfig: { query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}', mapping: '' },
+  },
+  {
+    type: 'jtl.prepare_action',
+    label: 'JTL Aktion vorbereiten',
+    category: 'integration',
+    canvasType: 'registry',
+    description:
+      'Baut einen Aktions-Vorschlag (resend_invoice/create_return/send_tracking/refund_status/custom) — führt nichts aus.',
+    defaultConfig: { kind: 'send_tracking', requireApproval: true },
+  },
+  {
+    type: 'ai.pick_canned',
+    label: 'KI: Textbaustein wählen',
+    category: 'ai',
+    canvasType: 'registry',
+    description: 'Die KI wählt den passenden Textbaustein, füllt Platzhalter und legt einen Entwurf an.',
+    defaultConfig: { createDraft: true },
+  },
+  {
+    type: 'email.auto_reply',
+    label: 'Auto-Antwort (Gate)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Entscheidet, ob automatisch geantwortet werden darf (Schalter + Confidence + Anti-Loop). Sendet selbst nichts.',
+    defaultConfig: { confidenceVar: 'ai.class_confidence', minConfidence: 70 },
+  },
+  {
+    type: 'email.release_outbound',
+    label: 'Versand freigeben',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Gegenstück zu „Versand sperren": hebt die Sperre auf (OK-Pfad der Ausgangsprüfung). Mit autoSend=true wird sofort gesendet.',
+    defaultConfig: { autoSend: true },
+  },
+  {
     type: 'workflow.subflow',
     label: 'Subflow ausführen',
     category: 'logic',
