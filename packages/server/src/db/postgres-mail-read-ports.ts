@@ -3364,7 +3364,10 @@ async function insertSpamLearningEventForMessage(
       account_id: message.account_id === null ? null : Number(message.account_id),
       label: input.label,
       source: input.source,
-      feature_keys_json: input.featureKeys.length > 0 ? [...input.featureKeys] : null,
+      // jsonb column: a raw JS array is serialized by node-postgres as a Postgres
+      // array literal ('{...}'), which fails to parse as JSON. Plain objects are
+      // auto-JSON.stringified, but arrays are not — so stringify explicitly.
+      feature_keys_json: input.featureKeys.length > 0 ? JSON.stringify([...input.featureKeys]) : null,
       source_row: serverApiSourceRow(),
       created_at: input.now,
       updated_at: input.now,
