@@ -33,6 +33,7 @@ import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
+import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
@@ -88,6 +89,7 @@ const TAB_DEFS: TabDef[] = [
   },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
+  { id: "userGroups", label: "Benutzergruppen", icon: Users, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
   { id: "pgp", label: "PGP", icon: KeyRound, render: () => <PgpPanel /> },
@@ -105,7 +107,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
-  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "canned"] },
+  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "userGroups", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
