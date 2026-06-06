@@ -11,6 +11,7 @@ import { handleNoticeRoute } from './notice-routes';
 import { handlePgpReadRoute } from './pgp-routes';
 import { handleSpamReadRoute } from './spam-routes';
 import { handleSettingsRoute } from './settings-routes';
+import { handleUserGroupRoute } from './user-group-routes';
 import { handleWorkflowReadRoute } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
@@ -69,6 +70,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const customers = await handleCustomerRoute(req, ports);
       if (customers) return customers;
+
+      const userGroups = await handleUserGroupRoute(req, ports);
+      if (userGroups) return userGroups;
 
       const coreCrm = await handleCoreCrmReadRoute(req, ports);
       if (coreCrm) return coreCrm;

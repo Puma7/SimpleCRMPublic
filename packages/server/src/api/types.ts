@@ -523,6 +523,71 @@ export type CustomerMutationInput = {
   status?: string;
 };
 
+export type UserGroupRecord = {
+  id: number;
+  name: string;
+  description: string | null;
+  memberCount: number;
+  updatedAt: string;
+};
+
+export type UserGroupMemberRecord = {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: 'owner' | 'admin' | 'user';
+};
+
+export type UserGroupMutationResult =
+  | { ok: true; group: UserGroupRecord }
+  | { ok: false; code: 'duplicate_name' | 'not_found' | 'invalid_name' };
+
+export type UserGroupAddMemberResult =
+  | { ok: true }
+  | { ok: false; code: 'group_not_found' | 'user_not_found' };
+
+export type UserGroupRemoveMemberResult =
+  | { ok: true }
+  | { ok: false; code: 'group_not_found' };
+
+export type UserGroupApiPort = {
+  list(input: { workspaceId: string }): Promise<UserGroupRecord[]>;
+  create(input: {
+    workspaceId: string;
+    actorUserId: string;
+    name: string;
+    description?: string | null;
+  }): Promise<UserGroupMutationResult>;
+  update(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    name?: string;
+    description?: string | null;
+  }): Promise<UserGroupMutationResult>;
+  delete(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+  }): Promise<UserGroupRecord | null>;
+  listMembers(input: {
+    workspaceId: string;
+    groupId: number;
+  }): Promise<UserGroupMemberRecord[] | null>;
+  addMember(input: {
+    workspaceId: string;
+    actorUserId: string;
+    groupId: number;
+    userId: string;
+  }): Promise<UserGroupAddMemberResult>;
+  removeMember(input: {
+    workspaceId: string;
+    actorUserId: string;
+    groupId: number;
+    userId: string;
+  }): Promise<UserGroupRemoveMemberResult>;
+};
+
 export type CustomerApiPort = {
   list(input: {
     workspaceId: string;
@@ -4009,6 +4074,7 @@ export type ServerApiPorts = {
   customerCustomFields?: CustomerCustomFieldApiPort;
   customerCustomFieldValues?: CustomerCustomFieldValueApiPort;
   customers?: CustomerApiPort;
+  userGroups?: UserGroupApiPort;
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;

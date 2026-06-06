@@ -69,6 +69,16 @@ const TaskChannels = literal({
   Delete: 'tasks:delete',
 });
 
+const UserGroupChannels = literal({
+  List: 'user-groups:list',
+  Create: 'user-groups:create',
+  Update: 'user-groups:update',
+  Delete: 'user-groups:delete',
+  ListMembers: 'user-groups:list-members',
+  AddMember: 'user-groups:add-member',
+  RemoveMember: 'user-groups:remove-member',
+});
+
 const SyncChannels = literal({
   Run: 'sync:run',
   GetStatus: 'sync:get-status',
@@ -345,6 +355,7 @@ export const IPCChannels = {
   Products: ProductChannels,
   Deals: DealChannels,
   Tasks: TaskChannels,
+  UserGroups: UserGroupChannels,
   Sync: SyncChannels,
   Mssql: MssqlChannels,
   Jtl: JtlChannels,

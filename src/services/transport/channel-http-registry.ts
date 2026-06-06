@@ -141,6 +141,21 @@ type TaskRecord = {
   updatedAt?: string | null
 }
 
+type UserGroupRecord = {
+  id: number
+  name: string
+  description: string | null
+  memberCount: number
+  updatedAt: string
+}
+
+type UserGroupMemberRecord = {
+  userId: string
+  email: string
+  displayName: string
+  role: "owner" | "admin" | "user"
+}
+
 type CalendarEventRecord = {
   id: number
   sourceSqliteId?: number | null
@@ -1295,6 +1310,65 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/tasks/${positiveId(id, "task id")}`,
     transform: () => ({ success: true }),
   })],
+
+  [IPCChannels.UserGroups.List, () => ({
+    method: "GET",
+    path: "/api/v1/user-groups",
+    transform: (body) => listItems<UserGroupRecord>(body),
+  })],
+  [IPCChannels.UserGroups.Create, ([payload]) => {
+    const input = objectPayload(payload, "user group payload")
+    return {
+      method: "POST",
+      path: "/api/v1/user-groups",
+      body: pruneUndefined({
+        name: stringPayloadField(input.name, "group name"),
+        description: optionalStringPayloadField(input.description, "group description", 2000),
+      }),
+      transform: (body) => dataBody<UserGroupRecord>(body),
+    }
+  }],
+  [IPCChannels.UserGroups.Update, ([payload]) => {
+    const input = objectPayload(payload, "user group payload")
+    const body: Record<string, unknown> = {}
+    if (input.name !== undefined) body.name = stringPayloadField(input.name, "group name")
+    if (Object.prototype.hasOwnProperty.call(input, "description")) {
+      body.description = input.description === null ? null : stringPayloadField(input.description, "group description")
+    }
+    return {
+      method: "PATCH",
+      path: `/api/v1/user-groups/${positiveId(input.id, "group id")}`,
+      body,
+      transform: (responseBody) => dataBody<UserGroupRecord>(responseBody),
+    }
+  }],
+  [IPCChannels.UserGroups.Delete, ([id]) => ({
+    method: "DELETE",
+    path: `/api/v1/user-groups/${positiveId(id, "group id")}`,
+    transform: () => ({ success: true }),
+  })],
+  [IPCChannels.UserGroups.ListMembers, ([groupId]) => ({
+    method: "GET",
+    path: `/api/v1/user-groups/${positiveId(groupId, "group id")}/members`,
+    transform: (body) => listItems<UserGroupMemberRecord>(body),
+  })],
+  [IPCChannels.UserGroups.AddMember, ([payload]) => {
+    const input = objectPayload(payload, "group member payload")
+    return {
+      method: "POST",
+      path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/members`,
+      body: { userId: stringPayloadField(input.userId, "user id") },
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.UserGroups.RemoveMember, ([payload]) => {
+    const input = objectPayload(payload, "group member payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/members/${pathTextSegment(input.userId, "user id", 80)}`,
+      transform: () => ({ success: true }),
+    }
+  }],
 
   [IPCChannels.Calendar.GetCalendarEvents, () => ({
     method: "GET",
