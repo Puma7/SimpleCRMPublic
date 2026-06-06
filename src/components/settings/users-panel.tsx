@@ -1,12 +1,18 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { AlertCircle, HelpCircle } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
-import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { getRendererTransport, invokeRenderer, RendererTransportError } from "@/services/transport"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
+
+const MIN_PASSWORD_LENGTH = 10
 
 type UserRow = {
   id: string
@@ -20,11 +26,14 @@ export function UsersPanel() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
-  const [passphrase, setPassphrase] = useState("")
+  const [password, setPassword] = useState("")
   const [inviteLink, setInviteLink] = useState("")
   const [inviteDelivery, setInviteDelivery] = useState("")
+  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const serverClientMode = getRendererTransport().kind === "http"
+
+  const strength = useMemo(() => evaluatePassword(password), [password])
 
   const load = useCallback(async () => {
     const rows = await invokeRenderer(IPCChannels.Auth.ListUsers, undefined)
@@ -36,26 +45,41 @@ export function UsersPanel() {
   }, [load])
 
   const createUser = async () => {
-    if (!username.trim() || !passphrase) return
+    setError(null)
+    const email = username.trim()
+    if (!email) {
+      setError("Benutzername / E-Mail ist erforderlich.")
+      return
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Das Passwort muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben.`)
+      return
+    }
     setBusy(true)
     try {
       await invokeRenderer(IPCChannels.Auth.SaveUser, {
-        username: username.trim(),
-        displayName: displayName.trim() || username.trim(),
+        username: email,
+        displayName: displayName.trim() || email,
         role: "agent",
-        passphrase,
+        passphrase: password,
       })
       setUsername("")
       setDisplayName("")
-      setPassphrase("")
+      setPassword("")
       await load()
+    } catch (e) {
+      setError(describeUserSaveError(e))
     } finally {
       setBusy(false)
     }
   }
 
   const createInvite = async () => {
-    if (!username.trim()) return
+    setError(null)
+    if (!username.trim()) {
+      setError("Benutzername / E-Mail ist erforderlich.")
+      return
+    }
     setBusy(true)
     try {
       const result = await invokeRenderer(IPCChannels.Auth.CreateInvite, {
@@ -70,7 +94,9 @@ export function UsersPanel() {
       if (link && typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(link).catch(() => undefined)
       }
-      setPassphrase("")
+      setPassword("")
+    } catch (e) {
+      setError(describeUserSaveError(e))
     } finally {
       setBusy(false)
     }
@@ -98,22 +124,59 @@ export function UsersPanel() {
         <div className="grid gap-2 sm:grid-cols-2">
           <div>
             <Label>Benutzername / E-Mail</Label>
-            <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+            <Input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
           </div>
           <div>
             <Label>Anzeigename</Label>
             <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
           </div>
           <div className="sm:col-span-2">
-            <Label>Passphrase</Label>
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="new-user-password">Passwort</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Hilfe zum Passwort"
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <HelpCircle className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-72 text-sm" align="start">
+                  <p className="font-medium">Passwort für die Anmeldung</p>
+                  <p className="mt-1 text-muted-foreground">
+                    Dieses Passwort nutzt der Benutzer, um sich anzumelden.
+                  </p>
+                  <p className="mt-2 font-medium">Mindestanforderung</p>
+                  <ul className="mt-1 list-disc pl-4 text-muted-foreground">
+                    <li>Mindestens {MIN_PASSWORD_LENGTH} Zeichen</li>
+                    <li>Empfohlen: Groß-/Kleinbuchstaben, Ziffern und Sonderzeichen mischen</li>
+                  </ul>
+                </PopoverContent>
+              </Popover>
+            </div>
             <Input
+              id="new-user-password"
               type="password"
-              value={passphrase}
-              onChange={(e) => setPassphrase(e.target.value)}
+              value={password}
+              autoComplete="new-password"
+              onChange={(e) => setPassword(e.target.value)}
             />
+            <PasswordStrengthMeter password={password} strength={strength} />
           </div>
         </div>
-        <Button type="button" disabled={busy} onClick={() => void createUser()}>
+        {error ? (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        <Button
+          type="button"
+          disabled={busy || !username.trim() || password.length < MIN_PASSWORD_LENGTH}
+          onClick={() => void createUser()}
+        >
           Benutzer anlegen
         </Button>
         {serverClientMode ? (
@@ -135,6 +198,76 @@ export function UsersPanel() {
       </CardContent>
     </Card>
   )
+}
+
+type PasswordStrength = {
+  score: 0 | 1 | 2 | 3 | 4
+  meetsMinimum: boolean
+}
+
+const STRENGTH_LABELS = ["", "Schwach", "Okay", "Gut", "Stark"] as const
+const STRENGTH_COLORS = ["", "bg-red-500", "bg-orange-500", "bg-yellow-500", "bg-green-500"] as const
+
+function evaluatePassword(password: string): PasswordStrength {
+  const length = password.length
+  const meetsMinimum = length >= MIN_PASSWORD_LENGTH
+  const variety = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(password)).length
+
+  let score = 0
+  if (length >= MIN_PASSWORD_LENGTH) score += 1
+  if (length >= 14) score += 1
+  if (variety >= 3) score += 1
+  if (variety >= 4 || length >= 20) score += 1
+  if (!meetsMinimum) score = Math.min(score, 1)
+
+  return { score: Math.min(score, 4) as PasswordStrength["score"], meetsMinimum }
+}
+
+function PasswordStrengthMeter({ password, strength }: { password: string; strength: PasswordStrength }) {
+  if (!password) return null
+  return (
+    <div className="mt-2 space-y-1">
+      <div className="flex gap-1" aria-hidden="true">
+        {[1, 2, 3, 4].map((segment) => (
+          <div
+            key={segment}
+            className={cn(
+              "h-1.5 flex-1 rounded-full transition-colors",
+              segment <= strength.score ? STRENGTH_COLORS[strength.score] : "bg-muted",
+            )}
+          />
+        ))}
+      </div>
+      <p className={cn("text-xs", strength.meetsMinimum ? "text-muted-foreground" : "text-destructive")}>
+        {strength.meetsMinimum
+          ? `Passwortqualität: ${STRENGTH_LABELS[strength.score]}`
+          : `Mindestens ${MIN_PASSWORD_LENGTH} Zeichen erforderlich`}
+      </p>
+    </div>
+  )
+}
+
+function describeUserSaveError(e: unknown): string {
+  if (e instanceof RendererTransportError) {
+    const fieldMessages = extractFieldMessages(e.details)
+    if (fieldMessages.length > 0) return fieldMessages.join(" ")
+    if (e.code === "auth_user_duplicate_email") return "Diese E-Mail ist bereits vergeben."
+    return e.message
+  }
+  return e instanceof Error ? e.message : "Benutzer konnte nicht angelegt werden."
+}
+
+function extractFieldMessages(details: unknown): string[] {
+  if (!details || typeof details !== "object") return []
+  const fields = (details as { fields?: unknown }).fields
+  if (!Array.isArray(fields)) return []
+  return fields
+    .map((field) =>
+      field && typeof field === "object" && typeof (field as { message?: unknown }).message === "string"
+        ? (field as { message: string }).message
+        : "",
+    )
+    .filter(Boolean)
 }
 
 function buildInviteLink(acceptPath: string | undefined, token: string | undefined): string {
