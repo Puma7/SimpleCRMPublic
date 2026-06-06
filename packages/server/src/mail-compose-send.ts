@@ -26,6 +26,7 @@ import type {
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
 import { withWorkspaceTransaction, type WorkspaceTransaction } from './db/workspace-context';
+import { computeTextChangeRatio } from './ai-feedback';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type {
   ServerImapSentCopyAppendInput,
@@ -870,6 +871,21 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // P2-9: capture how much the human changed an AI-suggested draft.
+          let suggestionSnapshot: string | null = null;
+          try {
+            const existing = await trx
+              .selectFrom('email_messages')
+              .select('ai_suggestion_snapshot')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.messageId)
+              .executeTakeFirst();
+            const snapshot = existing?.ai_suggestion_snapshot;
+            suggestionSnapshot = typeof snapshot === 'string' ? snapshot : null;
+          } catch {
+            /* feedback is best-effort */
+          }
+
           await trx
             .updateTable('email_messages')
             .set({
@@ -890,6 +906,25 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .execute();
+
+          if (suggestionSnapshot && suggestionSnapshot.trim()) {
+            try {
+              await trx
+                .insertInto('ai_reply_feedback')
+                .values({
+                  workspace_id: input.workspaceId,
+                  message_id: input.messageId,
+                  node_type: 'compose.send',
+                  suggestion_len: suggestionSnapshot.length,
+                  sent_len: input.bodyText.length,
+                  changed_ratio: computeTextChangeRatio(suggestionSnapshot, input.bodyText),
+                  created_at: options.now?.() ?? new Date(),
+                })
+                .execute();
+            } catch {
+              /* feedback is best-effort */
+            }
+          }
         },
       );
     },

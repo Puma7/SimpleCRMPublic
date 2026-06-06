@@ -15,6 +15,7 @@ import { emailReplySuggestionFieldsMigration } from './0014_email_reply_suggesti
 import { taskCustomerOptionalMigration } from './0015_task_customer_optional';
 import { taskAssignmentAndUserGroupsMigration } from './0016_task_assignment_and_user_groups';
 import { aiUsageEventsMigration } from './0017_ai_usage_events';
+import { aiReplyFeedbackMigration } from './0018_ai_reply_feedback';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -36,6 +37,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   taskCustomerOptionalMigration,
   taskAssignmentAndUserGroupsMigration,
   aiUsageEventsMigration,
+  aiReplyFeedbackMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

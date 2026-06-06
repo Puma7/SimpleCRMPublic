@@ -323,6 +323,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0015_task_customer_optional',
   '0016_task_assignment_and_user_groups',
   '0017_ai_usage_events',
+  '0018_ai_reply_feedback',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

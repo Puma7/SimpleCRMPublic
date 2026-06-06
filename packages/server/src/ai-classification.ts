@@ -577,6 +577,14 @@ export function createPostgresAiAgentPort(
               });
               if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
               continuationVariables['draft.id'] = draft.message.id;
+              // P2-9: snapshot the AI draft so feedback learning can measure how
+              // much a human edits it before sending.
+              await trx
+                .updateTable('email_messages')
+                .set({ ai_suggestion_snapshot: output })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', Number(draft.message.id))
+                .execute();
             }
             if (input.continuation) {
               await enqueueContinuation(trx, {

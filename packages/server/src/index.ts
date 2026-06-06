@@ -3,6 +3,7 @@ export * from './ai-classification';
 export * from './ai-reply-suggestion';
 export * from './ai-usage';
 export * from './ai-providers';
+export * from './ai-feedback';
 export * from './auth';
 export * from './auth-invitation-mailer';
 export * from './cli/doctor';

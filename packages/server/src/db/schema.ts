@@ -65,6 +65,18 @@ export type ServerDatabase = {
   pgp_peer_keys: PgpPeerKeysTable;
   automation_api_keys: AutomationApiKeysTable;
   ai_usage_events: AiUsageEventsTable;
+  ai_reply_feedback: AiReplyFeedbackTable;
+};
+
+export type AiReplyFeedbackTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  message_id: number | null;
+  node_type: string;
+  suggestion_len: number;
+  sent_len: number;
+  changed_ratio: number;
+  created_at: TimestampColumn;
 };
 
 export type AiUsageEventsTable = {
@@ -605,6 +617,7 @@ export type EmailMessagesTable = {
   reply_suggestion_text: string | null;
   reply_suggestion_status: string | null;
   reply_suggestion_error: string | null;
+  ai_suggestion_snapshot: string | null;
   reply_suggestion_updated_at: TimestampColumn | null;
   pop3_uidl: string | null;
   raw_headers: string | null;

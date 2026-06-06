@@ -101,15 +101,16 @@
 
 ## P2 — Qualität & Steuerung
 
-### P2-9 · Feedback-Lernen aus Korrekturen  — Status: ⬜ (Design steht)
+### P2-9 · Feedback-Lernen aus Korrekturen  — Status: 🟩 Basis steht
 **Ziel:** KI-Vorschlag vs. gesendete Endfassung speichern, Diff analysieren, Vorlagenverbesserung vorschlagen.
 
-**Nächster Schritt (Code):**
-- [ ] Migration `ai_reply_feedback` (Workspace-RLS, wie `0017`): message_id, suggestion_text, sent_text, changed_ratio, created_at.
-- [ ] Erfassung beim Senden in `mail-compose-send.ts` (`updateDraftForSend`/Send-Pfad): gespeicherten `reply_suggestion_text` (Migration `0014`) mit der gesendeten Fassung vergleichen, Diff-Kennzahl best-effort speichern (Muster `recordAiUsageSafe`).
-- [ ] Read: häufigste Ergänzungen je Tickettyp; Tests.
+**Basis (jetzt):**
+- [x] Migration `0018_ai_reply_feedback` (Workspace-RLS) + Spalte `email_messages.ai_suggestion_snapshot`.
+- [x] `ai-feedback.ts`: `computeTextChangeRatio` (Wort-Jaccard 0–1, ignoriert Groß/Klein+Satzzeichen) + `recordAiReplyFeedbackSafe` (best-effort).
+- [x] `ai.agent`-Entwürfe snapshotten den KI-Text; beim Senden (`updateDraftForSend`) wird Snapshot↔Endfassung verglichen und als Feedback (Längen + `changed_ratio`, **ohne Texte** = datensparsam) gespeichert.
+- [x] Tests: Ratio-Helper + Recorder.
 
-**Tiefe (später):** automatische Vorlagen-Vorschläge, Klassifikator-Nachtraining.
+**Tiefe (später):** Aggregations-Read (häufigste Änderungsrate je Tickettyp) im Diagnose-Panel; optionale Text-/Diff-Speicherung für „häufigste Ergänzungen"; Vorlagen-Vorschläge; Reply-Suggestion-Accept-Pfad ebenfalls snapshotten.
 
 ### P2-10 · KI-SLA/Latenz-Dashboard  — Status: 🟩 Basis steht (via P0-1)
 **Ziel:** Zeit bis Klassifizierung/Vorschlag, Automatisierungsquote, gesparte Zeit, Kosten.
