@@ -3405,7 +3405,7 @@ describe('server edition foundation', () => {
       applyWorkspaceSession: async () => undefined,
       async chatCompletion(input) {
         chatInputs.push(input);
-        return 'Support';
+        return 'Support | 85';
       },
     });
 
@@ -3452,6 +3452,7 @@ describe('server edition foundation', () => {
         eventVariables: {
           'message.id': 11,
           'ai.class': 'Support',
+          'ai.class_confidence': 85,
         },
       },
     });

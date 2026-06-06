@@ -12,28 +12,27 @@
 
 ## P0 — Fundament (größter Hebel)
 
-### P0-1 · Token-/Kosten-Tracking + Budgets  — Status: ⬜
+### P0-1 · Token-/Kosten-Tracking + Budgets  — Status: 🟩 Basis steht
 **Ziel:** Jeden KI-Aufruf mit prompt/completion-Tokens + geschätzten Kosten erfassen, aggregieren (Tag/Nutzer/Tickettyp/Modell), Budgets/Limits, Anzeige in Diagnose. Fundament für P2-SLA und für „bezahlbar".
 
 **Basis (jetzt):**
-- [ ] Migration: Tabelle `ai_usage_events` (workspace, ts, profile_id, model, node_type, message_id, run_id, prompt_tokens, completion_tokens, est_cost_micro, latency_ms).
-- [ ] Schema-Typ in `db/schema.ts` + Registrierung in `migrations/index.ts`.
-- [ ] Erfassung an der zentralen KI-Aufrufstelle (OpenAI-kompatibler `chat/completions`-Call) → `usage` auslesen, Kosten je Modell schätzen (Preis-Tabelle, konfigurierbar).
-- [ ] Read-Port: Aggregation (Summe Tokens/Kosten 24 h/30 d, Top-Modelle, Top-Nodetypes).
-- [ ] Diagnose-Anzeige: neuer Abschnitt „KI-Nutzung & Kosten" im Diagnose-Panel.
-- [ ] Tests: Erfassung schreibt Event; Aggregation rechnet korrekt; Kostenschätzung.
+- [x] Migration `0017_ai_usage_events` (workspace RLS) + Schema-Typ + Registrierung.
+- [x] `ai-usage.ts`: `extractChatCompletionUsage`, Preis-Tabelle + `estimateAiCostMicroUsd`, `recordAiUsageSafe` (eigene Transaktion, best-effort).
+- [x] Erfassung an allen 6 KI-Aufrufstellen (classify/transform/text_transform_api/review/agent/reply_suggestion) via `runTrackedChatCompletion` + `captureUsage`-Callback.
+- [x] Aggregation im Diagnose-Port (24 h/30 d Tokens/Kosten/Latenz + byNodeType) + Anzeige „KI-Nutzung & Kosten" im Diagnose-Panel.
+- [x] Tests: usage-Parsing, Kostenschätzung, `recordAiUsageSafe` (inkl. best-effort), Diagnose-Aggregation.
 
-**Tiefe (später):** harte Budget-Sperre (Aufruf blockieren bei Überschreitung), Limit pro Nutzer/Tickettyp, Alerting.
+**Tiefe (später):** harte Budget-Sperre (Aufruf blockieren bei Überschreitung), Limit pro Nutzer/Tickettyp, Alerting, konfigurierbare Preis-Tabelle.
 
-### P0-2 · Confidence aus `ai.classify`  — Status: ⬜
+### P0-2 · Confidence aus `ai.classify`  — Status: 🟩 Basis steht
 **Ziel:** Klassifizierung gibt zusätzlich einen Sicherheitswert (0–100) als Workflow-Variable aus, damit `logic.threshold` „nur wenn ≥ X %" greifen kann.
 
 **Basis (jetzt):**
-- [ ] Prompt erweitern: Modell gibt `Label|Confidence` zurück (robustes Parsing, Fallback bei fehlender Zahl).
-- [ ] Variable `ai.class_confidence` (0–100) + `ai.class` setzen.
-- [ ] Tests: Parsing inkl. Fallback; Variable landet im Kontext.
+- [x] Prompt erweitert: Modell gibt `Kategorie|Sicherheit` zurück; `parseClassificationOutput` (robust, Fallback → null/0).
+- [x] Variablen `ai.class` + `ai.class_confidence` (0–100) in die Workflow-Continuation gesetzt (für `logic.threshold`).
+- [x] Test: Continuation enthält Label + Confidence (z. B. `Support | 85` → 85).
 
-**Tiefe (später):** Kalibrierung der Confidence; Self-consistency.
+**Tiefe (später):** Kalibrierung der Confidence; Self-consistency; Confidence auch für `ai.review`/`ai.agent`.
 
 ### P0-3 · JTL-Kontextblock automatisch zur Mail  — Status: ⬜
 **Ziel:** Absender → passende Bestellung(en) → Tracking/Retoure/Zahlstatus als strukturierter Kontext, den KI-Nodes automatisch erhalten.
@@ -142,4 +141,6 @@
 
 | Datum | Item | Ergebnis | Commit |
 |-------|------|----------|--------|
-| 2026-06-06 | Plan | Tracker angelegt; P3 gestrichen (nur E-Mail) | _folgt_ |
+| 2026-06-06 | Plan | Tracker angelegt; P3 gestrichen (nur E-Mail) | 9361c46 |
+| 2026-06-06 | P0-1 | Kosten-Tracking Basis (ai_usage_events + Erfassung + Diagnose) | 394ea24 |
+| 2026-06-06 | P0-2 | Confidence aus ai.classify (`ai.class_confidence`) | _dieser Commit_ |

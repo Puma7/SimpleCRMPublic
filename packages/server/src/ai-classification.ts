@@ -236,7 +236,7 @@ export function createPostgresAiClassificationPort(
           user: classificationPrompt(input.labels, input.contextMode, context.message),
         },
       );
-      const label = normalizeClassificationLabel(output);
+      const { label, confidence } = parseClassificationOutput(output);
       if (!label) throw new Error('KI-Klassifizierung leer');
 
       await withWorkspaceTransaction(
@@ -245,7 +245,7 @@ export function createPostgresAiClassificationPort(
         async (trx) => {
           await addClassificationTag(trx, input.workspaceId, context.message, label, now());
           if (input.continuation) {
-            await enqueueClassificationContinuation(trx, input, label, now());
+            await enqueueClassificationContinuation(trx, input, label, confidence, now());
           }
         },
         { applySession: options.applyWorkspaceSession },
@@ -713,10 +713,25 @@ function classificationPrompt(
   message: ClassificationMessageRow,
 ): string {
   return [
-    `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.`,
+    `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}.`,
+    'Antworte ausschliesslich im Format "Kategorie|Sicherheit", wobei Sicherheit eine ganze Zahl von 0 bis 100 ist',
+    '(wie sicher du dir bei der Kategorie bist), z. B. "Rechnung|85". Keine weiteren Worte.',
     '',
     mode === 'full' ? fullMessageText(message) : metadataMessageText(message),
   ].join('\n');
+}
+
+/** Parses the model output "Kategorie|Sicherheit" into a label + confidence (0–100).
+ *  Tolerant of missing/garbled confidence (then null) and of a plain label. */
+function parseClassificationOutput(output: string): { label: string; confidence: number | null } {
+  const trimmed = output.trim();
+  const pipeIndex = trimmed.indexOf('|');
+  const labelPart = pipeIndex >= 0 ? trimmed.slice(0, pipeIndex) : trimmed;
+  const label = normalizeClassificationLabel(labelPart);
+  const confidenceSource = pipeIndex >= 0 ? trimmed.slice(pipeIndex + 1) : trimmed.slice(label.length);
+  const match = confidenceSource.match(/\d{1,3}/);
+  const confidence = match ? Math.max(0, Math.min(100, Number(match[0]))) : null;
+  return { label, confidence };
 }
 
 function metadataMessageText(message: ClassificationMessageRow): string {
@@ -871,6 +886,7 @@ async function enqueueClassificationContinuation(
   trx: WorkspaceTransaction,
   input: AiClassificationJobPlan,
   label: string,
+  confidence: number | null,
   now: Date,
 ): Promise<void> {
   const continuation = input.continuation;
@@ -880,7 +896,9 @@ async function enqueueClassificationContinuation(
     workspaceId: input.workspaceId,
     messageId: input.messageId,
     continuation,
-    variables: { 'ai.class': label },
+    // `ai.class_confidence` lets a downstream logic.threshold node gate on it
+    // ("nur antworten, wenn >= X%"). 0 when the model gave no usable number.
+    variables: { 'ai.class': label, 'ai.class_confidence': confidence ?? 0 },
     now,
   });
 }
