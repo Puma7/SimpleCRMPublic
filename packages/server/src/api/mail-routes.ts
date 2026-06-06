@@ -624,6 +624,12 @@ async function handleEmailAccountSync(
     return error(409, 'unsupported_email_account_protocol', 'Email account protocol wird nicht unterstuetzt');
   }
 
+  // Optional one-shot full inbox backfill (IMAP only): import older already-read
+  // messages skipped by the first-sync cap.
+  const fullInbox = jobType === 'mail.sync.imap'
+    && typeof req.body === 'object' && req.body !== null
+    && (req.body as { fullInbox?: unknown }).fullInbox === true;
+
   await ports.jobQueue.enqueue({
     workspaceId: principal.workspaceId,
     type: jobType,
@@ -631,6 +637,7 @@ async function handleEmailAccountSync(
       workspaceId: principal.workspaceId,
       accountId,
       actorUserId: principal.userId,
+      ...(fullInbox ? { fullInbox: true } : {}),
     },
   });
 
@@ -639,6 +646,7 @@ async function handleEmailAccountSync(
     queued: true,
     accountId,
     jobType,
+    fullInbox,
   });
 }
 

@@ -1572,6 +1572,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }
     },
   })],
+  [IPCChannels.Email.ImportFullInbox, ([id]) => ({
+    method: "POST",
+    path: `/api/v1/email/accounts/${positiveId(id, "email account id")}/sync`,
+    body: { fullInbox: true },
+    transform: () => ({ success: true }),
+  })],
   [IPCChannels.Email.ClearAccountSyncLock, ([id]) => ({
     method: "DELETE",
     path: `/api/v1/email/accounts/${positiveId(id, "email account id")}/sync-lock`,

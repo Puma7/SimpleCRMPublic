@@ -28,6 +28,9 @@ export type MailSyncJobPlan = Readonly<{
   accountId: number;
   protocol: MailSyncProtocol;
   actorUserId?: string;
+  /** One-shot full inbox backfill: ignore the first-sync cap and import older
+   *  (already-read) messages that were skipped, without moving the sync cursor. */
+  fullInbox?: boolean;
 }>;
 
 export type MailSyncJobResult = Readonly<{
@@ -229,6 +232,7 @@ export function buildMailSyncJobPlan(
     accountId: requiredPositiveInteger(payload, 'accountId'),
     protocol,
     ...optionalString(payload, 'actorUserId'),
+    ...optionalBooleanProperty(payload, 'fullInbox'),
   };
 }
 

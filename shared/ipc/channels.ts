@@ -174,6 +174,7 @@ const EmailChannels = literal({
   DeleteAccount: 'email:delete-account',
   TestImap: 'email:test-imap',
   SyncAccount: 'email:sync-account',
+  ImportFullInbox: 'email:import-full-inbox',
   ListMessages: 'email:list-messages',
   GetMessage: 'email:get-message',
   ListWorkflows: 'email:list-workflows',

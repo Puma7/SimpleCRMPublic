@@ -135,6 +135,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.ImportFullInbox, {
+    payload: positiveInt,
+    result: z.union([
+      z.object({ success: z.literal(true) }).passthrough(),
+      failResult,
+    ]),
+  });
   set(IPCChannels.Email.TestPop3, {
     payload: z
       .object({

@@ -1962,6 +1962,16 @@ describe('server edition foundation', () => {
       protocol: 'imap',
       actorUserId: 'user-a',
     });
+    expect(buildMailSyncJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      fullInbox: true,
+    }, WORKSPACE_A_ID, 'imap')).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap',
+      fullInbox: true,
+    });
     expect(buildScheduledSendJobPlan({
       workspaceId: WORKSPACE_A_ID,
       accountId: 7,
@@ -2570,6 +2580,64 @@ describe('server edition foundation', () => {
       uidvalidityStr: '22',
       syncedAt: now,
     })]);
+  });
+
+  test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 7 })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, upserts, folderUpdates, messageIds: [201, 202, 203, 204] });
+    // UIDs 5,6,7 already imported; 1-4 are older mail skipped by the first-sync cap.
+    store.loadImapUidToId = async () => new Map([[5, 105], [6, 106], [7, 107]]);
+    const fetchedUids: string[] = [];
+    const searchedQueries: any[] = [];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        searchedQueries.push(query);
+        return query.all ? [1, 2, 3, 4, 5, 6, 7] : [];
+      },
+      async fetchOne(uid: string) {
+        fetchedUids.push(uid);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set(['\\Seen']),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      imapClientFactory() { return client as any; },
+    });
+
+    const result = await port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap',
+      actorUserId: USER_A_ID,
+      fullInbox: true,
+    });
+
+    // Only the missing older messages are downloaded.
+    expect(fetchedUids).toEqual(['1', '2', '3', '4']);
+    expect(upserts.map((item) => item.uid)).toEqual([1, 2, 3, 4]);
+    // Backfill uses a single full search, never the incremental window.
+    expect(searchedQueries).toEqual([{ all: true }]);
+    // The sync cursor is not moved by a backfill.
+    expect(folderUpdates[0].lastUid).toBe(7);
+    // Historical mail must not trigger inbound workflows/spam/AI.
+    expect(result).toEqual({ inboundMessageIds: [] });
   });
 
   test('server mail sync job port restores local metadata after UIDVALIDITY resets', async () => {
@@ -17240,7 +17308,17 @@ describe('server edition foundation', () => {
       queued: true,
       accountId: 7,
       jobType: 'mail.sync.imap',
+      fullInbox: false,
     });
+
+    const fullInbox = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/7/sync',
+      body: { fullInbox: true },
+      principal,
+    });
+    expect(fullInbox.status).toBe(202);
+    expect((fullInbox.body as any).data.fullInbox).toBe(true);
 
     const pop3 = await api.handle({
       method: 'POST',
@@ -17298,6 +17376,7 @@ describe('server edition foundation', () => {
 
     expect(accountGetCalls).toEqual([
       { workspaceId: WORKSPACE_A_ID, id: 7 },
+      { workspaceId: WORKSPACE_A_ID, id: 7 },
       { workspaceId: WORKSPACE_A_ID, id: 8 },
       { workspaceId: WORKSPACE_A_ID, id: 77 },
       { workspaceId: WORKSPACE_A_ID, id: 9 },
@@ -17310,6 +17389,16 @@ describe('server edition foundation', () => {
           workspaceId: WORKSPACE_A_ID,
           accountId: 7,
           actorUserId: USER_A_ID,
+        },
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        type: 'mail.sync.imap',
+        payload: {
+          workspaceId: WORKSPACE_A_ID,
+          accountId: 7,
+          actorUserId: USER_A_ID,
+          fullInbox: true,
         },
       },
       {

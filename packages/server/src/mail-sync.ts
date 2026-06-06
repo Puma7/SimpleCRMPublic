@@ -474,8 +474,15 @@ async function syncImapFolder(input: {
       };
     }
 
+    // One-shot full inbox backfill (only the primary inbox): import older
+    // already-read messages skipped by the first-sync cap, without moving the
+    // sync cursor and without triggering inbound post-processing.
+    const fullInbox = input.plan.fullInbox === true && input.spec.runPostSync === true;
     let uids: number[];
-    if (lastUid > 0) {
+    if (fullInbox) {
+      const searchResult = await input.client.search({ all: true }, { uid: true });
+      uids = searchResult === false ? [] : searchResult;
+    } else if (lastUid > 0) {
       const searchResult = await input.client.search({ uid: `${lastUid + 1}:*` }, { uid: true });
       uids = searchResult === false ? [] : searchResult;
     } else {
@@ -491,6 +498,8 @@ async function syncImapFolder(input: {
       folderId: folder.id,
       uids: sorted,
     }));
+    // In backfill mode only download the messages we do not already have.
+    const toProcess = fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted;
     const context: ServerMailSyncUpsertContext = {
       imapUidToId,
       reconcileSeenFromServer: true,
@@ -499,7 +508,7 @@ async function syncImapFolder(input: {
     let chainEnd = lastUid;
     const skippedUids = new Set<number>();
 
-    for (const uid of sorted) {
+    for (const uid of toProcess) {
       try {
         const fetched = await input.client.fetchOne(
           String(uid),
@@ -542,12 +551,14 @@ async function syncImapFolder(input: {
       }
     }
 
-    if (sorted.length > 0) {
-      lastUid = chainEnd;
-    } else if (lastUid === 0) {
-      const refresh = await input.client.search({ all: true }, { uid: true });
-      const all = refresh === false ? [] : refresh;
-      if (all.length > 0) lastUid = Math.max(...all);
+    if (!fullInbox) {
+      if (sorted.length > 0) {
+        lastUid = chainEnd;
+      } else if (lastUid === 0) {
+        const refresh = await input.client.search({ all: true }, { uid: true });
+        const all = refresh === false ? [] : refresh;
+        if (all.length > 0) lastUid = Math.max(...all);
+      }
     }
 
     await input.store.updateFolderSyncState({
@@ -559,7 +570,8 @@ async function syncImapFolder(input: {
       syncedAt: input.now(),
     });
 
-    return { newMessageIds };
+    // Backfilled historical mail must not trigger inbound workflows/spam/AI.
+    return { newMessageIds: fullInbox ? [] : newMessageIds };
   } finally {
     lock.release();
   }
