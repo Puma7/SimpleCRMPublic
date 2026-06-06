@@ -2147,10 +2147,16 @@ function pathLeaf(pathValue: string, delimiter: string | undefined): string {
   return leaf;
 }
 
-function parseJsonValue(value: string | null): unknown | null {
+function parseJsonValue(value: string | null): string | null {
   if (!value) return null;
   try {
-    return JSON.parse(value) as unknown;
+    JSON.parse(value);
+    // Keep the validated JSON text rather than the parsed value: a parsed array
+    // would be serialized by node-postgres as a Postgres array literal ('{...}')
+    // and rejected by the jsonb column (this is what made messages with
+    // attachments fail to import). A JSON string is cast to jsonb correctly for
+    // both objects (from/to) and arrays (attachments).
+    return value;
   } catch {
     return null;
   }
