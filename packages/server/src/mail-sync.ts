@@ -547,7 +547,12 @@ async function syncImapFolder(input: {
         if (upserted.isNew && upserted.id > 0) newMessageIds.push(upserted.id);
         if (canAdvanceImapSyncCursor(chainEnd, uid, sortedSet, skippedUids)) chainEnd = uid;
       } catch (error) {
-        void error;
+        // Previously swallowed silently. A failing message blocks the sync
+        // cursor (it is retried every sync), so surface why so it is diagnosable.
+        skippedUids.add(uid);
+        console.warn(
+          `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 

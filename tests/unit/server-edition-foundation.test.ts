@@ -2640,6 +2640,56 @@ describe('server edition foundation', () => {
     expect(result).toEqual({ inboundMessageIds: [] });
   });
 
+  test('server mail sync skips a failing message and keeps advancing the cursor past it', async () => {
+    const now = new Date('2026-07-07T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5 })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, upserts, folderUpdates, messageIds: [301, 302] });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        if (query.uid === '6:*') return [6, 7, 8];
+        return query.all ? [1, 2, 3, 4, 5, 6, 7, 8] : [];
+      },
+      async fetchOne(uid: string) {
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      // UID 7 fails to parse; it must not block UID 8 or freeze the cursor.
+      parser: async (source) => {
+        const seed = source.toString('utf8');
+        if (seed.includes('Subject: 7')) throw new Error('boom parsing UID 7');
+        return makeParsedServerMailSyncMessage(seed);
+      },
+      imapClientFactory() { return client as any; },
+    });
+
+    await port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap', actorUserId: USER_A_ID });
+
+    // 6 and 8 import; 7 is skipped (not upserted) but logged.
+    expect(upserts.map((item) => item.uid)).toEqual([6, 8]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('UID 7'));
+    // Crucially the cursor advances PAST the failed UID 7 so newer mail is not blocked.
+    expect(folderUpdates[0].lastUid).toBe(8);
+    warn.mockRestore();
+  });
+
   test('server mail sync job port restores local metadata after UIDVALIDITY resets', async () => {
     const now = new Date('2026-07-05T10:30:00.000Z');
     const upserts: any[] = [];
