@@ -22,6 +22,7 @@ const mapDbCustomerToApp = (dbCustomer: any): Customer => ({
     affiliateLink: dbCustomer.affiliateLink,
     dateAdded: dbCustomer.jtl_dateCreated ? new Date(dbCustomer.jtl_dateCreated).toLocaleDateString() : '', // Format date
     lastContact: '', // This might need separate tracking if required
+    customFields: dbCustomer.customFields,
 });
 
 const mapDbProductToApp = (dbProduct: any): Product => ({
@@ -38,11 +39,64 @@ const mapDbProductToApp = (dbProduct: any): Product => ({
      // ... map other fields ...
 });
 
+export interface CustomerPageRequest {
+  limit?: number;
+  offset?: number;
+  query?: string;
+  status?: string | null;
+  includeCustomFields?: boolean;
+  sortBy?: string;
+  sortDirection?: 'asc' | 'desc';
+}
+
+export interface CustomerPageResult {
+  customers: Customer[];
+  total: number;
+}
+
+export const getCustomersPage = async ({
+  limit = 50,
+  offset = 0,
+  query = '',
+  status = null,
+  includeCustomFields = false,
+  sortBy,
+  sortDirection,
+}: CustomerPageRequest = {}): Promise<CustomerPageResult> => {
+  try {
+    const response = await invokeRenderer(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      includeCustomFields,
+      limit,
+      offset,
+      query,
+      status,
+      sortBy,
+      sortDirection,
+    }) as { items?: any[]; total?: number };
+
+    const items = Array.isArray(response?.items) ? response.items : [];
+    const total = typeof response?.total === 'number' && Number.isFinite(response.total)
+      ? response.total
+      : items.length;
+    return {
+      customers: items.map(mapDbCustomerToApp),
+      total,
+    };
+  } catch (error) {
+    console.error("Error invoking paginated 'db:get-customers':", error);
+    return { customers: [], total: 0 };
+  }
+};
+
 export const localDataService: DataService = {
   async getCustomers(): Promise<Customer[]> {
     try {
-      const dbCustomers = await invokeRenderer(IPCChannels.Db.GetCustomers, false) as any[]; // Skip custom fields for performance
-      return dbCustomers.map(mapDbCustomerToApp);
+      const { customers, total } = await getCustomersPage({ limit: 500 });
+      if (total > customers.length) {
+        console.warn(`localDataService.getCustomers() returned ${customers.length} of ${total} customers. Use getCustomersPage() for complete pagination.`);
+      }
+      return customers;
     } catch (error) {
         console.error("Error invoking 'db:get-customers':", error);
         // You might want to return an empty array or re-throw depending on desired UI behavior
@@ -123,34 +177,22 @@ export const getLocalCustomers = async (): Promise<Customer[]> => {
         console.debug("localDataService: getLocalCustomers called");
     }
     try {
-        const dbCustomers = await invokeRenderer(IPCChannels.Db.GetCustomers, false) as any[]; // Skip custom fields for performance
+        const { customers, total } = await getCustomersPage({ limit: 500 });
+        if (total > customers.length) {
+            console.warn(`getLocalCustomers() returned ${customers.length} of ${total} customers. Use getCustomersPage() for complete pagination.`);
+        }
         if (import.meta.env.DEV) {
-            console.debug("localDataService: Received customers from main", { count: Array.isArray(dbCustomers) ? dbCustomers.length : 'unknown' });
+            console.debug("localDataService: Received customers from main", { count: customers.length });
         }
 
         // Basic validation (can be expanded with Zod)
-        if (!Array.isArray(dbCustomers)) {
+        if (!Array.isArray(customers)) {
             console.error("localDataService: Received invalid data format for customers.");
             throw new Error("Invalid data format received from local database for customers.");
         }
 
         // Map to Customer type, ensuring all required fields are present
-        return dbCustomers.map((c: any): Customer => ({            id: c.KundeNr?.toString() ?? '', // Ensure ID is string and handle null/undefined
-            jtl_kKunde: c.KundeNr, // Map jtl_kKunde from KundeNr (assumption)
-            name: c.Name1 || '', // Map name from Name1 (assumption)
-            status: c.Status || 'Active', // Map status from Status (assumption)
-            firstName: c.Vorname || '', // Adjust field names based on actual source data
-            company: c.Firma || '', // Adjust field names
-            phone: c.Telefon || '',
-            street: c.Strasse || '',
-            zip: c.PLZ || '',
-            city: c.Ort || '',
-            country: c.Land || '',
-            notes: c.Notiz || '',
-            affiliateLink: c.affiliateLink || '',
-            dateAdded: c.Erfassungsdatum ? new Date(c.Erfassungsdatum).toLocaleDateString() : '',
-            lastContact: '', // Example default
-        }));
+        return customers;
     } catch (error) {
         console.error("Error fetching local customers:", error);
         // Consider how to handle errors - rethrow, return empty, etc.

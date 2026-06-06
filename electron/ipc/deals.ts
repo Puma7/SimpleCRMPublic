@@ -103,8 +103,9 @@ export function registerDealHandlers(options: DealsHandlersOptions) {
   disposers.push(
     registerIpcHandler(IPCChannels.Deals.UpdateStage, async (_event, payload: any) => {
       try {
-        const { dealId, newStage } = payload ?? {};
-        return updateDealStage(dealId, newStage);
+        const { dealId, newStage, stage, stageId } = payload ?? {};
+        const resolvedStage = newStage ?? stage ?? stageId;
+        return updateDealStage(dealId, resolvedStage);
       } catch (error) {
         logger.error('IPC Error updating deal stage:', error);
         return { success: false, error: (error as Error).message };

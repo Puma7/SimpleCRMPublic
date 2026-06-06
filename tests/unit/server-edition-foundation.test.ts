@@ -12858,8 +12858,11 @@ describe('server edition foundation', () => {
       path: '/api/v1/customers',
       query: {
         search: ' Alice ',
-        cursor: '5',
+        offset: '40',
         limit: '20',
+        status: 'Lead',
+        sortBy: 'fullName',
+        sortDirection: 'desc',
       },
       principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
     });
@@ -12868,8 +12871,11 @@ describe('server edition foundation', () => {
     expect(listCalls).toEqual([{
       workspaceId: WORKSPACE_A_ID,
       limit: 20,
-      cursor: 5,
+      offset: 40,
       search: 'Alice',
+      status: 'Lead',
+      sortBy: 'fullName',
+      sortDirection: 'desc',
     }]);
 
     const get = await api.handle({
@@ -12916,6 +12922,22 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(invalidCursor.status).toBe(400);
+
+    const ambiguousPagination = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customers',
+      query: { cursor: '1', offset: '1' },
+      principal,
+    });
+    expect(ambiguousPagination.status).toBe(400);
+
+    const cursorWithSort = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customers',
+      query: { cursor: '1', sortBy: 'fullName' },
+      principal,
+    });
+    expect(cursorWithSort.status).toBe(400);
 
     const invalidId = await api.handle({
       method: 'GET',

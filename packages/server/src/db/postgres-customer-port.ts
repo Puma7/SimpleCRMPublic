@@ -49,29 +49,91 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
           let query = trx
             .selectFrom('customers')
             .select(customerSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+          let countQuery = trx
+            .selectFrom('customers')
+            .select((eb) => eb.fn.countAll<number>().as('count'))
+            .where('workspace_id', '=', input.workspaceId);
 
-          if (input.cursor !== undefined) {
+          if (input.cursor !== undefined && input.offset === undefined) {
             query = query.where('id', '>', input.cursor);
           }
           const search = input.search?.trim();
           if (search) {
+            const { sql: kyselySql } = require('kysely') as typeof import('kysely');
             const pattern = `%${search}%`;
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('first_name', 'ilike', pattern),
               eb('company', 'ilike', pattern),
               eb('email', 'ilike', pattern),
+              eb('customer_number', 'ilike', pattern),
+              eb('phone', 'ilike', pattern),
+              eb('mobile', 'ilike', pattern),
+              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
+            ]));
+            countQuery = countQuery.where((eb) => eb.or([
+              eb('name', 'ilike', pattern),
+              eb('first_name', 'ilike', pattern),
+              eb('company', 'ilike', pattern),
+              eb('email', 'ilike', pattern),
+              eb('customer_number', 'ilike', pattern),
+              eb('phone', 'ilike', pattern),
+              eb('mobile', 'ilike', pattern),
+              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
             ]));
           }
 
-          const rows = await query.execute();
+          const status = input.status?.trim();
+          if (status) {
+            query = query.where('status', '=', status);
+            countQuery = countQuery.where('status', '=', status);
+          }
+
+          const sortDirection = input.sortDirection === 'desc' ? 'desc' : 'asc';
+          switch (input.sortBy) {
+            case 'fullName':
+              query = query.orderBy('name', sortDirection).orderBy('first_name', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'customerNumber':
+              query = query.orderBy('customer_number', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'company':
+              query = query.orderBy('company', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'email':
+              query = query.orderBy('email', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'contactPhone':
+              query = query.orderBy('phone', sortDirection).orderBy('mobile', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'status':
+              query = query.orderBy('status', sortDirection).orderBy('id', 'asc');
+              break;
+            case 'jtlCustomerNumber':
+              query = query.orderBy('source_sqlite_id', sortDirection).orderBy('id', 'asc');
+              break;
+            default:
+              query = query.orderBy('id', 'asc');
+              break;
+          }
+
+          if (input.offset !== undefined) {
+            query = query.offset(input.offset);
+          }
+
+          query = query.limit(limit + 1);
+
+          const [rows, countRow] = await Promise.all([
+            query.execute(),
+            countQuery.executeTakeFirstOrThrow(),
+          ]);
           const pageRows = rows.slice(0, limit);
+          const total = Number(countRow.count ?? 0);
           return {
             items: pageRows.map(mapCustomerRow),
             nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+            total: Number.isFinite(total) ? total : 0,
           };
         },
         { applySession: options.applyWorkspaceSession },

@@ -13,20 +13,44 @@ describe('localDataService', () => {
   });
 
   test('maps customer database shape to frontend shape', async () => {
-    invoke.mockResolvedValueOnce([
-      {
-        id: 15,
-        customerNumber: 'K-15',
-        name: 'Meyer',
-        firstName: 'Anna',
-        status: null,
-        jtl_dateCreated: '2026-03-10T00:00:00.000Z',
-      },
-    ]);
+    invoke.mockResolvedValueOnce({
+      items: [
+        {
+          id: 15,
+          customerNumber: 'K-15',
+          name: 'Meyer',
+          firstName: 'Anna',
+          status: null,
+          jtl_dateCreated: '2026-03-10T00:00:00.000Z',
+        },
+      ],
+      total: 1,
+    });
     const customers = await localDataService.getCustomers();
     expect(customers[0].id).toBe('15');
     expect(customers[0].status).toBe('Active');
     expect(customers[0].customerNumber).toBe('K-15');
+    expect(invoke).toHaveBeenCalledWith(IPCChannels.Db.GetCustomers, expect.objectContaining({
+      paginated: true,
+      limit: 500,
+    }));
+  });
+
+  test('warns when getCustomers returns a truncated legacy customer list', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    invoke.mockResolvedValueOnce({
+      items: [{ id: 15, name: 'Meyer', status: 'Active' }],
+      total: 650,
+    });
+
+    try {
+      const customers = await localDataService.getCustomers();
+
+      expect(customers).toHaveLength(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('returned 1 of 650 customers'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test('returns null when customer fetch fails', async () => {
@@ -51,5 +75,6 @@ describe('localDataService', () => {
     const products = await localDataService.getProducts();
     expect(products[0].id).toBe('7');
     expect(products[0].isActive).toBe(true);
+    expect(invoke).toHaveBeenCalledWith(IPCChannels.Products.GetAll);
   });
 });

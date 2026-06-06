@@ -504,6 +504,7 @@ export type CustomerRecord = {
 export type CustomerListResult = {
   items: readonly CustomerRecord[];
   nextCursor: number | null;
+  total?: number;
 };
 
 export type CustomerMutationInput = {
@@ -526,7 +527,11 @@ export type CustomerApiPort = {
   list(input: {
     workspaceId: string;
     search?: string;
+    status?: string;
+    sortBy?: string;
+    sortDirection?: 'asc' | 'desc';
     cursor?: number;
+    offset?: number;
     limit: number;
   }): Promise<CustomerListResult>;
   get(input: {

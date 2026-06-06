@@ -21,6 +21,30 @@ for (const channel of AllowedInvokeChannels) {
 const successResponse = z.object({ success: z.literal(true) }).passthrough();
 const failureResponse = z.object({ success: z.literal(false), error: z.string().optional() }).passthrough();
 const standardResult = z.union([successResponse, failureResponse]);
+const optionalListFilterSchema = z.object({
+  completed: z.boolean().optional(),
+  priority: z.string().optional(),
+  query: z.string().optional(),
+  stage: z.string().optional(),
+  customerId: z.number().int().positive().optional(),
+  customer_id: z.number().int().positive().optional(),
+}).passthrough();
+const optionalListParamsSchema = z.union([
+  z.undefined(),
+  z.object({
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    filter: optionalListFilterSchema.optional(),
+  }).passthrough(),
+]);
+const searchPayloadSchema = z.union([
+  z.string(),
+  z.object({
+    query: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+  }).passthrough(),
+  z.tuple([z.string(), z.number().int().positive().optional()]),
+]);
 
 const deployModeSchema = z.union([
   z.literal('standalone'),
@@ -102,7 +126,13 @@ const updateDealProductPayload = dealProductIdentifier.extend({
 
 // --- Calendar ---
 baseSchemaMap.set(IPCChannels.Calendar.GetCalendarEvents, {
-  payload: z.undefined(),
+  payload: z.union([
+    z.undefined(),
+    z.object({
+      startDate: z.string().optional(),
+      endDate: z.string().optional(),
+    }).passthrough(),
+  ]),
   result: z.array(z.any()),
 });
 
@@ -113,12 +143,12 @@ baseSchemaMap.set(IPCChannels.Calendar.AddCalendarEvent, {
 
 baseSchemaMap.set(IPCChannels.Calendar.UpdateCalendarEvent, {
   payload: z.any(),
-  result: z.undefined(),
+  result: z.any(),
 });
 
 baseSchemaMap.set(IPCChannels.Calendar.DeleteCalendarEvent, {
   payload: z.number().int(),
-  result: z.undefined(),
+  result: z.any(),
 });
 
 // --- Deals ---
@@ -176,7 +206,7 @@ baseSchemaMap.set(IPCChannels.Products.GetAll, {
 });
 
 baseSchemaMap.set(IPCChannels.Products.Search, {
-  payload: z.string(),
+  payload: searchPayloadSchema,
   result: z.array(z.any()),
 });
 
@@ -219,7 +249,11 @@ baseSchemaMap.set(IPCChannels.Mssql.SaveSettings, {
 
 baseSchemaMap.set(IPCChannels.Mssql.GetSettings, {
   payload: z.undefined(),
-  result: z.object({}).passthrough(),
+  result: z.union([
+    z.object({}).passthrough(),
+    z.null(),
+    failureResponse,
+  ]),
 });
 
 baseSchemaMap.set(IPCChannels.Mssql.TestConnection, {
@@ -255,7 +289,7 @@ baseSchemaMap.set(IPCChannels.Dashboard.GetUpcomingTasks, {
 
 // --- Tasks ---
 baseSchemaMap.set(IPCChannels.Tasks.GetAll, {
-  payload: z.undefined(),
+  payload: optionalListParamsSchema,
   result: z.array(z.any()),
 });
 
@@ -275,13 +309,19 @@ baseSchemaMap.set(IPCChannels.Tasks.Update, {
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.ToggleCompletion, {
-  payload: z.number().int().positive(),
+  payload: z.union([
+    z.number().int().positive(),
+    z.object({
+      taskId: z.number().int().positive(),
+      completed: z.boolean(),
+    }).passthrough(),
+  ]),
   result: z.any(),
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.Delete, {
   payload: z.number().int().positive(),
-  result: z.undefined(),
+  result: z.any(),
 });
 
 // --- Custom Fields ---
@@ -339,8 +379,27 @@ baseSchemaMap.set(IPCChannels.CustomFields.DeleteValue, {
 
 // --- Remaining DB channels ---
 baseSchemaMap.set(IPCChannels.Db.GetCustomers, {
-  payload: z.undefined(),
-  result: z.array(z.any()),
+  payload: z.union([
+    z.undefined(),
+    z.boolean(),
+    z.object({
+      includeCustomFields: z.boolean().optional(),
+      paginated: z.boolean().optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
+      query: z.string().optional(),
+      status: z.string().nullable().optional(),
+      sortBy: z.string().optional(),
+      sortDirection: z.union([z.literal('asc'), z.literal('desc')]).optional(),
+    }).passthrough(),
+  ]),
+  result: z.union([
+    z.array(z.any()),
+    z.object({
+      items: z.array(z.any()),
+      total: z.number().int().nonnegative(),
+    }).passthrough(),
+  ]),
 });
 
 baseSchemaMap.set(IPCChannels.Db.GetCustomersDropdown, {
@@ -349,7 +408,7 @@ baseSchemaMap.set(IPCChannels.Db.GetCustomersDropdown, {
 });
 
 baseSchemaMap.set(IPCChannels.Db.SearchCustomers, {
-  payload: z.string(),
+  payload: searchPayloadSchema,
   result: z.array(z.any()),
 });
 
@@ -385,7 +444,7 @@ baseSchemaMap.set(IPCChannels.Db.GetTasksForCustomer, {
 
 // --- Deals (remaining channels) ---
 baseSchemaMap.set(IPCChannels.Deals.GetAll, {
-  payload: z.undefined(),
+  payload: optionalListParamsSchema,
   result: z.array(z.any()),
 });
 
@@ -407,7 +466,11 @@ baseSchemaMap.set(IPCChannels.Deals.Update, {
 baseSchemaMap.set(IPCChannels.Deals.UpdateStage, {
   payload: z.object({
     dealId: z.number().int().positive(),
-    stageId: z.number().int().positive(),
+    stageId: z.number().int().positive().optional(),
+    newStage: z.string().min(1).optional(),
+    stage: z.string().min(1).optional(),
+  }).passthrough().refine((payload) => payload.stageId !== undefined || payload.newStage || payload.stage, {
+    message: 'stageId, newStage or stage is required',
   }),
   result: z.any(),
 });

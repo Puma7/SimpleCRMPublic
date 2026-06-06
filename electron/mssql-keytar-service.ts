@@ -68,6 +68,7 @@ const store: Store<MssqlKeytarStoreSchema> = new Store<MssqlKeytarStoreSchema>({
 });
 
 let pool: sql.ConnectionPool | null = null;
+let poolConnectPromise: Promise<sql.ConnectionPool> | null = null;
 
 // Parse common SQL Server input formats into host/instance/port components.
 // Supports:
@@ -331,11 +332,20 @@ export async function testConnectionWithKeytar(settings: MssqlSettings): Promise
 }
 
 
-async function getConnectionPool(): Promise<sql.ConnectionPool> {
+async function createConnectionPool(): Promise<sql.ConnectionPool> {
     if (pool?.connected) {
         return pool;
     }
-    await closeMssqlPool();
+    if (pool) {
+        try {
+            await pool.close();
+            console.log('[MSSQL Keytar] Closed stale MSSQL pool before reconnect.');
+        } catch (error) {
+            console.error('[MSSQL Keytar] Error closing stale MSSQL pool:', error);
+        } finally {
+            pool = null;
+        }
+    }
 
     const settings = await getMssqlSettingsWithKeytar();
     if (!settings || !settings.server || !settings.user || !settings.database) {
@@ -394,6 +404,23 @@ async function getConnectionPool(): Promise<sql.ConnectionPool> {
         const error_to_throw = new Error(errorMessage);
         (error_to_throw as any).detailedError = detailedError;
         throw error_to_throw;
+    }
+}
+
+async function getConnectionPool(): Promise<sql.ConnectionPool> {
+    if (pool?.connected) {
+        return pool;
+    }
+
+    if (poolConnectPromise) {
+        return poolConnectPromise;
+    }
+
+    poolConnectPromise = createConnectionPool();
+    try {
+        return await poolConnectPromise;
+    } finally {
+        poolConnectPromise = null;
     }
 }
 

@@ -57,8 +57,26 @@ export async function handleCustomerRoute(
     const cursor = parseOptionalPositiveInt(req.query?.cursor);
     if (cursor === null) return error(400, 'invalid_cursor', 'cursor muss eine positive Ganzzahl sein');
 
+    const offset = parseOptionalNonnegativeInt(req.query?.offset);
+    if (offset === null) return error(400, 'invalid_offset', 'offset muss eine nicht-negative Ganzzahl sein');
+    if (cursor !== undefined && offset !== undefined) {
+      return error(400, 'ambiguous_pagination', 'cursor und offset duerfen nicht gemeinsam gesetzt werden');
+    }
+
     const search = normalizeSearch(req.query?.search);
     if (search === null) return error(400, 'invalid_search', 'search darf maximal 200 Zeichen haben');
+
+    const status = normalizeOptionalText(req.query?.status, 50);
+    if (status === null) return error(400, 'invalid_status', 'status darf maximal 50 Zeichen haben');
+
+    const sortBy = normalizeOptionalText(req.query?.sortBy, 50);
+    if (sortBy === null) return error(400, 'invalid_sort_by', 'sortBy darf maximal 50 Zeichen haben');
+
+    const sortDirection = parseSortDirection(req.query?.sortDirection);
+    if (sortDirection === null) return error(400, 'invalid_sort_direction', 'sortDirection muss asc oder desc sein');
+    if (cursor !== undefined && sortBy !== undefined) {
+      return error(400, 'ambiguous_sort_pagination', 'sortierte Kundenlisten muessen offset statt cursor verwenden');
+    }
 
     if (!ports.customers) return error(503, 'customers_unavailable', 'Customer API nicht konfiguriert');
 
@@ -66,7 +84,11 @@ export async function handleCustomerRoute(
       workspaceId: principal.workspaceId,
       limit,
       ...(cursor === undefined ? {} : { cursor }),
+      ...(offset === undefined ? {} : { offset }),
       ...(search === undefined ? {} : { search }),
+      ...(status === undefined ? {} : { status }),
+      ...(sortBy === undefined ? {} : { sortBy }),
+      ...(sortDirection === undefined ? {} : { sortDirection }),
     });
     return data(200, result);
   }
@@ -238,6 +260,13 @@ function parseOptionalPositiveInt(value: string | undefined): number | undefined
   return parsePositiveInt(value);
 }
 
+function parseOptionalNonnegativeInt(value: string | undefined): number | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 function parsePositiveInt(value: string): number | null {
   if (!/^[1-9]\d*$/.test(value)) return null;
   const parsed = Number(value);
@@ -250,6 +279,20 @@ function normalizeSearch(value: string | undefined): string | undefined | null {
   if (!normalized) return undefined;
   if (normalized.length > 200) return null;
   return normalized;
+}
+
+function normalizeOptionalText(value: string | undefined, maxLength: number): string | undefined | null {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  if (normalized.length > maxLength) return null;
+  return normalized;
+}
+
+function parseSortDirection(value: string | undefined): 'asc' | 'desc' | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  if (value === 'asc' || value === 'desc') return value;
+  return null;
 }
 
 function parseCustomerMutationBody(

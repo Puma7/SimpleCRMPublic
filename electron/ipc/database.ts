@@ -3,6 +3,7 @@ import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import {
   getAllCustomers,
+  getCustomersPage,
   getCustomerById,
   createCustomer,
   updateCustomer,
@@ -26,17 +27,71 @@ interface DatabaseHandlersOptions {
 
 type Disposer = () => void;
 
+function parseSearchPayload(payload: unknown, explicitLimit?: number, defaultLimit = 20): { query: string; limit: number } {
+  if (Array.isArray(payload)) {
+    return {
+      query: String(payload[0] ?? ''),
+      limit: Number(payload[1] ?? defaultLimit),
+    };
+  }
+  if (payload && typeof payload === 'object') {
+    const input = payload as Record<string, unknown>;
+    return {
+      query: String(input.query ?? ''),
+      limit: Number(input.limit ?? defaultLimit),
+    };
+  }
+  return {
+    query: String(payload ?? ''),
+    limit: Number(explicitLimit ?? defaultLimit),
+  };
+}
+
+function parseCustomerListPayload(payload: unknown): {
+  includeCustomFields: boolean;
+  paginated: boolean;
+  limit?: number;
+  offset?: number;
+  query?: string;
+  status?: string | null;
+  sortBy?: string;
+  sortDirection?: 'asc' | 'desc';
+} {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const input = payload as Record<string, unknown>;
+    return {
+      includeCustomFields: Boolean(input.includeCustomFields),
+      paginated: Boolean(input.paginated ?? true),
+      limit: typeof input.limit === 'number' ? input.limit : undefined,
+      offset: typeof input.offset === 'number' ? input.offset : undefined,
+      query: typeof input.query === 'string' ? input.query : undefined,
+      status: typeof input.status === 'string' ? input.status : null,
+      sortBy: typeof input.sortBy === 'string' ? input.sortBy : undefined,
+      sortDirection: input.sortDirection === 'desc' ? 'desc' : 'asc',
+    };
+  }
+
+  return {
+    includeCustomFields: Boolean(payload),
+    paginated: false,
+  };
+}
+
 export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   const { logger, isDevelopment } = options;
   const disposers: Disposer[] = [];
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Db.GetCustomers, async (_event: IpcMainInvokeEvent, includeCustomFields?: boolean) => {
+    registerIpcHandler(IPCChannels.Db.GetCustomers, async (_event: IpcMainInvokeEvent, payload?: unknown) => {
       try {
+        const params = parseCustomerListPayload(payload);
         if (isDevelopment) {
-          logger.debug('[IPC] db:get-customers', { includeCustomFields });
+          logger.debug('[IPC] db:get-customers', params);
         }
-        return getAllCustomers(Boolean(includeCustomFields));
+        if (params.paginated) {
+          return getCustomersPage(params);
+        }
+        return getAllCustomers(params.includeCustomFields);
       } catch (error) {
         logger.error('IPC Error getting customers:', error);
         throw error;
@@ -59,13 +114,14 @@ export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Db.SearchCustomers, async (_event: IpcMainInvokeEvent, query: string, limit: number = 20) => {
+    registerIpcHandler(IPCChannels.Db.SearchCustomers, async (_event: IpcMainInvokeEvent, payload: unknown, limit?: number) => {
       try {
+        const { query, limit: resolvedLimit } = parseSearchPayload(payload, limit);
         if (isDevelopment) {
-          logger.debug('[IPC] db:search-customers', { query, limit });
+          logger.debug('[IPC] db:search-customers', { query, limit: resolvedLimit });
         }
         const startTime = Date.now();
-        const result = searchCustomers(query, limit);
+        const result = searchCustomers(query, resolvedLimit);
         if (isDevelopment) {
           logger.debug('[IPC] db:search-customers result', { count: result.length, duration: Date.now() - startTime });
         }
@@ -159,9 +215,10 @@ export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Products.Search, async (_event: IpcMainInvokeEvent, query: string = '', limit: number = 20) => {
+    registerIpcHandler(IPCChannels.Products.Search, async (_event: IpcMainInvokeEvent, payload: unknown = '', limit?: number) => {
       try {
-        return searchProducts(query, limit);
+        const { query, limit: resolvedLimit } = parseSearchPayload(payload, limit);
+        return searchProducts(query, resolvedLimit);
       } catch (error) {
         logger.error('IPC Error searching products:', error);
         return [];

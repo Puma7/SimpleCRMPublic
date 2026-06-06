@@ -77,6 +77,9 @@ import {
   deleteCustomField,
   getCustomFieldValuesForCustomer,
   deleteCustomFieldValue,
+  getCustomersPage,
+  searchProducts,
+  createTask,
 } from '../../electron/sqlite-service';
 
 describe('sqlite-service', () => {
@@ -119,6 +122,88 @@ describe('sqlite-service', () => {
     test('returns the database instance after initialization', () => {
       const db = getDb();
       expect(db).toBe(mockDb);
+    });
+  });
+
+  describe('getCustomersPage', () => {
+    test('aliases zipCode as zip in paginated customer queries', () => {
+      mockDb.prepare
+        .mockReturnValueOnce(makeStmt({ total: 1 }))
+        .mockReturnValueOnce(makeStmt([{ id: 1, zip: '10115' }]));
+
+      const result = getCustomersPage({ limit: 50 });
+
+      expect(result.total).toBe(1);
+      expect(mockDb.prepare.mock.calls[1][0]).toContain("COALESCE(zipCode, '') AS zip");
+    });
+
+    test('uses whitelisted global sort fields for paginated customers', () => {
+      mockDb.prepare
+        .mockReturnValueOnce(makeStmt({ total: 1 }))
+        .mockReturnValueOnce(makeStmt([{ id: 1, email: 'kunde@example.com' }]));
+
+      getCustomersPage({ limit: 50, sortBy: 'email', sortDirection: 'desc' });
+
+      expect(mockDb.prepare.mock.calls[1][0]).toContain('ORDER BY email DESC, id ASC');
+    });
+
+    test('includes null status customers when filtering active customers', () => {
+      mockDb.prepare
+        .mockReturnValueOnce(makeStmt({ total: 1 }))
+        .mockReturnValueOnce(makeStmt([{ id: 1, status: null }]));
+
+      getCustomersPage({ limit: 50, status: 'Active' });
+
+      expect(mockDb.prepare.mock.calls[0][0]).toContain('(status = @status OR status IS NULL)');
+      expect(mockDb.prepare.mock.calls[1][0]).toContain('(status = @status OR status IS NULL)');
+    });
+  });
+
+  describe('searchProducts', () => {
+    test('honors product search limits above 100 up to the server cap', () => {
+      const stmt = makeStmt([{ id: 1, name: 'Produkt' }]);
+      mockDb.prepare.mockReturnValue(stmt);
+
+      const result = searchProducts('', 200);
+
+      expect(result).toHaveLength(1);
+      expect(stmt.all).toHaveBeenCalledWith({ limit: 200 });
+    });
+  });
+
+  describe('createTask validation', () => {
+    test('rejects invalid customer ids without touching the database', () => {
+      const result = createTask({ customer_id: 0, title: 'Follow up' });
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Bitte wählen Sie einen gültigen Kunden aus.',
+      });
+      expect(mockDb.prepare).not.toHaveBeenCalled();
+    });
+
+    test('rejects empty titles before customer lookup', () => {
+      const result = createTask({ customer_id: 1, title: '   ' });
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Bitte geben Sie einen Aufgabentitel ein.',
+      });
+      expect(mockDb.prepare).not.toHaveBeenCalled();
+    });
+
+    test('rejects tasks for missing customers before inserting', () => {
+      const customerStmt = makeStmt(undefined);
+      mockDb.prepare.mockReturnValueOnce(customerStmt);
+
+      const result = createTask({ customer_id: 99, title: 'Follow up' });
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Kunde 99 wurde nicht gefunden.',
+      });
+      expect(mockDb.prepare).toHaveBeenCalledTimes(1);
+      expect(customerStmt.get).toHaveBeenCalledWith(99);
     });
   });
 
