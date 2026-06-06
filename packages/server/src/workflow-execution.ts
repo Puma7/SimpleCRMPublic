@@ -1325,7 +1325,16 @@ async function executeServerNode(
     const result = await addWorkflowMessageTag(trx, context, tag, now);
     return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
   }
-  if (type === 'email.set_category') {
+  if (type === 'email.set_category' || type === 'set_category') {
+    // Prefer a stable category reference (source_sqlite_id from the dropdown) so
+    // the workflow survives category renames; fall back to the path otherwise
+    // (and when the referenced category was deleted).
+    const categorySourceSqliteId = optionalPositiveIntegerConfig(config.categorySourceSqliteId, 'categorySourceSqliteId');
+    if (!categorySourceSqliteId.ok) return { status: 'error', port: 'error', message: categorySourceSqliteId.message };
+    if (categorySourceSqliteId.value !== undefined) {
+      const byId = await setWorkflowMessageCategoryById(trx, context, categorySourceSqliteId.value, now);
+      if (byId) return byId;
+    }
     const path = String(config.path ?? '').trim();
     if (!path) return { status: 'skipped', port: 'default' };
     return await setWorkflowMessageCategoryPath(trx, context, path, now);
@@ -3802,6 +3811,109 @@ async function setWorkflowMessageCategoryPath(
       'email.category_path': parts.join('/'),
     },
   };
+}
+
+/**
+ * Resolves a category by its stable source_sqlite_id and assigns the message to
+ * it. Rename-safe: the workflow stores the id, so renaming the category keeps it
+ * pointed at the same one. Returns null when the category no longer exists, so
+ * the caller can fall back to the configured path.
+ */
+async function setWorkflowMessageCategoryById(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  categorySourceSqliteId: number,
+  now: Date,
+): Promise<NodeResult | null> {
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const category = await loadWorkflowCategoryBySourceSqliteId(trx, context.workspaceId, categorySourceSqliteId);
+  if (!category) return null;
+
+  const messageSourceSqliteId = context.messageSourceSqliteId
+    ?? await resolveMessageSourceSqliteId(trx, context.workspaceId, context.messageId);
+  if (messageSourceSqliteId === null) {
+    return { status: 'error', port: 'error', message: 'Nachricht nicht gefunden' };
+  }
+
+  await trx
+    .deleteFrom('email_message_categories')
+    .where('workspace_id', '=', context.workspaceId)
+    .where('message_source_sqlite_id', '=', messageSourceSqliteId)
+    .execute();
+
+  await trx
+    .insertInto('email_message_categories')
+    .values({
+      workspace_id: context.workspaceId,
+      source_sqlite_id: serverCreatedWorkflowMessageCategorySourceSqliteId(
+        context.workspaceId,
+        messageSourceSqliteId,
+        category.sourceSqliteId,
+      ),
+      message_source_sqlite_id: messageSourceSqliteId,
+      category_source_sqlite_id: category.sourceSqliteId,
+      message_id: context.messageId,
+      category_id: category.id,
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .execute();
+
+  return {
+    status: 'ok',
+    port: 'default',
+    variables: {
+      'email.category_id': category.id,
+      'email.category_path': category.path,
+    },
+  };
+}
+
+type WorkflowCategoryLookupRow = {
+  id: number;
+  sourceSqliteId: number;
+  parentSourceSqliteId: number | null;
+  name: string;
+};
+
+/** Loads a category by its stable source id and reconstructs its current full path. */
+async function loadWorkflowCategoryBySourceSqliteId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  categorySourceSqliteId: number,
+): Promise<{ id: number; sourceSqliteId: number; path: string } | null> {
+  const rows = await trx
+    .selectFrom('email_categories')
+    .select(['id', 'source_sqlite_id', 'parent_source_sqlite_id', 'name'])
+    .where('workspace_id', '=', workspaceId)
+    .execute();
+  const bySource = new Map<number, WorkflowCategoryLookupRow>();
+  for (const row of rows) {
+    bySource.set(Number(row.source_sqlite_id), {
+      id: Number(row.id),
+      sourceSqliteId: Number(row.source_sqlite_id),
+      parentSourceSqliteId: row.parent_source_sqlite_id === null || row.parent_source_sqlite_id === undefined
+        ? null
+        : Number(row.parent_source_sqlite_id),
+      name: String(row.name ?? ''),
+    });
+  }
+  const start = bySource.get(categorySourceSqliteId);
+  if (!start) return null;
+
+  const path: string[] = [];
+  const seen = new Set<number>();
+  let current: WorkflowCategoryLookupRow | undefined = start;
+  while (current && !seen.has(current.sourceSqliteId) && path.length < MAX_EMAIL_CATEGORY_DEPTH) {
+    seen.add(current.sourceSqliteId);
+    path.unshift(current.name);
+    current = current.parentSourceSqliteId === null ? undefined : bySource.get(current.parentSourceSqliteId);
+  }
+
+  return { id: start.id, sourceSqliteId: categorySourceSqliteId, path: path.join('/') };
 }
 
 async function ensureWorkflowEmailCategory(

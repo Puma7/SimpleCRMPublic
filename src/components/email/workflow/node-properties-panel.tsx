@@ -31,6 +31,7 @@ import {
   AiProfileSelect,
   profileIdFromConfig,
 } from "../ai-profile-select"
+import { WorkflowCategorySelect } from "./workflow-category-select"
 import type { AiPrompt } from "../types"
 import { invokeRenderer } from "@/services/transport"
 import {
@@ -1163,6 +1164,7 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
     actionType?: string
     tag?: string
     path?: string
+    categorySourceSqliteId?: number
     reason?: string
     to?: string
     promptId?: number
@@ -1187,6 +1189,7 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
       next.tag = ""
     } else if (actionType === "set_category") {
       next.path = ""
+      next.categorySourceSqliteId = undefined
     } else if (actionType === "hold_outbound") {
       next.reason = ""
     } else if (actionType === "forward_copy") {
@@ -1233,14 +1236,11 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
         </div>
       ) : null}
       {t === "set_category" ? (
-        <div className="space-y-1.5">
-          <Label className="text-xs">Kategorie-Pfad</Label>
-          <Input
-            value={d.path ?? ""}
-            onChange={(e) => patch({ path: e.target.value })}
-            placeholder="Rechnungen/Unbezahlt"
-          />
-        </div>
+        <WorkflowCategorySelect
+          path={d.path ?? ""}
+          categorySourceSqliteId={typeof d.categorySourceSqliteId === "number" ? d.categorySourceSqliteId : undefined}
+          onChange={(next) => patch({ path: next.path, categorySourceSqliteId: next.categorySourceSqliteId })}
+        />
       ) : null}
       {t === "hold_outbound" ? (
         <div className="space-y-1.5">

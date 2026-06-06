@@ -6062,6 +6062,149 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port runs action-type set_category nodes (short-name alias)', async () => {
+    const now = new Date('2026-07-04T10:31:30.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            // Palette "Kategorie setzen" emits a short-name action node; the server
+            // must treat 'set_category' like 'email.set_category' instead of blocking it.
+            { id: 'set-cat', type: 'action', data: { actionType: 'set_category', path: 'Support' } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'set-cat' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        subject: 'Kat',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Kat',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      categories: [{
+        id: 801,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9801,
+        parent_source_sqlite_id: null,
+        parent_id: null,
+        name: 'Support',
+        sort_order: 0,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 28,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.runs.map((run) => run.status)).toEqual(['ok']);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      ['set-cat', 'set_category', 'ok', 'default'],
+    ]);
+    expect(rows.messageCategories.map((mc) => [mc.message_id, mc.category_id])).toEqual([[28, 801]]);
+  });
+
+  test('postgres workflow execution job port resolves set_category by stable id (rename-safe)', async () => {
+    const now = new Date('2026-07-04T10:31:45.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 43,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 430,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'set-cat',
+              type: 'registry',
+              data: {
+                nodeType: 'email.set_category',
+                // Stable id wins over the (now stale) configured path.
+                config: { categorySourceSqliteId: 9801, path: 'Stale Old Path' },
+              },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'set-cat' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        subject: 'Kat',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Kat',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      categories: [{
+        id: 801,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9801,
+        parent_source_sqlite_id: null,
+        parent_id: null,
+        name: 'Renamed',
+        sort_order: 0,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 43,
+      messageId: 29,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    // Resolved by stable id 9801 -> category 801 ('Renamed'), ignoring the stale path,
+    // and without creating a new category from that path.
+    expect(rows.messageCategories.map((mc) => [mc.message_id, mc.category_id, mc.category_source_sqlite_id]))
+      .toEqual([[29, 801, 9801]]);
+    expect(rows.categories.map((c) => c.id)).toEqual([801]);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status])).toEqual([
+      ['set-cat', 'email.set_category', 'ok'],
+    ]);
+  });
+
   test('postgres workflow execution job port queues account sync runs', async () => {
     const now = new Date('2026-07-04T10:32:00.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
