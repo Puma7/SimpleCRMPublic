@@ -88,7 +88,8 @@ describe('workflow run finalize writes jsonb-safe log_json', () => {
 
     await port.execute({ workspaceId: WORKSPACE_ID, workflowId: 999, runId: 7, context: {} });
 
-    const update = captured.updates.find((u) => u.table === 'email_workflow_runs');
+    // Pick the run-finalize update (startOrReuseRun may also persist source_sqlite_id).
+    const update = captured.updates.find((u) => u.table === 'email_workflow_runs' && 'log_json' in u.set);
     expect(update).toBeDefined();
     expect(typeof update!.set.log_json).toBe('string');
     expect(JSON.parse(update!.set.log_json as string)).toEqual(['error:workflow_not_found']);
@@ -128,7 +129,8 @@ describe('workflow run finalize writes jsonb-safe log_json', () => {
     expect(typeof insert!.values.log_json).toBe('string');
     expect(JSON.parse(insert!.values.log_json as string)).toEqual([]);
 
-    const update = captured.updates.find((u) => u.table === 'email_workflow_runs');
+    // Pick the run-finalize update (startOrReuseRun may also persist source_sqlite_id).
+    const update = captured.updates.find((u) => u.table === 'email_workflow_runs' && 'log_json' in u.set);
     expect(update).toBeDefined();
     expect(typeof update!.set.log_json).toBe('string');
     expect(JSON.parse(update!.set.log_json as string)).toEqual(['error:delayed_job_not_found']);

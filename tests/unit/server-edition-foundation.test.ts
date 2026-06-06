@@ -7740,6 +7740,13 @@ describe('server edition foundation', () => {
       ['switch-1', 'logic.switch', 'ok', 'versendet'],
       ['tag-jtl', 'email.tag', 'ok', 'default'],
     ]);
+    // The worker run persists its synthetic source id, and the steps carry the
+    // same run_source_sqlite_id — so the run-history "by source" step lookup
+    // resolves (previously the run kept source_sqlite_id=null while steps used
+    // -id, so the step protocol was always empty).
+    expect(rows.runs).toHaveLength(1);
+    expect(rows.runs[0].source_sqlite_id).toBeLessThan(0);
+    expect(rows.steps.every((step) => step.run_source_sqlite_id === rows.runs[0].source_sqlite_id)).toBe(true);
   });
 
   test('postgres workflow execution job port gates email.auto_reply on enable flag, confidence, and anti-loop', async () => {

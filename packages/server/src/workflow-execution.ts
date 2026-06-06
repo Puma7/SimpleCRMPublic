@@ -795,6 +795,7 @@ async function startOrReuseRun(
       .executeTakeFirst();
     if (existing) {
       const id = Number(existing.id);
+      const sourceSqliteId = nullableSourceSqliteId(existing.source_sqlite_id, id);
       await trx
         .updateTable('email_workflow_runs')
         .set({
@@ -804,6 +805,9 @@ async function startOrReuseRun(
           message_source_sqlite_id: input.message === null ? null : Number(input.message.source_sqlite_id),
           direction: input.direction,
           status: 'running',
+          // Persist the (synthetic) source id so run-step lookups by source match
+          // the run_source_sqlite_id written onto the steps.
+          source_sqlite_id: sourceSqliteId,
           started_at: input.now,
           finished_at: null,
           updated_at: input.now,
@@ -811,7 +815,7 @@ async function startOrReuseRun(
         .where('workspace_id', '=', input.workspaceId)
         .where('id', '=', id)
         .execute();
-      return { id, sourceSqliteId: nullableSourceSqliteId(existing.source_sqlite_id, id) };
+      return { id, sourceSqliteId };
     }
   }
 
@@ -838,7 +842,18 @@ async function startOrReuseRun(
     .returning(['id', 'source_sqlite_id'])
     .executeTakeFirstOrThrow();
   const id = Number(inserted.id);
-  return { id, sourceSqliteId: nullableSourceSqliteId(inserted.source_sqlite_id, id) };
+  const sourceSqliteId = nullableSourceSqliteId(inserted.source_sqlite_id, id);
+  if (inserted.source_sqlite_id === null || inserted.source_sqlite_id === undefined) {
+    // Worker-created run: persist the synthetic source id (-id) so run-step
+    // lookups by source resolve (the steps carry run_source_sqlite_id = -id).
+    await trx
+      .updateTable('email_workflow_runs')
+      .set({ source_sqlite_id: sourceSqliteId })
+      .where('workspace_id', '=', input.workspaceId)
+      .where('id', '=', id)
+      .execute();
+  }
+  return { id, sourceSqliteId };
 }
 
 async function finishExistingRun(
