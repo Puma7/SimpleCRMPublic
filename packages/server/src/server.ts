@@ -96,6 +96,14 @@ import {
   type ProductionJobHandlersOptions,
 } from './jobs';
 import {
+  createServerLogStore,
+  type ServerLogStore,
+} from './diagnostics/server-log-store';
+import {
+  createPinoLogCaptureStream,
+  installConsoleLogCapture,
+} from './diagnostics/server-log-capture';
+import {
   accessTokenSignerFromBase64,
   parseBase64MasterKey,
   type AccessTokenSigner,
@@ -161,6 +169,7 @@ export type ServerListenOptions = Readonly<{
   databaseUrl?: string;
   createDatabase?: (options: { databaseUrl: string }) => Promise<Kysely<ServerDatabase>>;
   logger?: boolean;
+  serverLogStore?: ServerLogStore;
   accessTokenSigner?: AccessTokenSigner;
   jobWorker?: Partial<ServerJobWorkerConfig>;
   jobHandlers?: JobHandlerRegistry;
@@ -193,6 +202,13 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
   const webhookAllowlist = env.JOB_WEBHOOK_ALLOWLIST?.trim();
+  // Central server log: capture every warning/error (pino + console) into a
+  // bounded, file-persisted store exposed via the diagnostics API.
+  const serverLogStore = options.serverLogStore ?? createServerLogStore({
+    filePath: env.SERVER_LOG_FILE?.trim() || undefined,
+  });
+  const captureLogs = options.logger !== false;
+  if (captureLogs) installConsoleLogCapture(serverLogStore);
   let db: Kysely<ServerDatabase> | undefined;
   let secrets: PostgresSecretPort | undefined;
   let apiJobQueue: GraphileQueuePort | undefined;
@@ -236,10 +252,14 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     }
   }
 
+  ports.serverLogs = serverLogStore;
+
   const app = createFastifyServer({
     ports,
     accessTokenSigner,
-    logger: options.logger ?? true,
+    logger: captureLogs
+      ? { level: env.LOG_LEVEL?.trim() || 'info', stream: createPinoLogCaptureStream(serverLogStore) }
+      : (options.logger ?? false),
     corsAllowedOrigins,
   });
 

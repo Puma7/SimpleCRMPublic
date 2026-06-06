@@ -8,6 +8,8 @@ export * from './cli/migrate-from-sqlite';
 export * from './cli/rls-check';
 export * from './config';
 export * from './db';
+export * from './diagnostics/server-log-store';
+export * from './diagnostics/server-log-capture';
 export * from './jobs';
 export * from './jtl-order';
 export * from './jtl-sync';

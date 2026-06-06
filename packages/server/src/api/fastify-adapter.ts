@@ -35,7 +35,7 @@ export type BearerTokenPrincipalResolver = (input: {
 
 export type FastifyServerOptions = Readonly<{
   ports: ServerApiPorts;
-  logger?: boolean | LoggerOptions;
+  logger?: boolean | (LoggerOptions & { stream?: { write(chunk: string): void } });
   resolvePrincipal?: FastifyPrincipalResolver;
   accessTokenSigner?: AccessTokenSigner;
   corsAllowedOrigins?: readonly string[];

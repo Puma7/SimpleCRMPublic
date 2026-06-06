@@ -5,6 +5,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
 import { RestoreWizardPanel } from "./restore-wizard-panel"
+import { ServerLogsSection } from "./server-logs-section"
 import { Button } from "@/components/ui/button"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import { invokeIpc } from "../types"
@@ -205,6 +206,8 @@ export function DiagnosticsPanel() {
       </div>
 
       {localBackupAvailable ? <RestoreWizardPanel /> : null}
+
+      {serverClientMode ? <ServerLogsSection /> : null}
 
       {!report && !loading ? (
         <p className="text-sm text-muted-foreground">Keine Diagnosedaten.</p>

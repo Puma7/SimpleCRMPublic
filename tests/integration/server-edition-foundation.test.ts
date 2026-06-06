@@ -142,6 +142,8 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm');
     expect(compose).toContain('PG_RESTORE_ROLE: simplecrm_app');
     expect(compose).toContain('audit_archives:/app/data/audit-archive');
+    expect(compose).toContain('SERVER_LOG_FILE: ${SERVER_LOG_FILE:-/app/data/logs/server-log.jsonl}');
+    expect(compose).toContain('server_logs:/app/data/logs');
     expect(compose).toContain('caddy_logs:/var/log');
     expect(compose).toContain('audit_archives:/data/audit-archive:ro');
     expect(compose).toContain('profiles: ["restore"]');
@@ -171,6 +173,7 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('attachments:/data/attachments:ro');
     expect(compose).toContain('backups:');
     expect(compose).toContain('caddy_logs:');
+    expect(compose).toContain('server_logs:');
     expect(compose).toContain('minio_data:');
     expect(compose).toContain('uptime_kuma_data:');
     expect(compose).toContain('pgadmin_data:');

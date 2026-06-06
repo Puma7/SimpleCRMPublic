@@ -47,10 +47,13 @@ services:
       JOB_WORKER_AI_CONCURRENCY: ${JOB_WORKER_AI_CONCURRENCY:-5}
       JOB_WORKER_MIGRATE_ON_START: ${JOB_WORKER_MIGRATE_ON_START:-false}
       JOB_WEBHOOK_ALLOWLIST: ${JOB_WEBHOOK_ALLOWLIST:-}
+      SERVER_LOG_FILE: ${SERVER_LOG_FILE:-/app/data/logs/server-log.jsonl}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 3000
     volumes:
       - attachments:/app/data/attachments
       - audit_archives:/app/data/audit-archive
+      - server_logs:/app/data/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -318,6 +321,7 @@ volumes:
   postgres_data:
   attachments:
   audit_archives:
+  server_logs:
   caddy_data:
   caddy_config:
   caddy_logs:

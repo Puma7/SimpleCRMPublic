@@ -69,6 +69,11 @@ const TaskChannels = literal({
   Delete: 'tasks:delete',
 });
 
+const DiagnosticsChannels = literal({
+  GetServerLogs: 'diagnostics:get-server-logs',
+  ClearServerLogs: 'diagnostics:clear-server-logs',
+});
+
 const UserGroupChannels = literal({
   List: 'user-groups:list',
   Create: 'user-groups:create',
@@ -357,6 +362,7 @@ export const IPCChannels = {
   Deals: DealChannels,
   Tasks: TaskChannels,
   UserGroups: UserGroupChannels,
+  Diagnostics: DiagnosticsChannels,
   Sync: SyncChannels,
   Mssql: MssqlChannels,
   Jtl: JtlChannels,

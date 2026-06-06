@@ -3,6 +3,7 @@ import { handleAutomationReadRoute } from './automation-routes';
 import { handleCoreCrmReadRoute } from './core-crm-routes';
 import { handleCustomerRoute } from './customer-routes';
 import { handleDashboardRoute } from './dashboard-routes';
+import { handleDiagnosticsRoute } from './diagnostics-routes';
 import { handleExtendedCrmReadRoute } from './extended-crm-routes';
 import { handleFollowUpRoute } from './follow-up-routes';
 import { handleLockRoute } from './lock-routes';
@@ -73,6 +74,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const userGroups = await handleUserGroupRoute(req, ports);
       if (userGroups) return userGroups;
+
+      const diagnostics = await handleDiagnosticsRoute(req, ports);
+      if (diagnostics) return diagnostics;
 
       const coreCrm = await handleCoreCrmReadRoute(req, ports);
       if (coreCrm) return coreCrm;

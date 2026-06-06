@@ -159,6 +159,13 @@ type UserGroupMemberRecord = {
   role: "owner" | "admin" | "user"
 }
 
+type ServerLogEntry = {
+  time: string
+  level: "warn" | "error" | "fatal"
+  message: string
+  source: string
+}
+
 type CalendarEventRecord = {
   id: number
   sourceSqliteId?: number | null
@@ -1372,6 +1379,21 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: () => ({ success: true }),
     }
   }],
+
+  [IPCChannels.Diagnostics.GetServerLogs, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "server log query")
+    return {
+      method: "GET",
+      path: "/api/v1/diagnostics/server-logs",
+      query: pruneQueryUndefined({ level: input.level, limit: input.limit }),
+      transform: (body) => listItems<ServerLogEntry>(body),
+    }
+  }],
+  [IPCChannels.Diagnostics.ClearServerLogs, () => ({
+    method: "POST",
+    path: "/api/v1/diagnostics/server-logs/clear",
+    transform: () => ({ success: true }),
+  })],
 
   [IPCChannels.Calendar.GetCalendarEvents, () => ({
     method: "GET",

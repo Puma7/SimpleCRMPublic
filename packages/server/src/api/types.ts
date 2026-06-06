@@ -4074,10 +4074,24 @@ export type HealthCheckApiPort = {
   pingDatabase(): Promise<void>;
 };
 
+export type ServerLogReadEntry = {
+  time: string;
+  level: 'warn' | 'error' | 'fatal';
+  message: string;
+  source: string;
+};
+
+export type ServerLogReadPort = {
+  recent(options?: { level?: 'warn' | 'error' | 'fatal'; limit?: number }): readonly ServerLogReadEntry[];
+  clear(): void;
+  count(): number;
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
   health?: HealthCheckApiPort;
+  serverLogs?: ServerLogReadPort;
   calendarEvents?: CalendarEventApiPort;
   locks: ConversationLockApiPort;
   audit?: AuditApiPort;
