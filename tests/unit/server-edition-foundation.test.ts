@@ -9667,6 +9667,110 @@ describe('server edition foundation', () => {
     });
   });
 
+  test('postgres workflow execution job port releases the outbound hold via email.release_outbound', async () => {
+    const now = new Date('2026-07-04T11:00:30.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 25,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 250,
+        trigger_name: 'outbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: {} } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 70,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 700,
+        subject: 'Approved draft',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'ok',
+        body_text: 'ok',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        outbound_hold: true,
+        outbound_block_reason: 'KI-Pruefung laeuft',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 25,
+      messageId: 70,
+      triggerName: 'outbound',
+      context: { outbound: { messageId: 70, subject: 'Approved draft', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    // After OK -> release: the hold is lifted, the reason cleared.
+    expect(rows.messages[0]).toMatchObject({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      updated_at: now,
+    });
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.port, step.message])).toEqual([
+      ['email.release_outbound', 'ok', 'default', 'outbound_hold_released'],
+    ]);
+    expect(rows.runs.map((run) => run.status)).toEqual(['ok']);
+  });
+
+  test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {
+    const now = new Date('2026-07-04T11:00:45.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 26,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 260,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 71,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 710,
+        subject: 'Inbound',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'in',
+        body_text: 'in',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 26, messageId: 71, triggerName: 'inbound', context: {} });
+
+    // Outbound-only: on inbound it skips, doesn't touch the message.
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.message])).toEqual([
+      ['email.release_outbound', 'skipped', 'Nur fuer ausgehende Nachrichten'],
+    ]);
+  });
+
   test('postgres workflow execution job port blocks local code and plugin nodes fail-closed', async () => {
     const now = new Date('2026-07-04T11:01:00.000Z');
     const unsupportedNodes = [

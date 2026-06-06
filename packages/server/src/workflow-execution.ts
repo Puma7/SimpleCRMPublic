@@ -1342,6 +1342,9 @@ async function executeServerNode(
       message: reason,
     };
   }
+  if (type === 'email.release_outbound') {
+    return await releaseWorkflowOutboundHold(trx, context, now);
+  }
   if (type === 'email.tag' || type === 'tag') {
     const tag = String(config.tag ?? node.data.tag ?? '').trim();
     if (!tag) return { status: 'skipped', port: 'default', message: 'leerer Tag' };
@@ -3437,6 +3440,37 @@ async function updateWorkflowMessage(
     .where('id', '=', context.messageId)
     .execute();
   return null;
+}
+
+/**
+ * Lifts an outbound hold (sets outbound_hold=false + clears the reason) on the
+ * current message. Counterpart to email.hold_outbound; intended for the OK path
+ * after ai.outbound_review approved a draft — without it an approved review
+ * could never actually release the draft. Outbound-only.
+ */
+async function releaseWorkflowOutboundHold(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  now: Date,
+): Promise<NodeResult> {
+  if (context.direction !== 'outbound') {
+    return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
+  }
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  await trx
+    .updateTable('email_messages')
+    .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', context.messageId)
+    .execute();
+  return {
+    status: 'ok',
+    port: 'default',
+    message: 'outbound_hold_released',
+    variables: { 'email.outbound_hold': false },
+  };
 }
 
 async function softDeleteWorkflowMessage(

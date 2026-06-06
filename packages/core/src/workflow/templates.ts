@@ -40,7 +40,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'outbound-quality-check',
     name: 'Ausgehend: KI-Qualitätsprüfung',
     description:
-      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. Blockierte Entwürfe erscheinen im Posteingang mit Hinweis.',
+      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. BLOCK hält den Entwurf zurück (Banner im Posteingang); OK gibt den Versand wieder frei (Sperre lösen).',
     trigger: 'outbound',
     graph: {
       version: 1,
@@ -54,8 +54,19 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { promptId: 0, checkReplyContext: true },
           },
         },
+        // OK-Pfad: Sperre lösen, damit der Entwurf beim nächsten Sende-Klick
+        // tatsächlich rausgeht. Ohne diesen Knoten bleibt jeder geprüfte Entwurf
+        // gesperrt — auch bei OK.
+        {
+          id: 'release',
+          type: 'registry',
+          data: { nodeType: 'email.release_outbound', config: {} },
+        },
       ],
-      edges: [{ id: 'e0', source: 't1', target: 'r1' }],
+      edges: [
+        { id: 'e0', source: 't1', target: 'r1' },
+        { id: 'e1', source: 'r1', target: 'release' },
+      ],
     } as WorkflowGraphDocument,
   },
   {
