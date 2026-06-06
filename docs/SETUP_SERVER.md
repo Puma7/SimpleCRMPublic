@@ -43,6 +43,12 @@ cd docker
 docker compose up -d --build
 ```
 
+Building the `caddy` web image runs `vite build`, which is memory-hungry (Monaco). On small hosts (for example a 4 GB VPS) add swap first so the build does not get OOM-killed:
+
+```sh
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
 Operator wrapper equivalent:
 
 ```sh

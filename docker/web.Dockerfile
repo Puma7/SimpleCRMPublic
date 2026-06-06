@@ -10,7 +10,10 @@ WORKDIR /app
 # Full context; .dockerignore keeps node_modules/.git/build output out.
 COPY . .
 RUN npm ci --legacy-peer-deps --ignore-scripts
-RUN SIMPLECRM_WEB_ONLY=1 npx vite build
+# The bundle is large (Monaco). Raise the V8 heap so the build does not hit the
+# ~2 GB default limit on small (e.g. 4 GB) hosts. The host still needs enough
+# RAM+swap to back this; see docs/SETUP_SERVER.md.
+RUN NODE_OPTIONS=--max-old-space-size=4096 SIMPLECRM_WEB_ONLY=1 npx vite build
 
 FROM caddy:2
 
