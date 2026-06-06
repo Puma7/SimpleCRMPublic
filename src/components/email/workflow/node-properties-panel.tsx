@@ -54,7 +54,7 @@ export function NodePropertiesPanel({
   selectedEdgeId,
   onClearSelection,
 }: Props) {
-  const { labelByType } = useWorkflowNodeCatalog()
+  const { labelByType, descriptionByType } = useWorkflowNodeCatalog()
   const nodes = useWorkflowEditorStore((s) => s.nodes)
   const edges = useWorkflowEditorStore((s) => s.edges)
   const setNodes = useWorkflowEditorStore((s) => s.setNodes)
@@ -179,7 +179,7 @@ export function NodePropertiesPanel({
             <ActionFields node={node} patch={patch} replaceData={replaceData} />
           ) : null}
           {node.type === "registry" ? (
-            <RegistryFields node={node} patch={patch} labelByType={labelByType} />
+            <RegistryFields node={node} patch={patch} labelByType={labelByType} descriptionByType={descriptionByType} />
           ) : null}
 
           {node.type !== "trigger" ? (
@@ -495,6 +495,7 @@ function ConditionFields({ node, patch }: FieldProps) {
 
 type RegistryFieldProps = FieldProps & {
   labelByType: Map<string, string>
+  descriptionByType: Map<string, string>
 }
 
 function patchConfig(
@@ -1078,7 +1079,7 @@ function CodeConfigFields({
   )
 }
 
-function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
+function RegistryFields({ node, patch, labelByType, descriptionByType }: RegistryFieldProps) {
   const d = node.data as {
     nodeType?: string
     label?: string
@@ -1087,6 +1088,7 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
   }
   const config = d.config ?? {}
   const displayLabel = resolveRegistryNodeLabel(d.nodeType, labelByType, d.label)
+  const description = d.nodeType ? descriptionByType.get(d.nodeType) : undefined
   return (
     <>
       <div className="space-y-1.5">
@@ -1094,6 +1096,11 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
         <Input value={displayLabel} disabled className="h-9 text-sm" />
         {d.nodeType ? (
           <p className="font-mono text-[10px] text-muted-foreground">{d.nodeType}</p>
+        ) : null}
+        {description ? (
+          <p className="rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed text-muted-foreground">
+            {description}
+          </p>
         ) : null}
       </div>
       {d.nodeType === "logic.switch" ? (
@@ -1133,8 +1140,49 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
       {d.nodeType === "ai.transform_text" ? (
         <TransformTextFields config={config} patch={patch} />
       ) : null}
-      <div className="space-y-1.5">
-        <Label className="text-xs">Experten-JSON (config)</Label>
+      {d.nodeType === "email.forward_copy" ? (
+        <ForwardCopyFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.release_outbound" ? (
+        <ReleaseOutboundFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.auto_reply" ? (
+        <AutoReplyFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.pick_canned" ? (
+        <PickCannedFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "logic.delay" ? (
+        <DelayFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "logic.set_variable" ? (
+        <SetVariableFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "http.request" ? (
+        <HttpRequestFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "workflow.subflow" ? (
+        <SubflowFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "sync.run" ? (
+        <SyncRunFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "crm.create_task" ? (
+        <CrmCreateTaskFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "mssql.query" ? (
+        <MssqlQueryFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "jtl.order_context" ? (
+        <JtlOrderContextFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "jtl.prepare_action" ? (
+        <JtlPrepareActionFields config={config} patch={patch} />
+      ) : null}
+      <details className="space-y-1.5">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+          Experten-JSON (config) — Fallback für selten genutzte Felder
+        </summary>
         <ExpertJsonEditor
           value={d.expertJson ?? JSON.stringify(d.config ?? {}, null, 2)}
           onChange={(text) => {
@@ -1147,8 +1195,336 @@ function RegistryFields({ node, patch, labelByType }: RegistryFieldProps) {
           }}
           height="220px"
         />
-      </div>
+      </details>
     </>
+  )
+}
+
+type FieldFnProps = { config: Record<string, unknown>; patch: (p: Record<string, unknown>) => void }
+
+function ForwardCopyFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Empfänger (kommagetrennt, max. 10)</Label>
+        <Textarea
+          className="min-h-[60px] text-sm"
+          placeholder="bank@example.com, buchhaltung@example.com"
+          value={String(config.to ?? "")}
+          onChange={(e) => patchConfig(patch, config, "to", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Trenner: Komma oder Semikolon. Adressen werden validiert und entdupliziert.
+        </p>
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.includeAttachments === true}
+          onCheckedChange={(v) => patchConfig(patch, config, "includeAttachments", v)}
+        />
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Original-Anhänge mitschicken</Label>
+          <p className="text-[11px] text-muted-foreground">Limit insgesamt 25 MB. Unlesbare Dateien werden übersprungen.</p>
+        </div>
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.runOutboundReview === true}
+          onCheckedChange={(v) => patchConfig(patch, config, "runOutboundReview", v)}
+        />
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Mit Ausgangsprüfung</Label>
+          <p className="text-[11px] text-muted-foreground">
+            Standard: aus (Weiterleitungen umgehen die Prüfung, Anti-Loop via Auto-Submitted-Header + Dedup).
+            Ein: fail-closed bei aktiven Outbound-Workflows.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReleaseOutboundFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.autoSend !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "autoSend", v)}
+        />
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Auto-senden nach Freigabe</Label>
+          <p className="text-[11px] text-muted-foreground">
+            Standard: ein. Markiert den Entwurf als geprüft und lässt den scheduled-send-Worker sofort versenden.
+            Aus: nur Sperre lösen, Versand per Klick.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AutoReplyFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Confidence-Variable</Label>
+        <Input
+          className="h-9 font-mono text-sm"
+          value={String(config.confidenceVar ?? "ai.class_confidence")}
+          onChange={(e) => patchConfig(patch, config, "confidenceVar", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Mindest-Confidence (0–100)</Label>
+        <Input
+          type="number"
+          min={0}
+          max={100}
+          className="h-9"
+          value={Number(config.minConfidence ?? 70)}
+          onChange={(e) => patchConfig(patch, config, "minConfidence", parseInt(e.target.value, 10) || 0)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function PickCannedFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.createDraft !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "createDraft", v)}
+        />
+        <Label className="text-xs font-normal">Entwurf direkt anlegen</Label>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Tag-Filter (optional)</Label>
+        <Input
+          className="h-9"
+          placeholder="z.B. support, retoure"
+          value={String(config.tagFilter ?? "")}
+          onChange={(e) => patchConfig(patch, config, "tagFilter", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function DelayFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Verzögerung (Sekunden)</Label>
+        <Input
+          type="number"
+          min={1}
+          className="h-9"
+          value={Number(config.delaySeconds ?? 60)}
+          onChange={(e) => patchConfig(patch, config, "delaySeconds", Math.max(1, parseInt(e.target.value, 10) || 1))}
+        />
+      </div>
+    </div>
+  )
+}
+
+function SetVariableFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Name</Label>
+        <Input
+          className="h-9 font-mono text-sm"
+          placeholder="z.B. priority"
+          value={String(config.name ?? "")}
+          onChange={(e) => patchConfig(patch, config, "name", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Wert</Label>
+        <Input
+          className="h-9 text-sm"
+          value={String(config.value ?? "")}
+          onChange={(e) => patchConfig(patch, config, "value", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">Text, Zahl oder Boolean (true/false).</p>
+      </div>
+    </div>
+  )
+}
+
+function HttpRequestFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Methode</Label>
+        <Input
+          className="h-9 font-mono text-sm uppercase"
+          value={String(config.method ?? "GET")}
+          onChange={(e) => patchConfig(patch, config, "method", e.target.value.toUpperCase())}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">URL</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="https://api.example.com/hook"
+          value={String(config.url ?? "")}
+          onChange={(e) => patchConfig(patch, config, "url", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Body (optional)</Label>
+        <Textarea
+          className="min-h-[80px] font-mono text-xs"
+          value={String(config.body ?? "")}
+          onChange={(e) => patchConfig(patch, config, "body", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function SubflowFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Subflow Workflow-ID</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.workflowId ?? 0)}
+          onChange={(e) => patchConfig(patch, config, "workflowId", parseInt(e.target.value, 10) || 0)}
+        />
+        <p className="text-[11px] text-muted-foreground">ID aus der Workflow-Liste. Subflow muss im selben Workspace existieren.</p>
+      </div>
+    </div>
+  )
+}
+
+function SyncRunFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Konto-ID (optional)</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.accountId ?? 0)}
+          onChange={(e) => patchConfig(patch, config, "accountId", parseInt(e.target.value, 10) || 0)}
+        />
+        <p className="text-[11px] text-muted-foreground">0 = alle Konten des Workspaces synchronisieren.</p>
+      </div>
+    </div>
+  )
+}
+
+function CrmCreateTaskFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Titel</Label>
+        <Input
+          className="h-9 text-sm"
+          value={String(config.title ?? "E-Mail nachverfolgen")}
+          onChange={(e) => patchConfig(patch, config, "title", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Priorität</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="low | medium | high"
+          value={String(config.priority ?? "medium")}
+          onChange={(e) => patchConfig(patch, config, "priority", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Fälligkeit in Tagen</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.daysUntilDue ?? 2)}
+          onChange={(e) => patchConfig(patch, config, "daysUntilDue", parseInt(e.target.value, 10) || 0)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function MssqlQueryFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">SQL (read-only, SELECT)</Label>
+        <Textarea
+          className="min-h-[100px] font-mono text-xs"
+          value={String(config.sql ?? "")}
+          onChange={(e) => patchConfig(patch, config, "sql", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Nur lesende Statements (SELECT). Variablen mit {`{{email}}`}/{`{{orderNo}}`} sind möglich.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function JtlOrderContextFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">SQL (MSSQL, read-only)</Label>
+        <Textarea
+          className="min-h-[100px] font-mono text-xs"
+          value={String(config.query ?? "")}
+          onChange={(e) => patchConfig(patch, config, "query", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Platzhalter: {`{{email}}`}, {`{{orderNo}}`}. Die erste Zeile wird auf {`jtl.*`}-Variablen gemappt.
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Mapping (optional)</Label>
+        <Textarea
+          className="min-h-[60px] font-mono text-xs"
+          placeholder="cStatus -> jtl.status&#10;dDatum -> jtl.date"
+          value={String(config.mapping ?? "")}
+          onChange={(e) => patchConfig(patch, config, "mapping", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function JtlPrepareActionFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Aktion</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="resend_invoice | create_return | send_tracking | refund_status | custom"
+          value={String(config.kind ?? "send_tracking")}
+          onChange={(e) => patchConfig(patch, config, "kind", e.target.value)}
+        />
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.requireApproval !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "requireApproval", v)}
+        />
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Vorher freigeben lassen</Label>
+          <p className="text-[11px] text-muted-foreground">Knoten bereitet nur vor — führt die Aktion nicht selbst aus.</p>
+        </div>
+      </div>
+    </div>
   )
 }
 

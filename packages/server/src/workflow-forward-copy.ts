@@ -52,6 +52,9 @@ export type WorkflowForwardCopyJobPlan = Readonly<{
   actorUserId?: string;
   to: string;
   includeAttachments?: boolean;
+  /** Opt-in: run the forward through outbound review (placeholder; fail-closed
+   *  if any outbound workflows are enabled). Default false. */
+  runOutboundReview?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: WorkflowForwardCopyContinuation;
@@ -255,12 +258,18 @@ async function prepareForwardCopy(
     };
   }
 
-  const outboundWorkflowCount = await countEnabledOutboundWorkflows(trx, input.workspaceId);
-  if (outboundWorkflowCount > 0) {
-    return {
-      ok: false,
-      error: 'Outbound-Workflows sind aktiv; automatische Weiterleitung bleibt im Servermodus fail-closed',
-    };
+  // Outbound-review gating: forwards normally bypass outbound review (they were
+  // initiated by an inbound workflow, not composed by a human, and the
+  // Auto-Submitted header + dedup table already guard loops). The fail-closed
+  // guard only fires when the workflow opts in via runOutboundReview=true.
+  if (input.runOutboundReview === true) {
+    const outboundWorkflowCount = await countEnabledOutboundWorkflows(trx, input.workspaceId);
+    if (outboundWorkflowCount > 0) {
+      return {
+        ok: false,
+        error: 'runOutboundReview=true: aktive Outbound-Workflows muessen die Weiterleitung pruefen — derzeit nicht implementiert',
+      };
+    }
   }
 
   const originalFromLine = addressesFromStoredJson(message.fromJson);

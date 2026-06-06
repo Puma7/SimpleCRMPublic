@@ -47,4 +47,16 @@ describe('workflow templates only use known nodes', () => {
       expect(entry.label.length).toBeGreaterThan(0);
     }
   });
+
+  // The editor renders entry.description as inline node documentation, so a
+  // missing description is a documentation gap. This test pins it.
+  test('every catalog entry has an inline description for the editor', () => {
+    const missing: string[] = [];
+    for (const entry of listBuiltinWorkflowNodeCatalog()) {
+      if (!entry.description || entry.description.trim().length < 10) {
+        missing.push(entry.type);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
 });

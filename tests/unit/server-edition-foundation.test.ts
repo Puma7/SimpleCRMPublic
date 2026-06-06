@@ -2179,6 +2179,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       to: 'audit@example.com',
       includeAttachments: false,
+      runOutboundReview: false,
       continuation: {
         workflowId: 23,
         triggerName: 'inbound',
@@ -9184,11 +9185,15 @@ describe('server edition foundation', () => {
       smtpSend,
     });
 
+    // Opt-in: runOutboundReview=true must fail-closed when outbound workflows
+    // exist (review-integration is not yet wired). Default behaviour (below)
+    // ignores outbound workflows and just sends.
     await port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 40,
       messageId: 28,
       to: 'audit@example.com',
+      runOutboundReview: true,
       continuation: {
         workflowId: 40,
         triggerName: 'inbound',
@@ -9206,13 +9211,40 @@ describe('server edition foundation', () => {
             resumeNodeId: 'tag-ok',
             eventVariables: expect.objectContaining({
               'forward_copy.ok': false,
-              'forward_copy.error': expect.stringContaining('fail-closed'),
+              'forward_copy.error': expect.stringContaining('runOutboundReview'),
               'forward_copy.duplicate': false,
             }),
           }),
         }),
       }),
     ]);
+
+    // Inverse: default (runOutboundReview omitted/false) bypasses the
+    // fail-closed guard — the forward IS sent even with outbound workflows
+    // enabled. The Auto-Submitted header + dedup table guard against loops.
+    smtpSend.mockClear();
+    const secretsForBypass = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const portBypass = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: secretsForBypass,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend,
+    });
+    await portBypass.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 40,
+      messageId: 28,
+      to: 'audit@example.com',
+    });
+    expect(smtpSend).toHaveBeenCalledTimes(1);
   });
 
   test('postgres workflow execution job port queues AI review continuations', async () => {

@@ -2408,6 +2408,7 @@ async function scheduleWorkflowForwardCopyJob(
     messageId: context.messageId,
     to: to.value,
     includeAttachments: config.includeAttachments === true,
+    runOutboundReview: config.runOutboundReview === true,
     eventStrings: context.strings,
     eventVariables: context.variables,
   };

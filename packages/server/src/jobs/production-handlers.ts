@@ -421,6 +421,7 @@ export function buildWorkflowForwardCopyJobPlan(
     ...optionalString(payload, 'actorUserId'),
     to: requiredStringValue(payload, 'to', MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH),
     includeAttachments: optionalBoolean(payload, 'includeAttachments', false),
+    runOutboundReview: optionalBoolean(payload, 'runOutboundReview', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload),
