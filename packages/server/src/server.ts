@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
 
 import {
   createFastifyServer,
@@ -350,7 +351,6 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
     health: {
       async pingDatabase() {
-        const { sql } = require('kysely') as typeof import('kysely');
         await sql`select 1`.execute(options.db);
       },
     },
