@@ -3981,9 +3981,21 @@ export type MssqlSettingsApiPort = Pick<
 
 export type { MssqlSettingsInput };
 
+/**
+ * Readiness probe port. `pingDatabase` resolves when the database is reachable
+ * and rejects otherwise; the `/health/ready` route uses it to report 200/503 so
+ * orchestrators can distinguish "process alive" (liveness, `/health`) from
+ * "can serve requests" (readiness). Optional — when absent the readiness route
+ * degrades to a shallow OK.
+ */
+export type HealthCheckApiPort = {
+  pingDatabase(): Promise<void>;
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
+  health?: HealthCheckApiPort;
   calendarEvents?: CalendarEventApiPort;
   locks: ConversationLockApiPort;
   audit?: AuditApiPort;

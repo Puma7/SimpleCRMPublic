@@ -40,9 +40,19 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
     paths: {
       '/health': {
         get: {
-          summary: 'Health check',
+          summary: 'Health check (liveness)',
           security: [],
-          responses: { '200': { description: 'Server ist erreichbar' } },
+          responses: { '200': { description: 'Prozess erreichbar' } },
+        },
+      },
+      '/health/ready': {
+        get: {
+          summary: 'Readiness check (liveness plus database connectivity)',
+          security: [],
+          responses: {
+            '200': { description: 'Datenbank erreichbar, betriebsbereit' },
+            '503': { description: 'Datenbank nicht erreichbar' },
+          },
         },
       },
       '/openapi.json': {

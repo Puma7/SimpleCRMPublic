@@ -348,6 +348,12 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
   });
   return {
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
+    health: {
+      async pingDatabase() {
+        const { sql } = require('kysely') as typeof import('kysely');
+        await sql`select 1`.execute(options.db);
+      },
+    },
     aiReplySuggestions: createPostgresAiReplySuggestionPort({ db: options.db, secrets: options.secrets }),
     aiProfiles: createPostgresAiProfileReadPort({ db: options.db, secrets: options.secrets }),
     aiPrompts: createPostgresAiPromptReadPort({ db: options.db }),

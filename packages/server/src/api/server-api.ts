@@ -31,6 +31,28 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
           version: 1,
         });
       }
+      if (req.path === '/health/ready' || req.path === '/api/v1/health/ready') {
+        if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+        if (!ports.health) {
+          return data(200, {
+            status: 'ok',
+            api: 'simplecrm-server',
+            version: 1,
+            checks: { database: 'skipped' },
+          });
+        }
+        try {
+          await ports.health.pingDatabase();
+        } catch {
+          return error(503, 'database_unavailable', 'Datenbank nicht erreichbar');
+        }
+        return data(200, {
+          status: 'ok',
+          api: 'simplecrm-server',
+          version: 1,
+          checks: { database: 'ok' },
+        });
+      }
       if (req.path === '/openapi.json' || req.path === '/api/v1/openapi.json') {
         if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
         return {
