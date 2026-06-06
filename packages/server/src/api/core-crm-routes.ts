@@ -701,7 +701,7 @@ async function handleCreateTask(
   const parsed = parseTaskMutationBody(req.body, {
     requireAtLeastOneField: true,
     requireTitle: true,
-    requireCustomer: true,
+    requireCustomer: false,
   });
   if (!parsed.ok) return parsed.response;
 

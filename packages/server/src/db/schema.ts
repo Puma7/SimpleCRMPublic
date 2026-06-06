@@ -273,7 +273,7 @@ export type TasksTable = {
   id: Generated<number>;
   workspace_id: string;
   source_sqlite_id: number;
-  customer_source_sqlite_id: number;
+  customer_source_sqlite_id: number | null;
   customer_id: number | null;
   title: string;
   description: string | null;

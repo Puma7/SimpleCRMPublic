@@ -4029,8 +4029,11 @@ function mapTaskRecord(record: TaskRecord) {
 
 function mapTaskMutation(value: unknown): Record<string, unknown> {
   const input = objectPayload(value ?? {}, "task payload")
+  // Customer is optional: a missing or 0 id means "no customer", not customer 0.
+  const rawCustomerId = input.customerId ?? input.customer_id
+  const customerId = typeof rawCustomerId === "number" && rawCustomerId > 0 ? rawCustomerId : undefined
   return pruneUndefined({
-    customerId: input.customerId ?? input.customer_id,
+    customerId,
     title: input.title,
     description: input.description,
     dueDate: input.dueDate ?? input.due_date,

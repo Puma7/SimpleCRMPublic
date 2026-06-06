@@ -320,6 +320,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0012_email_account_server_settings',
   '0013_email_compose_draft_fields',
   '0014_email_reply_suggestion_fields',
+  '0015_task_customer_optional',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

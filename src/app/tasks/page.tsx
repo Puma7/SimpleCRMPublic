@@ -224,15 +224,6 @@ export default function TasksPage() {
       return
     }
 
-    if (!newTask.customer_id) {
-      toast({
-        title: "Validierungsfehler",
-        description: "Bitte wählen Sie einen Kunden aus.",
-        variant: "destructive"
-      })
-      return
-    }
-
     if (addToCalendar && !newTask.due_date) {
       toast({
         title: "Validierungsfehler",
@@ -497,7 +488,7 @@ export default function TasksPage() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="customer_id">Kunde</Label>
+                    <Label htmlFor="customer_id">Kunde (optional)</Label>
                     <CustomerCombobox
                       value={newTask.customer_id || undefined}
                       onValueChange={handleCustomerValueChange}
@@ -626,13 +617,17 @@ export default function TasksPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Link 
-                            to="/customers/$customerId" 
-                            params={{ customerId: task.customer_id.toString() }} 
-                            className="hover:underline"
-                          >
-                            {task.customer_name}
-                          </Link>
+                          {task.customer_id ? (
+                            <Link
+                              to="/customers/$customerId"
+                              params={{ customerId: task.customer_id.toString() }}
+                              className="hover:underline"
+                            >
+                              {task.customer_name}
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           <div className="flex items-center gap-2">

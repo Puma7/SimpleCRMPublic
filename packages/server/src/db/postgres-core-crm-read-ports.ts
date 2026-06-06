@@ -631,7 +631,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
       const values = normalizeTaskMutation(input.values, {
         requireAtLeastOneField: true,
         requireTitle: true,
-        requireCustomer: true,
+        requireCustomer: false,
       });
       return withWorkspaceTransaction(
         options.db,
@@ -641,8 +641,12 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
           role: 'user',
         },
         async (trx) => {
-          const customer = await resolveCustomerReference(trx, input.workspaceId, values.customerId);
-          if (!customer) return { ok: false, code: 'customer_not_found' };
+          // Customer is optional. undefined => no customer; a provided id that
+          // does not resolve => customer_not_found.
+          const customer = values.customerId === undefined
+            ? undefined
+            : await resolveCustomerReference(trx, input.workspaceId, values.customerId);
+          if (customer === null) return { ok: false, code: 'customer_not_found' };
 
           const now = new Date();
           const row = await trx
@@ -650,8 +654,8 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .values({
               workspace_id: input.workspaceId,
               source_sqlite_id: serverCreatedTaskSourceSqliteId(),
-              customer_source_sqlite_id: customer.sourceSqliteId,
-              customer_id: customer.id,
+              customer_source_sqlite_id: customer ? customer.sourceSqliteId : null,
+              customer_id: customer ? customer.id : null,
               title: values.title ?? '',
               description: values.description ?? null,
               due_date: values.dueDate ?? null,
