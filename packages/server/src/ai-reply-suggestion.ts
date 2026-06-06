@@ -8,7 +8,8 @@ import type {
   EmailReplySuggestionTrigger,
 } from './api/types';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
-import { extractChatCompletionUsage, recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { callAiChat } from './ai-providers';
 import type {
   CustomersTable,
   EmailAiProfilesTable,
@@ -469,33 +470,22 @@ async function generateReplyDraftText(
   async function defaultChatCompletion(input: ChatCompletionInput): Promise<string> {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     if (!fetchImpl) throw new Error('fetch is not available for AI reply suggestions');
-    const baseUrl = input.profile.base_url.trim().replace(/\/+$/, '');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), OPENAI_CHAT_TIMEOUT_MS);
     try {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${input.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: input.profile.model,
-          messages: [
-            { role: 'system', content: input.system },
-            { role: 'user', content: input.user },
-          ],
-          temperature: 0.3,
-        }),
+      const result = await callAiChat({
+        provider: input.profile.provider,
+        baseUrl: input.profile.base_url,
+        model: input.profile.model,
+        apiKey: input.apiKey,
+        system: input.system,
+        user: input.user,
+        temperature: 0.3,
+        fetchImpl,
         signal: controller.signal,
       });
-      const body = await response.text();
-      if (!response.ok) {
-        const detail = body.trim().slice(0, 500);
-        throw new Error(`KI API HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
-      }
-      input.captureUsage?.(extractChatCompletionUsage(body));
-      return parseChatCompletionContent(body);
+      input.captureUsage?.(result.usage);
+      return result.content;
     } finally {
       clearTimeout(timeout);
     }
@@ -653,18 +643,6 @@ function parseJson(value: string): unknown {
   } catch {
     return value;
   }
-}
-
-function parseChatCompletionContent(body: string): string {
-  const parsed = parseJson(body);
-  if (!isRecord(parsed) || !Array.isArray(parsed.choices)) {
-    throw new Error('KI API response does not contain choices');
-  }
-  const choice = parsed.choices[0];
-  if (!isRecord(choice) || !isRecord(choice.message) || typeof choice.message.content !== 'string') {
-    throw new Error('KI API response does not contain message content');
-  }
-  return choice.message.content;
 }
 
 function formatAiUserError(err: unknown): string {

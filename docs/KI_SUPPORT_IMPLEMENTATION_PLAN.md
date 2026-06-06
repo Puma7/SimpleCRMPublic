@@ -68,16 +68,17 @@
 
 **Tiefe (später):** Mehrsprachigkeit, A/B der Bausteine, Fallback auf Freitext bei „keiner passt".
 
-### P1-6 · Modellwahl pro Tickettyp + native Provider  — Status: 🟡 teilweise heute, Rest = nächster Schritt
+### P1-6 · Modellwahl pro Tickettyp + native Provider  — Status: 🟩 Basis steht
 **Ziel:** Günstiges Modell für Standard, starkes für Reklamation; native Anthropic/Gemini zusätzlich zu OpenAI-kompatibel (lokal via `base_url` läuft bereits).
 
-**Heute schon möglich:** Pro Tickettyp ein anderes **KI-Profil** (eigenes Modell) wählen — die AI-Nodes haben bereits `profileId`, und `ai.classify` → `logic.switch` (auf `ai.class`) kann auf unterschiedliche KI-Nodes mit unterschiedlichen `profileId` routen. „Modell pro Tickettyp" ist damit ohne neuen Code abbildbar.
+**Basis (jetzt):**
+- [x] Provider-Adapter `ai-providers.ts` (`callAiChat`): OpenAI-kompatibel **+ native Anthropic** (`/v1/messages`, `x-api-key`, `anthropic-version`) **+ Gemini** (`generateContent`), `usage` auf gemeinsames `AiTokenUsage` normalisiert → P0-1-Tracking greift für alle Provider. Auswahl über `profile.provider`.
+- [x] Beide Chat-Aufrufstellen nutzen jetzt `callAiChat`; doppelte OpenAI-Parser entfernt.
+- [x] `estimateAiCostMicroUsd` deckt Anthropic/Gemini-Modelle bereits ab.
+- [x] Tests: Request-Form + Response-/Usage-Parsing je Provider + Fehlerpfad.
+- **Modell pro Tickettyp** ist über pro-Node-`profileId` + `ai.classify`→`logic.switch`-Routing bereits abbildbar.
 
-**Nächster Schritt (Code):**
-- [ ] Native Provider-Adapter in `defaultChatCompletion` (beide Stellen): bei `profile.provider === 'anthropic'` die Anthropic-Messages-API (eigener Header `x-api-key`/`anthropic-version`, anderes Body-/Response-Schema, `usage.input_tokens`/`output_tokens`), bei `'gemini'` die Google-API; `captureUsage` auf das gemeinsame `AiTokenUsage` normalisieren (P0-1 greift dann automatisch).
-- [ ] `estimateAiCostMicroUsd` deckt Anthropic/Gemini-Modelle bereits ab (Preis-Tabelle vorhanden).
-
-**Tiefe (später):** automatische Eskalation günstig→stark bei niedriger Confidence (`ai.class_confidence` < X → stärkeres Profil).
+**Tiefe (später):** automatische Eskalation günstig→stark bei niedriger Confidence (`ai.class_confidence` < X → stärkeres Profil); Profil-UI für Provider-Auswahl.
 
 ### P1-7 · E-Commerce-Workflow-Vorlagen mitliefern  — Status: 🟩 Basis steht
 **Ziel:** Die Standardfälle als fertige Vorlagen in der bestehenden Template-Infra (`workflow-templates-dialog` / `WORKFLOW_TEMPLATES`).
