@@ -175,6 +175,7 @@ import {
   createPostgresJtlOrderPort,
   createJtlSyncPort,
   createPostgresMssqlSettingsPort,
+  createPostgresComposeOutboundReviewPort,
   createPostgresWorkflowExecutionJobPort,
   createPostgresWorkflowInboundBackfillPort,
   createPostgresWorkflowForwardCopyPort,
@@ -10007,6 +10008,140 @@ describe('server edition foundation', () => {
     expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
       ['email.release_outbound', 'default', 'outbound_hold_released_auto_send'],
     ]);
+  });
+
+  // Regression for the marker retry-loop bug: scheduled-send may call
+  // composeSender.send multiple times when SMTP transiently fails. Each call
+  // must hit the approval marker and bypass review, otherwise reviewOutbound
+  // would re-hold the draft on every retry, eating the scheduled-send failure
+  // budget (5) for what is really one SMTP failure.
+  test('reviewOutbound.review retains approval marker on read so SMTP retries bypass review', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      // At least one enabled outbound workflow so the review is actually relevant
+      // (with zero workflows, review returns allowed:true without the marker).
+      workflows: [{
+        id: 91,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 910,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 81,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 810,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        body_text: 'ok',
+        body_html: null,
+      }],
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:81',
+        value: now.toISOString(),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    // First call (the scheduled-send picks up the draft for the first time).
+    const first = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 81,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+    expect(first).toEqual({ allowed: true });
+
+    // After bypass, the marker is STILL there (so the retry can also bypass).
+    const markerAfterFirst = rows.syncInfo.find((r) => r.key === 'outbound_review_approved:81');
+    expect(markerAfterFirst).toBeDefined();
+
+    // Re-hold the draft as if SMTP had failed and the cron is retrying.
+    const draftRow = rows.messages.find((m) => m.id === 81);
+    if (draftRow) {
+      draftRow.outbound_hold = true;
+      draftRow.outbound_block_reason = 'pending';
+    }
+
+    // Second call (the retry). Marker must still be honoured → bypass review.
+    const second = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 81,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+    expect(second).toEqual({ allowed: true });
+    // Draft was released again (outbound_hold=false), not re-held.
+    expect(rows.messages.find((m) => m.id === 81)?.outbound_hold).toBe(false);
+  });
+
+  // Mirror case: a stale marker (older than the 24h TTL) is deleted on read
+  // and the review proceeds normally — so workflows don't get stuck honouring
+  // ancient approvals on rebooted drafts.
+  test('reviewOutbound.review clears stale approval marker and runs review', async () => {
+    const approvalTimestamp = new Date('2026-07-01T09:00:00.000Z');
+    const now = new Date('2026-08-01T09:00:00.000Z'); // 31 days later, > 24h
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 92,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 920,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 82,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 820,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        body_text: 'ok',
+        body_html: null,
+      }],
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:82',
+        value: approvalTimestamp.toISOString(),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 82,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    // Stale marker is cleared so future review chains start fresh.
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:82')).toBeUndefined();
   });
 
   test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {

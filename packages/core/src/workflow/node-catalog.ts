@@ -46,7 +46,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Versand sperren',
     category: 'email',
     canvasType: 'action',
-    description: 'Setzt outbound_hold=true mit Grund (Banner im Editor). Erst nach Freigabe (email.release_outbound) sendbar.',
+    description: 'Setzt outbound_hold=true mit Grund (Banner in Liste + Editor). Beendet den Workflow am „blocked"-Port — Folgeknoten werden nicht ausgeführt. Freigabe nur über einen separaten Workflow (email.release_outbound) oder manuell.',
     defaultConfig: { reason: '' },
   },
   {

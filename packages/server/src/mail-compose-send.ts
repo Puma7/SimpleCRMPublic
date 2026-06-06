@@ -25,7 +25,11 @@ import type {
 } from './api';
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
-import { withWorkspaceTransaction, type WorkspaceTransaction } from './db/workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type {
@@ -529,6 +533,7 @@ export function createPostgresEmailOutboundValidationPort(options: {
 export function createPostgresComposeOutboundReviewPort(options: {
   db: Kysely<ServerDatabase>;
   now?: () => Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): ComposeOutboundReviewPort {
   return {
     async review(input) {
@@ -540,8 +545,14 @@ export function createPostgresComposeOutboundReviewPort(options: {
 
           // Approval-Bypass: if email.release_outbound (autoSend=true) recently
           // approved this draft, skip the review entirely so the scheduled-send
-          // cron doesn't re-enter the review on its SMTP send call. The marker is
-          // consumed on use so a manual edit-then-resend goes through review again.
+          // cron doesn't re-enter the review on its SMTP send call.
+          //
+          // The marker is NOT consumed on read: scheduled-send may call
+          // composeSender.send multiple times if SMTP fails transiently. Each
+          // retry must also bypass the review (otherwise we'd loop: retry →
+          // review re-runs → re-hold → cron picks up again). Stale markers age
+          // out via OUTBOUND_REVIEW_APPROVED_TTL_MS (24h). The marker is cleared
+          // once the SMTP send actually succeeds (see post-send cleanup below).
           const approvalKey = outboundReviewApprovedKey(input.draftMessageId);
           const approval = await trx
             .selectFrom('sync_info')
@@ -553,11 +564,6 @@ export function createPostgresComposeOutboundReviewPort(options: {
             const approvedAt = new Date(approval.value);
             const fresh = !Number.isNaN(approvedAt.getTime())
               && now.getTime() - approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
-            await trx
-              .deleteFrom('sync_info')
-              .where('workspace_id', '=', input.workspaceId)
-              .where('key', '=', approvalKey)
-              .execute();
             if (fresh) {
               await trx
                 .updateTable('email_messages')
@@ -567,6 +573,12 @@ export function createPostgresComposeOutboundReviewPort(options: {
                 .execute();
               return { allowed: true };
             }
+            // Stale marker: clear it so future reviews can run cleanly.
+            await trx
+              .deleteFrom('sync_info')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', '=', approvalKey)
+              .execute();
           }
 
           const workflows = await trx
@@ -691,6 +703,7 @@ export function createPostgresComposeOutboundReviewPort(options: {
             workflowRunId: firstRunId,
           };
         },
+        { applySession: options.applyWorkspaceSession },
       );
     },
   };
@@ -986,6 +999,14 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
+            .execute();
+          // SMTP succeeded — drop the outbound-review approval marker so it
+          // doesn't linger past the send (and so an edit-then-resend on the
+          // same id space would re-run review).
+          await trx
+            .deleteFrom('sync_info')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', outboundReviewApprovedKey(input.messageId))
             .execute();
         },
       );

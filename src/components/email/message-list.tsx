@@ -686,11 +686,17 @@ export function MessageList({
                             className={cn(
                               "truncate text-xs",
                               unread ? "font-semibold" : "text-muted-foreground",
+                              isDraft && blocked && "text-amber-700 dark:text-amber-300",
                             )}
+                            title={
+                              isDraft && blocked
+                                ? (m.outbound_block_reason || "Ausgangsprüfung: Versand blockiert").toString()
+                                : undefined
+                            }
                           >
                             {isDraft
                               ? blocked
-                                ? "Entwurf (blockiert)"
+                                ? "Entwurf — Ausgang blockiert"
                                 : "Entwurf"
                               : formatFrom(m.from_json)}
                           </span>
