@@ -3764,6 +3764,8 @@ describe('server edition foundation', () => {
         eventVariables: {
           'message.id': 14,
           'ai.agent.response': 'Antwort aus Agent',
+          'ai.agent.sources': 'Retoure',
+          'ai.agent.source_count': 1,
         },
       },
     });

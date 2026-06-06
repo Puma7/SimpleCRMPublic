@@ -78,19 +78,22 @@
 
 **Tiefe (später):** automatische Eskalation günstig→stark bei niedriger Confidence.
 
-### P1-7 · E-Commerce-Workflow-Vorlagen mitliefern  — Status: ⬜
-**Ziel:** Die 10 Standardfälle als fertige Vorlagen in der bestehenden Template-Infra (`workflow-templates-dialog`).
+### P1-7 · E-Commerce-Workflow-Vorlagen mitliefern  — Status: 🟩 Basis steht
+**Ziel:** Die Standardfälle als fertige Vorlagen in der bestehenden Template-Infra (`workflow-templates-dialog` / `WORKFLOW_TEMPLATES`).
 
 **Basis (jetzt):**
-- [ ] Vorlagen: „Wo ist meine Bestellung?", Retoure, Defekt, Falsche Größe, Rechnung, Paket nicht angekommen, Rückzahlung, Umtausch, Wieder verfügbar?.
-- [ ] Tests: Vorlagen valide (parsebar, Knoten unterstützt).
+- [x] 8 E-Commerce-Vorlagen (`ecom-*`) in `packages/core/src/workflow/templates.ts`: Wo ist meine Bestellung, Retoure, Defekt/Reklamation, Rechnungskopie, Lieferverzug, Umtausch/Größe, Rückzahlung, Wieder verfügbar — je Stichwort-Erkennung → Tag → Kategorie (nur config-freie, server-unterstützte Knoten).
+- [x] Test: alle Templates parsebar (`parseGraphDocument`), ecom-Set eindeutig + condition→tag→category.
 
-### P1-8 · Quellen-Transparenz der KI-Antwort  — Status: ⬜
+**Tiefe (später):** Varianten mit KI-Vorschlag/Auto-Antwort aufgesetzt; mehrsprachige Stichwörter.
+
+### P1-8 · Quellen-Transparenz der KI-Antwort  — Status: 🟩 Basis steht
 **Ziel:** Jede KI-Antwort zeigt genutzte Wissens-/Bestellquellen.
 
 **Basis (jetzt):**
-- [ ] RAG/Agent-Nodes geben genutzte Chunk-/JTL-Quellen als Variable/Meta zurück; in Draft-Meta sichtbar.
-- [ ] Tests.
+- [x] `ai.agent` gibt genutzte Wissens-Chunks als `ai.agent.sources` (Titel/#id) + `ai.agent.source_count` in die Continuation-Variablen.
+
+**Tiefe (später):** Quellen direkt am Entwurf sichtbar (interne Notiz/Header); JTL-Kontextquellen mit aufführen; Relevanz-Scores.
 
 ---
 
@@ -106,12 +109,13 @@
 
 **Tiefe (später):** automatische Vorlagen-Vorschläge, Klassifikator-Nachtraining.
 
-### P2-10 · KI-SLA/Latenz-Dashboard  — Status: ⬜
+### P2-10 · KI-SLA/Latenz-Dashboard  — Status: 🟩 Basis steht (via P0-1)
 **Ziel:** Zeit bis Klassifizierung/Vorschlag, Automatisierungsquote, gesparte Zeit, Kosten.
 
-**Basis (jetzt):** (nutzt P0-1 `latency_ms` + Aggregation)
-- [ ] Metriken in Diagnose: Ø-Latenz je Nodetype, Automatisierungsquote, Kosten/Tag.
-- [ ] Tests.
+**Basis (jetzt):** (durch P0-1 abgedeckt)
+- [x] Ø-Latenz (24 h), Aufrufe/Tokens/Kosten (24 h/30 Tage) und Aufschlüsselung nach Nodetype im Diagnose-Panel.
+
+**Tiefe (später):** Automatisierungsquote (Auto-Antworten/Tickets), geschätzte gesparte Bearbeitungszeit, Latenz-Perzentile p50/p95, Zeitreihen-Charts.
 
 ### P2-11 · Erweiterte kontrollierte JTL-Aktionen  — Status: ⬜
 **Ziel:** Rechnung erneut senden, Retoure anlegen, Trackinglink senden — als freigabepflichtige Aktionen.
@@ -144,4 +148,7 @@
 | 2026-06-06 | Plan | Tracker angelegt; P3 gestrichen (nur E-Mail) | 9361c46 |
 | 2026-06-06 | P0-1 | Kosten-Tracking Basis (ai_usage_events + Erfassung + Diagnose) | 394ea24 |
 | 2026-06-06 | P0-2 | Confidence aus ai.classify (`ai.class_confidence`) | 1a50464 |
-| 2026-06-06 | P0-3 | JTL-Kontext-Knoten `jtl.order_context` (generisch, read-only) | _dieser Commit_ |
+| 2026-06-06 | P0-3 | JTL-Kontext-Knoten `jtl.order_context` (generisch, read-only) | a7562f4 |
+| 2026-06-06 | P1-7 | 8 E-Commerce-Workflow-Vorlagen (`ecom-*`) | _dieser Commit_ |
+| 2026-06-06 | P1-8 | Quellen-Transparenz `ai.agent.sources` | _dieser Commit_ |
+| 2026-06-06 | P2-10 | SLA/Latenz-Basis (durch P0-1 abgedeckt) | _dieser Commit_ |

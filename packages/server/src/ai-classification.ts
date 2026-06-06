@@ -555,7 +555,14 @@ export function createPostgresAiAgentPort(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
-            const continuationVariables: JobPayload = { 'ai.agent.response': output };
+            const continuationVariables: JobPayload = {
+              'ai.agent.response': output,
+              // P1-8 source transparency: which knowledge chunks the answer drew on.
+              'ai.agent.sources': context.chunks
+                .map((chunk) => (chunk.title?.trim() ? chunk.title.trim() : `#${Number(chunk.id)}`))
+                .join('; '),
+              'ai.agent.source_count': context.chunks.length,
+            };
             if (input.createDraft) {
               if (!context.message) throw new Error('Nachricht fuer KI-Agent-Entwurf nicht gefunden');
               const draft = await createPostgresComposeDraftInTransaction(trx, {
