@@ -59,24 +59,25 @@
 
 **Tiefe (später):** tatsächlichen SMTP-Auto-Versand hinter separatem „live"-Flag + Rate-Limit-Tabelle + `Auto-Submitted: auto-replied`-Header (RFC 3834) verdrahten; Tickettyp-/Absender-Whitelist; Audit-Eintrag; Eskalations-Routing.
 
-### P1-5 · KI-gestützte Textbaustein-Auswahl + Variablenfüllung  — Status: ⬜
+### P1-5 · KI-gestützte Textbaustein-Auswahl + Variablenfüllung  — Status: ⬜ (Design steht)
 **Ziel:** KI wählt aus Canned Responses den passenden Baustein und füllt Variablen (günstiger/rechtssicherer als Freitext).
 
-**Basis (jetzt):**
-- [ ] Knoten `ai.pick_canned`: Canned-Liste → KI wählt beste ID (+ Confidence) → Variablen (JTL/Kunde) füllen → Draft.
+**Nächster Schritt (Code):**
+- [ ] Neuer AI-Port/Node `ai.pick_canned` analog `createPostgresAiAgentPort.runAgent` (`ai-classification.ts`): Canned-Liste laden (`email_canned_responses`), nummerierte Titel an das LLM („antworte nur mit der Nummer"), gewählten Baustein per `interpolateReplyTemplate`-Muster (`ai-reply-suggestion.ts:602`) mit Kunde/JTL-Variablen füllen → Draft via `createPostgresComposeDraftInTransaction`. Usage-Tracking über `runTrackedChatCompletion` (P0-1) gratis.
 - [ ] Tests: Auswahl + Platzhalterfüllung.
 
-**Tiefe (später):** Mehrsprachigkeit, A/B der Bausteine.
+**Tiefe (später):** Mehrsprachigkeit, A/B der Bausteine, Fallback auf Freitext bei „keiner passt".
 
-### P1-6 · Modellwahl pro Tickettyp + native Provider  — Status: ⬜
+### P1-6 · Modellwahl pro Tickettyp + native Provider  — Status: 🟡 teilweise heute, Rest = nächster Schritt
 **Ziel:** Günstiges Modell für Standard, starkes für Reklamation; native Anthropic/Gemini zusätzlich zu OpenAI-kompatibel (lokal via `base_url` läuft bereits).
 
-**Basis (jetzt):**
-- [ ] Provider-Abstraktion: `provider` am Profil (`openai_compatible` | `anthropic` | `gemini`); Adapter mit einheitlicher `usage`-Rückgabe (für P0-1).
-- [ ] Modell-Map pro Tickettyp (sync_info), Auflösung im Node.
-- [ ] Tests: Adapter-Auswahl, usage-Normalisierung.
+**Heute schon möglich:** Pro Tickettyp ein anderes **KI-Profil** (eigenes Modell) wählen — die AI-Nodes haben bereits `profileId`, und `ai.classify` → `logic.switch` (auf `ai.class`) kann auf unterschiedliche KI-Nodes mit unterschiedlichen `profileId` routen. „Modell pro Tickettyp" ist damit ohne neuen Code abbildbar.
 
-**Tiefe (später):** automatische Eskalation günstig→stark bei niedriger Confidence.
+**Nächster Schritt (Code):**
+- [ ] Native Provider-Adapter in `defaultChatCompletion` (beide Stellen): bei `profile.provider === 'anthropic'` die Anthropic-Messages-API (eigener Header `x-api-key`/`anthropic-version`, anderes Body-/Response-Schema, `usage.input_tokens`/`output_tokens`), bei `'gemini'` die Google-API; `captureUsage` auf das gemeinsame `AiTokenUsage` normalisieren (P0-1 greift dann automatisch).
+- [ ] `estimateAiCostMicroUsd` deckt Anthropic/Gemini-Modelle bereits ab (Preis-Tabelle vorhanden).
+
+**Tiefe (später):** automatische Eskalation günstig→stark bei niedriger Confidence (`ai.class_confidence` < X → stärkeres Profil).
 
 ### P1-7 · E-Commerce-Workflow-Vorlagen mitliefern  — Status: 🟩 Basis steht
 **Ziel:** Die Standardfälle als fertige Vorlagen in der bestehenden Template-Infra (`workflow-templates-dialog` / `WORKFLOW_TEMPLATES`).
@@ -99,13 +100,13 @@
 
 ## P2 — Qualität & Steuerung
 
-### P2-9 · Feedback-Lernen aus Korrekturen  — Status: ⬜
+### P2-9 · Feedback-Lernen aus Korrekturen  — Status: ⬜ (Design steht)
 **Ziel:** KI-Vorschlag vs. gesendete Endfassung speichern, Diff analysieren, Vorlagenverbesserung vorschlagen.
 
-**Basis (jetzt):**
-- [ ] Beim Senden eines KI-Drafts: Original-Vorschlag + Endfassung + Diff-Kennzahl speichern (`ai_reply_feedback`).
-- [ ] Read: häufigste Ergänzungen je Tickettyp.
-- [ ] Tests.
+**Nächster Schritt (Code):**
+- [ ] Migration `ai_reply_feedback` (Workspace-RLS, wie `0017`): message_id, suggestion_text, sent_text, changed_ratio, created_at.
+- [ ] Erfassung beim Senden in `mail-compose-send.ts` (`updateDraftForSend`/Send-Pfad): gespeicherten `reply_suggestion_text` (Migration `0014`) mit der gesendeten Fassung vergleichen, Diff-Kennzahl best-effort speichern (Muster `recordAiUsageSafe`).
+- [ ] Read: häufigste Ergänzungen je Tickettyp; Tests.
 
 **Tiefe (später):** automatische Vorlagen-Vorschläge, Klassifikator-Nachtraining.
 
@@ -117,14 +118,14 @@
 
 **Tiefe (später):** Automatisierungsquote (Auto-Antworten/Tickets), geschätzte gesparte Bearbeitungszeit, Latenz-Perzentile p50/p95, Zeitreihen-Charts.
 
-### P2-11 · Erweiterte kontrollierte JTL-Aktionen  — Status: ⬜
+### P2-11 · Erweiterte kontrollierte JTL-Aktionen  — Status: ⬜ (Design steht)
 **Ziel:** Rechnung erneut senden, Retoure anlegen, Trackinglink senden — als freigabepflichtige Aktionen.
 
-**Basis (jetzt):**
-- [ ] Read-only/Vorschlags-Variante zuerst (Aktion vorbereiten, nicht ausführen) + Audit.
+**Nächster Schritt (Code):**
+- [ ] Node `jtl.prepare_action` (analog `jtl.order_context`): baut aus Bestell-/Kontextvariablen einen **Aktions-Vorschlag** (`jtl.action.kind`/`payload`) + Audit-Eintrag, **führt nichts aus** (read-only). Freigabe-Port `approved`/`needs_review`.
 - [ ] Tests.
 
-**Tiefe (später):** echte Schreibaktionen in JTL (hinter Freigabe + Allowlist).
+**Tiefe (später):** echte Schreibaktionen in JTL (`jtl-order.ts` createOrder existiert) hinter Freigabe + Allowlist + Rate-Limit.
 
 ---
 
