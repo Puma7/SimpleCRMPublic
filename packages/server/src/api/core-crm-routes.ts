@@ -173,6 +173,7 @@ async function handleListRoute(
       return data(200, await ports.tasks.list({
         workspaceId: principal.workspaceId,
         limit,
+        viewer: { userId: principal.userId, role: principal.role },
         ...(cursor === undefined ? {} : { cursor }),
         ...(search === undefined ? {} : { search }),
         ...(customerId === undefined ? {} : { customerId }),
@@ -211,6 +212,7 @@ async function handleDealTasksRoute(
     workspaceId: principal.workspaceId,
     customerId: deal.customerId,
     limit,
+    viewer: { userId: principal.userId, role: principal.role },
     ...(cursor === undefined ? {} : { cursor }),
   }));
 }
@@ -435,7 +437,11 @@ async function handleGetRoute(
     }
     case 'tasks': {
       if (!ports.tasks) return error(503, 'tasks_unavailable', 'Task API nicht konfiguriert');
-      const task = await ports.tasks.get({ workspaceId: principal.workspaceId, id });
+      const task = await ports.tasks.get({
+        workspaceId: principal.workspaceId,
+        id,
+        viewer: { userId: principal.userId, role: principal.role },
+      });
       return task ? data(200, task) : error(404, 'task_not_found', 'Task nicht gefunden');
     }
     default:
@@ -710,7 +716,7 @@ async function handleCreateTask(
     actorUserId: principal.userId,
     values: parsed.values,
   });
-  if (!result.ok) return error(404, 'customer_not_found', 'Customer nicht gefunden');
+  if (!result.ok) return taskMutationError(result.code);
 
   const task = result.task;
   await ports.audit?.record({
@@ -752,9 +758,10 @@ async function handleUpdateTask(
     actorUserId: principal.userId,
     id,
     values: parsed.values,
+    viewer: { userId: principal.userId, role: principal.role },
   });
   if (!result) return error(404, 'task_not_found', 'Task nicht gefunden');
-  if (!result.ok) return error(404, 'customer_not_found', 'Customer nicht gefunden');
+  if (!result.ok) return taskMutationError(result.code);
 
   const task = result.task;
   await ports.audit?.record({
@@ -786,6 +793,7 @@ async function handleDeleteTask(
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id,
+    viewer: { userId: principal.userId, role: principal.role },
   });
   if (!task) return error(404, 'task_not_found', 'Task nicht gefunden');
 
@@ -1271,6 +1279,18 @@ function parseDealProductMutationBody(
   return { ok: true, values };
 }
 
+function taskMutationError(
+  code: 'customer_not_found' | 'assigned_user_not_found' | 'assigned_group_not_found',
+): ApiResponse {
+  if (code === 'assigned_user_not_found') {
+    return error(404, 'assigned_user_not_found', 'Zugewiesener Benutzer nicht gefunden');
+  }
+  if (code === 'assigned_group_not_found') {
+    return error(404, 'assigned_group_not_found', 'Zugewiesene Gruppe nicht gefunden');
+  }
+  return error(404, 'customer_not_found', 'Customer nicht gefunden');
+}
+
 function parseTaskMutationBody(
   body: unknown,
   options: {
@@ -1296,6 +1316,9 @@ function parseTaskMutationBody(
     'priority',
     'completed',
     'snoozedUntil',
+    'assignmentScope',
+    'assignedUserId',
+    'assignedGroupId',
   ]);
 
   for (const key of Object.keys(body)) {
@@ -1335,6 +1358,30 @@ function parseTaskMutationBody(
     const snoozedUntil = normalizeNullableTimestampBodyField(body.snoozedUntil, 'snoozedUntil');
     if (snoozedUntil.ok) values.snoozedUntil = snoozedUntil.value;
     else errors.push({ field: 'snoozedUntil', message: snoozedUntil.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'assignmentScope')) {
+    const scope = body.assignmentScope;
+    if (scope === 'global' || scope === 'user' || scope === 'group') values.assignmentScope = scope;
+    else errors.push({ field: 'assignmentScope', message: 'assignmentScope muss global, user oder group sein' });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'assignedUserId')) {
+    if (body.assignedUserId === null) values.assignedUserId = null;
+    else if (typeof body.assignedUserId === 'string' && body.assignedUserId.trim()) values.assignedUserId = body.assignedUserId.trim();
+    else errors.push({ field: 'assignedUserId', message: 'assignedUserId muss ein String oder null sein' });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'assignedGroupId')) {
+    if (body.assignedGroupId === null) values.assignedGroupId = null;
+    else {
+      const groupId = normalizePositiveBodyInt(body.assignedGroupId, 'assignedGroupId');
+      if (groupId.ok) values.assignedGroupId = groupId.value;
+      else errors.push({ field: 'assignedGroupId', message: groupId.message });
+    }
+  }
+  if (values.assignmentScope === 'user' && (values.assignedUserId ?? null) === null) {
+    errors.push({ field: 'assignedUserId', message: 'assignedUserId ist fuer assignmentScope=user erforderlich' });
+  }
+  if (values.assignmentScope === 'group' && (values.assignedGroupId ?? null) === null) {
+    errors.push({ field: 'assignedGroupId', message: 'assignedGroupId ist fuer assignmentScope=group erforderlich' });
   }
 
   if (errors.length > 0) {

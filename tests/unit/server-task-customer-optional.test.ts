@@ -89,6 +89,9 @@ function taskRecord(customerId: number | null): TaskRecord {
     priority: 'Medium',
     completed: false,
     snoozedUntil: null,
+    assignmentScope: 'global',
+    assignedUserId: null,
+    assignedGroupId: null,
     updatedAt: '2026-06-06T10:00:00.000Z',
   };
 }

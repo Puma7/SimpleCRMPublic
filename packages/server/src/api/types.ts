@@ -885,6 +885,13 @@ export type DealProductApiPort = {
   }): Promise<DealProductDeletePortResult>;
 };
 
+export type TaskAssignmentScope = 'global' | 'user' | 'group';
+
+export type TaskViewer = {
+  userId: string;
+  role: 'owner' | 'admin' | 'user';
+};
+
 export type TaskRecord = {
   id: number;
   sourceSqliteId: number;
@@ -896,6 +903,9 @@ export type TaskRecord = {
   priority: string;
   completed: boolean;
   snoozedUntil: string | null;
+  assignmentScope: TaskAssignmentScope;
+  assignedUserId: string | null;
+  assignedGroupId: number | null;
   updatedAt: string;
 };
 
@@ -912,11 +922,14 @@ export type TaskMutationInput = {
   priority?: string;
   completed?: boolean;
   snoozedUntil?: string | null;
+  assignmentScope?: TaskAssignmentScope;
+  assignedUserId?: string | null;
+  assignedGroupId?: number | null;
 };
 
 export type TaskMutationPortResult =
   | { ok: true; task: TaskRecord }
-  | { ok: false; code: 'customer_not_found' };
+  | { ok: false; code: 'customer_not_found' | 'assigned_user_not_found' | 'assigned_group_not_found' };
 
 export type TaskApiPort = {
   list(input: {
@@ -926,10 +939,12 @@ export type TaskApiPort = {
     completed?: boolean;
     cursor?: number;
     limit: number;
+    viewer?: TaskViewer;
   }): Promise<TaskListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    viewer?: TaskViewer;
   }): Promise<TaskRecord | null>;
   create?(input: {
     workspaceId: string;
@@ -941,11 +956,13 @@ export type TaskApiPort = {
     actorUserId: string;
     id: number;
     values: TaskMutationInput;
+    viewer?: TaskViewer;
   }): Promise<TaskMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
+    viewer?: TaskViewer;
   }): Promise<TaskRecord | null>;
 };
 

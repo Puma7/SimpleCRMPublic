@@ -13239,6 +13239,7 @@ describe('server edition foundation', () => {
       search: 'Call',
       customerId: 7,
       completed: false,
+      viewer: { userId: 'user-a', role: 'user' },
     }]);
 
     const product = await api.handle({
@@ -13745,6 +13746,7 @@ describe('server edition foundation', () => {
         completed: true,
         snoozedUntil: null,
       },
+      viewer: { userId: USER_A_ID, role: 'user' },
     }]);
 
     const toggledTask = await api.handle({
@@ -13764,6 +13766,7 @@ describe('server edition foundation', () => {
           completed: true,
           snoozedUntil: null,
         },
+        viewer: { userId: USER_A_ID, role: 'user' },
       },
       {
         workspaceId: WORKSPACE_A_ID,
@@ -13772,6 +13775,7 @@ describe('server edition foundation', () => {
         values: {
           completed: false,
         },
+        viewer: { userId: USER_A_ID, role: 'user' },
       },
     ]);
 
@@ -13785,6 +13789,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       actorUserId: USER_A_ID,
       id: 51,
+      viewer: { userId: USER_A_ID, role: 'user' },
     }]);
 
     expect(auditEvents.map((event) => event.action)).toEqual([

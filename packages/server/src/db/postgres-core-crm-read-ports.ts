@@ -1,4 +1,4 @@
-import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+import type { Expression, ExpressionBuilder, Kysely, RawBuilder, Selectable, SqlBool, Updateable } from 'kysely';
 
 import type {
   DealApiPort,
@@ -20,6 +20,7 @@ import type {
   TaskMutationInput,
   TaskMutationPortResult,
   TaskRecord,
+  TaskViewer,
 } from '../api/types';
 import type {
   DealProductsTable,
@@ -116,6 +117,9 @@ const taskSelectColumns = [
   'priority',
   'completed',
   'snoozed_until',
+  'assignment_scope',
+  'assigned_user_id',
+  'assigned_group_id',
   'updated_at',
 ] as const;
 
@@ -585,6 +589,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .selectFrom('tasks')
             .select(taskSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .orderBy('id', 'asc')
             .limit(limit + 1);
 
@@ -621,6 +626,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .select(taskSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .executeTakeFirst();
           return row ? mapTaskRow(row) : null;
         },
@@ -648,6 +654,9 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             : await resolveCustomerReference(trx, input.workspaceId, values.customerId);
           if (customer === null) return { ok: false, code: 'customer_not_found' };
 
+          const assignment = await resolveTaskAssignmentColumns(trx, input.workspaceId, values);
+          if (!assignment.ok) return { ok: false, code: assignment.code };
+
           const now = new Date();
           const row = await trx
             .insertInto('tasks')
@@ -656,6 +665,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
               source_sqlite_id: serverCreatedTaskSourceSqliteId(),
               customer_source_sqlite_id: customer ? customer.sourceSqliteId : null,
               customer_id: customer ? customer.id : null,
+              ...assignment.columns,
               title: values.title ?? '',
               description: values.description ?? null,
               due_date: values.dueDate ?? null,
@@ -693,16 +703,21 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             : await resolveCustomerReference(trx, input.workspaceId, values.customerId);
           if (customer === null) return { ok: false, code: 'customer_not_found' };
 
+          const assignment = await resolveTaskAssignmentColumns(trx, input.workspaceId, values);
+          if (!assignment.ok) return { ok: false, code: assignment.code };
+
           const now = new Date();
           const row = await trx
             .updateTable('tasks')
             .set({
               ...mutationToTaskPatch(values, customer),
+              ...assignment.columns,
               last_modified: now,
               updated_at: now,
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .returning(taskSelectColumns)
             .executeTakeFirst();
           return row ? { ok: true, task: mapTaskRow(row) } : null;
@@ -723,6 +738,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .deleteFrom('tasks')
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .returning(taskSelectColumns)
             .executeTakeFirst();
           return row ? mapTaskRow(row) : null;
@@ -1069,6 +1085,76 @@ function mutationToTaskPatch(
   };
 }
 
+/**
+ * Visibility filter for non-admin viewers: a user only sees tasks that are
+ * global, assigned to them, or assigned to a group they belong to. Owners,
+ * admins, and the system (no viewer) see everything.
+ */
+function taskVisibilityExpression(
+  eb: ExpressionBuilder<ServerDatabase, 'tasks'>,
+  workspaceId: string,
+  viewer: TaskViewer | undefined,
+): Expression<SqlBool> {
+  if (!viewer || viewer.role === 'owner' || viewer.role === 'admin') {
+    return eb.lit(true);
+  }
+  return eb.or([
+    eb('assignment_scope', '=', 'global'),
+    eb.and([eb('assignment_scope', '=', 'user'), eb('assigned_user_id', '=', viewer.userId)]),
+    eb.and([
+      eb('assignment_scope', '=', 'group'),
+      eb('assigned_group_id', 'in',
+        eb.selectFrom('user_group_members')
+          .select('group_id')
+          .where('workspace_id', '=', workspaceId)
+          .where('user_id', '=', viewer.userId)),
+    ]),
+  ]);
+}
+
+type TaskAssignmentResolution =
+  | { ok: true; columns: Partial<Updateable<TasksTable>> }
+  | { ok: false; code: 'assigned_user_not_found' | 'assigned_group_not_found' };
+
+/**
+ * Resolves the assignment columns for a mutation. When assignmentScope is
+ * absent the assignment is left unchanged. A scope of user/group with a
+ * non-resolvable id is rejected; with no id it falls back to global.
+ */
+async function resolveTaskAssignmentColumns(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  values: TaskMutationInput,
+): Promise<TaskAssignmentResolution> {
+  if (values.assignmentScope === undefined) return { ok: true, columns: {} };
+
+  if (values.assignmentScope === 'user' && (values.assignedUserId ?? null) !== null) {
+    const userId = values.assignedUserId as string;
+    const exists = await trx
+      .selectFrom('users')
+      .select('id')
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', userId)
+      .executeTakeFirst();
+    if (!exists) return { ok: false, code: 'assigned_user_not_found' };
+    return { ok: true, columns: { assignment_scope: 'user', assigned_user_id: userId, assigned_group_id: null } };
+  }
+
+  if (values.assignmentScope === 'group' && (values.assignedGroupId ?? null) !== null) {
+    const groupId = values.assignedGroupId as number;
+    const exists = await trx
+      .selectFrom('user_groups')
+      .select('id')
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', groupId)
+      .executeTakeFirst();
+    if (!exists) return { ok: false, code: 'assigned_group_not_found' };
+    return { ok: true, columns: { assignment_scope: 'group', assigned_group_id: groupId, assigned_user_id: null } };
+  }
+
+  return { ok: true, columns: { assignment_scope: 'global', assigned_user_id: null, assigned_group_id: null } };
+}
+
 async function resolveCustomerReference(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -1208,6 +1294,9 @@ function mapTaskRow(row: Pick<TaskRow, typeof taskSelectColumns[number]>): TaskR
     priority: row.priority,
     completed: row.completed,
     snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
+    assignmentScope: row.assignment_scope,
+    assignedUserId: row.assigned_user_id === null ? null : String(row.assigned_user_id),
+    assignedGroupId: row.assigned_group_id === null ? null : Number(row.assigned_group_id),
     updatedAt: timestampToIso(row.updated_at),
   };
 }

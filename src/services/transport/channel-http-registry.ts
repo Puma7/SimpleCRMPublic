@@ -138,6 +138,9 @@ type TaskRecord = {
   priority?: string | null
   completed?: boolean | number | null
   snoozedUntil?: string | null
+  assignmentScope?: "global" | "user" | "group" | null
+  assignedUserId?: string | null
+  assignedGroupId?: number | null
   updatedAt?: string | null
 }
 
@@ -4096,6 +4099,9 @@ function mapTaskRecord(record: TaskRecord) {
     priority: record.priority ?? "Medium",
     completed: Boolean(record.completed),
     snoozed_until: record.snoozedUntil ?? undefined,
+    assignment_scope: record.assignmentScope ?? "global",
+    assigned_user_id: record.assignedUserId ?? null,
+    assigned_group_id: record.assignedGroupId ?? null,
     last_modified: record.updatedAt ?? undefined,
     calendar_event_id: null,
   }
@@ -4114,6 +4120,9 @@ function mapTaskMutation(value: unknown): Record<string, unknown> {
     priority: input.priority,
     completed: input.completed === undefined ? undefined : Boolean(input.completed),
     snoozedUntil: input.snoozedUntil ?? input.snoozed_until,
+    assignmentScope: input.assignmentScope ?? input.assignment_scope,
+    assignedUserId: input.assignedUserId ?? input.assigned_user_id,
+    assignedGroupId: input.assignedGroupId ?? input.assigned_group_id,
   })
 }
 
