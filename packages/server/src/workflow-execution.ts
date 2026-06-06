@@ -1480,6 +1480,9 @@ async function executeServerNode(
   if (type === 'jtl.order_context') {
     return await executeWorkflowJtlOrderContext(context, config, ports.mssql);
   }
+  if (type === 'jtl.prepare_action') {
+    return executeWorkflowJtlPrepareAction(context, config);
+  }
   if (type === 'workflow.subflow') {
     return await enqueueWorkflowSubflow(trx, context, node, config, now);
   }
@@ -2596,6 +2599,47 @@ function bindJtlContextPlaceholders(
 
 function sqlStringLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+const JTL_ACTION_KINDS = new Set(['resend_invoice', 'create_return', 'send_tracking', 'refund_status', 'custom']);
+
+/**
+ * P2-11 (base): prepares a controlled JTL action proposal from the order context
+ * WITHOUT executing it. It assembles an action descriptor (kind + payload from
+ * the `jtl.*` context variables) and exposes it as `jtl.action.*` variables, then
+ * routes to `needs_review` (default — human approval) or `approved`. Actually
+ * performing the write in JTL (resend invoice / create return) is the documented
+ * next step, gated behind approval + allowlist + rate-limit.
+ */
+function executeWorkflowJtlPrepareAction(
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): NodeResult {
+  const kind = String(config.kind ?? '').trim().toLowerCase();
+  if (!kind || !JTL_ACTION_KINDS.has(kind)) {
+    return { status: 'error', port: 'error', message: `Unbekannte JTL-Aktion: ${kind || '(leer)'}` };
+  }
+  const email = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+  const orderNo = String(context.variables['jtl.order_no'] ?? config.orderNo ?? '').trim();
+  const tracking = String(context.variables['jtl.tracking'] ?? context.variables['jtl.tracking_number'] ?? '').trim();
+  const payload = {
+    kind,
+    email: email || null,
+    orderNo: orderNo || null,
+    tracking: tracking || null,
+    note: typeof config.note === 'string' ? config.note.slice(0, 500) : null,
+  };
+  const requireApproval = config.requireApproval !== false;
+  return {
+    status: 'ok',
+    port: requireApproval ? 'needs_review' : 'approved',
+    message: `jtl_action:prepared:${kind}`,
+    variables: {
+      'jtl.action.kind': kind,
+      'jtl.action.payload': JSON.stringify(payload),
+      'jtl.action.prepared': true,
+    },
+  };
 }
 
 function parseJtlContextMapping(value: unknown): Record<string, string> {

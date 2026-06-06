@@ -7772,6 +7772,78 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port prepares a JTL action proposal without executing it', async () => {
+    const now = new Date('2026-07-04T11:02:50.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            {
+              id: 'act-1',
+              type: 'registry',
+              data: { nodeType: 'jtl.prepare_action', config: { kind: 'send_tracking', requireApproval: false, runOnEveryInbound: true } },
+            },
+            {
+              id: 'switch-1',
+              type: 'registry',
+              data: { nodeType: 'logic.switch', config: { field: 'jtl.action.kind', cases: 'send_tracking' } },
+            },
+            {
+              id: 'tag-act',
+              type: 'registry',
+              data: { nodeType: 'email.tag', config: { tag: 'aktion-vorbereitet', runOnEveryInbound: true } },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'act-1' },
+            { id: 'edge-2', source: 'act-1', target: 'switch-1' },
+            { id: 'edge-3', source: 'switch-1', target: 'tag-act', label: 'send_tracking' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 55,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 550,
+        subject: 'Tracking?',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'tracking',
+        body_text: 'tracking',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 55,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'jtl.order_no': 'B-1001', 'jtl.tracking': '00340' } },
+    });
+
+    // The action descriptor is exposed as variables (read-only proposal, no execution).
+    expect(rows.tags.map((tag) => tag.tag)).toEqual(['aktion-vorbereitet']);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
+      ['act-1', 'jtl.prepare_action', 'ok', 'approved', 'jtl_action:prepared:send_tracking'],
+      ['switch-1', 'logic.switch', 'ok', 'send_tracking', null],
+      ['tag-act', 'email.tag', 'ok', 'default', null],
+    ]);
+  });
+
   test('postgres workflow execution job port rejects unsafe MSSQL queries before runtime port', async () => {
     const now = new Date('2026-07-04T11:01:25.000Z');
     const mssqlCalls: unknown[] = [];

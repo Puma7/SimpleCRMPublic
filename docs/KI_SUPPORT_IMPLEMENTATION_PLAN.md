@@ -118,14 +118,14 @@
 
 **Tiefe (später):** Automatisierungsquote (Auto-Antworten/Tickets), geschätzte gesparte Bearbeitungszeit, Latenz-Perzentile p50/p95, Zeitreihen-Charts.
 
-### P2-11 · Erweiterte kontrollierte JTL-Aktionen  — Status: ⬜ (Design steht)
+### P2-11 · Erweiterte kontrollierte JTL-Aktionen  — Status: 🟩 Basis steht (Vorschlag, ohne Ausführung)
 **Ziel:** Rechnung erneut senden, Retoure anlegen, Trackinglink senden — als freigabepflichtige Aktionen.
 
-**Nächster Schritt (Code):**
-- [ ] Node `jtl.prepare_action` (analog `jtl.order_context`): baut aus Bestell-/Kontextvariablen einen **Aktions-Vorschlag** (`jtl.action.kind`/`payload`) + Audit-Eintrag, **führt nichts aus** (read-only). Freigabe-Port `approved`/`needs_review`.
-- [ ] Tests.
+**Basis (jetzt):**
+- [x] Node `jtl.prepare_action`: baut aus Bestell-/Kontextvariablen einen **Aktions-Vorschlag** (`jtl.action.kind`/`payload`/`prepared`), **führt nichts aus**; Ports `needs_review` (Default) / `approved`. Bekannte Kinds: resend_invoice, create_return, send_tracking, refund_status, custom.
+- [x] Test: Vorschlag wird erzeugt + treibt Folgeknoten.
 
-**Tiefe (später):** echte Schreibaktionen in JTL (`jtl-order.ts` createOrder existiert) hinter Freigabe + Allowlist + Rate-Limit.
+**Tiefe (später):** echte Schreibaktionen in JTL (`jtl-order.ts` createOrder existiert) hinter Freigabe + Allowlist + Rate-Limit + Audit-Tabelle; Editor-Palette.
 
 ---
 
