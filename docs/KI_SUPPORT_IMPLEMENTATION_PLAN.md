@@ -48,16 +48,16 @@
 
 ## P1 — differenzierend
 
-### P1-4 · Abgesicherter Auto-Antwort-Modus (Modus 3)  — Status: ⬜
+### P1-4 · Abgesicherter Auto-Antwort-Modus (Modus 3)  — Status: 🟩 Basis steht (Gate, ohne Versand)
 **Ziel:** Pro Tickettyp echte Auto-Antwort — aber nur mit Sicherheits-Layer. Heute existiert bewusst nur Draft/Hold.
 
 **Basis (jetzt):**
-- [ ] Einstellungen (sync_info): `auto_reply_enabled`, Tickettyp-Whitelist, Confidence-Schwelle, Absender-Whitelist, Rate-Limit, Dry-Run-Schalter.
-- [ ] Workflow-Knoten/Pfad `email.auto_reply` der NUR sendet, wenn alle Guards erfüllt: Confidence-Gate (P0-2), Whitelist, Rate-Limit, **Anti-Loop `Auto-Submitted: auto-replied` (RFC 3834)**, Audit-Eintrag.
-- [ ] Default: deaktiviert / Dry-Run (loggt „würde senden").
-- [ ] Tests: alle Guards (jeder Guard blockt einzeln); Anti-Loop-Header; Audit.
+- [x] Einstellung `auto_reply_enabled` (sync_info, Default aus).
+- [x] Policy-Knoten `email.auto_reply`: prüft alle Guards — Workspace-Schalter an, Confidence ≥ Schwelle (`confidenceVar`/`minConfidence`, nutzt P0-2), **Anti-Loop** (kein Auto-Antwort an no-reply/mailer-daemon/postmaster-Absender). Ports `approved`/`blocked` + `auto_reply.*`-Variablen.
+- [x] **Sendet bewusst (noch) NICHT** — der Knoten entscheidet nur; so kann das Aktivieren der Guards nie einen versehentlichen Versand auslösen.
+- [x] Tests: approved / low_confidence / noreply / disabled.
 
-**Tiefe (später):** echtes SMTP-Auto-Send produktiv freischalten; Eskalations-Routing.
+**Tiefe (später):** tatsächlichen SMTP-Auto-Versand hinter separatem „live"-Flag + Rate-Limit-Tabelle + `Auto-Submitted: auto-replied`-Header (RFC 3834) verdrahten; Tickettyp-/Absender-Whitelist; Audit-Eintrag; Eskalations-Routing.
 
 ### P1-5 · KI-gestützte Textbaustein-Auswahl + Variablenfüllung  — Status: ⬜
 **Ziel:** KI wählt aus Canned Responses den passenden Baustein und füllt Variablen (günstiger/rechtssicherer als Freitext).
@@ -151,4 +151,5 @@
 | 2026-06-06 | P0-3 | JTL-Kontext-Knoten `jtl.order_context` (generisch, read-only) | a7562f4 |
 | 2026-06-06 | P1-7 | 8 E-Commerce-Workflow-Vorlagen (`ecom-*`) | _dieser Commit_ |
 | 2026-06-06 | P1-8 | Quellen-Transparenz `ai.agent.sources` | _dieser Commit_ |
-| 2026-06-06 | P2-10 | SLA/Latenz-Basis (durch P0-1 abgedeckt) | _dieser Commit_ |
+| 2026-06-06 | P2-10 | SLA/Latenz-Basis (durch P0-1 abgedeckt) | d711ca5 |
+| 2026-06-06 | P1-4 | Auto-Antwort Policy-Gate `email.auto_reply` (ohne Versand) | _dieser Commit_ |

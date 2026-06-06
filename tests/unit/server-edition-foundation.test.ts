@@ -7666,6 +7666,112 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port gates email.auto_reply on enable flag, confidence, and anti-loop', async () => {
+    const now = new Date('2026-07-04T11:02:10.000Z');
+    const autoReplyGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'auto-1',
+          type: 'registry',
+          data: { nodeType: 'email.auto_reply', config: { confidenceVar: 'ai.class_confidence', minConfidence: 70, runOnEveryInbound: true } },
+        },
+      ],
+      edges: [{ id: 'edge-1', source: 'trigger-1', target: 'auto-1' }],
+    };
+    const makeMessage = (id: number, sourceSqliteId: number, address: string) => ({
+      id,
+      workspace_id: WORKSPACE_A_ID,
+      source_sqlite_id: sourceSqliteId,
+      subject: 'Frage',
+      from_json: { value: [{ address }] },
+      to_json: { value: [{ address: 'agent@example.com' }] },
+      cc_json: null,
+      snippet: 'Frage',
+      body_text: 'Frage',
+      body_html: null,
+      has_attachments: false,
+      attachments_json: null,
+    });
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 37,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 370,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: autoReplyGraph,
+        execution_mode: 'graph',
+      }],
+      messages: [
+        makeMessage(51, 510, 'customer@example.com'),
+        makeMessage(52, 520, 'customer@example.com'),
+        makeMessage(53, 530, 'no-reply@shop.example.com'),
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: '1' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    // Enabled + high confidence + human sender -> approved.
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 51, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 90 } } });
+    // Enabled + low confidence -> blocked.
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 52, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 50 } } });
+    // Enabled + no-reply sender (anti-loop) -> blocked regardless of confidence.
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 53, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 95 } } });
+
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.port, step.message])).toEqual([
+      ['email.auto_reply', 'ok', 'approved', 'auto_reply:approved'],
+      ['email.auto_reply', 'ok', 'blocked', 'auto_reply:blocked:low_confidence'],
+      ['email.auto_reply', 'ok', 'blocked', 'auto_reply:blocked:noreply_sender'],
+    ]);
+  });
+
+  test('postgres workflow execution job port defaults email.auto_reply to blocked when disabled', async () => {
+    const now = new Date('2026-07-04T11:02:30.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 38,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 380,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'auto-1', type: 'registry', data: { nodeType: 'email.auto_reply', config: { runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'auto-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 54,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 540,
+        subject: 'Frage',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Frage',
+        body_text: 'Frage',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 38, messageId: 54, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 99 } } });
+
+    expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:disabled'],
+    ]);
+  });
+
   test('postgres workflow execution job port rejects unsafe MSSQL queries before runtime port', async () => {
     const now = new Date('2026-07-04T11:01:25.000Z');
     const mssqlCalls: unknown[] = [];

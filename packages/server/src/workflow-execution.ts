@@ -50,6 +50,9 @@ const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
 const WORKFLOW_SPAM_SCORE_THRESHOLD_KEY = 'workflow_spam_score_threshold';
+const AUTO_REPLY_ENABLED_KEY = 'auto_reply_enabled';
+// Anti-loop (RFC 3834 spirit): never auto-reply to automated/no-reply senders.
+const AUTO_REPLY_NOREPLY_RE = /(^|[._+-])(no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounce|notifications?|automated)([._+-]|@)/i;
 const MAX_WORKFLOW_JTL_LOOKUP_LIMIT = 50;
 const WORKFLOW_JTL_LOOKUP_RESULT_LIMIT = 8_000;
 const SERVER_CREATED_SOURCE_ID_OFFSET = 1_000_000_000_000n;
@@ -1338,6 +1341,9 @@ async function executeServerNode(
     const path = String(config.path ?? '').trim();
     if (!path) return { status: 'skipped', port: 'default' };
     return await setWorkflowMessageCategoryPath(trx, context, path, now);
+  }
+  if (type === 'email.auto_reply') {
+    return await evaluateWorkflowAutoReply(trx, context, config);
   }
   if (type === 'email.tag_attachment_meta' || type === 'tag_attachment_meta') {
     if (context.strings.has_attachments !== 'true') {
@@ -2727,6 +2733,59 @@ async function loadWorkflowSpamScoreThreshold(
     .where('key', '=', WORKFLOW_SPAM_SCORE_THRESHOLD_KEY)
     .executeTakeFirst();
   return boundedWorkflowSpamScoreThreshold(row?.value);
+}
+
+async function loadAutoReplyEnabled(trx: WorkspaceTransaction, workspaceId: string): Promise<boolean> {
+  const row = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', AUTO_REPLY_ENABLED_KEY)
+    .executeTakeFirst();
+  const value = String(row?.value ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'on';
+}
+
+/**
+ * P1-4 auto-reply policy gate. Decides whether a message MAY be answered
+ * automatically — all guards must pass: the workspace-level auto-reply switch is
+ * on, the configured confidence variable meets the threshold, and the sender is
+ * not an automated/no-reply address (anti-loop). It exposes the decision on the
+ * `approved`/`blocked` ports and as `auto_reply.*` variables. It intentionally
+ * does NOT send yet — wiring the actual SMTP send (behind a separate live flag +
+ * rate-limit) is the documented next step, so enabling guards can never cause an
+ * accidental send.
+ */
+async function evaluateWorkflowAutoReply(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<NodeResult> {
+  const confidenceVar = String(config.confidenceVar ?? 'ai.class_confidence').trim() || 'ai.class_confidence';
+  const minConfidence = Math.max(0, Math.min(100, Number(config.minConfidence ?? 70) || 70));
+  const rawConfidence = context.variables[confidenceVar];
+  const confidence = typeof rawConfidence === 'number' ? rawConfidence : Number.parseFloat(String(rawConfidence ?? ''));
+  const confidenceValue = Number.isFinite(confidence) ? confidence : 0;
+  const sender = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+
+  const block = (reason: string): NodeResult => ({
+    status: 'ok',
+    port: 'blocked',
+    message: `auto_reply:blocked:${reason}`,
+    variables: { 'auto_reply.decision': 'blocked', 'auto_reply.blocked_reason': reason, 'auto_reply.confidence': confidenceValue },
+  });
+
+  if (!context.message) return block('no_message');
+  if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) return block('disabled');
+  if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+  if (confidenceValue < minConfidence) return block('low_confidence');
+
+  return {
+    status: 'ok',
+    port: 'approved',
+    message: 'auto_reply:approved',
+    variables: { 'auto_reply.decision': 'approved', 'auto_reply.confidence': confidenceValue },
+  };
 }
 
 function boundedWorkflowSpamScoreThreshold(value: unknown): number {
