@@ -98,7 +98,9 @@ describe('server edition repository boundaries', () => {
     const ci = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(compose).toContain('postgres:18-alpine');
     expect(compose).toContain('postgres_data:/var/lib/postgresql');
-    expect(compose).toContain('caddy:2');
+    // Caddy now builds the web image (static SPA + reverse proxy) from web.Dockerfile.
+    expect(compose).toContain('dockerfile: docker/web.Dockerfile');
+    expect(compose).toContain('image: simplecrm/web:${VERSION:-dev}');
     expect(compose).toContain('"${CADDY_HTTP_PORT:-80}:80"');
     expect(compose).toContain('"${CADDY_HTTPS_PORT:-443}:443"');
     expect(compose).toContain('PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}');
@@ -198,6 +200,7 @@ describe('server edition repository boundaries', () => {
     const postgresInit = readFileSync(join(dockerRoot, 'postgres-init', '001-create-app-role.sh'), 'utf8');
     const doctor = readFileSync(join(dockerRoot, 'doctor.sh'), 'utf8');
     const caddyfile = readFileSync(join(dockerRoot, 'Caddyfile'), 'utf8');
+    const webDockerfile = readFileSync(join(dockerRoot, 'web.Dockerfile'), 'utf8');
     const envExample = readFileSync(join(dockerRoot, '.env.example'), 'utf8');
 
     expect(backup).toContain('pg_dump -Fc "$DATABASE_URL"');
@@ -268,6 +271,15 @@ describe('server edition repository boundaries', () => {
     expect(caddyfile).toContain('encode gzip zstd');
     expect(caddyfile).toContain('output file /var/log/access.log');
     expect(caddyfile).toContain('format json');
+    // Static SPA serving with client-side routing fallback, backend paths proxied.
+    expect(caddyfile).toContain('root * /srv/dist');
+    expect(caddyfile).toContain('try_files {path} /index.html');
+    expect(caddyfile).toContain('file_server');
+    expect(caddyfile).toContain('path /api/* /health /health/* /openapi.json');
+    // web.Dockerfile builds the web-only bundle and bakes it into a caddy image.
+    expect(webDockerfile).toContain('FROM caddy:2');
+    expect(webDockerfile).toContain('SIMPLECRM_WEB_ONLY=1 npx vite build');
+    expect(webDockerfile).toContain('COPY --from=build /app/dist /srv/dist');
     expect(envExample).toContain('PUBLIC_DOMAIN=localhost');
     expect(envExample).toContain('CADDY_HTTP_PORT=80');
     expect(envExample).toContain('CADDY_HTTPS_PORT=443');
