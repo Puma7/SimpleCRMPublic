@@ -345,20 +345,26 @@ export function WorkflowShell() {
     }
   }
 
-  const handleDelete = async () => {
-    if (selectedId == null) return
+  const handleDeleteId = async (id: number) => {
     if (!window.confirm("Workflow wirklich löschen?")) return
     try {
-      await invokeRenderer(IPCChannels.Email.DeleteWorkflow, selectedId)
+      await invokeRenderer(IPCChannels.Email.DeleteWorkflow, id)
       toast.success("Gelöscht.")
-      setSelectedId(null)
-      setSelectedNodeId(null)
-      setSelectedEdgeId(null)
+      if (selectedId === id) {
+        setSelectedId(null)
+        setSelectedNodeId(null)
+        setSelectedEdgeId(null)
+      }
       await load()
     } catch (e) {
       logError("workflow-shell: delete", e)
       toast.error("Löschen fehlgeschlagen.")
     }
+  }
+
+  const handleDelete = async () => {
+    if (selectedId == null) return
+    await handleDeleteId(selectedId)
   }
 
   const handleExportFile = async () => {
@@ -859,6 +865,7 @@ export function WorkflowShell() {
                   loading={loading}
                   onSelect={selectRowById}
                   onCreate={() => void handleCreate()}
+                  onDelete={(id) => void handleDeleteId(id)}
                 />
               </div>
             </ResizablePanel>
