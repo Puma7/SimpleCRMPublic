@@ -2,8 +2,21 @@ import type { Kysely } from 'kysely';
 
 import type { ConversationLockApiPort, ConversationLockRecord } from '../api';
 import type { ConversationLockReason } from '../locks';
+import { CONVERSATION_LOCK_TIMEOUT_SECONDS } from '../locks';
 import type { ConversationLockRow, ServerDatabase } from './schema';
 import { withWorkspaceTransaction, type WorkspaceTransaction } from './workspace-context';
+
+/**
+ * Cutoff timestamp before which a conversation lock counts as stale (its holder
+ * stopped sending heartbeats — crash, closed app, or lost connection). Pure and
+ * exported so the staleness threshold is unit-testable without a database.
+ */
+export function conversationLockStaleCutoff(
+  now: Date = new Date(),
+  timeoutSeconds: number = CONVERSATION_LOCK_TIMEOUT_SECONDS,
+): Date {
+  return new Date(now.getTime() - timeoutSeconds * 1000);
+}
 
 export type PostgresConversationLockPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -55,6 +68,37 @@ export function createPostgresConversationLockPort(
           .executeTakeFirst();
 
         if (inserted) return { ok: true, lock: mapLock(inserted) };
+
+        // Conflict: an existing lock occupies this message. If it is stale (the
+        // holder's client stopped heartbeating — crash, closed app, lost
+        // connection), reclaim it atomically. The `last_heartbeat_at` guard makes
+        // this race-safe: a still-fresh lock matches zero rows and is preserved,
+        // so this never steals a lock an active editor is still heartbeating.
+        // takeover_count is intentionally left unchanged — it tracks explicit
+        // admin force-takeovers, not automatic stale reclaims.
+        const reclaimedAt = new Date();
+        const reclaimed = await db
+          .updateTable('conversation_locks')
+          .set({
+            user_id: input.userId,
+            acquired_at: reclaimedAt,
+            last_heartbeat_at: reclaimedAt,
+            reason: input.reason,
+          })
+          .where('message_id', '=', input.messageId)
+          .where('workspace_id', '=', input.workspaceId)
+          .where('last_heartbeat_at', '<', conversationLockStaleCutoff(reclaimedAt))
+          .returning([
+            'message_id',
+            'user_id',
+            'workspace_id',
+            'acquired_at',
+            'last_heartbeat_at',
+            'reason',
+            'takeover_count',
+          ])
+          .executeTakeFirst();
+        if (reclaimed) return { ok: true, lock: mapLock(reclaimed) };
 
         const existing = await selectLock(db, {
           messageId: input.messageId,

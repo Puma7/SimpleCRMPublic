@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { sql } from 'kysely';
 import type { Kysely } from 'kysely';
 
 import {
@@ -348,6 +349,11 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
   });
   return {
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
+    health: {
+      async pingDatabase() {
+        await sql`select 1`.execute(options.db);
+      },
+    },
     aiReplySuggestions: createPostgresAiReplySuggestionPort({ db: options.db, secrets: options.secrets }),
     aiProfiles: createPostgresAiProfileReadPort({ db: options.db, secrets: options.secrets }),
     aiPrompts: createPostgresAiPromptReadPort({ db: options.db }),
