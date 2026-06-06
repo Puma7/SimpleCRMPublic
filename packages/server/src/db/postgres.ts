@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely';
 
 import type { ServerDatabase } from './schema';
+import { createJsonbArrayPlugin } from './jsonb-array-plugin';
 
 export type PostgresDatabaseOptions = Readonly<{
   databaseUrl: string;
@@ -12,7 +13,7 @@ export async function createPostgresDatabase(options: PostgresDatabaseOptions): 
     throw new Error('databaseUrl is required');
   }
 
-  const { Kysely, PostgresDialect } = await importKysely();
+  const { Kysely, PostgresDialect, OperationNodeTransformer } = await importKysely();
   const { Pool } = require('pg') as typeof import('pg');
   return new Kysely<ServerDatabase>({
     dialect: new PostgresDialect({
@@ -21,6 +22,8 @@ export async function createPostgresDatabase(options: PostgresDatabaseOptions): 
         max: options.maxConnections ?? 10,
       }),
     }),
+    // Structural safeguard: serialise array params for jsonb columns (error 22P02).
+    plugins: [createJsonbArrayPlugin(OperationNodeTransformer)],
   });
 }
 
