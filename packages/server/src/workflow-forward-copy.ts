@@ -1,12 +1,17 @@
+import { readFile } from 'node:fs/promises';
+
 import type { Kysely } from 'kysely';
 import {
   addressesFromRecipientJson,
+  buildComposeRfc822,
   generateOutboundMessageId,
   normalizeEmailAddress,
+  type ComposeRfc822Attachment,
 } from '@simplecrm/core';
 
 import type { EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
+import { resolveAttachmentStoragePath } from './db/postgres-mail-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -46,10 +51,13 @@ export type WorkflowForwardCopyJobPlan = Readonly<{
   messageId: number;
   actorUserId?: string;
   to: string;
+  includeAttachments?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: WorkflowForwardCopyContinuation;
 }>;
+
+const FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024;
 
 export type WorkflowForwardCopyJobPort = Readonly<{
   forwardCopy(input: WorkflowForwardCopyJobPlan): Promise<void>;
@@ -62,6 +70,17 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
+  /** Root dir for attachment files; required to forward attachments. */
+  attachmentsRoot?: string;
+  /** Injectable file reader (defaults to node:fs/promises readFile); for tests. */
+  readAttachmentFile?: (path: string) => Promise<Buffer>;
+}>;
+
+type ForwardCopyAttachment = Readonly<{
+  filename: string;
+  contentType: string | null;
+  storagePath: string;
+  sizeBytes: number;
 }>;
 
 type ForwardCopyMessage = Readonly<{
@@ -72,6 +91,7 @@ type ForwardCopyMessage = Readonly<{
   fromJson: unknown | null;
   snippet: string | null;
   bodyText: string | null;
+  attachments: readonly ForwardCopyAttachment[];
 }>;
 
 type ForwardCopyAccount = Readonly<{
@@ -96,6 +116,7 @@ type PreparedForwardCopy =
     message: ForwardCopyMessage;
     account: ForwardCopyAccount;
     destination: string;
+    recipients: readonly string[];
     subject: string;
     bodyText: string;
     rfc822: string;
@@ -111,13 +132,17 @@ export function createPostgresWorkflowForwardCopyPort(
 ): WorkflowForwardCopyJobPort {
   const now = () => options.now?.() ?? new Date();
   const smtpSend = options.smtpSend ?? sendSmtpMessage;
+  const readAttachmentFile = options.readAttachmentFile ?? ((p: string) => readFile(p));
 
   return {
     async forwardCopy(input): Promise<void> {
       const prepared = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => prepareForwardCopy(trx, input, now()),
+        async (trx) => prepareForwardCopy(trx, input, now(), {
+          attachmentsRoot: options.attachmentsRoot,
+          readAttachmentFile,
+        }),
         { applySession: options.applyWorkspaceSession },
       );
 
@@ -165,7 +190,7 @@ export function createPostgresWorkflowForwardCopyPort(
         tls: prepared.account.smtpTls,
         user: auth.user,
         envelopeFrom: prepared.account.emailAddress,
-        recipients: [prepared.destination],
+        recipients: [...prepared.recipients],
         rfc822: prepared.rfc822,
         ...(auth.password !== undefined ? { password: auth.password } : {}),
         ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
@@ -193,9 +218,12 @@ async function prepareForwardCopy(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
   now: Date,
+  deps: { attachmentsRoot?: string; readAttachmentFile: (path: string) => Promise<Buffer> },
 ): Promise<PreparedForwardCopy> {
-  const destination = normalizeForwardCopyDestination(input.to);
-  if (!destination) return { ok: false, error: 'Empfaenger fehlt oder ist ungueltig' };
+  const recipients = normalizeForwardCopyRecipients(input.to);
+  if (recipients.length === 0) return { ok: false, error: 'Empfaenger fehlt oder ist ungueltig' };
+  // Dedup key over the full, sorted recipient set (one row per forward action).
+  const destination = [...recipients].sort().join(',');
 
   const message = await loadForwardCopyMessage(trx, input.workspaceId, input.messageId);
   if (!message) return { ok: false, error: 'Nachricht nicht gefunden' };
@@ -220,6 +248,7 @@ async function prepareForwardCopy(
       message,
       account,
       destination,
+      recipients,
       subject: '',
       bodyText: '',
       rfc822: '',
@@ -243,6 +272,10 @@ async function prepareForwardCopy(
     `Original von: ${originalFromLine}`,
   ].join('\n').slice(0, FORWARD_COPY_BODY_MAX);
 
+  const attachments = input.includeAttachments === true
+    ? await readForwardCopyAttachments(message.attachments, deps)
+    : [];
+
   return {
     ok: true,
     duplicate: false,
@@ -250,17 +283,49 @@ async function prepareForwardCopy(
     message,
     account,
     destination,
+    recipients,
     subject,
     bodyText,
-    rfc822: buildForwardCopyRfc822({
+    rfc822: buildComposeRfc822({
       from: formatMailbox(account.displayName, account.emailAddress),
-      to: destination,
+      to: recipients.join(', '),
       subject,
-      bodyText,
+      text: bodyText,
       messageId: generateOutboundMessageId(account.emailAddress),
+      // Anti-loop: mark as auto-forwarded (the dedup table also guards loops).
+      extraHeaders: ['Auto-Submitted: auto-forwarded'],
+      attachments,
       date: now,
-    }),
+    }).toString('utf8'),
   };
+}
+
+/** Reads the original message's attachment files into MIME attachments, bounded
+ *  by a total-size cap. Missing/unreadable files are skipped (best-effort). */
+async function readForwardCopyAttachments(
+  attachments: readonly ForwardCopyAttachment[],
+  deps: { attachmentsRoot?: string; readAttachmentFile: (path: string) => Promise<Buffer> },
+): Promise<ComposeRfc822Attachment[]> {
+  if (!deps.attachmentsRoot || attachments.length === 0) return [];
+  const result: ComposeRfc822Attachment[] = [];
+  let total = 0;
+  for (const attachment of attachments) {
+    const resolved = resolveAttachmentStoragePath(deps.attachmentsRoot, attachment.storagePath);
+    if (!resolved) continue;
+    total += Math.max(0, attachment.sizeBytes);
+    if (total > FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES) break;
+    try {
+      const content = await deps.readAttachmentFile(resolved);
+      result.push({
+        filename: attachment.filename || 'anhang',
+        content,
+        ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
+      });
+    } catch {
+      /* skip unreadable attachment, still forward the rest */
+    }
+  }
+  return result;
 }
 
 async function loadForwardCopyMessage(
@@ -274,17 +339,30 @@ async function loadForwardCopyMessage(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
     .executeTakeFirst();
-  return row
-    ? {
-      id: Number(row.id),
-      sourceSqliteId: Number(row.source_sqlite_id),
-      accountId: row.account_id === null ? null : Number(row.account_id),
-      subject: row.subject,
-      fromJson: row.from_json,
-      snippet: row.snippet,
-      bodyText: row.body_text,
-    }
-    : null;
+  if (!row) return null;
+  const attachmentRows = await trx
+    .selectFrom('email_message_attachments')
+    .select(['filename_display', 'content_type', 'size_bytes', 'storage_path'])
+    .where('workspace_id', '=', workspaceId)
+    .where('message_id', '=', messageId)
+    .execute();
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
+    subject: row.subject,
+    fromJson: row.from_json,
+    snippet: row.snippet,
+    bodyText: row.body_text,
+    attachments: attachmentRows
+      .filter((att) => typeof att.storage_path === 'string' && att.storage_path.trim() !== '')
+      .map((att) => ({
+        filename: String(att.filename_display ?? 'anhang'),
+        contentType: att.content_type ?? null,
+        storagePath: String(att.storage_path),
+        sizeBytes: Number(att.size_bytes ?? 0),
+      })),
+  };
 }
 
 async function loadForwardCopyAccount(
@@ -450,7 +528,7 @@ async function enqueueForwardCopyContinuationInTransaction(
           eventVariables: {
             ...(continuation.eventVariables ?? {}),
             'forward_copy.ok': result.ok,
-            'forward_copy.to': normalizeForwardCopyDestination(input.to) ?? input.to.trim().toLowerCase(),
+            'forward_copy.to': normalizeForwardCopyRecipients(input.to).join(', ') || input.to.trim().toLowerCase(),
             'forward_copy.duplicate': result.duplicate,
             ...(result.error ? { 'forward_copy.error': result.error } : {}),
           },
@@ -573,9 +651,15 @@ function resolveSmtpUser(account: ForwardCopyAccount): string {
     : account.smtpUsername?.trim() || account.imapUsername;
 }
 
-function normalizeForwardCopyDestination(value: string): string | null {
-  const normalized = normalizeEmailAddress(value);
-  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) ? normalized : null;
+function normalizeForwardCopyRecipients(value: string): string[] {
+  const out: string[] = [];
+  for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const normalized = normalizeEmailAddress(part);
+    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) && !out.includes(normalized)) {
+      out.push(normalized);
+    }
+  }
+  return out.slice(0, 10);
 }
 
 function normalizeEmailOAuthProvider(value: string | null): EmailOAuthProvider | null {
@@ -599,27 +683,6 @@ function emailAccountSecretIdentifier(
   };
 }
 
-function buildForwardCopyRfc822(input: {
-  from: string;
-  to: string;
-  subject: string;
-  bodyText: string;
-  messageId: string;
-  date: Date;
-}): string {
-  const headers = [
-    `From: ${input.from}`,
-    `To: ${input.to}`,
-    `Subject: ${encodeHeaderValue(input.subject)}`,
-    `Message-ID: ${input.messageId}`,
-    `Date: ${input.date.toUTCString()}`,
-    'Auto-Submitted: auto-forwarded',
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-  ];
-  return `${headers.join('\r\n')}\r\n\r\n${input.bodyText.replace(/\r?\n/g, '\r\n')}`;
-}
 
 function formatMailbox(displayName: string, emailAddress: string): string {
   const cleanEmail = normalizeEmailAddress(emailAddress) ?? emailAddress.trim();

@@ -500,6 +500,42 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       ],
     } as WorkflowGraphDocument,
   },
+  {
+    id: 'inbound-invoice-auto-forward',
+    name: 'Eingehend: Rechnung weiterleiten (inkl. Anhänge)',
+    description:
+      'Erkennt Rechnungsmails und leitet sie automatisch an Bank + Buchhaltung weiter — inklusive Anhänge. Empfängeradressen im Knoten anpassen. Achtung: läuft im Servermodus nur, wenn keine Outbound-Workflows aktiv sind.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          data: { field: 'combined_text', op: 'regex', value: 'rechnung|invoice|beleg', caseInsensitive: true },
+        },
+        { id: 'a1', type: 'action', data: { actionType: 'tag', tag: 'rechnung' } },
+        {
+          id: 'fwd',
+          type: 'registry',
+          data: {
+            nodeType: 'email.forward_copy',
+            config: {
+              to: 'bank@example.com, buchhaltung@example.com',
+              includeAttachments: true,
+              runOnEveryInbound: true,
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
+        { id: 'e2', source: 'a1', target: 'fwd' },
+      ],
+    } as WorkflowGraphDocument,
+  },
   ...ecommerceSupportTemplates(),
 ];
 

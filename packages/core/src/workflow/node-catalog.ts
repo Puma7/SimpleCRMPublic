@@ -54,10 +54,12 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
   },
   {
     type: 'email.forward_copy',
-    label: 'Kopie weiterleiten',
+    label: 'Weiterleiten (Empfänger, optional Anhänge)',
     category: 'email',
     canvasType: 'action',
-    defaultConfig: { to: '' },
+    description:
+      'Leitet die Mail an einen oder mehrere Empfänger weiter (kommagetrennt). includeAttachments=true hängt die Original-Anhänge an. Fail-closed bei aktiven Outbound-Workflows.',
+    defaultConfig: { to: '', includeAttachments: false },
   },
   {
     type: 'email.tag_attachment_meta',

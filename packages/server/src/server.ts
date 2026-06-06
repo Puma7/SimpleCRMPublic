@@ -304,7 +304,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
                 mssql: createPostgresMssqlSettingsPort({ db, secrets }),
                 workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
               }),
-              workflowForwardCopy: createPostgresWorkflowForwardCopyPort({ db, secrets }),
+              workflowForwardCopy: createPostgresWorkflowForwardCopyPort({ db, secrets, attachmentsRoot }),
               workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
             } : {}),
             ...(ports.aiReplySuggestions ? {

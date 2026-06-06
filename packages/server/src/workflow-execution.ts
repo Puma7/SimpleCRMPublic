@@ -2407,6 +2407,7 @@ async function scheduleWorkflowForwardCopyJob(
     workflowId: context.workflowId,
     messageId: context.messageId,
     to: to.value,
+    includeAttachments: config.includeAttachments === true,
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
@@ -3311,17 +3312,30 @@ type WorkflowForwardCopyRecipientConfig =
   | { ok: true; value: string }
   | { ok: false; message: string };
 
+const MAX_FORWARD_COPY_RECIPIENTS = 10;
+
+/** Parses one or more comma/semicolon-separated forward recipients, validates
+ *  each, and returns them as a normalized comma-joined string. */
 function workflowForwardCopyRecipient(value: unknown): WorkflowForwardCopyRecipientConfig {
   if (value === undefined || value === null) return { ok: true, value: '' };
   if (typeof value !== 'string') return { ok: false, message: 'Forward-Empfaenger muss Text sein' };
   const trimmed = value.trim();
   if (!trimmed) return { ok: true, value: '' };
-  if (trimmed.length > 500) return { ok: false, message: 'Forward-Empfaenger zu lang' };
-  const normalized = normalizeEmailAddress(trimmed);
-  if (!isSimpleWorkflowEmailAddress(normalized)) {
-    return { ok: false, message: 'Forward-Empfaenger ist ungueltig' };
+  if (trimmed.length > 1000) return { ok: false, message: 'Forward-Empfaenger zu lang' };
+  const parts = trimmed.split(/[,;]+/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return { ok: true, value: '' };
+  if (parts.length > MAX_FORWARD_COPY_RECIPIENTS) {
+    return { ok: false, message: `Maximal ${MAX_FORWARD_COPY_RECIPIENTS} Forward-Empfaenger` };
   }
-  return { ok: true, value: normalized };
+  const normalized: string[] = [];
+  for (const part of parts) {
+    const address = normalizeEmailAddress(part);
+    if (!isSimpleWorkflowEmailAddress(address)) {
+      return { ok: false, message: `Forward-Empfaenger ist ungueltig: ${part}` };
+    }
+    if (!normalized.includes(address)) normalized.push(address);
+  }
+  return { ok: true, value: normalized.join(',') };
 }
 
 function isSimpleWorkflowEmailAddress(value: string): boolean {

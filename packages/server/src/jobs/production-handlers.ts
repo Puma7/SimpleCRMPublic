@@ -152,7 +152,7 @@ const DEFAULT_WORKFLOW_HTTP_TIMEOUT_MS = 30_000;
 const MAX_WORKFLOW_HTTP_TIMEOUT_MS = 60_000;
 const MAX_WORKFLOW_HTTP_URL_LENGTH = 2048;
 const MAX_WORKFLOW_HTTP_BODY_LENGTH = 128 * 1024;
-const MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH = 500;
+const MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH = 1000;
 
 export function createProductionJobHandlers(options: ProductionJobHandlersOptions): JobHandlerRegistry {
   const now = options.now ?? (() => new Date());
@@ -420,6 +420,7 @@ export function buildWorkflowForwardCopyJobPlan(
     messageId: requiredPositiveInteger(payload, 'messageId'),
     ...optionalString(payload, 'actorUserId'),
     to: requiredStringValue(payload, 'to', MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH),
+    includeAttachments: optionalBoolean(payload, 'includeAttachments', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload),

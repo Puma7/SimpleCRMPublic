@@ -2178,6 +2178,7 @@ describe('server edition foundation', () => {
       workflowId: 23,
       messageId: 11,
       to: 'audit@example.com',
+      includeAttachments: false,
       continuation: {
         workflowId: 23,
         triggerName: 'inbound',
@@ -2211,8 +2212,8 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       workflowId: 23,
       messageId: 11,
-      to: 'x'.repeat(501),
-    }, WORKSPACE_A_ID)).toThrow('to must not exceed 500 characters');
+      to: 'x'.repeat(1001),
+    }, WORKSPACE_A_ID)).toThrow('to must not exceed 1000 characters');
     expect(() => buildAiReplySuggestionJobPlan({
       workspaceId: WORKSPACE_A_ID,
       messageId: 11,
@@ -9046,6 +9047,86 @@ describe('server edition foundation', () => {
           }),
         }),
       }),
+    ]);
+  });
+
+  test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
+    const now = new Date('2026-07-04T11:04:30.000Z');
+    const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
+    const reads: string[] = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 40, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 400, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        account_id: 7,
+        subject: 'Rechnung 2026-001',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Rechnung',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      messageAttachments: [{
+        workspace_id: WORKSPACE_A_ID,
+        message_id: 28,
+        filename_display: 'rechnung.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+        storage_path: 'ws/28/rechnung.pdf',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const secrets = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      attachmentsRoot: '/attachments',
+      readAttachmentFile: async (p: string) => { reads.push(p); return Buffer.from('%PDF-1.4 fake'); },
+      smtpSend: async (input) => { smtpSends.push(input as { recipients: string[]; rfc822: string }); },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 40,
+      messageId: 28,
+      to: 'bank@example.com, buchhaltung@example.com',
+      includeAttachments: true,
+    });
+
+    expect(smtpSends).toHaveLength(1);
+    // Both recipients are addressed (SMTP envelope + To: header).
+    expect(smtpSends[0].recipients).toEqual(['bank@example.com', 'buchhaltung@example.com']);
+    expect(smtpSends[0].rfc822).toContain('bank@example.com');
+    expect(smtpSends[0].rfc822).toContain('buchhaltung@example.com');
+    // The original attachment is read from disk and included as a MIME part.
+    expect(reads).toEqual(['/attachments/ws/28/rechnung.pdf']);
+    expect(smtpSends[0].rfc822).toContain('rechnung.pdf');
+    expect(smtpSends[0].rfc822).toContain('Auto-Submitted: auto-forwarded');
+    // Dedup over the sorted recipient set.
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({ message_id: 28, dest: 'bank@example.com,buchhaltung@example.com' }),
     ]);
   });
 
@@ -35339,6 +35420,7 @@ type WorkflowExecutionFakeRows = {
   jtlVersandarten: Array<Record<string, unknown>>;
   delayedJobs: Array<Record<string, unknown>>;
   jobs: Array<Record<string, unknown>>;
+  messageAttachments: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -35373,9 +35455,12 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     jtlVersandarten: input.jtlVersandarten ?? [],
     delayedJobs: input.delayedJobs ?? [],
     jobs: input.jobs ?? [],
+    messageAttachments: input.messageAttachments ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
+      case 'email_message_attachments':
+        return rows.messageAttachments;
       case 'email_workflows':
         return rows.workflows;
       case 'email_messages':
