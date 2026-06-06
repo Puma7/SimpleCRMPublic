@@ -988,6 +988,7 @@ describe('server edition repository boundaries', () => {
         search: 'Call',
         customerId: 7,
         completed: false,
+        viewer: { userId: 'user-a', role: 'user' },
       }]);
 
       const calendarEvents = await app.inject({
