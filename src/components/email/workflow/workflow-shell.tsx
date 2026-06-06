@@ -66,6 +66,7 @@ import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
 import { JsonDevDrawer } from "./json-dev-drawer"
 import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
+import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
@@ -153,6 +154,7 @@ export function WorkflowShell() {
   const [backfilling, setBackfilling] = useState(false)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [referenceOpen, setReferenceOpen] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
@@ -546,6 +548,15 @@ export function WorkflowShell() {
               type="button"
               size="sm"
               variant="outline"
+              onClick={() => setReferenceOpen(true)}
+              title="Knoten-Referenz, Auslöser, Variablen und Best Practices"
+            >
+              Referenz
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
               disabled={selectedId == null}
               onClick={() => setVersionsOpen(true)}
             >
@@ -932,6 +943,7 @@ export function WorkflowShell() {
           jsonValue={editJson}
           onJsonChange={setEditJson}
         />
+        <WorkflowReferenceDialog open={referenceOpen} onOpenChange={setReferenceOpen} />
         <WorkflowTemplatesDialog
           open={templatesOpen}
           onOpenChange={setTemplatesOpen}

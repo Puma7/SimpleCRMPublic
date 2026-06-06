@@ -1179,6 +1179,45 @@ function RegistryFields({ node, patch, labelByType, descriptionByType }: Registr
       {d.nodeType === "jtl.prepare_action" ? (
         <JtlPrepareActionFields config={config} patch={patch} />
       ) : null}
+      {d.nodeType === "email.tag" || d.nodeType === "email.tag_attachment_meta" ? (
+        <TagFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.set_category" ? (
+        <SetCategoryFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.set_priority" ? (
+        <SetPriorityFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.set_spam_status" ? (
+        <SetSpamStatusFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.move_imap" ? (
+        <MoveImapFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.create_draft" ? (
+        <CreateDraftFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.hold_outbound" ? (
+        <HoldOutboundFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "email.auth_check" ? (
+        <AuthCheckFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.review" ? (
+        <AiReviewFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "ai.agent_tool" ? (
+        <AgentToolFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "crm.log_activity" ? (
+        <CrmLogActivityFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "crm.update_deal" ? (
+        <CrmUpdateDealFields config={config} patch={patch} />
+      ) : null}
+      {d.nodeType === "jtl.lookup" ? (
+        <JtlLookupFields config={config} patch={patch} />
+      ) : null}
       <details className="space-y-1.5">
         <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
           Experten-JSON (config) — Fallback für selten genutzte Felder
@@ -1528,6 +1567,309 @@ function JtlPrepareActionFields({ config, patch }: FieldFnProps) {
   )
 }
 
+function TagFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Tag</Label>
+        <Input
+          className="h-9"
+          placeholder="z.B. rechnung, support, dringend"
+          value={String(config.tag ?? "")}
+          onChange={(e) => patchConfig(patch, config, "tag", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">Tags sind lowercase und werden für Filter + Folge-Workflows verwendet.</p>
+      </div>
+    </div>
+  )
+}
+
+function SetCategoryFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Kategorie-Pfad</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="Support/Beschwerden"
+          value={String(config.path ?? "")}
+          onChange={(e) => patchConfig(patch, config, "path", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Pfad mit Schrägstrich-Trenner (legt fehlende Knoten an).
+          Tipp: Im Aktions-Editor gibt es einen Kategorie-Picker mit Auto-Vervollständigung.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function SetPriorityFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Level</Label>
+        <Select
+          value={String(config.level ?? "normal")}
+          onValueChange={(v) => patchConfig(patch, config, "level", v)}
+        >
+          <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="hoch">Hoch</SelectItem>
+            <SelectItem value="normal">Normal</SelectItem>
+            <SelectItem value="niedrig">Niedrig</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-[11px] text-muted-foreground">Setzt Tag priority:&lt;level&gt; für Sortierung/Filter.</p>
+      </div>
+    </div>
+  )
+}
+
+function SetSpamStatusFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Status</Label>
+        <Select
+          value={String(config.status ?? "review")}
+          onValueChange={(v) => patchConfig(patch, config, "status", v)}
+        >
+          <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="clean">Sauber</SelectItem>
+            <SelectItem value="review">Manuell prüfen</SelectItem>
+            <SelectItem value="spam">Spam</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch checked={config.train === true} onCheckedChange={(v) => patchConfig(patch, config, "train", v)} />
+        <Label className="text-xs font-normal">Lokalen Spam-Klassifikator anlernen</Label>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Optionaler Tag</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="z.B. trainings-set"
+          value={String(config.tag ?? "")}
+          onChange={(e) => patchConfig(patch, config, "tag", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function MoveImapFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">IMAP-Ordnerpfad</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="z.B. Rechnungen oder INBOX/Archiv/2026"
+          value={String(config.folderPath ?? "")}
+          onChange={(e) => patchConfig(patch, config, "folderPath", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">Bestehende IMAP-Ordnernamen. Schrägstrich-getrennt für Unterordner.</p>
+      </div>
+    </div>
+  )
+}
+
+function CreateDraftFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Body-Präfix (optional)</Label>
+        <Textarea
+          className="min-h-[80px] text-sm"
+          placeholder="Sehr geehrte Damen und Herren,&#10;&#10;"
+          value={String(config.bodyPrefix ?? "")}
+          onChange={(e) => patchConfig(patch, config, "bodyPrefix", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function HoldOutboundFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Grund (im Banner sichtbar)</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="z.B. Manueller Versand-Stop nach 17 Uhr"
+          value={String(config.reason ?? "")}
+          onChange={(e) => patchConfig(patch, config, "reason", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function AuthCheckFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Protokoll</Label>
+        <Select
+          value={String(config.protocol ?? "dmarc")}
+          onValueChange={(v) => patchConfig(patch, config, "protocol", v)}
+        >
+          <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="spf">SPF</SelectItem>
+            <SelectItem value="dkim">DKIM</SelectItem>
+            <SelectItem value="dmarc">DMARC</SelectItem>
+            <SelectItem value="arc">ARC</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.treatSoftfailAsFail !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "treatSoftfailAsFail", v)}
+        />
+        <Label className="text-xs font-normal">Softfail wie Fail behandeln</Label>
+      </div>
+      <p className="text-[11px] text-muted-foreground">Ausgangskanten: pass · fail · none · default.</p>
+    </div>
+  )
+}
+
+function AiReviewFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Prompt-ID</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.promptId ?? 0)}
+          onChange={(e) => patchConfig(patch, config, "promptId", parseInt(e.target.value, 10) || 0)}
+        />
+        <p className="text-[11px] text-muted-foreground">0 = ersten verfügbaren Prompt verwenden.</p>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Blockwort</Label>
+        <Input
+          className="h-9 font-mono text-sm"
+          value={String(config.blockKeyword ?? "BLOCK")}
+          onChange={(e) => patchConfig(patch, config, "blockKeyword", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">Wenn die KI-Antwort dieses Wort enthält → Knoten geht auf „blocked".</p>
+      </div>
+    </div>
+  )
+}
+
+function AgentToolFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Tool</Label>
+        <Select
+          value={String(config.tool ?? "search_knowledge")}
+          onValueChange={(v) => patchConfig(patch, config, "tool", v)}
+        >
+          <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="search_knowledge">Wissensbasis durchsuchen</SelectItem>
+            <SelectItem value="get_canned">Textbaustein abrufen</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Wissensbasis-ID (optional)</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.knowledgeBaseId ?? 0)}
+          onChange={(e) => patchConfig(patch, config, "knowledgeBaseId", parseInt(e.target.value, 10) || null)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function CrmLogActivityFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Aktivitätstyp</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="email, call, meeting, ..."
+          value={String(config.activityType ?? "email")}
+          onChange={(e) => patchConfig(patch, config, "activityType", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Titel</Label>
+        <Input
+          className="h-9 text-sm"
+          value={String(config.title ?? "")}
+          onChange={(e) => patchConfig(patch, config, "title", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function CrmUpdateDealFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Deal-ID</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.dealId ?? 0)}
+          onChange={(e) => patchConfig(patch, config, "dealId", parseInt(e.target.value, 10) || 0)}
+        />
+        <p className="text-[11px] text-muted-foreground">0 = den am Absender verknüpften Deal nehmen.</p>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Neue Stage</Label>
+        <Input
+          className="h-9 text-sm"
+          placeholder="z.B. proposal, won, lost"
+          value={String(config.stage ?? "")}
+          onChange={(e) => patchConfig(patch, config, "stage", e.target.value)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function JtlLookupFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Entität</Label>
+        <Select
+          value={String(config.entity ?? "firmen")}
+          onValueChange={(v) => patchConfig(patch, config, "entity", v)}
+        >
+          <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="firmen">Firmen</SelectItem>
+            <SelectItem value="warenlager">Warenlager</SelectItem>
+            <SelectItem value="zahlungsarten">Zahlungsarten</SelectItem>
+            <SelectItem value="versandarten">Versandarten</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-[11px] text-muted-foreground">Ergebnis steht als jtl.&lt;entity&gt;-Variable bereit.</p>
+      </div>
+    </div>
+  )
+}
+
 function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
   const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
   useEffect(() => {
@@ -1543,6 +1885,8 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
     categorySourceSqliteId?: number
     reason?: string
     to?: string
+    includeAttachments?: boolean
+    runOutboundReview?: boolean
     promptId?: number
     blockKeyword?: string
   }
@@ -1570,6 +1914,8 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
       next.reason = ""
     } else if (actionType === "forward_copy") {
       next.to = ""
+      next.includeAttachments = false
+      next.runOutboundReview = false
     } else if (actionType === "ai_review") {
       const firstPrompt = aiPrompts[0]?.id
       if (firstPrompt != null) {
@@ -1628,14 +1974,35 @@ function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
         </div>
       ) : null}
       {t === "forward_copy" ? (
-        <div className="space-y-1.5">
-          <Label className="text-xs">Weiterleiten an</Label>
-          <Input
-            value={d.to ?? ""}
-            onChange={(e) => patch({ to: e.target.value })}
-            placeholder="empfänger@example.com"
-            type="email"
-          />
+        <div className="space-y-3 rounded-md border p-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Weiterleiten an (kommagetrennt, max. 10)</Label>
+            <Textarea
+              className="min-h-[60px] text-sm"
+              value={d.to ?? ""}
+              onChange={(e) => patch({ to: e.target.value })}
+              placeholder="bank@example.com, buchhaltung@example.com"
+            />
+          </div>
+          <div className="flex items-start gap-2">
+            <Switch
+              checked={d.includeAttachments === true}
+              onCheckedChange={(v) => patch({ includeAttachments: v })}
+            />
+            <Label className="text-xs font-normal">Original-Anhänge mitschicken (max. 25 MB)</Label>
+          </div>
+          <div className="flex items-start gap-2">
+            <Switch
+              checked={d.runOutboundReview === true}
+              onCheckedChange={(v) => patch({ runOutboundReview: v })}
+            />
+            <div className="space-y-0.5">
+              <Label className="text-xs font-normal">Mit Ausgangsprüfung</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Aus: direkt senden (Standard). Ein: legt einen Entwurf an und durchläuft die Outbound-Workflows wie eine normale Mail.
+              </p>
+            </div>
+          </div>
         </div>
       ) : null}
       {t === "ai_review" ? (

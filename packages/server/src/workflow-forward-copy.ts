@@ -9,9 +9,12 @@ import {
   type ComposeRfc822Attachment,
 } from '@simplecrm/core';
 
-import type { EmailOAuthProvider } from './api';
+import type { EmailComposeSenderApiPort, EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
-import { resolveAttachmentStoragePath } from './db/postgres-mail-read-ports';
+import {
+  createPostgresComposeDraftInTransaction,
+  resolveAttachmentStoragePath,
+} from './db/postgres-mail-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -77,6 +80,18 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
   attachmentsRoot?: string;
   /** Injectable file reader (defaults to node:fs/promises readFile); for tests. */
   readAttachmentFile?: (path: string) => Promise<Buffer>;
+  /** Required for runOutboundReview=true (forward via real outbound review). */
+  composeSender?: EmailComposeSenderApiPort;
+  /** Actor user for review-pipeline audits. */
+  actorUserId?: string;
+  /** Injectable draft creator; defaults to the postgres compose draft helper. */
+  createDraft?: (input: {
+    workspaceId: string;
+    accountId: number;
+    subject: string;
+    bodyText: string;
+    recipients: readonly string[];
+  }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
 }>;
 
 type ForwardCopyAttachment = Readonly<{
@@ -136,6 +151,24 @@ export function createPostgresWorkflowForwardCopyPort(
   const now = () => options.now?.() ?? new Date();
   const smtpSend = options.smtpSend ?? sendSmtpMessage;
   const readAttachmentFile = options.readAttachmentFile ?? ((p: string) => readFile(p));
+  const createDraft = options.createDraft ?? (async (draftInput) => {
+    const draft = await withWorkspaceTransaction(
+      options.db,
+      { workspaceId: draftInput.workspaceId, role: 'system' },
+      async (trx) => createPostgresComposeDraftInTransaction(trx, {
+        workspaceId: draftInput.workspaceId,
+        accountId: draftInput.accountId,
+        values: {
+          accountId: draftInput.accountId,
+          subject: draftInput.subject,
+          bodyText: draftInput.bodyText,
+          toJson: { value: draftInput.recipients.map((address) => ({ address })) },
+        },
+      }),
+      { applySession: options.applyWorkspaceSession },
+    );
+    return draft.ok ? { ok: true as const, draftMessageId: draft.message.id } : { ok: false as const, reason: draft.reason };
+  });
 
   return {
     async forwardCopy(input): Promise<void> {
@@ -165,6 +198,41 @@ export function createPostgresWorkflowForwardCopyPort(
           error: null,
           duplicate: true,
           now: now(),
+        });
+        return;
+      }
+
+      // runOutboundReview=true: instead of sending direct via SMTP, materialise
+      // the forward as a draft and hand it to composeSender.send. The outbound
+      // review pipeline (reviewOutbound.review → email.release_outbound) then
+      // runs as if a human had typed and sent the mail. dedup is still recorded
+      // here so retries don't create duplicate drafts.
+      if (input.runOutboundReview === true) {
+        if (!options.composeSender) {
+          await enqueueForwardCopyContinuation(options, input, {
+            ok: false,
+            error: 'runOutboundReview=true: composeSender ist nicht konfiguriert',
+            duplicate: false,
+            now: now(),
+          });
+          return;
+        }
+        const reviewResult = await forwardViaOutboundReview({
+          input,
+          prepared,
+          db: options.db,
+          composeSender: options.composeSender,
+          applyWorkspaceSession: options.applyWorkspaceSession,
+          actorUserId: options.actorUserId ?? 'system',
+          createDraft,
+          now: now(),
+        });
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: reviewResult.ok,
+          error: reviewResult.error,
+          duplicate: false,
+          now: now(),
+          reviewPending: reviewResult.reviewPending,
         });
         return;
       }
@@ -260,17 +328,9 @@ async function prepareForwardCopy(
 
   // Outbound-review gating: forwards normally bypass outbound review (they were
   // initiated by an inbound workflow, not composed by a human, and the
-  // Auto-Submitted header + dedup table already guard loops). The fail-closed
-  // guard only fires when the workflow opts in via runOutboundReview=true.
-  if (input.runOutboundReview === true) {
-    const outboundWorkflowCount = await countEnabledOutboundWorkflows(trx, input.workspaceId);
-    if (outboundWorkflowCount > 0) {
-      return {
-        ok: false,
-        error: 'runOutboundReview=true: aktive Outbound-Workflows muessen die Weiterleitung pruefen — derzeit nicht implementiert',
-      };
-    }
-  }
+  // Auto-Submitted header + dedup table already guard loops). With
+  // runOutboundReview=true the forward path in forwardCopy() takes over and
+  // routes the forward through composeSender.send → existing review pipeline.
 
   const originalFromLine = addressesFromStoredJson(message.fromJson);
   const subject = message.subject ? `Fwd: ${message.subject}` : 'Weitergeleitet';
@@ -449,21 +509,6 @@ async function hasForwardCopyDedup(
   return Boolean(row);
 }
 
-async function countEnabledOutboundWorkflows(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-): Promise<number> {
-  const rows = await trx
-    .selectFrom('email_workflows')
-    .select('id')
-    .where('workspace_id', '=', workspaceId)
-    .where('trigger_name', '=', 'outbound')
-    .where('enabled', '=', true)
-    .limit(1)
-    .execute();
-  return rows.length;
-}
-
 async function insertForwardCopyDedup(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
@@ -500,10 +545,80 @@ async function insertForwardCopyDedup(
     .execute();
 }
 
+type ForwardReviewResult = { ok: boolean; error: string | null; reviewPending: boolean };
+
+/** Materialises the forward as a draft and runs it through composeSender.send,
+ *  so the existing outbound-review pipeline (reviewOutbound.review →
+ *  email.release_outbound → scheduled-send) handles approval and SMTP send. */
+async function forwardViaOutboundReview(args: {
+  input: WorkflowForwardCopyJobPlan;
+  prepared: Extract<PreparedForwardCopy, { ok: true }>;
+  db: Kysely<ServerDatabase>;
+  composeSender: EmailComposeSenderApiPort;
+  applyWorkspaceSession: WorkspaceSessionApplier | undefined;
+  actorUserId: string;
+  createDraft: (input: {
+    workspaceId: string;
+    accountId: number;
+    subject: string;
+    bodyText: string;
+    recipients: readonly string[];
+  }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
+  now: Date;
+}): Promise<ForwardReviewResult> {
+  const { input, prepared } = args;
+
+  // (1) Record dedup BEFORE creating the draft so a retry of this job doesn't
+  //     create a duplicate draft. We only mark this combination as forwarded
+  //     once it has at least started the review pipeline.
+  await withWorkspaceTransaction(
+    args.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
+    { applySession: args.applyWorkspaceSession },
+  );
+
+  // (2) Create the draft.
+  const draftResult = await args.createDraft({
+    workspaceId: input.workspaceId,
+    accountId: prepared.account.id,
+    subject: prepared.subject,
+    bodyText: prepared.bodyText,
+    recipients: prepared.recipients,
+  });
+  if (!draftResult.ok) {
+    return { ok: false, error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`, reviewPending: false };
+  }
+
+  // (3) Call composeSender.send. It runs reviewOutbound.review which holds the
+  //     draft if outbound workflows exist (workflowRunId set on the error
+  //     result). The pipeline then drives approval + send.
+  const sendResult = await args.composeSender.send({
+    workspaceId: input.workspaceId,
+    actorUserId: args.actorUserId,
+    values: {
+      accountId: prepared.account.id,
+      draftMessageId: draftResult.draftMessageId,
+      subject: prepared.subject,
+      bodyText: prepared.bodyText,
+      to: prepared.recipients.join(', '),
+      attachmentPaths: prepared.message.attachments
+        .map((att) => att.storagePath)
+        .filter((p): p is string => typeof p === 'string' && p.length > 0),
+    },
+  });
+  if (sendResult.ok) return { ok: true, error: null, reviewPending: false };
+  // workflowRunId set => held for review (not a real failure)
+  if (sendResult.workflowRunId != null) {
+    return { ok: true, error: null, reviewPending: true };
+  }
+  return { ok: false, error: sendResult.error, reviewPending: false };
+}
+
 async function enqueueForwardCopyContinuation(
   options: PostgresWorkflowForwardCopyPortOptions,
   input: WorkflowForwardCopyJobPlan,
-  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date },
+  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
 ): Promise<void> {
   if (!input.continuation) return;
   await withWorkspaceTransaction(
@@ -517,7 +632,7 @@ async function enqueueForwardCopyContinuation(
 async function enqueueForwardCopyContinuationInTransaction(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
-  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date },
+  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
 ): Promise<void> {
   const continuation = input.continuation;
   if (!continuation) return;
@@ -539,6 +654,7 @@ async function enqueueForwardCopyContinuationInTransaction(
             'forward_copy.ok': result.ok,
             'forward_copy.to': normalizeForwardCopyRecipients(input.to).join(', ') || input.to.trim().toLowerCase(),
             'forward_copy.duplicate': result.duplicate,
+            'forward_copy.review_pending': result.reviewPending === true,
             ...(result.error ? { 'forward_copy.error': result.error } : {}),
           },
         },

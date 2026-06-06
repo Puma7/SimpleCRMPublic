@@ -9051,6 +9051,112 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow forward-copy port routes through composeSender.send when runOutboundReview=true', async () => {
+    const now = new Date('2026-07-04T11:05:10.000Z');
+    const composeCalls: Array<{ draftMessageId: number; to: string; attachmentPaths: readonly string[] | undefined }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 50, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 500, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 30,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 300,
+        account_id: 7,
+        subject: 'Rechnung weiterleiten',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      messageAttachments: [{
+        workspace_id: WORKSPACE_A_ID,
+        message_id: 30,
+        filename_display: 'rechnung.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+        storage_path: 'ws/30/rechnung.pdf',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const composeSender = {
+      async send(input: { values: { draftMessageId: number; to: string; attachmentPaths?: readonly string[] } }) {
+        composeCalls.push({
+          draftMessageId: input.values.draftMessageId,
+          to: input.values.to,
+          attachmentPaths: input.values.attachmentPaths,
+        });
+        // Simulate "held for outbound review" — composeSender returns ok:false
+        // with workflowRunId, which the forward port interprets as review_pending.
+        return { ok: false as const, error: 'outbound review pending', workflowRunId: 999 };
+      },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender,
+      createDraft: async (input) => {
+        // Stub draft creation to return a stable id; production uses the
+        // postgres helper. We just need a draftMessageId for composeSender.send.
+        expect(input.accountId).toBe(7);
+        expect(input.recipients).toEqual(['bank@example.com', 'buchhaltung@example.com']);
+        return { ok: true as const, draftMessageId: 12345 };
+      },
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 50,
+      messageId: 30,
+      to: 'bank@example.com, buchhaltung@example.com',
+      includeAttachments: true,
+      runOutboundReview: true,
+      continuation: {
+        workflowId: 50,
+        triggerName: 'inbound',
+        resumeNodeId: 'after-forward',
+      },
+    });
+
+    // Draft was created and composeSender.send invoked with the right recipients +
+    // attachment paths (the storage_path of the original message).
+    expect(composeCalls).toHaveLength(1);
+    expect(composeCalls[0]).toMatchObject({
+      draftMessageId: 12345,
+      to: 'bank@example.com, buchhaltung@example.com',
+      attachmentPaths: ['ws/30/rechnung.pdf'],
+    });
+    // Dedup is recorded so a retry won't create a duplicate draft.
+    expect(rows.forwardDedup).toHaveLength(1);
+    // Continuation reflects ok=true + review_pending=true (it was held, not
+    // failed). The follow-up workflow can branch on this.
+    expect(rows.jobs).toEqual([
+      expect.objectContaining({
+        type: 'workflow.execute',
+        payload: expect.objectContaining({
+          context: expect.objectContaining({
+            eventVariables: expect.objectContaining({
+              'forward_copy.ok': true,
+              'forward_copy.review_pending': true,
+            }),
+          }),
+        }),
+      }),
+    ]);
+  });
+
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
     const now = new Date('2026-07-04T11:04:30.000Z');
     const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
@@ -9185,9 +9291,9 @@ describe('server edition foundation', () => {
       smtpSend,
     });
 
-    // Opt-in: runOutboundReview=true must fail-closed when outbound workflows
-    // exist (review-integration is not yet wired). Default behaviour (below)
-    // ignores outbound workflows and just sends.
+    // Opt-in: runOutboundReview=true requires composeSender to be configured
+    // (production wires this in server.ts). Without it the forward port reports
+    // a configuration error rather than silently sending.
     await port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 40,
@@ -9211,7 +9317,7 @@ describe('server edition foundation', () => {
             resumeNodeId: 'tag-ok',
             eventVariables: expect.objectContaining({
               'forward_copy.ok': false,
-              'forward_copy.error': expect.stringContaining('runOutboundReview'),
+              'forward_copy.error': expect.stringContaining('composeSender'),
               'forward_copy.duplicate': false,
             }),
           }),
