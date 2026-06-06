@@ -34,15 +34,15 @@
 
 **Tiefe (später):** Kalibrierung der Confidence; Self-consistency; Confidence auch für `ai.review`/`ai.agent`.
 
-### P0-3 · JTL-Kontextblock automatisch zur Mail  — Status: ⬜
+### P0-3 · JTL-Kontextblock automatisch zur Mail  — Status: 🟩 Basis steht
 **Ziel:** Absender → passende Bestellung(en) → Tracking/Retoure/Zahlstatus als strukturierter Kontext, den KI-Nodes automatisch erhalten.
 
 **Basis (jetzt):**
-- [ ] Helper `buildJtlContextForMessage(message)` auf Basis `jtl.lookup`/`mssql.query`/`jtl-order` (read-only): Bestellnr., Status, Tracking, Carrier, Retoure, Zahlstatus.
-- [ ] Als Kontext-Variablen (`jtl.order_no`, `jtl.tracking`, …) für KI-Nodes verfügbar.
-- [ ] Tests mit Fake-JTL-Daten.
+- [x] Neuer Workflow-Knoten `jtl.order_context`: read-only-Query mit `{{email}}`/`{{orderNo}}`-Platzhaltern (streng validiert + SQL-escaped, keine kundenspezifische Schema-Annahme), bindet Absender-Adresse automatisch.
+- [x] Mappt die erste Ergebniszeile auf `jtl.<spalte>`-Variablen (oder per `mapping`-Konfig) für KI-Nodes; `jtl.context_found` + `no_match`-Port.
+- [x] Test: Absender-E-Mail wird escaped injiziert, Spalten-Mapping treibt Folgeknoten.
 
-**Tiefe (später):** Mehrere Bestellungen/Heuristik beste Zuordnung; Caching; Marktplatz-Auftragsnr.-Erkennung aus dem Mailtext.
+**Tiefe (später):** Aufnahme in die Editor-Palette; fertige SQL-Vorlagen je JTL-Standardschema; Mehrfach-Bestellungen/Heuristik; Marktplatz-Auftragsnr.-Erkennung aus dem Mailtext; Caching.
 
 ---
 
@@ -143,4 +143,5 @@
 |-------|------|----------|--------|
 | 2026-06-06 | Plan | Tracker angelegt; P3 gestrichen (nur E-Mail) | 9361c46 |
 | 2026-06-06 | P0-1 | Kosten-Tracking Basis (ai_usage_events + Erfassung + Diagnose) | 394ea24 |
-| 2026-06-06 | P0-2 | Confidence aus ai.classify (`ai.class_confidence`) | _dieser Commit_ |
+| 2026-06-06 | P0-2 | Confidence aus ai.classify (`ai.class_confidence`) | 1a50464 |
+| 2026-06-06 | P0-3 | JTL-Kontext-Knoten `jtl.order_context` (generisch, read-only) | _dieser Commit_ |

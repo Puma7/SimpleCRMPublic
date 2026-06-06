@@ -7569,6 +7569,101 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port binds sender email into jtl.order_context and maps columns', async () => {
+    const now = new Date('2026-07-04T11:00:45.000Z');
+    const mssqlCalls: Array<{ workspaceId: string; query: string }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 36,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 360,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            {
+              id: 'jtl-1',
+              type: 'registry',
+              data: {
+                nodeType: 'jtl.order_context',
+                config: {
+                  query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}',
+                  mapping: 'cStatus:jtl.status',
+                  runOnEveryInbound: true,
+                },
+              },
+            },
+            {
+              id: 'switch-1',
+              type: 'registry',
+              data: { nodeType: 'logic.switch', config: { field: 'jtl.status', cases: 'versendet' } },
+            },
+            {
+              id: 'tag-jtl',
+              type: 'registry',
+              data: { nodeType: 'email.tag', config: { tag: 'jtl-versendet', runOnEveryInbound: true } },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'jtl-1' },
+            { id: 'edge-2', source: 'jtl-1', target: 'switch-1' },
+            { id: 'edge-3', source: 'switch-1', target: 'tag-jtl', label: 'versendet' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 23,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 230,
+        subject: 'JTL',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'jtl',
+        body_text: 'jtl',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      mssql: {
+        async executeReadOnlyQuery(input) {
+          mssqlCalls.push(input);
+          return { success: true, rows: [{ cStatus: 'versendet' }], rowCount: 1 };
+        },
+      },
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 36,
+      messageId: 23,
+      triggerName: 'inbound',
+      context: {},
+    });
+
+    // The sender address is strictly validated, SQL-escaped, and injected for {{email}}.
+    expect(mssqlCalls).toEqual([{
+      workspaceId: WORKSPACE_A_ID,
+      query: "SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = 'customer@example.com'",
+    }]);
+    // The mapped jtl.status variable drove the switch → tag.
+    expect(rows.tags.map((tag) => tag.tag)).toEqual(['jtl-versendet']);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      ['jtl-1', 'jtl.order_context', 'ok', 'default'],
+      ['switch-1', 'logic.switch', 'ok', 'versendet'],
+      ['tag-jtl', 'email.tag', 'ok', 'default'],
+    ]);
+  });
+
   test('postgres workflow execution job port rejects unsafe MSSQL queries before runtime port', async () => {
     const now = new Date('2026-07-04T11:01:25.000Z');
     const mssqlCalls: unknown[] = [];

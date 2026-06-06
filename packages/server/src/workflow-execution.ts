@@ -1471,6 +1471,9 @@ async function executeServerNode(
   if (type === 'mssql.query') {
     return await executeWorkflowMssqlQuery(context, config, ports.mssql);
   }
+  if (type === 'jtl.order_context') {
+    return await executeWorkflowJtlOrderContext(context, config, ports.mssql);
+  }
   if (type === 'workflow.subflow') {
     return await enqueueWorkflowSubflow(trx, context, node, config, now);
   }
@@ -2512,6 +2515,98 @@ async function executeWorkflowMssqlQuery(
       'mssql.row_count': result.rowCount ?? rows.length,
     },
   };
+}
+
+const JTL_CONTEXT_EMAIL_RE = /^[^\s@'";\\]+@[^\s@'";\\]+\.[^\s@'";\\]+$/;
+const JTL_CONTEXT_ORDER_NO_RE = /^[A-Za-z0-9._\-/]{1,64}$/;
+
+/**
+ * Convenience node that fetches a JTL/Wawi order context for the message sender.
+ * The operator supplies a read-only query with {{email}} / {{orderNo}} placeholders
+ * (bound from the sender address / a variable, strictly validated + SQL-escaped);
+ * the first result row's columns are exposed as `jtl.<column>` variables for the
+ * downstream KI nodes. No customer-specific schema is hard-coded — the SQL is
+ * configured per deployment.
+ */
+async function executeWorkflowJtlOrderContext(
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  mssql: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'> | undefined,
+): Promise<NodeResult> {
+  const template = String(config.query ?? config.sql ?? '').trim();
+  if (!template) return { status: 'skipped', port: 'default', message: 'Keine JTL-Query konfiguriert' };
+  if (!mssql) return { status: 'error', port: 'error', message: 'MSSQL-Port nicht konfiguriert' };
+
+  const email = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+  const orderNo = String(
+    context.variables['jtl.order_no'] ?? context.strings.order_no ?? config.orderNo ?? '',
+  ).trim();
+
+  const bound = bindJtlContextPlaceholders(template, email, orderNo);
+  if (!bound.ok) {
+    return { status: 'skipped', port: 'no_match', message: bound.reason, variables: { 'jtl.context_found': false } };
+  }
+  const validation = validateReadOnlyMssqlQuery(bound.query);
+  if (!validation.ok) return { status: 'error', port: 'error', message: validation.error };
+
+  const result = await mssql.executeReadOnlyQuery({ workspaceId: context.workspaceId, query: validation.query });
+  if (!result.success) return { status: 'error', port: 'error', message: result.error ?? 'MSSQL-Fehler' };
+
+  const rows = result.rows ?? [];
+  const first = rows[0];
+  if (!first || typeof first !== 'object') {
+    return { status: 'ok', port: 'no_match', message: 'Keine JTL-Daten gefunden', variables: { 'jtl.context_found': false } };
+  }
+
+  const mapping = parseJtlContextMapping(config.mapping);
+  const variables: WorkflowVariableContext = { 'jtl.context_found': true };
+  for (const [column, value] of Object.entries(first as Record<string, unknown>)) {
+    const key = column.toLowerCase();
+    variables[mapping[key] ?? `jtl.${key}`] = jtlContextScalar(value);
+  }
+  return { status: 'ok', port: 'default', variables };
+}
+
+function bindJtlContextPlaceholders(
+  template: string,
+  email: string,
+  orderNo: string,
+): { ok: true; query: string } | { ok: false; reason: string } {
+  let query = template;
+  if (query.includes('{{email}}')) {
+    if (!email || !JTL_CONTEXT_EMAIL_RE.test(email)) {
+      return { ok: false, reason: 'Keine gueltige Absender-E-Mail fuer {{email}}' };
+    }
+    query = query.replace(/\{\{email\}\}/g, sqlStringLiteral(email));
+  }
+  if (query.includes('{{orderNo}}')) {
+    if (!orderNo || !JTL_CONTEXT_ORDER_NO_RE.test(orderNo)) {
+      return { ok: false, reason: 'Keine gueltige Bestellnummer fuer {{orderNo}}' };
+    }
+    query = query.replace(/\{\{orderNo\}\}/g, sqlStringLiteral(orderNo));
+  }
+  return { ok: true, query };
+}
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function parseJtlContextMapping(value: unknown): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  if (typeof value !== 'string' || !value.trim()) return mapping;
+  for (const pair of value.split(',')) {
+    const [column, target] = pair.split(':').map((part) => part.trim());
+    if (column && target) mapping[column.toLowerCase()] = target;
+  }
+  return mapping;
+}
+
+function jtlContextScalar(value: unknown): string | number | boolean | null {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Date) return value.toISOString();
+  return String(value).slice(0, 2_000);
 }
 
 function workflowJtlLookupEntityConfig(value: unknown): WorkflowJtlLookupEntityConfig {
