@@ -1444,7 +1444,7 @@ export function getCustomersPage(options: CustomerPageOptions = {}): CustomerPag
     const whereParts: string[] = [];
 
     if (status) {
-        whereParts.push('status = @status');
+        whereParts.push(status === 'Active' ? '(status = @status OR status IS NULL)' : 'status = @status');
         params.status = status;
     }
 

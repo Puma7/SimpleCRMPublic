@@ -146,6 +146,17 @@ describe('sqlite-service', () => {
 
       expect(mockDb.prepare.mock.calls[1][0]).toContain('ORDER BY email DESC, id ASC');
     });
+
+    test('includes null status customers when filtering active customers', () => {
+      mockDb.prepare
+        .mockReturnValueOnce(makeStmt({ total: 1 }))
+        .mockReturnValueOnce(makeStmt([{ id: 1, status: null }]));
+
+      getCustomersPage({ limit: 50, status: 'Active' });
+
+      expect(mockDb.prepare.mock.calls[0][0]).toContain('(status = @status OR status IS NULL)');
+      expect(mockDb.prepare.mock.calls[1][0]).toContain('(status = @status OR status IS NULL)');
+    });
   });
 
   describe('searchProducts', () => {
