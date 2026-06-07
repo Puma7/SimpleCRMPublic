@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { CheckCircle2, Plus } from "lucide-react"
+import { CheckCircle2, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -65,6 +65,25 @@ export function AccountsMasterDetailSettings() {
     setEditAccount(a)
     setCreating(false)
     setSettingsAccountId(a.id)
+  }
+
+  const handleDelete = async (a: EmailAccount) => {
+    const scopeLabel = serverClientMode ? "serverseitigen" : "lokalen"
+    const ok = window.confirm(
+      `Konto „${a.display_name || a.email_address}“ (${a.email_address}) wirklich löschen? Alle ${scopeLabel} Nachrichten dieses Kontos werden entfernt.`,
+    )
+    if (!ok) return
+    try {
+      await invokeRenderer(IPCChannels.Email.DeleteAccount, a.id)
+      toast.success("Konto gelöscht.")
+      setSelectedId(null)
+      setEditAccount(null)
+      setCreating(false)
+      bumpAccountsRevision()
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Löschen fehlgeschlagen.")
+    }
   }
 
   const selected = accounts.find((a) => a.id === selectedId) ?? editAccount
@@ -145,6 +164,18 @@ export function AccountsMasterDetailSettings() {
                   </p>
                 ) : null}
               </div>
+              {!creating && selected ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 gap-2 text-destructive hover:text-destructive"
+                  onClick={() => void handleDelete(selected)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Konto löschen
+                </Button>
+              ) : null}
             </div>
             {!creating ? (
               <div className="flex shrink-0 gap-1 border-b px-4">
@@ -171,6 +202,7 @@ export function AccountsMasterDetailSettings() {
                   <div className="max-w-xl space-y-4">
                     <AccountsShippingHint />
                     <AccountForm
+                      key="new-account"
                       onCreated={() => {
                         bumpAccountsRevision()
                         void load()
@@ -180,6 +212,7 @@ export function AccountsMasterDetailSettings() {
                   </div>
                 ) : tab === "imap" ? (
                   <AccountForm
+                    key={`edit-${editAccount?.id ?? "none"}`}
                     editAccount={editAccount}
                     onCreated={() => {
                       bumpAccountsRevision()

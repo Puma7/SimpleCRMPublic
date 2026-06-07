@@ -27,6 +27,28 @@ import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 import type { EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier } from './db';
 import { resolveAttachmentStoragePath } from './db';
+import {
+  MAX_SYNC_ATTACHMENT_BYTES,
+  MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
+  parseJsonValue,
+  parseMailSource,
+  parsedAttachmentsForStorage,
+  sanitizeAttachmentFilename,
+  sourceToBuffer,
+  type ServerMailSyncParsedAttachment,
+  type ServerMailSyncParsedMessage,
+} from './mail-parse';
+export {
+  MAX_SYNC_ATTACHMENT_BYTES,
+  MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
+  parseJsonValue,
+  parseMailSource,
+  parsedAttachmentsForStorage,
+  sanitizeAttachmentFilename,
+  sourceToBuffer,
+  type ServerMailSyncParsedAttachment,
+  type ServerMailSyncParsedMessage,
+};
 import type { EmailAccountsTable, EmailFoldersTable, EmailMessagesTable, ServerDatabase } from './db/schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
@@ -37,8 +59,6 @@ const POP3_UID_CEILING = -1_000_000;
 const IMAP_CONNECTION_TIMEOUT_MS = 90_000;
 const IMAP_SOCKET_TIMEOUT_MS = 120_000;
 const POP3_TIMEOUT_MS = 90_000;
-const MAX_SYNC_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const MAX_SYNC_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 const UID_VALIDITY_NOTICE_PREFIX = 'uidvalidity_notice:';
 const UID_VALIDITY_BACKUP_PREFIX = 'uidvalidity_backup:';
 
@@ -106,33 +126,6 @@ export type ServerMailSyncFolder = Readonly<{
   pop3UidlStr: string | null;
 }>;
 
-export type ServerMailSyncParsedMessage = Readonly<{
-  messageId: string | null;
-  inReplyTo: string | null;
-  referencesHeader: string | null;
-  subject: string | null;
-  fromJson: unknown | null;
-  toJson: unknown | null;
-  ccJson: unknown | null;
-  bccJson: unknown | null;
-  dateReceived: string | null;
-  snippet: string | null;
-  bodyText: string | null;
-  bodyHtml: string | null;
-  hasAttachments: boolean;
-  attachmentsJson: unknown | null;
-  rawHeaders: string | null;
-  rawRfc822B64: string;
-  attachments?: readonly ServerMailSyncParsedAttachment[];
-}>;
-
-export type ServerMailSyncParsedAttachment = Readonly<{
-  filename: string;
-  contentType: string | null;
-  sizeBytes: number;
-  contentSha256: string;
-  content: Buffer;
-}>;
 
 export type ServerMailSyncMessageInput = ServerMailSyncParsedMessage & Readonly<{
   workspaceId: string;
@@ -474,8 +467,15 @@ async function syncImapFolder(input: {
       };
     }
 
+    // One-shot full inbox backfill (only the primary inbox): import older
+    // already-read messages skipped by the first-sync cap, without moving the
+    // sync cursor and without triggering inbound post-processing.
+    const fullInbox = input.plan.fullInbox === true && input.spec.runPostSync === true;
     let uids: number[];
-    if (lastUid > 0) {
+    if (fullInbox) {
+      const searchResult = await input.client.search({ all: true }, { uid: true });
+      uids = searchResult === false ? [] : searchResult;
+    } else if (lastUid > 0) {
       const searchResult = await input.client.search({ uid: `${lastUid + 1}:*` }, { uid: true });
       uids = searchResult === false ? [] : searchResult;
     } else {
@@ -491,6 +491,8 @@ async function syncImapFolder(input: {
       folderId: folder.id,
       uids: sorted,
     }));
+    // In backfill mode only download the messages we do not already have.
+    const toProcess = fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted;
     const context: ServerMailSyncUpsertContext = {
       imapUidToId,
       reconcileSeenFromServer: true,
@@ -499,7 +501,7 @@ async function syncImapFolder(input: {
     let chainEnd = lastUid;
     const skippedUids = new Set<number>();
 
-    for (const uid of sorted) {
+    for (const uid of toProcess) {
       try {
         const fetched = await input.client.fetchOne(
           String(uid),
@@ -538,16 +540,23 @@ async function syncImapFolder(input: {
         if (upserted.isNew && upserted.id > 0) newMessageIds.push(upserted.id);
         if (canAdvanceImapSyncCursor(chainEnd, uid, sortedSet, skippedUids)) chainEnd = uid;
       } catch (error) {
-        void error;
+        // Previously swallowed silently. A failing message blocks the sync
+        // cursor (it is retried every sync), so surface why so it is diagnosable.
+        skippedUids.add(uid);
+        console.warn(
+          `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 
-    if (sorted.length > 0) {
-      lastUid = chainEnd;
-    } else if (lastUid === 0) {
-      const refresh = await input.client.search({ all: true }, { uid: true });
-      const all = refresh === false ? [] : refresh;
-      if (all.length > 0) lastUid = Math.max(...all);
+    if (!fullInbox) {
+      if (sorted.length > 0) {
+        lastUid = chainEnd;
+      } else if (lastUid === 0) {
+        const refresh = await input.client.search({ all: true }, { uid: true });
+        const all = refresh === false ? [] : refresh;
+        if (all.length > 0) lastUid = Math.max(...all);
+      }
     }
 
     await input.store.updateFolderSyncState({
@@ -559,7 +568,8 @@ async function syncImapFolder(input: {
       syncedAt: input.now(),
     });
 
-    return { newMessageIds };
+    // Backfilled historical mail must not trigger inbound workflows/spam/AI.
+    return { newMessageIds: fullInbox ? [] : newMessageIds };
   } finally {
     lock.release();
   }
@@ -731,15 +741,25 @@ function createPostgresMailSyncStore(options: PostgresMailSyncJobPortOptions): S
     },
     async loadImapUidToId(input) {
       if (input.uids.length === 0) return new Map();
-      const rows = await withWorkspace(input.workspaceId, async (trx) => trx
-        .selectFrom('email_messages')
-        .select(['uid', 'id'])
-        .where('workspace_id', '=', input.workspaceId)
-        .where('folder_id', '=', input.folderId)
-        .where('pop3_uidl', 'is', null)
-        .where('uid', 'in', [...input.uids])
-        .execute());
-      return new Map(rows.map((row) => [Number(row.uid), Number(row.id)]));
+      // Chunk the uid list: the full-inbox backfill can pass tens of thousands
+      // of UIDs, and a single `WHERE uid IN (...)` would exceed Postgres'
+      // 65535-bind-parameter limit (and build a huge query) for exactly the
+      // large/old accounts the backfill is meant to recover.
+      const CHUNK = 1000;
+      const result = new Map<number, number>();
+      for (let i = 0; i < input.uids.length; i += CHUNK) {
+        const chunk = input.uids.slice(i, i + CHUNK);
+        const rows = await withWorkspace(input.workspaceId, async (trx) => trx
+          .selectFrom('email_messages')
+          .select(['uid', 'id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('folder_id', '=', input.folderId)
+          .where('pop3_uidl', 'is', null)
+          .where('uid', 'in', [...chunk])
+          .execute());
+        for (const row of rows) result.set(Number(row.uid), Number(row.id));
+      }
+      return result;
     },
     async loadPop3UidlToId(input) {
       const rows = await withWorkspace(input.workspaceId, async (trx) => trx
@@ -1592,55 +1612,6 @@ async function resolveOAuthMailAuth(input: {
   }
 }
 
-export async function parseMailSource(source: Buffer): Promise<ServerMailSyncParsedMessage> {
-  const { simpleParser } = require('mailparser') as {
-    simpleParser(input: Buffer): Promise<{
-      messageId?: string;
-      inReplyTo?: string;
-      references?: string | string[];
-      subject?: string;
-      from?: unknown;
-      to?: unknown;
-      cc?: unknown;
-      bcc?: unknown;
-      date?: Date;
-      text?: string;
-      html?: string | false;
-      attachments?: { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array | string }[];
-      headerLines?: string[];
-      headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
-    }>;
-  };
-  const parsed = await simpleParser(source);
-  const referencesHeader = parsed.references
-    ? Array.isArray(parsed.references)
-      ? parsed.references.join(' ')
-      : String(parsed.references)
-    : null;
-  const textBody = parsed.text?.trim() || null;
-  const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
-  const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
-  return {
-    messageId: parsed.messageId ?? null,
-    inReplyTo: parsed.inReplyTo ?? null,
-    referencesHeader,
-    subject: parsed.subject ?? null,
-    fromJson: parseJsonValue(addressJson(parsed.from)),
-    toJson: parseJsonValue(addressJson(parsed.to)),
-    ccJson: parseJsonValue(addressJson(parsed.cc)),
-    bccJson: parseJsonValue(addressJson(parsed.bcc)),
-    dateReceived: formatDate(parsed.date),
-    snippet: snippetFromParsed(textBody, htmlBody),
-    bodyText: textBody,
-    bodyHtml: htmlBody,
-    hasAttachments,
-    attachmentsJson: parseJsonValue(attachmentsJson),
-    rawHeaders: rawHeadersFromParsed(parsed),
-    rawRfc822B64: source.toString('base64'),
-    attachments: parsedAttachmentsForStorage(parsed.attachments),
-  };
-}
-
 async function replaceMessageAttachmentsIfPresent(
   store: ServerMailSyncStore,
   input: {
@@ -2101,12 +2072,6 @@ function mapMailSyncFolder(row: Pick<EmailFolderRow,
   };
 }
 
-function sourceToBuffer(source: Buffer | Uint8Array | string): Buffer {
-  if (Buffer.isBuffer(source)) return source;
-  if (typeof source === 'string') return Buffer.from(source, 'utf8');
-  return Buffer.from(source);
-}
-
 function flagsContainSeen(flags: Set<string> | string[] | null | undefined): boolean {
   if (!flags) return false;
   const values = Array.isArray(flags) ? flags : [...flags];
@@ -2128,51 +2093,6 @@ function pathLeaf(pathValue: string, delimiter: string | undefined): string {
     if (index >= 0) leaf = leaf.slice(index + delimiterValue.length);
   }
   return leaf;
-}
-
-function parseJsonValue(value: string | null): unknown | null {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function parsedAttachmentsForStorage(
-  attachments: readonly { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array | string }[] | undefined,
-): ServerMailSyncParsedAttachment[] {
-  if (!attachments?.length) return [];
-  const stored: ServerMailSyncParsedAttachment[] = [];
-  let totalBytes = 0;
-  for (const attachment of attachments) {
-    if (attachment.content == null) continue;
-    const content = sourceToBuffer(attachment.content);
-    if (content.length <= 0 || content.length > MAX_SYNC_ATTACHMENT_BYTES) continue;
-    if (totalBytes + content.length > MAX_SYNC_ATTACHMENT_TOTAL_BYTES) break;
-    totalBytes += content.length;
-    stored.push({
-      filename: sanitizeAttachmentFilename(attachment.filename ?? 'attachment'),
-      contentType: attachment.contentType?.trim() || null,
-      sizeBytes: typeof attachment.size === 'number' && Number.isFinite(attachment.size)
-        ? Math.max(0, Math.trunc(attachment.size))
-        : content.length,
-      contentSha256: createHash('sha256').update(content).digest('hex'),
-      content,
-    });
-  }
-  return stored;
-}
-
-function sanitizeAttachmentFilename(input: string): string {
-  const basename = path.basename(input).trim();
-  if (!basename || basename === '.' || basename === '..') return 'attachment';
-  const sanitized = basename
-    .replace(/[\r\n\0]+/g, '_')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/^_+/, '')
-    .slice(0, 180);
-  return sanitized || 'attachment';
 }
 
 function normalizeFirstSyncMaxMessages(value: number | undefined): number {

@@ -3,6 +3,7 @@ export * from './email-address-normalize';
 export * from './imap-mailbox-names';
 export * from './mail-rfc822-compose';
 export * from './mail-security-static';
+export * from './outbound-approval-marker';
 export * from './outbound-review-parse';
 export * from './outbound-threading';
 export * from './parse-utils';

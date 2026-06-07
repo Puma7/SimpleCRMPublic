@@ -655,7 +655,16 @@ export function MessageList({
                       disabled={bulkBusy}
                       onDragStart={(e) => {
                         if (m.uid < 0 || bulkBusy) return
-                        setMailDragData(e.dataTransfer, m.id)
+                        // If the dragged row is part of the current multi-
+                        // selection, drag the whole selection; otherwise just
+                        // this one. Only selectable (server-backed) rows count.
+                        const dragIds =
+                          selectedIds.has(m.id) && selectedIds.size > 1
+                            ? visibleMessages
+                                .filter((vm) => selectedIds.has(vm.id) && vm.uid >= 0)
+                                .map((vm) => vm.id)
+                            : [m.id]
+                        setMailDragData(e.dataTransfer, dragIds)
                       }}
                       onClick={() => {
                         if (bulkBusy) return
@@ -686,15 +695,27 @@ export function MessageList({
                             className={cn(
                               "truncate text-xs",
                               unread ? "font-semibold" : "text-muted-foreground",
+                              isDraft && blocked && "text-amber-700 dark:text-amber-300",
                             )}
+                            title={
+                              isDraft && blocked
+                                ? (m.outbound_block_reason || "Ausgangsprüfung: Versand blockiert").toString()
+                                : undefined
+                            }
                           >
                             {isDraft
                               ? blocked
-                                ? "Entwurf (blockiert)"
+                                ? "Entwurf — Ausgang blockiert"
                                 : "Entwurf"
                               : formatFrom(m.from_json)}
                           </span>
                           <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
+                            {m.has_attachments ? (
+                              <Paperclip
+                                className="h-3 w-3 text-muted-foreground"
+                                aria-label="Hat Anhang"
+                              />
+                            ) : null}
                             {lock ? (
                               <Lock
                                 className="h-3 w-3 text-amber-600 dark:text-amber-300"
@@ -720,9 +741,6 @@ export function MessageList({
                             <span className="col-span-2 truncate text-[10px] text-muted-foreground">
                               {accountLabel(m.account_id)}
                             </span>
-                          ) : null}
-                          {m.has_attachments ? (
-                            <Paperclip className="col-span-2 h-3 w-3 text-muted-foreground" />
                           ) : null}
                         </div>
                       </div>

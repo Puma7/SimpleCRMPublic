@@ -90,6 +90,8 @@ export function buildComposeRfc822(input: {
   references?: string;
   attachments?: ComposeRfc822Attachment[];
   requestReadReceipt?: boolean;
+  /** Extra raw header lines (already "Name: value"), e.g. Auto-Submitted. */
+  extraHeaders?: readonly string[];
   date?: Date;
 }): Buffer {
   const headerLines: string[] = [];
@@ -103,6 +105,10 @@ export function buildComposeRfc822(input: {
   if (input.references) headerLines.push(`References: ${sanitizeHeaderValue(input.references)}`);
   if (input.requestReadReceipt) {
     headerLines.push(`Disposition-Notification-To: ${encodeMailboxListHeader(input.from)}`);
+  }
+  for (const header of input.extraHeaders ?? []) {
+    const clean = sanitizeHeaderValue(header);
+    if (clean) headerLines.push(clean);
   }
   headerLines.push('MIME-Version: 1.0');
   headerLines.push(`Date: ${(input.date ?? new Date()).toUTCString()}`);

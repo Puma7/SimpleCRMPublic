@@ -95,6 +95,11 @@ async function collectDiagnostics(
   const messageStats = await selectMessageStats(trx, workspaceId);
   const byFolderKind = await selectFolderKindCounts(trx, workspaceId);
   const workflowStats = await selectWorkflowStats(trx, workspaceId, now);
+  const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const since30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const aiUsage24h = await selectAiUsageTotals(trx, workspaceId, since24h);
+  const aiUsage30d = await selectAiUsageTotals(trx, workspaceId, since30d);
+  const aiUsageByNodeType24h = await selectAiUsageByNodeType(trx, workspaceId, since24h);
   const syncInfoRows = await selectSyncInfoRows(trx, workspaceId);
   const accounts = await selectAccounts(trx, workspaceId);
 
@@ -114,6 +119,16 @@ async function collectDiagnostics(
       runsLast24h: countValue(workflowStats?.runs_last_24h),
       runsBlockedLast24h: countValue(workflowStats?.runs_blocked_last_24h),
       runsErrorLast24h: countValue(workflowStats?.runs_error_last_24h),
+    },
+    aiUsage: {
+      events24h: countValue(aiUsage24h?.events),
+      tokens24h: countValue(aiUsage24h?.tokens),
+      costMicroUsd24h: countValue(aiUsage24h?.cost),
+      avgLatencyMs24h: countValue(aiUsage24h?.avg_latency),
+      events30d: countValue(aiUsage30d?.events),
+      tokens30d: countValue(aiUsage30d?.tokens),
+      costMicroUsd30d: countValue(aiUsage30d?.cost),
+      byNodeType24h: aiUsageByNodeType24h,
     },
     notices: {
       imapAuth: countImapAuthNotices(syncInfoRows),
@@ -195,6 +210,50 @@ async function selectWorkflowStats(
     .where('workspace_id', '=', workspaceId)
     .where('started_at', '>=', since)
     .executeTakeFirst();
+}
+
+type AiUsageStatsRow = {
+  events: CountValue;
+  tokens: CountValue;
+  cost: CountValue;
+  avg_latency: CountValue;
+};
+
+async function selectAiUsageTotals(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  since: Date,
+): Promise<AiUsageStatsRow | undefined> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  return trx
+    .selectFrom('ai_usage_events')
+    .select([
+      kyselySql<CountValue>`count(*)`.as('events'),
+      kyselySql<CountValue>`coalesce(sum(total_tokens), 0)`.as('tokens'),
+      kyselySql<CountValue>`coalesce(sum(est_cost_micro_usd), 0)`.as('cost'),
+      kyselySql<CountValue>`coalesce(round(avg(latency_ms)), 0)`.as('avg_latency'),
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('created_at', '>=', since)
+    .executeTakeFirst();
+}
+
+async function selectAiUsageByNodeType(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  since: Date,
+): Promise<Record<string, number>> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  const rows = await trx
+    .selectFrom('ai_usage_events')
+    .select(['node_type', kyselySql<CountValue>`count(*)`.as('cnt')])
+    .where('workspace_id', '=', workspaceId)
+    .where('created_at', '>=', since)
+    .groupBy('node_type')
+    .execute();
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[String(row.node_type)] = countValue(row.cnt);
+  return counts;
 }
 
 async function selectSyncInfoRows(

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { invokeRenderer } from "@/services/transport"
+import { isServerClientMode } from "@/lib/runtime-mode"
 import { type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
@@ -41,6 +42,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [spamFolder, setSpamFolder] = useState("")
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [importingInbox, setImportingInbox] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -131,6 +133,22 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       else toast.error(r.error ?? "Fehler")
     } finally {
       setTesting(false)
+    }
+  }
+
+  const importFullInbox = async () => {
+    if (!accId) {
+      toast.error("Bitte zuerst ein Konto auswählen.")
+      return
+    }
+    setImportingInbox(true)
+    try {
+      await invokeRenderer(IPCChannels.Email.ImportFullInbox, accId)
+      toast.success("Voll-Import gestartet. Ältere Nachrichten werden im Hintergrund nachgeladen.")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import fehlgeschlagen.")
+    } finally {
+      setImportingInbox(false)
     }
   }
 
@@ -248,6 +266,26 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
                   placeholder="Spam (optional)"
                   className="h-9"
                 />
+              ) : null}
+              {isServerClientMode() ? (
+              <div className="border-t pt-3">
+                <p className="text-xs font-medium">Bereits gelesene Mails nachladen</p>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Holt ältere, bereits gelesene Nachrichten aus dem Posteingang nach, die beim ersten
+                  Abruf übersprungen wurden (z. B. beim Wechsel von einem anderen System). Läuft im
+                  Hintergrund und löst keine Workflows aus.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={importingInbox || !accId}
+                  onClick={() => void importFullInbox()}
+                >
+                  {importingInbox ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Vollständigen Posteingang importieren
+                </Button>
+              </div>
               ) : null}
             </div>
           ) : null}

@@ -543,7 +543,11 @@ export function createPostgresCustomerCustomFieldReadPort(
               label: values.label ?? '',
               type: values.type ?? 'text',
               required: values.required ?? false,
-              options: values.options ?? null,
+              // jsonb column: stringify so a select field's array of options is
+              // sent as valid JSON, not a Postgres array literal ({...}) -> 22P02.
+              options: values.options === undefined || values.options === null
+                ? null
+                : JSON.stringify(values.options),
               default_value: values.defaultValue ?? null,
               placeholder: values.placeholder ?? null,
               description: values.description ?? null,
@@ -1274,7 +1278,9 @@ function mutationToCustomFieldPatch(values: CustomerCustomFieldMutationInput): P
     ...(values.label === undefined ? {} : { label: values.label }),
     ...(values.type === undefined ? {} : { type: values.type }),
     ...(values.required === undefined ? {} : { required: values.required }),
-    ...(values.options === undefined ? {} : { options: values.options }),
+    ...(values.options === undefined
+      ? {}
+      : { options: values.options === null ? null : JSON.stringify(values.options) }),
     ...(values.defaultValue === undefined ? {} : { default_value: values.defaultValue }),
     ...(values.placeholder === undefined ? {} : { placeholder: values.placeholder }),
     ...(values.description === undefined ? {} : { description: values.description }),

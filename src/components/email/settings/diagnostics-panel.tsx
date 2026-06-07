@@ -5,6 +5,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
 import { RestoreWizardPanel } from "./restore-wizard-panel"
+import { ServerLogsSection } from "./server-logs-section"
 import { Button } from "@/components/ui/button"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import { invokeIpc } from "../types"
@@ -26,6 +27,16 @@ type DiagnosticsReport = {
     runsBlockedLast24h: number
     runsErrorLast24h: number
   }
+  aiUsage: {
+    events24h: number
+    tokens24h: number
+    costMicroUsd24h: number
+    avgLatencyMs24h: number
+    events30d: number
+    tokens30d: number
+    costMicroUsd30d: number
+    byNodeType24h: Record<string, number>
+  }
   notices: { imapAuth: number; uidValidity: number }
   syncInfo: { totalKeys: number; prefixes: Record<string, number> }
   background: {
@@ -40,6 +51,13 @@ type DiagnosticsReport = {
     protocol: string
     inboxLastSyncedAt: string | null
   }[]
+}
+
+function formatUsd(microUsd: number): string {
+  const usd = microUsd / 1_000_000
+  if (usd === 0) return "$0.00"
+  if (usd < 0.01) return `$${usd.toFixed(4)}`
+  return `$${usd.toFixed(2)}`
 }
 
 function formatBytes(n: number | null): string {
@@ -206,6 +224,8 @@ export function DiagnosticsPanel() {
 
       {localBackupAvailable ? <RestoreWizardPanel /> : null}
 
+      {serverClientMode ? <ServerLogsSection /> : null}
+
       {!report && !loading ? (
         <p className="text-sm text-muted-foreground">Keine Diagnosedaten.</p>
       ) : null}
@@ -267,6 +287,32 @@ export function DiagnosticsPanel() {
               <li>Blockiert: {report.workflows.runsBlockedLast24h}</li>
               <li>Fehler: {report.workflows.runsErrorLast24h}</li>
             </ul>
+          </section>
+
+          <section>
+            <h4 className="font-medium">KI-Nutzung & Kosten</h4>
+            <ul className="mt-1 list-inside list-disc text-muted-foreground">
+              <li>
+                24 h: {report.aiUsage.events24h} Aufrufe · {report.aiUsage.tokens24h.toLocaleString("de-DE")} Tokens ·{" "}
+                {formatUsd(report.aiUsage.costMicroUsd24h)} · Ø {report.aiUsage.avgLatencyMs24h} ms
+              </li>
+              <li>
+                30 Tage: {report.aiUsage.events30d} Aufrufe · {report.aiUsage.tokens30d.toLocaleString("de-DE")} Tokens ·{" "}
+                {formatUsd(report.aiUsage.costMicroUsd30d)}
+              </li>
+              {Object.keys(report.aiUsage.byNodeType24h).length > 0 ? (
+                <li>
+                  Nach Typ (24 h):{" "}
+                  {Object.entries(report.aiUsage.byNodeType24h)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([type, count]) => `${type}: ${count}`)
+                    .join(", ")}
+                </li>
+              ) : null}
+            </ul>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Kosten sind Schätzwerte je Modell; lokale/unbekannte Modelle zählen Tokens ohne Kosten.
+            </p>
           </section>
 
           <section>

@@ -53,6 +53,8 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('products'),
   rlsPolicyTable('deals'),
   rlsPolicyTable('tasks'),
+  rlsPolicyTable('user_groups'),
+  rlsPolicyTable('user_group_members'),
   rlsPolicyTable('deal_products'),
   rlsPolicyTable('calendar_events'),
   rlsPolicyTable('customer_custom_fields'),
@@ -97,6 +99,8 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('pgp_identities'),
   rlsPolicyTable('pgp_peer_keys'),
   rlsPolicyTable('automation_api_keys'),
+  rlsPolicyTable('ai_usage_events'),
+  rlsPolicyTable('ai_reply_feedback'),
 ];
 
 export async function runRlsIsolationCheck(client: RlsCheckClient): Promise<RlsCheckResult> {

@@ -40,7 +40,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'outbound-quality-check',
     name: 'Ausgehend: KI-Qualitätsprüfung',
     description:
-      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. Blockierte Entwürfe erscheinen im Posteingang mit Hinweis.',
+      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. BLOCK hält den Entwurf zurück (Banner im Posteingang); OK gibt den Entwurf frei und sendet ihn automatisch über den scheduled-send-Worker.',
     trigger: 'outbound',
     graph: {
       version: 1,
@@ -54,8 +54,20 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { promptId: 0, checkReplyContext: true },
           },
         },
+        // OK-Pfad: Sperre lösen + autoSend = der scheduled-send-Worker greift
+        // sofort und schickt den Entwurf raus. reviewOutbound.review erkennt den
+        // Approval-Marker und lässt den nächsten Sende-Aufruf durch, statt eine
+        // erneute Prüfung einzureihen.
+        {
+          id: 'release',
+          type: 'registry',
+          data: { nodeType: 'email.release_outbound', config: { autoSend: true } },
+        },
       ],
-      edges: [{ id: 'e0', source: 't1', target: 'r1' }],
+      edges: [
+        { id: 'e0', source: 't1', target: 'r1' },
+        { id: 'e1', source: 'r1', target: 'release' },
+      ],
     } as WorkflowGraphDocument,
   },
   {
@@ -488,7 +500,199 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       ],
     } as WorkflowGraphDocument,
   },
+  {
+    id: 'inbound-invoice-auto-forward',
+    name: 'Eingehend: Rechnung weiterleiten (inkl. Anhänge)',
+    description:
+      'Erkennt Rechnungsmails und leitet sie automatisch an Bank + Buchhaltung weiter — inklusive Anhänge. Empfängeradressen im Knoten anpassen. Achtung: läuft im Servermodus nur, wenn keine Outbound-Workflows aktiv sind.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          data: { field: 'combined_text', op: 'regex', value: 'rechnung|invoice|beleg', caseInsensitive: true },
+        },
+        { id: 'a1', type: 'action', data: { actionType: 'tag', tag: 'rechnung' } },
+        {
+          id: 'fwd',
+          type: 'registry',
+          data: {
+            nodeType: 'email.forward_copy',
+            config: {
+              to: 'bank@example.com, buchhaltung@example.com',
+              includeAttachments: true,
+              runOnEveryInbound: true,
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
+        { id: 'e2', source: 'a1', target: 'fwd' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'inbound-ai-auto-reply',
+    name: 'Eingehend: KI antwortet vollautomatisch (mit Gate)',
+    description:
+      'Vollautomatischer Antwort-Loop: KI klassifiziert, Auto-Antwort-Gate prüft Schalter + Confidence + No-Reply-Schutz, KI wählt einen passenden Textbaustein und legt einen adressierten Entwurf an (draft.id), der direkt versendet wird. Für KI-prüft-KI am send-Knoten runOutboundReview=true setzen.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        // (1) Klassifizieren + Confidence setzen.
+        {
+          id: 'classify',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.classify',
+            config: { labels: 'Frage,Bestellstatus,Reklamation,Sonstiges', contextMode: 'metadata' },
+          },
+        },
+        // (2) Auto-Antwort-Gate: nur bei hoher Confidence + kein no-reply-Absender + Schalter aktiv.
+        {
+          id: 'gate',
+          type: 'registry',
+          data: {
+            nodeType: 'email.auto_reply',
+            config: { confidenceVar: 'ai.class_confidence', minConfidence: 80 },
+          },
+        },
+        // (3) KI wählt einen Textbaustein und LEGT EINEN ENTWURF AN — setzt
+        //     draft.id als Variable (ai.reply_suggestion macht das NICHT,
+        //     daher hier pick_canned).
+        {
+          id: 'compose',
+          type: 'registry',
+          data: { nodeType: 'ai.pick_canned', config: { createDraft: true } },
+        },
+        // (4) Entwurf vollautomatisch versenden — Default ohne erneute Prüfung
+        //     (das Gate hat schon gefiltert).
+        {
+          id: 'send',
+          type: 'registry',
+          data: {
+            nodeType: 'email.send_draft',
+            config: { draftIdVariable: 'draft.id', runOutboundReview: false },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'classify' },
+        { id: 'e1', source: 'classify', target: 'gate' },
+        // Gate hat zwei Ports: 'approved' und 'blocked'. Wir verzweigen nur auf approved.
+        { id: 'e2', source: 'gate', target: 'compose', label: 'approved' },
+        { id: 'e3', source: 'compose', target: 'send' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  ...ecommerceSupportTemplates(),
 ];
+
+/**
+ * Prefab E-Commerce support routing templates (P1-7). Each detects one of the
+ * common customer-service intents via a keyword regex and tags + categorises the
+ * mail, so a JTL shop team can activate the standard cases in minutes. Uses only
+ * config-free, server-supported nodes (condition + tag + set_category); AI/auto-
+ * reply can be layered on top afterwards.
+ */
+function ecommerceSupportTemplates(): WorkflowTemplate[] {
+  const cases: ReadonlyArray<{
+    id: string;
+    name: string;
+    keywords: string;
+    tag: string;
+    category: string;
+  }> = [
+    {
+      id: 'ecom-where-is-order',
+      name: 'E-Commerce: Wo ist meine Bestellung?',
+      keywords: 'wo ist|sendung|tracking|versand|paket|lieferstatus|noch nicht angekommen',
+      tag: 'versandstatus',
+      category: 'Support/Versand',
+    },
+    {
+      id: 'ecom-return',
+      name: 'E-Commerce: Retoure / Rücksendung',
+      keywords: 'retoure|rücksendung|ruecksendung|zurückschicken|zurueckschicken|widerruf|return',
+      tag: 'retoure',
+      category: 'Support/Retoure',
+    },
+    {
+      id: 'ecom-defect',
+      name: 'E-Commerce: Defekt / Reklamation',
+      keywords: 'defekt|kaputt|beschädigt|beschaedigt|reklamation|funktioniert nicht|mangel',
+      tag: 'reklamation',
+      category: 'Support/Reklamation',
+    },
+    {
+      id: 'ecom-invoice-copy',
+      name: 'E-Commerce: Rechnungskopie',
+      keywords: 'rechnung|rechnungskopie|beleg|invoice|quittung',
+      tag: 'rechnung',
+      category: 'Support/Rechnung',
+    },
+    {
+      id: 'ecom-delivery-delay',
+      name: 'E-Commerce: Lieferverzug',
+      keywords: 'wann kommt|lieferzeit|verspätung|verspaetung|lieferverzug|wie lange dauert',
+      tag: 'lieferverzug',
+      category: 'Support/Versand',
+    },
+    {
+      id: 'ecom-size-exchange',
+      name: 'E-Commerce: Umtausch / Größe',
+      keywords: 'umtausch|umtauschen|falsche größe|falsche groesse|andere größe|tausch',
+      tag: 'umtausch',
+      category: 'Support/Umtausch',
+    },
+    {
+      id: 'ecom-refund',
+      name: 'E-Commerce: Rückzahlung',
+      keywords: 'rückzahlung|rueckzahlung|erstattung|geld zurück|refund|noch kein geld',
+      tag: 'rueckzahlung',
+      category: 'Support/Rückzahlung',
+    },
+    {
+      id: 'ecom-availability',
+      name: 'E-Commerce: Wieder verfügbar?',
+      keywords: 'wieder verfügbar|wieder verfuegbar|ausverkauft|nachbestellung|lieferbar|auf lager',
+      tag: 'verfuegbarkeit',
+      category: 'Support/Produktfrage',
+    },
+  ];
+
+  return cases.map(({ id, name, keywords, tag, category }) => ({
+    id,
+    name,
+    description: `Erkennt „${tag}"-Anfragen per Stichwort, taggt sie und legt sie in „${category}".`,
+    trigger: 'inbound' as const,
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          data: { field: 'combined_text', op: 'regex', value: keywords, caseInsensitive: true },
+        },
+        { id: 'a1', type: 'action', data: { actionType: 'tag', tag } },
+        { id: 'a2', type: 'action', data: { actionType: 'set_category', path: category } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
+        { id: 'e2', source: 'a1', target: 'a2' },
+      ],
+    } as WorkflowGraphDocument,
+  }));
+}
 
 export function getWorkflowTemplate(id: string): WorkflowTemplate | undefined {
   return WORKFLOW_TEMPLATES.find((t) => t.id === id);

@@ -160,6 +160,7 @@ import {
   createMaintenanceJobHandlers,
   createEmailComposeSenderPort,
   createPostgresAiAgentPort,
+  createPostgresAiPickCannedPort,
   createPostgresAiClassificationPort,
   createPostgresAiReviewPort,
   createPostgresAiTextTransformApiPort,
@@ -174,6 +175,7 @@ import {
   createPostgresJtlOrderPort,
   createJtlSyncPort,
   createPostgresMssqlSettingsPort,
+  createPostgresComposeOutboundReviewPort,
   createPostgresWorkflowExecutionJobPort,
   createPostgresWorkflowInboundBackfillPort,
   createPostgresWorkflowForwardCopyPort,
@@ -320,6 +322,11 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0012_email_account_server_settings',
   '0013_email_compose_draft_fields',
   '0014_email_reply_suggestion_fields',
+  '0015_task_customer_optional',
+  '0016_task_assignment_and_user_groups',
+  '0017_ai_usage_events',
+  '0018_ai_reply_feedback',
+  '0019_task_assignment_scope_reset',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1960,6 +1967,16 @@ describe('server edition foundation', () => {
       protocol: 'imap',
       actorUserId: 'user-a',
     });
+    expect(buildMailSyncJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      fullInbox: true,
+    }, WORKSPACE_A_ID, 'imap')).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap',
+      fullInbox: true,
+    });
     expect(buildScheduledSendJobPlan({
       workspaceId: WORKSPACE_A_ID,
       accountId: 7,
@@ -2163,6 +2180,8 @@ describe('server edition foundation', () => {
       workflowId: 23,
       messageId: 11,
       to: 'audit@example.com',
+      includeAttachments: false,
+      runOutboundReview: false,
       continuation: {
         workflowId: 23,
         triggerName: 'inbound',
@@ -2196,8 +2215,8 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       workflowId: 23,
       messageId: 11,
-      to: 'x'.repeat(501),
-    }, WORKSPACE_A_ID)).toThrow('to must not exceed 500 characters');
+      to: 'x'.repeat(1001),
+    }, WORKSPACE_A_ID)).toThrow('to must not exceed 1000 characters');
     expect(() => buildAiReplySuggestionJobPlan({
       workspaceId: WORKSPACE_A_ID,
       messageId: 11,
@@ -2568,6 +2587,114 @@ describe('server edition foundation', () => {
       uidvalidityStr: '22',
       syncedAt: now,
     })]);
+  });
+
+  test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 7 })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, upserts, folderUpdates, messageIds: [201, 202, 203, 204] });
+    // UIDs 5,6,7 already imported; 1-4 are older mail skipped by the first-sync cap.
+    store.loadImapUidToId = async () => new Map([[5, 105], [6, 106], [7, 107]]);
+    const fetchedUids: string[] = [];
+    const searchedQueries: any[] = [];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        searchedQueries.push(query);
+        return query.all ? [1, 2, 3, 4, 5, 6, 7] : [];
+      },
+      async fetchOne(uid: string) {
+        fetchedUids.push(uid);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set(['\\Seen']),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      imapClientFactory() { return client as any; },
+    });
+
+    const result = await port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap',
+      actorUserId: USER_A_ID,
+      fullInbox: true,
+    });
+
+    // Only the missing older messages are downloaded.
+    expect(fetchedUids).toEqual(['1', '2', '3', '4']);
+    expect(upserts.map((item) => item.uid)).toEqual([1, 2, 3, 4]);
+    // Backfill uses a single full search, never the incremental window.
+    expect(searchedQueries).toEqual([{ all: true }]);
+    // The sync cursor is not moved by a backfill.
+    expect(folderUpdates[0].lastUid).toBe(7);
+    // Historical mail must not trigger inbound workflows/spam/AI.
+    expect(result).toEqual({ inboundMessageIds: [] });
+  });
+
+  test('server mail sync skips a failing message and keeps advancing the cursor past it', async () => {
+    const now = new Date('2026-07-07T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5 })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, upserts, folderUpdates, messageIds: [301, 302] });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        if (query.uid === '6:*') return [6, 7, 8];
+        return query.all ? [1, 2, 3, 4, 5, 6, 7, 8] : [];
+      },
+      async fetchOne(uid: string) {
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      // UID 7 fails to parse; it must not block UID 8 or freeze the cursor.
+      parser: async (source) => {
+        const seed = source.toString('utf8');
+        if (seed.includes('Subject: 7')) throw new Error('boom parsing UID 7');
+        return makeParsedServerMailSyncMessage(seed);
+      },
+      imapClientFactory() { return client as any; },
+    });
+
+    await port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap', actorUserId: USER_A_ID });
+
+    // 6 and 8 import; 7 is skipped (not upserted) but logged.
+    expect(upserts.map((item) => item.uid)).toEqual([6, 8]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('UID 7'));
+    // Crucially the cursor advances PAST the failed UID 7 so newer mail is not blocked.
+    expect(folderUpdates[0].lastUid).toBe(8);
+    warn.mockRestore();
   });
 
   test('server mail sync job port restores local metadata after UIDVALIDITY resets', async () => {
@@ -3284,7 +3411,7 @@ describe('server edition foundation', () => {
       applyWorkspaceSession: async () => undefined,
       async chatCompletion(input) {
         chatInputs.push(input);
-        return 'Support';
+        return 'Support | 85';
       },
     });
 
@@ -3331,6 +3458,7 @@ describe('server edition foundation', () => {
         eventVariables: {
           'message.id': 11,
           'ai.class': 'Support',
+          'ai.class_confidence': 85,
         },
       },
     });
@@ -3519,6 +3647,26 @@ describe('server edition foundation', () => {
     expect((chatInputs[0] as any).user).toContain('Muster GmbH');
     expect((chatInputs[0] as any).user).toContain('Max');
     expect((chatInputs[0] as any).user).toContain('hilf mir');
+    // Default (no contextText): system prompt is the simple "rewrite the text".
+    expect((chatInputs[0] as any).system).not.toContain('markiert');
+
+    // Selection-aware mode: contextText supplied → system prompt instructs to
+    // use the full email as context but return ONLY the rewritten selection,
+    // and the full email is embedded as context.
+    await expect(port.transformText({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      promptId: 22,
+      text: 'hilf mir',
+      contextText: 'Sehr geehrte Damen und Herren, hilf mir bitte. Mit freundlichen Gruessen',
+      customerId: 7,
+    })).resolves.toEqual({ success: true, text: 'Sehr gerne helfe ich weiter.' });
+    const selectionCall = chatInputs[1] as any;
+    expect(selectionCall.system).toContain('markiert');
+    expect(selectionCall.system).toContain('AUSSCHLIESSLICH');
+    expect(selectionCall.system).toContain('Mit freundlichen Gruessen');
+    // The selection itself is still the {{text}} in the user message.
+    expect(selectionCall.user).toContain('hilf mir');
 
     await expect(port.transformText({
       workspaceId: WORKSPACE_A_ID,
@@ -3642,6 +3790,8 @@ describe('server edition foundation', () => {
         eventVariables: {
           'message.id': 14,
           'ai.agent.response': 'Antwort aus Agent',
+          'ai.agent.sources': 'Retoure',
+          'ai.agent.source_count': 1,
         },
       },
     });
@@ -3672,6 +3822,80 @@ describe('server edition foundation', () => {
     expect((rows.jobs[1]?.payload as any).context.eventVariables).toMatchObject({
       'ai.agent.response': 'Antwort aus Agent',
       'draft.id': 15,
+    });
+  });
+
+  test('postgres AI pick-canned port chooses a canned response and resumes the workflow', async () => {
+    const now = new Date('2026-06-03T12:40:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      messages: [{
+        id: 60,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 600,
+        account_id: 7,
+        subject: 'Wo bleibt mein Paket',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Wo bleibt mein Paket?',
+        body_text: 'Wo bleibt mein Paket?',
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      cannedResponses: [
+        { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Versandstatus', body: 'Status zu {{subject}}: unterwegs.', sort_order: 0 },
+        { id: 102, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1020, title: 'Retoure', body: 'Retoure-Infos.', sort_order: 1 },
+      ],
+    });
+    const chatInputs: any[] = [];
+    const secrets = { async readSecret() { return Buffer.from('sk-test'); } } as any;
+    const port = createPostgresAiPickCannedPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion(input) {
+        chatInputs.push(input);
+        return '1';
+      },
+    });
+
+    await port.pickCanned({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 60,
+      profileId: 21,
+      createDraft: false,
+      continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'message.id': 60 } },
+    });
+
+    // The numbered canned list is shown to the model.
+    expect(chatInputs[0].user).toContain('1. Versandstatus');
+    expect(chatInputs[0].user).toContain('2. Retoure');
+    // Pick "1" -> chosen canned, placeholder filled, exposed in the resumed workflow.
+    expect((rows.jobs[0]?.payload as any).context.eventVariables).toMatchObject({
+      'message.id': 60,
+      'ai.canned.pick': 1,
+      'ai.canned.id': 101,
+      'ai.canned.title': 'Versandstatus',
+      'ai.canned.text': 'Status zu Wo bleibt mein Paket: unterwegs.',
     });
   });
 
@@ -4418,6 +4642,9 @@ describe('server edition foundation', () => {
     ]);
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['vip-safe', 'explicit-inbound']);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      // Workflow 40: side-effect node gated off (no prior condition) — now recorded
+      // as a visible "skipped" step instead of vanishing into an empty OK run.
+      ['tag-direct', 'email.tag', 'skipped', 'blocked'],
       ['cond-1', 'condition', 'ok', 'yes'],
       ['tag-safe', 'email.tag', 'ok', 'default'],
       ['tag-explicit', 'email.tag', 'ok', 'default'],
@@ -5939,6 +6166,149 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port runs action-type set_category nodes (short-name alias)', async () => {
+    const now = new Date('2026-07-04T10:31:30.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            // Palette "Kategorie setzen" emits a short-name action node; the server
+            // must treat 'set_category' like 'email.set_category' instead of blocking it.
+            { id: 'set-cat', type: 'action', data: { actionType: 'set_category', path: 'Support' } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'set-cat' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        subject: 'Kat',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Kat',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      categories: [{
+        id: 801,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9801,
+        parent_source_sqlite_id: null,
+        parent_id: null,
+        name: 'Support',
+        sort_order: 0,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 28,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.runs.map((run) => run.status)).toEqual(['ok']);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      ['set-cat', 'set_category', 'ok', 'default'],
+    ]);
+    expect(rows.messageCategories.map((mc) => [mc.message_id, mc.category_id])).toEqual([[28, 801]]);
+  });
+
+  test('postgres workflow execution job port resolves set_category by stable id (rename-safe)', async () => {
+    const now = new Date('2026-07-04T10:31:45.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 43,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 430,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'set-cat',
+              type: 'registry',
+              data: {
+                nodeType: 'email.set_category',
+                // Stable id wins over the (now stale) configured path.
+                config: { categorySourceSqliteId: 9801, path: 'Stale Old Path' },
+              },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'set-cat' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        subject: 'Kat',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Kat',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      categories: [{
+        id: 801,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9801,
+        parent_source_sqlite_id: null,
+        parent_id: null,
+        name: 'Renamed',
+        sort_order: 0,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 43,
+      messageId: 29,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    // Resolved by stable id 9801 -> category 801 ('Renamed'), ignoring the stale path,
+    // and without creating a new category from that path.
+    expect(rows.messageCategories.map((mc) => [mc.message_id, mc.category_id, mc.category_source_sqlite_id]))
+      .toEqual([[29, 801, 9801]]);
+    expect(rows.categories.map((c) => c.id)).toEqual([801]);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status])).toEqual([
+      ['set-cat', 'email.set_category', 'ok'],
+    ]);
+  });
+
   test('postgres workflow execution job port queues account sync runs', async () => {
     const now = new Date('2026-07-04T10:32:00.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
@@ -7301,6 +7671,286 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port binds sender email into jtl.order_context and maps columns', async () => {
+    const now = new Date('2026-07-04T11:00:45.000Z');
+    const mssqlCalls: Array<{ workspaceId: string; query: string }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 36,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 360,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            {
+              id: 'jtl-1',
+              type: 'registry',
+              data: {
+                nodeType: 'jtl.order_context',
+                config: {
+                  query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}',
+                  mapping: 'cStatus:jtl.status',
+                  runOnEveryInbound: true,
+                },
+              },
+            },
+            {
+              id: 'switch-1',
+              type: 'registry',
+              data: { nodeType: 'logic.switch', config: { field: 'jtl.status', cases: 'versendet' } },
+            },
+            {
+              id: 'tag-jtl',
+              type: 'registry',
+              data: { nodeType: 'email.tag', config: { tag: 'jtl-versendet', runOnEveryInbound: true } },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'jtl-1' },
+            { id: 'edge-2', source: 'jtl-1', target: 'switch-1' },
+            { id: 'edge-3', source: 'switch-1', target: 'tag-jtl', label: 'versendet' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 23,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 230,
+        subject: 'JTL',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'jtl',
+        body_text: 'jtl',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      mssql: {
+        async executeReadOnlyQuery(input) {
+          mssqlCalls.push(input);
+          return { success: true, rows: [{ cStatus: 'versendet' }], rowCount: 1 };
+        },
+      },
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 36,
+      messageId: 23,
+      triggerName: 'inbound',
+      context: {},
+    });
+
+    // The sender address is strictly validated, SQL-escaped, and injected for {{email}}.
+    expect(mssqlCalls).toEqual([{
+      workspaceId: WORKSPACE_A_ID,
+      query: "SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = 'customer@example.com'",
+    }]);
+    // The mapped jtl.status variable drove the switch → tag.
+    expect(rows.tags.map((tag) => tag.tag)).toEqual(['jtl-versendet']);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      ['jtl-1', 'jtl.order_context', 'ok', 'default'],
+      ['switch-1', 'logic.switch', 'ok', 'versendet'],
+      ['tag-jtl', 'email.tag', 'ok', 'default'],
+    ]);
+    // The worker run persists its synthetic source id, and the steps carry the
+    // same run_source_sqlite_id — so the run-history "by source" step lookup
+    // resolves (previously the run kept source_sqlite_id=null while steps used
+    // -id, so the step protocol was always empty).
+    expect(rows.runs).toHaveLength(1);
+    expect(rows.runs[0].source_sqlite_id).toBeLessThan(0);
+    expect(rows.steps.every((step) => step.run_source_sqlite_id === rows.runs[0].source_sqlite_id)).toBe(true);
+  });
+
+  test('postgres workflow execution job port gates email.auto_reply on enable flag, confidence, and anti-loop', async () => {
+    const now = new Date('2026-07-04T11:02:10.000Z');
+    const autoReplyGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'auto-1',
+          type: 'registry',
+          data: { nodeType: 'email.auto_reply', config: { confidenceVar: 'ai.class_confidence', minConfidence: 70, runOnEveryInbound: true } },
+        },
+      ],
+      edges: [{ id: 'edge-1', source: 'trigger-1', target: 'auto-1' }],
+    };
+    const makeMessage = (id: number, sourceSqliteId: number, address: string) => ({
+      id,
+      workspace_id: WORKSPACE_A_ID,
+      source_sqlite_id: sourceSqliteId,
+      subject: 'Frage',
+      from_json: { value: [{ address }] },
+      to_json: { value: [{ address: 'agent@example.com' }] },
+      cc_json: null,
+      snippet: 'Frage',
+      body_text: 'Frage',
+      body_html: null,
+      has_attachments: false,
+      attachments_json: null,
+    });
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 37,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 370,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: autoReplyGraph,
+        execution_mode: 'graph',
+      }],
+      messages: [
+        makeMessage(51, 510, 'customer@example.com'),
+        makeMessage(52, 520, 'customer@example.com'),
+        makeMessage(53, 530, 'no-reply@shop.example.com'),
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: '1' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    // Enabled + high confidence + human sender -> approved.
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 51, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 90 } } });
+    // Enabled + low confidence -> blocked.
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 52, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 50 } } });
+    // Enabled + no-reply sender (anti-loop) -> blocked regardless of confidence.
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 53, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 95 } } });
+
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.port, step.message])).toEqual([
+      ['email.auto_reply', 'ok', 'approved', 'auto_reply:approved'],
+      ['email.auto_reply', 'ok', 'blocked', 'auto_reply:blocked:low_confidence'],
+      ['email.auto_reply', 'ok', 'blocked', 'auto_reply:blocked:noreply_sender'],
+    ]);
+  });
+
+  test('postgres workflow execution job port defaults email.auto_reply to blocked when disabled', async () => {
+    const now = new Date('2026-07-04T11:02:30.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 38,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 380,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'auto-1', type: 'registry', data: { nodeType: 'email.auto_reply', config: { runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'auto-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 54,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 540,
+        subject: 'Frage',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Frage',
+        body_text: 'Frage',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 38, messageId: 54, triggerName: 'inbound', context: { eventVariables: { 'ai.class_confidence': 99 } } });
+
+    expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:disabled'],
+    ]);
+  });
+
+  test('postgres workflow execution job port prepares a JTL action proposal without executing it', async () => {
+    const now = new Date('2026-07-04T11:02:50.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            {
+              id: 'act-1',
+              type: 'registry',
+              data: { nodeType: 'jtl.prepare_action', config: { kind: 'send_tracking', requireApproval: false, runOnEveryInbound: true } },
+            },
+            {
+              id: 'switch-1',
+              type: 'registry',
+              data: { nodeType: 'logic.switch', config: { field: 'jtl.action.kind', cases: 'send_tracking' } },
+            },
+            {
+              id: 'tag-act',
+              type: 'registry',
+              data: { nodeType: 'email.tag', config: { tag: 'aktion-vorbereitet', runOnEveryInbound: true } },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'act-1' },
+            { id: 'edge-2', source: 'act-1', target: 'switch-1' },
+            { id: 'edge-3', source: 'switch-1', target: 'tag-act', label: 'send_tracking' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 55,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 550,
+        subject: 'Tracking?',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'tracking',
+        body_text: 'tracking',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 55,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'jtl.order_no': 'B-1001', 'jtl.tracking': '00340' } },
+    });
+
+    // The action descriptor is exposed as variables (read-only proposal, no execution).
+    expect(rows.tags.map((tag) => tag.tag)).toEqual(['aktion-vorbereitet']);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
+      ['act-1', 'jtl.prepare_action', 'ok', 'approved', 'jtl_action:prepared:send_tracking'],
+      ['switch-1', 'logic.switch', 'ok', 'send_tracking', null],
+      ['tag-act', 'email.tag', 'ok', 'default', null],
+    ]);
+  });
+
   test('postgres workflow execution job port rejects unsafe MSSQL queries before runtime port', async () => {
     const now = new Date('2026-07-04T11:01:25.000Z');
     const mssqlCalls: unknown[] = [];
@@ -8423,6 +9073,192 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow forward-copy port routes through composeSender.send when runOutboundReview=true', async () => {
+    const now = new Date('2026-07-04T11:05:10.000Z');
+    const composeCalls: Array<{ draftMessageId: number; to: string; attachmentPaths: readonly string[] | undefined }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 50, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 500, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 30,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 300,
+        account_id: 7,
+        subject: 'Rechnung weiterleiten',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      messageAttachments: [{
+        workspace_id: WORKSPACE_A_ID,
+        message_id: 30,
+        filename_display: 'rechnung.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+        storage_path: 'ws/30/rechnung.pdf',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const composeSender = {
+      async send(input: { values: { draftMessageId: number; to: string; attachmentPaths?: readonly string[] } }) {
+        composeCalls.push({
+          draftMessageId: input.values.draftMessageId,
+          to: input.values.to,
+          attachmentPaths: input.values.attachmentPaths,
+        });
+        // Simulate "held for outbound review" — composeSender returns ok:false
+        // with workflowRunId, which the forward port interprets as review_pending.
+        return { ok: false as const, error: 'outbound review pending', workflowRunId: 999 };
+      },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender,
+      createDraft: async (input) => {
+        // Stub draft creation to return a stable id; production uses the
+        // postgres helper. We just need a draftMessageId for composeSender.send.
+        expect(input.accountId).toBe(7);
+        expect(input.recipients).toEqual(['bank@example.com', 'buchhaltung@example.com']);
+        return { ok: true as const, draftMessageId: 12345 };
+      },
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 50,
+      messageId: 30,
+      to: 'bank@example.com, buchhaltung@example.com',
+      includeAttachments: true,
+      runOutboundReview: true,
+      continuation: {
+        workflowId: 50,
+        triggerName: 'inbound',
+        resumeNodeId: 'after-forward',
+      },
+    });
+
+    // Draft was created and composeSender.send invoked with the right recipients +
+    // attachment paths (the storage_path of the original message).
+    expect(composeCalls).toHaveLength(1);
+    expect(composeCalls[0]).toMatchObject({
+      draftMessageId: 12345,
+      to: 'bank@example.com, buchhaltung@example.com',
+      attachmentPaths: ['ws/30/rechnung.pdf'],
+    });
+    // Dedup is recorded so a retry won't create a duplicate draft.
+    expect(rows.forwardDedup).toHaveLength(1);
+    // Continuation reflects ok=true + review_pending=true (it was held, not
+    // failed). The follow-up workflow can branch on this.
+    expect(rows.jobs).toEqual([
+      expect.objectContaining({
+        type: 'workflow.execute',
+        payload: expect.objectContaining({
+          context: expect.objectContaining({
+            eventVariables: expect.objectContaining({
+              'forward_copy.ok': true,
+              'forward_copy.review_pending': true,
+            }),
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
+    const now = new Date('2026-07-04T11:04:30.000Z');
+    const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
+    const reads: string[] = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 40, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 400, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        account_id: 7,
+        subject: 'Rechnung 2026-001',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Rechnung',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      messageAttachments: [{
+        workspace_id: WORKSPACE_A_ID,
+        message_id: 28,
+        filename_display: 'rechnung.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+        storage_path: 'ws/28/rechnung.pdf',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const secrets = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      attachmentsRoot: '/attachments',
+      readAttachmentFile: async (p: string) => { reads.push(p); return Buffer.from('%PDF-1.4 fake'); },
+      smtpSend: async (input) => { smtpSends.push(input as { recipients: string[]; rfc822: string }); },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 40,
+      messageId: 28,
+      to: 'bank@example.com, buchhaltung@example.com',
+      includeAttachments: true,
+    });
+
+    expect(smtpSends).toHaveLength(1);
+    // Both recipients are addressed (SMTP envelope + To: header).
+    expect(smtpSends[0].recipients).toEqual(['bank@example.com', 'buchhaltung@example.com']);
+    expect(smtpSends[0].rfc822).toContain('bank@example.com');
+    expect(smtpSends[0].rfc822).toContain('buchhaltung@example.com');
+    // The original attachment is read from disk and included as a MIME part.
+    expect(reads).toEqual(['/attachments/ws/28/rechnung.pdf']);
+    expect(smtpSends[0].rfc822).toContain('rechnung.pdf');
+    expect(smtpSends[0].rfc822).toContain('Auto-Submitted: auto-forwarded');
+    // Dedup over the sorted recipient set.
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({ message_id: 28, dest: 'bank@example.com,buchhaltung@example.com' }),
+    ]);
+  });
+
   test('postgres workflow forward-copy port fails closed while outbound workflows are enabled', async () => {
     const now = new Date('2026-07-04T11:04:55.000Z');
     const smtpSend = jest.fn();
@@ -8477,11 +9313,15 @@ describe('server edition foundation', () => {
       smtpSend,
     });
 
+    // Opt-in: runOutboundReview=true requires composeSender to be configured
+    // (production wires this in server.ts). Without it the forward port reports
+    // a configuration error rather than silently sending.
     await port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 40,
       messageId: 28,
       to: 'audit@example.com',
+      runOutboundReview: true,
       continuation: {
         workflowId: 40,
         triggerName: 'inbound',
@@ -8499,13 +9339,40 @@ describe('server edition foundation', () => {
             resumeNodeId: 'tag-ok',
             eventVariables: expect.objectContaining({
               'forward_copy.ok': false,
-              'forward_copy.error': expect.stringContaining('fail-closed'),
+              'forward_copy.error': expect.stringContaining('composeSender'),
               'forward_copy.duplicate': false,
             }),
           }),
         }),
       }),
     ]);
+
+    // Inverse: default (runOutboundReview omitted/false) bypasses the
+    // fail-closed guard — the forward IS sent even with outbound workflows
+    // enabled. The Auto-Submitted header + dedup table guard against loops.
+    smtpSend.mockClear();
+    const secretsForBypass = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const portBypass = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: secretsForBypass,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend,
+    });
+    await portBypass.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 40,
+      messageId: 28,
+      to: 'audit@example.com',
+    });
+    expect(smtpSend).toHaveBeenCalledTimes(1);
   });
 
   test('postgres workflow execution job port queues AI review continuations', async () => {
@@ -9039,6 +9906,624 @@ describe('server edition foundation', () => {
       outbound_block_reason: 'server_workflow_node_unsupported:email.move_imap',
       updated_at: now,
     });
+  });
+
+  test('postgres workflow execution job port releases the outbound hold via email.release_outbound', async () => {
+    const now = new Date('2026-07-04T11:00:30.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 25,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 250,
+        trigger_name: 'outbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: {} } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 70,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 700,
+        subject: 'Approved draft',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'ok',
+        body_text: 'ok',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        outbound_hold: true,
+        outbound_block_reason: 'KI-Pruefung laeuft',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 25,
+      messageId: 70,
+      triggerName: 'outbound',
+      context: { outbound: { messageId: 70, subject: 'Approved draft', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    // After OK -> release: the hold is lifted, the reason cleared.
+    expect(rows.messages[0]).toMatchObject({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      updated_at: now,
+    });
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.port, step.message])).toEqual([
+      ['email.release_outbound', 'ok', 'default', 'outbound_hold_released'],
+    ]);
+    expect(rows.runs.map((run) => run.status)).toEqual(['ok']);
+  });
+
+  test('postgres workflow execution job port arms auto-send via email.release_outbound autoSend=true', async () => {
+    const now = new Date('2026-07-04T11:00:35.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        trigger_name: 'outbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 72,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 720,
+        subject: 'Auto send',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'ok',
+        body_text: 'ok',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        outbound_hold: true,
+        outbound_block_reason: 'review',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 27,
+      messageId: 72,
+      triggerName: 'outbound',
+      context: { outbound: { messageId: 72, subject: 'Auto send', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    // (a) Hold released, scheduled_send_at primed so the cron picks it up now.
+    expect(rows.messages[0]).toMatchObject({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      scheduled_send_at: now,
+      updated_at: now,
+    });
+    // (b) Approval marker is written so reviewOutbound.review bypasses the
+    //     next review (otherwise the cron would loop). Marker value carries
+    //     the approval timestamp + a content fingerprint (hash of subject,
+    //     body, recipients, attachments) so an edit after approval invalidates
+    //     the bypass on the next review call.
+    const approval = rows.syncInfo.find((row) => row.key === 'outbound_review_approved:72');
+    expect(approval).toBeDefined();
+    const [markerIso, markerHash] = String(approval!.value).split('|');
+    expect(markerIso).toBe(now.toISOString());
+    expect(markerHash).toMatch(/^[0-9a-f]{32}$/);
+    expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
+      ['email.release_outbound', 'default', 'outbound_hold_released_auto_send'],
+    ]);
+  });
+
+  test('email.release_outbound autoSend strips the held-banner from body + bakes ticket-code into subject + skips marker if peer outbound runs are still open', async () => {
+    const now = new Date('2026-07-04T11:00:35.000Z');
+    // Two outbound workflows for the same draft: this run is the second, the
+    // first is still queued. release_outbound autoSend must clear hold + arm
+    // scheduled_send_at, but NOT write the bypass marker (the peer would
+    // otherwise race past its own review).
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 73,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 730,
+        subject: 'Re: Frage',
+        // body_text already contains the AUSGANGSPRUEFUNG banner from a prior
+        // reviewOutbound.review hold (real format from buildOutboundWarningBanner).
+        body_text: '⚠️ AUSGANGSPRÜFUNG — VERSAND BLOCKIERT\nai_review_block\nBitte E-Mail prüfen, korrigieren und erneut senden.\n---\n\nSehr geehrte Damen und Herren, ...',
+        body_html: '<div><strong>⚠️ AUSGANGSPRÜFUNG — VERSAND BLOCKIERT</strong></div><p>Sehr geehrte Damen und Herren, ...</p>',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'review',
+        outbound_hold: true,
+        outbound_block_reason: 'review',
+        ticket_code: null,
+      }],
+      // Another outbound run for the SAME draft, still queued — this is the
+      // peer that must block the marker.
+      runs: [{ id: 999, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 9990, workflow_id: 999, message_id: 73, direction: 'outbound', status: 'queued', log_json: null, started_at: null, finished_at: null }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 28,
+      messageId: 73,
+      triggerName: 'outbound',
+      context: { outbound: { messageId: 73, subject: 'Re: Frage', bodyText: 'Sehr geehrte ...', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    const draftAfter = rows.messages.find((m) => m.id === 73);
+    // (a) Banner is stripped from body_text/body_html so the customer doesn't
+    //     see the internal "AUSGANGSPRUEFUNG" wording.
+    expect(String(draftAfter?.body_text)).not.toContain('AUSGANGSPR');
+    expect(String(draftAfter?.body_text)).toContain('Sehr geehrte');
+    expect(String(draftAfter?.body_html ?? '')).not.toContain('AUSGANGSPR');
+    // (b) Subject gets a freshly generated ticket code (which is also persisted
+    //     in ticket_code), so the marker fingerprint stays valid through
+    //     prepareDraftForSend on the scheduled-send retry.
+    expect(String(draftAfter?.subject)).toMatch(/^\[SCR-[A-Z0-9]+\]/);
+    expect(String(draftAfter?.ticket_code ?? '')).toMatch(/^SCR-[A-Z0-9]+$/);
+    // (c) Hold is released + scheduled_send_at is primed so the cron picks up
+    //     immediately — but the peer outbound run blocks the bypass marker.
+    expect(draftAfter?.outbound_hold).toBe(false);
+    expect(draftAfter?.scheduled_send_at).toEqual(now);
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:73')).toBeUndefined();
+    expect(rows.steps.map((s) => s.message)).toContain('outbound_hold_released_auto_send_pending_peers');
+  });
+
+  test('postgres workflow execution job port arms full auto-reply via email.send_draft (default: no review)', async () => {
+    const now = new Date('2026-08-15T10:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        // The inbound mail that triggered this workflow.
+        {
+          id: 90,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 900,
+          subject: 'Frage',
+          from_json: { value: [{ address: 'kunde@example.com' }] },
+        },
+        // The AI-generated draft we want to send.
+        {
+          id: 91,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 910,
+          uid: -1,
+          folder_kind: 'draft',
+          subject: 'Re: Frage',
+          body_text: 'Hallo, danke für Ihre Anfrage. ...',
+          body_html: null,
+          to_json: { value: [{ address: 'kunde@example.com' }] },
+        },
+      ],
+      // send_draft's belt-and-braces guard requires the workspace auto-reply
+      // switch to be on for the inbound bypass path.
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 28,
+      messageId: 90,
+      triggerName: 'inbound',
+      context: {
+        // Upstream ai.reply_suggestion / email.create_draft would have set this.
+        inbound: { messageId: 90 },
+        eventVariables: { 'draft.id': 91 },
+      },
+    });
+
+    // (a) Draft has scheduled_send_at primed + outbound_hold cleared so
+    //     scheduled-send picks it up immediately.
+    const draftAfter = rows.messages.find((m) => m.id === 91);
+    expect(draftAfter).toMatchObject({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      scheduled_send_at: now,
+      updated_at: now,
+    });
+    // (b) Approval marker with content fingerprint so the scheduled-send tick
+    //     bypasses outbound review (KI is trusted by this workflow's choice).
+    const approval = rows.syncInfo.find((row) => row.key === 'outbound_review_approved:91');
+    expect(approval).toBeDefined();
+    const [iso, hash] = String(approval!.value).split('|');
+    expect(iso).toBe(now.toISOString());
+    expect(hash).toMatch(/^[0-9a-f]{32}$/);
+    // (c) Step message reflects the auto-send branch.
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'send_draft_queued_auto'],
+    ]);
+  });
+
+  // Belt-and-braces guard: even if an operator wires up email.send_draft
+  // without an email.auto_reply gate, the inbound path must refuse to send to
+  // a no-reply / mailer-daemon sender. The draft must NOT be primed.
+  test('email.send_draft inbound bypass skips when sender looks like no-reply (belt-and-braces)', async () => {
+    const now = new Date('2026-08-15T11:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        { id: 94, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 940, subject: 'Bounce', from_json: { value: [{ address: 'mailer-daemon@example.com' }] } },
+        { id: 95, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 950, uid: -1, folder_kind: 'draft', subject: 'Re: Bounce', body_text: 'reply', body_html: null, to_json: { value: [{ address: 'mailer-daemon@example.com' }] } },
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 31,
+      messageId: 94,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 94 }, eventVariables: { 'draft.id': 95 } },
+    });
+
+    // Draft NOT primed for send.
+    const draftAfter = rows.messages.find((m) => m.id === 95);
+    expect(draftAfter?.scheduled_send_at).toBeUndefined();
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:95')).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'noreply_sender_blocked'],
+    ]);
+  });
+
+  test('postgres workflow execution job port routes auto-reply through outbound review when runOutboundReview=true', async () => {
+    const now = new Date('2026-08-15T10:05:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: true, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        { id: 92, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 920, subject: 'Frage', from_json: { value: [{ address: 'kunde@example.com' }] } },
+        { id: 93, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 930, uid: -1, folder_kind: 'draft', subject: 'Re: Frage', body_text: 'KI-Antwort', body_html: null, to_json: { value: [{ address: 'kunde@example.com' }] } },
+      ],
+      // Belt-and-braces now also enforced on the runOutboundReview=true path
+      // (a workspace without outbound workflows would otherwise still send).
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 29,
+      messageId: 92,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 92 }, eventVariables: { 'draft.id': 93 } },
+    });
+
+    // Draft scheduled but NO approval marker written: composeSender.send will
+    // run reviewOutbound.review on it → outbound workflows can hold/approve.
+    const draftAfter = rows.messages.find((m) => m.id === 93);
+    expect(draftAfter?.scheduled_send_at).toBe(now);
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:93')).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'send_draft_queued_with_review'],
+    ]);
+  });
+
+  // Regression for the marker retry-loop bug: scheduled-send may call
+  // composeSender.send multiple times when SMTP transiently fails. Each call
+  // must hit the approval marker and bypass review, otherwise reviewOutbound
+  // would re-hold the draft on every retry, eating the scheduled-send failure
+  // budget (5) for what is really one SMTP failure.
+  test('reviewOutbound.review retains approval marker on read so SMTP retries bypass review', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      // At least one enabled outbound workflow so the review is actually relevant
+      // (with zero workflows, review returns allowed:true without the marker).
+      workflows: [{
+        id: 91,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 910,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 81,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 810,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        body_text: 'ok',
+        body_html: null,
+      }],
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:81',
+        value: now.toISOString(),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    // First call (the scheduled-send picks up the draft for the first time).
+    const first = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 81,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+    expect(first).toEqual({ allowed: true });
+
+    // After bypass, the marker is STILL there (so the retry can also bypass).
+    const markerAfterFirst = rows.syncInfo.find((r) => r.key === 'outbound_review_approved:81');
+    expect(markerAfterFirst).toBeDefined();
+
+    // Re-hold the draft as if SMTP had failed and the cron is retrying.
+    const draftRow = rows.messages.find((m) => m.id === 81);
+    if (draftRow) {
+      draftRow.outbound_hold = true;
+      draftRow.outbound_block_reason = 'pending';
+    }
+
+    // Second call (the retry). Marker must still be honoured → bypass review.
+    const second = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 81,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+    expect(second).toEqual({ allowed: true });
+    // Draft was released again (outbound_hold=false), not re-held.
+    expect(rows.messages.find((m) => m.id === 81)?.outbound_hold).toBe(false);
+  });
+
+  // Mirror case: a stale marker (older than the 24h TTL) is deleted on read
+  // and the review proceeds normally — so workflows don't get stuck honouring
+  // ancient approvals on rebooted drafts.
+  test('reviewOutbound.review clears stale approval marker and runs review', async () => {
+    const approvalTimestamp = new Date('2026-07-01T09:00:00.000Z');
+    const now = new Date('2026-08-01T09:00:00.000Z'); // 31 days later, > 24h
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 92,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 920,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 82,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 820,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        body_text: 'ok',
+        body_html: null,
+      }],
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:82',
+        value: approvalTimestamp.toISOString(),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 82,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    // Stale marker is cleared so future review chains start fresh.
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:82')).toBeUndefined();
+  });
+
+  // Edge case: between release_outbound (approval marker set) and the
+  // scheduled-send tick, the user edits the draft. The marker carries a
+  // content fingerprint that no longer matches → bypass MUST be denied so the
+  // edit gets re-reviewed. Defense in depth against the small race window.
+  test('reviewOutbound.review denies bypass when the approval-marker fingerprint mismatches the current content', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 93,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 930,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 83,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 830,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        body_text: 'EDITED text differs from what the workflow approved.',
+        body_html: null,
+      }],
+      // Marker hash is intentionally a value that won't match the current
+      // input (a real one would be 32 hex chars from outboundDraftFingerprint).
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:83',
+        value: `${now.toISOString()}|deadbeefdeadbeefdeadbeefdeadbeef`,
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 83,
+      subject: 'After approval',
+      bodyText: 'EDITED text differs from what the workflow approved.',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    // The bypass did NOT fire (workflow run was enqueued instead of returning
+    // allowed:true from the marker branch).
+    expect(result).not.toEqual({ allowed: true });
+    // The invalidated marker is cleared so the next review chain starts fresh
+    // and the new approval (with new hash) will not collide with the old one.
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:83')).toBeUndefined();
+  });
+
+  test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {
+    const now = new Date('2026-07-04T11:00:45.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 26,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 260,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 71,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 710,
+        subject: 'Inbound',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'in',
+        body_text: 'in',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 26, messageId: 71, triggerName: 'inbound', context: {} });
+
+    // Outbound-only: on inbound it skips, doesn't touch the message.
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.message])).toEqual([
+      ['email.release_outbound', 'skipped', 'Nur fuer ausgehende Nachrichten'],
+    ]);
   });
 
   test('postgres workflow execution job port blocks local code and plugin nodes fail-closed', async () => {
@@ -13237,6 +14722,7 @@ describe('server edition foundation', () => {
       search: 'Call',
       customerId: 7,
       completed: false,
+      viewer: { userId: 'user-a', role: 'user' },
     }]);
 
     const product = await api.handle({
@@ -13743,6 +15229,7 @@ describe('server edition foundation', () => {
         completed: true,
         snoozedUntil: null,
       },
+      viewer: { userId: USER_A_ID, role: 'user' },
     }]);
 
     const toggledTask = await api.handle({
@@ -13762,6 +15249,7 @@ describe('server edition foundation', () => {
           completed: true,
           snoozedUntil: null,
         },
+        viewer: { userId: USER_A_ID, role: 'user' },
       },
       {
         workspaceId: WORKSPACE_A_ID,
@@ -13770,6 +15258,7 @@ describe('server edition foundation', () => {
         values: {
           completed: false,
         },
+        viewer: { userId: USER_A_ID, role: 'user' },
       },
     ]);
 
@@ -13783,6 +15272,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       actorUserId: USER_A_ID,
       id: 51,
+      viewer: { userId: USER_A_ID, role: 'user' },
     }]);
 
     expect(auditEvents.map((event) => event.action)).toEqual([
@@ -17233,7 +18723,17 @@ describe('server edition foundation', () => {
       queued: true,
       accountId: 7,
       jobType: 'mail.sync.imap',
+      fullInbox: false,
     });
+
+    const fullInbox = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/7/sync',
+      body: { fullInbox: true },
+      principal,
+    });
+    expect(fullInbox.status).toBe(202);
+    expect((fullInbox.body as any).data.fullInbox).toBe(true);
 
     const pop3 = await api.handle({
       method: 'POST',
@@ -17291,6 +18791,7 @@ describe('server edition foundation', () => {
 
     expect(accountGetCalls).toEqual([
       { workspaceId: WORKSPACE_A_ID, id: 7 },
+      { workspaceId: WORKSPACE_A_ID, id: 7 },
       { workspaceId: WORKSPACE_A_ID, id: 8 },
       { workspaceId: WORKSPACE_A_ID, id: 77 },
       { workspaceId: WORKSPACE_A_ID, id: 9 },
@@ -17303,6 +18804,16 @@ describe('server edition foundation', () => {
           workspaceId: WORKSPACE_A_ID,
           accountId: 7,
           actorUserId: USER_A_ID,
+        },
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        type: 'mail.sync.imap',
+        payload: {
+          workspaceId: WORKSPACE_A_ID,
+          accountId: 7,
+          actorUserId: USER_A_ID,
+          fullInbox: true,
         },
       },
       {
@@ -25111,6 +26622,16 @@ describe('server edition foundation', () => {
               runsBlockedLast24h: 1,
               runsErrorLast24h: 2,
             },
+            aiUsage: {
+              events24h: 3,
+              tokens24h: 1500,
+              costMicroUsd24h: 450,
+              avgLatencyMs24h: 1200,
+              events30d: 10,
+              tokens30d: 5000,
+              costMicroUsd30d: 1500,
+              byNodeType24h: { 'ai.classify': 2, 'ai.agent': 1 },
+            },
             notices: {
               imapAuth: 1,
               uidValidity: 0,
@@ -25167,6 +26688,16 @@ describe('server edition foundation', () => {
           sent: 3,
         },
       }),
+      aiUsage: {
+        events24h: 3,
+        tokens24h: 1500,
+        costMicroUsd24h: 450,
+        avgLatencyMs24h: 1200,
+        events30d: 10,
+        tokens30d: 5000,
+        costMicroUsd30d: 1500,
+        byNodeType24h: { 'ai.classify': 2, 'ai.agent': 1 },
+      },
       background: expect.objectContaining({
         cronScheduled: true,
         syncInFlightAccountIds: [7, 8],
@@ -34177,6 +35708,7 @@ type AiReplySuggestionFakeRows = {
   jobs: Array<Record<string, unknown>>;
   knowledgeChunks: Array<Record<string, unknown>>;
   activityLog: Array<Record<string, unknown>>;
+  cannedResponses: Array<Record<string, unknown>>;
 };
 
 function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
@@ -34196,6 +35728,7 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
     jobs: input.jobs ?? [],
     knowledgeChunks: input.knowledgeChunks ?? [],
     activityLog: input.activityLog ?? [],
+    cannedResponses: input.cannedResponses ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
@@ -34223,6 +35756,8 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
         return rows.knowledgeChunks;
       case 'activity_log':
         return rows.activityLog;
+      case 'email_canned_responses':
+        return rows.cannedResponses;
       default:
         throw new Error(`unexpected AI reply suggestion table: ${table}`);
     }
@@ -34495,6 +36030,7 @@ type WorkflowExecutionFakeRows = {
   jtlVersandarten: Array<Record<string, unknown>>;
   delayedJobs: Array<Record<string, unknown>>;
   jobs: Array<Record<string, unknown>>;
+  messageAttachments: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -34529,9 +36065,12 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     jtlVersandarten: input.jtlVersandarten ?? [],
     delayedJobs: input.delayedJobs ?? [],
     jobs: input.jobs ?? [],
+    messageAttachments: input.messageAttachments ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
+      case 'email_message_attachments':
+        return rows.messageAttachments;
       case 'email_workflows':
         return rows.workflows;
       case 'email_messages':
@@ -34656,6 +36195,7 @@ class FakeWorkflowExecutionSelect {
   private matchingRows(): Array<Record<string, unknown>> {
     const result = this.rows.filter((row) => this.wheres.every(([column, operator, value]) => {
       if (operator === '=') return row[column] === value;
+      if (operator === '!=') return row[column] !== value;
       if (operator === 'is') return value === null ? row[column] === null || row[column] === undefined : row[column] === value;
       if (operator === 'in' && Array.isArray(value)) return value.includes(row[column]);
       if (operator === 'ilike') return ilikeMatch(row[column], value);
@@ -34681,6 +36221,26 @@ function ilikeMatch(actual: unknown, pattern: unknown): boolean {
   return haystack.includes(needle);
 }
 
+// Emulates the Postgres jsonb round-trip. Production passes a JSON *string* for
+// these columns so node-postgres sends valid JSON instead of a Postgres array
+// literal ({...}); on read node-postgres returns the parsed value. The fake
+// store keeps the parsed value so reads (and assertions) match production.
+const JSONB_STRING_COLUMNS = ['log_json', 'feature_keys_json'] as const;
+function decodeJsonbStringColumns(value: Record<string, unknown>): Record<string, unknown> {
+  const decoded: Record<string, unknown> = { ...value };
+  for (const column of JSONB_STRING_COLUMNS) {
+    if (typeof decoded[column] === 'string') {
+      try {
+        decoded[column] = JSON.parse(decoded[column] as string);
+      } catch {
+        // Leave as-is: Postgres would reject invalid jsonb, which the dedicated
+        // workflow-execution-jsonb test guards against at the binding layer.
+      }
+    }
+  }
+  return decoded;
+}
+
 class FakeWorkflowExecutionInsert {
   private row: Record<string, unknown> | null = null;
 
@@ -34692,7 +36252,7 @@ class FakeWorkflowExecutionInsert {
   ) {}
 
   values(value: Record<string, unknown>) {
-    this.row = { ...value };
+    this.row = decodeJsonbStringColumns(value);
     return this;
   }
 
@@ -34762,7 +36322,7 @@ class FakeWorkflowExecutionUpdate {
   constructor(private readonly rows: Array<Record<string, unknown>>) {}
 
   set(value: Record<string, unknown>) {
-    this.patch = { ...value };
+    this.patch = decodeJsonbStringColumns(value);
     return this;
   }
 

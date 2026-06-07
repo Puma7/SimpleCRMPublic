@@ -69,6 +69,22 @@ const TaskChannels = literal({
   Delete: 'tasks:delete',
 });
 
+const DiagnosticsChannels = literal({
+  GetServerLogs: 'diagnostics:get-server-logs',
+  ClearServerLogs: 'diagnostics:clear-server-logs',
+  SelfTestServerLogs: 'diagnostics:self-test-server-logs',
+});
+
+const UserGroupChannels = literal({
+  List: 'user-groups:list',
+  Create: 'user-groups:create',
+  Update: 'user-groups:update',
+  Delete: 'user-groups:delete',
+  ListMembers: 'user-groups:list-members',
+  AddMember: 'user-groups:add-member',
+  RemoveMember: 'user-groups:remove-member',
+});
+
 const SyncChannels = literal({
   Run: 'sync:run',
   GetStatus: 'sync:get-status',
@@ -164,6 +180,7 @@ const EmailChannels = literal({
   DeleteAccount: 'email:delete-account',
   TestImap: 'email:test-imap',
   SyncAccount: 'email:sync-account',
+  ImportFullInbox: 'email:import-full-inbox',
   ListMessages: 'email:list-messages',
   GetMessage: 'email:get-message',
   ListWorkflows: 'email:list-workflows',
@@ -345,6 +362,8 @@ export const IPCChannels = {
   Products: ProductChannels,
   Deals: DealChannels,
   Tasks: TaskChannels,
+  UserGroups: UserGroupChannels,
+  Diagnostics: DiagnosticsChannels,
   Sync: SyncChannels,
   Mssql: MssqlChannels,
   Jtl: JtlChannels,

@@ -33,9 +33,12 @@ import { taskService } from "@/services/data/taskService"
 import { calendarService, TASK_EVENT_DEFAULT_COLOR, TASK_EVENT_COMPLETED_COLOR } from "@/services/data/calendarService"
 import {
   getRendererTransport,
+  invokeRenderer,
   isTaskListRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { IPCChannels } from "@shared/ipc/channels"
+import { userGroupService, type UserGroup } from "@/services/data/userGroupService"
 import { useToast } from "@/components/ui/use-toast"
 import { Task } from "@/services/data/types"
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination"
@@ -96,6 +99,40 @@ export default function TasksPage() {
   const [taskMarkedForDelete, setTaskMarkedForDelete] = useState<TaskDisplay | null>(null)
   const [serverEventRefresh, setServerEventRefresh] = useState(0)
   const serverClientMode = getRendererTransport().kind === "http"
+
+  // Task assignment (server edition only): global / a user / a user group.
+  const [assignmentScope, setAssignmentScope] = useState<"global" | "user" | "group">("global")
+  const [assignedUserId, setAssignedUserId] = useState<string>("")
+  const [assignedGroupId, setAssignedGroupId] = useState<string>("")
+  const [assignableUsers, setAssignableUsers] = useState<Array<{ id: string; display_name: string; username: string }>>([])
+  const [assignableGroups, setAssignableGroups] = useState<UserGroup[]>([])
+
+  useEffect(() => {
+    if (!serverClientMode) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const [users, groups] = await Promise.all([
+          invokeRenderer(IPCChannels.Auth.ListUsers, undefined) as Promise<Array<{ id: string; display_name: string; username: string }>>,
+          userGroupService.list(),
+        ])
+        if (cancelled) return
+        if (Array.isArray(users)) setAssignableUsers(users)
+        setAssignableGroups(groups)
+      } catch {
+        /* assignment options are optional */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [serverClientMode])
+
+  const resetAssignment = () => {
+    setAssignmentScope("global")
+    setAssignedUserId("")
+    setAssignedGroupId("")
+  }
 
   const navigate = useNavigate()
 
@@ -224,15 +261,6 @@ export default function TasksPage() {
       return
     }
 
-    if (!newTask.customer_id) {
-      toast({
-        title: "Validierungsfehler",
-        description: "Bitte wählen Sie einen Kunden aus.",
-        variant: "destructive"
-      })
-      return
-    }
-
     if (addToCalendar && !newTask.due_date) {
       toast({
         title: "Validierungsfehler",
@@ -242,13 +270,43 @@ export default function TasksPage() {
       return
     }
 
+    // Standalone (sqlite) still requires a customer; only the server edition
+    // supports customerless tasks. Validate here so users don't submit only to
+    // hit a backend rejection.
+    if (!serverClientMode && (!newTask.customer_id || newTask.customer_id <= 0)) {
+      toast({
+        title: "Validierungsfehler",
+        description: "Bitte wählen Sie einen Kunden aus.",
+        variant: "destructive"
+      })
+      return
+    }
+
+    if (serverClientMode && assignmentScope === "user" && !assignedUserId) {
+      toast({ title: "Validierungsfehler", description: "Bitte einen Benutzer für die Zuweisung auswählen.", variant: "destructive" })
+      return
+    }
+    if (serverClientMode && assignmentScope === "group" && !assignedGroupId) {
+      toast({ title: "Validierungsfehler", description: "Bitte eine Benutzergruppe für die Zuweisung auswählen.", variant: "destructive" })
+      return
+    }
+
     setIsSubmitting(true)
+
+    const assignmentPayload = serverClientMode
+      ? {
+          assignmentScope,
+          assignedUserId: assignmentScope === "user" ? assignedUserId : null,
+          assignedGroupId: assignmentScope === "group" ? Number(assignedGroupId) : null,
+        }
+      : {}
 
     const payload = {
       ...newTask,
       title: trimmedTitle,
       description: trimmedDescription,
       calendar_event_id: null,
+      ...assignmentPayload,
     }
 
     try {
@@ -320,6 +378,7 @@ export default function TasksPage() {
         setAddToCalendar(false)
         setCalendarToggleTouched(false)
         setSelectedCustomerName(null)
+        resetAssignment()
         loadTasks()
       } else {
         toast({
@@ -497,7 +556,7 @@ export default function TasksPage() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="customer_id">Kunde</Label>
+                    <Label htmlFor="customer_id">{serverClientMode ? "Kunde (optional)" : "Kunde"}</Label>
                     <CustomerCombobox
                       value={newTask.customer_id || undefined}
                       onValueChange={handleCustomerValueChange}
@@ -550,6 +609,53 @@ export default function TasksPage() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {serverClientMode ? (
+                    <div className="grid gap-2">
+                      <Label htmlFor="assignment">Zuweisung</Label>
+                      <Select
+                        value={assignmentScope}
+                        onValueChange={(value) => setAssignmentScope(value as "global" | "user" | "group")}
+                      >
+                        <SelectTrigger id="assignment">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="global">Global (alle)</SelectItem>
+                          <SelectItem value="user">Benutzer</SelectItem>
+                          <SelectItem value="group">Benutzergruppe</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {assignmentScope === "user" ? (
+                        <Select value={assignedUserId} onValueChange={setAssignedUserId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Benutzer auswählen..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {assignableUsers.map((u) => (
+                              <SelectItem key={u.id} value={u.id}>{u.display_name || u.username}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                      {assignmentScope === "group" ? (
+                        <Select value={assignedGroupId} onValueChange={setAssignedGroupId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Gruppe auswählen..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {assignableGroups.map((g) => (
+                              <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                      {assignmentScope === "group" && assignableGroups.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Noch keine Gruppen. Unter Einstellungen → Benutzergruppen anlegen.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setIsAddTaskOpen(false)} disabled={isSubmitting}>
@@ -626,13 +732,17 @@ export default function TasksPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Link 
-                            to="/customers/$customerId" 
-                            params={{ customerId: task.customer_id.toString() }} 
-                            className="hover:underline"
-                          >
-                            {task.customer_name}
-                          </Link>
+                          {task.customer_id ? (
+                            <Link
+                              to="/customers/$customerId"
+                              params={{ customerId: task.customer_id.toString() }}
+                              className="hover:underline"
+                            >
+                              {task.customer_name}
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           <div className="flex items-center gap-2">

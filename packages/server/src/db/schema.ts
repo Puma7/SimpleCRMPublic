@@ -18,6 +18,8 @@ export type ServerDatabase = {
   products: ProductsTable;
   deals: DealsTable;
   tasks: TasksTable;
+  user_groups: UserGroupsTable;
+  user_group_members: UserGroupMembersTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -62,6 +64,36 @@ export type ServerDatabase = {
   pgp_identities: PgpIdentitiesTable;
   pgp_peer_keys: PgpPeerKeysTable;
   automation_api_keys: AutomationApiKeysTable;
+  ai_usage_events: AiUsageEventsTable;
+  ai_reply_feedback: AiReplyFeedbackTable;
+};
+
+export type AiReplyFeedbackTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  message_id: number | null;
+  node_type: string;
+  suggestion_len: number;
+  sent_len: number;
+  changed_ratio: number;
+  created_at: TimestampColumn;
+};
+
+export type AiUsageEventsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  ai_profile_id: number | null;
+  model: string | null;
+  node_type: string;
+  message_id: number | null;
+  run_id: number | null;
+  actor_user_id: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  est_cost_micro_usd: number | null;
+  latency_ms: number | null;
+  created_at: TimestampColumn;
 };
 
 export type WorkspacesTable = {
@@ -273,13 +305,16 @@ export type TasksTable = {
   id: Generated<number>;
   workspace_id: string;
   source_sqlite_id: number;
-  customer_source_sqlite_id: number;
+  customer_source_sqlite_id: number | null;
   customer_id: number | null;
   title: string;
   description: string | null;
   due_date: TimestampColumn | null;
   priority: string;
   completed: boolean;
+  assignment_scope: Generated<'global' | 'user' | 'group'>;
+  assigned_user_id: string | null;
+  assigned_group_id: number | null;
   calendar_event_source_sqlite_id: number | null;
   snoozed_until: TimestampColumn | null;
   created_date: TimestampColumn | null;
@@ -288,6 +323,22 @@ export type TasksTable = {
   imported_in_run_id: string | null;
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
+};
+
+export type UserGroupsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type UserGroupMembersTable = {
+  workspace_id: string;
+  group_id: number;
+  user_id: string;
+  created_at: TimestampColumn;
 };
 
 export type DealProductsTable = {
@@ -566,6 +617,7 @@ export type EmailMessagesTable = {
   reply_suggestion_text: string | null;
   reply_suggestion_status: string | null;
   reply_suggestion_error: string | null;
+  ai_suggestion_snapshot: string | null;
   reply_suggestion_updated_at: TimestampColumn | null;
   pop3_uidl: string | null;
   raw_headers: string | null;

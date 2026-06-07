@@ -22,6 +22,16 @@ export function CannedPanel() {
     setItems(await invokeRenderer(IPCChannels.Email.ListCannedResponses) as CannedResponse[])
   }, [])
 
+  const save = useCallback(async (id: number) => {
+    const title = (document.getElementById(`ct-${id}`) as HTMLInputElement | null)?.value ?? ""
+    const body = (document.getElementById(`cb-${id}`) as HTMLTextAreaElement | null)?.value ?? ""
+    try {
+      await invokeRenderer(IPCChannels.Email.SaveCannedResponse, { id, title, body })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Textbaustein konnte nicht gespeichert werden.")
+    }
+  }, [])
+
   useEffect(() => {
     void load()
   }, [load])
@@ -50,21 +60,13 @@ export function CannedPanel() {
             <Input
               defaultValue={c.title}
               id={`ct-${c.id}`}
-              onBlur={async (e) => {
-                const body = (
-                  document.getElementById(`cb-${c.id}`) as HTMLTextAreaElement
-                ).value
-                await invokeRenderer(IPCChannels.Email.SaveCannedResponse, {
-                  id: c.id,
-                  title: e.target.value,
-                  body,
-                })
-              }}
+              onBlur={() => void save(c.id)}
             />
             <Textarea
               defaultValue={c.body}
               id={`cb-${c.id}`}
               className="min-h-[80px] font-mono text-sm"
+              onBlur={() => void save(c.id)}
             />
           </div>
         ))}
@@ -74,9 +76,14 @@ export function CannedPanel() {
         variant="secondary"
         size="sm"
         onClick={async () => {
-          await invokeRenderer(IPCChannels.Email.SaveCannedResponse, { title: "Neu", body: "" })
-          await load()
-          toast.success("Baustein angelegt")
+          try {
+            // The server requires a non-empty body; seed a placeholder the user then edits.
+            await invokeRenderer(IPCChannels.Email.SaveCannedResponse, { title: "Neuer Baustein", body: "Neuer Textbaustein" })
+            await load()
+            toast.success("Baustein angelegt")
+          } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Baustein konnte nicht angelegt werden.")
+          }
         }}
       >
         <Plus className="mr-2 h-4 w-4" />

@@ -3,9 +3,15 @@ import {
   addressesFromRecipientJson,
   buildSpamDecision,
   buildFeaturePreview,
+  encodeOutboundApprovalMarker,
+  ensureTicketInSubject,
   evaluateSenderFilterFromLists,
+  extractDraftBodyForOutboundBlock,
+  extractTicketFromSubject,
+  generateTicketCode,
   normalizeMailboxName,
   normalizeEmailAddress,
+  outboundDraftFingerprint,
   outgoing,
   parseGraphDocument,
   parseSenderList,
@@ -42,6 +48,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { outboundReviewApprovedKey } from './mail-compose-send';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -50,6 +57,9 @@ const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
 const WORKFLOW_SPAM_SCORE_THRESHOLD_KEY = 'workflow_spam_score_threshold';
+const AUTO_REPLY_ENABLED_KEY = 'auto_reply_enabled';
+// Anti-loop (RFC 3834 spirit): never auto-reply to automated/no-reply senders.
+const AUTO_REPLY_NOREPLY_RE = /(^|[._+-])(no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounce|notifications?|automated)([._+-]|@)/i;
 const MAX_WORKFLOW_JTL_LOOKUP_LIMIT = 50;
 const WORKFLOW_JTL_LOOKUP_RESULT_LIMIT = 8_000;
 const SERVER_CREATED_SOURCE_ID_OFFSET = 1_000_000_000_000n;
@@ -792,6 +802,7 @@ async function startOrReuseRun(
       .executeTakeFirst();
     if (existing) {
       const id = Number(existing.id);
+      const sourceSqliteId = nullableSourceSqliteId(existing.source_sqlite_id, id);
       await trx
         .updateTable('email_workflow_runs')
         .set({
@@ -801,6 +812,9 @@ async function startOrReuseRun(
           message_source_sqlite_id: input.message === null ? null : Number(input.message.source_sqlite_id),
           direction: input.direction,
           status: 'running',
+          // Persist the (synthetic) source id so run-step lookups by source match
+          // the run_source_sqlite_id written onto the steps.
+          source_sqlite_id: sourceSqliteId,
           started_at: input.now,
           finished_at: null,
           updated_at: input.now,
@@ -808,7 +822,7 @@ async function startOrReuseRun(
         .where('workspace_id', '=', input.workspaceId)
         .where('id', '=', id)
         .execute();
-      return { id, sourceSqliteId: nullableSourceSqliteId(existing.source_sqlite_id, id) };
+      return { id, sourceSqliteId };
     }
   }
 
@@ -823,7 +837,9 @@ async function startOrReuseRun(
       message_id: input.message === null ? null : Number(input.message.id),
       direction: input.direction,
       status: 'running',
-      log_json: [],
+      // jsonb column: node-postgres serializes a JS array as a Postgres array
+      // literal ({...}), which is invalid JSON. Pass a JSON string instead.
+      log_json: JSON.stringify([] as string[]),
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       started_at: input.now,
@@ -833,7 +849,18 @@ async function startOrReuseRun(
     .returning(['id', 'source_sqlite_id'])
     .executeTakeFirstOrThrow();
   const id = Number(inserted.id);
-  return { id, sourceSqliteId: nullableSourceSqliteId(inserted.source_sqlite_id, id) };
+  const sourceSqliteId = nullableSourceSqliteId(inserted.source_sqlite_id, id);
+  if (inserted.source_sqlite_id === null || inserted.source_sqlite_id === undefined) {
+    // Worker-created run: persist the synthetic source id (-id) so run-step
+    // lookups by source resolve (the steps carry run_source_sqlite_id = -id).
+    await trx
+      .updateTable('email_workflow_runs')
+      .set({ source_sqlite_id: sourceSqliteId })
+      .where('workspace_id', '=', input.workspaceId)
+      .where('id', '=', id)
+      .execute();
+  }
+  return { id, sourceSqliteId };
 }
 
 async function finishExistingRun(
@@ -846,7 +873,9 @@ async function finishExistingRun(
     .updateTable('email_workflow_runs')
     .set({
       status: input.status,
-      log_json: input.log,
+      // jsonb column: stringify the array so node-postgres sends valid JSON
+      // instead of a Postgres array literal ({...}) -> 22P02 invalid input.
+      log_json: JSON.stringify(input.log),
       finished_at: input.now,
       updated_at: input.now,
     })
@@ -995,6 +1024,18 @@ async function walkGraph(
       && !input.inboundGate.conditionOk
     ) {
       input.log.push(`skip:${node.id}:no_prior_condition`);
+      // Record the skip as a run step so the run history shows *why* nothing
+      // happened (otherwise an inbound side-effect node is silently dropped and
+      // the run looks like an empty "OK").
+      if (!input.dryRun) {
+        await insertRunStep(trx, input.context, node, {
+          status: 'skipped',
+          port: 'blocked',
+          message: 'übersprungen: keine vorausgehende erfüllte Bedingung (Inbound-Schutz)',
+          durationMs: 0,
+          now: input.now,
+        });
+      }
       break;
     }
 
@@ -1079,7 +1120,15 @@ async function walkGraph(
     }
 
     if (result.variables) Object.assign(input.context.variables, result.variables);
-    if (node.type === 'condition' && result.port === 'yes' && input.inboundGate) {
+    // Inbound gate: condition.yes OR auto_reply.approved authorise downstream
+    // side-effect nodes. auto_reply IS a gate semantically (Schalter +
+    // Confidence + No-Reply-Schutz) so its OK port should free the chain.
+    const trippedInboundGate =
+      (node.type === 'condition' && result.port === 'yes')
+      || (node.type === 'registry'
+        && nodeRuntimeType(node) === 'email.auto_reply'
+        && result.port === 'approved');
+    if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
     }
@@ -1193,13 +1242,18 @@ async function executeServerNode(
     };
   }
   if (type === 'logic.delay') {
-    const minutes = boundedDelayMinutes(config.minutes);
+    // Accept either delaySeconds (what the UI writes) or legacy minutes. When
+    // both are present, delaySeconds wins; when neither is set, fall back to 5
+    // minutes as before. boundedDelayMs caps the total delay.
+    const totalMs = config.delaySeconds !== undefined
+      ? boundedDelayMs(Number(config.delaySeconds ?? 60) * 1000)
+      : boundedDelayMinutes(config.minutes) * 60_000;
     const resumeNodeId = String(config.resumeNodeId ?? '').trim()
       || resolveResumeNodeAfter(doc, node.id);
     if (!resumeNodeId) {
       return { status: 'error', port: 'error', message: 'Kein Folgeknoten fuer Resume' };
     }
-    const executeAt = new Date(now.getTime() + minutes * 60_000);
+    const executeAt = new Date(now.getTime() + totalMs);
     if (dryRun) {
       return dryRunSideEffectResult('logic.delay', log, {
         stop: true,
@@ -1286,6 +1340,11 @@ async function executeServerNode(
     if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
     return await scheduleAiAgentJob(trx, doc, context, node, config, createDraft.value, now);
   }
+  if (type === 'ai.pick_canned') {
+    const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
+    if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
+    return await scheduleAiPickCannedJob(trx, doc, context, node, config, createDraft.value, now);
+  }
   if (type === 'ai.agent_tool') {
     return await executeWorkflowAgentTool(trx, context, config);
   }
@@ -1303,16 +1362,34 @@ async function executeServerNode(
       message: reason,
     };
   }
+  if (type === 'email.release_outbound') {
+    return await releaseWorkflowOutboundHold(trx, context, config, now);
+  }
+  if (type === 'email.send_draft') {
+    return await sendWorkflowDraft(trx, context, config, now);
+  }
   if (type === 'email.tag' || type === 'tag') {
     const tag = String(config.tag ?? node.data.tag ?? '').trim();
     if (!tag) return { status: 'skipped', port: 'default', message: 'leerer Tag' };
     const result = await addWorkflowMessageTag(trx, context, tag, now);
     return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
   }
-  if (type === 'email.set_category') {
+  if (type === 'email.set_category' || type === 'set_category') {
+    // Prefer a stable category reference (source_sqlite_id from the dropdown) so
+    // the workflow survives category renames; fall back to the path otherwise
+    // (and when the referenced category was deleted).
+    const categorySourceSqliteId = optionalPositiveIntegerConfig(config.categorySourceSqliteId, 'categorySourceSqliteId');
+    if (!categorySourceSqliteId.ok) return { status: 'error', port: 'error', message: categorySourceSqliteId.message };
+    if (categorySourceSqliteId.value !== undefined) {
+      const byId = await setWorkflowMessageCategoryById(trx, context, categorySourceSqliteId.value, now);
+      if (byId) return byId;
+    }
     const path = String(config.path ?? '').trim();
     if (!path) return { status: 'skipped', port: 'default' };
     return await setWorkflowMessageCategoryPath(trx, context, path, now);
+  }
+  if (type === 'email.auto_reply') {
+    return await evaluateWorkflowAutoReply(trx, context, config);
   }
   if (type === 'email.tag_attachment_meta' || type === 'tag_attachment_meta') {
     if (context.strings.has_attachments !== 'true') {
@@ -1445,6 +1522,12 @@ async function executeServerNode(
   }
   if (type === 'mssql.query') {
     return await executeWorkflowMssqlQuery(context, config, ports.mssql);
+  }
+  if (type === 'jtl.order_context') {
+    return await executeWorkflowJtlOrderContext(context, config, ports.mssql);
+  }
+  if (type === 'jtl.prepare_action') {
+    return executeWorkflowJtlPrepareAction(context, config);
   }
   if (type === 'workflow.subflow') {
     return await enqueueWorkflowSubflow(trx, context, node, config, now);
@@ -2163,6 +2246,66 @@ async function scheduleAiAgentJob(
   };
 }
 
+async function scheduleAiPickCannedJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  createDraft: boolean,
+  now: Date,
+): Promise<NodeResult> {
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+
+  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    createDraft,
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+  };
+  if (context.messageId !== null) payload.messageId = context.messageId;
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (resumeNodeId) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = resumeNodeId;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      resumeNodeId,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.pick_canned',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: Boolean(resumeNodeId),
+    deferred: Boolean(resumeNodeId),
+    message: `queued_ai_pick_canned:${jobId}`,
+    variables: {
+      'ai.canned.status': 'pending',
+      'ai.canned.job_id': jobId,
+    },
+  };
+}
+
 async function createWorkflowComposeDraft(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -2286,6 +2429,8 @@ async function scheduleWorkflowForwardCopyJob(
     workflowId: context.workflowId,
     messageId: context.messageId,
     to: to.value,
+    includeAttachments: config.includeAttachments === true,
+    runOutboundReview: config.runOutboundReview === true,
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
@@ -2489,6 +2634,139 @@ async function executeWorkflowMssqlQuery(
   };
 }
 
+const JTL_CONTEXT_EMAIL_RE = /^[^\s@'";\\]+@[^\s@'";\\]+\.[^\s@'";\\]+$/;
+const JTL_CONTEXT_ORDER_NO_RE = /^[A-Za-z0-9._\-/]{1,64}$/;
+
+/**
+ * Convenience node that fetches a JTL/Wawi order context for the message sender.
+ * The operator supplies a read-only query with {{email}} / {{orderNo}} placeholders
+ * (bound from the sender address / a variable, strictly validated + SQL-escaped);
+ * the first result row's columns are exposed as `jtl.<column>` variables for the
+ * downstream KI nodes. No customer-specific schema is hard-coded — the SQL is
+ * configured per deployment.
+ */
+async function executeWorkflowJtlOrderContext(
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  mssql: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'> | undefined,
+): Promise<NodeResult> {
+  const template = String(config.query ?? config.sql ?? '').trim();
+  if (!template) return { status: 'skipped', port: 'default', message: 'Keine JTL-Query konfiguriert' };
+  if (!mssql) return { status: 'error', port: 'error', message: 'MSSQL-Port nicht konfiguriert' };
+
+  const email = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+  const orderNo = String(
+    context.variables['jtl.order_no'] ?? context.strings.order_no ?? config.orderNo ?? '',
+  ).trim();
+
+  const bound = bindJtlContextPlaceholders(template, email, orderNo);
+  if (!bound.ok) {
+    return { status: 'skipped', port: 'no_match', message: bound.reason, variables: { 'jtl.context_found': false } };
+  }
+  const validation = validateReadOnlyMssqlQuery(bound.query);
+  if (!validation.ok) return { status: 'error', port: 'error', message: validation.error };
+
+  const result = await mssql.executeReadOnlyQuery({ workspaceId: context.workspaceId, query: validation.query });
+  if (!result.success) return { status: 'error', port: 'error', message: result.error ?? 'MSSQL-Fehler' };
+
+  const rows = result.rows ?? [];
+  const first = rows[0];
+  if (!first || typeof first !== 'object') {
+    return { status: 'ok', port: 'no_match', message: 'Keine JTL-Daten gefunden', variables: { 'jtl.context_found': false } };
+  }
+
+  const mapping = parseJtlContextMapping(config.mapping);
+  const variables: WorkflowVariableContext = { 'jtl.context_found': true };
+  for (const [column, value] of Object.entries(first as Record<string, unknown>)) {
+    const key = column.toLowerCase();
+    variables[mapping[key] ?? `jtl.${key}`] = jtlContextScalar(value);
+  }
+  return { status: 'ok', port: 'default', variables };
+}
+
+function bindJtlContextPlaceholders(
+  template: string,
+  email: string,
+  orderNo: string,
+): { ok: true; query: string } | { ok: false; reason: string } {
+  let query = template;
+  if (query.includes('{{email}}')) {
+    if (!email || !JTL_CONTEXT_EMAIL_RE.test(email)) {
+      return { ok: false, reason: 'Keine gueltige Absender-E-Mail fuer {{email}}' };
+    }
+    query = query.replace(/\{\{email\}\}/g, sqlStringLiteral(email));
+  }
+  if (query.includes('{{orderNo}}')) {
+    if (!orderNo || !JTL_CONTEXT_ORDER_NO_RE.test(orderNo)) {
+      return { ok: false, reason: 'Keine gueltige Bestellnummer fuer {{orderNo}}' };
+    }
+    query = query.replace(/\{\{orderNo\}\}/g, sqlStringLiteral(orderNo));
+  }
+  return { ok: true, query };
+}
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+const JTL_ACTION_KINDS = new Set(['resend_invoice', 'create_return', 'send_tracking', 'refund_status', 'custom']);
+
+/**
+ * P2-11 (base): prepares a controlled JTL action proposal from the order context
+ * WITHOUT executing it. It assembles an action descriptor (kind + payload from
+ * the `jtl.*` context variables) and exposes it as `jtl.action.*` variables, then
+ * routes to `needs_review` (default — human approval) or `approved`. Actually
+ * performing the write in JTL (resend invoice / create return) is the documented
+ * next step, gated behind approval + allowlist + rate-limit.
+ */
+function executeWorkflowJtlPrepareAction(
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): NodeResult {
+  const kind = String(config.kind ?? '').trim().toLowerCase();
+  if (!kind || !JTL_ACTION_KINDS.has(kind)) {
+    return { status: 'error', port: 'error', message: `Unbekannte JTL-Aktion: ${kind || '(leer)'}` };
+  }
+  const email = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+  const orderNo = String(context.variables['jtl.order_no'] ?? config.orderNo ?? '').trim();
+  const tracking = String(context.variables['jtl.tracking'] ?? context.variables['jtl.tracking_number'] ?? '').trim();
+  const payload = {
+    kind,
+    email: email || null,
+    orderNo: orderNo || null,
+    tracking: tracking || null,
+    note: typeof config.note === 'string' ? config.note.slice(0, 500) : null,
+  };
+  const requireApproval = config.requireApproval !== false;
+  return {
+    status: 'ok',
+    port: requireApproval ? 'needs_review' : 'approved',
+    message: `jtl_action:prepared:${kind}`,
+    variables: {
+      'jtl.action.kind': kind,
+      'jtl.action.payload': JSON.stringify(payload),
+      'jtl.action.prepared': true,
+    },
+  };
+}
+
+function parseJtlContextMapping(value: unknown): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  if (typeof value !== 'string' || !value.trim()) return mapping;
+  for (const pair of value.split(',')) {
+    const [column, target] = pair.split(':').map((part) => part.trim());
+    if (column && target) mapping[column.toLowerCase()] = target;
+  }
+  return mapping;
+}
+
+function jtlContextScalar(value: unknown): string | number | boolean | null {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Date) return value.toISOString();
+  return String(value).slice(0, 2_000);
+}
+
 function workflowJtlLookupEntityConfig(value: unknown): WorkflowJtlLookupEntityConfig {
   const normalized = String(value ?? 'firmen').trim().toLowerCase();
   if (normalized === 'firma' || normalized === 'firmen' || normalized === 'jtl_firmen') {
@@ -2607,6 +2885,59 @@ async function loadWorkflowSpamScoreThreshold(
     .where('key', '=', WORKFLOW_SPAM_SCORE_THRESHOLD_KEY)
     .executeTakeFirst();
   return boundedWorkflowSpamScoreThreshold(row?.value);
+}
+
+async function loadAutoReplyEnabled(trx: WorkspaceTransaction, workspaceId: string): Promise<boolean> {
+  const row = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', AUTO_REPLY_ENABLED_KEY)
+    .executeTakeFirst();
+  const value = String(row?.value ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'on';
+}
+
+/**
+ * P1-4 auto-reply policy gate. Decides whether a message MAY be answered
+ * automatically — all guards must pass: the workspace-level auto-reply switch is
+ * on, the configured confidence variable meets the threshold, and the sender is
+ * not an automated/no-reply address (anti-loop). It exposes the decision on the
+ * `approved`/`blocked` ports and as `auto_reply.*` variables. It intentionally
+ * does NOT send yet — wiring the actual SMTP send (behind a separate live flag +
+ * rate-limit) is the documented next step, so enabling guards can never cause an
+ * accidental send.
+ */
+async function evaluateWorkflowAutoReply(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<NodeResult> {
+  const confidenceVar = String(config.confidenceVar ?? 'ai.class_confidence').trim() || 'ai.class_confidence';
+  const minConfidence = Math.max(0, Math.min(100, Number(config.minConfidence ?? 70) || 70));
+  const rawConfidence = context.variables[confidenceVar];
+  const confidence = typeof rawConfidence === 'number' ? rawConfidence : Number.parseFloat(String(rawConfidence ?? ''));
+  const confidenceValue = Number.isFinite(confidence) ? confidence : 0;
+  const sender = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+
+  const block = (reason: string): NodeResult => ({
+    status: 'ok',
+    port: 'blocked',
+    message: `auto_reply:blocked:${reason}`,
+    variables: { 'auto_reply.decision': 'blocked', 'auto_reply.blocked_reason': reason, 'auto_reply.confidence': confidenceValue },
+  });
+
+  if (!context.message) return block('no_message');
+  if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) return block('disabled');
+  if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+  if (confidenceValue < minConfidence) return block('low_confidence');
+
+  return {
+    status: 'ok',
+    port: 'approved',
+    message: 'auto_reply:approved',
+    variables: { 'auto_reply.decision': 'approved', 'auto_reply.confidence': confidenceValue },
+  };
 }
 
 function boundedWorkflowSpamScoreThreshold(value: unknown): number {
@@ -2834,6 +3165,36 @@ function workflowSpamPatternType(value: unknown): 'email' | 'domain' | null {
   return value === 'email' || value === 'domain' ? value : null;
 }
 
+/** Best-effort flatten of stored to_json/cc_json/bcc_json into a comma-joined
+ *  address list, for the outbound-approval fingerprint (which compares against
+ *  the same shape on the review side). addressesFromRecipientJson expects a
+ *  JSON *string*, not a parsed object — jsonb columns typically come back as
+ *  objects from kysely, so we re-stringify when needed. Passing a parsed object
+ *  through caused JSON.parse to throw inside the helper, which then returned
+ *  '' and broke the outbound auto-send approval marker (fingerprint mismatch). */
+function addressesFromStoredRecipientJson(value: unknown): string {
+  if (!value) return '';
+  try {
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
+  } catch {
+    return '';
+  }
+}
+
+/** Pull the attachment-paths list out of draft_attachment_paths_json (a stored
+ *  string[] or null). Returns [] on any parse trouble. */
+function draftAttachmentPathsFromJson(value: unknown): readonly string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 function extractWorkflowEmailAddress(value: unknown): string {
   const candidate = extractWorkflowEmailAddressCandidate(value);
   if (!candidate) return '';
@@ -3004,17 +3365,30 @@ type WorkflowForwardCopyRecipientConfig =
   | { ok: true; value: string }
   | { ok: false; message: string };
 
+const MAX_FORWARD_COPY_RECIPIENTS = 10;
+
+/** Parses one or more comma/semicolon-separated forward recipients, validates
+ *  each, and returns them as a normalized comma-joined string. */
 function workflowForwardCopyRecipient(value: unknown): WorkflowForwardCopyRecipientConfig {
   if (value === undefined || value === null) return { ok: true, value: '' };
   if (typeof value !== 'string') return { ok: false, message: 'Forward-Empfaenger muss Text sein' };
   const trimmed = value.trim();
   if (!trimmed) return { ok: true, value: '' };
-  if (trimmed.length > 500) return { ok: false, message: 'Forward-Empfaenger zu lang' };
-  const normalized = normalizeEmailAddress(trimmed);
-  if (!isSimpleWorkflowEmailAddress(normalized)) {
-    return { ok: false, message: 'Forward-Empfaenger ist ungueltig' };
+  if (trimmed.length > 1000) return { ok: false, message: 'Forward-Empfaenger zu lang' };
+  const parts = trimmed.split(/[,;]+/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return { ok: true, value: '' };
+  if (parts.length > MAX_FORWARD_COPY_RECIPIENTS) {
+    return { ok: false, message: `Maximal ${MAX_FORWARD_COPY_RECIPIENTS} Forward-Empfaenger` };
   }
-  return { ok: true, value: normalized };
+  const normalized: string[] = [];
+  for (const part of parts) {
+    const address = normalizeEmailAddress(part);
+    if (!isSimpleWorkflowEmailAddress(address)) {
+      return { ok: false, message: `Forward-Empfaenger ist ungueltig: ${part}` };
+    }
+    if (!normalized.includes(address)) normalized.push(address);
+  }
+  return { ok: true, value: normalized.join(',') };
 }
 
 function isSimpleWorkflowEmailAddress(value: string): boolean {
@@ -3114,6 +3488,14 @@ function boundedDelayMinutes(value: unknown): number {
   return Math.max(1, Math.min(60 * 24 * 7, Math.trunc(parsed)));
 }
 
+/** Total delay cap: 7 days in milliseconds; floor: 1 second so sub-second
+ *  configurations don't collapse to 0 and break scheduling. */
+function boundedDelayMs(value: unknown): number {
+  const parsed = Number(value ?? 60_000);
+  if (!Number.isFinite(parsed)) return 60_000;
+  return Math.max(1_000, Math.min(7 * 24 * 60 * 60_000, Math.trunc(parsed)));
+}
+
 function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
   return pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
@@ -3134,6 +3516,313 @@ async function updateWorkflowMessage(
     .where('id', '=', context.messageId)
     .execute();
   return null;
+}
+
+/**
+ * Lifts an outbound hold (sets outbound_hold=false + clears the reason) on the
+ * current message. Counterpart to email.hold_outbound; intended for the OK path
+ * after ai.outbound_review approved a draft — without it an approved review
+ * could never actually release the draft. Outbound-only.
+ *
+ * With config.autoSend=true it also (a) writes an approval marker into sync_info
+ * so reviewOutbound.review bypasses the review on the *next* send call (avoiding
+ * a re-entry loop from the scheduled-send cron) and (b) sets scheduled_send_at
+ * = now so the scheduled-send job picks the draft up immediately.
+ */
+async function releaseWorkflowOutboundHold(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  if (context.direction !== 'outbound') {
+    return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
+  }
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const autoSend = config.autoSend === true;
+
+  if (!autoSend) {
+    await trx
+      .updateTable('email_messages')
+      .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', context.messageId)
+      .execute();
+    return {
+      status: 'ok',
+      port: 'default',
+      message: 'outbound_hold_released',
+      variables: { 'email.outbound_hold': false, 'email.auto_send_scheduled': false },
+    };
+  }
+
+  // autoSend path:
+  // (1) review.review wrote the "AUSGANGSPRUEFUNG — VERSAND BLOCKIERT" banner
+  //     into body_text/body_html when it held the draft. If we don't strip it
+  //     here, the customer receives the internal banner in the sent mail.
+  // (2) review.review on the scheduled-send retry will receive a subject that
+  //     has been ticket-code-prefixed by prepareDraftForSend, so the marker
+  //     fingerprint must be computed against the SAME prefixed subject —
+  //     otherwise hash mismatches every retry and bypass is denied.
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', context.messageId)
+    .executeTakeFirst();
+
+  const cleaned = extractDraftBodyForOutboundBlock({
+    body_text: draftRow?.body_text ?? null,
+    body_html: draftRow?.body_html ?? null,
+  });
+  const cleanedBodyText = cleaned.plain;
+  const cleanedBodyHtml = cleaned.html;
+
+  // Reconcile subject with the ticket code that prepareDraftForSend will
+  // add when scheduled-send finally calls composeSender.send. The marker must
+  // be valid against that final subject so the retry bypasses the review.
+  const storedSubject = draftRow?.subject?.trim() || '';
+  const existingTicket = draftRow?.ticket_code?.trim()
+    || extractTicketFromSubject(draftRow?.subject ?? null);
+  const ticketCode = existingTicket || generateTicketCode();
+  const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+
+  await trx
+    .updateTable('email_messages')
+    .set({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      scheduled_send_at: now,
+      // Persist the cleaned body so the customer does not see the internal
+      // review banner, and the persisted ticket-prefixed subject so the
+      // fingerprint matches at send time.
+      body_text: cleanedBodyText,
+      body_html: cleanedBodyHtml || null,
+      subject: finalSubject,
+      ticket_code: ticketCode,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', context.messageId)
+    .execute();
+
+  // Multi-outbound-workflow safety: if there are OTHER outbound runs against
+  // this draft still queued/running, the user has multiple parallel quality
+  // checks (e.g. language + compliance). Setting the bypass marker now would
+  // let scheduled-send race them. Skip the marker (cron still picks up the
+  // draft via scheduled_send_at and re-enters reviewOutbound.review, which
+  // re-holds until the other workflows finish — they'll set their own marker
+  // once they all approve).
+  const otherOpenOutboundRuns = await trx
+    .selectFrom('email_workflow_runs')
+    .select('id')
+    .where('message_id', '=', context.messageId)
+    .where('direction', '=', 'outbound')
+    .where('status', 'in', ['queued', 'running'])
+    .where('id', '!=', context.runId)
+    .limit(1)
+    .execute();
+  if (otherOpenOutboundRuns.length > 0) {
+    return {
+      status: 'ok',
+      port: 'default',
+      message: 'outbound_hold_released_auto_send_pending_peers',
+      variables: { 'email.outbound_hold': false, 'email.auto_send_scheduled': true, 'email.pending_outbound_peers': true },
+    };
+  }
+
+  const fingerprint = outboundDraftFingerprint({
+    subject: finalSubject,
+    bodyText: cleanedBodyText,
+    bodyHtml: cleanedBodyHtml,
+    to: addressesFromStoredRecipientJson(draftRow?.to_json),
+    cc: addressesFromStoredRecipientJson(draftRow?.cc_json),
+    bcc: addressesFromStoredRecipientJson(draftRow?.bcc_json),
+    attachmentPaths: draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+  });
+  const key = outboundReviewApprovedKey(context.messageId);
+  const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: context.workspaceId,
+      key,
+      value: markerValue,
+      last_updated: now,
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'key'])
+      .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
+    .execute();
+
+  return {
+    status: 'ok',
+    port: 'default',
+    message: 'outbound_hold_released_auto_send',
+    variables: { 'email.outbound_hold': false, 'email.auto_send_scheduled': true },
+  };
+}
+
+/**
+ * Triggers the actual SMTP send of a (previously created) draft message —
+ * the missing link for fully automated reply chains.
+ *
+ *   ai.reply_suggestion / ai.agent / email.create_draft   →   sets draft.id
+ *                                                              ↓
+ *                                          email.auto_reply (approved gate)
+ *                                                              ↓
+ *                                          email.send_draft  ← THIS
+ *                                                              ↓
+ *                                   (scheduled-send cron + composeSender.send)
+ *
+ * Config:
+ *   - draftIdVariable (string, default 'draft.id'): which workflow variable to
+ *     read the draft message id from.
+ *   - runOutboundReview (bool, default false): when false, sets the approval
+ *     marker so the send bypasses the outbound review (the workflow has just
+ *     curated this draft, KI-on-KI review is the trigger workflow's choice).
+ *     When true, no marker is set → composeSender.send runs reviewOutbound on
+ *     the new draft and outbound workflows can hold/approve as for any mail.
+ *
+ * Idempotent: re-running on a draft already marked for send is a no-op.
+ */
+async function sendWorkflowDraft(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  const draftIdVar = String(config.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
+  const rawId = config.draftId ?? context.variables[draftIdVar];
+  const draftId = Number(rawId);
+  if (!Number.isFinite(draftId) || draftId <= 0) {
+    return {
+      status: 'error',
+      port: 'error',
+      message: `Keine gueltige Entwurfs-ID unter ${draftIdVar} oder config.draftId`,
+    };
+  }
+
+  // Belt-and-braces safety net for ALL inbound chains: the workspace auto-
+  // reply switch must be on, and the original sender must not look like a
+  // no-reply / bounce / automation address. This runs regardless of
+  // runOutboundReview, because runOutboundReview=true only helps when
+  // outbound workflows actually exist — if none are configured, the send
+  // would otherwise go out unguarded. Outbound-direction sends are not
+  // affected (a manual workflow is the operator's explicit choice).
+  if (context.direction === 'inbound') {
+    if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_disabled' };
+    }
+    const sender = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+    if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) {
+      return { status: 'skipped', port: 'default', message: 'noreply_sender_blocked' };
+    }
+  }
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', draftId)
+    .executeTakeFirst();
+  if (!draftRow) {
+    return { status: 'error', port: 'error', message: `Entwurf ${draftId} nicht gefunden` };
+  }
+  if (draftRow.folder_kind !== 'draft' || (draftRow.uid as number) >= 0) {
+    return { status: 'error', port: 'error', message: `Nachricht ${draftId} ist kein Entwurf` };
+  }
+
+  const runOutboundReview = config.runOutboundReview === true;
+
+  // For runOutboundReview=false we have to reconcile the persisted body and
+  // subject with what scheduled-send / composeSender.send will use at SMTP
+  // time, otherwise the approval marker we stamp now won't match:
+  //  - strip any "AUSGANGSPRUEFUNG"-banner left over from an earlier
+  //    reviewOutbound hold (it would otherwise be sent to the customer);
+  //  - bake in the ticket-code-prefixed subject that prepareDraftForSend will
+  //    enforce, so the fingerprint stays valid on the retry.
+  if (!runOutboundReview) {
+    const cleaned = extractDraftBodyForOutboundBlock({
+      body_text: draftRow.body_text ?? null,
+      body_html: draftRow.body_html ?? null,
+    });
+    const storedSubject = draftRow.subject?.trim() || '';
+    const existingTicket = draftRow.ticket_code?.trim()
+      || extractTicketFromSubject(draftRow.subject ?? null);
+    const ticketCode = existingTicket || generateTicketCode();
+    const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+
+    await trx
+      .updateTable('email_messages')
+      .set({
+        outbound_hold: false,
+        outbound_block_reason: null,
+        scheduled_send_at: now,
+        body_text: cleaned.plain,
+        body_html: cleaned.html || null,
+        subject: finalSubject,
+        ticket_code: ticketCode,
+        updated_at: now,
+      })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', draftId)
+      .execute();
+
+    const fingerprint = outboundDraftFingerprint({
+      subject: finalSubject,
+      bodyText: cleaned.plain,
+      bodyHtml: cleaned.html,
+      to: addressesFromStoredRecipientJson(draftRow.to_json),
+      cc: addressesFromStoredRecipientJson(draftRow.cc_json),
+      bcc: addressesFromStoredRecipientJson(draftRow.bcc_json),
+      attachmentPaths: draftAttachmentPathsFromJson(draftRow.draft_attachment_paths_json),
+    });
+    const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+    await trx
+      .insertInto('sync_info')
+      .values({
+        workspace_id: context.workspaceId,
+        key: outboundReviewApprovedKey(draftId),
+        value: markerValue,
+        last_updated: now,
+        source_row: serverWorkerSourceRow(),
+        imported_in_run_id: null,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'key'])
+        .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
+      .execute();
+  } else {
+    // runOutboundReview=true: outbound workflows guard the send via the
+    // existing pipeline; just prime scheduled_send_at + clear the hold.
+    await trx
+      .updateTable('email_messages')
+      .set({
+        outbound_hold: false,
+        outbound_block_reason: null,
+        scheduled_send_at: now,
+        updated_at: now,
+      })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', draftId)
+      .execute();
+  }
+
+  return {
+    status: 'ok',
+    port: 'default',
+    message: runOutboundReview ? 'send_draft_queued_with_review' : 'send_draft_queued_auto',
+    variables: {
+      'send_draft.draft_id': draftId,
+      'send_draft.with_review': runOutboundReview,
+    },
+  };
 }
 
 async function softDeleteWorkflowMessage(
@@ -3788,6 +4477,109 @@ async function setWorkflowMessageCategoryPath(
   };
 }
 
+/**
+ * Resolves a category by its stable source_sqlite_id and assigns the message to
+ * it. Rename-safe: the workflow stores the id, so renaming the category keeps it
+ * pointed at the same one. Returns null when the category no longer exists, so
+ * the caller can fall back to the configured path.
+ */
+async function setWorkflowMessageCategoryById(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  categorySourceSqliteId: number,
+  now: Date,
+): Promise<NodeResult | null> {
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const category = await loadWorkflowCategoryBySourceSqliteId(trx, context.workspaceId, categorySourceSqliteId);
+  if (!category) return null;
+
+  const messageSourceSqliteId = context.messageSourceSqliteId
+    ?? await resolveMessageSourceSqliteId(trx, context.workspaceId, context.messageId);
+  if (messageSourceSqliteId === null) {
+    return { status: 'error', port: 'error', message: 'Nachricht nicht gefunden' };
+  }
+
+  await trx
+    .deleteFrom('email_message_categories')
+    .where('workspace_id', '=', context.workspaceId)
+    .where('message_source_sqlite_id', '=', messageSourceSqliteId)
+    .execute();
+
+  await trx
+    .insertInto('email_message_categories')
+    .values({
+      workspace_id: context.workspaceId,
+      source_sqlite_id: serverCreatedWorkflowMessageCategorySourceSqliteId(
+        context.workspaceId,
+        messageSourceSqliteId,
+        category.sourceSqliteId,
+      ),
+      message_source_sqlite_id: messageSourceSqliteId,
+      category_source_sqlite_id: category.sourceSqliteId,
+      message_id: context.messageId,
+      category_id: category.id,
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .execute();
+
+  return {
+    status: 'ok',
+    port: 'default',
+    variables: {
+      'email.category_id': category.id,
+      'email.category_path': category.path,
+    },
+  };
+}
+
+type WorkflowCategoryLookupRow = {
+  id: number;
+  sourceSqliteId: number;
+  parentSourceSqliteId: number | null;
+  name: string;
+};
+
+/** Loads a category by its stable source id and reconstructs its current full path. */
+async function loadWorkflowCategoryBySourceSqliteId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  categorySourceSqliteId: number,
+): Promise<{ id: number; sourceSqliteId: number; path: string } | null> {
+  const rows = await trx
+    .selectFrom('email_categories')
+    .select(['id', 'source_sqlite_id', 'parent_source_sqlite_id', 'name'])
+    .where('workspace_id', '=', workspaceId)
+    .execute();
+  const bySource = new Map<number, WorkflowCategoryLookupRow>();
+  for (const row of rows) {
+    bySource.set(Number(row.source_sqlite_id), {
+      id: Number(row.id),
+      sourceSqliteId: Number(row.source_sqlite_id),
+      parentSourceSqliteId: row.parent_source_sqlite_id === null || row.parent_source_sqlite_id === undefined
+        ? null
+        : Number(row.parent_source_sqlite_id),
+      name: String(row.name ?? ''),
+    });
+  }
+  const start = bySource.get(categorySourceSqliteId);
+  if (!start) return null;
+
+  const path: string[] = [];
+  const seen = new Set<number>();
+  let current: WorkflowCategoryLookupRow | undefined = start;
+  while (current && !seen.has(current.sourceSqliteId) && path.length < MAX_EMAIL_CATEGORY_DEPTH) {
+    seen.add(current.sourceSqliteId);
+    path.unshift(current.name);
+    current = current.parentSourceSqliteId === null ? undefined : bySource.get(current.parentSourceSqliteId);
+  }
+
+  return { id: start.id, sourceSqliteId: categorySourceSqliteId, path: path.join('/') };
+}
+
 async function ensureWorkflowEmailCategory(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -3987,7 +4779,9 @@ async function trainWorkflowSpamStatus(
       account_id: message.account_id === null || message.account_id === undefined ? null : Number(message.account_id),
       label,
       source: 'workflow',
-      feature_keys_json: featureKeys.length > 0 ? [...featureKeys] : null,
+      // jsonb column: stringify the array (matches postgres-mail-read-ports);
+      // a raw JS array would serialize as a Postgres array literal and fail.
+      feature_keys_json: featureKeys.length > 0 ? JSON.stringify([...featureKeys]) : null,
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       created_at: now,
@@ -4426,7 +5220,19 @@ function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBr
   return { conditionOk: context.variables.__inbound_condition_ok === true || context.variables.__inbound_condition_ok === 1 };
 }
 
-const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set(['email.sender_filter', 'ai.classify']);
+const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set([
+  'email.sender_filter',
+  'ai.classify',
+  // ai.reply_suggestion is the standard "generate draft" step for auto-reply
+  // chains; without the allowance the inbound-gate would block it until a
+  // condition fires explicitly. The auto_reply node still gates whether the
+  // draft is actually sent.
+  'ai.reply_suggestion',
+  // email.auto_reply IS the gate (toggle + confidence + no-reply check). It
+  // must be reachable without a prior condition, and its 'approved' port trips
+  // the inbound gate so downstream nodes can run.
+  'email.auto_reply',
+]);
 
 function inboundNodeRequiresConditionGate(node: WorkflowGraphNode): boolean {
   if (node.type === 'condition' || node.type === 'trigger') return false;

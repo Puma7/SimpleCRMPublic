@@ -1,12 +1,20 @@
+import { readFile } from 'node:fs/promises';
+
 import type { Kysely } from 'kysely';
 import {
   addressesFromRecipientJson,
+  buildComposeRfc822,
   generateOutboundMessageId,
   normalizeEmailAddress,
+  type ComposeRfc822Attachment,
 } from '@simplecrm/core';
 
-import type { EmailOAuthProvider } from './api';
+import type { EmailComposeSenderApiPort, EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
+import {
+  createPostgresComposeDraftInTransaction,
+  resolveAttachmentStoragePath,
+} from './db/postgres-mail-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -46,10 +54,16 @@ export type WorkflowForwardCopyJobPlan = Readonly<{
   messageId: number;
   actorUserId?: string;
   to: string;
+  includeAttachments?: boolean;
+  /** Opt-in: run the forward through outbound review (placeholder; fail-closed
+   *  if any outbound workflows are enabled). Default false. */
+  runOutboundReview?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: WorkflowForwardCopyContinuation;
 }>;
+
+const FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024;
 
 export type WorkflowForwardCopyJobPort = Readonly<{
   forwardCopy(input: WorkflowForwardCopyJobPlan): Promise<void>;
@@ -62,6 +76,30 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
+  /** Root dir for attachment files; required to forward attachments. */
+  attachmentsRoot?: string;
+  /** Injectable file reader (defaults to node:fs/promises readFile); for tests. */
+  readAttachmentFile?: (path: string) => Promise<Buffer>;
+  /** Required for runOutboundReview=true (forward via real outbound review). */
+  composeSender?: EmailComposeSenderApiPort;
+  /** Actor user for review-pipeline audits. */
+  actorUserId?: string;
+  /** Injectable draft creator; defaults to the postgres compose draft helper. */
+  createDraft?: (input: {
+    workspaceId: string;
+    accountId: number;
+    subject: string;
+    bodyText: string;
+    recipients: readonly string[];
+    attachmentPaths?: readonly string[];
+  }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
+}>;
+
+type ForwardCopyAttachment = Readonly<{
+  filename: string;
+  contentType: string | null;
+  storagePath: string;
+  sizeBytes: number;
 }>;
 
 type ForwardCopyMessage = Readonly<{
@@ -72,6 +110,7 @@ type ForwardCopyMessage = Readonly<{
   fromJson: unknown | null;
   snippet: string | null;
   bodyText: string | null;
+  attachments: readonly ForwardCopyAttachment[];
 }>;
 
 type ForwardCopyAccount = Readonly<{
@@ -96,6 +135,7 @@ type PreparedForwardCopy =
     message: ForwardCopyMessage;
     account: ForwardCopyAccount;
     destination: string;
+    recipients: readonly string[];
     subject: string;
     bodyText: string;
     rfc822: string;
@@ -111,13 +151,38 @@ export function createPostgresWorkflowForwardCopyPort(
 ): WorkflowForwardCopyJobPort {
   const now = () => options.now?.() ?? new Date();
   const smtpSend = options.smtpSend ?? sendSmtpMessage;
+  const readAttachmentFile = options.readAttachmentFile ?? ((p: string) => readFile(p));
+  const createDraft = options.createDraft ?? (async (draftInput) => {
+    const draft = await withWorkspaceTransaction(
+      options.db,
+      { workspaceId: draftInput.workspaceId, role: 'system' },
+      async (trx) => createPostgresComposeDraftInTransaction(trx, {
+        workspaceId: draftInput.workspaceId,
+        accountId: draftInput.accountId,
+        values: {
+          accountId: draftInput.accountId,
+          subject: draftInput.subject,
+          bodyText: draftInput.bodyText,
+          toJson: { value: draftInput.recipients.map((address) => ({ address })) },
+          ...(draftInput.attachmentPaths && draftInput.attachmentPaths.length > 0
+            ? { draftAttachmentPaths: draftInput.attachmentPaths }
+            : {}),
+        },
+      }),
+      { applySession: options.applyWorkspaceSession },
+    );
+    return draft.ok ? { ok: true as const, draftMessageId: draft.message.id } : { ok: false as const, reason: draft.reason };
+  });
 
   return {
     async forwardCopy(input): Promise<void> {
       const prepared = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => prepareForwardCopy(trx, input, now()),
+        async (trx) => prepareForwardCopy(trx, input, now(), {
+          attachmentsRoot: options.attachmentsRoot,
+          readAttachmentFile,
+        }),
         { applySession: options.applyWorkspaceSession },
       );
 
@@ -137,6 +202,41 @@ export function createPostgresWorkflowForwardCopyPort(
           error: null,
           duplicate: true,
           now: now(),
+        });
+        return;
+      }
+
+      // runOutboundReview=true: instead of sending direct via SMTP, materialise
+      // the forward as a draft and hand it to composeSender.send. The outbound
+      // review pipeline (reviewOutbound.review → email.release_outbound) then
+      // runs as if a human had typed and sent the mail. dedup is still recorded
+      // here so retries don't create duplicate drafts.
+      if (input.runOutboundReview === true) {
+        if (!options.composeSender) {
+          await enqueueForwardCopyContinuation(options, input, {
+            ok: false,
+            error: 'runOutboundReview=true: composeSender ist nicht konfiguriert',
+            duplicate: false,
+            now: now(),
+          });
+          return;
+        }
+        const reviewResult = await forwardViaOutboundReview({
+          input,
+          prepared,
+          db: options.db,
+          composeSender: options.composeSender,
+          applyWorkspaceSession: options.applyWorkspaceSession,
+          actorUserId: options.actorUserId ?? 'system',
+          createDraft,
+          now: now(),
+        });
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: reviewResult.ok,
+          error: reviewResult.error,
+          duplicate: false,
+          now: now(),
+          reviewPending: reviewResult.reviewPending,
         });
         return;
       }
@@ -165,7 +265,7 @@ export function createPostgresWorkflowForwardCopyPort(
         tls: prepared.account.smtpTls,
         user: auth.user,
         envelopeFrom: prepared.account.emailAddress,
-        recipients: [prepared.destination],
+        recipients: [...prepared.recipients],
         rfc822: prepared.rfc822,
         ...(auth.password !== undefined ? { password: auth.password } : {}),
         ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
@@ -193,9 +293,12 @@ async function prepareForwardCopy(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
   now: Date,
+  deps: { attachmentsRoot?: string; readAttachmentFile: (path: string) => Promise<Buffer> },
 ): Promise<PreparedForwardCopy> {
-  const destination = normalizeForwardCopyDestination(input.to);
-  if (!destination) return { ok: false, error: 'Empfaenger fehlt oder ist ungueltig' };
+  const recipients = normalizeForwardCopyRecipients(input.to);
+  if (recipients.length === 0) return { ok: false, error: 'Empfaenger fehlt oder ist ungueltig' };
+  // Dedup key over the full, sorted recipient set (one row per forward action).
+  const destination = [...recipients].sort().join(',');
 
   const message = await loadForwardCopyMessage(trx, input.workspaceId, input.messageId);
   if (!message) return { ok: false, error: 'Nachricht nicht gefunden' };
@@ -220,19 +323,18 @@ async function prepareForwardCopy(
       message,
       account,
       destination,
+      recipients,
       subject: '',
       bodyText: '',
       rfc822: '',
     };
   }
 
-  const outboundWorkflowCount = await countEnabledOutboundWorkflows(trx, input.workspaceId);
-  if (outboundWorkflowCount > 0) {
-    return {
-      ok: false,
-      error: 'Outbound-Workflows sind aktiv; automatische Weiterleitung bleibt im Servermodus fail-closed',
-    };
-  }
+  // Outbound-review gating: forwards normally bypass outbound review (they were
+  // initiated by an inbound workflow, not composed by a human, and the
+  // Auto-Submitted header + dedup table already guard loops). With
+  // runOutboundReview=true the forward path in forwardCopy() takes over and
+  // routes the forward through composeSender.send → existing review pipeline.
 
   const originalFromLine = addressesFromStoredJson(message.fromJson);
   const subject = message.subject ? `Fwd: ${message.subject}` : 'Weitergeleitet';
@@ -243,6 +345,10 @@ async function prepareForwardCopy(
     `Original von: ${originalFromLine}`,
   ].join('\n').slice(0, FORWARD_COPY_BODY_MAX);
 
+  const attachments = input.includeAttachments === true
+    ? await readForwardCopyAttachments(message.attachments, deps)
+    : [];
+
   return {
     ok: true,
     duplicate: false,
@@ -250,17 +356,54 @@ async function prepareForwardCopy(
     message,
     account,
     destination,
+    recipients,
     subject,
     bodyText,
-    rfc822: buildForwardCopyRfc822({
+    rfc822: buildComposeRfc822({
       from: formatMailbox(account.displayName, account.emailAddress),
-      to: destination,
+      to: recipients.join(', '),
       subject,
-      bodyText,
+      text: bodyText,
       messageId: generateOutboundMessageId(account.emailAddress),
+      // Anti-loop: mark as auto-forwarded (the dedup table also guards loops).
+      extraHeaders: ['Auto-Submitted: auto-forwarded'],
+      attachments,
       date: now,
-    }),
+    }).toString('utf8'),
   };
+}
+
+/** Reads the original message's attachment files into MIME attachments, bounded
+ *  by a total-size cap. Missing/unreadable files are skipped (best-effort). */
+async function readForwardCopyAttachments(
+  attachments: readonly ForwardCopyAttachment[],
+  deps: { attachmentsRoot?: string; readAttachmentFile: (path: string) => Promise<Buffer> },
+): Promise<ComposeRfc822Attachment[]> {
+  if (!deps.attachmentsRoot || attachments.length === 0) return [];
+  const result: ComposeRfc822Attachment[] = [];
+  let total = 0;
+  for (const attachment of attachments) {
+    const resolved = resolveAttachmentStoragePath(deps.attachmentsRoot, attachment.storagePath);
+    if (!resolved) continue;
+    try {
+      const content = await deps.readAttachmentFile(resolved);
+      // Cap on the REAL byte size of the file we just read, not on the stored
+      // size_bytes metadata. The metadata can be null/0 for partially-imported
+      // attachments — Math.max(0, null) is 0 in JS, so a null pre-check would
+      // never trip the cap and a hostile sender could overflow the worker.
+      const next = total + content.length;
+      if (next > FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES) break;
+      total = next;
+      result.push({
+        filename: attachment.filename || 'anhang',
+        content,
+        ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
+      });
+    } catch {
+      /* skip unreadable attachment, still forward the rest */
+    }
+  }
+  return result;
 }
 
 async function loadForwardCopyMessage(
@@ -274,17 +417,30 @@ async function loadForwardCopyMessage(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
     .executeTakeFirst();
-  return row
-    ? {
-      id: Number(row.id),
-      sourceSqliteId: Number(row.source_sqlite_id),
-      accountId: row.account_id === null ? null : Number(row.account_id),
-      subject: row.subject,
-      fromJson: row.from_json,
-      snippet: row.snippet,
-      bodyText: row.body_text,
-    }
-    : null;
+  if (!row) return null;
+  const attachmentRows = await trx
+    .selectFrom('email_message_attachments')
+    .select(['filename_display', 'content_type', 'size_bytes', 'storage_path'])
+    .where('workspace_id', '=', workspaceId)
+    .where('message_id', '=', messageId)
+    .execute();
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
+    subject: row.subject,
+    fromJson: row.from_json,
+    snippet: row.snippet,
+    bodyText: row.body_text,
+    attachments: attachmentRows
+      .filter((att) => typeof att.storage_path === 'string' && att.storage_path.trim() !== '')
+      .map((att) => ({
+        filename: String(att.filename_display ?? 'anhang'),
+        contentType: att.content_type ?? null,
+        storagePath: String(att.storage_path),
+        sizeBytes: Number(att.size_bytes ?? 0),
+      })),
+  };
 }
 
 async function loadForwardCopyAccount(
@@ -362,21 +518,6 @@ async function hasForwardCopyDedup(
   return Boolean(row);
 }
 
-async function countEnabledOutboundWorkflows(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-): Promise<number> {
-  const rows = await trx
-    .selectFrom('email_workflows')
-    .select('id')
-    .where('workspace_id', '=', workspaceId)
-    .where('trigger_name', '=', 'outbound')
-    .where('enabled', '=', true)
-    .limit(1)
-    .execute();
-  return rows.length;
-}
-
 async function insertForwardCopyDedup(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
@@ -413,10 +554,96 @@ async function insertForwardCopyDedup(
     .execute();
 }
 
+type ForwardReviewResult = { ok: boolean; error: string | null; reviewPending: boolean };
+
+/** Materialises the forward as a draft and runs it through composeSender.send,
+ *  so the existing outbound-review pipeline (reviewOutbound.review →
+ *  email.release_outbound → scheduled-send) handles approval and SMTP send. */
+async function forwardViaOutboundReview(args: {
+  input: WorkflowForwardCopyJobPlan;
+  prepared: Extract<PreparedForwardCopy, { ok: true }>;
+  db: Kysely<ServerDatabase>;
+  composeSender: EmailComposeSenderApiPort;
+  applyWorkspaceSession: WorkspaceSessionApplier | undefined;
+  actorUserId: string;
+  createDraft: (input: {
+    workspaceId: string;
+    accountId: number;
+    subject: string;
+    bodyText: string;
+    recipients: readonly string[];
+    /** Persist into draft_attachment_paths_json so a held-then-released send
+     *  picks the attachments up later (the scheduled-send worker reads them
+     *  back from the draft, not from this call's args). */
+    attachmentPaths?: readonly string[];
+  }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
+  now: Date;
+}): Promise<ForwardReviewResult> {
+  const { input, prepared } = args;
+
+  // Respect includeAttachments centrally — used both on the initial
+  // composeSender.send call and persisted on the draft for the hold/release
+  // case where scheduled-send re-reads from the draft.
+  const forwardedAttachmentPaths = input.includeAttachments === true
+    ? prepared.message.attachments
+        .map((att) => att.storagePath)
+        .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    : [];
+
+  // (1) Create the draft FIRST (with attachment paths persisted). Dedup is
+  //     recorded only after we have at least handed the draft to composeSender
+  //     — otherwise a transient draft-create failure would mark the
+  //     (message, workflow, dest) as forwarded and block retries forever.
+  const draftResult = await args.createDraft({
+    workspaceId: input.workspaceId,
+    accountId: prepared.account.id,
+    subject: prepared.subject,
+    bodyText: prepared.bodyText,
+    recipients: prepared.recipients,
+    attachmentPaths: forwardedAttachmentPaths,
+  });
+  if (!draftResult.ok) {
+    return { ok: false, error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`, reviewPending: false };
+  }
+
+  // (2) Call composeSender.send. It runs reviewOutbound.review which holds the
+  //     draft if outbound workflows exist (workflowRunId set on the error
+  //     result). The pipeline then drives approval + send.
+  const sendResult = await args.composeSender.send({
+    workspaceId: input.workspaceId,
+    actorUserId: args.actorUserId,
+    values: {
+      accountId: prepared.account.id,
+      draftMessageId: draftResult.draftMessageId,
+      subject: prepared.subject,
+      bodyText: prepared.bodyText,
+      to: prepared.recipients.join(', '),
+      attachmentPaths: forwardedAttachmentPaths,
+    },
+  });
+
+  // Record dedup only when the forward has been successfully sent OR queued
+  // for review (workflowRunId set). A real failure must remain retryable.
+  const sent = sendResult.ok;
+  const queuedForReview = !sendResult.ok && sendResult.workflowRunId != null;
+  if (sent || queuedForReview) {
+    await withWorkspaceTransaction(
+      args.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
+      { applySession: args.applyWorkspaceSession },
+    );
+  }
+
+  if (sent) return { ok: true, error: null, reviewPending: false };
+  if (queuedForReview) return { ok: true, error: null, reviewPending: true };
+  return { ok: false, error: sendResult.error, reviewPending: false };
+}
+
 async function enqueueForwardCopyContinuation(
   options: PostgresWorkflowForwardCopyPortOptions,
   input: WorkflowForwardCopyJobPlan,
-  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date },
+  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
 ): Promise<void> {
   if (!input.continuation) return;
   await withWorkspaceTransaction(
@@ -430,7 +657,7 @@ async function enqueueForwardCopyContinuation(
 async function enqueueForwardCopyContinuationInTransaction(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
-  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date },
+  result: { ok: boolean; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
 ): Promise<void> {
   const continuation = input.continuation;
   if (!continuation) return;
@@ -450,8 +677,9 @@ async function enqueueForwardCopyContinuationInTransaction(
           eventVariables: {
             ...(continuation.eventVariables ?? {}),
             'forward_copy.ok': result.ok,
-            'forward_copy.to': normalizeForwardCopyDestination(input.to) ?? input.to.trim().toLowerCase(),
+            'forward_copy.to': normalizeForwardCopyRecipients(input.to).join(', ') || input.to.trim().toLowerCase(),
             'forward_copy.duplicate': result.duplicate,
+            'forward_copy.review_pending': result.reviewPending === true,
             ...(result.error ? { 'forward_copy.error': result.error } : {}),
           },
         },
@@ -573,9 +801,15 @@ function resolveSmtpUser(account: ForwardCopyAccount): string {
     : account.smtpUsername?.trim() || account.imapUsername;
 }
 
-function normalizeForwardCopyDestination(value: string): string | null {
-  const normalized = normalizeEmailAddress(value);
-  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) ? normalized : null;
+function normalizeForwardCopyRecipients(value: string): string[] {
+  const out: string[] = [];
+  for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const normalized = normalizeEmailAddress(part);
+    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) && !out.includes(normalized)) {
+      out.push(normalized);
+    }
+  }
+  return out.slice(0, 10);
 }
 
 function normalizeEmailOAuthProvider(value: string | null): EmailOAuthProvider | null {
@@ -599,27 +833,6 @@ function emailAccountSecretIdentifier(
   };
 }
 
-function buildForwardCopyRfc822(input: {
-  from: string;
-  to: string;
-  subject: string;
-  bodyText: string;
-  messageId: string;
-  date: Date;
-}): string {
-  const headers = [
-    `From: ${input.from}`,
-    `To: ${input.to}`,
-    `Subject: ${encodeHeaderValue(input.subject)}`,
-    `Message-ID: ${input.messageId}`,
-    `Date: ${input.date.toUTCString()}`,
-    'Auto-Submitted: auto-forwarded',
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-  ];
-  return `${headers.join('\r\n')}\r\n\r\n${input.bodyText.replace(/\r?\n/g, '\r\n')}`;
-}
 
 function formatMailbox(displayName: string, emailAddress: string): string {
   const cleanEmail = normalizeEmailAddress(emailAddress) ?? emailAddress.trim();

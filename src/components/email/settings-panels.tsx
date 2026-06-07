@@ -4,6 +4,7 @@ import type { ReactElement } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
+import { isServerClientMode } from "@/lib/runtime-mode"
 import {
   AtSign,
   BookOpen,
@@ -33,6 +34,7 @@ import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
+import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
@@ -43,6 +45,9 @@ type TabDef = {
   icon: typeof AtSign
   render: () => ReactElement
   fullBleed?: boolean
+  /** Tab depends on server-only IPC channels (no Electron handlers); hidden in
+   *  standalone mode so it doesn't error on open. */
+  serverOnly?: boolean
 }
 
 const TAB_DEFS: TabDef[] = [
@@ -88,6 +93,7 @@ const TAB_DEFS: TabDef[] = [
   },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
+  { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
   { id: "pgp", label: "PGP", icon: KeyRound, render: () => <PgpPanel /> },
@@ -105,7 +111,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
-  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "canned"] },
+  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "userGroups", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
@@ -150,6 +156,9 @@ function SettingsNav({ current, onSelect }: NavProps) {
               {group.tabIds.map((id) => {
                 const t = tabById.get(id)
                 if (!t) return null
+                // Hide server-only tabs in standalone Electron (their IPC
+                // channels have no local handler).
+                if (t.serverOnly && !isServerClientMode()) return null
                 const Icon = t.icon
                 const active = t.id === current
                 return (

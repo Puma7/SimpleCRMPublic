@@ -2,11 +2,13 @@
  * Monaco web workers for Vite/Electron dev (avoids broken default worker URLs).
  * Import before the first Editor mount (see app-monaco-editor.tsx).
  */
+// Only the workers for languages we actually load (see monaco-curated.ts):
+// JSON has a real language service worker; JavaScript/Python/Markdown are
+// tokenizer-only (basic-languages) and use the default editor worker. We do not
+// import the css/html/typescript workers — those languages aren't bundled, so
+// pulling their worker entries would needlessly re-add build weight.
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker"
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker"
-import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker"
-import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker"
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
 
 type MonacoEnvironmentLike = {
   getWorker: (workerId: string, label: string) => Worker
@@ -22,17 +24,6 @@ if (!env.MonacoEnvironment) {
       switch (label) {
         case "json":
           return new jsonWorker()
-        case "css":
-        case "scss":
-        case "less":
-          return new cssWorker()
-        case "html":
-        case "handlebars":
-        case "razor":
-          return new htmlWorker()
-        case "typescript":
-        case "javascript":
-          return new tsWorker()
         default:
           return new editorWorker()
       }

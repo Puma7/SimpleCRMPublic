@@ -21,10 +21,15 @@ export function useWorkflowNodeCatalog() {
     [catalog],
   )
 
+  const descriptionByType = useMemo(
+    () => new Map(catalog.filter((e) => e.description).map((e) => [e.type, e.description ?? ""])),
+    [catalog],
+  )
+
   const registryEntries = useMemo(
     () => catalog.filter((c) => c.canvasType === "registry"),
     [catalog],
   )
 
-  return { catalog, labelByType, registryEntries, catalogLoaded: loaded }
+  return { catalog, labelByType, descriptionByType, registryEntries, catalogLoaded: loaded }
 }

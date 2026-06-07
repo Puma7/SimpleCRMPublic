@@ -37,6 +37,15 @@ export type SaveDeployConfigResult =
 
 export const BROWSER_DEPLOY_CONFIG_STORAGE_KEY = "simplecrm.deployConfig.v1"
 
+/**
+ * Inlined by Vite (`define`) for the server web-only build. `true` means this
+ * bundle is served by the SimpleCRM server itself, so an unconfigured browser
+ * should talk to its own origin. For dev (`npm run dev`) and tests the
+ * identifier is absent, so the guarded `typeof` check below evaluates to false
+ * and the existing "missing" → deploy-wizard behavior is preserved.
+ */
+declare const __SIMPLECRM_FORCE_SAME_ORIGIN__: boolean | undefined
+
 const serverUrlSearchParams = ["simplecrmServer", "serverUrl", "server"]
 const serverUserSearchParams = ["simplecrmUser", "username"]
 
@@ -53,7 +62,30 @@ export function getBrowserDeployConfig(): DeployConfigResult {
   const stored = readStoredBrowserDeployConfig()
   if (stored) return stored
 
+  const sameOrigin = sameOriginServerDefault()
+  if (sameOrigin) return sameOrigin
+
   return { status: "missing" }
+}
+
+/**
+ * When the SPA is served by the SimpleCRM server (web-only build flag), an
+ * unconfigured browser defaults to a server-client config pointing at its own
+ * origin. This is intentionally not persisted, so the config follows the URL
+ * the app is actually loaded from (e.g. after a domain change). An explicit
+ * `?serverUrl=` or a stored config always takes precedence (checked earlier).
+ */
+function sameOriginServerDefault(): DeployConfigResult | null {
+  const forced = typeof __SIMPLECRM_FORCE_SAME_ORIGIN__ !== "undefined" && __SIMPLECRM_FORCE_SAME_ORIGIN__
+  if (!forced) return null
+  const origin = typeof window !== "undefined" ? window.location?.origin : undefined
+  if (!origin || (!origin.startsWith("http://") && !origin.startsWith("https://"))) return null
+
+  const result = savePayloadWithoutPersisting({
+    mode: "server-client",
+    server: { baseUrl: origin },
+  })
+  return result.success ? { status: "ok", config: result.config } : null
 }
 
 export function saveBrowserDeployConfig(payload: SaveDeployConfigPayload): SaveDeployConfigResult {

@@ -36,6 +36,7 @@ describe('server deal tasks API', () => {
       workspaceId: 'workspace-1',
       customerId: 2,
       limit: 25,
+      viewer: { userId: 'user-1', role: 'owner' },
     });
   });
 
@@ -111,6 +112,9 @@ function taskPort(): jest.Mocked<TaskApiPort> {
           priority: 'High',
           completed: false,
           snoozedUntil: null,
+          assignmentScope: 'global',
+          assignedUserId: null,
+          assignedGroupId: null,
           updatedAt: '2026-06-03T10:00:00.000Z',
         },
       ],

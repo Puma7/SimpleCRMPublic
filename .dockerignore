@@ -1,0 +1,11 @@
+# Keep the Docker build context lean. Excludes nothing that api.Dockerfile or
+# web.Dockerfile need (lockfile, configs, packages/, src/, shared/, index.html).
+node_modules
+**/node_modules
+.git
+dist
+dist-electron
+coverage
+*.log
+.env
+docker/.env

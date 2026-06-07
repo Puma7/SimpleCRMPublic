@@ -24,6 +24,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Tag setzen',
     category: 'email',
     canvasType: 'action',
+    description: 'Hängt der Nachricht einen Tag an (für Filter, Folge-Workflows oder Sortierung). Mehrere Tags = mehrere Knoten.',
     defaultConfig: { tag: '' },
   },
   {
@@ -31,18 +32,21 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Als gelesen markieren',
     category: 'email',
     canvasType: 'action',
+    description: 'Setzt die Nachricht lokal auf gelesen und versucht zusätzlich, das IMAP-\\Seen-Flag zu setzen.',
   },
   {
     type: 'email.archive',
     label: 'Archivieren',
     category: 'email',
     canvasType: 'action',
+    description: 'Versteckt die Nachricht aus dem Posteingang (lokales Archiv-Flag). IMAP-Verschiebung erfolgt nicht.',
   },
   {
     type: 'email.hold_outbound',
     label: 'Versand sperren',
     category: 'email',
     canvasType: 'action',
+    description: 'Setzt outbound_hold=true mit Grund (Banner in Liste + Editor). Beendet den Workflow am „blocked"-Port — Folgeknoten werden nicht ausgeführt. Freigabe nur über einen separaten Workflow (email.release_outbound) oder manuell.',
     defaultConfig: { reason: '' },
   },
   {
@@ -50,20 +54,24 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Kategorie setzen',
     category: 'email',
     canvasType: 'action',
+    description: 'Ordnet die Nachricht einer Kategorie zu (Pfad wie "Support/Beschwerden"). Legt fehlende Knoten an.',
     defaultConfig: { path: '' },
   },
   {
     type: 'email.forward_copy',
-    label: 'Kopie weiterleiten',
+    label: 'Weiterleiten (Empfänger, optional Anhänge)',
     category: 'email',
     canvasType: 'action',
-    defaultConfig: { to: '' },
+    description:
+      'Leitet die Mail an einen oder mehrere Empfänger weiter (komma-/semikolongetrennt, max. 10). includeAttachments=true hängt die Original-Anhänge an (Limit 25 MB). runOutboundReview=false (Standard) sendet direkt; =true erzwingt die Ausgangsprüfung (derzeit fail-closed bei aktiven Outbound-Workflows). Anti-Loop: Auto-Submitted-Header + Dedup-Tabelle.',
+    defaultConfig: { to: '', includeAttachments: false, runOutboundReview: false },
   },
   {
     type: 'email.tag_attachment_meta',
     label: 'Tag bei Anhang',
     category: 'email',
     canvasType: 'action',
+    description: 'Setzt den Tag nur, wenn die Nachricht mindestens einen Anhang hat.',
     defaultConfig: { tag: 'attachment' },
   },
   {
@@ -71,6 +79,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Antwort-Entwurf erstellen',
     category: 'email',
     canvasType: 'registry',
+    description: 'Legt einen Antwort-Entwurf auf die aktuelle Nachricht an (optional mit Body-Präfix oder Vorlage).',
     defaultConfig: { bodyPrefix: '' },
   },
   {
@@ -117,6 +126,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Als Spam markieren',
     category: 'email',
     canvasType: 'registry',
+    description: 'Markiert die Nachricht als Spam (lokal + optional IMAP-Verschiebung in den Spam-Ordner).',
     defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false },
   },
   {
@@ -124,6 +134,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Mitarbeiter zuweisen',
     category: 'email',
     canvasType: 'registry',
+    description: 'Weist die Nachricht einem Team-Mitglied zu (taucht in dessen Posteingang-Filter "Mir zugewiesen" auf).',
     defaultConfig: { teamMemberId: '' },
   },
   {
@@ -131,6 +142,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'IMAP verschieben',
     category: 'email',
     canvasType: 'registry',
+    description: 'Verschiebt die Nachricht auf dem IMAP-Server in den angegebenen Ordner (z.B. "Rechnungen"). Lokale Sync folgt.',
     defaultConfig: { folderPath: 'Spam' },
   },
   {
@@ -138,6 +150,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Auf Server löschen',
     category: 'email',
     canvasType: 'registry',
+    description: 'Löscht die Nachricht auf dem IMAP-Server und markiert sie lokal als gelöscht. Nicht wiederherstellbar.',
     defaultConfig: {},
   },
   {
@@ -145,12 +158,14 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Kunde verknüpfen',
     category: 'crm',
     canvasType: 'action',
+    description: 'Verknüpft die Nachricht mit einem Kunden anhand der Absender-E-Mail (matchet ihn in der CRM-Datenbank).',
   },
   {
     type: 'crm.create_task',
     label: 'Aufgabe anlegen',
     category: 'crm',
     canvasType: 'registry',
+    description: 'Legt eine CRM-Aufgabe an, die an die Mail/den Kunden gehängt wird. Fälligkeit in Tagen, Priorität wählbar.',
     defaultConfig: { title: 'E-Mail bearbeiten', priority: 'medium', daysUntilDue: 3 },
   },
   {
@@ -158,6 +173,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Aktivität protokollieren',
     category: 'crm',
     canvasType: 'registry',
+    description: 'Hängt einen Aktivitätseintrag an den verknüpften Kunden/Deal — für Audit-Trail und Timeline.',
     defaultConfig: { activityType: 'email', title: 'Workflow' },
   },
   {
@@ -165,6 +181,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Deal aktualisieren',
     category: 'crm',
     canvasType: 'registry',
+    description: 'Aktualisiert Deal-Stage oder Felder anhand der Deal-ID (oder dem verknüpften Kunden).',
     defaultConfig: { dealId: 0, stage: '' },
   },
   {
@@ -172,6 +189,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Prüfung',
     category: 'ai',
     canvasType: 'action',
+    description: 'Generische KI-Prüfung mit Prompt; wenn die Antwort das Blockwort enthält, geht es auf "blocked".',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
   },
   {
@@ -188,6 +206,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Text transformieren',
     category: 'ai',
     canvasType: 'registry',
+    description: 'Schickt den E-Mail-Text an die KI und legt das Ergebnis als Variable ab (z.B. Zusammenfassung, Übersetzung).',
     defaultConfig: { promptId: 0, targetVariable: 'ai.text' },
   },
   {
@@ -207,6 +226,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Klassifizierung',
     category: 'ai',
     canvasType: 'registry',
+    description: 'Sortiert die Mail in genau eine der angegebenen Klassen (kommagetrennt). Setzt ai.class und ai.class_confidence.',
     defaultConfig: { labels: 'Rechnung,Support,Spam', contextMode: 'metadata' },
   },
   {
@@ -214,6 +234,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Agent',
     category: 'ai',
     canvasType: 'registry',
+    description: 'Generischer KI-Agent mit System-Prompt und Wissensbasis. Kann optional direkt einen Antwort-Entwurf anlegen.',
     defaultConfig: {
       systemPrompt: 'Du bist ein CRM-Assistent. Nutze die Wissensbasis. Antworte kurz.',
       knowledgeBaseId: null,
@@ -235,6 +256,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Agent-Tool',
     category: 'ai',
     canvasType: 'registry',
+    description: 'Werkzeug-Aufruf für KI-Agenten: search_knowledge, get_canned oder eigener Tool-Name (Echo).',
     defaultConfig: { tool: 'search_knowledge', knowledgeBaseId: null },
   },
   {
@@ -242,12 +264,14 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Stopp',
     category: 'logic',
     canvasType: 'action',
+    description: 'Beendet die Workflow-Ausführung an dieser Stelle sauber (kein Fehler).',
   },
   {
     type: 'logic.set_variable',
     label: 'Variable setzen',
     category: 'logic',
     canvasType: 'registry',
+    description: 'Legt eine Workflow-Variable an (steht in Folge-Knoten als {{name}} bereit).',
     defaultConfig: { name: 'var', value: '' },
   },
   {
@@ -255,13 +279,15 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Verzögerung',
     category: 'logic',
     canvasType: 'registry',
-    defaultConfig: { minutes: 5 },
+    description: 'Pausiert den Workflow für die angegebene Zeit (z.B. "5 Minuten warten, dann Folgeaktion"). Persistent über Restarts.',
+    defaultConfig: { delaySeconds: 60 },
   },
   {
     type: 'logic.merge',
     label: 'Zusammenführen',
     category: 'logic',
     canvasType: 'registry',
+    description: 'Sammelt mehrere parallele Zweige wieder zu einem (alle Eingangskanten landen am gleichen Punkt).',
     defaultConfig: {},
   },
   {
@@ -277,6 +303,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Schalter',
     category: 'logic',
     canvasType: 'registry',
+    description: 'Verzweigt anhand einer Variable in beliebig viele Cases (sonst: default-Kante).',
     defaultConfig: { field: 'ai.class', cases: 'A,B,C' },
   },
   {
@@ -284,6 +311,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Schleife',
     category: 'logic',
     canvasType: 'registry',
+    description: 'Iteriert über eine Liste (Variable oder Komma-Liste). maxItems schützt vor Endlos-Läufen.',
     defaultConfig: { sourceVariable: 'attachment_names', items: '', maxItems: 50 },
   },
   {
@@ -311,6 +339,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Plugin-Knoten',
     category: 'code',
     canvasType: 'registry',
+    description: 'Ruft einen registrierten Plugin-Handler auf. Im Servermodus nicht verfügbar.',
     defaultConfig: { pluginId: '', handler: '' },
   },
   {
@@ -318,6 +347,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'E-Mail-Konto syncen',
     category: 'integration',
     canvasType: 'registry',
+    description: 'Stößt einen IMAP-Sync für ein Konto an (oder alle, wenn accountId=0). Per Schedule-Trigger nutzbar.',
     defaultConfig: {},
   },
   {
@@ -325,6 +355,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'HTTP-Anfrage',
     category: 'integration',
     canvasType: 'registry',
+    description: 'Schickt eine HTTP-Anfrage (Webhook, eigene API). Antwort steht als Variable http.* bereit.',
     defaultConfig: { method: 'GET', url: '', body: '' },
   },
   {
@@ -332,6 +363,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'MSSQL (Read-only)',
     category: 'integration',
     canvasType: 'registry',
+    description: 'Führt eine read-only MSSQL-Abfrage gegen die konfigurierte Datenbank aus. Nur SELECT erlaubt.',
     defaultConfig: { sql: 'SELECT TOP 10 1 AS ok' },
   },
   {
@@ -339,13 +371,68 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'JTL Stammdaten',
     category: 'integration',
     canvasType: 'registry',
+    description: 'Liest JTL-Stammdaten via MSSQL: firmen, warenlager, zahlungsarten oder versandarten.',
     defaultConfig: { entity: 'firmen' },
+  },
+  {
+    type: 'jtl.order_context',
+    label: 'JTL Bestell-Kontext',
+    category: 'integration',
+    canvasType: 'registry',
+    description:
+      'Read-only-Query (MSSQL) mit {{email}}/{{orderNo}}; mappt die erste Zeile auf jtl.*-Variablen für KI-Nodes.',
+    defaultConfig: { query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}', mapping: '' },
+  },
+  {
+    type: 'jtl.prepare_action',
+    label: 'JTL Aktion vorbereiten',
+    category: 'integration',
+    canvasType: 'registry',
+    description:
+      'Baut einen Aktions-Vorschlag (resend_invoice/create_return/send_tracking/refund_status/custom) — führt nichts aus.',
+    defaultConfig: { kind: 'send_tracking', requireApproval: true },
+  },
+  {
+    type: 'ai.pick_canned',
+    label: 'KI: Textbaustein wählen',
+    category: 'ai',
+    canvasType: 'registry',
+    description: 'Die KI wählt den passenden Textbaustein, füllt Platzhalter und legt einen Entwurf an.',
+    defaultConfig: { createDraft: true },
+  },
+  {
+    type: 'email.auto_reply',
+    label: 'Auto-Antwort (Gate)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Entscheidet, ob automatisch geantwortet werden darf (Schalter + Confidence + Anti-Loop). Sendet selbst nichts.',
+    defaultConfig: { confidenceVar: 'ai.class_confidence', minConfidence: 70 },
+  },
+  {
+    type: 'email.release_outbound',
+    label: 'Versand freigeben',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Gegenstück zu „Versand sperren": hebt die Sperre auf (OK-Pfad der Ausgangsprüfung). Mit autoSend=true wird sofort gesendet. Die Freigabe ist an die aktuellen Inhalte gebunden — Edits zwischen Freigabe und Versand erzwingen eine neue Prüfung.',
+    defaultConfig: { autoSend: true },
+  },
+  {
+    type: 'email.send_draft',
+    label: 'Entwurf versenden (vollautomatisch)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Verschickt einen zuvor angelegten Entwurf (z.B. von ai.reply_suggestion oder email.create_draft). draftIdVariable liest die ID aus einer Workflow-Variable (Standard: draft.id). runOutboundReview=true lässt den Versand zusätzlich durch die Outbound-Workflows (KI prüft KI); =false (Standard) sendet ohne weitere Prüfung.',
+    defaultConfig: { draftIdVariable: 'draft.id', runOutboundReview: false },
   },
   {
     type: 'workflow.subflow',
     label: 'Subflow ausführen',
     category: 'logic',
     canvasType: 'registry',
+    description: 'Ruft einen anderen Workflow als Subflow auf (Wiederverwendbarkeit). Die Workflow-ID stammt aus der Workflow-Liste.',
     defaultConfig: { workflowId: 0 },
   },
 ];

@@ -8,6 +8,8 @@ import type {
   EmailReplySuggestionTrigger,
 } from './api/types';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
+import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { callAiChat } from './ai-providers';
 import type {
   CustomersTable,
   EmailAiProfilesTable,
@@ -42,6 +44,7 @@ type ChatCompletionInput = Readonly<{
   apiKey: string;
   system: string;
   user: string;
+  captureUsage?: (usage: AiTokenUsage | null) => void;
 }>;
 
 export type PostgresAiReplySuggestionPortOptions = Readonly<{
@@ -437,12 +440,27 @@ async function generateReplyDraftText(
   );
 
   try {
+    const started = Date.now();
+    let usage: AiTokenUsage | null = null;
     const text = (await (options.chatCompletion ?? defaultChatCompletion)({
       profile: context.profile!,
       apiKey,
       system: DEFAULT_REPLY_SYSTEM_PROMPT,
       user,
+      captureUsage: (value) => { usage = value; },
     })).trim();
+    await recordAiUsageSafe(
+      { db: options.db, applyWorkspaceSession: options.applyWorkspaceSession, now: options.now },
+      {
+        workspaceId: context.message.workspace_id,
+        aiProfileId: context.profile ? Number(context.profile.id) : null,
+        model: context.profile?.model ?? null,
+        nodeType: 'ai.reply_suggestion',
+        messageId: Number(context.message.id),
+        usage,
+        latencyMs: Date.now() - started,
+      },
+    );
     if (!text) return { success: false, error: 'KI-Antwort leer' };
     return { success: true, text };
   } catch (err) {
@@ -452,32 +470,22 @@ async function generateReplyDraftText(
   async function defaultChatCompletion(input: ChatCompletionInput): Promise<string> {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     if (!fetchImpl) throw new Error('fetch is not available for AI reply suggestions');
-    const baseUrl = input.profile.base_url.trim().replace(/\/+$/, '');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), OPENAI_CHAT_TIMEOUT_MS);
     try {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${input.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: input.profile.model,
-          messages: [
-            { role: 'system', content: input.system },
-            { role: 'user', content: input.user },
-          ],
-          temperature: 0.3,
-        }),
+      const result = await callAiChat({
+        provider: input.profile.provider,
+        baseUrl: input.profile.base_url,
+        model: input.profile.model,
+        apiKey: input.apiKey,
+        system: input.system,
+        user: input.user,
+        temperature: 0.3,
+        fetchImpl,
         signal: controller.signal,
       });
-      const body = await response.text();
-      if (!response.ok) {
-        const detail = body.trim().slice(0, 500);
-        throw new Error(`KI API HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
-      }
-      return parseChatCompletionContent(body);
+      input.captureUsage?.(result.usage);
+      return result.content;
     } finally {
       clearTimeout(timeout);
     }
@@ -635,18 +643,6 @@ function parseJson(value: string): unknown {
   } catch {
     return value;
   }
-}
-
-function parseChatCompletionContent(body: string): string {
-  const parsed = parseJson(body);
-  if (!isRecord(parsed) || !Array.isArray(parsed.choices)) {
-    throw new Error('KI API response does not contain choices');
-  }
-  const choice = parsed.choices[0];
-  if (!isRecord(choice) || !isRecord(choice.message) || typeof choice.message.content !== 'string') {
-    throw new Error('KI API response does not contain message content');
-  }
-  return choice.message.content;
 }
 
 function formatAiUserError(err: unknown): string {

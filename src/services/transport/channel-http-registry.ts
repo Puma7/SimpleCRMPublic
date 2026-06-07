@@ -138,7 +138,32 @@ type TaskRecord = {
   priority?: string | null
   completed?: boolean | number | null
   snoozedUntil?: string | null
+  assignmentScope?: "global" | "user" | "group" | null
+  assignedUserId?: string | null
+  assignedGroupId?: number | null
   updatedAt?: string | null
+}
+
+type UserGroupRecord = {
+  id: number
+  name: string
+  description: string | null
+  memberCount: number
+  updatedAt: string
+}
+
+type UserGroupMemberRecord = {
+  userId: string
+  email: string
+  displayName: string
+  role: "owner" | "admin" | "user"
+}
+
+type ServerLogEntry = {
+  time: string
+  level: "info" | "warn" | "error" | "fatal"
+  message: string
+  source: string
 }
 
 type CalendarEventRecord = {
@@ -406,6 +431,16 @@ type EmailDiagnosticsRecord = {
     runsLast24h?: number | null
     runsBlockedLast24h?: number | null
     runsErrorLast24h?: number | null
+  } | null
+  aiUsage?: {
+    events24h?: number | null
+    tokens24h?: number | null
+    costMicroUsd24h?: number | null
+    avgLatencyMs24h?: number | null
+    events30d?: number | null
+    tokens30d?: number | null
+    costMicroUsd30d?: number | null
+    byNodeType24h?: Record<string, number | null> | null
   } | null
   notices?: {
     imapAuth?: number | null
@@ -1296,6 +1331,85 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     transform: () => ({ success: true }),
   })],
 
+  [IPCChannels.UserGroups.List, () => ({
+    method: "GET",
+    path: "/api/v1/user-groups",
+    transform: (body) => listItems<UserGroupRecord>(body),
+  })],
+  [IPCChannels.UserGroups.Create, ([payload]) => {
+    const input = objectPayload(payload, "user group payload")
+    return {
+      method: "POST",
+      path: "/api/v1/user-groups",
+      body: pruneUndefined({
+        name: stringPayloadField(input.name, "group name"),
+        description: optionalStringPayloadField(input.description, "group description", 2000),
+      }),
+      transform: (body) => dataBody<UserGroupRecord>(body),
+    }
+  }],
+  [IPCChannels.UserGroups.Update, ([payload]) => {
+    const input = objectPayload(payload, "user group payload")
+    const body: Record<string, unknown> = {}
+    if (input.name !== undefined) body.name = stringPayloadField(input.name, "group name")
+    if (Object.prototype.hasOwnProperty.call(input, "description")) {
+      body.description = input.description === null ? null : stringPayloadField(input.description, "group description")
+    }
+    return {
+      method: "PATCH",
+      path: `/api/v1/user-groups/${positiveId(input.id, "group id")}`,
+      body,
+      transform: (responseBody) => dataBody<UserGroupRecord>(responseBody),
+    }
+  }],
+  [IPCChannels.UserGroups.Delete, ([id]) => ({
+    method: "DELETE",
+    path: `/api/v1/user-groups/${positiveId(id, "group id")}`,
+    transform: () => ({ success: true }),
+  })],
+  [IPCChannels.UserGroups.ListMembers, ([groupId]) => ({
+    method: "GET",
+    path: `/api/v1/user-groups/${positiveId(groupId, "group id")}/members`,
+    transform: (body) => listItems<UserGroupMemberRecord>(body),
+  })],
+  [IPCChannels.UserGroups.AddMember, ([payload]) => {
+    const input = objectPayload(payload, "group member payload")
+    return {
+      method: "POST",
+      path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/members`,
+      body: { userId: stringPayloadField(input.userId, "user id") },
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.UserGroups.RemoveMember, ([payload]) => {
+    const input = objectPayload(payload, "group member payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/members/${pathTextSegment(input.userId, "user id", 80)}`,
+      transform: () => ({ success: true }),
+    }
+  }],
+
+  [IPCChannels.Diagnostics.GetServerLogs, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "server log query")
+    return {
+      method: "GET",
+      path: "/api/v1/diagnostics/server-logs",
+      query: pruneQueryUndefined({ level: input.level, limit: input.limit }),
+      transform: (body) => listItems<ServerLogEntry>(body),
+    }
+  }],
+  [IPCChannels.Diagnostics.ClearServerLogs, () => ({
+    method: "POST",
+    path: "/api/v1/diagnostics/server-logs/clear",
+    transform: () => ({ success: true }),
+  })],
+  [IPCChannels.Diagnostics.SelfTestServerLogs, () => ({
+    method: "POST",
+    path: "/api/v1/diagnostics/server-logs/self-test",
+    transform: (body) => dataBody<{ written: number }>(body),
+  })],
+
   [IPCChannels.Calendar.GetCalendarEvents, () => ({
     method: "GET",
     path: "/api/v1/calendar-events",
@@ -1494,6 +1608,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         ...result,
       }
     },
+  })],
+  [IPCChannels.Email.ImportFullInbox, ([id]) => ({
+    method: "POST",
+    path: `/api/v1/email/accounts/${positiveId(id, "email account id")}/sync`,
+    body: { fullInbox: true },
+    transform: () => ({ success: true }),
   })],
   [IPCChannels.Email.ClearAccountSyncLock, ([id]) => ({
     method: "DELETE",
@@ -3265,6 +3385,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       body: pruneUndefined({
         promptId: positiveId(input.promptId, "email ai prompt id"),
         text: stringPayloadField(input.text, "email ai transform text"),
+        contextText: input.contextText === undefined || input.contextText === null
+          ? undefined
+          : stringPayloadField(input.contextText, "email ai transform context"),
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),
@@ -4022,6 +4145,9 @@ function mapTaskRecord(record: TaskRecord) {
     priority: record.priority ?? "Medium",
     completed: Boolean(record.completed),
     snoozed_until: record.snoozedUntil ?? undefined,
+    assignment_scope: record.assignmentScope ?? "global",
+    assigned_user_id: record.assignedUserId ?? null,
+    assigned_group_id: record.assignedGroupId ?? null,
     last_modified: record.updatedAt ?? undefined,
     calendar_event_id: null,
   }
@@ -4029,14 +4155,20 @@ function mapTaskRecord(record: TaskRecord) {
 
 function mapTaskMutation(value: unknown): Record<string, unknown> {
   const input = objectPayload(value ?? {}, "task payload")
+  // Customer is optional: a missing or 0 id means "no customer", not customer 0.
+  const rawCustomerId = input.customerId ?? input.customer_id
+  const customerId = typeof rawCustomerId === "number" && rawCustomerId > 0 ? rawCustomerId : undefined
   return pruneUndefined({
-    customerId: input.customerId ?? input.customer_id,
+    customerId,
     title: input.title,
     description: input.description,
     dueDate: input.dueDate ?? input.due_date,
     priority: input.priority,
     completed: input.completed === undefined ? undefined : Boolean(input.completed),
     snoozedUntil: input.snoozedUntil ?? input.snoozed_until,
+    assignmentScope: input.assignmentScope ?? input.assignment_scope,
+    assignedUserId: input.assignedUserId ?? input.assigned_user_id,
+    assignedGroupId: input.assignedGroupId ?? input.assigned_group_id,
   })
 }
 
@@ -4479,6 +4611,7 @@ function mapMailFolderCounts(record: EmailMailFolderCountsRecord) {
 function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
   const messages = record.messages ?? {}
   const workflows = record.workflows ?? {}
+  const aiUsage = record.aiUsage ?? {}
   const notices = record.notices ?? {}
   const syncInfo = record.syncInfo ?? {}
   const background = record.background ?? {}
@@ -4501,6 +4634,16 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
       runsLast24h: countValue(workflows.runsLast24h),
       runsBlockedLast24h: countValue(workflows.runsBlockedLast24h),
       runsErrorLast24h: countValue(workflows.runsErrorLast24h),
+    },
+    aiUsage: {
+      events24h: countValue(aiUsage.events24h),
+      tokens24h: countValue(aiUsage.tokens24h),
+      costMicroUsd24h: countValue(aiUsage.costMicroUsd24h),
+      avgLatencyMs24h: countValue(aiUsage.avgLatencyMs24h),
+      events30d: countValue(aiUsage.events30d),
+      tokens30d: countValue(aiUsage.tokens30d),
+      costMicroUsd30d: countValue(aiUsage.costMicroUsd30d),
+      byNodeType24h: countMap(aiUsage.byNodeType24h),
     },
     notices: {
       imapAuth: countValue(notices.imapAuth),

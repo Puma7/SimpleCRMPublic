@@ -6,6 +6,8 @@ import type {
   AiAgentJobPort,
   AiClassificationJobPort,
   AiClassificationJobPlan,
+  AiPickCannedJobPlan,
+  AiPickCannedJobPort,
   AiReviewJobPlan,
   AiReviewJobPort,
   AiTransformTextJobPlan,
@@ -28,6 +30,9 @@ export type MailSyncJobPlan = Readonly<{
   accountId: number;
   protocol: MailSyncProtocol;
   actorUserId?: string;
+  /** One-shot full inbox backfill: ignore the first-sync cap and import older
+   *  (already-read) messages that were skipped, without moving the sync cursor. */
+  fullInbox?: boolean;
 }>;
 
 export type MailSyncJobResult = Readonly<{
@@ -129,6 +134,7 @@ export type ProductionJobHandlersOptions = Readonly<{
   mailVacationAutoReply?: MailVacationAutoReplyJobPort;
   aiReplySuggestion?: AiReplySuggestionJobPort;
   aiAgent?: AiAgentJobPort;
+  aiPickCanned?: AiPickCannedJobPort;
   aiClassification?: AiClassificationJobPort;
   aiReview?: AiReviewJobPort;
   aiTransformText?: AiTransformTextJobPort;
@@ -146,7 +152,7 @@ const DEFAULT_WORKFLOW_HTTP_TIMEOUT_MS = 30_000;
 const MAX_WORKFLOW_HTTP_TIMEOUT_MS = 60_000;
 const MAX_WORKFLOW_HTTP_URL_LENGTH = 2048;
 const MAX_WORKFLOW_HTTP_BODY_LENGTH = 128 * 1024;
-const MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH = 500;
+const MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH = 1000;
 
 export function createProductionJobHandlers(options: ProductionJobHandlersOptions): JobHandlerRegistry {
   const now = options.now ?? (() => new Date());
@@ -174,6 +180,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'ai.agent': async (job) => {
       if (!options.aiAgent) throw new Error('AI agent job port is not configured');
       await options.aiAgent.runAgent(buildAiAgentJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.pick_canned': async (job) => {
+      if (!options.aiPickCanned) throw new Error('AI pick-canned job port is not configured');
+      await options.aiPickCanned.pickCanned(buildAiPickCannedJobPlan(job.payload, job.workspaceId));
     },
     'ai.classify': async (job) => {
       if (!options.aiClassification) throw new Error('AI classification job port is not configured');
@@ -229,6 +239,7 @@ export function buildMailSyncJobPlan(
     accountId: requiredPositiveInteger(payload, 'accountId'),
     protocol,
     ...optionalString(payload, 'actorUserId'),
+    ...optionalBooleanProperty(payload, 'fullInbox'),
   };
 }
 
@@ -304,6 +315,22 @@ export function buildAiAgentJobPlan(
       4000,
     ),
     ...optionalPositiveInteger(payload, 'knowledgeBaseId'),
+    createDraft: optionalBoolean(payload, 'createDraft', false),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload),
+  };
+}
+
+export function buildAiPickCannedJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiPickCannedJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'profileId'),
     createDraft: optionalBoolean(payload, 'createDraft', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
@@ -393,6 +420,8 @@ export function buildWorkflowForwardCopyJobPlan(
     messageId: requiredPositiveInteger(payload, 'messageId'),
     ...optionalString(payload, 'actorUserId'),
     to: requiredStringValue(payload, 'to', MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH),
+    includeAttachments: optionalBoolean(payload, 'includeAttachments', false),
+    runOutboundReview: optionalBoolean(payload, 'runOutboundReview', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload),

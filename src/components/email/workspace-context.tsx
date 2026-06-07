@@ -39,6 +39,7 @@ export type SettingsTab =
   | "automation"
   | "team"
   | "appUsers"
+  | "userGroups"
   | "canned"
   | "prompts"
   | "export"
@@ -172,6 +173,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "automation",
   "team",
   "appUsers",
+  "userGroups",
   "canned",
   "prompts",
   "export",

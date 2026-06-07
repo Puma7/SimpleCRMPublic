@@ -21,6 +21,8 @@ export type ServerEditionEnv = {
   JOB_WORKER_AI_CONCURRENCY?: string;
   JOB_WORKER_MIGRATE_ON_START?: string;
   JOB_WEBHOOK_ALLOWLIST?: string;
+  SERVER_LOG_FILE?: string;
+  LOG_LEVEL?: string;
   NODE_ENV?: string;
   CI?: string;
 };

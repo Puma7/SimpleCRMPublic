@@ -2413,6 +2413,7 @@ async function selectMailFolderCounts(
         and (snoozed_until is null or snoozed_until <= now())
         and (uid >= 0 or pop3_uidl is not null)
         and (is_spam = true or coalesce(spam_status, 'clean') = 'spam')
+        and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('spam'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
@@ -3364,7 +3365,10 @@ async function insertSpamLearningEventForMessage(
       account_id: message.account_id === null ? null : Number(message.account_id),
       label: input.label,
       source: input.source,
-      feature_keys_json: input.featureKeys.length > 0 ? [...input.featureKeys] : null,
+      // jsonb column: a raw JS array is serialized by node-postgres as a Postgres
+      // array literal ('{...}'), which fails to parse as JSON. Plain objects are
+      // auto-JSON.stringified, but arrays are not — so stringify explicitly.
+      feature_keys_json: input.featureKeys.length > 0 ? JSON.stringify([...input.featureKeys]) : null,
       source_row: serverApiSourceRow(),
       created_at: input.now,
       updated_at: input.now,
@@ -3456,7 +3460,9 @@ export async function createPostgresComposeDraftInTransaction(
       imap_thread_id: null,
       has_attachments: false,
       attachments_json: null,
-      draft_attachment_paths_json: null,
+      draft_attachment_paths_json: input.values.draftAttachmentPaths === undefined
+        ? null
+        : draftAttachmentPathsToJsonValue(input.values.draftAttachmentPaths),
       post_process_done: false,
       reply_parent_message_id: null,
       assigned_to: null,

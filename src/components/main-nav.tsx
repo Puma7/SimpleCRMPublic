@@ -15,16 +15,18 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserSwitcher } from "@/components/auth/user-switcher"
+import { LanguageToggle } from "@/components/language-toggle"
+import { useTranslation } from "@/lib/i18n"
 
 const navLinks = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
-  { to: "/followup", label: "Nachverfolgung", icon: ListChecks },
-  { to: "/customers", label: "Kunden", icon: Users },
-  { to: "/deals", label: "Deals", icon: FileBox },
-  { to: "/tasks", label: "Aufgaben", icon: CheckSquare },
-  { to: "/products", label: "Produkte", icon: Package },
-  { to: "/calendar", label: "Kalender", icon: CalendarDays },
-  { to: "/email", label: "E-Mail", icon: Mail },
+  { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, exact: true },
+  { to: "/followup", labelKey: "nav.followup", icon: ListChecks },
+  { to: "/customers", labelKey: "nav.customers", icon: Users },
+  { to: "/deals", labelKey: "nav.deals", icon: FileBox },
+  { to: "/tasks", labelKey: "nav.tasks", icon: CheckSquare },
+  { to: "/products", labelKey: "nav.products", icon: Package },
+  { to: "/calendar", labelKey: "nav.calendar", icon: CalendarDays },
+  { to: "/email", labelKey: "nav.email", icon: Mail },
 ] as const
 
 export function MainNav({
@@ -34,6 +36,7 @@ export function MainNav({
 }: React.HTMLAttributes<HTMLElement> & {
   onOpenCommandPalette?: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <nav className={cn("border-b", className)} {...props}>
       <div className="flex h-16 items-center px-4">
@@ -42,7 +45,7 @@ export function MainNav({
           <span className="font-bold">SimpleCRM</span>
         </Link>
         <div className="flex flex-1 items-center space-x-4 lg:space-x-6">
-          {navLinks.map(({ to, label, icon: Icon }) => (
+          {navLinks.map(({ to, labelKey, icon: Icon }) => (
             <Link
               key={to}
               to={to}
@@ -56,11 +59,12 @@ export function MainNav({
               inactiveProps={{ className: "text-muted-foreground" }}
             >
               <Icon className="h-4 w-4" />
-              <span>{label}</span>
+              <span>{t(labelKey)}</span>
             </Link>
           ))}
         </div>
         <div className="ml-auto flex items-center gap-3">
+          <LanguageToggle className="hidden h-8 w-[7.5rem] sm:flex" />
           {onOpenCommandPalette ? (
             <button
               type="button"
@@ -82,7 +86,7 @@ export function MainNav({
             inactiveProps={{ className: "text-muted-foreground" }}
           >
             <Settings className="h-4 w-4" />
-            <span>Einstellungen</span>
+            <span>{t("nav.settings")}</span>
           </Link>
         </div>
       </div>

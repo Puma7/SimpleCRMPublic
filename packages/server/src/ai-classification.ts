@@ -11,6 +11,8 @@ import type {
   WorkflowKnowledgeChunksTable,
 } from './db/schema';
 import type { AiTextTransformApiPort } from './api/types';
+import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { callAiChat } from './ai-providers';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -30,7 +32,17 @@ type ChatCompletionInput = Readonly<{
   apiKey: string;
   system: string;
   user: string;
+  captureUsage?: (usage: AiTokenUsage | null) => void;
 }>;
+
+type AiUsageAttribution = {
+  workspaceId: string;
+  aiProfileId: number | null;
+  model: string | null;
+  nodeType: string;
+  messageId?: number | null;
+  actorUserId?: string | null;
+};
 
 export type AiClassificationContextMode = 'metadata' | 'full';
 
@@ -208,13 +220,24 @@ export function createPostgresAiClassificationPort(
       const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
       if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
 
-      const output = await (options.chatCompletion ?? defaultChatCompletion(options))({
-        profile: context.profile,
-        apiKey,
-        system: 'Du bist ein E-Mail-Klassifizierer.',
-        user: classificationPrompt(input.labels, input.contextMode, context.message),
-      });
-      const label = normalizeClassificationLabel(output);
+      const output = await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.classify',
+          messageId: input.messageId,
+          actorUserId: input.actorUserId ?? null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: 'Du bist ein E-Mail-Klassifizierer.',
+          user: classificationPrompt(input.labels, input.contextMode, context.message),
+        },
+      );
+      const { label, confidence } = parseClassificationOutput(output);
       if (!label) throw new Error('KI-Klassifizierung leer');
 
       await withWorkspaceTransaction(
@@ -223,7 +246,7 @@ export function createPostgresAiClassificationPort(
         async (trx) => {
           await addClassificationTag(trx, input.workspaceId, context.message, label, now());
           if (input.continuation) {
-            await enqueueClassificationContinuation(trx, input, label, now());
+            await enqueueClassificationContinuation(trx, input, label, confidence, now());
           }
         },
         { applySession: options.applyWorkspaceSession },
@@ -269,12 +292,23 @@ export function createPostgresAiTransformTextPort(
         ...stringPayload(input.eventStrings),
       };
       const variables = variablePayload(input.eventVariables);
-      const output = (await (options.chatCompletion ?? defaultChatCompletion(options))({
-        profile: context.profile,
-        apiKey,
-        system: 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text.',
-        user: interpolateWorkflowTemplate(context.prompt.user_template, strings, variables),
-      })).trim();
+      const output = (await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.transform_text',
+          messageId: input.messageId ?? null,
+          actorUserId: input.actorUserId ?? null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text.',
+          user: interpolateWorkflowTemplate(context.prompt.user_template, strings, variables),
+        },
+      )).trim();
       if (!output) throw new Error('KI-Texttransformation leer');
 
       if (input.continuation) {
@@ -338,22 +372,45 @@ export function createPostgresAiTextTransformApiPort(
         const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
         if (!apiKey) return { success: false, error: 'Kein KI-API-Schluessel konfiguriert' };
 
-        const output = await (options.chatCompletion ?? defaultChatCompletion(options))({
-          profile: context.profile,
-          apiKey,
-          system: 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.',
-          user: interpolateWorkflowTemplate(
-            context.prompt.user_template,
-            {
-              text: sourceText,
-              combined_text: sourceText,
-              'customer.name': context.customer?.name ?? '',
-              'customer.firstName': context.customer?.first_name ?? '',
-              'customer.email': context.customer?.email ?? '',
-            },
-            {},
-          ),
-        });
+        // Selection-aware mode: when a context is supplied, `sourceText` is the
+        // user-highlighted excerpt and `contextText` is the full surrounding
+        // email. Tell the model to use the context but rewrite + return ONLY
+        // the excerpt, so the caller can splice it back in.
+        const contextText = input.contextText?.trim() ?? '';
+        const selectionMode = contextText.length > 0 && contextText !== sourceText;
+        const systemPrompt = selectionMode
+          ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer hat in seiner Antwort eine Stelle markiert. '
+            + 'Nutze den GESAMTEN E-Mail-Text nur als Kontext, bearbeite und antworte aber AUSSCHLIESSLICH mit dem '
+            + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
+            + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamte E-Mail, nicht erneut ausgeben):\n'
+            + contextText
+          : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+        const output = await runTrackedChatCompletion(
+          options,
+          {
+            workspaceId: input.workspaceId,
+            aiProfileId: Number(context.profile.id),
+            model: context.profile.model,
+            nodeType: 'ai.text_transform_api',
+            actorUserId: input.actorUserId ?? null,
+          },
+          {
+            profile: context.profile,
+            apiKey,
+            system: systemPrompt,
+            user: interpolateWorkflowTemplate(
+              context.prompt.user_template,
+              {
+                text: sourceText,
+                combined_text: sourceText,
+                'customer.name': context.customer?.name ?? '',
+                'customer.firstName': context.customer?.first_name ?? '',
+                'customer.email': context.customer?.email ?? '',
+              },
+              {},
+            ),
+          },
+        );
         if (!output.trim()) return { success: false, error: 'KI-Antwort leer' };
         return { success: true, text: output };
       } catch (error) {
@@ -404,13 +461,24 @@ export function createPostgresAiReviewPort(
       const variables = variablePayload(input.eventVariables);
       const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
         .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
-      const output = await (options.chatCompletion ?? defaultChatCompletion(options))({
-        profile: context.profile,
-        apiKey,
-        system: input.systemPrompt
-          ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
-        user: interpolateWorkflowTemplate(userTemplate, strings, variables),
-      });
+      const output = await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.review',
+          messageId: input.messageId ?? null,
+          actorUserId: input.actorUserId ?? null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: input.systemPrompt
+            ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
+          user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+        },
+      );
       const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
       const blocked = output.toUpperCase().includes(blockKeyword.toUpperCase());
 
@@ -477,12 +545,23 @@ export function createPostgresAiAgentPort(
       if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
 
       const variables = variablePayload(input.eventVariables);
-      const output = (await (options.chatCompletion ?? defaultChatCompletion(options))({
-        profile: context.profile,
-        apiKey,
-        system: interpolateWorkflowTemplate(input.systemPrompt, context.strings, variables),
-        user: buildAgentUserPrompt(context.strings, context.chunks, variables),
-      })).trim();
+      const output = (await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.agent',
+          messageId: input.messageId ?? null,
+          actorUserId: input.actorUserId ?? null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: interpolateWorkflowTemplate(input.systemPrompt, context.strings, variables),
+          user: buildAgentUserPrompt(context.strings, context.chunks, variables),
+        },
+      )).trim();
       if (!output) throw new Error('KI-Agent-Antwort leer');
 
       if (input.continuation || input.createDraft) {
@@ -490,7 +569,14 @@ export function createPostgresAiAgentPort(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
-            const continuationVariables: JobPayload = { 'ai.agent.response': output };
+            const continuationVariables: JobPayload = {
+              'ai.agent.response': output,
+              // P1-8 source transparency: which knowledge chunks the answer drew on.
+              'ai.agent.sources': context.chunks
+                .map((chunk) => (chunk.title?.trim() ? chunk.title.trim() : `#${Number(chunk.id)}`))
+                .join('; '),
+              'ai.agent.source_count': context.chunks.length,
+            };
             if (input.createDraft) {
               if (!context.message) throw new Error('Nachricht fuer KI-Agent-Entwurf nicht gefunden');
               const draft = await createPostgresComposeDraftInTransaction(trx, {
@@ -504,6 +590,14 @@ export function createPostgresAiAgentPort(
               });
               if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
               continuationVariables['draft.id'] = draft.message.id;
+              // P2-9: snapshot the AI draft so feedback learning can measure how
+              // much a human edits it before sending.
+              await trx
+                .updateTable('email_messages')
+                .set({ ai_suggestion_snapshot: output })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', Number(draft.message.id))
+                .execute();
             }
             if (input.continuation) {
               await enqueueContinuation(trx, {
@@ -520,6 +614,176 @@ export function createPostgresAiAgentPort(
       }
     },
   };
+}
+
+export type AiPickCannedJobPlan = Readonly<{
+  workspaceId: string;
+  messageId?: number;
+  actorUserId?: string;
+  profileId?: number;
+  createDraft: boolean;
+  eventStrings?: JobPayload;
+  eventVariables?: JobPayload;
+  continuation?: AiClassificationContinuation;
+}>;
+
+export type AiPickCannedJobPort = Readonly<{
+  pickCanned(input: AiPickCannedJobPlan): Promise<void>;
+}>;
+
+type CannedRow = { id: number; title: string; body: string };
+
+/**
+ * P1-5: lets the KI pick the best-matching canned response for an inbound mail
+ * (instead of free-texting), fills its placeholders and creates a draft. Cheaper
+ * and more controllable than freeform generation; falls through (pick 0) when no
+ * canned response fits.
+ */
+export function createPostgresAiPickCannedPort(
+  options: PostgresAiClassificationPortOptions,
+): AiPickCannedJobPort {
+  const now = () => options.now?.() ?? new Date();
+  return {
+    async pickCanned(input): Promise<void> {
+      const context = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const message = input.messageId === undefined
+            ? null
+            : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
+          const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
+          const canned = await selectCannedResponses(trx, input.workspaceId);
+          return { message, profile, canned };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!context.profile) throw new Error('AI-Profil nicht gefunden');
+      if (context.canned.length === 0) throw new Error('Keine Textbausteine vorhanden');
+
+      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+      if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
+
+      const strings = {
+        ...stringsFromOptionalMessage(context.message),
+        ...stringPayload(input.eventStrings),
+      };
+      const list = context.canned.map((row, index) => `${index + 1}. ${row.title}`).join('\n');
+      const output = await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.pick_canned',
+          messageId: input.messageId ?? null,
+          actorUserId: input.actorUserId ?? null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: 'Du waehlst den am besten passenden Textbaustein fuer die Kundenmail. Antworte nur mit der Nummer des Bausteins, oder 0 wenn keiner passt.',
+          user: `Textbausteine:\n${list}\n\nKundenmail:\n${strings.combined_text ?? ''}`,
+        },
+      );
+      const pick = parseCannedPickNumber(output, context.canned.length);
+
+      const continuationVariables: JobPayload = { 'ai.canned.pick': pick };
+      let draftBody: string | null = null;
+      if (pick > 0) {
+        const chosen = context.canned[pick - 1]!;
+        continuationVariables['ai.canned.id'] = chosen.id;
+        continuationVariables['ai.canned.title'] = chosen.title;
+        draftBody = interpolateWorkflowTemplate(chosen.body, strings, variablePayload(input.eventVariables));
+        continuationVariables['ai.canned.text'] = draftBody.slice(0, 8000);
+      }
+
+      // When the model returns "0 = no canned template fits", draftBody stays
+      // null. If a continuation is queued in that state, downstream nodes such
+      // as email.send_draft would error out (no draft.id). Surface a clear
+      // no-match flag in the continuation variables so the workflow can branch
+      // or skip; do NOT enqueue a continuation that lacks a draft when the
+      // node was configured to create one.
+      if (input.createDraft && draftBody === null) {
+        continuationVariables['ai.canned.no_match'] = true;
+      }
+      const willCreateDraft = input.createDraft && draftBody !== null;
+      // Skip the continuation when createDraft was requested but no draft was
+      // produced — downstream nodes that depend on draft.id would error out.
+      const shouldEnqueueContinuation = !!input.continuation
+        && (willCreateDraft || !input.createDraft);
+
+      if (willCreateDraft || shouldEnqueueContinuation) {
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            // Narrow for the closure: TypeScript can't carry the willCreateDraft
+            // discriminant into the async callback.
+            const draftBodyForCreate = draftBody;
+            if (willCreateDraft && draftBodyForCreate !== null && context.message) {
+              // Address the canned-response draft to the original sender; without
+              // a recipient, scheduled-send would clear scheduled_send_at and the
+              // auto-reply would never actually go out (silently no-op).
+              const replyToAddress = recipientAddresses(context.message.from_json).trim();
+              const draft = await createPostgresComposeDraftInTransaction(trx, {
+                workspaceId: input.workspaceId,
+                accountId: Number(context.message.account_id),
+                values: {
+                  accountId: Number(context.message.account_id),
+                  subject: replySubject(context.message.subject),
+                  bodyText: draftBodyForCreate,
+                  ...(replyToAddress
+                    ? { toJson: { value: [{ address: replyToAddress }] } }
+                    : {}),
+                },
+              });
+              if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
+              continuationVariables['draft.id'] = draft.message.id;
+              await trx
+                .updateTable('email_messages')
+                .set({ ai_suggestion_snapshot: draftBodyForCreate })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', Number(draft.message.id))
+                .execute();
+            }
+            if (shouldEnqueueContinuation) {
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation!,
+                variables: continuationVariables,
+                now: now(),
+              });
+            }
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
+    },
+  };
+}
+
+function parseCannedPickNumber(output: string, max: number): number {
+  const match = output.trim().match(/\d+/);
+  if (!match) return 0;
+  const value = Number(match[0]);
+  if (!Number.isFinite(value) || value < 1 || value > max) return 0;
+  return value;
+}
+
+async function selectCannedResponses(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<CannedRow[]> {
+  const rows = await trx
+    .selectFrom('email_canned_responses')
+    .select(['id', 'title', 'body'])
+    .where('workspace_id', '=', workspaceId)
+    .orderBy('sort_order', 'asc')
+    .limit(50)
+    .execute();
+  return rows.map((row) => ({ id: Number(row.id), title: String(row.title ?? ''), body: String(row.body ?? '') }));
 }
 
 async function selectClassificationMessage(
@@ -648,10 +912,25 @@ function classificationPrompt(
   message: ClassificationMessageRow,
 ): string {
   return [
-    `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.`,
+    `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}.`,
+    'Antworte ausschliesslich im Format "Kategorie|Sicherheit", wobei Sicherheit eine ganze Zahl von 0 bis 100 ist',
+    '(wie sicher du dir bei der Kategorie bist), z. B. "Rechnung|85". Keine weiteren Worte.',
     '',
     mode === 'full' ? fullMessageText(message) : metadataMessageText(message),
   ].join('\n');
+}
+
+/** Parses the model output "Kategorie|Sicherheit" into a label + confidence (0–100).
+ *  Tolerant of missing/garbled confidence (then null) and of a plain label. */
+function parseClassificationOutput(output: string): { label: string; confidence: number | null } {
+  const trimmed = output.trim();
+  const pipeIndex = trimmed.indexOf('|');
+  const labelPart = pipeIndex >= 0 ? trimmed.slice(0, pipeIndex) : trimmed;
+  const label = normalizeClassificationLabel(labelPart);
+  const confidenceSource = pipeIndex >= 0 ? trimmed.slice(pipeIndex + 1) : trimmed.slice(label.length);
+  const match = confidenceSource.match(/\d{1,3}/);
+  const confidence = match ? Math.max(0, Math.min(100, Number(match[0]))) : null;
+  return { label, confidence };
 }
 
 function metadataMessageText(message: ClassificationMessageRow): string {
@@ -806,6 +1085,7 @@ async function enqueueClassificationContinuation(
   trx: WorkspaceTransaction,
   input: AiClassificationJobPlan,
   label: string,
+  confidence: number | null,
   now: Date,
 ): Promise<void> {
   const continuation = input.continuation;
@@ -815,7 +1095,9 @@ async function enqueueClassificationContinuation(
     workspaceId: input.workspaceId,
     messageId: input.messageId,
     continuation,
-    variables: { 'ai.class': label },
+    // `ai.class_confidence` lets a downstream logic.threshold node gate on it
+    // ("nur antworten, wenn >= X%"). 0 when the model gave no usable number.
+    variables: { 'ai.class': label, 'ai.class_confidence': confidence ?? 0 },
     now,
   });
 }
@@ -877,46 +1159,46 @@ function defaultChatCompletion(
   return async (input) => {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     if (!fetchImpl) throw new Error('fetch is not available for AI classification');
-    const baseUrl = input.profile.base_url.trim().replace(/\/+$/, '');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), OPENAI_CHAT_TIMEOUT_MS);
     try {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${input.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: input.profile.model,
-          messages: [
-            { role: 'system', content: input.system },
-            { role: 'user', content: input.user },
-          ],
-          temperature: 0.1,
-        }),
+      const result = await callAiChat({
+        provider: input.profile.provider,
+        baseUrl: input.profile.base_url,
+        model: input.profile.model,
+        apiKey: input.apiKey,
+        system: input.system,
+        user: input.user,
+        temperature: 0.1,
+        fetchImpl,
         signal: controller.signal,
       });
-      const body = await response.text();
-      if (!response.ok) {
-        const detail = body.trim().slice(0, 500);
-        throw new Error(`KI API HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
-      }
-      return parseChatCompletionContent(body);
+      input.captureUsage?.(result.usage);
+      return result.content;
     } finally {
       clearTimeout(timeout);
     }
   };
 }
 
-function parseChatCompletionContent(body: string): string {
-  const parsed = parseJson(body);
-  if (!parsed || typeof parsed !== 'object') return body;
-  const choices = (parsed as { choices?: unknown }).choices;
-  if (!Array.isArray(choices)) return body;
-  const first = choices[0] as { message?: { content?: unknown } } | undefined;
-  const content = first?.message?.content;
-  return typeof content === 'string' ? content : body;
+/**
+ * Runs a chat completion and records token/cost/latency into `ai_usage_events`
+ * (best-effort). All AI call sites go through this so usage tracking is uniform.
+ */
+async function runTrackedChatCompletion(
+  options: PostgresAiClassificationPortOptions,
+  attribution: AiUsageAttribution,
+  input: ChatCompletionInput,
+): Promise<string> {
+  const chat = options.chatCompletion ?? defaultChatCompletion(options);
+  const started = Date.now();
+  let usage: AiTokenUsage | null = null;
+  const output = await chat({ ...input, captureUsage: (value) => { usage = value; } });
+  await recordAiUsageSafe(
+    { db: options.db, applyWorkspaceSession: options.applyWorkspaceSession, now: options.now },
+    { ...attribution, usage, latencyMs: Date.now() - started },
+  );
+  return output;
 }
 
 function parseJson(value: string): unknown {

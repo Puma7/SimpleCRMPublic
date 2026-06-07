@@ -28,6 +28,7 @@ import {
   createPostgresCustomerCustomFieldReadPort,
   createPostgresCustomerCustomFieldValueReadPort,
   createPostgresCustomerReadPort,
+  createPostgresUserGroupPort,
   createPostgresDashboardPort,
   createPostgresDealProductPort,
   createPostgresDealReadPort,
@@ -95,6 +96,14 @@ import {
   type ProductionJobHandlersOptions,
 } from './jobs';
 import {
+  createServerLogStore,
+  type ServerLogStore,
+} from './diagnostics/server-log-store';
+import {
+  createPinoLogCaptureStream,
+  installConsoleLogCapture,
+} from './diagnostics/server-log-capture';
+import {
   accessTokenSignerFromBase64,
   parseBase64MasterKey,
   type AccessTokenSigner,
@@ -103,6 +112,7 @@ import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
 import { createPostgresAiReplySuggestionPort } from './ai-reply-suggestion';
 import {
   createPostgresAiAgentPort,
+  createPostgresAiPickCannedPort,
   createPostgresAiClassificationPort,
   createPostgresAiReviewPort,
   createPostgresAiTextTransformApiPort,
@@ -160,6 +170,7 @@ export type ServerListenOptions = Readonly<{
   databaseUrl?: string;
   createDatabase?: (options: { databaseUrl: string }) => Promise<Kysely<ServerDatabase>>;
   logger?: boolean;
+  serverLogStore?: ServerLogStore;
   accessTokenSigner?: AccessTokenSigner;
   jobWorker?: Partial<ServerJobWorkerConfig>;
   jobHandlers?: JobHandlerRegistry;
@@ -192,6 +203,13 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
   const webhookAllowlist = env.JOB_WEBHOOK_ALLOWLIST?.trim();
+  // Central server log: capture every warning/error (pino + console) into a
+  // bounded, file-persisted store exposed via the diagnostics API.
+  const serverLogStore = options.serverLogStore ?? createServerLogStore({
+    filePath: env.SERVER_LOG_FILE?.trim() || undefined,
+  });
+  const captureLogs = options.logger !== false;
+  if (captureLogs) installConsoleLogCapture(serverLogStore);
   let db: Kysely<ServerDatabase> | undefined;
   let secrets: PostgresSecretPort | undefined;
   let apiJobQueue: GraphileQueuePort | undefined;
@@ -235,10 +253,14 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     }
   }
 
+  ports.serverLogs = serverLogStore;
+
   const app = createFastifyServer({
     ports,
     accessTokenSigner,
-    logger: options.logger ?? true,
+    logger: captureLogs
+      ? { level: env.LOG_LEVEL?.trim() || 'info', stream: createPinoLogCaptureStream(serverLogStore) }
+      : (options.logger ?? false),
     corsAllowedOrigins,
   });
 
@@ -282,7 +304,12 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
                 mssql: createPostgresMssqlSettingsPort({ db, secrets }),
                 workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
               }),
-              workflowForwardCopy: createPostgresWorkflowForwardCopyPort({ db, secrets }),
+              workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
+                db,
+                secrets,
+                attachmentsRoot,
+                ...(ports.emailComposeSender ? { composeSender: ports.emailComposeSender } : {}),
+              }),
               workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
             } : {}),
             ...(ports.aiReplySuggestions ? {
@@ -290,6 +317,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
             } : {}),
             ...(db ? {
               aiAgent: createPostgresAiAgentPort({ db, secrets }),
+              aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
               aiClassification: createPostgresAiClassificationPort({ db, secrets }),
               aiReview: createPostgresAiReviewPort({ db, secrets }),
               aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
@@ -373,6 +401,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     customerCustomFields: createPostgresCustomerCustomFieldReadPort({ db: options.db }),
     customerCustomFieldValues: createPostgresCustomerCustomFieldValueReadPort({ db: options.db }),
     customers: createPostgresCustomerReadPort({ db: options.db }),
+    userGroups: createPostgresUserGroupPort({ db: options.db }),
     dashboard: createPostgresDashboardPort({ db: options.db }),
     deals: createPostgresDealReadPort({ db: options.db }),
     dealProducts: createPostgresDealProductPort({ db: options.db }),

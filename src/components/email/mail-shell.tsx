@@ -43,6 +43,9 @@ type MailEventRefreshRequest = {
   remotePolicy: boolean
 }
 
+/** Minimum gap between actual IMAP polls when the refresh button is clicked. */
+const IMAP_SYNC_MIN_GAP_MS = 15_000
+
 function MailShellInner() {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "email-panes",
@@ -76,7 +79,9 @@ function MailShellInner() {
     refreshCurrentMessage,
     handleSync,
     moveMessageToView: moveMessageToViewBase,
+    moveMessagesToView: moveMessagesToViewBase,
     assignMessageCategory: assignMessageCategoryBase,
+    assignMessagesCategory: assignMessagesCategoryBase,
     snoozeMessageUntilTomorrow: snoozeMessageUntilTomorrowBase,
     advanceSelectionAfterMessageRemoved: advanceSelectionAfterMessageRemovedBase,
     loadMore,
@@ -139,6 +144,24 @@ function MailShellInner() {
     [assignMessageCategoryBase, invalidateMailMetrics],
   )
 
+  const assignMessagesCategory = useCallback(
+    async (messageIds: number[], categoryId: number) => {
+      const ok = await assignMessagesCategoryBase(messageIds, categoryId)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [assignMessagesCategoryBase, invalidateMailMetrics],
+  )
+
+  const moveMessagesToView = useCallback(
+    async (messageIds: number[], view: MailView) => {
+      const ok = await moveMessagesToViewBase(messageIds, view)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [moveMessagesToViewBase, invalidateMailMetrics],
+  )
+
   const snoozeMessageUntilTomorrow = useCallback(
     async (messageId: number) => {
       const ok = await snoozeMessageUntilTomorrowBase(messageId)
@@ -148,12 +171,23 @@ function MailShellInner() {
     [snoozeMessageUntilTomorrowBase, invalidateMailMetrics],
   )
 
+  // Refresh always reloads the list view from the DB (cheap, can be clicked
+  // often). The actual IMAP poll is throttled to at most once per 15s here (the
+  // server throttles too), so frequent clicks update the view without hammering
+  // the mail server.
+  const lastImapSyncRef = useRef(0)
   const handleSyncWithCategories = useCallback(() => {
     void (async () => {
-      await handleSync()
+      const now = Date.now()
+      if (now - lastImapSyncRef.current >= IMAP_SYNC_MIN_GAP_MS) {
+        lastImapSyncRef.current = now
+        await handleSync({ onAfterSync: () => refreshList({ preserveSelection: true }) })
+      } else {
+        await refreshList({ preserveSelection: true })
+      }
       invalidateMailMetrics()
     })()
-  }, [handleSync, invalidateMailMetrics])
+  }, [handleSync, refreshList, invalidateMailMetrics])
 
   const { messageTags, internalNotes, messageAttachments, reloadNotes, reloadTags } =
     useMessageMetadata()
@@ -338,7 +372,9 @@ function MailShellInner() {
             countForCategory={countForCategory}
             onCategoriesChanged={invalidateMailMetrics}
             onMoveMessageToView={moveMessageToView}
+            onMoveMessagesToView={moveMessagesToView}
             onAssignMessageCategory={assignMessageCategory}
+            onAssignMessagesCategory={assignMessagesCategory}
             onSnoozeMessage={snoozeMessageUntilTomorrow}
           />
         </ResizablePanel>

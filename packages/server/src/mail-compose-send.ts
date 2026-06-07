@@ -13,6 +13,8 @@ import {
   extractTicketFromSubject,
   generateOutboundMessageId,
   generateTicketCode,
+  outboundDraftFingerprint,
+  parseOutboundApprovalMarker,
 } from '@simplecrm/core';
 
 import type {
@@ -25,7 +27,12 @@ import type {
 } from './api';
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
-import { withWorkspaceTransaction, type WorkspaceTransaction } from './db/workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './db/workspace-context';
+import { computeTextChangeRatio } from './ai-feedback';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type {
   ServerImapSentCopyAppendInput,
@@ -50,6 +57,14 @@ const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
 const COMPOSE_SEND_LOCK_PREFIX = 'email_compose_sending:';
 const COMPOSE_SMTP_COMMITTED_PREFIX = 'email_compose_smtp_ok:';
 const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
+/** Marker set by email.release_outbound (autoSend=true) after ai.outbound_review
+ *  returned OK. reviewOutbound.review honours it as "already approved, just send",
+ *  so the scheduled-send cron doesn't loop through the review again. */
+export const OUTBOUND_REVIEW_APPROVED_PREFIX = 'outbound_review_approved:';
+const OUTBOUND_REVIEW_APPROVED_TTL_MS = 24 * 60 * 60 * 1000;
+export function outboundReviewApprovedKey(draftId: number): string {
+  return `${OUTBOUND_REVIEW_APPROVED_PREFIX}${draftId}`;
+}
 const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
 const OUTBOUND_REVIEW_REASON =
   'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
@@ -520,6 +535,7 @@ export function createPostgresEmailOutboundValidationPort(options: {
 export function createPostgresComposeOutboundReviewPort(options: {
   db: Kysely<ServerDatabase>;
   now?: () => Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): ComposeOutboundReviewPort {
   return {
     async review(input) {
@@ -528,6 +544,58 @@ export function createPostgresComposeOutboundReviewPort(options: {
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const now = options.now?.() ?? new Date();
+
+          // Approval-Bypass: if email.release_outbound (autoSend=true) recently
+          // approved this draft for the EXACT content present now, skip the
+          // review entirely. The marker stores a content fingerprint
+          // (subject+body+to/cc/bcc+attachments). On read we recompute the
+          // fingerprint from the current send-input and compare:
+          //  - hash matches + < 24h: bypass review (covers SMTP retries).
+          //  - hash differs: user edited the draft between approval and send;
+          //    deny bypass so the change goes through review again.
+          //  - no hash (older marker): backward compat — accept fresh markers.
+          // The marker is otherwise NOT consumed on read so SMTP retries inside
+          // scheduled-send can all bypass; markDraftAsSent clears it on success.
+          const approvalKey = outboundReviewApprovedKey(input.draftMessageId);
+          const approval = await trx
+            .selectFrom('sync_info')
+            .select('value')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', approvalKey)
+            .executeTakeFirst();
+          if (approval?.value) {
+            const parsed = parseOutboundApprovalMarker(approval.value);
+            const fresh = parsed.approvedAt !== null
+              && now.getTime() - parsed.approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
+            const currentFingerprint = outboundDraftFingerprint({
+              subject: input.subject,
+              bodyText: input.bodyText,
+              bodyHtml: input.bodyHtml,
+              to: input.to,
+              cc: input.cc ?? null,
+              bcc: input.bcc ?? null,
+              attachmentPaths: input.attachmentPaths ?? null,
+            });
+            const contentMatches = parsed.fingerprint === null || parsed.fingerprint === currentFingerprint;
+            if (fresh && contentMatches) {
+              await trx
+                .updateTable('email_messages')
+                .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', input.draftMessageId)
+                .execute();
+              return { allowed: true };
+            }
+            if (!fresh || !contentMatches) {
+              // Stale OR invalidated by an edit: clear so future reviews start fresh.
+              await trx
+                .deleteFrom('sync_info')
+                .where('workspace_id', '=', input.workspaceId)
+                .where('key', '=', approvalKey)
+                .execute();
+            }
+          }
+
           const workflows = await trx
             .selectFrom('email_workflows')
             .select(['id', 'source_sqlite_id', 'name', 'priority'])
@@ -617,7 +685,9 @@ export function createPostgresComposeOutboundReviewPort(options: {
                 message_id: input.draftMessageId,
                 direction: 'outbound',
                 status: 'queued',
-                log_json: ['queued:server_compose_outbound_review'],
+                // jsonb column: stringify the array so node-postgres sends
+                // valid JSON instead of a Postgres array literal ({...}).
+                log_json: JSON.stringify(['queued:server_compose_outbound_review']),
                 source_row: serverApiSourceRow(),
                 imported_in_run_id: null,
                 started_at: null,
@@ -648,6 +718,7 @@ export function createPostgresComposeOutboundReviewPort(options: {
             workflowRunId: firstRunId,
           };
         },
+        { applySession: options.applyWorkspaceSession },
       );
     },
   };
@@ -888,6 +959,9 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .execute();
+          // P2-9 ai_reply_feedback is recorded in markDraftAsSent (post-SMTP)
+          // so a held / retried / failed send does not skew the edit-ratio
+          // metric or produce duplicate rows.
         },
       );
     },
@@ -896,6 +970,29 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // P2-9: capture how much the human changed an AI-suggested draft —
+          // only AFTER SMTP committed, so feedback never reflects held /
+          // failed sends. Reads snapshot + the sent body in one row select to
+          // keep the cost minimal.
+          let feedback: { snapshot: string; sentBody: string } | null = null;
+          try {
+            const existing = await trx
+              .selectFrom('email_messages')
+              .select(['ai_suggestion_snapshot', 'body_text'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.messageId)
+              .executeTakeFirst();
+            const snapshot = existing?.ai_suggestion_snapshot;
+            if (typeof snapshot === 'string' && snapshot.trim()) {
+              feedback = {
+                snapshot,
+                sentBody: typeof existing?.body_text === 'string' ? existing.body_text : '',
+              };
+            }
+          } catch {
+            /* feedback is best-effort */
+          }
+
           await trx
             .updateTable('email_messages')
             .set({
@@ -905,11 +1002,41 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
               archived: false,
               scheduled_send_at: null,
               sent_imap_sync_failed: input.sentImapSyncFailed,
+              // Null the snapshot after measuring so an accidental re-run of
+              // markDraftAsSent does not produce a duplicate feedback row.
+              ...(feedback ? { ai_suggestion_snapshot: null } : {}),
               updated_at: options.now?.() ?? new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .execute();
+          // SMTP succeeded — drop the outbound-review approval marker so it
+          // doesn't linger past the send (and so an edit-then-resend on the
+          // same id space would re-run review).
+          await trx
+            .deleteFrom('sync_info')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', outboundReviewApprovedKey(input.messageId))
+            .execute();
+
+          if (feedback) {
+            try {
+              await trx
+                .insertInto('ai_reply_feedback')
+                .values({
+                  workspace_id: input.workspaceId,
+                  message_id: input.messageId,
+                  node_type: 'compose.send',
+                  suggestion_len: feedback.snapshot.length,
+                  sent_len: feedback.sentBody.length,
+                  changed_ratio: computeTextChangeRatio(feedback.snapshot, feedback.sentBody),
+                  created_at: options.now?.() ?? new Date(),
+                })
+                .execute();
+            } catch {
+              /* feedback is best-effort */
+            }
+          }
         },
       );
     },

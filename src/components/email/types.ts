@@ -110,6 +110,8 @@ export type EmailMessage = {
 
 export type CategoryRow = {
   id: number
+  /** Stable cross-instance id (server edition). Used for rename-safe references. */
+  source_sqlite_id?: number
   parent_id: number | null
   name: string
   sort_order: number

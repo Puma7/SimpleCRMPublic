@@ -523,6 +523,71 @@ export type CustomerMutationInput = {
   status?: string;
 };
 
+export type UserGroupRecord = {
+  id: number;
+  name: string;
+  description: string | null;
+  memberCount: number;
+  updatedAt: string;
+};
+
+export type UserGroupMemberRecord = {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: 'owner' | 'admin' | 'user';
+};
+
+export type UserGroupMutationResult =
+  | { ok: true; group: UserGroupRecord }
+  | { ok: false; code: 'duplicate_name' | 'not_found' | 'invalid_name' };
+
+export type UserGroupAddMemberResult =
+  | { ok: true }
+  | { ok: false; code: 'group_not_found' | 'user_not_found' };
+
+export type UserGroupRemoveMemberResult =
+  | { ok: true }
+  | { ok: false; code: 'group_not_found' };
+
+export type UserGroupApiPort = {
+  list(input: { workspaceId: string }): Promise<UserGroupRecord[]>;
+  create(input: {
+    workspaceId: string;
+    actorUserId: string;
+    name: string;
+    description?: string | null;
+  }): Promise<UserGroupMutationResult>;
+  update(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    name?: string;
+    description?: string | null;
+  }): Promise<UserGroupMutationResult>;
+  delete(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+  }): Promise<UserGroupRecord | null>;
+  listMembers(input: {
+    workspaceId: string;
+    groupId: number;
+  }): Promise<UserGroupMemberRecord[] | null>;
+  addMember(input: {
+    workspaceId: string;
+    actorUserId: string;
+    groupId: number;
+    userId: string;
+  }): Promise<UserGroupAddMemberResult>;
+  removeMember(input: {
+    workspaceId: string;
+    actorUserId: string;
+    groupId: number;
+    userId: string;
+  }): Promise<UserGroupRemoveMemberResult>;
+};
+
 export type CustomerApiPort = {
   list(input: {
     workspaceId: string;
@@ -820,6 +885,13 @@ export type DealProductApiPort = {
   }): Promise<DealProductDeletePortResult>;
 };
 
+export type TaskAssignmentScope = 'global' | 'user' | 'group';
+
+export type TaskViewer = {
+  userId: string;
+  role: 'owner' | 'admin' | 'user';
+};
+
 export type TaskRecord = {
   id: number;
   sourceSqliteId: number;
@@ -831,6 +903,9 @@ export type TaskRecord = {
   priority: string;
   completed: boolean;
   snoozedUntil: string | null;
+  assignmentScope: TaskAssignmentScope;
+  assignedUserId: string | null;
+  assignedGroupId: number | null;
   updatedAt: string;
 };
 
@@ -847,11 +922,14 @@ export type TaskMutationInput = {
   priority?: string;
   completed?: boolean;
   snoozedUntil?: string | null;
+  assignmentScope?: TaskAssignmentScope;
+  assignedUserId?: string | null;
+  assignedGroupId?: number | null;
 };
 
 export type TaskMutationPortResult =
   | { ok: true; task: TaskRecord }
-  | { ok: false; code: 'customer_not_found' };
+  | { ok: false; code: 'customer_not_found' | 'assigned_user_not_found' | 'assigned_group_not_found' };
 
 export type TaskApiPort = {
   list(input: {
@@ -861,10 +939,12 @@ export type TaskApiPort = {
     completed?: boolean;
     cursor?: number;
     limit: number;
+    viewer?: TaskViewer;
   }): Promise<TaskListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    viewer?: TaskViewer;
   }): Promise<TaskRecord | null>;
   create?(input: {
     workspaceId: string;
@@ -876,11 +956,13 @@ export type TaskApiPort = {
     actorUserId: string;
     id: number;
     values: TaskMutationInput;
+    viewer?: TaskViewer;
   }): Promise<TaskMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
+    viewer?: TaskViewer;
   }): Promise<TaskRecord | null>;
 };
 
@@ -1617,6 +1699,16 @@ export type EmailDiagnosticsReport = {
     runsBlockedLast24h: number;
     runsErrorLast24h: number;
   };
+  aiUsage: {
+    events24h: number;
+    tokens24h: number;
+    costMicroUsd24h: number;
+    avgLatencyMs24h: number;
+    events30d: number;
+    tokens30d: number;
+    costMicroUsd30d: number;
+    byNodeType24h: Record<string, number>;
+  };
   notices: {
     imapAuth: number;
     uidValidity: number;
@@ -1741,6 +1833,9 @@ export type EmailComposeDraftCreateInput = {
   subject?: string;
   bodyText?: string;
   toJson?: unknown | null;
+  /** Optional attachment storage paths to persist into draft_attachment_paths_json,
+   *  so a hold-then-release send picks them up later. */
+  draftAttachmentPaths?: readonly string[];
 };
 
 export type EmailComposeDraftUpdateInput = {
@@ -2917,6 +3012,10 @@ export type AiTextTransformInput = {
   actorUserId?: string;
   promptId: number;
   text: string;
+  /** When set, `text` is a selection to rewrite and `contextText` is the full
+   *  surrounding email used as context. The AI returns only the rewritten
+   *  selection. */
+  contextText?: string;
   customerId?: number | null;
 };
 
@@ -3992,10 +4091,26 @@ export type HealthCheckApiPort = {
   pingDatabase(): Promise<void>;
 };
 
+export type ServerLogReadEntry = {
+  time: string;
+  level: 'info' | 'warn' | 'error' | 'fatal';
+  message: string;
+  source: string;
+};
+
+export type ServerLogReadPort = {
+  recent(options?: { level?: 'info' | 'warn' | 'error' | 'fatal'; limit?: number }): readonly ServerLogReadEntry[];
+  /** Emits sample info/warn/error entries so operators can verify the pipeline. */
+  selfTest(): number;
+  clear(): void;
+  count(): number;
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
   health?: HealthCheckApiPort;
+  serverLogs?: ServerLogReadPort;
   calendarEvents?: CalendarEventApiPort;
   locks: ConversationLockApiPort;
   audit?: AuditApiPort;
@@ -4009,6 +4124,7 @@ export type ServerApiPorts = {
   customerCustomFields?: CustomerCustomFieldApiPort;
   customerCustomFieldValues?: CustomerCustomFieldValueApiPort;
   customers?: CustomerApiPort;
+  userGroups?: UserGroupApiPort;
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;

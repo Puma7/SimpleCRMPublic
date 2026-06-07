@@ -8,6 +8,14 @@ import electron from 'vite-plugin-electron'
 const sharedAlias = { '@shared': path.resolve(__dirname, './shared') }
 const electronConditions = ['node', 'import', 'module', 'default']
 
+/**
+ * Web-only build for the server edition: the Docker/Caddy image serves the
+ * browser SPA directly. In this mode we skip the vite-plugin-electron bundles
+ * (no Electron main/preload needed) and inline a flag so the browser client
+ * defaults to talking to its own origin (no `?serverUrl=` required).
+ */
+const webOnly = process.env.SIMPLECRM_WEB_ONLY === '1'
+
 /** Nodemon starts Electron (`electron:dev:main`); disable vite-plugin-electron auto-spawn. */
 const electronOnstartNoop = () => {}
 
@@ -26,7 +34,7 @@ export default defineConfig({
     react(),
     tailwindcss(),
     tsconfigPaths(),
-    electron([
+    ...(webOnly ? [] : [electron([
       {
         entry: 'electron/main.js',
         onstart: electronOnstartNoop,
@@ -70,12 +78,22 @@ export default defineConfig({
           },
         },
       },
-    ]),
+    ])]),
   ],
+  define: {
+    // Inlined at build time. `true` only for the server web-only build so the
+    // browser client defaults to its own origin; `false` for dev/electron so
+    // the deploy-mode wizard keeps its existing behavior.
+    __SIMPLECRM_FORCE_SAME_ORIGIN__: JSON.stringify(webOnly),
+  },
   base: '/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Skip the gzip-size report: it walks every chunk through gzip at the very
+    // end of the build, the peak-memory phase that OOM-kills `vite build` on
+    // small (4 GB) hosts. It only affects console output, not the artifacts.
+    reportCompressedSize: false,
     rollupOptions: {
       input: { main: './index.html' },
     },
@@ -96,7 +114,6 @@ export default defineConfig({
       '@xyflow/react',
       '@xyflow/system',
       '@monaco-editor/react',
-      'monaco-editor',
     ],
     exclude: ['electron'],
   },

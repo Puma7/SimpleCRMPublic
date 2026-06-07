@@ -43,6 +43,12 @@ cd docker
 docker compose up -d --build
 ```
 
+Building the `caddy` web image runs `vite build`, which is memory-hungry (Monaco). On small hosts (for example a 4 GB VPS) add swap first so the build does not get OOM-killed:
+
+```sh
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
 Operator wrapper equivalent:
 
 ```sh
@@ -94,14 +100,29 @@ Profiles:
 
 The profile ports bind to `127.0.0.1` by default. Change the bind variables only behind a firewall or private VPN, and replace every `CHANGE_ME` profile password before starting the service.
 
-## First Owner
+## Web App And First Owner
 
-Open `PUBLIC_BASE_URL` in the browser. The server login page calls:
+The `caddy` service builds and serves the browser app (single-page app) at
+`PUBLIC_BASE_URL` and reverse-proxies the API, health probes, OpenAPI and the
+WebSocket event stream to the `api` service. Open `PUBLIC_BASE_URL` in a browser;
+because the bundle is served by the server itself, it talks to the same origin
+automatically (no `?serverUrl=` query and no extra `CORS_ALLOWED_ORIGINS` entry
+needed for the served app).
+
+On first start the app runs the initial setup flow, which calls:
 
 - `GET /api/v1/auth/setup-state`
 - `POST /api/v1/auth/initial-setup`
 
-When setup is required, create the first server owner with email and password. Server-client desktop/browser clients can then connect to the same URL.
+When setup is required, create the first server owner with email and password. Additional desktop or browser clients can then connect to the same URL.
+
+You can also create the owner without a browser, directly against the API:
+
+```sh
+curl -fsS -X POST "$PUBLIC_BASE_URL/api/v1/auth/initial-setup" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"owner@example.com","password":"change-me-min-10-chars","workspaceName":"Acme"}'
+```
 
 ## Server Doctor
 
@@ -122,11 +143,11 @@ npm run doctor:server -- --backup-dir C:\path\to\backups
 
 ## Upgrade / Restart
 
-After pulling new code:
+After pulling new code (rebuild `caddy` too — it now contains the web app bundle):
 
 ```sh
 cd docker
-docker compose build api migrate
+docker compose build api migrate caddy
 docker compose up -d
 docker compose run --rm migrate
 ```

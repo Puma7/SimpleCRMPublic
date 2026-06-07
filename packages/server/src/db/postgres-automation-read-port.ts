@@ -135,7 +135,9 @@ export function createPostgresAutomationApiKeyReadPort(
                 label: values.label,
                 key_hash: hashAutomationApiKey(key),
                 secret_id: secret.id,
-                scopes: values.scopes,
+                // jsonb column: stringify the array so node-postgres sends valid
+                // JSON instead of a Postgres array literal ({...}) -> 22P02.
+                scopes: JSON.stringify(values.scopes),
                 last_used_at: null,
                 revoked_at: null,
                 created_by_user_id: input.actorUserId,

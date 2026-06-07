@@ -624,6 +624,12 @@ async function handleEmailAccountSync(
     return error(409, 'unsupported_email_account_protocol', 'Email account protocol wird nicht unterstuetzt');
   }
 
+  // Optional one-shot full inbox backfill (IMAP only): import older already-read
+  // messages skipped by the first-sync cap.
+  const fullInbox = jobType === 'mail.sync.imap'
+    && typeof req.body === 'object' && req.body !== null
+    && (req.body as { fullInbox?: unknown }).fullInbox === true;
+
   await ports.jobQueue.enqueue({
     workspaceId: principal.workspaceId,
     type: jobType,
@@ -631,6 +637,7 @@ async function handleEmailAccountSync(
       workspaceId: principal.workspaceId,
       accountId,
       actorUserId: principal.userId,
+      ...(fullInbox ? { fullInbox: true } : {}),
     },
   });
 
@@ -639,6 +646,7 @@ async function handleEmailAccountSync(
     queued: true,
     accountId,
     jobType,
+    fullInbox,
   });
 }
 
@@ -2648,6 +2656,16 @@ function sanitizeMailDiagnostics(report: EmailDiagnosticsReport): EmailDiagnosti
       runsLast24h: safeCount(report.workflows.runsLast24h),
       runsBlockedLast24h: safeCount(report.workflows.runsBlockedLast24h),
       runsErrorLast24h: safeCount(report.workflows.runsErrorLast24h),
+    },
+    aiUsage: {
+      events24h: safeCount(report.aiUsage.events24h),
+      tokens24h: safeCount(report.aiUsage.tokens24h),
+      costMicroUsd24h: safeCount(report.aiUsage.costMicroUsd24h),
+      avgLatencyMs24h: safeCount(report.aiUsage.avgLatencyMs24h),
+      events30d: safeCount(report.aiUsage.events30d),
+      tokens30d: safeCount(report.aiUsage.tokens30d),
+      costMicroUsd30d: safeCount(report.aiUsage.costMicroUsd30d),
+      byNodeType24h: sanitizeCountMap(report.aiUsage.byNodeType24h),
     },
     notices: {
       imapAuth: safeCount(report.notices.imapAuth),
