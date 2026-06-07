@@ -704,6 +704,10 @@ export function createPostgresAiPickCannedPort(
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
             if (input.createDraft && draftBody !== null && context.message) {
+              // Address the canned-response draft to the original sender; without
+              // a recipient, scheduled-send would clear scheduled_send_at and the
+              // auto-reply would never actually go out (silently no-op).
+              const replyToAddress = recipientAddresses(context.message.from_json).trim();
               const draft = await createPostgresComposeDraftInTransaction(trx, {
                 workspaceId: input.workspaceId,
                 accountId: Number(context.message.account_id),
@@ -711,6 +715,9 @@ export function createPostgresAiPickCannedPort(
                   accountId: Number(context.message.account_id),
                   subject: replySubject(context.message.subject),
                   bodyText: draftBody,
+                  ...(replyToAddress
+                    ? { toJson: { value: [{ address: replyToAddress }] } }
+                    : {}),
                 },
               });
               if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);

@@ -1238,13 +1238,18 @@ async function executeServerNode(
     };
   }
   if (type === 'logic.delay') {
-    const minutes = boundedDelayMinutes(config.minutes);
+    // Accept either delaySeconds (what the UI writes) or legacy minutes. When
+    // both are present, delaySeconds wins; when neither is set, fall back to 5
+    // minutes as before. boundedDelayMs caps the total delay.
+    const totalMs = config.delaySeconds !== undefined
+      ? boundedDelayMs(Number(config.delaySeconds ?? 60) * 1000)
+      : boundedDelayMinutes(config.minutes) * 60_000;
     const resumeNodeId = String(config.resumeNodeId ?? '').trim()
       || resolveResumeNodeAfter(doc, node.id);
     if (!resumeNodeId) {
       return { status: 'error', port: 'error', message: 'Kein Folgeknoten fuer Resume' };
     }
-    const executeAt = new Date(now.getTime() + minutes * 60_000);
+    const executeAt = new Date(now.getTime() + totalMs);
     if (dryRun) {
       return dryRunSideEffectResult('logic.delay', log, {
         stop: true,
@@ -3158,11 +3163,16 @@ function workflowSpamPatternType(value: unknown): 'email' | 'domain' | null {
 
 /** Best-effort flatten of stored to_json/cc_json/bcc_json into a comma-joined
  *  address list, for the outbound-approval fingerprint (which compares against
- *  the same shape on the review side). */
+ *  the same shape on the review side). addressesFromRecipientJson expects a
+ *  JSON *string*, not a parsed object — jsonb columns typically come back as
+ *  objects from kysely, so we re-stringify when needed. Passing a parsed object
+ *  through caused JSON.parse to throw inside the helper, which then returned
+ *  '' and broke the outbound auto-send approval marker (fingerprint mismatch). */
 function addressesFromStoredRecipientJson(value: unknown): string {
   if (!value) return '';
   try {
-    return addressesFromRecipientJson(typeof value === 'string' ? JSON.parse(value) : value);
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
   } catch {
     return '';
   }
@@ -3474,6 +3484,14 @@ function boundedDelayMinutes(value: unknown): number {
   return Math.max(1, Math.min(60 * 24 * 7, Math.trunc(parsed)));
 }
 
+/** Total delay cap: 7 days in milliseconds; floor: 1 second so sub-second
+ *  configurations don't collapse to 0 and break scheduling. */
+function boundedDelayMs(value: unknown): number {
+  const parsed = Number(value ?? 60_000);
+  if (!Number.isFinite(parsed)) return 60_000;
+  return Math.max(1_000, Math.min(7 * 24 * 60 * 60_000, Math.trunc(parsed)));
+}
+
 function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
   return pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
@@ -3621,6 +3639,24 @@ async function sendWorkflowDraft(
       port: 'error',
       message: `Keine gueltige Entwurfs-ID unter ${draftIdVar} oder config.draftId`,
     };
+  }
+
+  // Belt-and-braces safety net for inbound chains that bypass the outbound
+  // review (runOutboundReview=false): the workspace auto-reply switch must be
+  // on and the original sender must not look like a no-reply / bounce /
+  // automation address. Even if the workflow author forgot to chain
+  // email.auto_reply ahead of send_draft, we refuse to auto-send to a
+  // mailer-daemon. Outbound-direction sends (e.g. a manual workflow) and the
+  // runOutboundReview=true path are not affected (that path uses
+  // composeSender.send → reviewOutbound → outbound workflows for guarding).
+  if (config.runOutboundReview !== true && context.direction === 'inbound') {
+    if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_disabled' };
+    }
+    const sender = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
+    if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) {
+      return { status: 'skipped', port: 'default', message: 'noreply_sender_blocked' };
+    }
   }
   const draftRow = await trx
     .selectFrom('email_messages')
@@ -5093,6 +5129,10 @@ const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set([
   // condition fires explicitly. The auto_reply node still gates whether the
   // draft is actually sent.
   'ai.reply_suggestion',
+  // email.auto_reply IS the gate (toggle + confidence + no-reply check). It
+  // must be reachable without a prior condition, and its 'approved' port trips
+  // the inbound gate so downstream nodes can run.
+  'email.auto_reply',
 ]);
 
 function inboundNodeRequiresConditionGate(node: WorkflowGraphNode): boolean {

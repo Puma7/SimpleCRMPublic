@@ -1366,6 +1366,10 @@ function AutoReplyFields({ config, patch }: FieldFnProps) {
 }
 
 function PickCannedFields({ config, patch }: FieldFnProps) {
+  // Canned responses have no tag column today, so a tag-filter field would
+  // be misleading (UI-only, not enforced on the server). When tags land on
+  // email_canned_responses, re-add the input here AND thread it through
+  // scheduleAiPickCannedJob → selectCannedResponses.
   return (
     <div className="space-y-2 rounded-md border p-3">
       <div className="flex items-start gap-2">
@@ -1374,15 +1378,6 @@ function PickCannedFields({ config, patch }: FieldFnProps) {
           onCheckedChange={(v) => patchConfig(patch, config, "createDraft", v)}
         />
         <Label className="text-xs font-normal">Entwurf direkt anlegen</Label>
-      </div>
-      <div className="space-y-1.5">
-        <Label className="text-xs">Tag-Filter (optional)</Label>
-        <Input
-          className="h-9"
-          placeholder="z.B. support, retoure"
-          value={String(config.tagFilter ?? "")}
-          onChange={(e) => patchConfig(patch, config, "tagFilter", e.target.value)}
-        />
       </div>
     </div>
   )

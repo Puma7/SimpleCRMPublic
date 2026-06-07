@@ -1,7 +1,10 @@
 /**
  * @jest-environment node
  */
-import { parseMailSource } from '../../packages/server/src';
+// Import directly from mail-parse (DB-free) instead of the server barrel — the
+// mail Jest preset doesn't transform kysely's ESM, and the barrel pulls in the
+// whole DB stack.
+import { parseMailSource } from '../../packages/server/src/mail-parse';
 
 // Regression for "messages with attachments fail to import": the parser must
 // produce jsonb-safe values. A raw JS array would be serialized by node-postgres

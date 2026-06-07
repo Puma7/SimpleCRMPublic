@@ -57,9 +57,15 @@ function buildProviderRequest(provider: AiProviderKind, req: AiChatRequest): Pro
     };
   }
   if (provider === 'gemini') {
+    // Use the x-goog-api-key header instead of the ?key=… query parameter so
+    // the key never appears in URLs (which are logged by proxies, captured in
+    // crash stacks, and not redacted by our log-store secret filter).
     return {
-      url: `${baseUrl}/v1beta/models/${encodeURIComponent(req.model)}:generateContent?key=${encodeURIComponent(req.apiKey)}`,
-      headers: { 'Content-Type': 'application/json' },
+      url: `${baseUrl}/v1beta/models/${encodeURIComponent(req.model)}:generateContent`,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': req.apiKey,
+      },
       body: {
         ...(req.system ? { systemInstruction: { parts: [{ text: req.system }] } } : {}),
         contents: [{ role: 'user', parts: [{ text: req.user }] }],

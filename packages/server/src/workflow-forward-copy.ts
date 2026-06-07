@@ -381,10 +381,15 @@ async function readForwardCopyAttachments(
   for (const attachment of attachments) {
     const resolved = resolveAttachmentStoragePath(deps.attachmentsRoot, attachment.storagePath);
     if (!resolved) continue;
-    total += Math.max(0, attachment.sizeBytes);
-    if (total > FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES) break;
     try {
       const content = await deps.readAttachmentFile(resolved);
+      // Cap on the REAL byte size of the file we just read, not on the stored
+      // size_bytes metadata. The metadata can be null/0 for partially-imported
+      // attachments — Math.max(0, null) is 0 in JS, so a null pre-check would
+      // never trip the cap and a hostile sender could overflow the worker.
+      const next = total + content.length;
+      if (next > FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES) break;
+      total = next;
       result.push({
         filename: attachment.filename || 'anhang',
         content,
@@ -602,9 +607,14 @@ async function forwardViaOutboundReview(args: {
       subject: prepared.subject,
       bodyText: prepared.bodyText,
       to: prepared.recipients.join(', '),
-      attachmentPaths: prepared.message.attachments
-        .map((att) => att.storagePath)
-        .filter((p): p is string => typeof p === 'string' && p.length > 0),
+      // Respect includeAttachments on the review path too, otherwise a forward
+      // configured to be text-only would still leak the original attachments
+      // when runOutboundReview=true.
+      attachmentPaths: input.includeAttachments === true
+        ? prepared.message.attachments
+            .map((att) => att.storagePath)
+            .filter((p): p is string => typeof p === 'string' && p.length > 0)
+        : [],
     },
   });
   if (sendResult.ok) return { ok: true, error: null, reviewPending: false };

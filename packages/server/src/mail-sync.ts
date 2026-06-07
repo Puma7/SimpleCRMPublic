@@ -27,6 +27,28 @@ import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 import type { EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier } from './db';
 import { resolveAttachmentStoragePath } from './db';
+import {
+  MAX_SYNC_ATTACHMENT_BYTES,
+  MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
+  parseJsonValue,
+  parseMailSource,
+  parsedAttachmentsForStorage,
+  sanitizeAttachmentFilename,
+  sourceToBuffer,
+  type ServerMailSyncParsedAttachment,
+  type ServerMailSyncParsedMessage,
+} from './mail-parse';
+export {
+  MAX_SYNC_ATTACHMENT_BYTES,
+  MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
+  parseJsonValue,
+  parseMailSource,
+  parsedAttachmentsForStorage,
+  sanitizeAttachmentFilename,
+  sourceToBuffer,
+  type ServerMailSyncParsedAttachment,
+  type ServerMailSyncParsedMessage,
+};
 import type { EmailAccountsTable, EmailFoldersTable, EmailMessagesTable, ServerDatabase } from './db/schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
@@ -37,8 +59,6 @@ const POP3_UID_CEILING = -1_000_000;
 const IMAP_CONNECTION_TIMEOUT_MS = 90_000;
 const IMAP_SOCKET_TIMEOUT_MS = 120_000;
 const POP3_TIMEOUT_MS = 90_000;
-const MAX_SYNC_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const MAX_SYNC_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 const UID_VALIDITY_NOTICE_PREFIX = 'uidvalidity_notice:';
 const UID_VALIDITY_BACKUP_PREFIX = 'uidvalidity_backup:';
 
@@ -106,33 +126,6 @@ export type ServerMailSyncFolder = Readonly<{
   pop3UidlStr: string | null;
 }>;
 
-export type ServerMailSyncParsedMessage = Readonly<{
-  messageId: string | null;
-  inReplyTo: string | null;
-  referencesHeader: string | null;
-  subject: string | null;
-  fromJson: unknown | null;
-  toJson: unknown | null;
-  ccJson: unknown | null;
-  bccJson: unknown | null;
-  dateReceived: string | null;
-  snippet: string | null;
-  bodyText: string | null;
-  bodyHtml: string | null;
-  hasAttachments: boolean;
-  attachmentsJson: unknown | null;
-  rawHeaders: string | null;
-  rawRfc822B64: string;
-  attachments?: readonly ServerMailSyncParsedAttachment[];
-}>;
-
-export type ServerMailSyncParsedAttachment = Readonly<{
-  filename: string;
-  contentType: string | null;
-  sizeBytes: number;
-  contentSha256: string;
-  content: Buffer;
-}>;
 
 export type ServerMailSyncMessageInput = ServerMailSyncParsedMessage & Readonly<{
   workspaceId: string;
@@ -1609,55 +1602,6 @@ async function resolveOAuthMailAuth(input: {
   }
 }
 
-export async function parseMailSource(source: Buffer): Promise<ServerMailSyncParsedMessage> {
-  const { simpleParser } = require('mailparser') as {
-    simpleParser(input: Buffer): Promise<{
-      messageId?: string;
-      inReplyTo?: string;
-      references?: string | string[];
-      subject?: string;
-      from?: unknown;
-      to?: unknown;
-      cc?: unknown;
-      bcc?: unknown;
-      date?: Date;
-      text?: string;
-      html?: string | false;
-      attachments?: { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array | string }[];
-      headerLines?: string[];
-      headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
-    }>;
-  };
-  const parsed = await simpleParser(source);
-  const referencesHeader = parsed.references
-    ? Array.isArray(parsed.references)
-      ? parsed.references.join(' ')
-      : String(parsed.references)
-    : null;
-  const textBody = parsed.text?.trim() || null;
-  const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
-  const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
-  return {
-    messageId: parsed.messageId ?? null,
-    inReplyTo: parsed.inReplyTo ?? null,
-    referencesHeader,
-    subject: parsed.subject ?? null,
-    fromJson: parseJsonValue(addressJson(parsed.from)),
-    toJson: parseJsonValue(addressJson(parsed.to)),
-    ccJson: parseJsonValue(addressJson(parsed.cc)),
-    bccJson: parseJsonValue(addressJson(parsed.bcc)),
-    dateReceived: formatDate(parsed.date),
-    snippet: snippetFromParsed(textBody, htmlBody),
-    bodyText: textBody,
-    bodyHtml: htmlBody,
-    hasAttachments,
-    attachmentsJson: parseJsonValue(attachmentsJson),
-    rawHeaders: rawHeadersFromParsed(parsed),
-    rawRfc822B64: source.toString('base64'),
-    attachments: parsedAttachmentsForStorage(parsed.attachments),
-  };
-}
-
 async function replaceMessageAttachmentsIfPresent(
   store: ServerMailSyncStore,
   input: {
@@ -2118,12 +2062,6 @@ function mapMailSyncFolder(row: Pick<EmailFolderRow,
   };
 }
 
-function sourceToBuffer(source: Buffer | Uint8Array | string): Buffer {
-  if (Buffer.isBuffer(source)) return source;
-  if (typeof source === 'string') return Buffer.from(source, 'utf8');
-  return Buffer.from(source);
-}
-
 function flagsContainSeen(flags: Set<string> | string[] | null | undefined): boolean {
   if (!flags) return false;
   const values = Array.isArray(flags) ? flags : [...flags];
@@ -2145,57 +2083,6 @@ function pathLeaf(pathValue: string, delimiter: string | undefined): string {
     if (index >= 0) leaf = leaf.slice(index + delimiterValue.length);
   }
   return leaf;
-}
-
-function parseJsonValue(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    JSON.parse(value);
-    // Keep the validated JSON text rather than the parsed value: a parsed array
-    // would be serialized by node-postgres as a Postgres array literal ('{...}')
-    // and rejected by the jsonb column (this is what made messages with
-    // attachments fail to import). A JSON string is cast to jsonb correctly for
-    // both objects (from/to) and arrays (attachments).
-    return value;
-  } catch {
-    return null;
-  }
-}
-
-function parsedAttachmentsForStorage(
-  attachments: readonly { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array | string }[] | undefined,
-): ServerMailSyncParsedAttachment[] {
-  if (!attachments?.length) return [];
-  const stored: ServerMailSyncParsedAttachment[] = [];
-  let totalBytes = 0;
-  for (const attachment of attachments) {
-    if (attachment.content == null) continue;
-    const content = sourceToBuffer(attachment.content);
-    if (content.length <= 0 || content.length > MAX_SYNC_ATTACHMENT_BYTES) continue;
-    if (totalBytes + content.length > MAX_SYNC_ATTACHMENT_TOTAL_BYTES) break;
-    totalBytes += content.length;
-    stored.push({
-      filename: sanitizeAttachmentFilename(attachment.filename ?? 'attachment'),
-      contentType: attachment.contentType?.trim() || null,
-      sizeBytes: typeof attachment.size === 'number' && Number.isFinite(attachment.size)
-        ? Math.max(0, Math.trunc(attachment.size))
-        : content.length,
-      contentSha256: createHash('sha256').update(content).digest('hex'),
-      content,
-    });
-  }
-  return stored;
-}
-
-function sanitizeAttachmentFilename(input: string): string {
-  const basename = path.basename(input).trim();
-  if (!basename || basename === '.' || basename === '..') return 'attachment';
-  const sanitized = basename
-    .replace(/[\r\n\0]+/g, '_')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/^_+/, '')
-    .slice(0, 180);
-  return sanitized || 'attachment';
 }
 
 function normalizeFirstSyncMaxMessages(value: number | undefined): number {

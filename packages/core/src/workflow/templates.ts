@@ -540,7 +540,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'inbound-ai-auto-reply',
     name: 'Eingehend: KI antwortet vollautomatisch (mit Gate)',
     description:
-      'Vollautomatischer Antwort-Loop: KI klassifiziert die Mail, das Auto-Antwort-Gate prüft Schalter + Confidence + No-Reply-Schutz, KI schlägt eine Antwort vor und legt einen Entwurf an, der Entwurf wird direkt versendet (ohne erneute Outbound-Prüfung — wer KI-prüft-KI will, setzt am Send-Knoten runOutboundReview=true).',
+      'Vollautomatischer Antwort-Loop: KI klassifiziert, Auto-Antwort-Gate prüft Schalter + Confidence + No-Reply-Schutz, KI wählt einen passenden Textbaustein und legt einen adressierten Entwurf an (draft.id), der direkt versendet wird. Für KI-prüft-KI am send-Knoten runOutboundReview=true setzen.',
     trigger: 'inbound',
     graph: {
       version: 1,
@@ -564,15 +564,16 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { confidenceVar: 'ai.class_confidence', minConfidence: 80 },
           },
         },
-        // (3) KI schlägt eine Antwort vor (legt direkt einen Entwurf an).
+        // (3) KI wählt einen Textbaustein und LEGT EINEN ENTWURF AN — setzt
+        //     draft.id als Variable (ai.reply_suggestion macht das NICHT,
+        //     daher hier pick_canned).
         {
-          id: 'suggest',
+          id: 'compose',
           type: 'registry',
-          data: { nodeType: 'ai.reply_suggestion', config: { promptId: 0, skipIfReady: true } },
+          data: { nodeType: 'ai.pick_canned', config: { createDraft: true } },
         },
         // (4) Entwurf vollautomatisch versenden — Default ohne erneute Prüfung
-        //     (das Gate hat schon gefiltert). Für "KI prüft KI" am send-Knoten
-        //     runOutboundReview=true setzen.
+        //     (das Gate hat schon gefiltert).
         {
           id: 'send',
           type: 'registry',
@@ -586,8 +587,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e0', source: 't1', target: 'classify' },
         { id: 'e1', source: 'classify', target: 'gate' },
         // Gate hat zwei Ports: 'approved' und 'blocked'. Wir verzweigen nur auf approved.
-        { id: 'e2', source: 'gate', target: 'suggest', label: 'approved' },
-        { id: 'e3', source: 'suggest', target: 'send' },
+        { id: 'e2', source: 'gate', target: 'compose', label: 'approved' },
+        { id: 'e3', source: 'compose', target: 'send' },
       ],
     } as WorkflowGraphDocument,
   },

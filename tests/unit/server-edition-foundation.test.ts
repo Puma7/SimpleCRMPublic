@@ -326,6 +326,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0016_task_assignment_and_user_groups',
   '0017_ai_usage_events',
   '0018_ai_reply_feedback',
+  '0019_task_assignment_scope_reset',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -10077,6 +10078,9 @@ describe('server edition foundation', () => {
           to_json: { value: [{ address: 'kunde@example.com' }] },
         },
       ],
+      // send_draft's belt-and-braces guard requires the workspace auto-reply
+      // switch to be on for the inbound bypass path.
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
     });
     const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
 
@@ -10111,6 +10115,54 @@ describe('server edition foundation', () => {
     // (c) Step message reflects the auto-send branch.
     expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
       ['email.send_draft', 'default', 'send_draft_queued_auto'],
+    ]);
+  });
+
+  // Belt-and-braces guard: even if an operator wires up email.send_draft
+  // without an email.auto_reply gate, the inbound path must refuse to send to
+  // a no-reply / mailer-daemon sender. The draft must NOT be primed.
+  test('email.send_draft inbound bypass skips when sender looks like no-reply (belt-and-braces)', async () => {
+    const now = new Date('2026-08-15T11:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        { id: 94, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 940, subject: 'Bounce', from_json: { value: [{ address: 'mailer-daemon@example.com' }] } },
+        { id: 95, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 950, uid: -1, folder_kind: 'draft', subject: 'Re: Bounce', body_text: 'reply', body_html: null, to_json: { value: [{ address: 'mailer-daemon@example.com' }] } },
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 31,
+      messageId: 94,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 94 }, eventVariables: { 'draft.id': 95 } },
+    });
+
+    // Draft NOT primed for send.
+    const draftAfter = rows.messages.find((m) => m.id === 95);
+    expect(draftAfter?.scheduled_send_at).toBeUndefined();
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:95')).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'noreply_sender_blocked'],
     ]);
   });
 
