@@ -4,7 +4,11 @@ import {
   buildSpamDecision,
   buildFeaturePreview,
   encodeOutboundApprovalMarker,
+  ensureTicketInSubject,
   evaluateSenderFilterFromLists,
+  extractDraftBodyForOutboundBlock,
+  extractTicketFromSubject,
+  generateTicketCode,
   normalizeMailboxName,
   normalizeEmailAddress,
   outboundDraftFingerprint,
@@ -3538,66 +3542,129 @@ async function releaseWorkflowOutboundHold(
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
   }
   const autoSend = config.autoSend === true;
-  const messagePatch: Record<string, unknown> = {
-    outbound_hold: false,
-    outbound_block_reason: null,
-    updated_at: now,
-  };
-  if (autoSend) messagePatch.scheduled_send_at = now;
+
+  if (!autoSend) {
+    await trx
+      .updateTable('email_messages')
+      .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', context.messageId)
+      .execute();
+    return {
+      status: 'ok',
+      port: 'default',
+      message: 'outbound_hold_released',
+      variables: { 'email.outbound_hold': false, 'email.auto_send_scheduled': false },
+    };
+  }
+
+  // autoSend path:
+  // (1) review.review wrote the "AUSGANGSPRUEFUNG — VERSAND BLOCKIERT" banner
+  //     into body_text/body_html when it held the draft. If we don't strip it
+  //     here, the customer receives the internal banner in the sent mail.
+  // (2) review.review on the scheduled-send retry will receive a subject that
+  //     has been ticket-code-prefixed by prepareDraftForSend, so the marker
+  //     fingerprint must be computed against the SAME prefixed subject —
+  //     otherwise hash mismatches every retry and bypass is denied.
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', context.messageId)
+    .executeTakeFirst();
+
+  const cleaned = extractDraftBodyForOutboundBlock({
+    body_text: draftRow?.body_text ?? null,
+    body_html: draftRow?.body_html ?? null,
+  });
+  const cleanedBodyText = cleaned.plain;
+  const cleanedBodyHtml = cleaned.html;
+
+  // Reconcile subject with the ticket code that prepareDraftForSend will
+  // add when scheduled-send finally calls composeSender.send. The marker must
+  // be valid against that final subject so the retry bypasses the review.
+  const storedSubject = draftRow?.subject?.trim() || '';
+  const existingTicket = draftRow?.ticket_code?.trim()
+    || extractTicketFromSubject(draftRow?.subject ?? null);
+  const ticketCode = existingTicket || generateTicketCode();
+  const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+
   await trx
     .updateTable('email_messages')
-    .set(messagePatch)
+    .set({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      scheduled_send_at: now,
+      // Persist the cleaned body so the customer does not see the internal
+      // review banner, and the persisted ticket-prefixed subject so the
+      // fingerprint matches at send time.
+      body_text: cleanedBodyText,
+      body_html: cleanedBodyHtml || null,
+      subject: finalSubject,
+      ticket_code: ticketCode,
+      updated_at: now,
+    })
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', context.messageId)
     .execute();
 
-  if (autoSend) {
-    // Bind the approval to the draft's current content. If the user edits the
-    // draft after release_outbound runs but before scheduled-send fires, the
-    // fingerprint stored here won't match what review.review computes on its
-    // call → bypass denied → re-review. Defense in depth.
-    const draftRow = await trx
-      .selectFrom('email_messages')
-      .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
-      .where('workspace_id', '=', context.workspaceId)
-      .where('id', '=', context.messageId)
-      .executeTakeFirst();
-    const fingerprint = outboundDraftFingerprint({
-      subject: draftRow?.subject ?? null,
-      bodyText: draftRow?.body_text ?? null,
-      bodyHtml: draftRow?.body_html ?? null,
-      to: addressesFromStoredRecipientJson(draftRow?.to_json),
-      cc: addressesFromStoredRecipientJson(draftRow?.cc_json),
-      bcc: addressesFromStoredRecipientJson(draftRow?.bcc_json),
-      attachmentPaths: draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
-    });
-    const key = outboundReviewApprovedKey(context.messageId);
-    const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
-    await trx
-      .insertInto('sync_info')
-      .values({
-        workspace_id: context.workspaceId,
-        key,
-        value: markerValue,
-        last_updated: now,
-        source_row: serverWorkerSourceRow(),
-        imported_in_run_id: null,
-        updated_at: now,
-      })
-      .onConflict((oc) => oc
-        .columns(['workspace_id', 'key'])
-        .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
-      .execute();
+  // Multi-outbound-workflow safety: if there are OTHER outbound runs against
+  // this draft still queued/running, the user has multiple parallel quality
+  // checks (e.g. language + compliance). Setting the bypass marker now would
+  // let scheduled-send race them. Skip the marker (cron still picks up the
+  // draft via scheduled_send_at and re-enters reviewOutbound.review, which
+  // re-holds until the other workflows finish — they'll set their own marker
+  // once they all approve).
+  const otherOpenOutboundRuns = await trx
+    .selectFrom('email_workflow_runs')
+    .select('id')
+    .where('message_id', '=', context.messageId)
+    .where('direction', '=', 'outbound')
+    .where('status', 'in', ['queued', 'running'])
+    .where('id', '!=', context.runId)
+    .limit(1)
+    .execute();
+  if (otherOpenOutboundRuns.length > 0) {
+    return {
+      status: 'ok',
+      port: 'default',
+      message: 'outbound_hold_released_auto_send_pending_peers',
+      variables: { 'email.outbound_hold': false, 'email.auto_send_scheduled': true, 'email.pending_outbound_peers': true },
+    };
   }
+
+  const fingerprint = outboundDraftFingerprint({
+    subject: finalSubject,
+    bodyText: cleanedBodyText,
+    bodyHtml: cleanedBodyHtml,
+    to: addressesFromStoredRecipientJson(draftRow?.to_json),
+    cc: addressesFromStoredRecipientJson(draftRow?.cc_json),
+    bcc: addressesFromStoredRecipientJson(draftRow?.bcc_json),
+    attachmentPaths: draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+  });
+  const key = outboundReviewApprovedKey(context.messageId);
+  const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: context.workspaceId,
+      key,
+      value: markerValue,
+      last_updated: now,
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'key'])
+      .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
+    .execute();
 
   return {
     status: 'ok',
     port: 'default',
-    message: autoSend ? 'outbound_hold_released_auto_send' : 'outbound_hold_released',
-    variables: {
-      'email.outbound_hold': false,
-      'email.auto_send_scheduled': autoSend,
-    },
+    message: 'outbound_hold_released_auto_send',
+    variables: { 'email.outbound_hold': false, 'email.auto_send_scheduled': true },
   };
 }
 
@@ -3641,15 +3708,14 @@ async function sendWorkflowDraft(
     };
   }
 
-  // Belt-and-braces safety net for inbound chains that bypass the outbound
-  // review (runOutboundReview=false): the workspace auto-reply switch must be
-  // on and the original sender must not look like a no-reply / bounce /
-  // automation address. Even if the workflow author forgot to chain
-  // email.auto_reply ahead of send_draft, we refuse to auto-send to a
-  // mailer-daemon. Outbound-direction sends (e.g. a manual workflow) and the
-  // runOutboundReview=true path are not affected (that path uses
-  // composeSender.send → reviewOutbound → outbound workflows for guarding).
-  if (config.runOutboundReview !== true && context.direction === 'inbound') {
+  // Belt-and-braces safety net for ALL inbound chains: the workspace auto-
+  // reply switch must be on, and the original sender must not look like a
+  // no-reply / bounce / automation address. This runs regardless of
+  // runOutboundReview, because runOutboundReview=true only helps when
+  // outbound workflows actually exist — if none are configured, the send
+  // would otherwise go out unguarded. Outbound-direction sends are not
+  // affected (a manual workflow is the operator's explicit choice).
+  if (context.direction === 'inbound') {
     if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) {
       return { status: 'skipped', port: 'default', message: 'auto_reply_disabled' };
     }
@@ -3660,7 +3726,7 @@ async function sendWorkflowDraft(
   }
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', draftId)
     .executeTakeFirst();
@@ -3672,26 +3738,45 @@ async function sendWorkflowDraft(
   }
 
   const runOutboundReview = config.runOutboundReview === true;
-  const messagePatch: Record<string, unknown> = {
-    outbound_hold: false,
-    outbound_block_reason: null,
-    scheduled_send_at: now,
-    updated_at: now,
-  };
-  await trx
-    .updateTable('email_messages')
-    .set(messagePatch)
-    .where('workspace_id', '=', context.workspaceId)
-    .where('id', '=', draftId)
-    .execute();
 
+  // For runOutboundReview=false we have to reconcile the persisted body and
+  // subject with what scheduled-send / composeSender.send will use at SMTP
+  // time, otherwise the approval marker we stamp now won't match:
+  //  - strip any "AUSGANGSPRUEFUNG"-banner left over from an earlier
+  //    reviewOutbound hold (it would otherwise be sent to the customer);
+  //  - bake in the ticket-code-prefixed subject that prepareDraftForSend will
+  //    enforce, so the fingerprint stays valid on the retry.
   if (!runOutboundReview) {
-    // Bypass the outbound review pipeline by stamping the approval marker with
-    // the current content fingerprint.
+    const cleaned = extractDraftBodyForOutboundBlock({
+      body_text: draftRow.body_text ?? null,
+      body_html: draftRow.body_html ?? null,
+    });
+    const storedSubject = draftRow.subject?.trim() || '';
+    const existingTicket = draftRow.ticket_code?.trim()
+      || extractTicketFromSubject(draftRow.subject ?? null);
+    const ticketCode = existingTicket || generateTicketCode();
+    const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+
+    await trx
+      .updateTable('email_messages')
+      .set({
+        outbound_hold: false,
+        outbound_block_reason: null,
+        scheduled_send_at: now,
+        body_text: cleaned.plain,
+        body_html: cleaned.html || null,
+        subject: finalSubject,
+        ticket_code: ticketCode,
+        updated_at: now,
+      })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', draftId)
+      .execute();
+
     const fingerprint = outboundDraftFingerprint({
-      subject: draftRow.subject ?? null,
-      bodyText: draftRow.body_text ?? null,
-      bodyHtml: draftRow.body_html ?? null,
+      subject: finalSubject,
+      bodyText: cleaned.plain,
+      bodyHtml: cleaned.html,
       to: addressesFromStoredRecipientJson(draftRow.to_json),
       cc: addressesFromStoredRecipientJson(draftRow.cc_json),
       bcc: addressesFromStoredRecipientJson(draftRow.bcc_json),
@@ -3712,6 +3797,20 @@ async function sendWorkflowDraft(
       .onConflict((oc) => oc
         .columns(['workspace_id', 'key'])
         .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
+      .execute();
+  } else {
+    // runOutboundReview=true: outbound workflows guard the send via the
+    // existing pipeline; just prime scheduled_send_at + clear the hold.
+    await trx
+      .updateTable('email_messages')
+      .set({
+        outbound_hold: false,
+        outbound_block_reason: null,
+        scheduled_send_at: now,
+        updated_at: now,
+      })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', draftId)
       .execute();
   }
 

@@ -133,10 +133,18 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
         onChangeRef.current(html === "<p><br></p>" ? "" : html)
       })
 
-      quill.on("selection-change", (range) => {
+      quill.on("selection-change", (range, _oldRange, source) => {
         // Cache the last non-empty selection before focus moves to a toolbar
         // control (e.g. the AI prompt dropdown) and Quill reports null.
-        if (range && range.length > 0) lastSelectionRef.current = range
+        if (range && range.length > 0) {
+          lastSelectionRef.current = range
+          return
+        }
+        // The user actively moved the cursor or deselected (source === 'user'):
+        // drop the cached range so a later AI transform doesn't reuse a stale
+        // selection. Programmatic/silent changes (focus stolen by the prompt
+        // dropdown) leave the cache intact, which is the entire point.
+        if (source === "user") lastSelectionRef.current = null
       })
 
       return () => {

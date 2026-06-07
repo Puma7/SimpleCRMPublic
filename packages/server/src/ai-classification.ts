@@ -698,12 +698,30 @@ export function createPostgresAiPickCannedPort(
         continuationVariables['ai.canned.text'] = draftBody.slice(0, 8000);
       }
 
-      if (input.continuation || (input.createDraft && draftBody !== null)) {
+      // When the model returns "0 = no canned template fits", draftBody stays
+      // null. If a continuation is queued in that state, downstream nodes such
+      // as email.send_draft would error out (no draft.id). Surface a clear
+      // no-match flag in the continuation variables so the workflow can branch
+      // or skip; do NOT enqueue a continuation that lacks a draft when the
+      // node was configured to create one.
+      if (input.createDraft && draftBody === null) {
+        continuationVariables['ai.canned.no_match'] = true;
+      }
+      const willCreateDraft = input.createDraft && draftBody !== null;
+      // Skip the continuation when createDraft was requested but no draft was
+      // produced — downstream nodes that depend on draft.id would error out.
+      const shouldEnqueueContinuation = !!input.continuation
+        && (willCreateDraft || !input.createDraft);
+
+      if (willCreateDraft || shouldEnqueueContinuation) {
         await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
-            if (input.createDraft && draftBody !== null && context.message) {
+            // Narrow for the closure: TypeScript can't carry the willCreateDraft
+            // discriminant into the async callback.
+            const draftBodyForCreate = draftBody;
+            if (willCreateDraft && draftBodyForCreate !== null && context.message) {
               // Address the canned-response draft to the original sender; without
               // a recipient, scheduled-send would clear scheduled_send_at and the
               // auto-reply would never actually go out (silently no-op).
@@ -714,7 +732,7 @@ export function createPostgresAiPickCannedPort(
                 values: {
                   accountId: Number(context.message.account_id),
                   subject: replySubject(context.message.subject),
-                  bodyText: draftBody,
+                  bodyText: draftBodyForCreate,
                   ...(replyToAddress
                     ? { toJson: { value: [{ address: replyToAddress }] } }
                     : {}),
@@ -724,16 +742,16 @@ export function createPostgresAiPickCannedPort(
               continuationVariables['draft.id'] = draft.message.id;
               await trx
                 .updateTable('email_messages')
-                .set({ ai_suggestion_snapshot: draftBody })
+                .set({ ai_suggestion_snapshot: draftBodyForCreate })
                 .where('workspace_id', '=', input.workspaceId)
                 .where('id', '=', Number(draft.message.id))
                 .execute();
             }
-            if (input.continuation) {
+            if (shouldEnqueueContinuation) {
               await enqueueContinuation(trx, {
                 workspaceId: input.workspaceId,
                 messageId: input.messageId,
-                continuation: input.continuation,
+                continuation: input.continuation!,
                 variables: continuationVariables,
                 now: now(),
               });

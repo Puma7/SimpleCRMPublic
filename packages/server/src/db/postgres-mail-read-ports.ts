@@ -3460,7 +3460,9 @@ export async function createPostgresComposeDraftInTransaction(
       imap_thread_id: null,
       has_attachments: false,
       attachments_json: null,
-      draft_attachment_paths_json: null,
+      draft_attachment_paths_json: input.values.draftAttachmentPaths === undefined
+        ? null
+        : draftAttachmentPathsToJsonValue(input.values.draftAttachmentPaths),
       post_process_done: false,
       reply_parent_message_id: null,
       assigned_to: null,

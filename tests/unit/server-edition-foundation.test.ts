@@ -10036,6 +10036,80 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('email.release_outbound autoSend strips the held-banner from body + bakes ticket-code into subject + skips marker if peer outbound runs are still open', async () => {
+    const now = new Date('2026-07-04T11:00:35.000Z');
+    // Two outbound workflows for the same draft: this run is the second, the
+    // first is still queued. release_outbound autoSend must clear hold + arm
+    // scheduled_send_at, but NOT write the bypass marker (the peer would
+    // otherwise race past its own review).
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 73,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 730,
+        subject: 'Re: Frage',
+        // body_text already contains the AUSGANGSPRUEFUNG banner from a prior
+        // reviewOutbound.review hold (real format from buildOutboundWarningBanner).
+        body_text: '⚠️ AUSGANGSPRÜFUNG — VERSAND BLOCKIERT\nai_review_block\nBitte E-Mail prüfen, korrigieren und erneut senden.\n---\n\nSehr geehrte Damen und Herren, ...',
+        body_html: '<div><strong>⚠️ AUSGANGSPRÜFUNG — VERSAND BLOCKIERT</strong></div><p>Sehr geehrte Damen und Herren, ...</p>',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'review',
+        outbound_hold: true,
+        outbound_block_reason: 'review',
+        ticket_code: null,
+      }],
+      // Another outbound run for the SAME draft, still queued — this is the
+      // peer that must block the marker.
+      runs: [{ id: 999, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 9990, workflow_id: 999, message_id: 73, direction: 'outbound', status: 'queued', log_json: null, started_at: null, finished_at: null }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 28,
+      messageId: 73,
+      triggerName: 'outbound',
+      context: { outbound: { messageId: 73, subject: 'Re: Frage', bodyText: 'Sehr geehrte ...', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    const draftAfter = rows.messages.find((m) => m.id === 73);
+    // (a) Banner is stripped from body_text/body_html so the customer doesn't
+    //     see the internal "AUSGANGSPRUEFUNG" wording.
+    expect(String(draftAfter?.body_text)).not.toContain('AUSGANGSPR');
+    expect(String(draftAfter?.body_text)).toContain('Sehr geehrte');
+    expect(String(draftAfter?.body_html ?? '')).not.toContain('AUSGANGSPR');
+    // (b) Subject gets a freshly generated ticket code (which is also persisted
+    //     in ticket_code), so the marker fingerprint stays valid through
+    //     prepareDraftForSend on the scheduled-send retry.
+    expect(String(draftAfter?.subject)).toMatch(/^\[SCR-[A-Z0-9]+\]/);
+    expect(String(draftAfter?.ticket_code ?? '')).toMatch(/^SCR-[A-Z0-9]+$/);
+    // (c) Hold is released + scheduled_send_at is primed so the cron picks up
+    //     immediately — but the peer outbound run blocks the bypass marker.
+    expect(draftAfter?.outbound_hold).toBe(false);
+    expect(draftAfter?.scheduled_send_at).toEqual(now);
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:73')).toBeUndefined();
+    expect(rows.steps.map((s) => s.message)).toContain('outbound_hold_released_auto_send_pending_peers');
+  });
+
   test('postgres workflow execution job port arms full auto-reply via email.send_draft (default: no review)', async () => {
     const now = new Date('2026-08-15T10:00:00.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
@@ -10187,9 +10261,12 @@ describe('server edition foundation', () => {
         execution_mode: 'graph',
       }],
       messages: [
-        { id: 92, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 920, subject: 'Frage' },
+        { id: 92, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 920, subject: 'Frage', from_json: { value: [{ address: 'kunde@example.com' }] } },
         { id: 93, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 930, uid: -1, folder_kind: 'draft', subject: 'Re: Frage', body_text: 'KI-Antwort', body_html: null, to_json: { value: [{ address: 'kunde@example.com' }] } },
       ],
+      // Belt-and-braces now also enforced on the runOutboundReview=true path
+      // (a workspace without outbound workflows would otherwise still send).
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
     });
     const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
 
@@ -36118,6 +36195,7 @@ class FakeWorkflowExecutionSelect {
   private matchingRows(): Array<Record<string, unknown>> {
     const result = this.rows.filter((row) => this.wheres.every(([column, operator, value]) => {
       if (operator === '=') return row[column] === value;
+      if (operator === '!=') return row[column] !== value;
       if (operator === 'is') return value === null ? row[column] === null || row[column] === undefined : row[column] === value;
       if (operator === 'in' && Array.isArray(value)) return value.includes(row[column]);
       if (operator === 'ilike') return ilikeMatch(row[column], value);

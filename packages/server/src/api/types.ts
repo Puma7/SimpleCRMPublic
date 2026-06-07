@@ -1833,6 +1833,9 @@ export type EmailComposeDraftCreateInput = {
   subject?: string;
   bodyText?: string;
   toJson?: unknown | null;
+  /** Optional attachment storage paths to persist into draft_attachment_paths_json,
+   *  so a hold-then-release send picks them up later. */
+  draftAttachmentPaths?: readonly string[];
 };
 
 export type EmailComposeDraftUpdateInput = {

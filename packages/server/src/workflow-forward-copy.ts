@@ -91,6 +91,7 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
     subject: string;
     bodyText: string;
     recipients: readonly string[];
+    attachmentPaths?: readonly string[];
   }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
 }>;
 
@@ -163,6 +164,9 @@ export function createPostgresWorkflowForwardCopyPort(
           subject: draftInput.subject,
           bodyText: draftInput.bodyText,
           toJson: { value: draftInput.recipients.map((address) => ({ address })) },
+          ...(draftInput.attachmentPaths && draftInput.attachmentPaths.length > 0
+            ? { draftAttachmentPaths: draftInput.attachmentPaths }
+            : {}),
         },
       }),
       { applySession: options.applyWorkspaceSession },
@@ -568,34 +572,41 @@ async function forwardViaOutboundReview(args: {
     subject: string;
     bodyText: string;
     recipients: readonly string[];
+    /** Persist into draft_attachment_paths_json so a held-then-released send
+     *  picks the attachments up later (the scheduled-send worker reads them
+     *  back from the draft, not from this call's args). */
+    attachmentPaths?: readonly string[];
   }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
   now: Date;
 }): Promise<ForwardReviewResult> {
   const { input, prepared } = args;
 
-  // (1) Record dedup BEFORE creating the draft so a retry of this job doesn't
-  //     create a duplicate draft. We only mark this combination as forwarded
-  //     once it has at least started the review pipeline.
-  await withWorkspaceTransaction(
-    args.db,
-    { workspaceId: input.workspaceId, role: 'system' },
-    async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
-    { applySession: args.applyWorkspaceSession },
-  );
+  // Respect includeAttachments centrally — used both on the initial
+  // composeSender.send call and persisted on the draft for the hold/release
+  // case where scheduled-send re-reads from the draft.
+  const forwardedAttachmentPaths = input.includeAttachments === true
+    ? prepared.message.attachments
+        .map((att) => att.storagePath)
+        .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    : [];
 
-  // (2) Create the draft.
+  // (1) Create the draft FIRST (with attachment paths persisted). Dedup is
+  //     recorded only after we have at least handed the draft to composeSender
+  //     — otherwise a transient draft-create failure would mark the
+  //     (message, workflow, dest) as forwarded and block retries forever.
   const draftResult = await args.createDraft({
     workspaceId: input.workspaceId,
     accountId: prepared.account.id,
     subject: prepared.subject,
     bodyText: prepared.bodyText,
     recipients: prepared.recipients,
+    attachmentPaths: forwardedAttachmentPaths,
   });
   if (!draftResult.ok) {
     return { ok: false, error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`, reviewPending: false };
   }
 
-  // (3) Call composeSender.send. It runs reviewOutbound.review which holds the
+  // (2) Call composeSender.send. It runs reviewOutbound.review which holds the
   //     draft if outbound workflows exist (workflowRunId set on the error
   //     result). The pipeline then drives approval + send.
   const sendResult = await args.composeSender.send({
@@ -607,21 +618,25 @@ async function forwardViaOutboundReview(args: {
       subject: prepared.subject,
       bodyText: prepared.bodyText,
       to: prepared.recipients.join(', '),
-      // Respect includeAttachments on the review path too, otherwise a forward
-      // configured to be text-only would still leak the original attachments
-      // when runOutboundReview=true.
-      attachmentPaths: input.includeAttachments === true
-        ? prepared.message.attachments
-            .map((att) => att.storagePath)
-            .filter((p): p is string => typeof p === 'string' && p.length > 0)
-        : [],
+      attachmentPaths: forwardedAttachmentPaths,
     },
   });
-  if (sendResult.ok) return { ok: true, error: null, reviewPending: false };
-  // workflowRunId set => held for review (not a real failure)
-  if (sendResult.workflowRunId != null) {
-    return { ok: true, error: null, reviewPending: true };
+
+  // Record dedup only when the forward has been successfully sent OR queued
+  // for review (workflowRunId set). A real failure must remain retryable.
+  const sent = sendResult.ok;
+  const queuedForReview = !sendResult.ok && sendResult.workflowRunId != null;
+  if (sent || queuedForReview) {
+    await withWorkspaceTransaction(
+      args.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
+      { applySession: args.applyWorkspaceSession },
+    );
   }
+
+  if (sent) return { ok: true, error: null, reviewPending: false };
+  if (queuedForReview) return { ok: true, error: null, reviewPending: true };
   return { ok: false, error: sendResult.error, reviewPending: false };
 }
 
