@@ -16,6 +16,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+# captured build output (npm run build > build.log)
+build.log
 
 # env files
 .env*
