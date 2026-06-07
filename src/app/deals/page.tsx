@@ -539,7 +539,7 @@ export default function DealsPage() {
                               expectedCloseDate: date ? format(date, "yyyy-MM-dd") : ""
                             })
                           }}
-                          initialFocus
+
                         />
                       </PopoverContent>
                     </Popover>

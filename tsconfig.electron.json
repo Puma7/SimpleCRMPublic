@@ -12,8 +12,11 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["shared/*"]
-    }
+      "@shared/*": [
+        "shared/*"
+      ]
+    },
+    "isolatedModules": true
   },
   "include": [
     "electron/**/*.ts",
@@ -25,4 +28,4 @@
     "dist",
     "electron/preload.ts"
   ]
-} 
+}

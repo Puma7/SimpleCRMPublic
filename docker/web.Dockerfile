@@ -4,7 +4,7 @@
 #
 # A glibc base (node:22, not alpine) avoids the Rollup musl optional-dependency
 # pitfall during `vite build`.
-FROM node:22 AS build
+FROM node:24 AS build
 
 WORKDIR /app
 # Full context; .dockerignore keeps node_modules/.git/build output out.
