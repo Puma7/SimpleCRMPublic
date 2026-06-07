@@ -114,7 +114,6 @@ export default defineConfig({
       '@xyflow/react',
       '@xyflow/system',
       '@monaco-editor/react',
-      'monaco-editor',
     ],
     exclude: ['electron'],
   },

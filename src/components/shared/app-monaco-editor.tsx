@@ -14,9 +14,12 @@ let loaderConfigured = false
 
 async function configureMonacoLoader(): Promise<void> {
   if (loaderConfigured) return
+  // Curated Monaco (editor.all + only json/js/python/markdown) instead of the
+  // full `monaco-editor` package, which bundles ~80 languages and OOM-kills
+  // `vite build` on 4 GB hosts. See src/lib/monaco-curated.ts.
   const [{ loader }, monaco] = await Promise.all([
     import("@monaco-editor/react"),
-    import("monaco-editor"),
+    import("@/lib/monaco-curated"),
   ])
   loader.config({ monaco })
   loaderConfigured = true
