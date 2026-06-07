@@ -9375,7 +9375,7 @@ describe('server edition foundation', () => {
       attachmentsRoot: '/attachments',
       readAttachmentFile: async (p: string) => {
         reads.push(p);
-        return Buffer.alloc(20 * 1024 * 1024);
+        return Buffer.alloc(15 * 1024 * 1024);
       },
       smtpSend: async (input) => { smtpSends.push(input as { rfc822: string }); },
     });
@@ -9388,7 +9388,9 @@ describe('server edition foundation', () => {
       includeAttachments: true,
     });
 
-    expect(reads).toEqual(['/attachments/ws/29/a.bin']);
+    // Both files are read (metadata size_bytes=0/null no longer bypasses the cap),
+    // but only the first fits within the 25 MB total limit.
+    expect(reads).toEqual(['/attachments/ws/29/a.bin', '/attachments/ws/29/b.bin']);
     expect(smtpSends).toHaveLength(1);
     expect(smtpSends[0].rfc822).toContain('a.bin');
     expect(smtpSends[0].rfc822).not.toContain('b.bin');
