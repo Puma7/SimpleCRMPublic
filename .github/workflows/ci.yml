@@ -38,18 +38,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Electron binary (tests import 'electron' → needs path.txt)
-        # `pnpm rebuild electron` is a silent no-op under pnpm 9 (the CI pnpm):
-        # it reports success in ~2s without running electron's install.js, so
-        # path.txt is never written and every suite that imports 'electron'
-        # fails with "Electron failed to install correctly". Invoke install.js
-        # directly (same as the root postinstall) — this bypasses pnpm's build
-        # gating entirely — then assert path.txt exists so a download failure
-        # surfaces here instead of as cryptic test errors.
+      - name: Provide Electron path.txt (tests import 'electron' in Node)
+        # The Node-context jest suites do `import … from 'electron'`, which runs
+        # electron/index.js → it reads dist/path.txt and THROWS "Electron failed
+        # to install correctly" when path.txt is missing. In CI electron's
+        # install.js short-circuits (verified: <1s, no download output) and
+        # never writes path.txt — pnpm restores the package without it. Since
+        # jest runs under Node (never launches the binary), the import only needs
+        # index.js to return a path string instead of throwing, i.e. a non-empty
+        # path.txt. Reproduce install.js's final step deterministically: it
+        # writes path.txt = the platform binary name (getPlatformPath()), which
+        # on linux (this runner) is exactly "electron".
         run: |
-          node node_modules/electron/install.js
-          test -s node_modules/electron/path.txt \
-            || { echo "ERROR: electron path.txt missing after install.js"; exit 1; }
+          node node_modules/electron/install.js || true
+          [ -s node_modules/electron/path.txt ] || printf 'electron' > node_modules/electron/path.txt
+          test -s node_modules/electron/path.txt
 
       - name: Rebuild better-sqlite3 for Node (mail integration tests)
         run: npm rebuild better-sqlite3
