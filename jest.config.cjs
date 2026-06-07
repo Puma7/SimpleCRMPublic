@@ -89,13 +89,9 @@ module.exports = {
       transform: {
         // Use a custom transformer for files that contain import.meta.env (Vite-specific syntax)
         'localDataService\\.ts$': '<rootDir>/tests/setup/transform-import-meta.cjs',
-        '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json', isolatedModules: true }],
-      },
-      globals: {
-        'ts-jest': {
-          tsconfig: '<rootDir>/tsconfig.json',
-          isolatedModules: true,
-        },
+        // isolatedModules is set in tsconfig.json (ts-jest deprecates passing
+        // it via globals/transformer options; will be removed in ts-jest v30).
+        '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
       },
     },
     {
@@ -113,11 +109,9 @@ module.exports = {
       },
       testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],
       setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
-      globals: {
-        'ts-jest': {
-          tsconfig: '<rootDir>/tsconfig.electron.json',
-          isolatedModules: true,
-        },
+      transform: {
+        // isolatedModules is set in tsconfig.electron.json.
+        '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.electron.json' }],
       },
     },
   ],
