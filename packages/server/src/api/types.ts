@@ -3009,6 +3009,10 @@ export type AiTextTransformInput = {
   actorUserId?: string;
   promptId: number;
   text: string;
+  /** When set, `text` is a selection to rewrite and `contextText` is the full
+   *  surrounding email used as context. The AI returns only the rewritten
+   *  selection. */
+  contextText?: string;
   customerId?: number | null;
 };
 

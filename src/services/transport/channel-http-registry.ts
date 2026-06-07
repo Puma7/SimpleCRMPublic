@@ -3385,6 +3385,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       body: pruneUndefined({
         promptId: positiveId(input.promptId, "email ai prompt id"),
         text: stringPayloadField(input.text, "email ai transform text"),
+        contextText: input.contextText === undefined || input.contextText === null
+          ? undefined
+          : stringPayloadField(input.contextText, "email ai transform context"),
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),

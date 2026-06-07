@@ -372,6 +372,19 @@ export function createPostgresAiTextTransformApiPort(
         const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
         if (!apiKey) return { success: false, error: 'Kein KI-API-Schluessel konfiguriert' };
 
+        // Selection-aware mode: when a context is supplied, `sourceText` is the
+        // user-highlighted excerpt and `contextText` is the full surrounding
+        // email. Tell the model to use the context but rewrite + return ONLY
+        // the excerpt, so the caller can splice it back in.
+        const contextText = input.contextText?.trim() ?? '';
+        const selectionMode = contextText.length > 0 && contextText !== sourceText;
+        const systemPrompt = selectionMode
+          ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer hat in seiner Antwort eine Stelle markiert. '
+            + 'Nutze den GESAMTEN E-Mail-Text nur als Kontext, bearbeite und antworte aber AUSSCHLIESSLICH mit dem '
+            + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
+            + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamte E-Mail, nicht erneut ausgeben):\n'
+            + contextText
+          : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
         const output = await runTrackedChatCompletion(
           options,
           {
@@ -384,7 +397,7 @@ export function createPostgresAiTextTransformApiPort(
           {
             profile: context.profile,
             apiKey,
-            system: 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.',
+            system: systemPrompt,
             user: interpolateWorkflowTemplate(
               context.prompt.user_template,
               {

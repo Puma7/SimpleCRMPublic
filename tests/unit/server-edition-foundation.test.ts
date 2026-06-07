@@ -3646,6 +3646,26 @@ describe('server edition foundation', () => {
     expect((chatInputs[0] as any).user).toContain('Muster GmbH');
     expect((chatInputs[0] as any).user).toContain('Max');
     expect((chatInputs[0] as any).user).toContain('hilf mir');
+    // Default (no contextText): system prompt is the simple "rewrite the text".
+    expect((chatInputs[0] as any).system).not.toContain('markiert');
+
+    // Selection-aware mode: contextText supplied → system prompt instructs to
+    // use the full email as context but return ONLY the rewritten selection,
+    // and the full email is embedded as context.
+    await expect(port.transformText({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      promptId: 22,
+      text: 'hilf mir',
+      contextText: 'Sehr geehrte Damen und Herren, hilf mir bitte. Mit freundlichen Gruessen',
+      customerId: 7,
+    })).resolves.toEqual({ success: true, text: 'Sehr gerne helfe ich weiter.' });
+    const selectionCall = chatInputs[1] as any;
+    expect(selectionCall.system).toContain('markiert');
+    expect(selectionCall.system).toContain('AUSSCHLIESSLICH');
+    expect(selectionCall.system).toContain('Mit freundlichen Gruessen');
+    // The selection itself is still the {{text}} in the user message.
+    expect(selectionCall.user).toContain('hilf mir');
 
     await expect(port.transformText({
       workspaceId: WORKSPACE_A_ID,

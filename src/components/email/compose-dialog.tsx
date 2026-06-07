@@ -1012,9 +1012,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       <CircleHelp className="h-3.5 w-3.5" />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="top" className="max-w-[260px] text-xs">
-                    Formuliert nur Ihren Antworttext (oberhalb des Zitats) mit einem Prompt aus
-                    Einstellungen → E-Mail → KI-Prompts. Zuerst kurz tippen, dann Prompt wählen.
+                  <TooltipContent side="top" className="max-w-[280px] text-xs">
+                    Formuliert Ihren Antworttext (oberhalb des Zitats) mit einem Prompt aus
+                    Einstellungen → E-Mail → KI-Prompts. Tipp: Markieren Sie nur eine Stelle, dann
+                    wird ausschließlich diese umgeschrieben — die KI kennt den restlichen Text als
+                    Kontext. Ohne Markierung wird der ganze Antworttext bearbeitet.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1027,10 +1029,17 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   if (!Number.isFinite(pid)) return
                   const rawHtml = getEditorHtml()
                   const { editableHtml, quotedHtml } = splitComposeHtml(rawHtml)
-                  const src = stripHtmlToText(editableHtml)
+                  const fullText = stripHtmlToText(editableHtml)
+                  // Selection-aware: if the user highlighted part of their reply,
+                  // rewrite ONLY that part (using the full reply as context) and
+                  // replace just the selection. Otherwise transform the whole
+                  // editable text as before.
+                  const selectionText = editorRef.current?.getSelectionText() ?? null
+                  const useSelection = !!selectionText && selectionText.trim().length > 0
+                  const src = useSelection ? selectionText! : fullText
                   if (!src.trim()) {
                     toast.error(
-                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben, dann einen KI-Prompt wählen.",
+                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
                     )
                     setAiPromptSelectKey((k) => k + 1)
                     return
@@ -1039,6 +1048,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                     const r = await invokeRenderer(IPCChannels.Email.AiTransformText, {
                       promptId: pid,
                       text: src,
+                      ...(useSelection ? { contextText: fullText } : {}),
                       customerId: selectedMessage?.customer_id ?? null,
                     }) as {
                       success: boolean
@@ -1046,11 +1056,15 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       error?: string
                     }
                     if (r.success && r.text?.trim()) {
-                      const transformed = sanitizeComposeHtml(
-                        plainTextToReplyHtml(r.text),
-                      )
-                      setBodyHtml(mergeComposeHtml(transformed, quotedHtml))
-                      toast.success("KI-Text eingefügt (Zitat unverändert)")
+                      if (useSelection && editorRef.current?.replaceSelectionText(r.text.trim())) {
+                        toast.success("KI hat den markierten Text ersetzt")
+                      } else {
+                        const transformed = sanitizeComposeHtml(
+                          plainTextToReplyHtml(r.text),
+                        )
+                        setBodyHtml(mergeComposeHtml(transformed, quotedHtml))
+                        toast.success("KI-Text eingefügt (Zitat unverändert)")
+                      }
                     } else {
                       toast.error(
                         r.error ??
