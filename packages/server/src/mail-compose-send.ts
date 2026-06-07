@@ -939,21 +939,6 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          // P2-9: capture how much the human changed an AI-suggested draft.
-          let suggestionSnapshot: string | null = null;
-          try {
-            const existing = await trx
-              .selectFrom('email_messages')
-              .select('ai_suggestion_snapshot')
-              .where('workspace_id', '=', input.workspaceId)
-              .where('id', '=', input.messageId)
-              .executeTakeFirst();
-            const snapshot = existing?.ai_suggestion_snapshot;
-            suggestionSnapshot = typeof snapshot === 'string' ? snapshot : null;
-          } catch {
-            /* feedback is best-effort */
-          }
-
           await trx
             .updateTable('email_messages')
             .set({
@@ -974,25 +959,9 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .execute();
-
-          if (suggestionSnapshot && suggestionSnapshot.trim()) {
-            try {
-              await trx
-                .insertInto('ai_reply_feedback')
-                .values({
-                  workspace_id: input.workspaceId,
-                  message_id: input.messageId,
-                  node_type: 'compose.send',
-                  suggestion_len: suggestionSnapshot.length,
-                  sent_len: input.bodyText.length,
-                  changed_ratio: computeTextChangeRatio(suggestionSnapshot, input.bodyText),
-                  created_at: options.now?.() ?? new Date(),
-                })
-                .execute();
-            } catch {
-              /* feedback is best-effort */
-            }
-          }
+          // P2-9 ai_reply_feedback is recorded in markDraftAsSent (post-SMTP)
+          // so a held / retried / failed send does not skew the edit-ratio
+          // metric or produce duplicate rows.
         },
       );
     },
@@ -1001,6 +970,29 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // P2-9: capture how much the human changed an AI-suggested draft —
+          // only AFTER SMTP committed, so feedback never reflects held /
+          // failed sends. Reads snapshot + the sent body in one row select to
+          // keep the cost minimal.
+          let feedback: { snapshot: string; sentBody: string } | null = null;
+          try {
+            const existing = await trx
+              .selectFrom('email_messages')
+              .select(['ai_suggestion_snapshot', 'body_text'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.messageId)
+              .executeTakeFirst();
+            const snapshot = existing?.ai_suggestion_snapshot;
+            if (typeof snapshot === 'string' && snapshot.trim()) {
+              feedback = {
+                snapshot,
+                sentBody: typeof existing?.body_text === 'string' ? existing.body_text : '',
+              };
+            }
+          } catch {
+            /* feedback is best-effort */
+          }
+
           await trx
             .updateTable('email_messages')
             .set({
@@ -1010,6 +1002,9 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
               archived: false,
               scheduled_send_at: null,
               sent_imap_sync_failed: input.sentImapSyncFailed,
+              // Null the snapshot after measuring so an accidental re-run of
+              // markDraftAsSent does not produce a duplicate feedback row.
+              ...(feedback ? { ai_suggestion_snapshot: null } : {}),
               updated_at: options.now?.() ?? new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -1023,6 +1018,25 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('key', '=', outboundReviewApprovedKey(input.messageId))
             .execute();
+
+          if (feedback) {
+            try {
+              await trx
+                .insertInto('ai_reply_feedback')
+                .values({
+                  workspace_id: input.workspaceId,
+                  message_id: input.messageId,
+                  node_type: 'compose.send',
+                  suggestion_len: feedback.snapshot.length,
+                  sent_len: feedback.sentBody.length,
+                  changed_ratio: computeTextChangeRatio(feedback.snapshot, feedback.sentBody),
+                  created_at: options.now?.() ?? new Date(),
+                })
+                .execute();
+            } catch {
+              /* feedback is best-effort */
+            }
+          }
         },
       );
     },
