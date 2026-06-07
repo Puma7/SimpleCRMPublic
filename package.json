@@ -96,7 +96,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/ssr": "^0.9.0",
     "@supabase/supabase-js": "^2.99.1",
-    "@simplecrm/core": "workspace:*",
+    "@simplecrm/core": "0.1.0",
     "@tanstack/react-router": "^1.166.7",
     "@tanstack/react-table": "^8.21.3",
     "@testing-library/dom": "^10.4.1",

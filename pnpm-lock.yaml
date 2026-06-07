@@ -115,7 +115,7 @@ importers:
         specifier: ^1.2.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@simplecrm/core':
-        specifier: workspace:*
+        specifier: 0.1.0
         version: link:packages/core
       '@supabase/ssr':
         specifier: ^0.9.0
@@ -397,7 +397,7 @@ importers:
         specifier: ^11.2.0
         version: 11.2.0
       '@simplecrm/core':
-        specifier: workspace:*
+        specifier: 0.1.0
         version: link:../core
       archiver:
         specifier: ^7.0.1
