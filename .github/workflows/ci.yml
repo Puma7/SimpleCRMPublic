@@ -39,7 +39,17 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Electron binary (tests import 'electron' → needs path.txt)
-        run: pnpm rebuild electron
+        # `pnpm rebuild electron` is a silent no-op under pnpm 9 (the CI pnpm):
+        # it reports success in ~2s without running electron's install.js, so
+        # path.txt is never written and every suite that imports 'electron'
+        # fails with "Electron failed to install correctly". Invoke install.js
+        # directly (same as the root postinstall) — this bypasses pnpm's build
+        # gating entirely — then assert path.txt exists so a download failure
+        # surfaces here instead of as cryptic test errors.
+        run: |
+          node node_modules/electron/install.js
+          test -s node_modules/electron/path.txt \
+            || { echo "ERROR: electron path.txt missing after install.js"; exit 1; }
 
       - name: Rebuild better-sqlite3 for Node (mail integration tests)
         run: npm rebuild better-sqlite3
