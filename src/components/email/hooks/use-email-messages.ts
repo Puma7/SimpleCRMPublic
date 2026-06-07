@@ -301,6 +301,68 @@ export function useEmailMessages() {
     [mailView, refreshList, selectedMessage?.id, advanceSelectionAfterMessageRemoved],
   )
 
+  // Bulk variants for drag-drop of a multi-selection: one toast + one list
+  // refresh instead of N. Self-contained (loop the single IPC; there is no bulk
+  // endpoint for category/move) so they don't depend on the single handlers.
+  const assignMessagesCategory = useCallback(
+    async (messageIds: number[], categoryId: number) => {
+      const ids = messageIds.filter((id) => typeof id === "number" && id > 0)
+      if (ids.length === 0) return false
+      let ok = 0
+      try {
+        for (const id of ids) {
+          await invokeRenderer(IPCChannels.Email.SetMessageCategory, { messageId: id, categoryId })
+          ok += 1
+        }
+        toast.success(ok === 1 ? "Kategorie zugewiesen" : `${ok} Nachrichten kategorisiert`)
+        await refreshList({ preserveSelection: true })
+        return true
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Kategorisieren fehlgeschlagen")
+        if (ok > 0) await refreshList({ preserveSelection: true })
+        return false
+      }
+    },
+    [refreshList],
+  )
+
+  const moveMessagesToView = useCallback(
+    async (messageIds: number[], targetView: MailView) => {
+      const ids = messageIds.filter((id) => typeof id === "number" && id > 0)
+      if (ids.length === 0) return false
+      const labels: Record<MailView, string> = {
+        inbox: "Posteingang",
+        snoozed: "Zurückgestellt",
+        sent: "Gesendet",
+        drafts: "Entwürfe",
+        archived: "Archiv",
+        spam_review: "Spam prüfen",
+        spam: "Spam",
+        trash: "Papierkorb",
+      }
+      let ok = 0
+      try {
+        for (const id of ids) {
+          const r = (await invokeRenderer(IPCChannels.Email.MoveMessageToView, {
+            messageId: id,
+            view: targetView,
+          })) as { success: boolean; error?: string }
+          if (r.success) ok += 1
+        }
+        toast.success(
+          ok === 1 ? `Nachricht → ${labels[targetView]}` : `${ok} Nachrichten → ${labels[targetView]}`,
+        )
+        await refreshList({ preserveSelection: true })
+        return ok > 0
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Verschieben fehlgeschlagen")
+        if (ok > 0) await refreshList({ preserveSelection: true })
+        return false
+      }
+    },
+    [refreshList],
+  )
+
   const handleSync = useCallback(
     async (opts?: HandleSyncOptions) => {
       if (selectedAccountId == null) return
@@ -452,7 +514,9 @@ export function useEmailMessages() {
     openMessage,
     refreshCurrentMessage,
     moveMessageToView,
+    moveMessagesToView,
     assignMessageCategory,
+    assignMessagesCategory,
     snoozeMessageUntilTomorrow,
     advanceSelectionAfterMessageRemoved,
   }

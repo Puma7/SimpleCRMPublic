@@ -27,7 +27,9 @@ type Props = {
   countForCategory: (id: number) => number
   onCategoriesChanged: () => void | Promise<void>
   onMoveMessageToView: (messageId: number, view: MailView) => Promise<boolean>
+  onMoveMessagesToView: (messageIds: number[], view: MailView) => Promise<boolean>
   onAssignMessageCategory: (messageId: number, categoryId: number) => Promise<boolean>
+  onAssignMessagesCategory: (messageIds: number[], categoryId: number) => Promise<boolean>
   onSnoozeMessage: (messageId: number) => Promise<boolean>
 }
 
@@ -56,7 +58,9 @@ export function MailSidebar({
   countForCategory,
   onCategoriesChanged,
   onMoveMessageToView,
+  onMoveMessagesToView,
   onAssignMessageCategory,
+  onAssignMessagesCategory,
   onSnoozeMessage,
 }: Props) {
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
@@ -116,7 +120,7 @@ export function MailSidebar({
                 setDropTarget(null)
                 const payload = readMailDragData(e.dataTransfer)
                 if (!payload) return
-                void onAssignMessageCategory(payload.messageId, n.id)
+                void onAssignMessagesCategory(payload.messageIds, n.id)
               }}
             >
               <span className="flex items-center gap-2 truncate">
@@ -223,9 +227,11 @@ export function MailSidebar({
                         const payload = readMailDragData(e.dataTransfer)
                         if (!payload) return
                         if (id === "snoozed") {
-                          void onSnoozeMessage(payload.messageId)
+                          void (async () => {
+                            for (const mid of payload.messageIds) await onSnoozeMessage(mid)
+                          })()
                         } else {
-                          void onMoveMessageToView(payload.messageId, id)
+                          void onMoveMessagesToView(payload.messageIds, id)
                         }
                       }
                     : undefined

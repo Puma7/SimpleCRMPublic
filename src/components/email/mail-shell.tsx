@@ -79,7 +79,9 @@ function MailShellInner() {
     refreshCurrentMessage,
     handleSync,
     moveMessageToView: moveMessageToViewBase,
+    moveMessagesToView: moveMessagesToViewBase,
     assignMessageCategory: assignMessageCategoryBase,
+    assignMessagesCategory: assignMessagesCategoryBase,
     snoozeMessageUntilTomorrow: snoozeMessageUntilTomorrowBase,
     advanceSelectionAfterMessageRemoved: advanceSelectionAfterMessageRemovedBase,
     loadMore,
@@ -140,6 +142,24 @@ function MailShellInner() {
       return ok
     },
     [assignMessageCategoryBase, invalidateMailMetrics],
+  )
+
+  const assignMessagesCategory = useCallback(
+    async (messageIds: number[], categoryId: number) => {
+      const ok = await assignMessagesCategoryBase(messageIds, categoryId)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [assignMessagesCategoryBase, invalidateMailMetrics],
+  )
+
+  const moveMessagesToView = useCallback(
+    async (messageIds: number[], view: MailView) => {
+      const ok = await moveMessagesToViewBase(messageIds, view)
+      if (ok) invalidateMailMetrics()
+      return ok
+    },
+    [moveMessagesToViewBase, invalidateMailMetrics],
   )
 
   const snoozeMessageUntilTomorrow = useCallback(
@@ -352,7 +372,9 @@ function MailShellInner() {
             countForCategory={countForCategory}
             onCategoriesChanged={invalidateMailMetrics}
             onMoveMessageToView={moveMessageToView}
+            onMoveMessagesToView={moveMessagesToView}
             onAssignMessageCategory={assignMessageCategory}
+            onAssignMessagesCategory={assignMessagesCategory}
             onSnoozeMessage={snoozeMessageUntilTomorrow}
           />
         </ResizablePanel>
