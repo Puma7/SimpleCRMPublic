@@ -193,7 +193,15 @@
       "jest-mock": "30.4.1",
       "jest-runtime": "30.4.2",
       "jest-circus": "30.4.0"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "electron",
+      "better-sqlite3",
+      "esbuild",
+      "keytar",
+      "mssql",
+      "@parcel/watcher"
+    ]
   },
   "build": {
     "appId": "com.zondiac.simplecrm",
