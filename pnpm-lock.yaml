@@ -117,9 +117,6 @@ importers:
       '@simplecrm/core':
         specifier: 0.1.0
         version: link:packages/core
-      '@supabase/ssr':
-        specifier: ^0.9.0
-        version: 0.9.0(@supabase/supabase-js@2.107.0)
       '@supabase/supabase-js':
         specifier: ^2.107.0
         version: 2.107.0
@@ -199,8 +196,8 @@ importers:
         specifier: ^3.2.10
         version: 3.2.10(better-sqlite3@https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/c22e411a6b0988a3d488c95f91836f245528fbf5)
       lucide-react:
-        specifier: ^0.577.0
-        version: 0.577.0(react@19.2.7)
+        specifier: ^1.17.0
+        version: 1.17.0(react@19.2.7)
       mailauth:
         specifier: ^4.13.3
         version: 4.13.3
@@ -2246,11 +2243,6 @@ packages:
   '@supabase/realtime-js@2.107.0':
     resolution: {integrity: sha512-cF2KYdR3JIn9YlWGeluY9S0G+otqTdL6hB8GzpatlEIY6fZudCcyFo6Dc3+X9tjeb+x9XcIyNAk9qhNAknjH1A==}
     engines: {node: '>=20.0.0'}
-
-  '@supabase/ssr@0.9.0':
-    resolution: {integrity: sha512-UFY6otYV3yqCgV+AyHj80vNkTvbf1Gas2LW4dpbQ4ap6p6v3eB2oaDfcI99jsuJzwVBCFU4BJI+oDYyhNk1z0Q==}
-    peerDependencies:
-      '@supabase/supabase-js': ^2.97.0
 
   '@supabase/storage-js@2.107.0':
     resolution: {integrity: sha512-/X8OOVwKBn8aVKuHAGOz2yLA0d2OauqhVuy4mNtN+o7wttHOgx1/j+pqOzlsjmhOHrYykF6AJNZhs3gKZzcMUw==}
@@ -5017,8 +5009,8 @@ packages:
     resolution: {integrity: sha512-Jo6dJ04CmSjuznwJSS3pUeWmd/H0ffTlkXXgwZi+eq1UCmqQwCh+eLsYOYCwY991i2Fah4h1BEMCx4qThGbsiA==}
     engines: {node: '>=10'}
 
-  lucide-react@0.577.0:
-    resolution: {integrity: sha512-4LjoFv2eEPwYDPg/CUdBJQSDfPyzXCRrVW1X7jrx/trgxnxkHFjnVZINbzvzxjN70dxychOfg+FTYwBiS3pQ5A==}
+  lucide-react@1.17.0:
+    resolution: {integrity: sha512-9FA9evdox/JQL5PT57fdA1x/yg8T7knJ98+zjTL3UfKza6pflQUUh3XtaQIHKvnsJw1lmsEyHVlt5jchYxOQ5w==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -8853,11 +8845,6 @@ snapshots:
       '@supabase/phoenix': 0.4.2
       tslib: 2.8.1
 
-  '@supabase/ssr@0.9.0(@supabase/supabase-js@2.107.0)':
-    dependencies:
-      '@supabase/supabase-js': 2.107.0
-      cookie: 1.1.1
-
   '@supabase/storage-js@2.107.0':
     dependencies:
       iceberg-js: 0.8.1
@@ -12116,7 +12103,7 @@ snapshots:
     dependencies:
       yallist: 4.0.0
 
-  lucide-react@0.577.0(react@19.2.7):
+  lucide-react@1.17.0(react@19.2.7):
     dependencies:
       react: 19.2.7
 
