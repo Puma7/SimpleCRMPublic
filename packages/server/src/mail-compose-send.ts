@@ -13,6 +13,8 @@ import {
   extractTicketFromSubject,
   generateOutboundMessageId,
   generateTicketCode,
+  outboundDraftFingerprint,
+  parseOutboundApprovalMarker,
 } from '@simplecrm/core';
 
 import type {
@@ -544,15 +546,16 @@ export function createPostgresComposeOutboundReviewPort(options: {
           const now = options.now?.() ?? new Date();
 
           // Approval-Bypass: if email.release_outbound (autoSend=true) recently
-          // approved this draft, skip the review entirely so the scheduled-send
-          // cron doesn't re-enter the review on its SMTP send call.
-          //
-          // The marker is NOT consumed on read: scheduled-send may call
-          // composeSender.send multiple times if SMTP fails transiently. Each
-          // retry must also bypass the review (otherwise we'd loop: retry →
-          // review re-runs → re-hold → cron picks up again). Stale markers age
-          // out via OUTBOUND_REVIEW_APPROVED_TTL_MS (24h). The marker is cleared
-          // once the SMTP send actually succeeds (see post-send cleanup below).
+          // approved this draft for the EXACT content present now, skip the
+          // review entirely. The marker stores a content fingerprint
+          // (subject+body+to/cc/bcc+attachments). On read we recompute the
+          // fingerprint from the current send-input and compare:
+          //  - hash matches + < 24h: bypass review (covers SMTP retries).
+          //  - hash differs: user edited the draft between approval and send;
+          //    deny bypass so the change goes through review again.
+          //  - no hash (older marker): backward compat — accept fresh markers.
+          // The marker is otherwise NOT consumed on read so SMTP retries inside
+          // scheduled-send can all bypass; markDraftAsSent clears it on success.
           const approvalKey = outboundReviewApprovedKey(input.draftMessageId);
           const approval = await trx
             .selectFrom('sync_info')
@@ -561,10 +564,20 @@ export function createPostgresComposeOutboundReviewPort(options: {
             .where('key', '=', approvalKey)
             .executeTakeFirst();
           if (approval?.value) {
-            const approvedAt = new Date(approval.value);
-            const fresh = !Number.isNaN(approvedAt.getTime())
-              && now.getTime() - approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
-            if (fresh) {
+            const parsed = parseOutboundApprovalMarker(approval.value);
+            const fresh = parsed.approvedAt !== null
+              && now.getTime() - parsed.approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
+            const currentFingerprint = outboundDraftFingerprint({
+              subject: input.subject,
+              bodyText: input.bodyText,
+              bodyHtml: input.bodyHtml,
+              to: input.to,
+              cc: input.cc ?? null,
+              bcc: input.bcc ?? null,
+              attachmentPaths: input.attachmentPaths ?? null,
+            });
+            const contentMatches = parsed.fingerprint === null || parsed.fingerprint === currentFingerprint;
+            if (fresh && contentMatches) {
               await trx
                 .updateTable('email_messages')
                 .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
@@ -573,12 +586,14 @@ export function createPostgresComposeOutboundReviewPort(options: {
                 .execute();
               return { allowed: true };
             }
-            // Stale marker: clear it so future reviews can run cleanly.
-            await trx
-              .deleteFrom('sync_info')
-              .where('workspace_id', '=', input.workspaceId)
-              .where('key', '=', approvalKey)
-              .execute();
+            if (!fresh || !contentMatches) {
+              // Stale OR invalidated by an edit: clear so future reviews start fresh.
+              await trx
+                .deleteFrom('sync_info')
+                .where('workspace_id', '=', input.workspaceId)
+                .where('key', '=', approvalKey)
+                .execute();
+            }
           }
 
           const workflows = await trx

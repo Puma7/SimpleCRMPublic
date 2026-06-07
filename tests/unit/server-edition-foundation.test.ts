@@ -10001,12 +10001,141 @@ describe('server edition foundation', () => {
       updated_at: now,
     });
     // (b) Approval marker is written so reviewOutbound.review bypasses the
-    //     next review (otherwise the cron would loop).
+    //     next review (otherwise the cron would loop). Marker value carries
+    //     the approval timestamp + a content fingerprint (hash of subject,
+    //     body, recipients, attachments) so an edit after approval invalidates
+    //     the bypass on the next review call.
     const approval = rows.syncInfo.find((row) => row.key === 'outbound_review_approved:72');
     expect(approval).toBeDefined();
-    expect(approval!.value).toBe(now.toISOString());
+    const [markerIso, markerHash] = String(approval!.value).split('|');
+    expect(markerIso).toBe(now.toISOString());
+    expect(markerHash).toMatch(/^[0-9a-f]{32}$/);
     expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
       ['email.release_outbound', 'default', 'outbound_hold_released_auto_send'],
+    ]);
+  });
+
+  test('postgres workflow execution job port arms full auto-reply via email.send_draft (default: no review)', async () => {
+    const now = new Date('2026-08-15T10:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        // The inbound mail that triggered this workflow.
+        {
+          id: 90,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 900,
+          subject: 'Frage',
+          from_json: { value: [{ address: 'kunde@example.com' }] },
+        },
+        // The AI-generated draft we want to send.
+        {
+          id: 91,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 910,
+          uid: -1,
+          folder_kind: 'draft',
+          subject: 'Re: Frage',
+          body_text: 'Hallo, danke für Ihre Anfrage. ...',
+          body_html: null,
+          to_json: { value: [{ address: 'kunde@example.com' }] },
+        },
+      ],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 28,
+      messageId: 90,
+      triggerName: 'inbound',
+      context: {
+        // Upstream ai.reply_suggestion / email.create_draft would have set this.
+        inbound: { messageId: 90 },
+        eventVariables: { 'draft.id': 91 },
+      },
+    });
+
+    // (a) Draft has scheduled_send_at primed + outbound_hold cleared so
+    //     scheduled-send picks it up immediately.
+    const draftAfter = rows.messages.find((m) => m.id === 91);
+    expect(draftAfter).toMatchObject({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      scheduled_send_at: now,
+      updated_at: now,
+    });
+    // (b) Approval marker with content fingerprint so the scheduled-send tick
+    //     bypasses outbound review (KI is trusted by this workflow's choice).
+    const approval = rows.syncInfo.find((row) => row.key === 'outbound_review_approved:91');
+    expect(approval).toBeDefined();
+    const [iso, hash] = String(approval!.value).split('|');
+    expect(iso).toBe(now.toISOString());
+    expect(hash).toMatch(/^[0-9a-f]{32}$/);
+    // (c) Step message reflects the auto-send branch.
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'send_draft_queued_auto'],
+    ]);
+  });
+
+  test('postgres workflow execution job port routes auto-reply through outbound review when runOutboundReview=true', async () => {
+    const now = new Date('2026-08-15T10:05:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: true, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        { id: 92, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 920, subject: 'Frage' },
+        { id: 93, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 930, uid: -1, folder_kind: 'draft', subject: 'Re: Frage', body_text: 'KI-Antwort', body_html: null, to_json: { value: [{ address: 'kunde@example.com' }] } },
+      ],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 29,
+      messageId: 92,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 92 }, eventVariables: { 'draft.id': 93 } },
+    });
+
+    // Draft scheduled but NO approval marker written: composeSender.send will
+    // run reviewOutbound.review on it → outbound workflows can hold/approve.
+    const draftAfter = rows.messages.find((m) => m.id === 93);
+    expect(draftAfter?.scheduled_send_at).toBe(now);
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:93')).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'send_draft_queued_with_review'],
     ]);
   });
 
@@ -10142,6 +10271,65 @@ describe('server edition foundation', () => {
 
     // Stale marker is cleared so future review chains start fresh.
     expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:82')).toBeUndefined();
+  });
+
+  // Edge case: between release_outbound (approval marker set) and the
+  // scheduled-send tick, the user edits the draft. The marker carries a
+  // content fingerprint that no longer matches → bypass MUST be denied so the
+  // edit gets re-reviewed. Defense in depth against the small race window.
+  test('reviewOutbound.review denies bypass when the approval-marker fingerprint mismatches the current content', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 93,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 930,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 83,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 830,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        body_text: 'EDITED text differs from what the workflow approved.',
+        body_html: null,
+      }],
+      // Marker hash is intentionally a value that won't match the current
+      // input (a real one would be 32 hex chars from outboundDraftFingerprint).
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:83',
+        value: `${now.toISOString()}|deadbeefdeadbeefdeadbeefdeadbeef`,
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 83,
+      subject: 'After approval',
+      bodyText: 'EDITED text differs from what the workflow approved.',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    // The bypass did NOT fire (workflow run was enqueued instead of returning
+    // allowed:true from the marker branch).
+    expect(result).not.toEqual({ allowed: true });
+    // The invalidated marker is cleared so the next review chain starts fresh
+    // and the new approval (with new hash) will not collide with the old one.
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:83')).toBeUndefined();
   });
 
   test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {

@@ -415,8 +415,17 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'email',
     canvasType: 'registry',
     description:
-      'Gegenstück zu „Versand sperren": hebt die Sperre auf (OK-Pfad der Ausgangsprüfung). Mit autoSend=true wird sofort gesendet.',
+      'Gegenstück zu „Versand sperren": hebt die Sperre auf (OK-Pfad der Ausgangsprüfung). Mit autoSend=true wird sofort gesendet. Die Freigabe ist an die aktuellen Inhalte gebunden — Edits zwischen Freigabe und Versand erzwingen eine neue Prüfung.',
     defaultConfig: { autoSend: true },
+  },
+  {
+    type: 'email.send_draft',
+    label: 'Entwurf versenden (vollautomatisch)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Verschickt einen zuvor angelegten Entwurf (z.B. von ai.reply_suggestion oder email.create_draft). draftIdVariable liest die ID aus einer Workflow-Variable (Standard: draft.id). runOutboundReview=true lässt den Versand zusätzlich durch die Outbound-Workflows (KI prüft KI); =false (Standard) sendet ohne weitere Prüfung.',
+    defaultConfig: { draftIdVariable: 'draft.id', runOutboundReview: false },
   },
   {
     type: 'workflow.subflow',

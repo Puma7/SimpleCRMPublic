@@ -1146,6 +1146,9 @@ function RegistryFields({ node, patch, labelByType, descriptionByType }: Registr
       {d.nodeType === "email.release_outbound" ? (
         <ReleaseOutboundFields config={config} patch={patch} />
       ) : null}
+      {d.nodeType === "email.send_draft" ? (
+        <SendDraftFields config={config} patch={patch} />
+      ) : null}
       {d.nodeType === "email.auto_reply" ? (
         <AutoReplyFields config={config} patch={patch} />
       ) : null}
@@ -1276,6 +1279,39 @@ function ForwardCopyFields({ config, patch }: FieldFnProps) {
           <p className="text-[11px] text-muted-foreground">
             Standard: aus (Weiterleitungen umgehen die Prüfung, Anti-Loop via Auto-Submitted-Header + Dedup).
             Ein: fail-closed bei aktiven Outbound-Workflows.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SendDraftFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Workflow-Variable mit Draft-ID</Label>
+        <Input
+          className="h-9 font-mono text-sm"
+          placeholder="draft.id"
+          value={String(config.draftIdVariable ?? "draft.id")}
+          onChange={(e) => patchConfig(patch, config, "draftIdVariable", e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Typische Quellen: <code>draft.id</code> (von email.create_draft) oder{" "}
+          <code>ai.reply_suggestion.draft_id</code>.
+        </p>
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.runOutboundReview === true}
+          onCheckedChange={(v) => patchConfig(patch, config, "runOutboundReview", v)}
+        />
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Zusätzlich durch Outbound-Workflows prüfen</Label>
+          <p className="text-[11px] text-muted-foreground">
+            Aus (Standard): KI-Antwort geht direkt raus, ohne erneute Prüfung. Ein: die KI-Antwort durchläuft
+            die Outbound-Workflows (z. B. KI-Ausgangsprüfung), genau wie eine getippte Mail.
           </p>
         </div>
       </div>

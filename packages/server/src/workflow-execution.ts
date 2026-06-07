@@ -3,9 +3,11 @@ import {
   addressesFromRecipientJson,
   buildSpamDecision,
   buildFeaturePreview,
+  encodeOutboundApprovalMarker,
   evaluateSenderFilterFromLists,
   normalizeMailboxName,
   normalizeEmailAddress,
+  outboundDraftFingerprint,
   outgoing,
   parseGraphDocument,
   parseSenderList,
@@ -1114,7 +1116,15 @@ async function walkGraph(
     }
 
     if (result.variables) Object.assign(input.context.variables, result.variables);
-    if (node.type === 'condition' && result.port === 'yes' && input.inboundGate) {
+    // Inbound gate: condition.yes OR auto_reply.approved authorise downstream
+    // side-effect nodes. auto_reply IS a gate semantically (Schalter +
+    // Confidence + No-Reply-Schutz) so its OK port should free the chain.
+    const trippedInboundGate =
+      (node.type === 'condition' && result.port === 'yes')
+      || (node.type === 'registry'
+        && nodeRuntimeType(node) === 'email.auto_reply'
+        && result.port === 'approved');
+    if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
     }
@@ -1345,6 +1355,9 @@ async function executeServerNode(
   }
   if (type === 'email.release_outbound') {
     return await releaseWorkflowOutboundHold(trx, context, config, now);
+  }
+  if (type === 'email.send_draft') {
+    return await sendWorkflowDraft(trx, context, config, now);
   }
   if (type === 'email.tag' || type === 'tag') {
     const tag = String(config.tag ?? node.data.tag ?? '').trim();
@@ -3143,6 +3156,31 @@ function workflowSpamPatternType(value: unknown): 'email' | 'domain' | null {
   return value === 'email' || value === 'domain' ? value : null;
 }
 
+/** Best-effort flatten of stored to_json/cc_json/bcc_json into a comma-joined
+ *  address list, for the outbound-approval fingerprint (which compares against
+ *  the same shape on the review side). */
+function addressesFromStoredRecipientJson(value: unknown): string {
+  if (!value) return '';
+  try {
+    return addressesFromRecipientJson(typeof value === 'string' ? JSON.parse(value) : value);
+  } catch {
+    return '';
+  }
+}
+
+/** Pull the attachment-paths list out of draft_attachment_paths_json (a stored
+ *  string[] or null). Returns [] on any parse trouble. */
+function draftAttachmentPathsFromJson(value: unknown): readonly string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 function extractWorkflowEmailAddress(value: unknown): string {
   const candidate = extractWorkflowEmailAddressCandidate(value);
   if (!candidate) return '';
@@ -3496,14 +3534,33 @@ async function releaseWorkflowOutboundHold(
     .execute();
 
   if (autoSend) {
+    // Bind the approval to the draft's current content. If the user edits the
+    // draft after release_outbound runs but before scheduled-send fires, the
+    // fingerprint stored here won't match what review.review computes on its
+    // call → bypass denied → re-review. Defense in depth.
+    const draftRow = await trx
+      .selectFrom('email_messages')
+      .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', context.messageId)
+      .executeTakeFirst();
+    const fingerprint = outboundDraftFingerprint({
+      subject: draftRow?.subject ?? null,
+      bodyText: draftRow?.body_text ?? null,
+      bodyHtml: draftRow?.body_html ?? null,
+      to: addressesFromStoredRecipientJson(draftRow?.to_json),
+      cc: addressesFromStoredRecipientJson(draftRow?.cc_json),
+      bcc: addressesFromStoredRecipientJson(draftRow?.bcc_json),
+      attachmentPaths: draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+    });
     const key = outboundReviewApprovedKey(context.messageId);
-    const isoNow = now.toISOString();
+    const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
     await trx
       .insertInto('sync_info')
       .values({
         workspace_id: context.workspaceId,
         key,
-        value: isoNow,
+        value: markerValue,
         last_updated: now,
         source_row: serverWorkerSourceRow(),
         imported_in_run_id: null,
@@ -3511,7 +3568,7 @@ async function releaseWorkflowOutboundHold(
       })
       .onConflict((oc) => oc
         .columns(['workspace_id', 'key'])
-        .doUpdateSet({ value: isoNow, last_updated: now, updated_at: now }))
+        .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
       .execute();
   }
 
@@ -3522,6 +3579,113 @@ async function releaseWorkflowOutboundHold(
     variables: {
       'email.outbound_hold': false,
       'email.auto_send_scheduled': autoSend,
+    },
+  };
+}
+
+/**
+ * Triggers the actual SMTP send of a (previously created) draft message —
+ * the missing link for fully automated reply chains.
+ *
+ *   ai.reply_suggestion / ai.agent / email.create_draft   →   sets draft.id
+ *                                                              ↓
+ *                                          email.auto_reply (approved gate)
+ *                                                              ↓
+ *                                          email.send_draft  ← THIS
+ *                                                              ↓
+ *                                   (scheduled-send cron + composeSender.send)
+ *
+ * Config:
+ *   - draftIdVariable (string, default 'draft.id'): which workflow variable to
+ *     read the draft message id from.
+ *   - runOutboundReview (bool, default false): when false, sets the approval
+ *     marker so the send bypasses the outbound review (the workflow has just
+ *     curated this draft, KI-on-KI review is the trigger workflow's choice).
+ *     When true, no marker is set → composeSender.send runs reviewOutbound on
+ *     the new draft and outbound workflows can hold/approve as for any mail.
+ *
+ * Idempotent: re-running on a draft already marked for send is a no-op.
+ */
+async function sendWorkflowDraft(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  const draftIdVar = String(config.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
+  const rawId = config.draftId ?? context.variables[draftIdVar];
+  const draftId = Number(rawId);
+  if (!Number.isFinite(draftId) || draftId <= 0) {
+    return {
+      status: 'error',
+      port: 'error',
+      message: `Keine gueltige Entwurfs-ID unter ${draftIdVar} oder config.draftId`,
+    };
+  }
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', draftId)
+    .executeTakeFirst();
+  if (!draftRow) {
+    return { status: 'error', port: 'error', message: `Entwurf ${draftId} nicht gefunden` };
+  }
+  if (draftRow.folder_kind !== 'draft' || (draftRow.uid as number) >= 0) {
+    return { status: 'error', port: 'error', message: `Nachricht ${draftId} ist kein Entwurf` };
+  }
+
+  const runOutboundReview = config.runOutboundReview === true;
+  const messagePatch: Record<string, unknown> = {
+    outbound_hold: false,
+    outbound_block_reason: null,
+    scheduled_send_at: now,
+    updated_at: now,
+  };
+  await trx
+    .updateTable('email_messages')
+    .set(messagePatch)
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', draftId)
+    .execute();
+
+  if (!runOutboundReview) {
+    // Bypass the outbound review pipeline by stamping the approval marker with
+    // the current content fingerprint.
+    const fingerprint = outboundDraftFingerprint({
+      subject: draftRow.subject ?? null,
+      bodyText: draftRow.body_text ?? null,
+      bodyHtml: draftRow.body_html ?? null,
+      to: addressesFromStoredRecipientJson(draftRow.to_json),
+      cc: addressesFromStoredRecipientJson(draftRow.cc_json),
+      bcc: addressesFromStoredRecipientJson(draftRow.bcc_json),
+      attachmentPaths: draftAttachmentPathsFromJson(draftRow.draft_attachment_paths_json),
+    });
+    const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+    await trx
+      .insertInto('sync_info')
+      .values({
+        workspace_id: context.workspaceId,
+        key: outboundReviewApprovedKey(draftId),
+        value: markerValue,
+        last_updated: now,
+        source_row: serverWorkerSourceRow(),
+        imported_in_run_id: null,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'key'])
+        .doUpdateSet({ value: markerValue, last_updated: now, updated_at: now }))
+      .execute();
+  }
+
+  return {
+    status: 'ok',
+    port: 'default',
+    message: runOutboundReview ? 'send_draft_queued_with_review' : 'send_draft_queued_auto',
+    variables: {
+      'send_draft.draft_id': draftId,
+      'send_draft.with_review': runOutboundReview,
     },
   };
 }
@@ -4921,7 +5085,15 @@ function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBr
   return { conditionOk: context.variables.__inbound_condition_ok === true || context.variables.__inbound_condition_ok === 1 };
 }
 
-const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set(['email.sender_filter', 'ai.classify']);
+const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set([
+  'email.sender_filter',
+  'ai.classify',
+  // ai.reply_suggestion is the standard "generate draft" step for auto-reply
+  // chains; without the allowance the inbound-gate would block it until a
+  // condition fires explicitly. The auto_reply node still gates whether the
+  // draft is actually sent.
+  'ai.reply_suggestion',
+]);
 
 function inboundNodeRequiresConditionGate(node: WorkflowGraphNode): boolean {
   if (node.type === 'condition' || node.type === 'trigger') return false;
