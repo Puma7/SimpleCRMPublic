@@ -2,8 +2,8 @@
 # bundle and reverse-proxies the API. Web-only build (SIMPLECRM_WEB_ONLY=1) skips
 # the Electron bundles and makes the client default to its own origin.
 #
-# A glibc base (node:22, not alpine) avoids the Rollup musl optional-dependency
-# pitfall during `vite build`.
+# glibc base (not alpine): avoids native-addon musl/glibc ABI mismatches
+# (e.g. better-sqlite3, canvas) during `vite build` with Rolldown.
 FROM node:24 AS build
 
 WORKDIR /app
