@@ -71,7 +71,7 @@ describe('callAiChat — anthropic', () => {
 });
 
 describe('callAiChat — gemini', () => {
-  test('posts to generateContent with key query and normalises usageMetadata', async () => {
+  test('posts to generateContent with the api key in the x-goog-api-key header (not the URL) and normalises usageMetadata', async () => {
     const captured: CapturedRequest[] = [];
     const fetchImpl = fakeFetch(
       {
@@ -81,7 +81,11 @@ describe('callAiChat — gemini', () => {
       captured,
     );
     const result = await callAiChat({ ...baseReq, provider: 'gemini', fetchImpl });
-    expect(captured[0].url).toBe('https://api.example.com/v1beta/models/test-model:generateContent?key=sk-secret');
+    // The key must NOT leak into the URL (proxy access logs, stack traces) —
+    // it travels in the x-goog-api-key header instead.
+    expect(captured[0].url).toBe('https://api.example.com/v1beta/models/test-model:generateContent');
+    expect(captured[0].url).not.toContain('key=');
+    expect((captured[0].init.headers as Record<string, string>)['x-goog-api-key']).toBe('sk-secret');
     const sentBody = JSON.parse(captured[0].init.body as string);
     expect(sentBody.systemInstruction).toEqual({ parts: [{ text: 'Sys' }] });
     expect(sentBody.contents).toEqual([{ role: 'user', parts: [{ text: 'Hallo' }] }]);
