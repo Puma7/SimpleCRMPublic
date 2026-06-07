@@ -741,15 +741,25 @@ function createPostgresMailSyncStore(options: PostgresMailSyncJobPortOptions): S
     },
     async loadImapUidToId(input) {
       if (input.uids.length === 0) return new Map();
-      const rows = await withWorkspace(input.workspaceId, async (trx) => trx
-        .selectFrom('email_messages')
-        .select(['uid', 'id'])
-        .where('workspace_id', '=', input.workspaceId)
-        .where('folder_id', '=', input.folderId)
-        .where('pop3_uidl', 'is', null)
-        .where('uid', 'in', [...input.uids])
-        .execute());
-      return new Map(rows.map((row) => [Number(row.uid), Number(row.id)]));
+      // Chunk the uid list: the full-inbox backfill can pass tens of thousands
+      // of UIDs, and a single `WHERE uid IN (...)` would exceed Postgres'
+      // 65535-bind-parameter limit (and build a huge query) for exactly the
+      // large/old accounts the backfill is meant to recover.
+      const CHUNK = 1000;
+      const result = new Map<number, number>();
+      for (let i = 0; i < input.uids.length; i += CHUNK) {
+        const chunk = input.uids.slice(i, i + CHUNK);
+        const rows = await withWorkspace(input.workspaceId, async (trx) => trx
+          .selectFrom('email_messages')
+          .select(['uid', 'id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('folder_id', '=', input.folderId)
+          .where('pop3_uidl', 'is', null)
+          .where('uid', 'in', [...chunk])
+          .execute());
+        for (const row of rows) result.set(Number(row.uid), Number(row.id));
+      }
+      return result;
     },
     async loadPop3UidlToId(input) {
       const rows = await withWorkspace(input.workspaceId, async (trx) => trx

@@ -1,4 +1,4 @@
-import { callAiChat, normalizeAiProvider, parseProviderResponse } from '../../packages/server/src';
+import { callAiChat, normalizeAiProvider, parseProviderResponse, resolveProviderKind } from '../../packages/server/src';
 
 type CapturedRequest = { url: string; init: RequestInit };
 
@@ -34,6 +34,55 @@ describe('normalizeAiProvider', () => {
     expect(normalizeAiProvider('openai_compatible')).toBe('openai');
     expect(normalizeAiProvider('')).toBe('openai');
     expect(normalizeAiProvider(null)).toBe('openai');
+  });
+});
+
+describe('resolveProviderKind (provider + baseUrl)', () => {
+  test('OpenAI-compatible presets route through the openai adapter', () => {
+    // These are exactly the shipped AI_PROVIDER_PRESETS base URLs.
+    expect(resolveProviderKind('anthropic', 'https://api.anthropic.com/v1')).toBe('openai');
+    expect(resolveProviderKind('google', 'https://generativelanguage.googleapis.com/v1beta/openai')).toBe('openai');
+    // Trailing slash tolerated.
+    expect(resolveProviderKind('anthropic', 'https://api.anthropic.com/v1/')).toBe('openai');
+  });
+
+  test('native base URLs still select the native adapters', () => {
+    expect(resolveProviderKind('anthropic', 'https://api.anthropic.com')).toBe('anthropic');
+    expect(resolveProviderKind('gemini', 'https://generativelanguage.googleapis.com')).toBe('gemini');
+  });
+
+  test('openai stays openai regardless of base URL', () => {
+    expect(resolveProviderKind('openai', 'https://api.openai.com/v1')).toBe('openai');
+  });
+});
+
+describe('callAiChat — OpenAI-compatible anthropic/google presets', () => {
+  test('anthropic OpenAI-compatible preset posts to /chat/completions (no double /v1)', async () => {
+    const captured: CapturedRequest[] = [];
+    const fetchImpl = fakeFetch(
+      { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+      captured,
+    );
+    await callAiChat({ ...baseReq, baseUrl: 'https://api.anthropic.com/v1', provider: 'anthropic', fetchImpl });
+    expect(captured[0].url).toBe('https://api.anthropic.com/v1/chat/completions');
+    expect(captured[0].url).not.toContain('/v1/v1/');
+    expect((captured[0].init.headers as Record<string, string>).Authorization).toBe('Bearer sk-secret');
+  });
+
+  test('google OpenAI-compatible preset posts to /chat/completions (not native generateContent)', async () => {
+    const captured: CapturedRequest[] = [];
+    const fetchImpl = fakeFetch(
+      { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+      captured,
+    );
+    await callAiChat({
+      ...baseReq,
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      provider: 'google',
+      fetchImpl,
+    });
+    expect(captured[0].url).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    expect(captured[0].url).not.toContain('generateContent');
   });
 });
 

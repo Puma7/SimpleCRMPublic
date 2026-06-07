@@ -270,6 +270,18 @@ export default function TasksPage() {
       return
     }
 
+    // Standalone (sqlite) still requires a customer; only the server edition
+    // supports customerless tasks. Validate here so users don't submit only to
+    // hit a backend rejection.
+    if (!serverClientMode && (!newTask.customer_id || newTask.customer_id <= 0)) {
+      toast({
+        title: "Validierungsfehler",
+        description: "Bitte wählen Sie einen Kunden aus.",
+        variant: "destructive"
+      })
+      return
+    }
+
     if (serverClientMode && assignmentScope === "user" && !assignedUserId) {
       toast({ title: "Validierungsfehler", description: "Bitte einen Benutzer für die Zuweisung auswählen.", variant: "destructive" })
       return
@@ -544,7 +556,7 @@ export default function TasksPage() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="customer_id">Kunde (optional)</Label>
+                    <Label htmlFor="customer_id">{serverClientMode ? "Kunde (optional)" : "Kunde"}</Label>
                     <CustomerCombobox
                       value={newTask.customer_id || undefined}
                       onValueChange={handleCustomerValueChange}

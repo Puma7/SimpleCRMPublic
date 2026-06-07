@@ -1538,7 +1538,9 @@ function MssqlQueryFields({ config, patch }: FieldFnProps) {
           onChange={(e) => patchConfig(patch, config, "sql", e.target.value)}
         />
         <p className="text-[11px] text-muted-foreground">
-          Nur lesende Statements (SELECT). Variablen mit {`{{email}}`}/{`{{orderNo}}`} sind möglich.
+          Nur lesende Statements (SELECT). Hinweis: Dieser generische Knoten
+          interpoliert keine Platzhalter — für {`{{email}}`}/{`{{orderNo}}`} den
+          Knoten „JTL Bestell-Kontext" verwenden.
         </p>
       </div>
     </div>
@@ -1563,7 +1565,7 @@ function JtlOrderContextFields({ config, patch }: FieldFnProps) {
         <Label className="text-xs">Mapping (optional)</Label>
         <Textarea
           className="min-h-[60px] font-mono text-xs"
-          placeholder="cStatus -> jtl.status&#10;dDatum -> jtl.date"
+          placeholder="cStatus:jtl.status, dDatum:jtl.date"
           value={String(config.mapping ?? "")}
           onChange={(e) => patchConfig(patch, config, "mapping", e.target.value)}
         />

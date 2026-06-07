@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { invokeRenderer } from "@/services/transport"
+import { isServerClientMode } from "@/lib/runtime-mode"
 import { type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
@@ -266,6 +267,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
                   className="h-9"
                 />
               ) : null}
+              {isServerClientMode() ? (
               <div className="border-t pt-3">
                 <p className="text-xs font-medium">Bereits gelesene Mails nachladen</p>
                 <p className="mb-2 text-xs text-muted-foreground">
@@ -284,6 +286,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
                   Vollständigen Posteingang importieren
                 </Button>
               </div>
+              ) : null}
             </div>
           ) : null}
           <div className="flex gap-2">

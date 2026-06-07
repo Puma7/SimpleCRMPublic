@@ -30,6 +30,36 @@ export function normalizeAiProvider(provider: string | null | undefined): AiProv
   return 'openai';
 }
 
+/**
+ * Resolves which wire protocol to use, given both the configured provider id
+ * and the base URL. The shipped presets for "anthropic" and "google" are
+ * OpenAI-COMPATIBLE endpoints (https://api.anthropic.com/v1 and
+ * https://generativelanguage.googleapis.com/v1beta/openai), so they must go
+ * through the OpenAI chat-completions adapter, NOT the native one — otherwise
+ * buildProviderRequest would append native paths and produce broken URLs like
+ * `…/v1/v1/messages` or `…/v1beta/openai/v1beta/models/…`.
+ *
+ * The native adapters are only selected when the base URL is the bare native
+ * host (no OpenAI-compat suffix): anthropic native = host without a trailing
+ * `/v1`; gemini native = host without an `/openai` segment.
+ */
+export function resolveProviderKind(
+  provider: string | null | undefined,
+  baseUrl: string | null | undefined,
+): AiProviderKind {
+  const kind = normalizeAiProvider(provider);
+  if (kind === 'openai') return 'openai';
+  const url = trimTrailingSlash(String(baseUrl ?? '')).toLowerCase();
+  if (kind === 'anthropic') {
+    // OpenAI-compatible Anthropic endpoint ends in `/v1`; native is the bare
+    // host (the adapter appends `/v1/messages`).
+    return /\/v1$/.test(url) ? 'openai' : 'anthropic';
+  }
+  // gemini: OpenAI-compatible endpoint contains `/openai`; native does not
+  // (the adapter appends `/v1beta/models/…`).
+  return url.includes('/openai') ? 'openai' : 'gemini';
+}
+
 type ProviderRequest = { url: string; headers: Record<string, string>; body: unknown };
 
 function trimTrailingSlash(url: string): string {
@@ -155,7 +185,7 @@ function usageFrom(prompt: number | null, completion: number | null, total: numb
 
 /** Calls the configured provider and returns normalised content + usage. */
 export async function callAiChat(req: AiChatRequest): Promise<AiChatResult> {
-  const provider = normalizeAiProvider(req.provider);
+  const provider = resolveProviderKind(req.provider, req.baseUrl);
   const spec = buildProviderRequest(provider, req);
   const response = await req.fetchImpl(spec.url, {
     method: 'POST',
