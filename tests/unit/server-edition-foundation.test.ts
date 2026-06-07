@@ -7834,6 +7834,58 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port blocks email.auto_reply on Auto-Submitted header', async () => {
+    const now = new Date('2026-07-04T11:02:20.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 371,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 3710,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'auto-1', type: 'registry', data: { nodeType: 'email.auto_reply', config: { runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'auto-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 55,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 550,
+        subject: 'Auto reply',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Auto reply',
+        body_text: 'Auto reply',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        raw_headers: 'Auto-Submitted: auto-replied',
+      }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: '1' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 371,
+      messageId: 55,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'ai.class_confidence': 99 } },
+    });
+
+    expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:auto_submitted_header'],
+    ]);
+  });
+
   test('postgres workflow execution job port defaults email.auto_reply to blocked when disabled', async () => {
     const now = new Date('2026-07-04T11:02:30.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
@@ -9258,6 +9310,90 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow forward-copy port caps attachments by actual file bytes, not DB metadata', async () => {
+    const now = new Date('2026-07-04T11:04:45.000Z');
+    const smtpSends: Array<{ rfc822: string }> = [];
+    const reads: string[] = [];
+    const { db } = makeWorkflowExecutionDb({
+      workflows: [{ id: 40, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 400, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        account_id: 7,
+        subject: 'Grosse Anhaenge',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Anhaenge',
+        body_text: 'Zwei grosse Dateien.',
+      }],
+      messageAttachments: [
+        {
+          workspace_id: WORKSPACE_A_ID,
+          message_id: 29,
+          filename_display: 'a.bin',
+          content_type: 'application/octet-stream',
+          size_bytes: 0,
+          storage_path: 'ws/29/a.bin',
+        },
+        {
+          workspace_id: WORKSPACE_A_ID,
+          message_id: 29,
+          filename_display: 'b.bin',
+          content_type: 'application/octet-stream',
+          size_bytes: null,
+          storage_path: 'ws/29/b.bin',
+        },
+      ],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const secrets = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      attachmentsRoot: '/attachments',
+      readAttachmentFile: async (p: string) => {
+        reads.push(p);
+        return Buffer.alloc(20 * 1024 * 1024);
+      },
+      smtpSend: async (input) => { smtpSends.push(input as { rfc822: string }); },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 40,
+      messageId: 29,
+      to: 'bank@example.com',
+      includeAttachments: true,
+    });
+
+    expect(reads).toEqual(['/attachments/ws/29/a.bin']);
+    expect(smtpSends).toHaveLength(1);
+    expect(smtpSends[0].rfc822).toContain('a.bin');
+    expect(smtpSends[0].rfc822).not.toContain('b.bin');
+  });
+
   test('postgres workflow forward-copy port fails closed while outbound workflows are enabled', async () => {
     const now = new Date('2026-07-04T11:04:55.000Z');
     const smtpSend = jest.fn();
@@ -10055,6 +10191,7 @@ describe('server edition foundation', () => {
         },
         execution_mode: 'graph',
       }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: '1' }],
       messages: [
         // The inbound mail that triggered this workflow.
         {
@@ -10156,6 +10293,130 @@ describe('server edition foundation', () => {
     expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:93')).toBeUndefined();
     expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
       ['email.send_draft', 'default', 'send_draft_queued_with_review'],
+    ]);
+  });
+
+  test('postgres workflow execution job port skips email.send_draft when auto-reply is disabled', async () => {
+    const now = new Date('2026-08-15T10:02:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 30,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 300,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        { id: 94, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 940, subject: 'Frage', from_json: { value: [{ address: 'kunde@example.com' }] } },
+        { id: 95, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 950, uid: -1, folder_kind: 'draft', subject: 'Re: Frage', body_text: 'KI-Antwort', body_html: null, to_json: { value: [{ address: 'kunde@example.com' }] } },
+      ],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 30,
+      messageId: 94,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 94 }, eventVariables: { 'draft.id': 95 } },
+    });
+
+    expect(rows.messages.find((m) => m.id === 95)?.scheduled_send_at).toBeUndefined();
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:95')).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.message])).toEqual([
+      ['email.send_draft', 'skipped', 'auto_reply_disabled'],
+    ]);
+  });
+
+  test('postgres workflow execution job port skips email.send_draft for no-reply senders', async () => {
+    const now = new Date('2026-08-15T10:03:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: '1' }],
+      messages: [
+        { id: 96, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 960, subject: 'Frage', from_json: { value: [{ address: 'no-reply@shop.example.com' }] } },
+        { id: 97, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 970, uid: -1, folder_kind: 'draft', subject: 'Re: Frage', body_text: 'KI-Antwort', body_html: null, to_json: { value: [{ address: 'no-reply@shop.example.com' }] } },
+      ],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 31,
+      messageId: 96,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 96 }, eventVariables: { 'draft.id': 97 } },
+    });
+
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.message])).toEqual([
+      ['email.send_draft', 'skipped', 'noreply_sender_blocked'],
+    ]);
+  });
+
+  test('postgres workflow execution job port rejects email.send_draft when draft is already sent', async () => {
+    const now = new Date('2026-08-15T10:04:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 32,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 320,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: '1' }],
+      messages: [
+        { id: 98, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 980, subject: 'Frage', from_json: { value: [{ address: 'kunde@example.com' }] } },
+        { id: 99, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 990, uid: 42, folder_kind: 'draft', subject: 'Re: Frage', body_text: 'Bereits gesendet', body_html: null, to_json: { value: [{ address: 'kunde@example.com' }] } },
+      ],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 32,
+      messageId: 98,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 98 }, eventVariables: { 'draft.id': 99 } },
+    });
+
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.port, s.message])).toEqual([
+      ['email.send_draft', 'error', 'error', 'Nachricht 99 ist kein Entwurf'],
     ]);
   });
 

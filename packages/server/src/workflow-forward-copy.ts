@@ -381,10 +381,10 @@ async function readForwardCopyAttachments(
   for (const attachment of attachments) {
     const resolved = resolveAttachmentStoragePath(deps.attachmentsRoot, attachment.storagePath);
     if (!resolved) continue;
-    total += Math.max(0, attachment.sizeBytes);
-    if (total > FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES) break;
     try {
       const content = await deps.readAttachmentFile(resolved);
+      total += content.length;
+      if (total > FORWARD_COPY_MAX_ATTACHMENT_TOTAL_BYTES) break;
       result.push({
         filename: attachment.filename || 'anhang',
         content,

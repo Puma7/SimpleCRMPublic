@@ -58,8 +58,11 @@ function buildProviderRequest(provider: AiProviderKind, req: AiChatRequest): Pro
   }
   if (provider === 'gemini') {
     return {
-      url: `${baseUrl}/v1beta/models/${encodeURIComponent(req.model)}:generateContent?key=${encodeURIComponent(req.apiKey)}`,
-      headers: { 'Content-Type': 'application/json' },
+      url: `${baseUrl}/v1beta/models/${encodeURIComponent(req.model)}:generateContent`,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': req.apiKey,
+      },
       body: {
         ...(req.system ? { systemInstruction: { parts: [{ text: req.system }] } } : {}),
         contents: [{ role: 'user', parts: [{ text: req.user }] }],

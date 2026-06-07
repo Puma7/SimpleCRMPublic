@@ -101,6 +101,7 @@ type MessageRow = Pick<
   | 'spam_score_label'
   | 'spam_decision_source'
   | 'spam_score_breakdown_json'
+  | 'raw_headers'
 >;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
@@ -697,6 +698,7 @@ async function loadMessage(
       'spam_score_label',
       'spam_decision_source',
       'spam_score_breakdown_json',
+      'raw_headers',
     ])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
@@ -2921,6 +2923,10 @@ async function evaluateWorkflowAutoReply(
   if (!context.message) return block('no_message');
   if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) return block('disabled');
   if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+  const inboundAutoSubmitted = String(
+    context.strings.header_auto_submitted ?? '',
+  ).toLowerCase();
+  if (inboundAutoSubmitted.startsWith('auto-')) return block('auto_submitted_header');
   if (confidenceValue < minConfidence) return block('low_confidence');
 
   return {
@@ -3636,6 +3642,27 @@ async function sendWorkflowDraft(
   }
 
   const runOutboundReview = config.runOutboundReview === true;
+
+  // Inbound guard: without explicit runOutboundReview=true or email.auto_reply in
+  // the graph, enforce the workspace auto-reply switch and no-reply sender check.
+  if (!runOutboundReview && context.direction === 'inbound') {
+    const autoReplyEnabled = await loadAutoReplyEnabled(trx, context.workspaceId);
+    if (!autoReplyEnabled) {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_disabled' };
+    }
+    const sender = context.message
+      ? extractWorkflowEmailAddress(context.message.from_json)
+      : '';
+    if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) {
+      return { status: 'skipped', port: 'default', message: 'noreply_sender_blocked' };
+    }
+    const inboundAutoSubmitted = String(
+      context.strings.header_auto_submitted ?? '',
+    ).toLowerCase();
+    if (inboundAutoSubmitted.startsWith('auto-')) {
+      return { status: 'skipped', port: 'default', message: 'auto_submitted_header_blocked' };
+    }
+  }
   const messagePatch: Record<string, unknown> = {
     outbound_hold: false,
     outbound_block_reason: null,
@@ -4886,6 +4913,16 @@ function authProtocolConfig(value: unknown): 'spf' | 'dkim' | 'dmarc' | 'arc' {
   return 'dmarc';
 }
 
+function headerValueFromRawHeaders(rawHeaders: string | null | undefined, name: string): string {
+  const needle = `${name.toLowerCase()}:`;
+  for (const line of String(rawHeaders ?? '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.toLowerCase().startsWith(needle)) continue;
+    return trimmed.slice(needle.length).trim();
+  }
+  return '';
+}
+
 function stringsFromMessage(message: MessageRow): WorkflowStringContext {
   const from = addressesFromStoredJson(message.from_json);
   const to = addressesFromStoredJson(message.to_json);
@@ -4894,6 +4931,7 @@ function stringsFromMessage(message: MessageRow): WorkflowStringContext {
   const body = message.body_text ?? '';
   const snippet = message.snippet ?? '';
   const attachments = attachmentContextFromJsonValue(message.attachments_json, Boolean(message.has_attachments));
+  const headerAutoSubmitted = headerValueFromRawHeaders(message.raw_headers, 'Auto-Submitted');
   return {
     subject,
     body_text: body,
@@ -4902,6 +4940,7 @@ function stringsFromMessage(message: MessageRow): WorkflowStringContext {
     to_address: to,
     cc_address: cc,
     combined_text: [subject, body, snippet, from, to, cc].join('\n'),
+    ...(headerAutoSubmitted ? { header_auto_submitted: headerAutoSubmitted } : {}),
     ...attachments,
   };
 }
