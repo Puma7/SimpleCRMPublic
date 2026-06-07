@@ -43,6 +43,15 @@ describe('MainNav', () => {
     expect(screen.getByText('Einstellungen')).toBeTruthy();
   });
 
+  test('renders the app version badge', () => {
+    render(<MainNav />);
+    const badge = screen.getByTestId('app-version');
+    expect(badge).toBeTruthy();
+    // Build-time defines are absent under jest, so the component falls back to
+    // "vdev"; the meaningful assertion is that it renders a "v"-prefixed label.
+    expect(badge.textContent?.startsWith('v')).toBe(true);
+  });
+
   test('nav links point to correct routes', () => {
     render(<MainNav />);
 

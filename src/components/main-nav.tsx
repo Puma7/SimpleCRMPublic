@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils"
 import { UserSwitcher } from "@/components/auth/user-switcher"
 import { LanguageToggle } from "@/components/language-toggle"
+import { AppVersionBadge } from "@/components/app-version-badge"
 import { useTranslation } from "@/lib/i18n"
 
 const navLinks = [
@@ -40,10 +41,11 @@ export function MainNav({
   return (
     <nav className={cn("border-b", className)} {...props}>
       <div className="flex h-16 items-center px-4">
-        <Link to="/" className="mr-6 flex items-center space-x-2">
+        <Link to="/" className="mr-2 flex items-center space-x-2">
           <CheckCircle className="h-6 w-6" />
           <span className="font-bold">SimpleCRM</span>
         </Link>
+        <AppVersionBadge className="mr-6 hidden sm:inline" />
         <div className="flex flex-1 items-center space-x-4 lg:space-x-6">
           {navLinks.map(({ to, labelKey, icon: Icon }) => (
             <Link

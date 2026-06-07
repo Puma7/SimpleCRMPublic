@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import path from 'path'
+import { readFileSync } from 'fs'
+import { execSync } from 'child_process'
 import electron from 'vite-plugin-electron'
 
 const sharedAlias = { '@shared': path.resolve(__dirname, './shared') }
@@ -15,6 +17,29 @@ const electronConditions = ['node', 'import', 'module', 'default']
  * defaults to talking to its own origin (no `?serverUrl=` required).
  */
 const webOnly = process.env.SIMPLECRM_WEB_ONLY === '1'
+
+/** App version — single source of truth is package.json, inlined at build time. */
+const appVersion = JSON.parse(
+  readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'),
+).version as string
+
+/**
+ * Short commit SHA of the current build, best-effort. Empty when git is
+ * unavailable or there is no `.git` directory (e.g. the Docker image builds,
+ * which copy only sources) — the UI then shows the version without a SHA.
+ */
+const gitSha = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: __dirname,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim()
+  } catch {
+    return ''
+  }
+})()
 
 /** Nodemon starts Electron (`electron:dev:main`); disable vite-plugin-electron auto-spawn. */
 const electronOnstartNoop = () => {}
@@ -94,6 +119,9 @@ export default defineConfig({
     // browser client defaults to its own origin; `false` for dev/electron so
     // the deploy-mode wizard keeps its existing behavior.
     __SIMPLECRM_FORCE_SAME_ORIGIN__: JSON.stringify(webOnly),
+    // App version (from package.json) + short git SHA, shown in the top nav.
+    __SIMPLECRM_APP_VERSION__: JSON.stringify(appVersion),
+    __SIMPLECRM_GIT_SHA__: JSON.stringify(gitSha),
   },
   base: '/',
   build: {
