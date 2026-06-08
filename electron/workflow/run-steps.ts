@@ -112,6 +112,30 @@ export function getLatestWorkflowRunForMessage(messageId: number): {
   return row ?? null;
 }
 
+function parseWorkflowRunLog(value: unknown): string[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value.map((entry) => String(entry));
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [value];
+    } catch {
+      return [value];
+    }
+  }
+  return [String(value)];
+}
+
+export function getWorkflowRunLog(runId: number): string[] {
+  const row = getDb()
+    .prepare(
+      `SELECT log_json FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE id = ?`,
+    )
+    .get(runId) as { log_json: string | null } | undefined;
+  if (!row?.log_json) return [];
+  return parseWorkflowRunLog(row.log_json);
+}
+
 export function listRecentWorkflowRuns(workflowId: number, limit = 20): {
   id: number;
   workflow_id: number;

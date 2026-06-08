@@ -1193,6 +1193,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({}).passthrough(),
   });
   set(IPCChannels.Email.ListWorkflowRuns, { payload: positiveInt, result: recordArray });
+  set(IPCChannels.Email.GetWorkflowRunLog, { payload: positiveInt, result: z.array(z.string()) });
   set(IPCChannels.Email.ListWorkflowRunSteps, { payload: positiveInt, result: recordArray });
   set(IPCChannels.Email.ListWorkflowTemplates, { payload: voidPayload, result: recordArray });
   set(IPCChannels.Email.ImportWorkflowBundle, {

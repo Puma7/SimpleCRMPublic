@@ -1732,6 +1732,21 @@ export type EmailDiagnosticsReport = {
     protocol: string;
     inboxLastSyncedAt: string | null;
   }>;
+  jobQueue?: {
+    ready: number;
+    locked: number;
+    lagSeconds: number;
+    oldestLockedSeconds: number | null;
+    samples: Array<{
+      id: number;
+      type: string;
+      attempts: number;
+      maxAttempts: number;
+      lockedBy: string | null;
+      lockedSeconds: number | null;
+      lastError: string | null;
+    }>;
+  };
 };
 
 export type EmailDiagnosticsApiPort = {

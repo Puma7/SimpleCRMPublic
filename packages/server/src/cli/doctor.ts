@@ -242,25 +242,36 @@ async function checkJobQueue(client: PgQueryClient): Promise<DoctorCheck> {
   return safeCheck('job_queue', async () => {
     const rows = await client.query<{
       ready_jobs: string | number;
+      locked_jobs: string | number;
       queue_lag_seconds: string | number | null;
+      oldest_locked_seconds: string | number | null;
     }>(`SELECT
-  count(*)::integer AS ready_jobs,
-  COALESCE(EXTRACT(EPOCH FROM max(now() - run_after))::integer, 0) AS queue_lag_seconds
-FROM job_queue
-WHERE locked_at IS NULL
-  AND run_after <= now();`);
+  count(*) filter (where locked_at is null and run_after <= now())::integer AS ready_jobs,
+  count(*) filter (where locked_at is not null)::integer AS locked_jobs,
+  COALESCE(EXTRACT(EPOCH FROM max(now() - run_after))::integer, 0) AS queue_lag_seconds,
+  max(EXTRACT(EPOCH FROM (now() - locked_at))::integer) AS oldest_locked_seconds
+FROM job_queue;`);
     const row = rows.rows[0];
     if (!row) {
       return { status: 'fail', message: 'job queue query returned no rows' };
     }
     const readyJobs = Number(row.ready_jobs);
+    const lockedJobs = Number(row.locked_jobs);
     const lagSeconds = Number(row.queue_lag_seconds ?? 0);
+    const oldestLockedSeconds = row.oldest_locked_seconds == null
+      ? null
+      : Number(row.oldest_locked_seconds);
+    const warn = lagSeconds > 300
+      || lockedJobs > 0
+      || (oldestLockedSeconds != null && oldestLockedSeconds > 900);
     return {
-      status: lagSeconds > 300 ? 'warn' : 'ok',
-      message: `${readyJobs} ready job(s), lag ${lagSeconds}s`,
+      status: warn ? 'warn' : 'ok',
+      message: `${readyJobs} ready, ${lockedJobs} locked, lag ${lagSeconds}s${oldestLockedSeconds != null ? `, oldest lock ${oldestLockedSeconds}s` : ''}`,
       details: {
         readyJobs,
+        lockedJobs,
         lagSeconds,
+        oldestLockedSeconds,
       },
     };
   });
