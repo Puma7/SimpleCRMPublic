@@ -2,7 +2,7 @@
 
 import { Link, Outlet, useMatchRoute } from "@tanstack/react-router"
 import { cn } from "@/lib/utils"
-import { Database, FileText } from "lucide-react"
+import { Database, FileText, Wrench } from "lucide-react"
 
 const navItems = [
   {
@@ -14,6 +14,11 @@ const navItems = [
     title: "Benutzerdefinierte Felder",
     href: "/settings/custom-fields" as const,
     icon: FileText,
+  },
+  {
+    title: "Wartung",
+    href: "/settings/maintenance" as const,
+    icon: Wrench,
   },
 ]
 

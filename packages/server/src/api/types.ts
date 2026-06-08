@@ -5,6 +5,9 @@ import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJ
 import type { ConversationLockReason } from '../locks';
 import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
 import type { LoginPenalty } from '../auth';
+import type { ServerMaintenancePort } from '../maintenance/service';
+
+export type ServerMaintenanceApiPort = ServerMaintenancePort;
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
@@ -4191,6 +4194,7 @@ export type ServerApiPorts = {
   workflowTemplates?: WorkflowTemplateApiPort;
   workflowVersions?: WorkflowVersionApiPort;
   workflows?: WorkflowApiPort;
+  maintenance?: ServerMaintenanceApiPort;
 };
 
 export function json<T>(status: number, body: T, headers?: Record<string, string>): ApiResponse<T> {

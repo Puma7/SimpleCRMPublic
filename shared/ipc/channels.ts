@@ -75,6 +75,18 @@ const DiagnosticsChannels = literal({
   SelfTestServerLogs: 'diagnostics:self-test-server-logs',
 });
 
+const MaintenanceChannels = literal({
+  GetStatus: 'maintenance:get-status',
+  RunDoctor: 'maintenance:run-doctor',
+  CheckMigrations: 'maintenance:check-migrations',
+  RunRepair: 'maintenance:run-repair',
+  PreviewHardReset: 'maintenance:preview-hard-reset',
+  ExecuteHardReset: 'maintenance:execute-hard-reset',
+  CheckForUpdates: 'maintenance:check-for-updates',
+  InstallUpdate: 'maintenance:install-update',
+  GetUpdateStatus: 'maintenance:get-update-status',
+});
+
 const UserGroupChannels = literal({
   List: 'user-groups:list',
   Create: 'user-groups:create',
@@ -364,6 +376,7 @@ export const IPCChannels = {
   Tasks: TaskChannels,
   UserGroups: UserGroupChannels,
   Diagnostics: DiagnosticsChannels,
+  Maintenance: MaintenanceChannels,
   Sync: SyncChannels,
   Mssql: MssqlChannels,
   Jtl: JtlChannels,
@@ -397,6 +410,7 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
   ...Object.values(IPCChannels.Diagnostics),
+  ...Object.values(IPCChannels.Maintenance),
 );
 
 export type InvokeChannel = typeof AllowedInvokeChannels[number];

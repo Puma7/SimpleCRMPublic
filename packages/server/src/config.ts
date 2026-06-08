@@ -14,6 +14,8 @@ export type ServerEditionEnv = {
   AUTH_INVITE_SMTP_TIMEOUT_MS?: string;
   ATTACHMENTS_DIR?: string;
   AUDIT_ARCHIVE_DIR?: string;
+  BACKUP_DIR?: string;
+  VERSION?: string;
   HOST?: string;
   PORT?: string;
   JOB_WORKER_ENABLED?: string;
