@@ -16,6 +16,7 @@ import {
   runDesktopSchemaRepair,
   type DesktopMaintenancePaths,
 } from './paths';
+import { purgeDesktopKeytarSecrets } from './keytar-purge';
 
 export const DESKTOP_HARD_RESET_PHRASE = 'SYSTEM LÖSCHEN';
 
@@ -69,6 +70,8 @@ export async function executeDesktopHardReset(input: DesktopHardResetInput): Pro
 
   stopEmailBackgroundServices();
   closeDatabase();
+
+  await purgeDesktopKeytarSecrets().catch(() => undefined);
 
   const paths = resolveDesktopMaintenancePaths();
   removePathIfExists(paths.databasePath);
