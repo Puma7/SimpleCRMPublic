@@ -207,5 +207,7 @@ If setup completed but login returns invalid credentials:
 
 ## Known Limits
 
-- `JOB_WORKER_ENABLED` defaults to `false`; production worker handler coverage is still being hardened.
+- `JOB_WORKER_ENABLED` defaults to `false`. For productive server deployments with mail sync and workflows (including **Weiterleiten / `email.forward_copy`**), set it to `true` in `docker/.env` and restart the API container.
+- Workflow side-effects enqueue rows into PostgreSQL `job_queue`; the in-process worker polls that table in addition to Graphile Worker.
+- Production worker handler coverage is still being hardened.
 - Full production workflow side-effect parity and concrete mail-sync adapter replacement remain open.
