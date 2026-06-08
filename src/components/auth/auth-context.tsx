@@ -14,6 +14,7 @@ import { invokeIpc, hasElectron } from "@/components/email/types"
 import {
   createServerAuthClient,
   getRendererTransport,
+  ServerAuthClientError,
   type ServerAuthClient,
   type ServerAuthSession,
   type ServerAuthUser,
@@ -147,7 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         return {
           ok: false,
-          error: error instanceof Error ? error.message : "Anmeldung fehlgeschlagen",
+          error: formatServerLoginError(error),
         }
       }
     }
@@ -218,4 +219,21 @@ function mapServerUser(user: ServerAuthUser): AuthUser {
     displayName: user.displayName,
     role: user.role,
   }
+}
+
+function formatServerLoginError(error: unknown): string {
+  if (error instanceof ServerAuthClientError) {
+    if (error.code === "invalid_credentials") {
+      return "E-Mail oder Passwort ist falsch. Verwenden Sie dieselben Zugangsdaten wie bei der Ersteinrichtung."
+    }
+    if (error.code === "account_locked") {
+      return "Konto voruebergehend gesperrt wegen zu vieler Fehlversuche."
+    }
+    if (error.code === "rate_limited") {
+      return "Zu viele Fehlversuche. Bitte kurz warten und es erneut versuchen."
+    }
+    if (error.message) return error.message
+  }
+  if (error instanceof Error && error.message) return error.message
+  return "Anmeldung fehlgeschlagen"
 }
