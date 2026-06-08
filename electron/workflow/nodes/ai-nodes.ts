@@ -514,7 +514,7 @@ export function registerAiNodes(register: Reg): void {
         variables['ai.canned.text'] = draftBody.slice(0, 8000);
 
         if (createDraft && ctx.message) {
-          const { recipientJsonFromField } = await import('../../shared/email-recipient-parse');
+          const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse');
           const { updateComposeDraft } = await import('../../email/email-store');
           const replyTo = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
           const subjectRaw = ctx.message.subject?.trim() ?? '';
