@@ -42,6 +42,11 @@ import { parseOutboundReviewResponse } from '../../email/email-outbound-review-p
 // createComposeDraft used by ai.agent
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
 import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
+import {
+  classificationPrompt,
+  parseCannedPickNumber,
+  parseClassificationOutput,
+} from '../ai-classification-parse';
 import { searchKnowledgeChunks } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 
@@ -291,17 +296,27 @@ export function registerAiNodes(register: Reg): void {
         mode === 'full' || !ctx.message
           ? ctx.strings.combined_text
           : buildMetadataContextFromMessage(ctx.message).combined_text;
-      const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${text}`;
-      if (ctx.dryRun) return { status: 'ok' };
+      const prompt = classificationPrompt(labels, text);
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          variables: { 'ai.class': labels[0] ?? '', 'ai.class_confidence': 85 },
+        };
+      }
       const out = await runChatCompletion(
         'Du bist ein E-Mail-Klassifizierer.',
         prompt,
         profileIdFromConfig(config),
       );
       ctx.ai.lastResponse = out;
-      const label = out.trim().split(/\s+/)[0] ?? '';
+      const parsed = parseClassificationOutput(out);
+      const label = parsed.label;
+      const confidence = parsed.confidence ?? 0;
       if (ctx.messageId != null && label) addMessageTag(ctx.messageId, `ki:${label}`);
-      return { status: 'ok', variables: { 'ai.class': label } };
+      return {
+        status: 'ok',
+        variables: { 'ai.class': label, 'ai.class_confidence': confidence },
+      };
     },
   });
 
@@ -451,6 +466,79 @@ export function registerAiNodes(register: Reg): void {
         status: 'ok',
         variables: { 'tool.result': ctx.strings.combined_text.slice(0, 500) },
       };
+    },
+  });
+
+  register({
+    type: 'ai.pick_canned',
+    label: 'KI: Textbaustein wählen',
+    category: 'ai',
+    canvasType: 'registry',
+    description: 'Die KI wählt den passenden Textbaustein, füllt Platzhalter und legt einen Entwurf an.',
+    defaultConfig: { createDraft: true },
+    execute: async (ctx, config) => {
+      const { listCannedResponses } = await import('../../email/email-crm-store');
+      const canned = listCannedResponses();
+      if (canned.length === 0) {
+        return { status: 'error', message: 'Keine Textbausteine vorhanden' };
+      }
+
+      const createDraft = config.createDraft !== false;
+      if (ctx.dryRun) {
+        const variables: Record<string, string | number | boolean | null> = {
+          'ai.canned.pick': 1,
+          'ai.canned.status': 'ready',
+        };
+        if (createDraft) variables['draft.id'] = 0;
+        return { status: 'ok', message: 'dry-run pick_canned', variables };
+      }
+
+      const list = canned.map((row, index) => `${index + 1}. ${row.title}`).join('\n');
+      const out = await runChatCompletion(
+        'Du wählst den am besten passenden Textbaustein für die Kundenmail. Antworte nur mit der Nummer des Bausteins, oder 0 wenn keiner passt.',
+        `Textbausteine:\n${list}\n\nKundenmail:\n${ctx.strings.combined_text ?? ''}`,
+        profileIdFromConfig(config),
+      );
+      ctx.ai.lastResponse = out;
+      const pick = parseCannedPickNumber(out, canned.length);
+      const variables: Record<string, string | number | boolean | null> = {
+        'ai.canned.pick': pick,
+        'ai.canned.status': 'ready',
+      };
+
+      if (pick > 0) {
+        const chosen = canned[pick - 1]!;
+        variables['ai.canned.id'] = chosen.id;
+        variables['ai.canned.title'] = chosen.title;
+        const draftBody = interpolateTemplate(chosen.body, ctx);
+        variables['ai.canned.text'] = draftBody.slice(0, 8000);
+
+        if (createDraft && ctx.message) {
+          const { recipientJsonFromField } = await import('../../shared/email-recipient-parse');
+          const { updateComposeDraft } = await import('../../email/email-store');
+          const replyTo = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
+          const subjectRaw = ctx.message.subject?.trim() ?? '';
+          const reSubject = !subjectRaw
+            ? 'Re:'
+            : /^re:/i.test(subjectRaw)
+              ? subjectRaw
+              : `Re: ${subjectRaw}`;
+          const id = createComposeDraft({
+            accountId: ctx.message.account_id,
+            subject: reSubject,
+            bodyText: draftBody,
+            toJson: replyTo ? recipientJsonFromField(replyTo) : null,
+          });
+          if (ctx.messageId != null) {
+            updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
+          }
+          variables['draft.id'] = id;
+        }
+      } else if (createDraft) {
+        variables['ai.canned.no_match'] = true;
+      }
+
+      return { status: 'ok', variables };
     },
   });
 }

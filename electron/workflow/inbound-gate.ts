@@ -1,7 +1,12 @@
 import type { WorkflowGraphNode } from '../../shared/email-workflow-graph';
 import { LEGACY_ACTION_MAP } from './registry';
 
-const INBOUND_DIRECT_ALLOWED_REGISTRY = new Set(['email.sender_filter', 'ai.classify']);
+const INBOUND_DIRECT_ALLOWED_REGISTRY = new Set([
+  'email.sender_filter',
+  'ai.classify',
+  'ai.reply_suggestion',
+  'email.auto_reply',
+]);
 
 const INBOUND_ROUTING_PREFIXES = ['logic.'];
 
