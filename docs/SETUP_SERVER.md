@@ -165,6 +165,46 @@ Data lives in Docker volumes:
 
 Do not delete volumes unless you are intentionally resetting the instance.
 
+## Troubleshooting
+
+### Setup-state and login diagnostics
+
+Check whether initial setup is still required:
+
+```sh
+set -a && source .env && set +a
+curl -fsS "$PUBLIC_BASE_URL/api/v1/auth/setup-state"
+```
+
+- `needsInitialSetup: true` — open the browser app and complete Ersteinrichtung.
+- `needsInitialSetup: false` — an owner already exists; use the login form with the same email and password from setup.
+
+### PostgreSQL row-level security (RLS)
+
+The API connects as `simplecrm_app`, which is subject to RLS. Direct SQL checks with that role can show **zero users** even when setup succeeded:
+
+```sh
+docker compose exec postgres psql -U simplecrm_app -d simplecrm -c "SELECT email FROM users;"
+```
+
+For operator diagnostics, use the admin role instead:
+
+```sh
+docker compose exec postgres psql -U simplecrm_admin -d simplecrm \
+  -c "SELECT email, role, created_at FROM users;"
+```
+
+An empty result from `simplecrm_app` does **not** mean the database is empty.
+
+### Login fails after setup
+
+If setup completed but login returns invalid credentials:
+
+1. Confirm the exact email stored in `users` (admin query above).
+2. Use the same email (case-insensitive) and the password chosen during Ersteinrichtung.
+3. Check API logs: `sh ./simplecrm logs api`
+4. As a last resort, reset the password hash via admin SQL or recreate the instance only if you accept data loss.
+
 ## Known Limits
 
 - `JOB_WORKER_ENABLED` defaults to `false`; production worker handler coverage is still being hardened.
