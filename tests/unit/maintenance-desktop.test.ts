@@ -23,6 +23,10 @@ jest.mock('../../electron/email/email-imap-services', () => ({
   startEmailBackgroundServices: jest.fn(async () => undefined),
 }));
 
+jest.mock('../../electron/maintenance/paths', () => ({
+  runDesktopSchemaRepair: jest.fn(() => ({ ok: true, message: 'Schema-Migrationen wurden angewendet.' })),
+}));
+
 const keytar = jest.requireMock('keytar') as {
   findCredentials: jest.Mock;
   deletePassword: jest.Mock;
