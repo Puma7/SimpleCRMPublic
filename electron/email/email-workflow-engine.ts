@@ -418,6 +418,25 @@ export async function evaluateOutboundWorkflows(
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 
+  const { tryOutboundApprovalBypass } = await import('./outbound-approval');
+  const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
+  const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments');
+  if (
+    !dryRun &&
+    tryOutboundApprovalBypass(payload.messageId, {
+      subject: payload.subject,
+      bodyText: payload.bodyText,
+      bodyHtml: payload.bodyHtml ?? null,
+      to: payload.to,
+      cc: payload.cc ?? null,
+      bcc: payload.bcc ?? null,
+      attachmentPaths: payload.attachmentPaths ?? parseDraftAttachmentPathsJson(row.draft_attachment_paths_json),
+    })
+  ) {
+    if (draftSideEffects) setOutboundHold(payload.messageId, false, null);
+    return { allowed: true, reason: null, workflowRunId: null };
+  }
+
   if (!dryRun && draftSideEffects) {
     setOutboundHold(payload.messageId, false, null);
   }
