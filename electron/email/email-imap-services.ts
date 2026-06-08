@@ -158,23 +158,23 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
         try {
           await processDueDelayedJobs(logger);
         } catch (e) {
-          logger.debug('[workflow] delayed jobs', e);
+          logger.warn('[workflow] delayed jobs', e);
         }
         try {
           const { processDueScheduledSends } = await import('./email-scheduled-send');
           await processDueScheduledSends(logger);
         } catch (e) {
-          logger.debug('[email] scheduled send', e);
+          logger.warn('[email] scheduled send', e);
         }
         try {
           await scanDueTasksAndFireWorkflows();
         } catch (e) {
-          logger.debug('[workflow] task due scan', e);
+          logger.warn('[workflow] task due scan', e);
         }
         try {
           await scanUpcomingCalendarEventsAndFireWorkflows();
         } catch (e) {
-          logger.debug('[workflow] calendar scan', e);
+          logger.warn('[workflow] calendar scan', e);
         }
         const now = Date.now();
         const accounts = listEmailAccounts();
@@ -191,7 +191,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
               await syncAccountImap(acc.id);
             }
           } catch (e) {
-            logger.debug(`[email] sync ${acc.id}`, e);
+            logger.warn(`[email] sync account ${acc.id}`, e);
           } finally {
             syncInFlight.delete(acc.id);
           }

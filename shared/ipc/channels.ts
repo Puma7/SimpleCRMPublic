@@ -396,6 +396,7 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Pgp),
   ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
+  ...Object.values(IPCChannels.Diagnostics),
 );
 
 export type InvokeChannel = typeof AllowedInvokeChannels[number];

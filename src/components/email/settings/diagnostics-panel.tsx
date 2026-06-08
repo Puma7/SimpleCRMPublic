@@ -224,7 +224,7 @@ export function DiagnosticsPanel() {
 
       {localBackupAvailable ? <RestoreWizardPanel /> : null}
 
-      {serverClientMode ? <ServerLogsSection /> : null}
+      <ServerLogsSection desktopMode={!serverClientMode} />
 
       {!report && !loading ? (
         <p className="text-sm text-muted-foreground">Keine Diagnosedaten.</p>

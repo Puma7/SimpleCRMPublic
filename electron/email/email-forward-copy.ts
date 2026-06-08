@@ -34,10 +34,16 @@ export async function sendWorkflowForwardCopy(
   input: ForwardCopyInput,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const recipients = normalizeForwardCopyRecipients(input.to);
-  if (recipients.length === 0) return { ok: false, reason: 'Empfänger fehlt' };
+  if (recipients.length === 0) {
+    console.warn('[email] forward_copy skipped: no recipients', { messageId: input.sourceMessageId, workflowId: input.workflowId });
+    return { ok: false, reason: 'Empfänger fehlt' };
+  }
 
   const acc = getEmailAccountById(input.accountId);
-  if (!acc) return { ok: false, reason: 'Konto fehlt' };
+  if (!acc) {
+    console.warn('[email] forward_copy skipped: account missing', { accountId: input.accountId, messageId: input.sourceMessageId });
+    return { ok: false, reason: 'Konto fehlt' };
+  }
 
   const dest = [...recipients].sort().join(',');
   const dup = getDb()
@@ -47,9 +53,7 @@ export async function sendWorkflowForwardCopy(
     .get(input.sourceMessageId, input.workflowId, dest);
   if (dup) return { ok: true };
 
-  // Workflow forwards bypass outbound review (server edition parity): they are
-  // initiated by inbound automation, not human compose. Auto-Submitted + dedup
-  // guard loops; sensitive-content rules would block typical invoice forwards.
+  // Workflow forwards bypass outbound review — see packages/server workflow-forward-copy.ts
 
   try {
     await sendSmtpForAccount(input.accountId, {
@@ -61,6 +65,13 @@ export async function sendWorkflowForwardCopy(
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[email] forward_copy failed', {
+      accountId: input.accountId,
+      messageId: input.sourceMessageId,
+      workflowId: input.workflowId,
+      to: recipients.join(', '),
+      error: msg,
+    });
     return { ok: false, reason: msg };
   }
 
