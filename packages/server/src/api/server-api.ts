@@ -8,6 +8,7 @@ import { handleExtendedCrmReadRoute } from './extended-crm-routes';
 import { handleFollowUpRoute } from './follow-up-routes';
 import { handleLockRoute } from './lock-routes';
 import { handleMailReadRoute } from './mail-routes';
+import { handleMaintenanceRoute } from './maintenance-routes';
 import { handleNoticeRoute } from './notice-routes';
 import { handlePgpReadRoute } from './pgp-routes';
 import { handleSpamReadRoute } from './spam-routes';
@@ -77,6 +78,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const diagnostics = await handleDiagnosticsRoute(req, ports);
       if (diagnostics) return diagnostics;
+
+      const maintenance = await handleMaintenanceRoute(req, ports);
+      if (maintenance) return maintenance;
 
       const coreCrm = await handleCoreCrmReadRoute(req, ports);
       if (coreCrm) return coreCrm;

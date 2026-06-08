@@ -150,11 +150,16 @@ import { createPostgresWorkflowHttpRequestPort } from './workflow-http-request';
 import { createPostgresWorkflowImapActionPort } from './workflow-imap-actions';
 import { createStaticWorkflowNodeCatalogPort } from './workflow-node-catalog';
 import { createStaticWorkflowTemplatePort } from './workflow-templates';
+import { createServerMaintenancePort } from './maintenance/service';
 
 export type PostgresServerApiPortsOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   accessTokenSigner: AccessTokenSigner;
   attachmentsRoot?: string;
+  auditArchiveRoot?: string;
+  databaseUrl?: string;
+  backupDir?: string;
+  appVersion?: string;
   events?: ServerApiPorts['events'];
   jobQueue?: ServerApiPorts['jobQueue'];
   secrets?: PostgresSecretPort;
@@ -220,6 +225,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     databaseUrl,
     accessTokenSigner,
     attachmentsRoot,
+    auditArchiveRoot: auditArchiveRoot,
+    backupDir: env.BACKUP_DIR?.trim(),
+    appVersion: env.VERSION?.trim() || '0.0.0',
     createDatabase: options.createDatabase,
     createEventNotifications: options.createEventNotifications,
     masterKey: env.SIMPLECRM_MASTER_KEY,
@@ -382,6 +390,24 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     mssql: createPostgresMssqlSettingsPort({ db: options.db, secrets: options.secrets }),
     workflowImapActions,
   });
+  const auth = createPostgresAuthPort({
+    db: options.db,
+    accessTokenSigner: options.accessTokenSigner,
+  });
+  const maintenance = options.databaseUrl?.trim()
+    ? createServerMaintenancePort({
+      db: options.db,
+      databaseUrl: options.databaseUrl.trim(),
+      appVersion: options.appVersion ?? '0.0.0',
+      backupDir: options.backupDir,
+      attachmentsRoot: options.attachmentsRoot,
+      auditArchiveRoot: options.auditArchiveRoot,
+      getNeedsInitialSetup: async () => {
+        const state = await auth.getInitialSetupState?.();
+        return state?.needsInitialSetup ?? false;
+      },
+    })
+    : undefined;
   return {
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
     health: {
@@ -395,10 +421,8 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     aiTextTransform: createPostgresAiTextTransformApiPort({ db: options.db, secrets: options.secrets }),
     automationApiKeys: createPostgresAutomationApiKeyReadPort({ db: options.db, secrets: options.secrets }),
     calendarEvents: createPostgresCalendarEventReadPort({ db: options.db }),
-    auth: createPostgresAuthPort({
-      db: options.db,
-      accessTokenSigner: options.accessTokenSigner,
-    }),
+    auth,
+    ...(maintenance ? { maintenance } : {}),
     ...(options.authInvitationMail ? {
       authInvitationMailer: createAuthInvitationMailerPort(options.authInvitationMail),
     } : {}),
@@ -503,6 +527,9 @@ async function createDefaultServerPorts(input: {
   databaseUrl?: string;
   accessTokenSigner?: AccessTokenSigner;
   attachmentsRoot?: string;
+  auditArchiveRoot?: string;
+  backupDir?: string;
+  appVersion?: string;
   createDatabase?: (options: { databaseUrl: string }) => Promise<Kysely<ServerDatabase>>;
   createEventNotifications?: (options: { databaseUrl: string }) => Promise<PostgresServerEventNotificationChannel>;
   masterKey?: string;
@@ -538,6 +565,10 @@ async function createDefaultServerPorts(input: {
     db,
     accessTokenSigner: input.accessTokenSigner,
     attachmentsRoot: input.attachmentsRoot,
+    auditArchiveRoot: input.auditArchiveRoot,
+    databaseUrl: input.databaseUrl,
+    backupDir: input.backupDir,
+    appVersion: input.appVersion,
     authInvitationMail: input.authInvitationMail,
     events: createPostgresServerEventPort({ db, notifications: eventNotifications }),
     secrets,

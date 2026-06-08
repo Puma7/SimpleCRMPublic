@@ -1410,6 +1410,59 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     transform: (body) => dataBody<{ written: number }>(body),
   })],
 
+  [IPCChannels.Maintenance.GetStatus, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.RunDoctor, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/doctor",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.CheckMigrations, () => ({
+    method: "POST",
+    path: "/api/v1/maintenance/migrations/check",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.RunRepair, () => ({
+    method: "POST",
+    path: "/api/v1/maintenance/migrations/apply",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.PreviewHardReset, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/reset/preview",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.ExecuteHardReset, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "hard reset payload")
+    return {
+      method: "POST",
+      path: "/api/v1/maintenance/reset/execute",
+      body: {
+        confirmPhrase: input.confirmPhrase,
+        acknowledgeDataLoss: input.acknowledgeDataLoss === true,
+      },
+      transform: (body) => dataBody(body),
+    }
+  }],
+  [IPCChannels.Maintenance.CheckForUpdates, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => ({ success: true, status: dataBody(body) }),
+  })],
+  [IPCChannels.Maintenance.InstallUpdate, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => ({ success: true, status: dataBody(body) }),
+  })],
+  [IPCChannels.Maintenance.GetUpdateStatus, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => dataBody(body),
+  })],
+
   [IPCChannels.Calendar.GetCalendarEvents, () => ({
     method: "GET",
     path: "/api/v1/calendar-events",
