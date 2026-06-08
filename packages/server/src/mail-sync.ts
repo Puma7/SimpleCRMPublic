@@ -438,7 +438,7 @@ async function syncImapFolder(input: {
   type FetchedImapMessage = Readonly<{
     uid: number;
     source: Buffer;
-    flags: Set<string> | undefined;
+    flags: Set<string> | string[] | null | undefined;
     threadId: string | null;
   }>;
 

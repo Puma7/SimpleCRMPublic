@@ -30,6 +30,7 @@ const mockMaybeSendVacationAutoReply = jest.fn();
 const mockReturnOutboundDraftToInbox = jest.fn();
 const mockSyncInboxPop3 = jest.fn();
 const mockSyncInboxImap = jest.fn();
+const mockTryOutboundApprovalBypass = jest.fn(() => false);
 
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...args: unknown[]) => mockGetEmailMessageById(...args),
@@ -83,6 +84,13 @@ jest.mock('../../electron/email/email-vacation', () => ({
 
 jest.mock('../../electron/email/email-outbound-review', () => ({
   returnOutboundDraftToInbox: (...args: unknown[]) => mockReturnOutboundDraftToInbox(...args),
+}));
+
+jest.mock('../../electron/email/outbound-approval', () => ({
+  tryOutboundApprovalBypass: (...args: unknown[]) => mockTryOutboundApprovalBypass(...args),
+  stampOutboundApprovalMarker: jest.fn(),
+  clearOutboundApprovalMarker: jest.fn(),
+  outboundReviewApprovedKey: (draftId: number) => `outbound_review_approved:${draftId}`,
 }));
 
 jest.mock('../../electron/email/email-pop3-sync', () => ({
@@ -176,6 +184,7 @@ describe('email-workflow-engine core', () => {
     mockRunChatCompletion.mockResolvedValue('OK');
     mockSyncInboxPop3.mockResolvedValue({ fetched: 2 });
     mockSyncInboxImap.mockResolvedValue({ fetched: 3 });
+    mockTryOutboundApprovalBypass.mockReturnValue(false);
   });
 
   describe('outboundPayloadFromMessage', () => {
