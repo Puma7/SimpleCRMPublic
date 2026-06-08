@@ -533,6 +533,29 @@ describe('email-workflow-engine core', () => {
       expect(mockMaybeSendVacationAutoReply).toHaveBeenCalled();
     });
 
+    test('skips post-steps when an inbound workflow defers on delay', async () => {
+      const row = inboundRow();
+      const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
+      mockListWorkflowsByTrigger.mockReturnValue([wf]);
+      mockGetEmailMessageById.mockReturnValue(row);
+      mockExecuteWorkflowForTrigger.mockResolvedValueOnce({
+        runId: 1,
+        status: 'ok',
+        log: ['delayed'],
+        blocked: false,
+        blockReason: null,
+        deferred: true,
+      });
+      await runInboundWorkflowsForMessage(row.id, {
+        row,
+        inboundWorkflows: [wf],
+        appliedWorkflowIds: new Set(),
+      });
+      expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
+    });
+
     test('skips applied workflows and records executor errors', async () => {
       const row = inboundRow();
       mockWasWorkflowAppliedToMessage.mockReturnValueOnce(true);

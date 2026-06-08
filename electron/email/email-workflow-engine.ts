@@ -320,6 +320,7 @@ export async function runInboundWorkflowsForMessage(
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
   const applied = opts?.appliedWorkflowIds;
+  let inboundWorkflowDeferred = false;
   for (const wf of workflows) {
     if (applied?.has(wf.id)) continue;
     if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
@@ -330,6 +331,7 @@ export async function runInboundWorkflowsForMessage(
         direction: 'inbound',
         message: freshRow,
       });
+      if (r.deferred) inboundWorkflowDeferred = true;
       if (r.status !== 'ok') {
         releaseInboundWorkflowClaim(messageId, wf.id);
       }
@@ -353,6 +355,8 @@ export async function runInboundWorkflowsForMessage(
       return;
     }
   }
+
+  if (inboundWorkflowDeferred) return;
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
   if (
