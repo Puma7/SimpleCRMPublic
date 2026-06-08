@@ -33,6 +33,7 @@ import {
   createPostgresDealProductPort,
   createPostgresDealReadPort,
   createPostgresDatabase,
+  createPostgresJobQueuePort,
   createPostgresEmailAccountReadPort,
   createPostgresEmailAccountSignatureReadPort,
   createPostgresEmailAttachmentContentPort,
@@ -90,9 +91,11 @@ import {
   createWebhookJobHandlers,
   mergeJobHandlerRegistries,
   startGraphileWorkerRuntime,
+  startPostgresJobQueueWorker,
   type GraphileQueuePort,
   type GraphileWorkerRuntime,
   type JobHandlerRegistry,
+  type PostgresJobQueueWorkerRuntime,
   type ProductionJobHandlersOptions,
 } from './jobs';
 import {
@@ -220,6 +223,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let secrets: PostgresSecretPort | undefined;
   let apiJobQueue: GraphileQueuePort | undefined;
   let jobWorker: GraphileWorkerRuntime | undefined;
+  let postgresJobQueueWorker: PostgresJobQueueWorkerRuntime | undefined;
   let eventNotifications: PostgresServerEventNotificationChannel | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
@@ -257,7 +261,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         });
       }
     } catch (error) {
-      await closeServerResources(jobWorker, db, eventNotifications, apiJobQueue);
+      await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
       throw error;
     }
   }
@@ -277,92 +281,41 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   });
 
   app.addHook('onClose', async () => {
-    await closeServerResources(jobWorker, db, eventNotifications, apiJobQueue);
+    await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
+  });
+
+  const jobHandlers = buildServerJobHandlers({
+    db,
+    secrets,
+    ports,
+    attachmentsRoot,
+    auditArchiveRoot,
+    webhookAllowlist,
+    jobServices: options.jobServices,
+    extraHandlers: options.jobHandlers,
   });
 
   try {
+    const jobWorkerConfig = parseServerJobWorkerConfig(env);
+    const workerEnabled = options.jobWorker?.enabled ?? jobWorkerConfig.enabled;
+    if (workerEnabled && db) {
+      postgresJobQueueWorker = startPostgresJobQueueWorker({
+        queue: createPostgresJobQueuePort({ db }),
+        handlers: jobHandlers,
+      });
+    }
+
     jobWorker = await startConfiguredJobWorker({
       env,
       databaseUrl,
       options: options.jobWorker,
-      handlers: mergeJobHandlerRegistries(
-        mergeJobHandlerRegistries(
-          mergeJobHandlerRegistries(
-            mergeJobHandlerRegistries(
-              db ? createMaintenanceJobHandlers({
-                db,
-                ...(auditArchiveRoot ? {
-                  auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
-                } : {}),
-              }) : {},
-              createSpamScoringJobHandlers({
-                emailMessages: ports.emailMessages,
-                ...(db && ports.jobQueue ? { db, jobQueue: ports.jobQueue } : {}),
-              }),
-            ),
-            createWebhookJobHandlers({
-              ...(webhookAllowlist ? {
-                dispatcher: createFetchWebhookDispatchPort({ allowlist: webhookAllowlist }),
-              } : {}),
-            }),
-          ),
-          createProductionJobHandlers({
-            ...(db && ports.emailComposeSender ? {
-              scheduledSend: createPostgresScheduledSendJobPort({
-                db,
-                composeSender: ports.emailComposeSender,
-              }),
-            } : {}),
-            ...(db ? {
-              workflowExecution: createPostgresWorkflowExecutionJobPort({
-                db,
-                mssql: createPostgresMssqlSettingsPort({ db, secrets }),
-                workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
-              }),
-              workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
-                db,
-                secrets,
-                attachmentsRoot,
-                ...(ports.emailComposeSender ? { composeSender: ports.emailComposeSender } : {}),
-              }),
-              workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
-            } : {}),
-            ...(ports.aiReplySuggestions ? {
-              aiReplySuggestion: ports.aiReplySuggestions,
-            } : {}),
-            ...(db ? {
-              aiAgent: createPostgresAiAgentPort({ db, secrets }),
-              aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
-              aiClassification: createPostgresAiClassificationPort({ db, secrets }),
-              aiReview: createPostgresAiReviewPort({ db, secrets }),
-              aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
-            } : {}),
-            ...(db && ports.jobQueue ? {
-              mailSync: createPostgresMailSyncJobPort({
-                db,
-                secrets,
-                attachmentsRoot,
-              }),
-              mailSyncPostProcess: createPostgresMailSyncPostProcessor({
-                db,
-                jobQueue: ports.jobQueue,
-              }),
-              mailVacationAutoReply: createPostgresEmailVacationAutoReplyPort({
-                db,
-                secrets,
-              }),
-            } : {}),
-            ...(options.jobServices ?? {}),
-          }),
-        ),
-        options.jobHandlers ?? {},
-      ),
+      handlers: jobHandlers,
       createGraphileQueue: options.createGraphileQueue,
       createJobWorker: options.createJobWorker,
     });
     await app.listen({ host, port });
   } catch (error) {
-    await closeServerResources(jobWorker, db, eventNotifications, apiJobQueue);
+    await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }
 
@@ -619,6 +572,7 @@ async function startConfiguredJobWorker(input: {
 
 async function closeServerResources(
   jobWorker: GraphileWorkerRuntime | undefined,
+  postgresJobQueueWorker: PostgresJobQueueWorkerRuntime | undefined,
   db: Kysely<ServerDatabase> | undefined,
   eventNotifications: PostgresServerEventNotificationChannel | undefined,
   apiJobQueue?: GraphileQueuePort,
@@ -626,7 +580,11 @@ async function closeServerResources(
   try {
     try {
       try {
-        await jobWorker?.stop();
+        try {
+          await postgresJobQueueWorker?.stop();
+        } finally {
+          await jobWorker?.stop();
+        }
       } finally {
         await apiJobQueue?.release();
       }
@@ -636,6 +594,91 @@ async function closeServerResources(
   } finally {
     await db?.destroy();
   }
+}
+
+function buildServerJobHandlers(input: {
+  db: Kysely<ServerDatabase> | undefined;
+  secrets: PostgresSecretPort | undefined;
+  ports: ServerApiPorts;
+  attachmentsRoot: string;
+  auditArchiveRoot: string | undefined;
+  webhookAllowlist: string | undefined;
+  jobServices?: ProductionJobHandlersOptions;
+  extraHandlers?: JobHandlerRegistry;
+}): JobHandlerRegistry {
+  const { db, secrets, ports, attachmentsRoot, auditArchiveRoot, webhookAllowlist, jobServices, extraHandlers } = input;
+  return mergeJobHandlerRegistries(
+    mergeJobHandlerRegistries(
+      mergeJobHandlerRegistries(
+        mergeJobHandlerRegistries(
+          db ? createMaintenanceJobHandlers({
+            db,
+            ...(auditArchiveRoot ? {
+              auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
+            } : {}),
+          }) : {},
+          createSpamScoringJobHandlers({
+            emailMessages: ports.emailMessages,
+            ...(db && ports.jobQueue ? { db, jobQueue: ports.jobQueue } : {}),
+          }),
+        ),
+        createWebhookJobHandlers({
+          ...(webhookAllowlist ? {
+            dispatcher: createFetchWebhookDispatchPort({ allowlist: webhookAllowlist }),
+          } : {}),
+        }),
+      ),
+      createProductionJobHandlers({
+        ...(db && ports.emailComposeSender ? {
+          scheduledSend: createPostgresScheduledSendJobPort({
+            db,
+            composeSender: ports.emailComposeSender,
+          }),
+        } : {}),
+        ...(db ? {
+          workflowExecution: createPostgresWorkflowExecutionJobPort({
+            db,
+            mssql: createPostgresMssqlSettingsPort({ db, secrets }),
+            workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
+          }),
+          workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
+            db,
+            secrets,
+            attachmentsRoot,
+            ...(ports.emailComposeSender ? { composeSender: ports.emailComposeSender } : {}),
+          }),
+          workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
+        } : {}),
+        ...(ports.aiReplySuggestions ? {
+          aiReplySuggestion: ports.aiReplySuggestions,
+        } : {}),
+        ...(db ? {
+          aiAgent: createPostgresAiAgentPort({ db, secrets }),
+          aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
+          aiClassification: createPostgresAiClassificationPort({ db, secrets }),
+          aiReview: createPostgresAiReviewPort({ db, secrets }),
+          aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
+        } : {}),
+        ...(db && ports.jobQueue ? {
+          mailSync: createPostgresMailSyncJobPort({
+            db,
+            secrets,
+            attachmentsRoot,
+          }),
+          mailSyncPostProcess: createPostgresMailSyncPostProcessor({
+            db,
+            jobQueue: ports.jobQueue,
+          }),
+          mailVacationAutoReply: createPostgresEmailVacationAutoReplyPort({
+            db,
+            secrets,
+          }),
+        } : {}),
+        ...(jobServices ?? {}),
+      }),
+    ),
+    extraHandlers ?? {},
+  );
 }
 
 if (require.main === module) {

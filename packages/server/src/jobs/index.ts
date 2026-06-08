@@ -2,6 +2,7 @@ export * from './audit-archive';
 export * from './graphile-worker';
 export * from './maintenance-handlers';
 export * from './policy';
+export * from './postgres-job-queue-worker';
 export * from './production-handlers';
 export * from './spam-handlers';
 export * from './types';
