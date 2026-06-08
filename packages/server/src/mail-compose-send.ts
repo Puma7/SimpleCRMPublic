@@ -15,6 +15,8 @@ import {
   generateTicketCode,
   outboundDraftFingerprint,
   parseOutboundApprovalMarker,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
 } from '@simplecrm/core';
 
 import type {
@@ -430,9 +432,12 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         });
         if (!auth.ok) return { ok: false, error: auth.error };
 
+        const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
+        if (!smtpHost) return { ok: false, error: SMTP_HOST_MISSING_ERROR };
+
         try {
           const smtpInput: ServerSmtpSendInput = {
-            host: account.smtpHost?.trim() || account.imapHost,
+            host: smtpHost,
             port: account.smtpPort ?? 587,
             tls: account.smtpTls,
             user: auth.user,

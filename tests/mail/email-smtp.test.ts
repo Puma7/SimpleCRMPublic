@@ -28,7 +28,6 @@ import { sendSmtpForAccount, testSmtpConnection } from '../../electron/email/ema
 describe('email-smtp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockVerify.mockResolvedValue(true);
     mockSendMail.mockResolvedValue({});
   });
 
@@ -41,13 +40,26 @@ describe('email-smtp', () => {
       pass: 'x',
     })).toEqual({ ok: true });
 
-    mockVerify.mockRejectedValueOnce(new Error('auth'));
+    expect(mockSendMail).toHaveBeenCalledWith(expect.objectContaining({
+      from: 'a@b.de',
+      to: 'a@b.de',
+      subject: 'SimpleCRM SMTP-Verbindungstest',
+    }));
+
+    mockSendMail.mockRejectedValueOnce(new Error('auth'));
     expect(await testSmtpConnection({
       host: 'smtp.test',
       port: 587,
       secure: false,
       user: 'a@b.de',
     })).toEqual({ ok: false, error: 'auth' });
+
+    expect(await testSmtpConnection({
+      host: '',
+      port: 587,
+      secure: false,
+      user: 'a@b.de',
+    })).toEqual({ ok: false, error: expect.stringContaining('SMTP-Host fehlt') });
   });
 
   test('sendSmtpForAccount throws without account', async () => {
@@ -55,6 +67,21 @@ describe('email-smtp', () => {
     await expect(
       sendSmtpForAccount(1, { from: 'a@b.de', to: 'c@d.de', subject: 's', text: 't' }),
     ).rejects.toThrow('Konto nicht gefunden');
+  });
+
+  test('sendSmtpForAccount throws without smtp host', async () => {
+    (getEmailAccountById as jest.Mock).mockReturnValue({
+      id: 3,
+      imap_host: 'imap.test',
+      smtp_port: 587,
+      smtp_tls: true,
+      imap_username: 'u',
+      keytar_account_key: 'k',
+      smtp_use_imap_auth: true,
+    });
+    await expect(
+      sendSmtpForAccount(3, { from: 'a@b.de', to: 'c@d.de', subject: 's', text: 't' }),
+    ).rejects.toThrow('SMTP-Host fehlt');
   });
 
   test('sendSmtpForAccount sends with password auth', async () => {

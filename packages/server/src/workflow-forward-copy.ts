@@ -6,6 +6,8 @@ import {
   buildComposeRfc822,
   generateOutboundMessageId,
   normalizeEmailAddress,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
   type ComposeRfc822Attachment,
 } from '@simplecrm/core';
 
@@ -259,8 +261,19 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
+      const smtpHost = resolveConfiguredSmtpHost(prepared.account.smtpHost);
+      if (!smtpHost) {
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: SMTP_HOST_MISSING_ERROR,
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
       await smtpSend({
-        host: prepared.account.smtpHost?.trim() || prepared.account.imapHost,
+        host: smtpHost,
         port: prepared.account.smtpPort ?? 587,
         tls: prepared.account.smtpTls,
         user: auth.user,

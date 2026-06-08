@@ -19154,24 +19154,50 @@ describe('server edition foundation', () => {
     }, '+OK POP3 ready\r\n');
 
     const smtpLines: string[] = [];
+    let inData = false;
     const smtpServer = await startLineServer((line, socket) => {
       smtpLines.push(line);
+      if (inData) {
+        if (line === '.') {
+          inData = false;
+          socket.write('250 2.0.0 queued\r\n');
+        }
+        return;
+      }
       if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH LOGIN\r\n250 OK\r\n');
       else if (line === 'AUTH LOGIN') socket.write('334 VXNlcm5hbWU6\r\n');
       else if (line === Buffer.from('user@example.com', 'utf8').toString('base64')) socket.write('334 UGFzc3dvcmQ6\r\n');
       else if (line === Buffer.from('secret', 'utf8').toString('base64')) socket.write('235 2.7.0 Authentication successful\r\n');
-      else if (line === 'QUIT') socket.write('221 bye\r\n');
+      else if (line === 'MAIL FROM:<user@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<user@example.com>') socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        inData = true;
+        socket.write('354 end with dot\r\n');
+      } else if (line === 'QUIT') socket.write('221 bye\r\n');
       else socket.write('500 unknown command\r\n');
     }, '220 SMTP ready\r\n');
 
     const smtpOauthLines: string[] = [];
     let smtpOauthPayload = '';
+    let smtpOauthInData = false;
     const smtpOauthServer = await startLineServer((line, socket) => {
       smtpOauthLines.push(line);
+      if (smtpOauthInData) {
+        if (line === '.') {
+          smtpOauthInData = false;
+          socket.write('250 2.0.0 queued\r\n');
+        }
+        return;
+      }
       if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH XOAUTH2\r\n250 OK\r\n');
       else if (line.startsWith('AUTH XOAUTH2 ')) {
         smtpOauthPayload = Buffer.from(line.slice('AUTH XOAUTH2 '.length), 'base64').toString('utf8');
         socket.write('235 2.7.0 Authentication successful\r\n');
+      } else if (line === 'MAIL FROM:<user@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<user@example.com>') socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        smtpOauthInData = true;
+        socket.write('354 end with dot\r\n');
       } else if (line === 'QUIT') socket.write('221 bye\r\n');
       else socket.write('500 unknown command\r\n');
     }, '220 SMTP ready\r\n');
@@ -19224,8 +19250,24 @@ describe('server edition foundation', () => {
       expect(smtpLines).toContain('AUTH LOGIN');
       expect(smtpLines).toContain(Buffer.from('user@example.com', 'utf8').toString('base64'));
       expect(smtpLines).toContain(Buffer.from('secret', 'utf8').toString('base64'));
+      expect(smtpLines).toContain('MAIL FROM:<user@example.com>');
+      expect(smtpLines).toContain('RCPT TO:<user@example.com>');
+      expect(smtpLines).toContain('DATA');
+      expect(smtpLines).toContain('.');
       expect(smtpOauthLines.find((line) => line.startsWith('AUTH XOAUTH2 '))).toBeTruthy();
       expect(smtpOauthPayload).toBe('user=user@example.com\u0001auth=Bearer oauth-access-token\u0001\u0001');
+
+      await expect(port.testSmtp({
+        workspaceId: WORKSPACE_A_ID,
+        host: '',
+        port: smtpServer.port,
+        tls: false,
+        user: 'user@example.com',
+        password: 'secret',
+      })).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('SMTP-Host fehlt'),
+      });
 
       const guardedPort = createServerMailConnectionTestPort({
         timeoutMs: 1000,

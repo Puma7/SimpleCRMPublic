@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { invokeRenderer } from "@/services/transport"
 import { isServerClientMode } from "@/lib/runtime-mode"
+import { guessSmtpHostFromImapHost } from "@simplecrm/core"
 import { type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
@@ -62,7 +63,8 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   useEffect(() => {
     const a = accounts.find((x) => x.id === accId)
     if (a) {
-      setSmtpHost(a.smtp_host || a.imap_host || "")
+      const stored = a.smtp_host?.trim() ?? ""
+      setSmtpHost(stored || guessSmtpHostFromImapHost(a.imap_host) || "")
       setSmtpPort(String(a.smtp_port ?? 587))
       setSmtpTls((a.smtp_tls ?? 1) === 1)
       setSmtpUser(a.smtp_username || "")
@@ -78,11 +80,16 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
 
   const saveSmtp = async () => {
     if (accId == null) return
+    const host = smtpHost.trim()
+    if (!host) {
+      toast.error("Bitte SMTP-Host eintragen (z. B. smtp.ionos.de).")
+      return
+    }
     setSaving(true)
     try {
       await invokeRenderer(IPCChannels.Email.UpdateAccount, {
         id: accId,
-        smtpHost: smtpHost.trim() || null,
+        smtpHost: host,
         smtpPort: parseInt(smtpPort, 10) || 587,
         smtpTls,
         smtpUsername: smtpUser.trim() || null,
@@ -108,6 +115,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   }
 
   const testSmtp = async () => {
+    const host = smtpHost.trim()
+    if (!host) {
+      toast.error("Bitte SMTP-Host eintragen (z. B. smtp.ionos.de).")
+      return
+    }
     const user = smtpImapAuth
       ? accounts.find((x) => x.id === accId)?.imap_username || ""
       : smtpUser
@@ -121,7 +133,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         IPCChannels.Email.TestSmtp,
         {
           ...(accId != null ? { accountId: accId } : {}),
-          host: smtpHost.trim(),
+          host,
           port: parseInt(smtpPort, 10) || 587,
           secure: smtpTls && (parseInt(smtpPort, 10) || 587) === 465,
           user,
@@ -129,7 +141,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
           smtpUseImapAuth: smtpImapAuth,
         },
       ) as { success: boolean; error?: string }
-      if (r.success) toast.success("SMTP OK")
+      if (r.success) toast.success("SMTP-Verbindung und Versand OK")
       else toast.error(r.error ?? "Fehler")
     } finally {
       setTesting(false)
@@ -183,7 +195,14 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         <>
           <div className="space-y-1.5">
             <Label>SMTP-Host</Label>
-            <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} />
+            <Input
+              value={smtpHost}
+              onChange={(e) => setSmtpHost(e.target.value)}
+              placeholder="z. B. smtp.ionos.de"
+            />
+            <p className="text-xs text-muted-foreground">
+              Separater SMTP-Server — nicht der IMAP-Host (z. B. smtp.ionos.de statt imap.ionos.de).
+            </p>
           </div>
           <div className="flex gap-2">
             <div className="flex-1 space-y-1.5">

@@ -111,9 +111,9 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   }
 
   const handleTestPop3 = async () => {
-    const host = pop3Host.trim() || imapHost.trim()
+    const host = pop3Host.trim()
     if (!host || !imapUsername.trim()) {
-      const msg = "POP3-Host und Benutzer ausfüllen."
+      const msg = "Bitte POP3-Host und Benutzer ausfüllen."
       setTestFeedback(msg)
       toast.error(msg)
       return
