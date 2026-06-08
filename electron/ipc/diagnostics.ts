@@ -42,7 +42,7 @@ export function registerDiagnosticsHandlers(options: {
           limit: payload.limit ?? 1000,
         });
       },
-      { logger: options.logger },
+      { logger: options.logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

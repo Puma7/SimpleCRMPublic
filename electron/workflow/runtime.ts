@@ -192,6 +192,7 @@ async function walkGraph(
         );
         log.push(...r.log);
         if (r.blocked) return r;
+        if (r.deferred) return r;
         if (r.status === 'error') {
           blocked = false;
           blockReason = null;
@@ -251,7 +252,13 @@ async function walkGraph(
     }
     if (result.stop) {
       log.push('stop');
-      return { log, status: 'ok', blocked: false, blockReason: null };
+      return {
+        log,
+        status: 'ok',
+        blocked: false,
+        blockReason: null,
+        deferred: result.deferred === true,
+      };
     }
 
     const outs = outgoing(doc.edges, currentId);

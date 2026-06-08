@@ -73,7 +73,7 @@ export function registerLogicNodes(register: Reg): void {
           eventStrings: ctx.strings,
         }),
       });
-      return { status: 'ok', stop: true, message: `delayed_until:${executeAt}` };
+      return { status: 'ok', stop: true, deferred: true, message: `delayed_until:${executeAt}` };
     },
   });
 

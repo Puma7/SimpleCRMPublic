@@ -27,6 +27,7 @@ describe('sendWorkflowForwardCopy', () => {
     jest.clearAllMocks();
     mockGetAccount.mockReturnValue({ email_address: 'me@test.de' });
     mockDbGet.mockReturnValue(undefined);
+    mockDbRun.mockReturnValue({ changes: 1 });
     mockSend.mockResolvedValue(undefined);
   });
 

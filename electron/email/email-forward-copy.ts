@@ -53,6 +53,14 @@ export async function sendWorkflowForwardCopy(
     .get(input.sourceMessageId, input.workflowId, dest);
   if (dup) return { ok: true };
 
+  // Claim dedup before SMTP so concurrent workers cannot double-send on failure.
+  const claim = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
+    )
+    .run(input.sourceMessageId, input.workflowId, dest);
+  if (claim.changes === 0) return { ok: true };
+
   // Workflow forwards bypass outbound review — see packages/server workflow-forward-copy.ts
 
   try {
@@ -64,6 +72,11 @@ export async function sendWorkflowForwardCopy(
       headers: { 'Auto-Submitted': 'auto-forwarded' },
     });
   } catch (e) {
+    getDb()
+      .prepare(
+        `DELETE FROM ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} WHERE message_id = ? AND workflow_id = ? AND dest = ?`,
+      )
+      .run(input.sourceMessageId, input.workflowId, dest);
     const msg = e instanceof Error ? e.message : String(e);
     console.warn('[email] forward_copy failed', {
       accountId: input.accountId,
@@ -74,12 +87,6 @@ export async function sendWorkflowForwardCopy(
     });
     return { ok: false, reason: msg };
   }
-
-  getDb()
-    .prepare(
-      `INSERT OR IGNORE INTO ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} (message_id, workflow_id, dest) VALUES (?, ?, ?)`,
-    )
-    .run(input.sourceMessageId, input.workflowId, dest);
 
   return { ok: true };
 }

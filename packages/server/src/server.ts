@@ -202,6 +202,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const attachmentsRoot = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
+  const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim();
   const webhookAllowlist = env.JOB_WEBHOOK_ALLOWLIST?.trim();
   // Central server log: capture every warning/error (pino + console) into a
   // bounded, file-persisted store exposed via the diagnostics API.
@@ -254,6 +255,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   }
 
   ports.serverLogs = serverLogStore;
+  if (initialSetupToken) {
+    ports.initialSetupToken = initialSetupToken;
+  }
 
   const app = createFastifyServer({
     ports,

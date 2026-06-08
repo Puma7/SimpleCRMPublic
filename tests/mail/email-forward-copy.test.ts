@@ -2,6 +2,7 @@ const mockGetAccount = jest.fn();
 const mockSendSmtp = jest.fn();
 const mockDbGet = jest.fn();
 const mockDbRun = jest.fn();
+const mockDbPrepare = jest.fn();
 
 jest.mock('../../electron/email/email-store', () => ({
   getEmailAccountById: (...args: unknown[]) => mockGetAccount(...args),
@@ -11,10 +12,13 @@ jest.mock('../../electron/email/email-smtp', () => ({
 }));
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({
-    prepare: () => ({
-      get: (...args: unknown[]) => mockDbGet(...args),
-      run: (...args: unknown[]) => mockDbRun(...args),
-    }),
+    prepare: (sql: string) => {
+      mockDbPrepare(sql);
+      return {
+        get: (...args: unknown[]) => mockDbGet(...args),
+        run: (...args: unknown[]) => mockDbRun(...args),
+      };
+    },
   }),
 }));
 
@@ -39,6 +43,7 @@ describe('email-forward-copy', () => {
     mockGetAccount.mockReturnValue({ id: 1, email_address: 'me@test.de' });
     mockSendSmtp.mockResolvedValue(undefined);
     mockDbGet.mockReturnValue(undefined);
+    mockDbRun.mockReturnValue({ changes: 1 });
   });
 
   test('normalizeForwardCopyRecipients splits comma and angle addresses', () => {
@@ -66,10 +71,21 @@ describe('email-forward-copy', () => {
     expect(mockSendSmtp).not.toHaveBeenCalled();
   });
 
-  test('sends smtp without outbound workflow gate and records dedup', async () => {
+  test('sends smtp without outbound workflow gate and records dedup before send', async () => {
+    const callOrder: string[] = [];
+    mockDbRun.mockImplementation((...args: unknown[]) => {
+      if (args.length === 3) callOrder.push('dedup-insert');
+      if (args.length === 0) callOrder.push('dedup-delete');
+      return { changes: 1 };
+    });
+    mockSendSmtp.mockImplementation(async () => {
+      callOrder.push('smtp');
+    });
+
     expect(await sendWorkflowForwardCopy({ ...input, to: 'bank@x.de, buchhaltung@x.de' })).toEqual({
       ok: true,
     });
+    expect(callOrder).toEqual(['dedup-insert', 'smtp']);
     expect(mockSendSmtp).toHaveBeenCalledWith(
       1,
       expect.objectContaining({
@@ -80,8 +96,9 @@ describe('email-forward-copy', () => {
     expect(mockDbRun).toHaveBeenCalledWith(10, 3, 'bank@x.de,buchhaltung@x.de');
   });
 
-  test('returns smtp error message', async () => {
+  test('returns smtp error message and rolls back dedup claim', async () => {
     mockSendSmtp.mockRejectedValue(new Error('smtp down'));
     expect(await sendWorkflowForwardCopy(input)).toEqual({ ok: false, reason: 'smtp down' });
+    expect(mockDbPrepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM'));
   });
 });

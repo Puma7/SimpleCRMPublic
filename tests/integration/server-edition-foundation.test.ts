@@ -2132,6 +2132,9 @@ describe('server edition repository boundaries', () => {
       port: 0,
       logger: false,
       databaseUrl: 'postgres://simplecrm@postgres/simplecrm',
+      env: {
+        DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+      },
     })).rejects.toThrow('ACCESS_TOKEN_SECRET');
 
     await expect(startServer({
@@ -2143,6 +2146,7 @@ describe('server edition repository boundaries', () => {
         keyId: 'test',
         secret: Buffer.alloc(32, 12),
       },
+      env: {},
     })).rejects.toThrow('DATABASE_URL');
   });
 

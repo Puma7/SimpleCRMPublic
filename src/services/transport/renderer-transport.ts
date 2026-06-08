@@ -1,6 +1,7 @@
 import type { InvokeChannel } from "@shared/ipc/channels"
 import type { InferPayload, InferResult } from "@shared/ipc/types"
 import { buildHttpInvocation, type HttpRequestSpec } from "./channel-http-registry"
+import { createServerAuthClient } from "./server-auth-client"
 import { getServerAccessToken } from "./server-auth-session"
 
 type InvokeArgs<C extends InvokeChannel> = InferPayload<C> extends undefined
@@ -229,6 +230,10 @@ export function createIpcRendererTransport(api: ElectronInvokeApi | undefined = 
 export function createHttpRendererTransport(options: HttpRendererTransportOptions): RendererTransport {
   const baseUrl = normalizeBaseUrl(options.baseUrl)
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
+  const serverAuth = createServerAuthClient({
+    baseUrl,
+    device: "simplecrm-renderer",
+  })
 
   const invoke = async (channel: InvokeChannel, ...args: any[]): Promise<any> => {
     if (!fetchImpl) {
@@ -237,14 +242,18 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       })
     }
 
-    const token = await getAccessToken(options.getAccessToken)
+    let token = await getAccessToken(options.getAccessToken)
 
-    const fetchHttp = async (requestSpec: HttpRequestSpec): Promise<{ body: unknown; response: Response }> => {
+    const fetchHttp = async (
+      requestSpec: HttpRequestSpec,
+      retriedAfterRefresh = false,
+    ): Promise<{ body: unknown; response: Response }> => {
       const url = buildUrl(baseUrl, requestSpec.path, requestSpec.query)
       const headers: Record<string, string> = {
         Accept: requestSpec.responseType === "blob" ? "application/octet-stream, application/json" : "application/json",
       }
-      if (token) headers.Authorization = `Bearer ${token}`
+      const activeToken = await getAccessToken(options.getAccessToken) ?? token
+      if (activeToken) headers.Authorization = `Bearer ${activeToken}`
 
       const init: RequestInit = {
         method: requestSpec.method,
@@ -260,6 +269,15 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       const body = response.ok && requestSpec.responseType === "blob"
         ? await response.blob()
         : await parseResponseBody(response)
+
+      if (response.status === 401 && !retriedAfterRefresh) {
+        const refreshed = await serverAuth.refresh()
+        if (refreshed) {
+          token = refreshed.tokens.accessToken
+          return fetchHttp(requestSpec, true)
+        }
+      }
+
       if (!response.ok) {
         throw httpError(response, body)
       }

@@ -8,6 +8,8 @@ import {
 } from '../mssql-keytar-service';
 import { parsePort } from '../utils/ports';
 
+const ADMIN_IPC_ROLES = ['owner', 'admin'] as const;
+
 interface MssqlHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   isDevelopment: boolean;
@@ -36,7 +38,7 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         logger.error('[IPC Main] mssql:save-settings error:', error);
         return { success: false, error: (error as Error).message || 'Unknown error during saveMssqlSettingsWithKeytar call' };
       }
-    }, { logger })
+    }, { logger, requireRole: [...ADMIN_IPC_ROLES] })
   );
 
   disposers.push(
@@ -51,7 +53,7 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         logger.error('IPC Error getting MSSQL settings:', error);
         return { success: false, error: (error as Error).message || 'Failed to retrieve settings', data: null };
       }
-    }, { logger })
+    }, { logger, requireRole: [...ADMIN_IPC_ROLES] })
   );
 
   disposers.push(
@@ -78,7 +80,7 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         logger.error('[IPC Main] mssql:test-connection error:', error);
         return { success: false, error: (error as Error).message || 'Test connection failed in main process' };
       }
-    }, { logger })
+    }, { logger, requireRole: [...ADMIN_IPC_ROLES] })
   );
 
   disposers.push(
@@ -92,7 +94,7 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         logger.error('[IPC Main] mssql:clear-password error:', error);
         return { success: false, error: (error as Error).message || 'Failed to clear password' };
       }
-    }, { logger })
+    }, { logger, requireRole: [...ADMIN_IPC_ROLES] })
   );
 
   return () => {

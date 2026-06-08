@@ -11,6 +11,7 @@ import type {
 import {
   data,
   error,
+  requireAdmin,
   requirePrincipal,
 } from './types';
 
@@ -86,6 +87,7 @@ async function handleApiKeyGet(
 async function handleApiKeyCreate(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.automationApiKeys?.create) return error(503, 'automation_api_keys_unavailable', 'Automation API key API nicht konfiguriert');
 
   const parsed = parseApiKeyMutationBody(req.body);
@@ -111,6 +113,7 @@ async function handleApiKeyRevoke(
   principal: AuthenticatedPrincipal,
   id: string,
 ): Promise<ApiResponse> {
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.automationApiKeys?.revoke) return error(503, 'automation_api_keys_unavailable', 'Automation API key API nicht konfiguriert');
 
   const result = await ports.automationApiKeys.revoke({

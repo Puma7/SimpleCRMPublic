@@ -25,6 +25,7 @@ export type ServerEditionEnv = {
   LOG_LEVEL?: string;
   NODE_ENV?: string;
   CI?: string;
+  INITIAL_SETUP_TOKEN?: string;
 };
 
 export type ServerEditionConfig = {
@@ -40,6 +41,7 @@ export type ServerEditionConfig = {
   host: string;
   port: number;
   jobWorker: ServerJobWorkerConfig;
+  initialSetupToken?: string;
 };
 
 export type ServerJobWorkerConfig = {
@@ -88,6 +90,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   const host = env.HOST?.trim() || '0.0.0.0';
   const port = parsePort(env.PORT ?? '3000');
   const jobWorker = parseServerJobWorkerConfig(env);
+  const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim() || undefined;
 
   return {
     databaseUrl,
@@ -102,6 +105,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     host,
     port,
     jobWorker,
+    ...(initialSetupToken ? { initialSetupToken } : {}),
   };
 }
 

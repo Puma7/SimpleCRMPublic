@@ -1,6 +1,6 @@
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { WORKFLOW_DELAYED_JOBS_TABLE } from '../database-schema';
-import { getWorkflowById } from '../email/email-workflow-store';
+import { getWorkflowById, releaseInboundWorkflowClaim } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
 import { parseGraphDocument } from './runtime';
 import { executeWorkflowForTrigger } from './workflow-executor';
@@ -213,6 +213,9 @@ export async function processDueDelayedJobs(
       if (result.status === 'blocked') {
         markJob(job.id, 'cancelled', result.log.join(';').slice(0, 500));
       } else if (result.status === 'error') {
+        if (job.message_id != null) {
+          releaseInboundWorkflowClaim(job.message_id, job.workflow_id);
+        }
         maybeRequeueFailedJob(job.id, result.log.join(';').slice(0, 500));
       } else {
         markJob(job.id, 'done');
@@ -221,6 +224,9 @@ export async function processDueDelayedJobs(
       processed += 1;
     } catch (e) {
       logger.warn('[workflow] delayed job failed', job.id, e);
+      if (job.message_id != null) {
+        releaseInboundWorkflowClaim(job.message_id, job.workflow_id);
+      }
       maybeRequeueFailedJob(job.id, e instanceof Error ? e.message : String(e));
     } finally {
       PROCESSING.delete(job.id);

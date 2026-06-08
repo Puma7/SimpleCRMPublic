@@ -36,6 +36,7 @@ export async function executeWorkflowForTrigger(input: {
   log: string[];
   blocked: boolean;
   blockReason: string | null;
+  deferred?: boolean;
 }> {
   const runId = startWorkflowRun({
     workflowId: input.workflow.id,
@@ -74,6 +75,7 @@ export async function executeWorkflowForTrigger(input: {
         log,
         blocked: result.blocked,
         blockReason: result.blockReason,
+        deferred: result.deferred === true,
       };
     }
 
