@@ -53,7 +53,7 @@ export function registerDiagnosticsHandlers(options: {
         ensureAppLogStore().clear();
         return { success: true as const };
       },
-      { logger: options.logger, requireAuth: true, requireRealSession: true },
+      { logger: options.logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -64,7 +64,7 @@ export function registerDiagnosticsHandlers(options: {
         const written = ensureAppLogStore().selfTest();
         return { written };
       },
-      { logger: options.logger, requireAuth: true, requireRealSession: true },
+      { logger: options.logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

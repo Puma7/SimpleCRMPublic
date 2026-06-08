@@ -4225,21 +4225,8 @@ describe('server edition foundation', () => {
           actorUserId: USER_A_ID,
           applyStatus: true,
           runSecurityCheck: true,
+          enqueueInboundWorkflows: true,
         },
-        maxAttempts: 3,
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          workflowId: 23,
-          messageId: 31,
-          actorUserId: USER_A_ID,
-          triggerName: 'inbound',
-          context: { skipIfMessageSpamOrReview: true },
-        },
-        runAfter: new Date('2026-07-04T09:01:10.000Z'),
         maxAttempts: 3,
       },
       {
@@ -4283,8 +4270,7 @@ describe('server edition foundation', () => {
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
-    expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+    expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
     expect(enqueued.filter((item) => (item as any).type === 'mail.vacation.auto_reply')
@@ -10829,6 +10815,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: true,
       runSecurityCheck: false,
+      enqueueInboundWorkflows: false,
       actorUserId: USER_A_ID,
     });
     expect(buildSpamScoringPlan({
@@ -10839,6 +10826,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: false,
       runSecurityCheck: false,
+      enqueueInboundWorkflows: false,
     });
     expect(() => buildSpamScoringPlan({
       workspaceId: WORKSPACE_B_ID,
@@ -10913,6 +10901,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: true,
       runSecurityCheck: true,
+      enqueueInboundWorkflows: false,
     });
 
     const calls: unknown[] = [];

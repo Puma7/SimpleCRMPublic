@@ -16,6 +16,8 @@ const mockListAiPrompts = jest.fn(() => [] as { id: number; label: string; user_
 const mockListWorkflowsByTrigger = jest.fn(() => [] as { id: number; name: string; trigger: string; enabled: number }[]);
 const mockWasWorkflowAppliedToMessage = jest.fn(() => false);
 const mockMarkWorkflowAppliedToMessage = jest.fn();
+const mockTryClaimInboundWorkflowForMessage = jest.fn(() => true);
+const mockReleaseInboundWorkflowClaim = jest.fn();
 const mockInsertWorkflowRun = jest.fn();
 const mockGetWorkflowById = jest.fn();
 
@@ -49,6 +51,8 @@ jest.mock('../../electron/email/email-workflow-store', () => ({
   listWorkflowsByTrigger: (...args: unknown[]) => mockListWorkflowsByTrigger(...args),
   wasWorkflowAppliedToMessage: (...args: unknown[]) => mockWasWorkflowAppliedToMessage(...args),
   markWorkflowAppliedToMessage: (...args: unknown[]) => mockMarkWorkflowAppliedToMessage(...args),
+  tryClaimInboundWorkflowForMessage: (...args: unknown[]) => mockTryClaimInboundWorkflowForMessage(...args),
+  releaseInboundWorkflowClaim: (...args: unknown[]) => mockReleaseInboundWorkflowClaim(...args),
   insertWorkflowRun: (...args: unknown[]) => mockInsertWorkflowRun(...args),
   getWorkflowById: (...args: unknown[]) => mockGetWorkflowById(...args),
 }));
@@ -503,7 +507,7 @@ describe('email-workflow-engine core', () => {
       expect(mockExecuteWorkflowForTrigger).not.toHaveBeenCalled();
     });
 
-    test('runs workflows and marks applied', async () => {
+    test('runs workflows and claims applied slot', async () => {
       const row = inboundRow();
       const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
       mockListWorkflowsByTrigger.mockReturnValue([wf]);
@@ -514,7 +518,8 @@ describe('email-workflow-engine core', () => {
         appliedWorkflowIds: new Set(),
       });
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
-      expect(mockMarkWorkflowAppliedToMessage).toHaveBeenCalledWith(row.id, 3);
+      expect(mockTryClaimInboundWorkflowForMessage).toHaveBeenCalledWith(row.id, 3);
+      expect(mockMarkWorkflowAppliedToMessage).not.toHaveBeenCalled();
       expect(mockEnsureReplySuggestion).toHaveBeenCalled();
       expect(mockMaybeSendVacationAutoReply).toHaveBeenCalled();
     });
@@ -552,7 +557,7 @@ describe('email-workflow-engine core', () => {
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalledWith(
         expect.objectContaining({ trigger: 'draft_created', direction: 'draft_created' }),
       );
-      expect(mockMarkWorkflowAppliedToMessage).toHaveBeenCalledWith(row.id, 4);
+      expect(mockTryClaimInboundWorkflowForMessage).toHaveBeenCalledWith(row.id, 4);
     });
 
     test('records errors from draft_created executor', async () => {

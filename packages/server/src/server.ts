@@ -287,7 +287,10 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
                   auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
                 } : {}),
               }) : {},
-              createSpamScoringJobHandlers({ emailMessages: ports.emailMessages }),
+              createSpamScoringJobHandlers({
+                emailMessages: ports.emailMessages,
+                ...(db && ports.jobQueue ? { db, jobQueue: ports.jobQueue } : {}),
+              }),
             ),
             createWebhookJobHandlers({
               ...(webhookAllowlist ? {

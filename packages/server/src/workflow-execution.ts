@@ -5444,7 +5444,14 @@ function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {
 
 function messageIsSpamOrReview(message: MessageRow): boolean {
   const status = String(message.spam_status ?? '').toLowerCase();
-  return message.is_spam === true || status === 'spam' || status === 'review';
+  const label = String(message.spam_score_label ?? '').toLowerCase();
+  return (
+    message.is_spam === true
+    || status === 'spam'
+    || status === 'review'
+    || label === 'spam'
+    || label === 'review'
+  );
 }
 
 function outboundMessageIdFromContext(value: Record<string, unknown>): number | null {

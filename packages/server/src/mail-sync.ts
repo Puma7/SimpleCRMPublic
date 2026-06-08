@@ -434,6 +434,23 @@ async function syncImapFolder(input: {
   let uidValidityNum: number | null | undefined;
   let uidValidityStr: string | null | undefined;
   let uidValidityReset = false;
+
+  type FetchedImapMessage = Readonly<{
+    uid: number;
+    source: Buffer;
+    flags: Set<string> | undefined;
+    threadId: string | null;
+  }>;
+
+  const fullInbox = input.plan.fullInbox === true && input.spec.runPostSync === true;
+  let sorted: number[] = [];
+  let sortedSet = new Set<number>();
+  let imapUidToId = new Map<number, number>();
+  let toProcess: number[] = [];
+  const fetchedMessages: FetchedImapMessage[] = [];
+  const skippedUids = new Set<number>();
+  let chainEnd = lastUid;
+
   const lock = await input.client.getMailboxLock(input.spec.path);
   try {
     const status = await input.client.status(input.spec.path, {
@@ -467,10 +484,6 @@ async function syncImapFolder(input: {
       };
     }
 
-    // One-shot full inbox backfill (only the primary inbox): import older
-    // already-read messages skipped by the first-sync cap, without moving the
-    // sync cursor and without triggering inbound post-processing.
-    const fullInbox = input.plan.fullInbox === true && input.spec.runPostSync === true;
     let uids: number[];
     if (fullInbox) {
       const searchResult = await input.client.search({ all: true }, { uid: true });
@@ -484,22 +497,15 @@ async function syncImapFolder(input: {
       uids = [...allUids].sort((a, b) => a - b).slice(-input.firstSyncMaxMessages);
     }
 
-    const sorted = [...uids].sort((a, b) => a - b).filter((uid) => Number.isSafeInteger(uid) && uid > 0);
-    const sortedSet = new Set(sorted);
-    const imapUidToId = new Map(await input.store.loadImapUidToId({
+    sorted = [...uids].sort((a, b) => a - b).filter((uid) => Number.isSafeInteger(uid) && uid > 0);
+    sortedSet = new Set(sorted);
+    imapUidToId = new Map(await input.store.loadImapUidToId({
       workspaceId: input.plan.workspaceId,
       folderId: folder.id,
       uids: sorted,
     }));
-    // In backfill mode only download the messages we do not already have.
-    const toProcess = fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted;
-    const context: ServerMailSyncUpsertContext = {
-      imapUidToId,
-      reconcileSeenFromServer: true,
-    };
-    const newMessageIds: number[] = [];
-    let chainEnd = lastUid;
-    const skippedUids = new Set<number>();
+    toProcess = fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted;
+    chainEnd = lastUid;
 
     for (const uid of toProcess) {
       try {
@@ -509,70 +515,93 @@ async function syncImapFolder(input: {
           { uid: true },
         );
         if (!fetched || !fetched.source) throw new Error(`empty source for UID ${uid}`);
-        const source = sourceToBuffer(fetched.source);
-        const parsed = await input.parser(source);
-        const upserted = await input.store.upsertMessage({
-          workspaceId: input.plan.workspaceId,
-          account: input.account,
-          folder,
+        fetchedMessages.push({
           uid,
-          ...parsed,
-          seenLocal: flagsContainSeen(fetched.flags),
-          imapThreadId: fetched.threadId == null ? null : String(fetched.threadId),
-          folderKind: input.spec.folderKind,
-          archived: input.spec.archived,
-          isSpam: input.spec.isSpam,
-        }, context);
-        await replaceMessageAttachmentsIfPresent(input.store, {
-          workspaceId: input.plan.workspaceId,
-          messageId: upserted.id,
-          attachments: parsed.attachments,
+          source: sourceToBuffer(fetched.source),
+          flags: fetched.flags,
+          threadId: fetched.threadId == null ? null : String(fetched.threadId),
         });
-        if (uidValidityReset && input.store.restoreUidValidityLocalMetadata) {
-          await input.store.restoreUidValidityLocalMetadata({
-            workspaceId: input.plan.workspaceId,
-            folderId: folder.id,
-            messageId: upserted.id,
-            messageIdHeader: parsed.messageId,
-            now: input.now(),
-          });
-        }
-        if (upserted.isNew && upserted.id > 0) newMessageIds.push(upserted.id);
-        if (canAdvanceImapSyncCursor(chainEnd, uid, sortedSet, skippedUids)) chainEnd = uid;
       } catch (error) {
-        // Previously swallowed silently. A failing message blocks the sync
-        // cursor (it is retried every sync), so surface why so it is diagnosable.
         skippedUids.add(uid);
         console.warn(
           `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
-
-    if (!fullInbox) {
-      if (sorted.length > 0) {
-        lastUid = chainEnd;
-      } else if (lastUid === 0) {
-        const refresh = await input.client.search({ all: true }, { uid: true });
-        const all = refresh === false ? [] : refresh;
-        if (all.length > 0) lastUid = Math.max(...all);
-      }
-    }
-
-    await input.store.updateFolderSyncState({
-      workspaceId: input.plan.workspaceId,
-      folderId: folder.id,
-      lastUid,
-      uidvalidity: uidValidityNum,
-      uidvalidityStr: uidValidityStr,
-      syncedAt: input.now(),
-    });
-
-    // Backfilled historical mail must not trigger inbound workflows/spam/AI.
-    return { newMessageIds: fullInbox ? [] : newMessageIds };
   } finally {
     lock.release();
   }
+
+  const context: ServerMailSyncUpsertContext = {
+    imapUidToId,
+    reconcileSeenFromServer: true,
+  };
+  const newMessageIds: number[] = [];
+
+  for (const item of fetchedMessages) {
+    try {
+      const parsed = await input.parser(item.source);
+      const upserted = await input.store.upsertMessage({
+        workspaceId: input.plan.workspaceId,
+        account: input.account,
+        folder,
+        uid: item.uid,
+        ...parsed,
+        seenLocal: flagsContainSeen(item.flags),
+        imapThreadId: item.threadId,
+        folderKind: input.spec.folderKind,
+        archived: input.spec.archived,
+        isSpam: input.spec.isSpam,
+      }, context);
+      await replaceMessageAttachmentsIfPresent(input.store, {
+        workspaceId: input.plan.workspaceId,
+        messageId: upserted.id,
+        attachments: parsed.attachments,
+      });
+      if (uidValidityReset && input.store.restoreUidValidityLocalMetadata) {
+        await input.store.restoreUidValidityLocalMetadata({
+          workspaceId: input.plan.workspaceId,
+          folderId: folder.id,
+          messageId: upserted.id,
+          messageIdHeader: parsed.messageId,
+          now: input.now(),
+        });
+      }
+      if (upserted.isNew && upserted.id > 0) newMessageIds.push(upserted.id);
+      if (canAdvanceImapSyncCursor(chainEnd, item.uid, sortedSet, skippedUids)) chainEnd = item.uid;
+    } catch (error) {
+      skippedUids.add(item.uid);
+      console.warn(
+        `[mail-sync] skipped message UID ${item.uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  if (!fullInbox) {
+    if (sorted.length > 0) {
+      lastUid = chainEnd;
+    } else if (lastUid === 0) {
+      const lockForRefresh = await input.client.getMailboxLock(input.spec.path);
+      try {
+        const refresh = await input.client.search({ all: true }, { uid: true });
+        const all = refresh === false ? [] : refresh;
+        if (all.length > 0) lastUid = Math.max(...all);
+      } finally {
+        lockForRefresh.release();
+      }
+    }
+  }
+
+  await input.store.updateFolderSyncState({
+    workspaceId: input.plan.workspaceId,
+    folderId: folder.id,
+    lastUid,
+    uidvalidity: uidValidityNum,
+    uidvalidityStr: uidValidityStr,
+    syncedAt: input.now(),
+  });
+
+  return { newMessageIds: fullInbox ? [] : newMessageIds };
 }
 
 async function syncPop3Account(input: {
