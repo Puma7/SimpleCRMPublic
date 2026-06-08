@@ -2,7 +2,6 @@ import { getDb } from '../sqlite-service';
 import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../database-schema';
 import { getEmailAccountById } from './email-store';
 import { sendSmtpForAccount } from './email-smtp';
-import { evaluateOutboundWorkflows } from './email-workflow-engine';
 
 export type ForwardCopyInput = {
   accountId: number;
@@ -14,16 +13,33 @@ export type ForwardCopyInput = {
   originalFromLine: string;
 };
 
+const MAX_FORWARD_RECIPIENTS = 10;
+
+/** Parse comma/semicolon-separated forward targets (aligned with server edition). */
+export function normalizeForwardCopyRecipients(raw: string): string[] {
+  const parts = raw
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const out: string[] = [];
+  for (const part of parts.slice(0, MAX_FORWARD_RECIPIENTS)) {
+    const m = part.match(/<([^>]+)>/) ?? part.match(/^([^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)$/);
+    const addr = (m ? m[1]! : part).trim().toLowerCase();
+    if (addr && !out.includes(addr)) out.push(addr);
+  }
+  return out;
+}
+
 export async function sendWorkflowForwardCopy(
   input: ForwardCopyInput,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const to = input.to.trim();
-  if (!to) return { ok: false, reason: 'Empfänger fehlt' };
+  const recipients = normalizeForwardCopyRecipients(input.to);
+  if (recipients.length === 0) return { ok: false, reason: 'Empfänger fehlt' };
 
   const acc = getEmailAccountById(input.accountId);
   if (!acc) return { ok: false, reason: 'Konto fehlt' };
 
-  const dest = to.toLowerCase();
+  const dest = [...recipients].sort().join(',');
   const dup = getDb()
     .prepare(
       `SELECT 1 FROM ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} WHERE message_id = ? AND workflow_id = ? AND dest = ?`,
@@ -31,23 +47,14 @@ export async function sendWorkflowForwardCopy(
     .get(input.sourceMessageId, input.workflowId, dest);
   if (dup) return { ok: true };
 
-  const outbound = await evaluateOutboundWorkflows(
-    {
-      messageId: input.sourceMessageId,
-      subject: input.subject,
-      bodyText: input.bodyText,
-      to,
-    },
-    { sideEffects: 'none' },
-  );
-  if (!outbound.allowed) {
-    return { ok: false, reason: outbound.reason ?? 'Outbound-Workflow blockiert Weiterleitung' };
-  }
+  // Workflow forwards bypass outbound review (server edition parity): they are
+  // initiated by inbound automation, not human compose. Auto-Submitted + dedup
+  // guard loops; sensitive-content rules would block typical invoice forwards.
 
   try {
     await sendSmtpForAccount(input.accountId, {
       from: acc.email_address,
-      to,
+      to: recipients.join(', '),
       subject: input.subject,
       text: input.bodyText.slice(0, 500_000),
       headers: { 'Auto-Submitted': 'auto-forwarded' },
