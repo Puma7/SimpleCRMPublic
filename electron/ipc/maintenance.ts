@@ -43,7 +43,7 @@ export function registerMaintenanceHandlers(options: {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Maintenance.RunRepair,
-      async () => runDesktopRepair(),
+      async () => runDesktopRepair(options.logger),
       { logger: options.logger, requireRole: ['owner', 'admin'] },
     ),
   );

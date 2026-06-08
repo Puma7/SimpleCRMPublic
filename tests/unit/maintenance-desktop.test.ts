@@ -6,6 +6,7 @@ import {
 } from '../../electron/maintenance/keytar-purge';
 import {
   validateDesktopHardResetInput,
+  runDesktopRepair,
 } from '../../electron/maintenance/reset-service';
 
 jest.mock('keytar', () => ({
@@ -17,9 +18,19 @@ jest.mock('keytar', () => ({
   deletePassword: jest.fn(async () => true),
 }));
 
+jest.mock('../../electron/email/email-imap-services', () => ({
+  stopEmailBackgroundServices: jest.fn(),
+  startEmailBackgroundServices: jest.fn(async () => undefined),
+}));
+
 const keytar = jest.requireMock('keytar') as {
   findCredentials: jest.Mock;
   deletePassword: jest.Mock;
+};
+
+const emailBackground = jest.requireMock('../../electron/email/email-imap-services') as {
+  stopEmailBackgroundServices: jest.Mock;
+  startEmailBackgroundServices: jest.Mock;
 };
 
 describe('desktop maintenance hard reset', () => {
@@ -49,5 +60,13 @@ describe('desktop maintenance hard reset', () => {
     expect(deleted).toBe(1);
     expect(keytar.findCredentials).toHaveBeenCalledTimes(DESKTOP_KEYTAR_SERVICES.length);
     expect(keytar.deletePassword).toHaveBeenCalledWith('SimpleCRMElectron-Email', 'email-1');
+  });
+
+  test('runDesktopRepair restarts email background services', async () => {
+    const logger = { warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const result = await runDesktopRepair(logger);
+    expect(result.ok).toBe(true);
+    expect(emailBackground.stopEmailBackgroundServices).toHaveBeenCalledTimes(1);
+    expect(emailBackground.startEmailBackgroundServices).toHaveBeenCalledWith(logger);
   });
 });

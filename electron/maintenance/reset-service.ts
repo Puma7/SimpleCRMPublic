@@ -3,7 +3,10 @@ import path from 'node:path';
 import { app } from 'electron';
 
 import { maintenanceHardResetPhraseMatches } from '@simplecrm/core';
-import { stopEmailBackgroundServices } from '../email/email-imap-services';
+import {
+  startEmailBackgroundServices,
+  stopEmailBackgroundServices,
+} from '../email/email-imap-services';
 import {
   bootstrapFreshDatabaseSchema,
   closeDatabase,
@@ -94,9 +97,20 @@ export async function executeDesktopHardReset(input: DesktopHardResetInput): Pro
   return { ok: true };
 }
 
-export function runDesktopRepair(): { ok: true; message: string } {
+export async function runDesktopRepair(
+  logger: Pick<typeof console, 'warn' | 'error' | 'debug'>,
+): Promise<{ ok: true; message: string }> {
   stopEmailBackgroundServices();
   runDesktopSchemaRepair();
+  try {
+    await startEmailBackgroundServices(logger);
+  } catch (error) {
+    logger.error('[maintenance] startEmailBackgroundServices after repair failed', error);
+    return {
+      ok: true,
+      message: 'Schema-Migrationen wurden angewendet, aber Hintergrunddienste konnten nicht neu gestartet werden. Bitte die App neu starten.',
+    };
+  }
   return { ok: true, message: 'Lokale Reparatur abgeschlossen. Schema-Migrationen wurden angewendet.' };
 }
 
