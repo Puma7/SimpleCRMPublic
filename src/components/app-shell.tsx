@@ -7,7 +7,8 @@ import Titlebar from "@/components/ui/titlebar"
 import { MainNav } from "@/components/main-nav"
 import { UpdateStatusDisplay } from "@/components/update-status-display"
 import { ErrorBoundary } from "@/components/error-boundary"
-import { Toaster } from "@/components/ui/sonner"
+import { Toaster as SonnerToaster } from "@/components/ui/sonner"
+import { Toaster as RadixToaster } from "@/components/ui/toaster"
 import {
   CommandPalette,
   useCommandPaletteShortcut,
@@ -48,7 +49,8 @@ export function AppShell() {
             <MainNav onOpenCommandPalette={openPalette} />
             <UpdateStatusDisplay />
             <AppMain />
-        <Toaster richColors closeButton position="bottom-right" />
+        <SonnerToaster richColors closeButton position="bottom-right" />
+        <RadixToaster />
             <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
           </div>
         </AuthGate>

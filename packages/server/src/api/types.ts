@@ -4109,6 +4109,8 @@ export type ServerLogReadPort = {
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
+  /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
+  initialSetupToken?: string;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;
   calendarEvents?: CalendarEventApiPort;

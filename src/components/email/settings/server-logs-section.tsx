@@ -16,9 +16,13 @@ type ServerLogEntry = {
 
 type LogLevelFilter = "info" | "warn" | "error"
 
-/** Central server log (warnings + errors), persisted across restarts, with
- *  copy/export and clear — server edition only. */
-export function ServerLogsSection() {
+type Props = {
+  /** Standalone Electron: same UI, reads local app log store via IPC. */
+  desktopMode?: boolean
+}
+
+/** Central app log (warnings + errors), persisted across restarts. */
+export function ServerLogsSection({ desktopMode = false }: Props) {
   const [entries, setEntries] = useState<ServerLogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -80,10 +84,14 @@ export function ServerLogsSection() {
     <section className="space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-medium">Server-Logs (Warnungen &amp; Fehler)</p>
+          <p className="text-sm font-medium">
+            {desktopMode ? "Anwendungs-Logs" : "Server-Logs"} (Warnungen &amp; Fehler)
+          </p>
           <p className="text-xs text-muted-foreground">
-            Zentral gesammelt und über Neustarts/Neubauten hinweg gespeichert. {entries.length} Einträge.
-            Mit „Selbsttest" prüfst du, ob die Erfassung funktioniert.
+            Zentral gesammelt und über Neustarts hinweg gespeichert. {entries.length} Einträge.
+            {desktopMode
+              ? " Enthält Hintergrund-Sync, Workflows und IPC-Warnungen aus dem Hauptprozess."
+              : " Mit „Selbsttest“ prüfst du, ob die Erfassung funktioniert."}
           </p>
         </div>
         <div className="flex items-center gap-1.5">

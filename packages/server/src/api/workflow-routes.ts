@@ -29,6 +29,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './types';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
@@ -409,7 +410,12 @@ async function handleWorkflowExecute(
     if (!message) return error(404, 'email_message_not_found', 'Email message nicht gefunden');
   }
 
-  if (parsed.values.dryRun) {
+  const dryRun = parsed.values.dryRun !== false;
+  if (!dryRun && !requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte');
+  }
+
+  if (dryRun) {
     if (!ports.workflowExecution?.dryRun) {
       return error(503, 'workflow_dry_run_unavailable', 'Workflow Dry-Run API nicht konfiguriert');
     }

@@ -1,17 +1,19 @@
+import { notifyError } from '@/lib/notify-error';
+
 /**
  * Shared logging helper for the email module.
- *
- * The original page.tsx used to console.error-log failures in a handful of
- * places and silently swallow the rest. When we split the monolith into
- * hooks + panels, the silent catches ended up scattered across a dozen
- * files. This helper gives us one canonical place to surface errors so
- * that `grep logError src/components/email` lists every known failure
- * path — and makes it easy to later pipe them into a real logger.
+ * Surfaces errors to console (→ electron-log in desktop) for grep-friendly audits.
  */
 export function logError(context: string, error: unknown): void {
   if (error instanceof Error) {
-    console.error(`[email] ${context}:`, error.message, error)
+    console.error(`[email] ${context}:`, error.message, error);
   } else {
-    console.error(`[email] ${context}:`, error)
+    console.error(`[email] ${context}:`, error);
   }
+}
+
+/** Log + Sonner toast for user-visible email failures. */
+export function notifyEmailError(context: string, error: unknown, userMessage: string): void {
+  logError(context, error);
+  notifyError(context, error, userMessage);
 }

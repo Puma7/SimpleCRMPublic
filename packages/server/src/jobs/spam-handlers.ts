@@ -1,9 +1,17 @@
-import type { EmailMessageApiPort } from '../api';
+import type { Kysely } from 'kysely';
+
+import type { EmailMessageApiPort, ServerJobQueueApiPort } from '../api';
+import { enqueueInboundWorkflowsAfterSpam } from '../mail-inbound-workflow-enqueue';
+import type { ServerDatabase } from '../db';
+import type { WorkspaceSessionApplier } from '../db/workspace-context';
 import type { JobPayload } from './types';
 import type { JobHandlerRegistry } from './worker';
 
 export type SpamScoringJobHandlersOptions = Readonly<{
   emailMessages?: EmailMessageApiPort;
+  jobQueue?: ServerJobQueueApiPort;
+  db?: Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
 
 export type SpamScoringPlan = Readonly<{
@@ -11,6 +19,7 @@ export type SpamScoringPlan = Readonly<{
   messageId: number;
   applyStatus: boolean;
   runSecurityCheck: boolean;
+  enqueueInboundWorkflows: boolean;
   actorUserId?: string;
 }>;
 
@@ -31,6 +40,25 @@ export function createSpamScoringJobHandlers(options: SpamScoringJobHandlersOpti
         ? await options.emailMessages.runSecurityCheck(input)
         : await options.emailMessages.evaluateSpamDecision?.(input);
       if (!result) throw new Error(`email message not found for spam scoring: ${plan.messageId}`);
+
+      if (
+        plan.enqueueInboundWorkflows
+        && options.jobQueue
+        && options.db
+      ) {
+        await enqueueInboundWorkflowsAfterSpam(
+          {
+            db: options.db,
+            jobQueue: options.jobQueue,
+            ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
+          },
+          {
+            workspaceId: plan.workspaceId,
+            messageId: plan.messageId,
+            ...(plan.actorUserId ? { actorUserId: plan.actorUserId } : {}),
+          },
+        );
+      }
     },
   };
 }
@@ -45,6 +73,7 @@ export function buildSpamScoringPlan(payload: JobPayload, jobWorkspaceId: string
     messageId: requiredPositiveInteger(payload, 'messageId'),
     applyStatus: optionalBoolean(payload, 'applyStatus', false),
     runSecurityCheck: optionalBoolean(payload, 'runSecurityCheck', false),
+    enqueueInboundWorkflows: optionalBoolean(payload, 'enqueueInboundWorkflows', false),
     ...optionalString(payload, 'actorUserId'),
   };
 }

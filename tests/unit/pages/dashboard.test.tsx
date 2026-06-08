@@ -20,6 +20,24 @@ jest.mock('@/services/data/dashboardService', () => ({
   dashboardService: mockDashboardService,
 }));
 
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => ({
+    loading: false,
+    authenticated: true,
+    authRequired: false,
+    user: null,
+    login: jest.fn(),
+    logout: jest.fn(),
+    refresh: jest.fn(),
+  }),
+}));
+
+jest.mock('@/services/transport', () => ({
+  getRendererTransport: () => ({ kind: 'ipc' }),
+  subscribeServerEvents: () => ({ unsubscribe: jest.fn() }),
+  isDashboardRefreshEvent: () => false,
+}));
+
 // Suppress skeleton/card/button imports
 jest.mock('@/components/ui/skeleton', () => ({
   Skeleton: ({ className }: any) => <div data-testid="skeleton" className={className} />,

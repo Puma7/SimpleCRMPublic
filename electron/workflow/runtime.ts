@@ -124,6 +124,7 @@ async function walkGraph(
     const node = nodesById.get(currentId);
     if (!node) break;
 
+    const regType = registryTypeOf(node);
     const gate = inboundGate;
     if (
       gate &&
@@ -132,10 +133,17 @@ async function walkGraph(
       !gate.conditionOk
     ) {
       log.push(`skip:${node.id}:no_prior_condition`);
+      insertWorkflowRunStep({
+        runId: ctx.runId,
+        nodeId: node.id,
+        nodeType: regType ?? node.type,
+        status: 'skipped',
+        port: null,
+        durationMs: 0,
+        message: 'skip:no_prior_condition',
+      });
       break;
     }
-
-    const regType = registryTypeOf(node);
 
     if (regType === 'logic.loop') {
       const data = node.data as Record<string, unknown>;
@@ -184,6 +192,7 @@ async function walkGraph(
         );
         log.push(...r.log);
         if (r.blocked) return r;
+        if (r.deferred) return r;
         if (r.status === 'error') {
           blocked = false;
           blockReason = null;
@@ -243,7 +252,13 @@ async function walkGraph(
     }
     if (result.stop) {
       log.push('stop');
-      return { log, status: 'ok', blocked: false, blockReason: null };
+      return {
+        log,
+        status: 'ok',
+        blocked: false,
+        blockReason: null,
+        deferred: result.deferred === true,
+      };
     }
 
     const outs = outgoing(doc.edges, currentId);
@@ -252,20 +267,30 @@ async function walkGraph(
     let port: string = 'default';
     if (node.type === 'condition') {
       port = result.port === 'no' ? 'no' : 'yes';
-      if (gate && port === 'yes') {
-        gate.conditionOk = true;
-        ctx.variables.__inbound_condition_ok = true;
-      }
     } else if (regType === 'logic.switch') {
       port = String(result.port ?? 'default');
     } else if (regType === 'logic.threshold') {
       port = result.port === 'no' ? 'no' : 'yes';
     } else if (regType === 'email.sender_filter') {
       port = String(result.port ?? 'default');
+    } else if (regType === 'email.auto_reply') {
+      port = String(result.port ?? 'blocked');
     } else if (result.port === 'error') {
       port = 'no';
     } else if (result.port) {
       port = result.port;
+    }
+
+    if (gate) {
+      const tripped =
+        (node.type === 'condition' && port === 'yes') ||
+        (regType === 'email.auto_reply' && port === 'approved') ||
+        (regType === 'logic.threshold' && port === 'yes') ||
+        (regType === 'logic.switch' && port !== 'default');
+      if (tripped) {
+        gate.conditionOk = true;
+        ctx.variables.__inbound_condition_ok = true;
+      }
     }
 
     const nextEdge = pickEdge(outs, port);

@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { toast } from "sonner"
 import { invokeRenderer } from "@/services/transport"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 
@@ -43,7 +44,8 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
     try {
       const s = await invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as StepRow[]
       setSteps(s ?? [])
-    } catch {
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Workflow-Schritte konnten nicht geladen werden.")
       setSteps([])
     } finally {
       setLoading(false)

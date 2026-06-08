@@ -6,6 +6,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { resolveRunStepNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { toast } from "sonner"
 import { invokeRenderer } from "@/services/transport"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 
@@ -48,6 +49,8 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
     try {
       const list = await invokeRenderer(IPCChannels.Email.ListWorkflowRuns, workflowId) as RunRow[]
       setRuns(list)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Workflow-Läufe konnten nicht geladen werden.")
     } finally {
       setLoading(false)
     }
@@ -61,8 +64,13 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
 
   const loadSteps = async (runId: number) => {
     setSelectedRunId(runId)
-    const s = await invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as StepRow[]
-    setSteps(s)
+    try {
+      const s = await invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as StepRow[]
+      setSteps(s)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Workflow-Schritte konnten nicht geladen werden.")
+      setSteps([])
+    }
   }
 
   if (workflowId == null) {

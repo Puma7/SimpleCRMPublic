@@ -1,45 +1,40 @@
-const mockToast = jest.fn();
+const mockToastError = jest.fn();
 
-jest.mock('@/components/ui/use-toast', () => ({
-  toast: mockToast,
+jest.mock('sonner', () => ({
+  toast: {
+    error: (...args: unknown[]) => mockToastError(...args),
+  },
 }));
 
 import { handleApiError } from '@/lib/api-error-handler';
 
 describe('handleApiError', () => {
   beforeEach(() => {
-    mockToast.mockReset();
+    mockToastError.mockReset();
   });
 
   test('shows toast with context title', () => {
     handleApiError(new Error('Something failed'), 'fetching customers');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: 'Fehler: fetching customers',
-        variant: 'destructive',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: fetching customers', {
+      description: 'Something failed',
+    });
   });
 
   test('uses Error.message as description', () => {
     handleApiError(new Error('Connection refused'), 'saving data');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Connection refused',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: saving data', {
+      description: 'Connection refused',
+    });
   });
 
   test('uses string error directly', () => {
     handleApiError('Something went wrong', 'loading products');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Something went wrong',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: loading products', {
+      description: 'Something went wrong',
+    });
   });
 
   test('uses errorDetails.userMessage when available', () => {
@@ -52,10 +47,11 @@ describe('handleApiError', () => {
 
     handleApiError(error, 'connecting');
 
-    expect(mockToast).toHaveBeenCalledWith(
+    expect(mockToastError).toHaveBeenCalledWith(
+      'Fehler: connecting',
       expect.objectContaining({
         description: expect.stringContaining('Verbindung zum Server fehlgeschlagen'),
-      })
+      }),
     );
   });
 
@@ -69,10 +65,10 @@ describe('handleApiError', () => {
 
     handleApiError(error, 'login');
 
-    const call = mockToast.mock.calls[0][0];
-    expect(call.description).toContain('Auth failed');
-    expect(call.description).toContain('Check credentials');
-    expect(call.description).toContain('Lösungsvorschlag');
+    const call = mockToastError.mock.calls[0];
+    expect(call?.[1]?.description).toContain('Auth failed');
+    expect(call?.[1]?.description).toContain('Check credentials');
+    expect(call?.[1]?.description).toContain('Lösungsvorschlag');
   });
 
   test('uses backend error string from { success: false, error: "..." } shape', () => {
@@ -80,79 +76,68 @@ describe('handleApiError', () => {
 
     handleApiError(backendError, 'deleting customer');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Record not found',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: deleting customer', {
+      description: 'Record not found',
+    });
   });
 
   test('uses fallback message for null error', () => {
     handleApiError(null, 'unknown operation');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Ein unerwarteter Fehler ist aufgetreten.',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: unknown operation', {
+      description: 'Ein unerwarteter Fehler ist aufgetreten.',
+    });
   });
 
   test('uses custom fallback message when provided', () => {
     handleApiError(null, 'something', 'Benutzerdefinierter Fehler');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Benutzerdefinierter Fehler',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: something', {
+      description: 'Benutzerdefinierter Fehler',
+    });
   });
 
   test('uses fallback for empty string error', () => {
     handleApiError('', 'test context');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Ein unerwarteter Fehler ist aufgetreten.',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: test context', {
+      description: 'Ein unerwarteter Fehler ist aufgetreten.',
+    });
   });
 
   test('uses fallback when errorDetails has no userMessage, still appends suggestion', () => {
     const error = {
       errorDetails: {
-        // userMessage is missing — falls back to default message
         suggestion: 'Try again',
       },
     };
 
     handleApiError(error, 'context');
 
-    const call = mockToast.mock.calls[0][0];
-    expect(call.description).toContain('Ein unerwarteter Fehler ist aufgetreten.');
-    expect(call.description).toContain('Try again');
+    const call = mockToastError.mock.calls[0];
+    expect(call?.[1]?.description).toContain('Ein unerwarteter Fehler ist aufgetreten.');
+    expect(call?.[1]?.description).toContain('Try again');
   });
 
   test('uses Error fallback message when error.message is empty', () => {
     const err = new Error('');
     handleApiError(err, 'context');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Ein unerwarteter Fehler ist aufgetreten.',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: context', {
+      description: 'Ein unerwarteter Fehler ist aufgetreten.',
+    });
   });
 
   test('uses errorDetails.userMessage over Error.message', () => {
     const error = new Error('low-level error');
-    (error as any).errorDetails = { userMessage: 'Benutzerfreundliche Meldung' };
+    (error as { errorDetails?: { userMessage: string } }).errorDetails = {
+      userMessage: 'Benutzerfreundliche Meldung',
+    };
 
     handleApiError(error, 'context');
 
-    expect(mockToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: 'Benutzerfreundliche Meldung',
-      })
-    );
+    expect(mockToastError).toHaveBeenCalledWith('Fehler: context', {
+      description: 'Benutzerfreundliche Meldung',
+    });
   });
 });

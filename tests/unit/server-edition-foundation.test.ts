@@ -4225,21 +4225,8 @@ describe('server edition foundation', () => {
           actorUserId: USER_A_ID,
           applyStatus: true,
           runSecurityCheck: true,
+          enqueueInboundWorkflows: true,
         },
-        maxAttempts: 3,
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          workflowId: 23,
-          messageId: 31,
-          actorUserId: USER_A_ID,
-          triggerName: 'inbound',
-          context: { skipIfMessageSpamOrReview: true },
-        },
-        runAfter: new Date('2026-07-04T09:01:10.000Z'),
         maxAttempts: 3,
       },
       {
@@ -4283,8 +4270,7 @@ describe('server edition foundation', () => {
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
-    expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+    expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
     expect(enqueued.filter((item) => (item as any).type === 'mail.vacation.auto_reply')
@@ -10829,6 +10815,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: true,
       runSecurityCheck: false,
+      enqueueInboundWorkflows: false,
       actorUserId: USER_A_ID,
     });
     expect(buildSpamScoringPlan({
@@ -10839,6 +10826,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: false,
       runSecurityCheck: false,
+      enqueueInboundWorkflows: false,
     });
     expect(() => buildSpamScoringPlan({
       workspaceId: WORKSPACE_B_ID,
@@ -10913,6 +10901,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: true,
       runSecurityCheck: true,
+      enqueueInboundWorkflows: false,
     });
 
     const calls: unknown[] = [];
@@ -25780,6 +25769,7 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const workflow = await api.handle({
       method: 'GET',
@@ -25802,7 +25792,7 @@ describe('server edition foundation', () => {
     });
     expect(misc.status).toBe(200);
     expect((misc.body as any).data).toEqual({
-      webhookSecret: 'secret-1',
+      webhookSecret: 'se****-1',
       maxAttachmentMb: '30',
     });
 
@@ -25841,7 +25831,7 @@ describe('server edition foundation', () => {
       },
     });
 
-    const miscPatch = await api.handle({
+    const miscPatchDenied = await api.handle({
       method: 'PATCH',
       path: '/api/v1/email/settings/misc',
       body: {
@@ -25849,6 +25839,17 @@ describe('server edition foundation', () => {
         maxAttachmentMb: 55,
       },
       principal,
+    });
+    expect(miscPatchDenied.status).toBe(403);
+
+    const miscPatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/settings/misc',
+      body: {
+        webhookSecret: ' rotated ',
+        maxAttachmentMb: 55,
+      },
+      principal: adminPrincipal,
     });
     expect(miscPatch.status).toBe(200);
     expect(setCalls[1]).toEqual({
@@ -26198,6 +26199,7 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const loaded = await api.handle({
       method: 'GET',
@@ -26243,7 +26245,7 @@ describe('server edition foundation', () => {
         forcePort: true,
         cWaehrung: 'eur',
       },
-      principal,
+      principal: adminPrincipal,
     });
     expect(saved.status).toBe(200);
     expect((saved.body as any).data).toEqual({ success: true });
@@ -26251,7 +26253,7 @@ describe('server edition foundation', () => {
     const cleared = await api.handle({
       method: 'DELETE',
       path: '/api/v1/mssql/password',
-      principal,
+      principal: adminPrincipal,
     });
     expect(cleared.status).toBe(200);
     expect((cleared.body as any).data.success).toBe(true);
@@ -26314,7 +26316,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const saved = await api.handle({
       method: 'PATCH',
@@ -27957,13 +27959,16 @@ describe('server edition foundation', () => {
       body: { messageId: '11' },
       principal,
     });
-    expect(bySource.status).toBe(202);
+    expect(bySource.status).toBe(200);
     expect((bySource.body as any).data).toEqual({
       success: true,
-      queued: true,
-      status: 'queued',
+      dryRun: true,
       workflowId: -23,
       messageId: 11,
+      status: 'ok',
+      blocked: false,
+      blockReason: null,
+      log: ['dry_run:server', 'dry_run:email.tag'],
     });
 
     const byId = await api.handle({
@@ -27972,7 +27977,32 @@ describe('server edition foundation', () => {
       body: {},
       principal,
     });
-    expect(byId.status).toBe(202);
+    expect(byId.status).toBe(200);
+    expect((byId.body as any).data.dryRun).toBe(true);
+
+    const liveDenied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: false },
+      principal,
+    });
+    expect(liveDenied.status).toBe(403);
+
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+    const liveQueued = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: false },
+      principal: adminPrincipal,
+    });
+    expect(liveQueued.status).toBe(202);
+    expect((liveQueued.body as any).data).toEqual({
+      success: true,
+      queued: true,
+      status: 'queued',
+      workflowId: -23,
+      messageId: 11,
+    });
 
     const missingMessage = await api.handle({
       method: 'POST',
@@ -28024,9 +28054,11 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(unavailable.status).toBe(503);
-    expect((unavailable.body as any).error.code).toBe('job_queue_unavailable');
+    expect((unavailable.body as any).error.code).toBe('workflow_dry_run_unavailable');
 
     expect(workflowListCalls).toEqual([
+      expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
+      expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
@@ -28035,17 +28067,36 @@ describe('server edition foundation', () => {
     expect(workflowGetCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 23 }]);
     expect(messageGetCalls).toEqual([
       { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
+      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
+      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
       { workspaceId: WORKSPACE_A_ID, id: 77, includeBody: false },
       { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
     ]);
-    expect(dryRunCalls).toEqual([{
-      workspaceId: WORKSPACE_A_ID,
-      workflowId: 23,
-      messageId: 11,
-      triggerName: 'manual',
-      actorUserId: USER_A_ID,
-      context: {},
-    }]);
+    expect(dryRunCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 23,
+        messageId: 11,
+        triggerName: 'manual',
+        actorUserId: USER_A_ID,
+        context: {},
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 23,
+        triggerName: 'manual',
+        actorUserId: USER_A_ID,
+        context: {},
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 23,
+        messageId: 11,
+        triggerName: 'manual',
+        actorUserId: USER_A_ID,
+        context: {},
+      },
+    ]);
     expect(queueCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
@@ -28054,17 +28105,6 @@ describe('server edition foundation', () => {
           workspaceId: WORKSPACE_A_ID,
           workflowId: 23,
           messageId: 11,
-          triggerName: 'manual',
-          actorUserId: USER_A_ID,
-          context: {},
-        },
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          workflowId: 23,
           triggerName: 'manual',
           actorUserId: USER_A_ID,
           context: {},

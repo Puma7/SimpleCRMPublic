@@ -9,7 +9,7 @@ function node(
 }
 
 describe('inboundNodeRequiresConditionGate', () => {
-  test('allows sender_filter and ai.classify without prior condition', () => {
+  test('allows sender_filter, ai.classify, ai.reply_suggestion and email.auto_reply without prior condition', () => {
     expect(
       inboundNodeRequiresConditionGate(
         node('registry', { nodeType: 'email.sender_filter', config: {} }),
@@ -17,6 +17,16 @@ describe('inboundNodeRequiresConditionGate', () => {
     ).toBe(false);
     expect(
       inboundNodeRequiresConditionGate(node('registry', { nodeType: 'ai.classify', config: {} })),
+    ).toBe(false);
+    expect(
+      inboundNodeRequiresConditionGate(
+        node('registry', { nodeType: 'ai.reply_suggestion', config: {} }),
+      ),
+    ).toBe(false);
+    expect(
+      inboundNodeRequiresConditionGate(
+        node('registry', { nodeType: 'email.auto_reply', config: {} }),
+      ),
     ).toBe(false);
   });
 

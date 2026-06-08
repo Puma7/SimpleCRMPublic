@@ -10,6 +10,7 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './types';
+import { timingSafeEqual } from 'node:crypto';
 
 const DEFAULT_AUDIT_LIMIT = 100;
 const MAX_AUDIT_LIMIT = 500;
@@ -82,6 +83,9 @@ async function handleInitialSetup(req: ApiRequest, ports: ServerApiPorts): Promi
   if (!ports.auth.createInitialOwner) {
     return error(503, 'auth_setup_unavailable', 'Initiales Server-Setup ist nicht konfiguriert');
   }
+
+  const tokenCheck = verifyInitialSetupToken(req, ports.initialSetupToken);
+  if (tokenCheck) return tokenCheck;
 
   const parsed = parseInitialSetupBody(req.body);
   if ('response' in parsed) return parsed.response;
@@ -724,4 +728,28 @@ function parsePositiveInt(value: string): number | null {
   if (!/^[1-9]\d*$/.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function verifyInitialSetupToken(
+  req: ApiRequest,
+  configuredToken: string | undefined,
+): ApiResponse | null {
+  const expected = configuredToken?.trim();
+  if (!expected) return null;
+
+  const headerToken = req.headers?.['x-initial-setup-token']?.trim();
+  const bodyToken =
+    getStringField(req.body, 'setupToken')?.trim()
+    ?? getStringField(req.body, 'initialSetupToken')?.trim();
+  const provided = headerToken || bodyToken;
+  if (!provided) {
+    return error(403, 'forbidden', 'Initial-Setup-Token erforderlich');
+  }
+
+  const expectedBuf = Buffer.from(expected);
+  const providedBuf = Buffer.from(provided);
+  if (expectedBuf.length !== providedBuf.length || !timingSafeEqual(expectedBuf, providedBuf)) {
+    return error(403, 'forbidden', 'Initial-Setup-Token ungueltig');
+  }
+  return null;
 }

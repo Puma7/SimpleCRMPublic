@@ -38,7 +38,7 @@ describe('registerIpcHandler', () => {
     const disposer = registerIpcHandler(
       IPCChannels.Tasks.GetAll,
       async (_event, payload) => ({ success: true, payload }),
-      { logger: console }
+      { logger: console, requireAuth: false }
     );
 
     expect(removeHandler).toHaveBeenCalledWith(IPCChannels.Tasks.GetAll);
@@ -62,7 +62,7 @@ describe('registerIpcHandler', () => {
     registerIpcHandler(
       IPCChannels.Tasks.GetAll,
       async () => ({ success: true }),
-      { logger: console }
+      { logger: console, requireAuth: false }
     );
 
     const wrapped = handle.mock.calls[0][1];
@@ -79,7 +79,7 @@ describe('registerIpcHandler', () => {
     registerIpcHandler(
       IPCChannels.Tasks.GetAll,
       async () => ({ success: true }),
-      { logger: console }
+      { logger: console, requireAuth: false }
     );
 
     const wrapped = handle.mock.calls[0][1];
@@ -94,7 +94,7 @@ describe('registerIpcHandler', () => {
     registerIpcHandler(
       IPCChannels.Tasks.GetAll,
       async (_event, payload) => payload,
-      { logger: console }
+      { logger: console, requireAuth: false }
     );
 
     const wrapped = handle.mock.calls[0][1];
@@ -109,7 +109,7 @@ describe('registerIpcHandler', () => {
     registerIpcHandler(
       IPCChannels.Tasks.GetAll,
       async () => ({ arbitrary: 'data' }),
-      { logger: console }
+      { logger: console, requireAuth: false }
     );
 
     const wrapped = handle.mock.calls[0][1];
@@ -124,7 +124,7 @@ describe('registerIpcHandler', () => {
     registerIpcHandler(
       IPCChannels.Tasks.GetAll,
       async () => ({ success: true }),
-      { logger: console, onDeprecatedUse }
+      { logger: console, onDeprecatedUse, requireAuth: false }
     );
 
     const wrapped = handle.mock.calls[0][1];

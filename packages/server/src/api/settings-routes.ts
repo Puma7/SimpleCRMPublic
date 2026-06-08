@@ -9,6 +9,7 @@ import type {
 import {
   data,
   error,
+  requireAdmin,
   requirePrincipal,
 } from './types';
 
@@ -24,6 +25,22 @@ const EMAIL_MISC_KEYS = [
   'email_webhook_secret',
   'email_max_attachment_mb',
 ] as const;
+
+function syncInfoKeyRequiresAdmin(key: string): boolean {
+  const lower = key.toLowerCase();
+  return (
+    lower.includes('secret')
+    || lower.includes('password')
+    || lower.includes('_token')
+    || lower.endsWith('_key')
+  );
+}
+
+function maskSyncInfoSecret(value: string | null | undefined): string {
+  if (!value) return '';
+  if (value.length <= 4) return '****';
+  return `${value.slice(0, 2)}${'*'.repeat(Math.min(value.length - 4, 12))}${value.slice(-2)}`;
+}
 
 const MAIL_SECURITY_KEYS = [
   'mail_security_mailauth_enabled',
@@ -191,6 +208,9 @@ async function handleGenericSyncInfo(
   if (!parsedKey.ok) return parsedKey.response;
 
   if (req.method === 'GET') {
+    if (syncInfoKeyRequiresAdmin(parsedKey.key) && !requireAdmin(principal)) {
+      return error(403, 'forbidden', 'Adminrechte erforderlich');
+    }
     const rows = await ports.syncInfo.getMany({
       workspaceId: principal.workspaceId,
       keys: [parsedKey.key],
@@ -202,6 +222,10 @@ async function handleGenericSyncInfo(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+
+  if (syncInfoKeyRequiresAdmin(parsedKey.key) && !requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
+  }
 
   const parsedValue = parseGenericSyncInfoBody(req.body);
   if (!parsedValue.ok) return parsedValue.response;
@@ -251,17 +275,27 @@ async function handleEmailMiscSettings(
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   if (req.method === 'GET') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
     const loaded = await loadSyncInfo(req, ports, EMAIL_MISC_KEYS);
     if ('status' in loaded) return loaded;
+    const canReadSecret = requireAdmin(principal);
     return data(200, {
-      webhookSecret: loaded.values.get('email_webhook_secret') ?? '',
+      webhookSecret: canReadSecret
+        ? (loaded.values.get('email_webhook_secret') ?? '')
+        : maskSyncInfoSecret(loaded.values.get('email_webhook_secret')),
       maxAttachmentMb: loaded.values.get('email_max_attachment_mb') ?? '25',
     });
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
   const parsed = parseEmailMiscSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
+  if ('email_webhook_secret' in parsed.values && !requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
+  }
   const saved = await saveSyncInfo(req, ports, parsed.values, 'email_settings.misc.updated', 'email.settings.misc');
   if ('status' in saved) return saved;
   return data(200, { success: true });
@@ -413,6 +447,7 @@ async function handleMssqlSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseMssqlSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const result = await ports.mssqlSettings.saveSettings({
@@ -463,6 +498,7 @@ async function handleMssqlPassword(
   if ('status' in principal) return principal;
   if (!ports.mssqlSettings) return error(503, 'mssql_settings_unavailable', 'MSSQL Settings API nicht konfiguriert');
   if (req.method !== 'DELETE') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
 
   const result = await ports.mssqlSettings.clearPassword({ workspaceId: principal.workspaceId });
   if (result.success) {

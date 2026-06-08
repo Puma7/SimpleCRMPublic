@@ -11,8 +11,8 @@ import {
 import { assignCategoryPathToMessage, tryLinkMessageToCustomer } from './email-crm-store';
 import {
   listWorkflowsByTrigger,
-  wasWorkflowAppliedToMessage,
-  markWorkflowAppliedToMessage,
+  tryClaimInboundWorkflowForMessage,
+  releaseInboundWorkflowClaim,
   insertWorkflowRun,
 } from './email-workflow-store';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
@@ -320,9 +320,10 @@ export async function runInboundWorkflowsForMessage(
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
   const applied = opts?.appliedWorkflowIds;
+  let inboundWorkflowDeferred = false;
   for (const wf of workflows) {
-    if (applied ? applied.has(wf.id) : wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
-    let markApplied = false;
+    if (applied?.has(wf.id)) continue;
+    if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
       const r = await executeWorkflowForTrigger({
         workflow: wf,
@@ -330,8 +331,12 @@ export async function runInboundWorkflowsForMessage(
         direction: 'inbound',
         message: freshRow,
       });
-      if (r.status === 'ok') markApplied = true;
+      if (r.deferred) inboundWorkflowDeferred = true;
+      if (r.status !== 'ok') {
+        releaseInboundWorkflowClaim(messageId, wf.id);
+      }
     } catch (e) {
+      releaseInboundWorkflowClaim(messageId, wf.id);
       insertWorkflowRun({
         workflowId: wf.id,
         messageId,
@@ -340,7 +345,6 @@ export async function runInboundWorkflowsForMessage(
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
     const afterWorkflowRow = getEmailMessageById(messageId);
     if (
       !afterWorkflowRow ||
@@ -351,6 +355,8 @@ export async function runInboundWorkflowsForMessage(
       return;
     }
   }
+
+  if (inboundWorkflowDeferred) return;
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
   if (
@@ -377,8 +383,7 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
   const workflows = listWorkflowsByTrigger('draft_created');
   for (const wf of workflows) {
-    if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
-    let markApplied = false;
+    if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
       const r = await executeWorkflowForTrigger({
         workflow: wf,
@@ -386,8 +391,11 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
         direction: 'draft_created',
         message: row,
       });
-      if (r.status === 'ok') markApplied = true;
+      if (r.status !== 'ok') {
+        releaseInboundWorkflowClaim(messageId, wf.id);
+      }
     } catch (e) {
+      releaseInboundWorkflowClaim(messageId, wf.id);
       insertWorkflowRun({
         workflowId: wf.id,
         messageId,
@@ -396,7 +404,6 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
 }
 
@@ -416,6 +423,25 @@ export async function evaluateOutboundWorkflows(
   const row = getEmailMessageById(payload.messageId);
   if (!row) {
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
+  }
+
+  const { tryOutboundApprovalBypass } = await import('./outbound-approval');
+  const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
+  const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments');
+  if (
+    !dryRun &&
+    tryOutboundApprovalBypass(payload.messageId, {
+      subject: payload.subject,
+      bodyText: payload.bodyText,
+      bodyHtml: payload.bodyHtml ?? null,
+      to: payload.to,
+      cc: payload.cc ?? null,
+      bcc: payload.bcc ?? null,
+      attachmentPaths: payload.attachmentPaths ?? parseDraftAttachmentPathsJson(row.draft_attachment_paths_json),
+    })
+  ) {
+    if (draftSideEffects) setOutboundHold(payload.messageId, false, null);
+    return { allowed: true, reason: null, workflowRunId: null };
   }
 
   if (!dryRun && draftSideEffects) {

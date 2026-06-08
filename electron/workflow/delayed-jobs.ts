@@ -1,6 +1,6 @@
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { WORKFLOW_DELAYED_JOBS_TABLE } from '../database-schema';
-import { getWorkflowById } from '../email/email-workflow-store';
+import { getWorkflowById, releaseInboundWorkflowClaim } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
 import { parseGraphDocument } from './runtime';
 import { executeWorkflowForTrigger } from './workflow-executor';
@@ -109,17 +109,17 @@ function markJob(id: number, status: 'running' | 'done' | 'failed' | 'cancelled'
     .run(status, id);
 }
 
-function maybeRequeueFailedJob(id: number, note?: string): void {
+function maybeRequeueFailedJob(id: number, note?: string): 'requeued' | 'failed' {
   if (note && NON_RETRYABLE_FAILURES.some((f) => note.includes(f))) {
     markJob(id, 'failed', note);
-    return;
+    return 'failed';
   }
   const key = delayedJobRetryKey(id);
   const tries = parseInt(getSyncInfo(key) ?? '0', 10) + 1;
   if (tries >= MAX_DELAYED_JOB_RETRIES) {
     markJob(id, 'failed', note);
     setSyncInfo(key, '0');
-    return;
+    return 'failed';
   }
   setSyncInfo(key, String(tries));
   const retryAt = new Date(Date.now() + tries * 5 * 60_000).toISOString();
@@ -131,6 +131,13 @@ function maybeRequeueFailedJob(id: number, note?: string): void {
     )
     .run(retryAt, id);
   console.warn(`[workflow] delayed job ${id} requeued (${tries}/${MAX_DELAYED_JOB_RETRIES})`);
+  return 'requeued';
+}
+
+function releaseInboundClaimForJob(job: DelayedJobRow): void {
+  if (job.message_id != null) {
+    releaseInboundWorkflowClaim(job.message_id, job.workflow_id);
+  }
 }
 
 export async function processDueDelayedJobs(
@@ -145,21 +152,25 @@ export async function processDueDelayedJobs(
     try {
       const wf = getWorkflowById(job.workflow_id);
       if (!wf?.enabled) {
+        releaseInboundClaimForJob(job);
         markJob(job.id, 'cancelled', 'workflow_disabled');
         continue;
       }
       const resumeId = (job.resume_node_id ?? '').trim();
       if (!resumeId) {
+        releaseInboundClaimForJob(job);
         markJob(job.id, 'failed', 'missing_resume_node');
         continue;
       }
       const mode = wf.execution_mode ?? 'graph';
       if (mode === 'compiled') {
+        releaseInboundClaimForJob(job);
         markJob(job.id, 'failed', 'delay_requires_graph_mode');
         continue;
       }
       const doc = parseGraphDocument(wf.graph_json);
       if (!doc) {
+        releaseInboundClaimForJob(job);
         markJob(job.id, 'failed', 'missing_graph');
         continue;
       }
@@ -211,9 +222,11 @@ export async function processDueDelayedJobs(
         dryRun: false,
       });
       if (result.status === 'blocked') {
+        releaseInboundClaimForJob(job);
         markJob(job.id, 'cancelled', result.log.join(';').slice(0, 500));
       } else if (result.status === 'error') {
-        maybeRequeueFailedJob(job.id, result.log.join(';').slice(0, 500));
+        const outcome = maybeRequeueFailedJob(job.id, result.log.join(';').slice(0, 500));
+        if (outcome === 'failed') releaseInboundClaimForJob(job);
       } else {
         markJob(job.id, 'done');
         setSyncInfo(delayedJobRetryKey(job.id), '0');
@@ -221,7 +234,8 @@ export async function processDueDelayedJobs(
       processed += 1;
     } catch (e) {
       logger.warn('[workflow] delayed job failed', job.id, e);
-      maybeRequeueFailedJob(job.id, e instanceof Error ? e.message : String(e));
+      const outcome = maybeRequeueFailedJob(job.id, e instanceof Error ? e.message : String(e));
+      if (outcome === 'failed') releaseInboundClaimForJob(job);
     } finally {
       PROCESSING.delete(job.id);
     }

@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { ArrowRight, BarChart3, TrendingUp, Clock, Users, Loader2, Rocket } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+import { useAuth } from "@/components/auth/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { dashboardService, DashboardStats, RecentCustomer, UpcomingTask } from "@/services/data/dashboardService";
@@ -14,6 +15,7 @@ import {
 } from "@/services/transport";
 
 export default function Home() {
+  const { loading: authLoading, authenticated, authRequired } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [recentCustomers, setRecentCustomers] = useState<RecentCustomer[]>([]);
   const [upcomingTasks, setUpcomingTasks] = useState<UpcomingTask[]>([]);
@@ -63,8 +65,10 @@ export default function Home() {
   }, [serverClientMode]);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (serverClientMode && authRequired && !authenticated) return;
     void fetchData();
-  }, [fetchData, serverEventRefresh]);
+  }, [fetchData, serverEventRefresh, authLoading, authenticated, authRequired, serverClientMode]);
 
   const isOnboarding =
     !loadingStats && !loadingCustomers && !loadingTasks &&

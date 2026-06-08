@@ -14,6 +14,8 @@ import {
 } from '../automation/settings';
 import { restartAutomationApiServer } from '../automation/server';
 
+const ADMIN_IPC_ROLES = ['owner', 'admin'] as const;
+
 type Disposer = () => void;
 
 export function registerAutomationHandlers(options: {
@@ -25,6 +27,7 @@ export function registerAutomationHandlers(options: {
   disposers.push(
     registerIpcHandler(IPCChannels.Automation.GetSettings, async () => getAutomationApiSettings(), {
       logger,
+      requireRole: [...ADMIN_IPC_ROLES],
     }),
   );
 
@@ -45,7 +48,7 @@ export function registerAutomationHandlers(options: {
         await restartAutomationApiServer(logger);
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: [...ADMIN_IPC_ROLES] },
     ),
   );
 
@@ -67,7 +70,7 @@ export function registerAutomationHandlers(options: {
           hint: 'Key wird nur einmal angezeigt. In n8n als Bearer-Token speichern.',
         };
       },
-      { logger },
+      { logger, requireRole: [...ADMIN_IPC_ROLES] },
     ),
   );
 
@@ -76,7 +79,7 @@ export function registerAutomationHandlers(options: {
       await revokeApiCredentials();
       await restartAutomationApiServer(logger);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, requireRole: [...ADMIN_IPC_ROLES] }),
   );
 
   return () => disposers.forEach((d) => d());

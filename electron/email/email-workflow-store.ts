@@ -256,6 +256,25 @@ export function markWorkflowAppliedToMessage(messageId: number, workflowId: numb
     .run(messageId, workflowId);
 }
 
+/** Atomically claim inbound workflow execution (returns false if already claimed/applied). */
+export function tryClaimInboundWorkflowForMessage(messageId: number, workflowId: number): boolean {
+  const result = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO ${EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE} (message_id, workflow_id) VALUES (?, ?)`,
+    )
+    .run(messageId, workflowId);
+  return result.changes > 0;
+}
+
+/** Release inbound claim after error so backfill/sync can retry. */
+export function releaseInboundWorkflowClaim(messageId: number, workflowId: number): void {
+  getDb()
+    .prepare(
+      `DELETE FROM ${EMAIL_MESSAGE_WORKFLOW_APPLIED_TABLE} WHERE message_id = ? AND workflow_id = ?`,
+    )
+    .run(messageId, workflowId);
+}
+
 /** Clears inbound applied flags so backfill can re-run rules after workflow edits. */
 export function clearInboundWorkflowAppliedForMessage(messageId: number): void {
   getDb()
