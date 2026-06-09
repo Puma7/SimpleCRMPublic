@@ -13264,6 +13264,40 @@ describe('server edition foundation', () => {
     }
   });
 
+  test('server auth security route allows users to enable email MFA for themselves', async () => {
+    let enabledFor: string | null = null;
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async enableEmailMfa(input: { workspaceId: string; userId: string }) {
+          enabledFor = input.userId;
+        },
+      },
+    };
+    const api = createServerApi(ports);
+    const self = { userId: 'user-a', workspaceId: 'workspace-a', role: 'user' as const };
+
+    const ok = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-a/mfa/email',
+      principal: self,
+    });
+    expect(ok.status).toBe(200);
+    expect((ok.body as { data: { enabled: boolean; method: string } }).data).toEqual({
+      enabled: true,
+      method: 'email',
+    });
+    expect(enabledFor).toBe('user-a');
+
+    const forbidden = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/other-user/mfa/email',
+      principal: self,
+    });
+    expect(forbidden.status).toBe(403);
+    expect((forbidden.body as { error: { code: string } }).error.code).toBe('forbidden');
+  });
+
   test('server auth route requires captcha for unknown emails when workspace captcha is enabled', async () => {
     const ports = {
       ...makeServerApiPorts(),
