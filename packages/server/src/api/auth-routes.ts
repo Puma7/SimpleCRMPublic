@@ -1,4 +1,8 @@
 import {
+  MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
+} from '@simplecrm/core';
+import {
   calculateLoginPenalty,
   shouldResetFailureCounterAfterSuccess,
 } from '../auth';
@@ -522,10 +526,10 @@ function parseInitialSetupBody(body: unknown):
   if (!email) {
     errors.push({ field: 'email', message: 'email muss eine gueltige E-Mail-Adresse sein' });
   }
-  if (!password || password.length < 10) {
-    errors.push({ field: 'password', message: 'password muss mindestens 10 Zeichen haben' });
-  } else if (password.length > 1000) {
-    errors.push({ field: 'password', message: 'password darf maximal 1000 Zeichen haben' });
+  if (!password || password.length < MIN_PASSWORD_LENGTH) {
+    errors.push({ field: 'password', message: `password muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben` });
+  } else if (password.length > MAX_PASSWORD_LENGTH) {
+    errors.push({ field: 'password', message: `password darf maximal ${MAX_PASSWORD_LENGTH} Zeichen haben` });
   }
   if (displayName.length > 120) {
     errors.push({ field: 'displayName', message: 'displayName darf maximal 120 Zeichen haben' });
@@ -592,10 +596,10 @@ function parseInvitationAcceptBody(body: unknown):
   const device = normalizeOptionalText(getStringField(body, 'device'), 120);
   const errors: Array<{ field: string; message: string }> = [];
 
-  if (!password || password.length < 10) {
-    errors.push({ field: 'password', message: 'password muss mindestens 10 Zeichen haben' });
-  } else if (password.length > 1000) {
-    errors.push({ field: 'password', message: 'password darf maximal 1000 Zeichen haben' });
+  if (!password || password.length < MIN_PASSWORD_LENGTH) {
+    errors.push({ field: 'password', message: `password muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben` });
+  } else if (password.length > MAX_PASSWORD_LENGTH) {
+    errors.push({ field: 'password', message: `password darf maximal ${MAX_PASSWORD_LENGTH} Zeichen haben` });
   }
 
   if (errors.length > 0 || !password) {
@@ -663,10 +667,10 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
   if (!email) errors.push({ field: 'email', message: 'email muss eine gueltige E-Mail-Adresse sein' });
   if (!displayName) errors.push({ field: 'displayName', message: 'displayName ist erforderlich' });
   if (!role) errors.push({ field: 'role', message: 'role muss owner, admin oder user sein' });
-  if (password !== undefined && password.length < 10) {
-    errors.push({ field: 'password', message: 'password muss mindestens 10 Zeichen haben' });
-  } else if (password !== undefined && password.length > 1000) {
-    errors.push({ field: 'password', message: 'password darf maximal 1000 Zeichen haben' });
+  if (password !== undefined && password.length < MIN_PASSWORD_LENGTH) {
+    errors.push({ field: 'password', message: `password muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben` });
+  } else if (password !== undefined && password.length > MAX_PASSWORD_LENGTH) {
+    errors.push({ field: 'password', message: `password darf maximal ${MAX_PASSWORD_LENGTH} Zeichen haben` });
   }
 
   if (errors.length > 0 || !email || !role) {

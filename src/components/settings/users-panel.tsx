@@ -11,8 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
-
-const MIN_PASSWORD_LENGTH = 10
+import { MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 
 type UserRow = {
   id: string

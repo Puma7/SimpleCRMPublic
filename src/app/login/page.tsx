@@ -17,6 +17,11 @@ import {
   type ServerAuthClient,
   type ServerAuthInvitation,
 } from "@/services/transport"
+import {
+  getPasswordTooShortMessage,
+  isPasswordLengthValid,
+  MIN_PASSWORD_LENGTH,
+} from "@shared/auth-password-policy"
 
 const LAST_LOGIN_EMAIL_STORAGE_KEY = "simplecrm:last-login-email"
 
@@ -117,6 +122,10 @@ export default function LoginPage() {
       setError("Passwoerter stimmen nicht ueberein")
       return
     }
+    if (!isPasswordLengthValid(invitePass)) {
+      setError(getPasswordTooShortMessage())
+      return
+    }
     const serverAuth = getActiveServerAuthClient()
     if (!serverAuth || !inviteToken) {
       setError("Einladung kann in diesem Client nicht angenommen werden")
@@ -140,6 +149,10 @@ export default function LoginPage() {
     e.preventDefault()
     if (setupPass !== setupPass2) {
       setError("Passwörter stimmen nicht überein")
+      return
+    }
+    if (!isPasswordLengthValid(setupPass)) {
+      setError(getPasswordTooShortMessage())
       return
     }
     const normalizedSetupUsername = setupUsername.trim()
@@ -256,6 +269,16 @@ export default function LoginPage() {
     }
   }
 
+  const invitePasswordReady = Boolean(
+    invite
+    && isPasswordLengthValid(invitePass)
+    && invitePass === invitePass2,
+  )
+  const setupPasswordReady = isPasswordLengthValid(setupPass) && setupPass === setupPass2
+  const setupUsernameReady = setupUsername.trim().length > 0
+  const setupTokenReady = serverSetupMode || setupToken.trim().length > 0
+  const setupFormReady = setupUsernameReady && setupPasswordReady && setupTokenReady
+
   if (!setupStateResolved && !inviteToken) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
@@ -283,13 +306,13 @@ export default function LoginPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleAcceptInvite} className="space-y-4">
+            <form onSubmit={handleAcceptInvite} className="space-y-4" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="invite-email">E-Mail</Label>
                 <Input id="invite-email" type="email" value={invite?.email ?? ""} readOnly />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="invite-pass">Passwort</Label>
+                <Label htmlFor="invite-pass">Neues Passwort</Label>
                 <Input
                   id="invite-pass"
                   type="password"
@@ -297,7 +320,7 @@ export default function LoginPage() {
                   value={invitePass}
                   onChange={(e) => setInvitePass(e.target.value)}
                   required
-                  minLength={10}
+                  minLength={MIN_PASSWORD_LENGTH}
                   disabled={!invite}
                 />
               </div>
@@ -310,12 +333,15 @@ export default function LoginPage() {
                   value={invitePass2}
                   onChange={(e) => setInvitePass2(e.target.value)}
                   required
-                  minLength={10}
+                  minLength={MIN_PASSWORD_LENGTH}
                   disabled={!invite}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Mindestens {MIN_PASSWORD_LENGTH} Zeichen. Beide Felder muessen uebereinstimmen.
+                </p>
               </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              <Button type="submit" className="w-full" disabled={isLoading || !invite}>
+              <Button type="submit" className="w-full" disabled={isLoading || !invitePasswordReady}>
                 {isLoading ? "..." : "Konto aktivieren"}
               </Button>
             </form>
@@ -366,7 +392,7 @@ export default function LoginPage() {
                   value={setupPass}
                   onChange={(e) => setSetupPass(e.target.value)}
                   required
-                  minLength={10}
+                  minLength={MIN_PASSWORD_LENGTH}
                 />
               </div>
               <div className="space-y-2">
@@ -378,8 +404,11 @@ export default function LoginPage() {
                   value={setupPass2}
                   onChange={(e) => setSetupPass2(e.target.value)}
                   required
-                  minLength={10}
+                  minLength={MIN_PASSWORD_LENGTH}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Mindestens {MIN_PASSWORD_LENGTH} Zeichen. Beide Felder muessen uebereinstimmen.
+                </p>
               </div>
               {!serverSetupMode ? (
                 <div className="space-y-2">
@@ -405,7 +434,7 @@ export default function LoginPage() {
                 </div>
               ) : null}
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              <Button type="submit" className="w-full" disabled={isLoading}>
+              <Button type="submit" className="w-full" disabled={isLoading || !setupFormReady}>
                 {isLoading ? "…" : serverSetupMode ? "Owner-Konto anlegen" : "Passwort setzen"}
               </Button>
             </form>
@@ -512,6 +541,8 @@ function formatAuthError(err: unknown, serverMode: boolean): string {
       return "Zu viele Fehlversuche. Bitte kurz warten und es erneut versuchen."
     }
     if (err.code === "validation_error") {
+      const passwordMessage = readValidationFieldMessage(err.details, "password")
+      if (passwordMessage) return passwordMessage
       const fieldMessage = readValidationFieldMessage(err.details, serverMode ? "email" : "username")
       if (fieldMessage) return fieldMessage
     }
@@ -530,6 +561,10 @@ function readValidationFieldMessage(details: unknown, field: string): string | n
     const record = entry as { field?: unknown; message?: unknown }
     if (record.field !== field || typeof record.message !== "string") continue
     if (field === "email") return "Bitte geben Sie eine gueltige E-Mail-Adresse ein."
+    if (field === "password") {
+      if (record.message.includes("mindestens")) return getPasswordTooShortMessage()
+      return record.message
+    }
     return record.message
   }
   return null
