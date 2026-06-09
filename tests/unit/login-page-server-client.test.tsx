@@ -110,6 +110,49 @@ describe('LoginPage server-client mode', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  test('keeps initial setup submit disabled until password policy and confirmation match', async () => {
+    global.fetch = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { needsInitialSetup: true },
+    })) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    await screen.findByText(/ersten Server-Owner/);
+
+    const submit = screen.getByRole('button', { name: 'Owner-Konto anlegen' });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('E-Mail'), { target: { value: 'owner@example.com' } });
+    fireEvent.change(screen.getByLabelText('Neues Passwort'), { target: { value: 'short-pass' } });
+    fireEvent.change(screen.getByLabelText('Passwort wiederholen'), { target: { value: 'short-pass' } });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Neues Passwort'), { target: { value: 'secure-pass-1' } });
+    fireEvent.change(screen.getByLabelText('Passwort wiederholen'), { target: { value: 'secure-pass-2' } });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Passwort wiederholen'), { target: { value: 'secure-pass-1' } });
+    expect(submit).toBeEnabled();
+  });
+
+  test('rejects too-short password on initial setup submit', async () => {
+    global.fetch = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { needsInitialSetup: true },
+    })) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    await screen.findByText(/ersten Server-Owner/);
+
+    fireEvent.change(screen.getByLabelText('E-Mail'), { target: { value: 'owner@example.com' } });
+    fireEvent.change(screen.getByLabelText('Neues Passwort'), { target: { value: 'short-pass' } });
+    fireEvent.change(screen.getByLabelText('Passwort wiederholen'), { target: { value: 'short-pass' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Owner-Konto anlegen' }).closest('form')!);
+
+    expect(await screen.findByText(/mindestens 12 Zeichen/)).toBeInTheDocument();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   test('logs in after successful server initial setup and remembers email', async () => {
     global.fetch = jest
       .fn()

@@ -3,6 +3,7 @@ import { AUTOMATION_SCOPES, type AutomationScope } from "@shared/automation-api"
 import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
+import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -3961,7 +3962,7 @@ function authUserEmailValue(value: unknown): string {
 
 function authUserPasswordValue(value: unknown): string {
   if (typeof value !== "string") throw new Error("Invalid auth user password")
-  if (value.length < 10 || value.length > 1000) throw new Error("Invalid auth user password")
+  if (!isPasswordLengthValid(value)) throw new Error("Invalid auth user password")
   return value
 }
 

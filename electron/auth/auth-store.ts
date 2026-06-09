@@ -10,6 +10,7 @@ import {
   type AuditLogRow,
 } from './audit-log';
 import { hashPassword } from './password-hash';
+import { getPasswordTooShortMessage, isPasswordLengthValid } from '../../shared/auth-password-policy';
 import {
   clearOneTimeSetupToken,
   hasActiveOneTimeSetupToken,
@@ -181,8 +182,8 @@ export function setInitialOwnerPassword(payload: {
   username?: string;
 }): AuthMutationResult {
   const db = requireLocalAuthDb();
-  if (!payload.passphrase || payload.passphrase.length < 10) {
-    return { success: false, error: 'Passwort mindestens 10 Zeichen' };
+  if (!isPasswordLengthValid(payload.passphrase)) {
+    return { success: false, error: getPasswordTooShortMessage() };
   }
   const owner = db
     .prepare(`SELECT must_set_password FROM ${USERS_TABLE} WHERE id = ?`)
