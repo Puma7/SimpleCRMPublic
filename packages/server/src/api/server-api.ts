@@ -12,6 +12,7 @@ import { handleMailReadRoute } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
 import { handleNoticeRoute } from './notice-routes';
 import { handlePgpReadRoute } from './pgp-routes';
+import { handleReturnsRoute } from './returns-routes';
 import { handleSpamReadRoute } from './spam-routes';
 import { handleSettingsRoute } from './settings-routes';
 import { handleUserGroupRoute } from './user-group-routes';
@@ -115,6 +116,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const spam = await handleSpamReadRoute(req, ports);
       if (spam) return spam;
+
+      const returns = await handleReturnsRoute(req, ports);
+      if (returns) return returns;
 
       const locks = await handleLockRoute(req, ports);
       if (locks) return locks;

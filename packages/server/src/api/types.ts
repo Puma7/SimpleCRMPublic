@@ -4205,6 +4205,114 @@ export type ServerLogReadPort = {
   count(): number;
 };
 
+/** Status lifecycle / outcome / condition enums live in the DB-schema module
+ *  so the Kysely table types and the API records share one source of truth. */
+export type { ReturnStatus, ReturnOutcome, ReturnItemCondition } from '../db/schema';
+import type { ReturnItemCondition, ReturnOutcome, ReturnStatus } from '../db/schema';
+
+export type ReturnReasonRecord = {
+  id: number;
+  code: string;
+  label: string;
+  isActive: boolean;
+  sortOrder: number;
+};
+
+export type ReturnItemRecord = {
+  id: number;
+  returnId: number;
+  productId: number | null;
+  reasonId: number | null;
+  sku: string | null;
+  productName: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  notes: string | null;
+};
+
+export type ReturnRecord = {
+  id: number;
+  returnNumber: string;
+  customerId: number | null;
+  emailMessageId: number | null;
+  jtlOrderNumber: string | null;
+  jtlKauftrag: number | null;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  customerEmail: string | null;
+  customerName: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: ReturnItemRecord[];
+};
+
+export type ReturnItemMutationInput = {
+  productId?: number | null;
+  reasonId?: number | null;
+  sku?: string | null;
+  productName?: string | null;
+  quantity: number;
+  condition?: ReturnItemCondition | null;
+  notes?: string | null;
+};
+
+export type ReturnCreateInput = {
+  customerId?: number | null;
+  emailMessageId?: number | null;
+  jtlOrderNumber?: string | null;
+  jtlKauftrag?: number | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
+  notes?: string | null;
+  items: readonly ReturnItemMutationInput[];
+};
+
+export type ReturnUpdateInput = {
+  status?: ReturnStatus;
+  outcome?: ReturnOutcome | null;
+  notes?: string | null;
+};
+
+export type ReturnListInput = {
+  workspaceId: string;
+  limit: number;
+  offset?: number;
+  status?: ReturnStatus;
+  customerId?: number;
+  search?: string;
+};
+
+export type ReturnListResult = {
+  items: readonly ReturnRecord[];
+  totalCount: number;
+};
+
+export type ReturnsApiPort = {
+  list(input: ReturnListInput): Promise<ReturnListResult>;
+  get(input: { workspaceId: string; id: number }): Promise<ReturnRecord | null>;
+  create(input: {
+    workspaceId: string;
+    actorUserId: string;
+    input: ReturnCreateInput;
+  }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+  update(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    update: ReturnUpdateInput;
+  }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+};
+
+export type ReturnReasonsApiPort = {
+  /**
+   * Returns the active reasons for the workspace, seeding a default vocabulary
+   * (size_wrong, not_liked, defective, wrong_item, late_delivery, other) on
+   * first call when the workspace has none. Idempotent.
+   */
+  list(input: { workspaceId: string }): Promise<readonly ReturnReasonRecord[]>;
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
@@ -4272,6 +4380,8 @@ export type ServerApiPorts = {
   pgpMessages?: PgpMessageCryptoApiPort;
   pgpPeerKeys?: PgpPeerKeyApiPort;
   products?: ProductApiPort;
+  returns?: ReturnsApiPort;
+  returnReasons?: ReturnReasonsApiPort;
   spamDecisions?: SpamDecisionApiPort;
   spamFeatureStats?: SpamFeatureStatApiPort;
   spamLearningEvents?: SpamLearningEventApiPort;
