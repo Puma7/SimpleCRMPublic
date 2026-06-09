@@ -157,9 +157,16 @@ describe('LoginPage server-client mode', () => {
   });
 
   test('rejects too-short password on initial setup submit', async () => {
-    global.fetch = jest.fn().mockResolvedValueOnce(jsonResponse({
-      data: { needsInitialSetup: true },
-    })) as typeof fetch;
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { needsInitialSetup: true } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          captcha: { enabled: false, provider: null, siteKey: null },
+          pinKeypad: { enabled: false },
+          mfa: { enabled: false, methods: [] },
+          user: null,
+        },
+      })) as typeof fetch;
     configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
 
     render(<LoginPage />);
@@ -171,7 +178,8 @@ describe('LoginPage server-client mode', () => {
     fireEvent.submit(screen.getByRole('button', { name: 'Owner-Konto anlegen' }).closest('form')!);
 
     expect(await screen.findByText(/mindestens 12 Zeichen/)).toBeInTheDocument();
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(String((global.fetch as jest.Mock).mock.calls[1]?.[0])).toContain('/auth/login-config');
   });
 
   test('logs in after successful server initial setup and remembers email', async () => {
