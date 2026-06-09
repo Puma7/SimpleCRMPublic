@@ -78,6 +78,7 @@ describe('server auth client', () => {
       email: 'owner@example.com',
       password: 'new-passphrase',
       displayName: 'Owner',
+      setupToken: 'setup-token-secret',
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -89,6 +90,7 @@ describe('server auth client', () => {
           password: 'new-passphrase',
           displayName: 'Owner',
           workspaceName: 'SimpleCRM',
+          initialSetupToken: 'setup-token-secret',
           device: 'desktop-test',
         }),
       }),

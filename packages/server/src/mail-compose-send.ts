@@ -15,6 +15,8 @@ import {
   generateTicketCode,
   outboundDraftFingerprint,
   parseOutboundApprovalMarker,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
 } from '@simplecrm/core';
 
 import type {
@@ -56,6 +58,11 @@ const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
 
 const COMPOSE_SEND_LOCK_PREFIX = 'email_compose_sending:';
 const COMPOSE_SMTP_COMMITTED_PREFIX = 'email_compose_smtp_ok:';
+const COMPOSE_SMTP_OUTBOX_VALUE = 'outbox';
+const COMPOSE_SMTP_SENT_VALUE = 'sent';
+const COMPOSE_SMTP_COMMITTED_VALUE = '1';
+
+export type ComposeSmtpOutboxState = 'none' | 'outbox' | 'committed';
 const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
 /** Marker set by email.release_outbound (autoSend=true) after ai.outbound_review
  *  returned OK. reviewOutbound.review honours it as "already approved, just send",
@@ -147,6 +154,10 @@ export type ComposeSenderStore = Readonly<{
     workspaceId: string;
     keys: readonly string[];
   }): Promise<void>;
+  claimSmtpOutbox(input: {
+    workspaceId: string;
+    messageId: number;
+  }): Promise<'claimed' | 'outbox' | 'committed'>;
   tryAcquireSendingLock(input: {
     workspaceId: string;
     messageId: number;
@@ -340,7 +351,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           };
         }
 
-        const smtpCommitted = await isSmtpCommitted(options.store, input.workspaceId, values.draftMessageId);
         const prepared = await prepareDraftForSend({
           store: options.store,
           workspaceId: input.workspaceId,
@@ -369,32 +379,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           attachments,
           date: now(),
         }).toString('utf8');
-
-        if (smtpCommitted) {
-          const sentCopy = await appendSentCopyAfterSmtp({
-            append: sentCopyAppend,
-            workspaceId: input.workspaceId,
-            account,
-            draftMessageId: values.draftMessageId,
-            rfc822,
-          });
-          await finalizeSentDraft({
-            store: options.store,
-            workspaceId: input.workspaceId,
-            draftMessageId: values.draftMessageId,
-            inReplyToMessageId: values.inReplyToMessageId,
-            markReplyParentDone: values.markReplyParentDone,
-            recovered: true,
-            sentImapSyncFailed: sentCopy.sentImapSyncFailed,
-          });
-          return {
-            ok: true,
-            messageId: values.draftMessageId,
-            accountId: account.id,
-            recoveredSentAppend: true,
-            warning: sentCopy.warning,
-          };
-        }
 
         if (outboundReview) {
           const review = await outboundReview.review({
@@ -430,9 +414,42 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         });
         if (!auth.ok) return { ok: false, error: auth.error };
 
+        const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
+        if (!smtpHost) return { ok: false, error: SMTP_HOST_MISSING_ERROR };
+
+        const smtpOutboxClaim = await options.store.claimSmtpOutbox({
+          workspaceId: input.workspaceId,
+          messageId: values.draftMessageId,
+        });
+        if (smtpOutboxClaim === 'committed') {
+          const sentCopy = await appendSentCopyAfterSmtp({
+            append: sentCopyAppend,
+            workspaceId: input.workspaceId,
+            account,
+            draftMessageId: values.draftMessageId,
+            rfc822,
+          });
+          await finalizeSentDraft({
+            store: options.store,
+            workspaceId: input.workspaceId,
+            draftMessageId: values.draftMessageId,
+            inReplyToMessageId: values.inReplyToMessageId,
+            markReplyParentDone: values.markReplyParentDone,
+            recovered: true,
+            sentImapSyncFailed: sentCopy.sentImapSyncFailed,
+          });
+          return {
+            ok: true,
+            messageId: values.draftMessageId,
+            accountId: account.id,
+            recoveredSentAppend: true,
+            warning: sentCopy.warning,
+          };
+        }
+
         try {
           const smtpInput: ServerSmtpSendInput = {
-            host: account.smtpHost?.trim() || account.imapHost,
+            host: smtpHost,
             port: account.smtpPort ?? 587,
             tls: account.smtpTls,
             user: auth.user,
@@ -446,10 +463,11 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
           });
         } catch (error) {
+          await clearSmtpOutboxClaim(options.store, input.workspaceId, values.draftMessageId);
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
 
-        await markSmtpCommitted(options.store, input.workspaceId, values.draftMessageId);
+        await markSmtpSent(options.store, input.workspaceId, values.draftMessageId);
         const sentCopy = await appendSentCopyAfterSmtp({
           append: sentCopyAppend,
           workspaceId: input.workspaceId,
@@ -895,6 +913,13 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('key', 'in', input.keys)
             .execute();
         },
+      );
+    },
+    async claimSmtpOutbox(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => claimSmtpOutboxInTransaction(trx, input.workspaceId, input.messageId, options.now?.()),
       );
     },
     async tryAcquireSendingLock(input) {
@@ -1580,26 +1605,64 @@ function emailAccountSecretIdentifier(
   };
 }
 
-async function isSmtpCommitted(
+async function claimSmtpOutboxInTransaction(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+  nowInput?: Date,
+): Promise<'claimed' | 'outbox' | 'committed'> {
+  const key = smtpCommittedKey(messageId);
+  const now = nowInput ?? new Date();
+  const inserted = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: workspaceId,
+      key,
+      value: COMPOSE_SMTP_OUTBOX_VALUE,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+    .returning('key')
+    .executeTakeFirst();
+  if (inserted) return 'claimed';
+
+  const row = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', key)
+    .executeTakeFirst();
+  if (
+    row?.value === COMPOSE_SMTP_COMMITTED_VALUE
+    || row?.value === COMPOSE_SMTP_SENT_VALUE
+  ) {
+    return 'committed';
+  }
+  return 'outbox';
+}
+
+async function clearSmtpOutboxClaim(
   store: ComposeSenderStore,
   workspaceId: string,
   messageId: number,
-): Promise<boolean> {
-  const values = await store.getSyncInfo({
-    workspaceId,
-    keys: [smtpCommittedKey(messageId)],
-  });
-  return values.get(smtpCommittedKey(messageId)) === '1';
+): Promise<void> {
+  const key = smtpCommittedKey(messageId);
+  const values = await store.getSyncInfo({ workspaceId, keys: [key] });
+  if (values.get(key) !== COMPOSE_SMTP_OUTBOX_VALUE) return;
+  await store.deleteSyncInfo({ workspaceId, keys: [key] });
 }
 
-async function markSmtpCommitted(
+async function markSmtpSent(
   store: ComposeSenderStore,
   workspaceId: string,
   messageId: number,
 ): Promise<void> {
   await store.setSyncInfo({
     workspaceId,
-    values: { [smtpCommittedKey(messageId)]: '1' },
+    values: { [smtpCommittedKey(messageId)]: COMPOSE_SMTP_SENT_VALUE },
   });
 }
 

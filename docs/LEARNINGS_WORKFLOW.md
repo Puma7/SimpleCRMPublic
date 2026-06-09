@@ -59,6 +59,14 @@ Concrete lessons from building the graph runtime, spam pipeline, outbound gate, 
 
 ---
 
+## Server workflow execution (PostgreSQL)
+
+1. **Kein IMAP in DB-Transaktionen** — `email.mark_seen`, `email.move_imap`, `email.delete_server` und `mark_spam`+`moveImap` queuen IMAP-Aktionen in `deferredImapEffects` und führen sie nach `withWorkspaceTransaction` aus. Lokale DB-Updates für Move/Delete folgen erst nach erfolgreichem IMAP.
+2. **Downstream-Variablen im selben Graph** — `imap.seen_synced`, `imap.source_folder` usw. stehen nachgelagerten Knoten im **selben** Lauf nicht mehr live zur Verfügung (Trade-off für kurze Transaktionen).
+3. **Dry-run** bleibt unverändert — IMAP wird dort ohnehin nicht aufgerufen.
+
+---
+
 ## Testing
 
 1. **Do not import `workflow-graph-resolve` in unit tests without mocking sqlite** — import `graphHasRunnableNodes` from `graph-presets.ts` instead.

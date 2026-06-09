@@ -6,6 +6,8 @@ import {
   buildComposeRfc822,
   generateOutboundMessageId,
   normalizeEmailAddress,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
   type ComposeRfc822Attachment,
 } from '@simplecrm/core';
 
@@ -259,17 +261,38 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
-      await smtpSend({
-        host: prepared.account.smtpHost?.trim() || prepared.account.imapHost,
-        port: prepared.account.smtpPort ?? 587,
-        tls: prepared.account.smtpTls,
-        user: auth.user,
-        envelopeFrom: prepared.account.emailAddress,
-        recipients: [...prepared.recipients],
-        rfc822: prepared.rfc822,
-        ...(auth.password !== undefined ? { password: auth.password } : {}),
-        ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
-      });
+      const smtpHost = resolveConfiguredSmtpHost(prepared.account.smtpHost);
+      if (!smtpHost) {
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: SMTP_HOST_MISSING_ERROR,
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
+      try {
+        await smtpSend({
+          host: smtpHost,
+          port: prepared.account.smtpPort ?? 587,
+          tls: prepared.account.smtpTls,
+          user: auth.user,
+          envelopeFrom: prepared.account.emailAddress,
+          recipients: [...prepared.recipients],
+          rfc822: prepared.rfc822,
+          ...(auth.password !== undefined ? { password: auth.password } : {}),
+          ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
+        });
+      } catch (error) {
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
 
       await withWorkspaceTransaction(
         options.db,

@@ -16,6 +16,7 @@ import {
   Users,
   Wrench,
   Workflow,
+  Shield,
   ShieldCheck,
   Stethoscope,
 } from "lucide-react"
@@ -33,6 +34,7 @@ import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
+import { AuthSecurityPanel } from "@/components/settings/auth-security-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
 import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
@@ -93,6 +95,7 @@ const TAB_DEFS: TabDef[] = [
   },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
   { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
+  { id: "authSecurity", label: "Login-Sicherheit", icon: Shield, render: () => <AuthSecurityPanel />, serverOnly: true },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
@@ -111,7 +114,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
-  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "userGroups", "canned"] },
+  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]

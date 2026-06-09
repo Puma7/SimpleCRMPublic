@@ -319,6 +319,7 @@ const EmailChannels = literal({
   TestWorkflowOnMessage: 'workflow:test-on-message',
   ExecuteWorkflowNow: 'workflow:execute-now',
   ListWorkflowRuns: 'workflow:list-runs',
+  GetWorkflowRunLog: 'workflow:get-run-log',
   ListWorkflowRunSteps: 'workflow:list-run-steps',
   ListWorkflowTemplates: 'workflow:list-templates',
   ImportWorkflowBundle: 'workflow:import-bundle',

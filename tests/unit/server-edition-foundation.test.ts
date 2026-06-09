@@ -327,6 +327,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0017_ai_usage_events',
   '0018_ai_reply_feedback',
   '0019_task_assignment_scope_reset',
+  '0020_auth_login_security',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -9059,6 +9060,94 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow forward-copy port leaves dedup empty when SMTP fails so retries can resend', async () => {
+    const now = new Date('2026-07-04T11:04:10.000Z');
+    let smtpAttempts = 0;
+    const smtpSends: unknown[] = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        account_id: 7,
+        subject: 'Retry forward',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        snippet: 'Kurzfassung',
+        body_text: 'Originaltext',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: {
+        async readSecret(input: { kind: string }) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+        },
+        async writeSecret() {
+          throw new Error('unexpected writeSecret');
+        },
+        async deleteSecret() {
+          return false;
+        },
+        async rotateSecret() {
+          return null;
+        },
+      },
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async (input) => {
+        smtpAttempts += 1;
+        if (smtpAttempts === 1) throw new Error('smtp transient');
+        smtpSends.push(input);
+      },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 27,
+      to: 'retry@example.com',
+    });
+    expect(rows.forwardDedup).toEqual([]);
+    expect(smtpSends).toHaveLength(0);
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 27,
+      to: 'retry@example.com',
+    });
+    expect(smtpSends).toHaveLength(1);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({
+        dest: 'retry@example.com',
+        message_id: 27,
+        workflow_id: 39,
+      }),
+    ]);
+  });
+
   test('postgres workflow forward-copy port routes through composeSender.send when runOutboundReview=true', async () => {
     const now = new Date('2026-07-04T11:05:10.000Z');
     const composeCalls: Array<{ draftMessageId: number; to: string; attachmentPaths: readonly string[] | undefined }> = [];
@@ -12414,7 +12503,7 @@ describe('server edition foundation', () => {
       expect(output.checks.find((check: { name: string }) => check.name === 'database').details)
         .toEqual({ databaseName: 'simplecrm', databaseSize: '42 MB' });
       expect(output.checks.find((check: { name: string }) => check.name === 'job_queue').details)
-        .toEqual({ readyJobs: 2, lagSeconds: 30 });
+        .toEqual({ readyJobs: 2, lockedJobs: 0, lagSeconds: 30, oldestLockedSeconds: null });
       expect(output.checks.find((check: { name: string }) => check.name === 'backups').message)
         .toContain('verified');
       expect(JSON.stringify(output.checks.find((check: { name: string }) => check.name === 'backups').details))
@@ -13175,6 +13264,68 @@ describe('server edition foundation', () => {
     }
   });
 
+  test('server auth route requires captcha for unknown emails when workspace captcha is enabled', async () => {
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async getLoginConfig() {
+          return {
+            captcha: { enabled: true, provider: 'turnstile' as const, siteKey: 'site-key' },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          };
+        },
+        assertCaptchaChallenge() {
+          return false;
+        },
+      },
+    };
+    const api = createServerApi(ports);
+
+    const blocked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: { email: 'unknown@example.com', password: 'guess' },
+    });
+    expect(blocked.status).toBe(403);
+    expect((blocked.body as { error: { code: string } }).error.code).toBe('captcha_required');
+  });
+
+  test('server auth security route allows non-admin users to enable email MFA for themselves', async () => {
+    const enableCalls: Array<{ workspaceId: string; userId: string }> = [];
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async enableEmailMfa(input: { workspaceId: string; userId: string }) {
+          enableCalls.push(input);
+        },
+      },
+    };
+    const api = createServerApi(ports);
+    const userPrincipal = { userId: 'user-b', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const enabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-b/mfa/email',
+      principal: userPrincipal,
+    });
+    expect(enabled.status).toBe(200);
+    expect((enabled.body as { data: { enabled: boolean; method: string } }).data).toEqual({
+      enabled: true,
+      method: 'email',
+    });
+    expect(enableCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, userId: 'user-b' }]);
+
+    const forbidden = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-a/mfa/email',
+      principal: userPrincipal,
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
   test('server auth routes login, refresh, and logout without leaking password hash', async () => {
     const ports = makeServerApiPorts();
     const api = createServerApi(ports);
@@ -13244,7 +13395,10 @@ describe('server edition foundation', () => {
 
   test('server auth setup routes expose initial state and create first owner without leaking secrets', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
-    const ports = makeServerApiPorts({ auditEvents, initialSetupNeeded: true });
+    const ports = {
+      ...makeServerApiPorts({ auditEvents, initialSetupNeeded: true }),
+      initialSetupToken: 'setup-token-secret',
+    };
     const api = createServerApi(ports);
 
     const state = await api.handle({
@@ -13253,6 +13407,17 @@ describe('server edition foundation', () => {
     });
     expect(state.status).toBe(200);
     expect((state.body as any).data).toEqual({ needsInitialSetup: true });
+
+    const missingToken = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/initial-setup',
+      body: {
+        email: 'owner@example.com',
+        password: 'new-passphrase',
+      },
+    });
+    expect(missingToken.status).toBe(403);
+    expect((missingToken.body as any).error.code).toBe('forbidden');
 
     const created = await api.handle({
       method: 'POST',
@@ -13263,6 +13428,7 @@ describe('server edition foundation', () => {
         displayName: ' Owner ',
         workspaceName: ' Vertrieb ',
         device: 'browser',
+        initialSetupToken: 'setup-token-secret',
       },
     });
     expect(created.status).toBe(201);
@@ -13285,7 +13451,7 @@ describe('server edition foundation', () => {
     const invalid = await api.handle({
       method: 'POST',
       path: '/api/v1/auth/initial-setup',
-      body: { email: 'invalid', password: 'short' },
+      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret' },
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -13296,6 +13462,7 @@ describe('server edition foundation', () => {
       body: {
         email: 'second@example.com',
         password: 'another-passphrase',
+        initialSetupToken: 'setup-token-secret',
       },
     });
     expect(blocked.status).toBe(409);
@@ -13494,6 +13661,7 @@ describe('server edition foundation', () => {
       role: 'admin',
       isActive: false,
       passwordChanged: false,
+      loginPinChanged: false,
     });
     expect(JSON.stringify(created.body)).not.toContain('agent-passphrase');
     expect(JSON.stringify(auditEvents)).not.toContain('agent-passphrase');
@@ -16771,6 +16939,28 @@ describe('server edition foundation', () => {
       search: 'DE',
     }]);
 
+    const batchedCustomFieldValues = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customer-custom-field-values',
+      query: { customerIds: '7,8' },
+      principal,
+    });
+    expect(batchedCustomFieldValues.status).toBe(200);
+    expect(customFieldValueCalls.at(-1)).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      limit: 50,
+      customerIds: [7, 8],
+    });
+
+    const conflictingCustomerFilters = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customer-custom-field-values',
+      query: { customerId: '7', customerIds: '8' },
+      principal,
+    });
+    expect(conflictingCustomerFilters.status).toBe(400);
+    expect((conflictingCustomerFilters.body as any).error.code).toBe('invalid_customer_filter');
+
     const activityLog = await api.handle({
       method: 'GET',
       path: '/api/v1/activity-log',
@@ -19154,24 +19344,50 @@ describe('server edition foundation', () => {
     }, '+OK POP3 ready\r\n');
 
     const smtpLines: string[] = [];
+    let inData = false;
     const smtpServer = await startLineServer((line, socket) => {
       smtpLines.push(line);
+      if (inData) {
+        if (line === '.') {
+          inData = false;
+          socket.write('250 2.0.0 queued\r\n');
+        }
+        return;
+      }
       if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH LOGIN\r\n250 OK\r\n');
       else if (line === 'AUTH LOGIN') socket.write('334 VXNlcm5hbWU6\r\n');
       else if (line === Buffer.from('user@example.com', 'utf8').toString('base64')) socket.write('334 UGFzc3dvcmQ6\r\n');
       else if (line === Buffer.from('secret', 'utf8').toString('base64')) socket.write('235 2.7.0 Authentication successful\r\n');
-      else if (line === 'QUIT') socket.write('221 bye\r\n');
+      else if (line === 'MAIL FROM:<user@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<user@example.com>') socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        inData = true;
+        socket.write('354 end with dot\r\n');
+      } else if (line === 'QUIT') socket.write('221 bye\r\n');
       else socket.write('500 unknown command\r\n');
     }, '220 SMTP ready\r\n');
 
     const smtpOauthLines: string[] = [];
     let smtpOauthPayload = '';
+    let smtpOauthInData = false;
     const smtpOauthServer = await startLineServer((line, socket) => {
       smtpOauthLines.push(line);
+      if (smtpOauthInData) {
+        if (line === '.') {
+          smtpOauthInData = false;
+          socket.write('250 2.0.0 queued\r\n');
+        }
+        return;
+      }
       if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH XOAUTH2\r\n250 OK\r\n');
       else if (line.startsWith('AUTH XOAUTH2 ')) {
         smtpOauthPayload = Buffer.from(line.slice('AUTH XOAUTH2 '.length), 'base64').toString('utf8');
         socket.write('235 2.7.0 Authentication successful\r\n');
+      } else if (line === 'MAIL FROM:<user@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<user@example.com>') socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        smtpOauthInData = true;
+        socket.write('354 end with dot\r\n');
       } else if (line === 'QUIT') socket.write('221 bye\r\n');
       else socket.write('500 unknown command\r\n');
     }, '220 SMTP ready\r\n');
@@ -19224,8 +19440,24 @@ describe('server edition foundation', () => {
       expect(smtpLines).toContain('AUTH LOGIN');
       expect(smtpLines).toContain(Buffer.from('user@example.com', 'utf8').toString('base64'));
       expect(smtpLines).toContain(Buffer.from('secret', 'utf8').toString('base64'));
+      expect(smtpLines).toContain('MAIL FROM:<user@example.com>');
+      expect(smtpLines).toContain('RCPT TO:<user@example.com>');
+      expect(smtpLines).toContain('DATA');
+      expect(smtpLines).toContain('.');
       expect(smtpOauthLines.find((line) => line.startsWith('AUTH XOAUTH2 '))).toBeTruthy();
       expect(smtpOauthPayload).toBe('user=user@example.com\u0001auth=Bearer oauth-access-token\u0001\u0001');
+
+      await expect(port.testSmtp({
+        workspaceId: WORKSPACE_A_ID,
+        host: '',
+        port: smtpServer.port,
+        tls: false,
+        user: 'user@example.com',
+        password: 'secret',
+      })).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('SMTP-Host fehlt'),
+      });
 
       const guardedPort = createServerMailConnectionTestPort({
         timeoutMs: 1000,
@@ -19708,6 +19940,15 @@ describe('server edition foundation', () => {
           updates.push(['deleteSyncInfo', input]);
           for (const key of input.keys) syncInfo.delete(key);
         },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          const existing = syncInfo.get(key);
+          if (existing === '1' || existing === 'sent') return 'committed';
+          if (existing === 'outbox') return 'outbox';
+          syncInfo.set(key, 'outbox');
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -19788,9 +20029,13 @@ describe('server edition foundation', () => {
         inReplyTo: '<parent@example.com>',
         references: '<root@example.com> <parent@example.com>',
       })],
+      ['claimSmtpOutbox', {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 44,
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
-        values: { 'email_compose_smtp_ok:44': '1' },
+        values: { 'email_compose_smtp_ok:44': 'sent' },
       }],
       ['markDraftAsSent', {
         workspaceId: WORKSPACE_A_ID,
@@ -20066,6 +20311,10 @@ describe('server edition foundation', () => {
         async deleteSyncInfo(input) {
           updates.push(['deleteSyncInfo', input]);
         },
+        async claimSmtpOutbox(input) {
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -20203,6 +20452,10 @@ describe('server edition foundation', () => {
         async deleteSyncInfo(input) {
           updates.push(['deleteSyncInfo', input]);
         },
+        async claimSmtpOutbox(input) {
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -20257,6 +20510,180 @@ describe('server edition foundation', () => {
       messageId: 45,
       sentImapSyncFailed: false,
     }]);
+  });
+
+  test('server compose sender uses outbox claim and recovers without duplicate SMTP', async () => {
+    const smtpSends: unknown[] = [];
+    const syncInfo = new Map<string, string | null>();
+    let locked = false;
+    const draft = {
+      id: 48,
+      accountId: 7,
+      uid: -48,
+      folderKind: 'draft' as const,
+      subject: 'Outbox',
+      bodyText: 'Retry',
+      bodyHtml: null,
+      messageIdHeader: null,
+      inReplyToHeader: null,
+      referencesHeader: null,
+      ticketCode: null,
+      threadId: null,
+      draftAttachmentPathsJson: null,
+      outboundHold: false,
+      outboundBlockReason: null,
+    };
+    const account = {
+      id: 7,
+      sourceSqliteId: 70,
+      displayName: 'Support',
+      emailAddress: 'agent@example.com',
+      imapHost: 'imap.example.com',
+      imapUsername: 'agent@example.com',
+      smtpHost: 'smtp.example.com',
+      smtpPort: 587,
+      smtpTls: true,
+      smtpUsername: 'smtp-agent@example.com',
+      smtpUseImapAuth: false,
+      oauthProvider: null,
+      protocol: 'imap' as const,
+      requestReadReceipt: false,
+    };
+    let smtpAttempts = 0;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: async (input) => {
+        smtpAttempts += 1;
+        if (smtpAttempts === 1) throw new Error('smtp transient');
+        smtpSends.push(input);
+      },
+      store: {
+        async getDraft(input) {
+          return input.messageId === 48 ? draft : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7 ? account : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-outbox';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+        },
+        async setSyncInfo(input) {
+          for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        },
+        async deleteSyncInfo(input) {
+          for (const key of input.keys) syncInfo.delete(key);
+        },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          const existing = syncInfo.get(key);
+          if (existing === '1' || existing === 'sent') return 'committed';
+          if (existing === 'outbox') return 'outbox';
+          syncInfo.set(key, 'outbox');
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend() {
+          return undefined;
+        },
+        async markDraftAsSent() {
+          return undefined;
+        },
+        async markMessageDone() {
+          return undefined;
+        },
+      },
+    });
+
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toEqual({
+      ok: false,
+      error: 'smtp transient',
+    });
+    expect(syncInfo.get('email_compose_smtp_ok:48')).toBeUndefined();
+    expect(smtpSends).toHaveLength(0);
+
+    syncInfo.set('email_compose_smtp_ok:48', 'outbox');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+    });
+    expect(smtpSends).toHaveLength(1);
+    expect(smtpAttempts).toBe(2);
+
+    smtpSends.length = 0;
+    syncInfo.set('email_compose_smtp_ok:48', 'sent');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+      recoveredSentAppend: true,
+    });
+    expect(smtpSends).toHaveLength(0);
+    expect(smtpAttempts).toBe(2);
+
+    smtpSends.length = 0;
+    syncInfo.set('email_compose_smtp_ok:48', '1');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+      recoveredSentAppend: true,
+    });
+    expect(smtpSends).toHaveLength(0);
+    expect(smtpAttempts).toBe(2);
   });
 
   test('server read receipt responder validates MDN guards and sends through SMTP port', async () => {
@@ -35646,7 +36073,7 @@ function makeDoctorPgClient(input: {
         if (input.failJobQueue) {
           throw new Error('job_queue missing');
         }
-        return { rows: [{ ready_jobs: 2, queue_lag_seconds: 30 } as T] };
+        return { rows: [{ ready_jobs: 2, locked_jobs: 0, queue_lag_seconds: 30, oldest_locked_seconds: null } as T] };
       }
       if (sql.includes('FROM conversation_locks')) {
         return { rows: [{ stale_locks: 0 } as T] };

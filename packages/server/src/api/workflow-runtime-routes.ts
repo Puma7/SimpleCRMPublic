@@ -84,6 +84,11 @@ export async function handleWorkflowRuntimeReadRoute(
   const messageRunsMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/workflow-runs$/.exec(req.path);
   if (messageRunsMatch) return handleMessageScopedRuns(req, ports, messageRunsMatch[1]);
 
+  const runSourceGetMatch = /^\/api\/v1\/workflow-runs\/by-source\/([^/]+)$/.exec(req.path);
+  if (runSourceGetMatch) {
+    return handleWorkflowRunSourceGet(req, ports, runSourceGetMatch[1]);
+  }
+
   const runStepsMatch = /^\/api\/v1\/workflow-runs\/([^/]+)\/steps$/.exec(req.path);
   if (runStepsMatch) return handleRunScopedSteps(req, ports, runStepsMatch[1]);
 
@@ -251,6 +256,30 @@ async function handleRunScopedSteps(
   const runId = positiveIntFromPath(rawRunId);
   if (runId === null) return error(400, 'invalid_workflow_run_id', 'workflow run id muss eine positive Ganzzahl sein');
   return handleWorkflowRunStepList(req, ports, { runId });
+}
+
+async function handleWorkflowRunSourceGet(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawRunSourceSqliteId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'GET') return methodNotAllowed();
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const sourceSqliteId = parseNonZeroInt(rawRunSourceSqliteId);
+  if (sourceSqliteId === null) {
+    return error(400, 'invalid_workflow_run_source_sqlite_id', 'Workflow run sourceSqliteId muss eine Ganzzahl ungleich 0 sein');
+  }
+  if (!ports.workflowRuns) return unavailable('workflow_runs_unavailable', 'Workflow run API nicht konfiguriert');
+  const run = await findWorkflowRunBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
+  if (!run) return error(404, 'workflow_run_not_found', 'Workflow run nicht gefunden');
+  const detailed = await ports.workflowRuns.get({
+    workspaceId: principal.workspaceId,
+    id: run.id,
+    includeLog: true,
+  });
+  if (!detailed) return error(404, 'workflow_run_not_found', 'Workflow run nicht gefunden');
+  return data(200, sanitizeWorkflowRun(detailed, true));
 }
 
 async function handleWorkflowRunSourceScopedSteps(

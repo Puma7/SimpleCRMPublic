@@ -9,6 +9,7 @@ Short, durable facts discovered during implementation. **Read before refactoring
 | Area | File |
 |------|------|
 | **Agent continuity (start here)** | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) |
+| Auth / Login-Sicherheit / Server-Setup | [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md), [LOGIN_SECURITY.md](LOGIN_SECURITY.md) |
 | CRM (Kunden, Deals, Follow-up, JTL) | [CRM_PRODUCT_GUIDE.md](CRM_PRODUCT_GUIDE.md), [DEVELOPER_CRM.md](DEVELOPER_CRM.md) |
 | E-mail / sync / SQLite / UI | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) |
 | Workflows / graphs / outbound / spam | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) |
@@ -32,7 +33,8 @@ Short, durable facts discovered during implementation. **Read before refactoring
 - “Real mail” filter: `(uid >= 0 OR pop3_uidl IS NOT NULL)`; drafts are `uid < 0` without uidl.
 - Outbound workflows: **fail-closed**; run all workflows before final block decision.
 - Viewer: **plain text only**; compose: sanitize HTML (DOMPurify).
-- `forward_copy` dedupe: record **after** successful SMTP.
+- **Compose SMTP outbox:** `sync_info` Claim `outbox` **before** SMTP; retry on `outbox`/`1` ohne erneuten Versand.
+- **`forward_copy` dedupe (Server):** Insert **before** SMTP; delete dedup row on SMTP failure so retries work.
 
 ---
 

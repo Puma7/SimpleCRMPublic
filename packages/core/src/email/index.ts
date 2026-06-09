@@ -1,6 +1,7 @@
 export * from './imap-sync-cursor';
 export * from './email-address-normalize';
 export * from './imap-mailbox-names';
+export * from './mail-host-hints';
 export * from './mail-rfc822-compose';
 export * from './mail-security-static';
 export * from './outbound-approval-marker';

@@ -5,7 +5,7 @@ import { registerIpcHandler } from './register';
 import { getWorkflowById, createWorkflow, updateWorkflow } from '../email/email-workflow-store';
 import { listWorkflowNodeCatalog, ensureBuiltinWorkflowNodes } from '../workflow/registry';
 import { executeWorkflowNow, testWorkflowOnMessage } from '../workflow/workflow-executor';
-import { listRecentWorkflowRuns, listWorkflowRunSteps } from '../workflow/run-steps';
+import { listRecentWorkflowRuns, listWorkflowRunSteps, getWorkflowRunLog } from '../workflow/run-steps';
 import { WORKFLOW_TEMPLATES } from '../workflow/templates';
 import { exportWorkflowBundle, parseWorkflowImport } from '../workflow/export-import';
 import {
@@ -70,6 +70,14 @@ export function registerWorkflowHandlers(options: {
     registerIpcHandler(
       IPCChannels.Email.ListWorkflowRuns,
       async (_event: IpcMainInvokeEvent, workflowId: number) => listRecentWorkflowRuns(workflowId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetWorkflowRunLog,
+      async (_event: IpcMainInvokeEvent, runId: number) => getWorkflowRunLog(runId),
       { logger },
     ),
   );

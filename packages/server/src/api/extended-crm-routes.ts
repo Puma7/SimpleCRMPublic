@@ -1697,14 +1697,39 @@ function parseCustomFieldFilters(req: ApiRequest): ParseResult<{ search?: string
   return { ok: true, filters: omitUndefined({ search, type, active }) };
 }
 
-function parseCustomFieldValueFilters(req: ApiRequest): ParseResult<{ customerId?: number; fieldId?: number; search?: string }> {
+function parseCustomFieldValueFilters(req: ApiRequest): ParseResult<{
+  customerId?: number;
+  customerIds?: number[];
+  fieldId?: number;
+  search?: string;
+}> {
   const customerId = parseOptionalPositiveInt(req.query?.customerId);
   if (customerId === null) return parseError('invalid_customer_id', 'customerId muss eine positive Ganzzahl sein');
+  const customerIds = parseOptionalPositiveIntList(req.query?.customerIds);
+  if (customerIds === null) {
+    return parseError('invalid_customer_ids', 'customerIds muss eine kommagetrennte Liste positiver Ganzzahlen sein');
+  }
+  if (customerId !== undefined && customerIds !== undefined) {
+    return parseError('invalid_customer_filter', 'customerId und customerIds sind gegenseitig ausschliessend');
+  }
   const fieldId = parseOptionalPositiveInt(req.query?.fieldId);
   if (fieldId === null) return parseError('invalid_field_id', 'fieldId muss eine positive Ganzzahl sein');
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return parseError('invalid_search', 'search darf maximal 200 Zeichen haben');
-  return { ok: true, filters: omitUndefined({ customerId, fieldId, search }) };
+  return { ok: true, filters: omitUndefined({ customerId, customerIds, fieldId, search }) };
+}
+
+function parseOptionalPositiveIntList(value: string | undefined): number[] | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  const parts = value.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return undefined;
+  const ids: number[] = [];
+  for (const part of parts) {
+    const parsed = parsePositiveInt(part);
+    if (parsed === null) return null;
+    ids.push(parsed);
+  }
+  return Array.from(new Set(ids));
 }
 
 function parseCustomFieldMutationBody(

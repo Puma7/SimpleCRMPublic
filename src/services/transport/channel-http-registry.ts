@@ -3,6 +3,7 @@ import { AUTOMATION_SCOPES, type AutomationScope } from "@shared/automation-api"
 import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
+import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -34,6 +35,9 @@ type AuthUserRecord = {
   displayName?: string | null
   role?: string | null
   disabledAt?: string | null
+  loginPinEnabled?: boolean | null
+  mfaEnabled?: boolean | null
+  mfaMethod?: "totp" | "email" | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -457,6 +461,13 @@ type EmailDiagnosticsRecord = {
     idleImapAccountIds?: unknown
   } | null
   accounts?: unknown
+  jobQueue?: {
+    ready?: number | null
+    locked?: number | null
+    lagSeconds?: number | null
+    oldestLockedSeconds?: number | null
+    samples?: unknown
+  } | null
 }
 
 type EmailReportingRecord = {
@@ -2840,6 +2851,26 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  [IPCChannels.Email.GetWorkflowRunLog, ([runId]) => ({
+    method: "GET",
+    path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}`,
+    query: { includeLog: true },
+    transform: (body) => {
+      const run = dataBody<WorkflowRunRecord>(body)
+      const log = run.log
+      if (log == null) return [] as string[]
+      if (Array.isArray(log)) return log.map((entry) => String(entry))
+      if (typeof log === "string") {
+        try {
+          const parsed = JSON.parse(log) as unknown
+          return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [log]
+        } catch {
+          return [log]
+        }
+      }
+      return [String(log)]
+    },
+  })],
   [IPCChannels.Email.ListWorkflowRunSteps, ([runId]) => ({
     method: "GET",
     path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}/steps`,
@@ -3793,6 +3824,9 @@ function mapAuthUserRecord(record: AuthUserRecord) {
     display_name: record.displayName ?? record.email ?? "",
     role: legacyAuthUserRole(record.role),
     is_active: record.disabledAt ? 0 : 1,
+    login_pin_enabled: Boolean(record.loginPinEnabled),
+    mfa_enabled: Boolean(record.mfaEnabled),
+    mfa_method: record.mfaMethod ?? null,
     created_at: record.createdAt ?? null,
     updated_at: record.updatedAt ?? null,
     last_login_at: null,
@@ -3886,12 +3920,19 @@ function mapAuthUserPayload(input: Record<string, any>): Record<string, unknown>
       ? authUserPasswordValue(input.passphrase)
       : undefined
 
+  const loginPin = Object.prototype.hasOwnProperty.call(input, "loginPin")
+    ? optionalAuthUserLoginPin(input.loginPin)
+    : Object.prototype.hasOwnProperty.call(input, "login_pin")
+      ? optionalAuthUserLoginPin(input.login_pin)
+      : undefined
+
   return pruneUndefined({
     email,
     displayName,
     role: authUserRoleValue(input.role),
     password,
     isActive: authUserActiveValue(input.isActive ?? input.is_active),
+    loginPin,
   })
 }
 
@@ -3934,8 +3975,18 @@ function authUserEmailValue(value: unknown): string {
 
 function authUserPasswordValue(value: unknown): string {
   if (typeof value !== "string") throw new Error("Invalid auth user password")
-  if (value.length < 10 || value.length > 1000) throw new Error("Invalid auth user password")
+  if (!isPasswordLengthValid(value)) throw new Error("Invalid auth user password")
   return value
+}
+
+function optionalAuthUserLoginPin(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== "string") throw new Error("Invalid auth user login pin")
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!/^\d{6}$/.test(trimmed)) throw new Error("Invalid auth user login pin")
+  return trimmed
 }
 
 function optionalAuthUserText(value: unknown, label: string, maxLength: number): string | undefined {
@@ -4043,23 +4094,27 @@ async function attachCustomerCustomFields<T extends { id: number }>(
 
   const fields = await fetchAllCustomerCustomFields(context)
   const fieldNamesById = new Map(fields.map((field) => [field.id, field.name ?? ""]))
-  const customFieldsByCustomerId = new Map<number, Record<string, string>>()
+  const customFieldsByCustomerId = new Map<number, Record<string, string>>(
+    customers.map((customer) => [customer.id, {}]),
+  )
 
-  await Promise.all(customers.map(async (customer) => {
-    const body = await context.fetchJson({
-      method: "GET",
-      path: "/api/v1/customer-custom-field-values",
-      query: { limit: DEFAULT_LIST_LIMIT, customerId: customer.id },
-    })
-    const values = listItems<CustomFieldValueRecord>(body)
-    const customFields: Record<string, string> = {}
-    for (const value of values) {
-      const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
-      if (!fieldName) continue
-      customFields[fieldName] = value.value ?? ""
-    }
-    customFieldsByCustomerId.set(customer.id, customFields)
-  }))
+  const body = await context.fetchJson({
+    method: "GET",
+    path: "/api/v1/customer-custom-field-values",
+    query: {
+      limit: DEFAULT_LIST_LIMIT,
+      customerIds: customers.map((customer) => customer.id).join(","),
+    },
+  })
+  const values = listItems<CustomFieldValueRecord>(body)
+  for (const value of values) {
+    const customerId = Number(value.customerId ?? 0)
+    const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
+    if (!fieldName || !customFieldsByCustomerId.has(customerId)) continue
+    const customFields = customFieldsByCustomerId.get(customerId) ?? {}
+    customFields[fieldName] = value.value ?? ""
+    customFieldsByCustomerId.set(customerId, customFields)
+  }
 
   return customers.map((customer) => ({
     ...customer,
@@ -4720,6 +4775,27 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
         inboxLastSyncedAt: typeof account.inboxLastSyncedAt === "string" ? account.inboxLastSyncedAt : null,
       }))
       : [],
+    ...(record.jobQueue ? {
+      jobQueue: {
+        ready: countValue(record.jobQueue.ready),
+        locked: countValue(record.jobQueue.locked),
+        lagSeconds: countValue(record.jobQueue.lagSeconds),
+        oldestLockedSeconds: record.jobQueue.oldestLockedSeconds == null
+          ? null
+          : countValue(record.jobQueue.oldestLockedSeconds),
+        samples: Array.isArray(record.jobQueue.samples)
+          ? record.jobQueue.samples.filter(isRecord).map((job) => ({
+            id: countValue(job.id),
+            type: typeof job.type === "string" ? job.type : "",
+            attempts: countValue(job.attempts),
+            maxAttempts: countValue(job.maxAttempts),
+            lockedBy: typeof job.lockedBy === "string" ? job.lockedBy : null,
+            lockedSeconds: job.lockedSeconds == null ? null : countValue(job.lockedSeconds),
+            lastError: typeof job.lastError === "string" ? job.lastError : null,
+          }))
+          : [],
+      },
+    } : {}),
   }
 }
 

@@ -5,6 +5,8 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { ClipboardCopy, FlaskConical, Loader2, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import { invokeRenderer } from "@/services/transport"
 
 type ServerLogEntry = {
@@ -21,12 +23,15 @@ type Props = {
   desktopMode?: boolean
 }
 
+const AUTO_REFRESH_MS = 5000;
+
 /** Central app log (warnings + errors), persisted across restarts. */
 export function ServerLogsSection({ desktopMode = false }: Props) {
   const [entries, setEntries] = useState<ServerLogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [testing, setTesting] = useState(false)
   const [level, setLevel] = useState<LogLevelFilter>("warn")
+  const [autoRefresh, setAutoRefresh] = useState(false)
 
   const load = useCallback(async (lvl: LogLevelFilter = level) => {
     setLoading(true)
@@ -58,6 +63,14 @@ export function ServerLogsSection({ desktopMode = false }: Props) {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const timer = window.setInterval(() => {
+      void load()
+    }, AUTO_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [autoRefresh, load])
 
   const copyAll = async () => {
     const text = entries.map((e) => `${e.time} [${e.level}] (${e.source}) ${e.message}`).join("\n")
@@ -92,6 +105,7 @@ export function ServerLogsSection({ desktopMode = false }: Props) {
             {desktopMode
               ? " Enthält Hintergrund-Sync, Workflows und IPC-Warnungen aus dem Hauptprozess."
               : " Mit „Selbsttest“ prüfst du, ob die Erfassung funktioniert."}
+            {" "}Filter „Alle“ zeigt auch Job-Worker-Fortschritt (Quelle job-worker).
           </p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -105,6 +119,16 @@ export function ServerLogsSection({ desktopMode = false }: Props) {
             <option value="warn">Warnungen + Fehler</option>
             <option value="error">Nur Fehler</option>
           </select>
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <Switch
+              id="server-logs-auto-refresh"
+              checked={autoRefresh}
+              onCheckedChange={setAutoRefresh}
+            />
+            <Label htmlFor="server-logs-auto-refresh" className="text-xs font-normal">
+              Live ({AUTO_REFRESH_MS / 1000}s)
+            </Label>
+          </div>
           <Button type="button" size="sm" variant="outline" onClick={() => void runSelfTest()} disabled={testing} aria-label="Selbsttest">
             {testing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="mr-1 h-3.5 w-3.5" />}
             Selbsttest
@@ -135,7 +159,9 @@ export function ServerLogsSection({ desktopMode = false }: Props) {
                     : "text-destructive"
               }
             >
-              <span className="text-muted-foreground">{entry.time}</span> [{entry.level}] {entry.message}
+              <span className="text-muted-foreground">{entry.time}</span> [{entry.level}]
+              {entry.source !== "app" ? <span className="text-muted-foreground"> ({entry.source})</span> : null}
+              {" "}{entry.message}
             </div>
           ))}
         </div>

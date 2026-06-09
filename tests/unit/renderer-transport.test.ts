@@ -165,6 +165,9 @@ describe('renderer transport', () => {
       display_name: 'Agent',
       role: 'agent',
       is_active: 1,
+      login_pin_enabled: false,
+      mfa_enabled: false,
+      mfa_method: null,
       created_at: '2026-06-04T10:00:00.000Z',
       updated_at: '2026-06-04T10:00:00.000Z',
       last_login_at: null,
@@ -620,7 +623,7 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerId=42',
+      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerIds=42',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result.items[0].customFields).toEqual({ vip_status: 'Gold' });
