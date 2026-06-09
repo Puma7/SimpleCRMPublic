@@ -256,7 +256,7 @@ FROM job_queue;`);
       return { status: 'fail', message: 'job queue query returned no rows' };
     }
     const readyJobs = Number(row.ready_jobs);
-    const lockedJobs = Number(row.locked_jobs);
+    const lockedJobs = Number(row.locked_jobs ?? 0);
     const lagSeconds = Number(row.queue_lag_seconds ?? 0);
     const oldestLockedSeconds = row.oldest_locked_seconds == null
       ? null
