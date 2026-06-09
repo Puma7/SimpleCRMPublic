@@ -82,6 +82,14 @@ describe('login security service MFA gate', () => {
     const db = overrides.db ?? {
       insertInto: () => ({
         values: () => ({
+          returning: () => ({
+            executeTakeFirst: async () => ({ id: 1 }),
+          }),
+          execute: async () => undefined,
+        }),
+      }),
+      deleteFrom: () => ({
+        where: () => ({
           execute: async () => undefined,
         }),
       }),
@@ -118,6 +126,62 @@ describe('login security service MFA gate', () => {
         mfaEmailEnabled: true,
       },
     })).resolves.toEqual({ kind: 'complete' });
+  });
+
+  test('rolls back MFA email code row when SMTP delivery fails', async () => {
+    const deletedIds: number[] = [];
+    const db = {
+      insertInto: () => ({
+        values: () => ({
+          returning: () => ({
+            executeTakeFirst: async () => ({ id: 42 }),
+          }),
+        }),
+      }),
+      deleteFrom: () => ({
+        where: () => ({
+          execute: async () => {
+            deletedIds.push(42);
+          },
+        }),
+      }),
+    };
+    const service = createLoginSecurityService({
+      db: db as never,
+      syncInfo: {
+        getMany: async () => ({}),
+        setMany: async () => undefined,
+      },
+      secrets: {
+        readSecret: async () => null,
+        writeSecret: async () => undefined,
+        deleteSecret: async () => undefined,
+      },
+      auth: {
+        findUserByEmail: async () => null,
+      },
+      accessTokenSigner: signer,
+      config: {},
+      authInvitationSmtp: {
+        host: 'smtp.example.com',
+        port: 587,
+        tls: true,
+        user: 'smtp-user',
+        password: 'smtp-pass',
+        from: 'noreply@example.com',
+      },
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+
+    await expect(service.beginMfaIfRequired({
+      user: mfaUser,
+      workspaceSettings: {
+        ...DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS,
+        mfaEnabled: true,
+        mfaEmailEnabled: true,
+      },
+    })).resolves.toEqual({ kind: 'mfa_delivery_failed' });
+    expect(deletedIds).toEqual([42]);
   });
 
   test('fails closed when email MFA cannot be delivered', async () => {

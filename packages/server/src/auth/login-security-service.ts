@@ -453,11 +453,11 @@ async function sendEmailMfaCode(input: {
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   const codeHash = hashEmailCode(code);
   const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);
-  await input.db.insertInto('auth_mfa_email_codes').values({
+  const inserted = await input.db.insertInto('auth_mfa_email_codes').values({
     user_id: input.user.id,
     code_hash: codeHash,
     expires_at: expiresAt,
-  }).execute();
+  }).returning('id').executeTakeFirst();
 
   try {
     await sendMfaEmailCode({
@@ -468,6 +468,12 @@ async function sendEmailMfaCode(input: {
       now: input.now,
     });
   } catch {
+    if (inserted?.id !== undefined) {
+      await input.db
+        .deleteFrom('auth_mfa_email_codes')
+        .where('id', '=', inserted.id)
+        .execute();
+    }
     return false;
   }
   return true;
