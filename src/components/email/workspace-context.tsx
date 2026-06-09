@@ -39,6 +39,7 @@ export type SettingsTab =
   | "automation"
   | "team"
   | "appUsers"
+  | "authSecurity"
   | "userGroups"
   | "canned"
   | "prompts"

@@ -17,11 +17,13 @@ function bucketForPath(path: string): RateLimitBucket {
     path === '/api/v1/auth/login'
     || path === '/api/v1/auth/refresh'
     || path === '/api/v1/auth/initial-setup'
+    || path === '/api/v1/auth/captcha-verify'
+    || path === '/api/v1/auth/mfa/verify'
     || path.startsWith('/api/v1/auth/invitations/')
   ) {
     return 'auth-strict';
   }
-  if (path === '/api/v1/auth/setup-state') {
+  if (path === '/api/v1/auth/setup-state' || path === '/api/v1/auth/login-config') {
     return 'auth-public';
   }
   return 'api-global';

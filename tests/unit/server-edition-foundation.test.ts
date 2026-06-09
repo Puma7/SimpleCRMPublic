@@ -327,6 +327,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0017_ai_usage_events',
   '0018_ai_reply_feedback',
   '0019_task_assignment_scope_reset',
+  '0020_auth_login_security',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -13494,6 +13495,7 @@ describe('server edition foundation', () => {
       role: 'admin',
       isActive: false,
       passwordChanged: false,
+      loginPinChanged: false,
     });
     expect(JSON.stringify(created.body)).not.toContain('agent-passphrase');
     expect(JSON.stringify(auditEvents)).not.toContain('agent-passphrase');

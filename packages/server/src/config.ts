@@ -28,6 +28,8 @@ export type ServerEditionEnv = {
   NODE_ENV?: string;
   CI?: string;
   INITIAL_SETUP_TOKEN?: string;
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
 };
 
 export type ServerEditionConfig = {
@@ -44,6 +46,8 @@ export type ServerEditionConfig = {
   port: number;
   jobWorker: ServerJobWorkerConfig;
   initialSetupToken?: string;
+  turnstileSiteKey?: string;
+  turnstileSecretKey?: string;
 };
 
 export type ServerJobWorkerConfig = {
@@ -93,6 +97,8 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   const port = parsePort(env.PORT ?? '3000');
   const jobWorker = parseServerJobWorkerConfig(env);
   const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim() || undefined;
+  const turnstileSiteKey = env.TURNSTILE_SITE_KEY?.trim() || undefined;
+  const turnstileSecretKey = env.TURNSTILE_SECRET_KEY?.trim() || undefined;
 
   return {
     databaseUrl,
@@ -108,6 +114,8 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     port,
     jobWorker,
     ...(initialSetupToken ? { initialSetupToken } : {}),
+    ...(turnstileSiteKey ? { turnstileSiteKey } : {}),
+    ...(turnstileSecretKey ? { turnstileSecretKey } : {}),
   };
 }
 

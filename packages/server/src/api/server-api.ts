@@ -1,4 +1,5 @@
 import { handleAuthRoute } from './auth-routes';
+import { handleAuthSecurityRoute } from './auth-security-routes';
 import { handleAutomationReadRoute } from './automation-routes';
 import { handleCoreCrmReadRoute } from './core-crm-routes';
 import { handleCustomerRoute } from './customer-routes';
@@ -63,6 +64,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
           body: getServerOpenApiSpec(),
         };
       }
+
+      const authSecurity = await handleAuthSecurityRoute(req, ports);
+      if (authSecurity) return authSecurity;
 
       const auth = await handleAuthRoute(req, ports);
       if (auth) return auth;

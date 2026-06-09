@@ -126,6 +126,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             'display_name',
             'role',
             'disabled_at',
+            'login_pin_enabled',
+            'mfa_enabled',
+            'mfa_method',
             'created_at',
             'updated_at',
           ])
@@ -650,10 +653,20 @@ async function resolveAccessTokenPrincipal(
   };
 }
 
-function mapUser(row: Pick<
-  UserRow,
-  'id' | 'workspace_id' | 'email' | 'display_name' | 'role' | 'password_hash' | 'disabled_at'
->): AuthUserRecord {
+function mapUser(row: {
+  id: string;
+  workspace_id: string;
+  email: string;
+  display_name: string;
+  role: UserRow['role'];
+  password_hash: string;
+  disabled_at: UserRow['disabled_at'];
+  login_pin_hash?: string | null;
+  login_pin_enabled?: boolean;
+  mfa_enabled?: boolean;
+  mfa_method?: UserRow['mfa_method'];
+  mfa_totp_secret_id?: string | null;
+}): AuthUserRecord {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -662,19 +675,35 @@ function mapUser(row: Pick<
     role: row.role,
     passwordHash: row.password_hash,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
+    loginPinHash: row.login_pin_hash ?? null,
+    loginPinEnabled: Boolean(row.login_pin_enabled),
+    mfaEnabled: Boolean(row.mfa_enabled),
+    mfaMethod: row.mfa_method ?? null,
+    mfaTotpSecretId: row.mfa_totp_secret_id ?? null,
   };
 }
 
-function mapAdminUser(row: Pick<
-  UserRow,
-  'id' | 'email' | 'display_name' | 'role' | 'disabled_at' | 'created_at' | 'updated_at'
->) {
+function mapAdminUser(row: {
+  id: string;
+  email: string;
+  display_name: string;
+  role: UserRow['role'];
+  disabled_at: UserRow['disabled_at'];
+  login_pin_enabled?: boolean;
+  mfa_enabled?: boolean;
+  mfa_method?: UserRow['mfa_method'];
+  created_at?: UserRow['created_at'];
+  updated_at?: UserRow['updated_at'];
+}) {
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
     role: row.role,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
+    loginPinEnabled: Boolean(row.login_pin_enabled),
+    mfaEnabled: Boolean(row.mfa_enabled),
+    mfaMethod: row.mfa_method ?? null,
     createdAt: row.created_at ? toDate(row.created_at).toISOString() : null,
     updatedAt: row.updated_at ? toDate(row.updated_at).toISOString() : null,
   };
