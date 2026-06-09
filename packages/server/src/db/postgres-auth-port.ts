@@ -398,46 +398,52 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
     },
 
     async recordFailedLogin(input) {
-      const penalty = calculateLoginPenalty(1);
-      const lockUntil = penalty.kind === 'temporary'
-        ? new Date(now().getTime() + penalty.lockSeconds * 1000)
-        : null;
-      const row = await options.db
-        .insertInto('auth_login_failures')
-        .values({
-          workspace_id: null,
-          user_id: input.userId ?? null,
-          email_normalized: input.email.toLowerCase(),
-          ip_address: input.ip,
-          failed_at: now(),
-          failed_attempts: 1,
-          penalty_kind: penalty.kind,
-          lock_until: lockUntil,
-          user_agent: null,
-        })
-        .onConflict((oc) => oc.columns(['email_normalized', 'ip_address']).doUpdateSet((eb) => ({
-          failed_attempts: eb('auth_login_failures.failed_attempts', '+', 1),
-          failed_at: now(),
-          user_id: input.userId ?? null,
-        })))
-        .returning(['failed_attempts'])
-        .executeTakeFirst();
+      return withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => {
+          const penalty = calculateLoginPenalty(1);
+          const lockUntil = penalty.kind === 'temporary'
+            ? new Date(now().getTime() + penalty.lockSeconds * 1000)
+            : null;
+          const row = await trx
+            .insertInto('auth_login_failures')
+            .values({
+              workspace_id: null,
+              user_id: input.userId ?? null,
+              email_normalized: input.email.toLowerCase(),
+              ip_address: input.ip,
+              failed_at: now(),
+              failed_attempts: 1,
+              penalty_kind: penalty.kind,
+              lock_until: lockUntil,
+              user_agent: null,
+            })
+            .onConflict((oc) => oc.columns(['email_normalized', 'ip_address']).doUpdateSet((eb) => ({
+              failed_attempts: eb('auth_login_failures.failed_attempts', '+', 1),
+              failed_at: now(),
+              user_id: input.userId ?? null,
+            })))
+            .returning(['failed_attempts'])
+            .executeTakeFirst();
 
-      const failedAttempts = row?.failed_attempts ?? 1;
-      const updatedPenalty = calculateLoginPenalty(failedAttempts);
-      await options.db
-        .updateTable('auth_login_failures')
-        .set({
-          penalty_kind: updatedPenalty.kind,
-          lock_until: updatedPenalty.kind === 'temporary'
-            ? new Date(now().getTime() + updatedPenalty.lockSeconds * 1000)
-            : null,
-        })
-        .where('email_normalized', '=', input.email.toLowerCase())
-        .where('ip_address', '=', input.ip)
-        .execute();
+          const failedAttempts = row?.failed_attempts ?? 1;
+          const updatedPenalty = calculateLoginPenalty(failedAttempts);
+          await trx
+            .updateTable('auth_login_failures')
+            .set({
+              penalty_kind: updatedPenalty.kind,
+              lock_until: updatedPenalty.kind === 'temporary'
+                ? new Date(now().getTime() + updatedPenalty.lockSeconds * 1000)
+                : null,
+            })
+            .where('email_normalized', '=', input.email.toLowerCase())
+            .where('ip_address', '=', input.ip)
+            .execute();
 
-      return failedAttempts;
+          return failedAttempts;
+        },
+      );
     },
 
     async recordSuccessfulLogin(input) {

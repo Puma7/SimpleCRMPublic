@@ -23,6 +23,7 @@ import {
   issueCaptchaChallenge,
   verifyCaptchaChallenge,
 } from '../security/captcha-challenge';
+import { consumeSingleUseToken } from '../security/consumed-token-store';
 import { hashLoginPin, verifyLoginPin } from '../security/login-pin-hash';
 import {
   issueMfaChallengeToken,
@@ -253,6 +254,9 @@ export function createLoginSecurityService(input: {
       if (!user || user.id !== claims.userId) {
         return { ok: false, code: 'mfa_challenge_invalid' };
       }
+      if (user.disabledAt) {
+        return { ok: false, code: 'user_disabled' };
+      }
 
       const verified = claims.method === 'totp'
         ? await verifyUserTotp({
@@ -268,6 +272,11 @@ export function createLoginSecurityService(input: {
           now: now(),
         });
       if (!verified) return { ok: false, code: 'mfa_code_invalid' };
+
+      const challengeTtlMs = 5 * 60 * 1000;
+      if (!consumeSingleUseToken(mfaChallengeToken, challengeTtlMs, now().getTime())) {
+        return { ok: false, code: 'mfa_challenge_invalid' };
+      }
 
       await input.auth.recordSuccessfulLogin({
         userId: user.id,
@@ -474,21 +483,15 @@ async function verifyEmailMfaCode(input: {
   if (!/^\d{6}$/.test(normalized)) return false;
   const codeHash = hashEmailCode(normalized);
   const row = await input.db
-    .selectFrom('auth_mfa_email_codes')
-    .select(['id'])
+    .updateTable('auth_mfa_email_codes')
+    .set({ consumed_at: input.now })
     .where('user_id', '=', input.userId)
     .where('code_hash', '=', codeHash)
     .where('consumed_at', 'is', null)
     .where('expires_at', '>', input.now)
-    .orderBy('expires_at', 'desc')
+    .returning(['id'])
     .executeTakeFirst();
-  if (!row) return false;
-  await input.db
-    .updateTable('auth_mfa_email_codes')
-    .set({ consumed_at: input.now })
-    .where('id', '=', row.id)
-    .execute();
-  return true;
+  return Boolean(row);
 }
 
 function hashEmailCode(code: string): string {

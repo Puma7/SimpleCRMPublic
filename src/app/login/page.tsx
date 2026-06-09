@@ -269,8 +269,10 @@ export default function LoginPage() {
       setError("Bitte geben Sie eine gueltige E-Mail-Adresse ein")
       return
     }
-    if (!serverSetupMode && !setupToken.trim()) {
-      setError("Setup-Token erforderlich (Einmal-Passwort abrufen)")
+    if (!setupToken.trim()) {
+      setError(serverSetupMode
+        ? "Initial-Setup-Token erforderlich (steht in INITIAL_SETUP_TOKEN auf dem Server)"
+        : "Setup-Token erforderlich (Einmal-Passwort abrufen)")
       return
     }
     setIsLoading(true)
@@ -283,6 +285,7 @@ export default function LoginPage() {
           email: setupEmail,
           password: setupPass,
           displayName: setupEmail,
+          setupToken: setupToken.trim(),
         })
         rememberLoginEmail(setupEmail)
         const loginResult = await login(setupEmail, setupPass)
@@ -524,29 +527,38 @@ export default function LoginPage() {
                   minLength={10}
                 />
               </div>
-              {!serverSetupMode ? (
-                <div className="space-y-2">
-                  <Label htmlFor="setup-token">Setup-Token</Label>
+              <div className="space-y-2">
+                <Label htmlFor="setup-token">
+                  {serverSetupMode ? "Initial-Setup-Token" : "Setup-Token"}
+                </Label>
                 <Input
                   id="setup-token"
                   type="password"
                   value={setupToken}
                   onChange={(e) => setSetupToken(e.target.value)}
+                  autoComplete="off"
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={handleFetchSetupToken}
-                  disabled={isFetchingSetupToken || isLoading}
-                >
-                  {isFetchingSetupToken ? "..." : "Einmal-Passwort abrufen"}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  Das Token bestätigt nur diese erste Einrichtung und wird über den Button lokal abgerufen.
-                </p>
-                </div>
-              ) : null}
+                {serverSetupMode ? (
+                  <p className="text-xs text-muted-foreground">
+                    Wert aus der Server-Umgebungsvariable INITIAL_SETUP_TOKEN. Ohne dieses Token kann kein Owner-Konto angelegt werden.
+                  </p>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      onClick={handleFetchSetupToken}
+                      disabled={isFetchingSetupToken || isLoading}
+                    >
+                      {isFetchingSetupToken ? "..." : "Einmal-Passwort abrufen"}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      Das Token bestaetigt nur diese erste Einrichtung und wird ueber den Button lokal abgerufen.
+                    </p>
+                  </>
+                )}
+              </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "…" : serverSetupMode ? "Owner-Konto anlegen" : "Passwort setzen"}

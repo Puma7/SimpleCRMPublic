@@ -117,6 +117,7 @@ export type ServerInitialOwnerInput = {
   password: string
   displayName?: string
   workspaceName?: string
+  setupToken: string
 }
 
 export type ServerAuthInvitation = {
@@ -192,6 +193,7 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
           password: input.password,
           displayName: input.displayName ?? input.email,
           workspaceName: input.workspaceName ?? "SimpleCRM",
+          initialSetupToken: input.setupToken,
           ...(options.device ? { device: options.device } : {}),
         },
       })

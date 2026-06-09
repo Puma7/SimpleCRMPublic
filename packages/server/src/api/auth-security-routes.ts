@@ -98,7 +98,8 @@ async function handleMfaVerify(req: ApiRequest, ports: ServerApiPorts): Promise<
     ip: req.ip ?? '0.0.0.0',
   });
   if (!result.ok) {
-    return error(401, result.code, 'Zweiter Faktor konnte nicht bestaetigt werden');
+    const status = result.code === 'user_disabled' ? 403 : 401;
+    return error(status, result.code, 'Zweiter Faktor konnte nicht bestaetigt werden');
   }
   await ports.audit?.record({
     workspaceId: result.user.workspaceId,
@@ -147,7 +148,8 @@ async function handlePatchSecuritySettings(req: ApiRequest, ports: ServerApiPort
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
-  const parsed = parseSecuritySettingsBody(req.body);
+  const existing = await ports.loginSecurity.getWorkspaceSettings(principal.workspaceId);
+  const parsed = parseSecuritySettingsBody(req.body, existing);
   if ('response' in parsed) return parsed.response;
   const settings = await ports.loginSecurity.setWorkspaceSettings(
     principal.workspaceId,
@@ -265,18 +267,28 @@ async function handleDisableMfa(
   return data(200, { enabled: false });
 }
 
-function parseSecuritySettingsBody(body: unknown):
-  | { values: AuthSecurityWorkspaceSettings }
-  | { response: ApiResponse } {
+function parseSecuritySettingsBody(
+  body: unknown,
+  existing?: AuthSecurityWorkspaceSettings,
+): { values: AuthSecurityWorkspaceSettings } | { response: ApiResponse } {
   const record = body && typeof body === 'object' ? body as Record<string, unknown> : {};
   const values: AuthSecurityWorkspaceSettings = {
-    captchaEnabled: parseOptionalBoolean(record.captchaEnabled, false),
-    pinKeypadEnabled: parseOptionalBoolean(record.pinKeypadEnabled, false),
-    mfaEnabled: parseOptionalBoolean(record.mfaEnabled, false),
-    mfaTotpEnabled: parseOptionalBoolean(record.mfaTotpEnabled, true),
-    mfaEmailEnabled: parseOptionalBoolean(record.mfaEmailEnabled, false),
+    captchaEnabled: readOptionalBoolean(record, 'captchaEnabled', existing?.captchaEnabled ?? false),
+    pinKeypadEnabled: readOptionalBoolean(record, 'pinKeypadEnabled', existing?.pinKeypadEnabled ?? false),
+    mfaEnabled: readOptionalBoolean(record, 'mfaEnabled', existing?.mfaEnabled ?? false),
+    mfaTotpEnabled: readOptionalBoolean(record, 'mfaTotpEnabled', existing?.mfaTotpEnabled ?? true),
+    mfaEmailEnabled: readOptionalBoolean(record, 'mfaEmailEnabled', existing?.mfaEmailEnabled ?? false),
   };
   return { values };
+}
+
+function readOptionalBoolean(
+  record: Record<string, unknown>,
+  key: string,
+  fallback: boolean,
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(record, key)) return fallback;
+  return parseOptionalBoolean(record[key], fallback);
 }
 
 function parseOptionalBoolean(value: unknown, fallback: boolean): boolean {

@@ -22,6 +22,7 @@ export async function verifyTurnstileToken(input: {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
+    signal: AbortSignal.timeout(5_000),
   });
   if (!response.ok) {
     return { ok: false, error: 'captcha_provider_unavailable' };

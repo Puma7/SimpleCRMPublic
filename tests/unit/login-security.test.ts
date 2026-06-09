@@ -5,6 +5,7 @@ jest.mock('../../packages/server/src/mail-smtp-send', () => ({
 }));
 
 import { createLoginSecurityService } from '../../packages/server/src/auth/login-security-service';
+import { consumeSingleUseToken, resetConsumedTokens } from '../../packages/server/src/security/consumed-token-store';
 import {
   issueCaptchaChallenge,
   verifyCaptchaChallenge,
@@ -51,6 +52,13 @@ describe('login security helpers', () => {
       ip: '9.9.9.9',
       now: issuedAt,
     })).toBe(false);
+  });
+
+  test('single-use token store rejects replay', () => {
+    resetConsumedTokens();
+    expect(consumeSingleUseToken('challenge-token', 60_000, 1_000)).toBe(true);
+    expect(consumeSingleUseToken('challenge-token', 60_000, 2_000)).toBe(false);
+    expect(consumeSingleUseToken('challenge-token', 60_000, 62_000)).toBe(true);
   });
 
   test('login pin hash roundtrip', async () => {

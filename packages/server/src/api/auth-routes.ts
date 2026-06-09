@@ -808,7 +808,13 @@ function verifyInitialSetupToken(
   configuredToken: string | undefined,
 ): ApiResponse | null {
   const expected = configuredToken?.trim();
-  if (!expected) return null;
+  if (!expected) {
+    return error(
+      503,
+      'initial_setup_token_required',
+      'INITIAL_SETUP_TOKEN muss auf dem Server gesetzt sein, bevor das erste Owner-Konto angelegt werden kann.',
+    );
+  }
 
   const headerToken = req.headers?.['x-initial-setup-token']?.trim();
   const bodyToken =

@@ -165,6 +165,7 @@ describe('LoginPage server-client mode', () => {
     fireEvent.change(screen.getByLabelText('E-Mail'), { target: { value: 'Owner@Example.com' } });
     fireEvent.change(screen.getByLabelText('Neues Passwort'), { target: { value: 'secure-pass-1' } });
     fireEvent.change(screen.getByLabelText('Passwort wiederholen'), { target: { value: 'secure-pass-1' } });
+    fireEvent.change(screen.getByLabelText('Initial-Setup-Token'), { target: { value: 'setup-token-secret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Owner-Konto anlegen' }));
 
     await waitFor(() => expect(mockLogin).toHaveBeenCalledWith('owner@example.com', 'secure-pass-1'));

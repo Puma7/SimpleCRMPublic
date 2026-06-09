@@ -13245,7 +13245,10 @@ describe('server edition foundation', () => {
 
   test('server auth setup routes expose initial state and create first owner without leaking secrets', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
-    const ports = makeServerApiPorts({ auditEvents, initialSetupNeeded: true });
+    const ports = {
+      ...makeServerApiPorts({ auditEvents, initialSetupNeeded: true }),
+      initialSetupToken: 'setup-token-secret',
+    };
     const api = createServerApi(ports);
 
     const state = await api.handle({
@@ -13254,6 +13257,17 @@ describe('server edition foundation', () => {
     });
     expect(state.status).toBe(200);
     expect((state.body as any).data).toEqual({ needsInitialSetup: true });
+
+    const missingToken = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/initial-setup',
+      body: {
+        email: 'owner@example.com',
+        password: 'new-passphrase',
+      },
+    });
+    expect(missingToken.status).toBe(403);
+    expect((missingToken.body as any).error.code).toBe('forbidden');
 
     const created = await api.handle({
       method: 'POST',
@@ -13264,6 +13278,7 @@ describe('server edition foundation', () => {
         displayName: ' Owner ',
         workspaceName: ' Vertrieb ',
         device: 'browser',
+        initialSetupToken: 'setup-token-secret',
       },
     });
     expect(created.status).toBe(201);
@@ -13286,7 +13301,7 @@ describe('server edition foundation', () => {
     const invalid = await api.handle({
       method: 'POST',
       path: '/api/v1/auth/initial-setup',
-      body: { email: 'invalid', password: 'short' },
+      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret' },
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -13297,6 +13312,7 @@ describe('server edition foundation', () => {
       body: {
         email: 'second@example.com',
         password: 'another-passphrase',
+        initialSetupToken: 'setup-token-secret',
       },
     });
     expect(blocked.status).toBe(409);
