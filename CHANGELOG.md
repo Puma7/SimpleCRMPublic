@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Forward-Copy:** Dedup-Zeile wird vor SMTP eingetragen und bei SMTP-Fehler wieder gelöscht (Retry-fähig).
 
 ### Fixed
+- **SMTP-Host:** Kein stiller Fallback auf IMAP-Host mehr; `resolveConfiguredSmtpHost` + getrennte Verbindungstests pro Protokoll (IMAP/POP3/SMTP).
 - **Pre-Beta Audit:** MFA E-Mail Race (atomic consume), deaktivierte User nach MFA blockiert, MFA-Challenge single-use, partielles PATCH für Security-Settings, Login-Failure-Counter in einer Transaktion, Turnstile 5s-Timeout.
 - **CI:** `pnpm-lock.yaml` für `otplib`; Renderer-Transport-Test für MFA/PIN-Felder; TypeScript-Narrowing in `server-auth-client.ts` für MFA-Login-Union.
 
