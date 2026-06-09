@@ -13293,6 +13293,39 @@ describe('server edition foundation', () => {
     expect((blocked.body as { error: { code: string } }).error.code).toBe('captcha_required');
   });
 
+  test('server auth security route allows non-admin users to enable email MFA for themselves', async () => {
+    const enableCalls: Array<{ workspaceId: string; userId: string }> = [];
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async enableEmailMfa(input: { workspaceId: string; userId: string }) {
+          enableCalls.push(input);
+        },
+      },
+    };
+    const api = createServerApi(ports);
+    const userPrincipal = { userId: 'user-b', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const enabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-b/mfa/email',
+      principal: userPrincipal,
+    });
+    expect(enabled.status).toBe(200);
+    expect((enabled.body as { data: { enabled: boolean; method: string } }).data).toEqual({
+      enabled: true,
+      method: 'email',
+    });
+    expect(enableCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, userId: 'user-b' }]);
+
+    const forbidden = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-a/mfa/email',
+      principal: userPrincipal,
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
   test('server auth routes login, refresh, and logout without leaking password hash', async () => {
     const ports = makeServerApiPorts();
     const api = createServerApi(ports);
@@ -19910,7 +19943,7 @@ describe('server edition foundation', () => {
         async claimSmtpOutbox(input) {
           const key = `email_compose_smtp_ok:${input.messageId}`;
           const existing = syncInfo.get(key);
-          if (existing === '1') return 'committed';
+          if (existing === '1' || existing === 'sent') return 'committed';
           if (existing === 'outbox') return 'outbox';
           syncInfo.set(key, 'outbox');
           updates.push(['claimSmtpOutbox', input]);
@@ -20002,7 +20035,7 @@ describe('server edition foundation', () => {
       }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
-        values: { 'email_compose_smtp_ok:44': '1' },
+        values: { 'email_compose_smtp_ok:44': 'sent' },
       }],
       ['markDraftAsSent', {
         workspaceId: WORKSPACE_A_ID,
@@ -20552,7 +20585,7 @@ describe('server edition foundation', () => {
         async claimSmtpOutbox(input) {
           const key = `email_compose_smtp_ok:${input.messageId}`;
           const existing = syncInfo.get(key);
-          if (existing === '1') return 'committed';
+          if (existing === '1' || existing === 'sent') return 'committed';
           if (existing === 'outbox') return 'outbox';
           syncInfo.set(key, 'outbox');
           return 'claimed';
@@ -20610,6 +20643,26 @@ describe('server edition foundation', () => {
       messageId: 48,
     });
     expect(smtpSends).toHaveLength(1);
+    expect(smtpAttempts).toBe(2);
+
+    smtpSends.length = 0;
+    syncInfo.set('email_compose_smtp_ok:48', 'sent');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+      recoveredSentAppend: true,
+    });
+    expect(smtpSends).toHaveLength(0);
     expect(smtpAttempts).toBe(2);
 
     smtpSends.length = 0;

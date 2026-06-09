@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Login CAPTCHA:** CAPTCHA-Pflicht gilt auch für unbekannte E-Mails, wenn der Workspace CAPTCHA aktiviert hat (analog `login-config`, Single-Workspace).
+- **Email-MFA Self-Service:** `POST .../mfa/email` erlaubt wie TOTP-Setup Admin oder eigenen Account.
+- **MFA E-Mail-Codes:** Verwaiste DB-Zeilen werden bei SMTP-Fehler wieder gelöscht.
+- **Compose Outbox:** Claim erst nach Outbound-Review; `sent`-Marker nach SMTP verhindert Doppelversand bei Retry nach Crash.
 - **SMTP-Host:** Kein stiller Fallback auf IMAP-Host mehr; `resolveConfiguredSmtpHost` + getrennte Verbindungstests pro Protokoll (IMAP/POP3/SMTP).
 - **Pre-Beta Audit:** MFA E-Mail Race (atomic consume), deaktivierte User nach MFA blockiert, MFA-Challenge single-use, partielles PATCH für Security-Settings, Login-Failure-Counter in einer Transaktion, Turnstile 5s-Timeout.
 - **CI:** `pnpm-lock.yaml` für `otplib`; Renderer-Transport-Test für MFA/PIN-Felder; TypeScript-Narrowing in `server-auth-client.ts` für MFA-Login-Union.
