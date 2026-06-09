@@ -30,11 +30,15 @@ Set these in `docker/.env`:
 - `PG_PASSWORD`: strong PostgreSQL password for the non-superuser `simplecrm_app` role used by API and migrations.
 - `MASTER_KEY`: Base64 value that decodes to exactly 32 bytes.
 - `ACCESS_TOKEN_SECRET`: Base64 value that decodes to at least 32 bytes.
+- `INITIAL_SETUP_TOKEN`: **required** before the first owner account can be created. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. Pass as `X-Initial-Setup-Token` header or in the setup UI.
+- `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: optional Cloudflare Turnstile pair for login CAPTCHA (enable separately in workspace security settings).
 - `PUBLIC_DOMAIN`: domain for Caddy, for example `crm.example.com`.
 - `PUBLIC_BASE_URL`: public URL, for example `https://crm.example.com`.
 - `CORS_ALLOWED_ORIGINS`: optional comma-separated extra browser origins for server-client HTTP transport. `PUBLIC_BASE_URL` is allowed automatically. Add `null` only for trusted packaged desktop/file-origin clients that require it.
 
-Invite SMTP variables are optional. If they are empty, invite creation can still return a manual link.
+Invite SMTP variables are optional. If they are empty, invite creation can still return a manual link. E-mail MFA codes also use the invite SMTP configuration when enabled.
+
+See [LOGIN_SECURITY.md](LOGIN_SECURITY.md) for CAPTCHA, PIN keypad, and MFA operator guidance.
 
 ## Start The Stack
 
@@ -121,7 +125,8 @@ You can also create the owner without a browser, directly against the API:
 ```sh
 curl -fsS -X POST "$PUBLIC_BASE_URL/api/v1/auth/initial-setup" \
   -H 'Content-Type: application/json' \
-  -d '{"email":"owner@example.com","password":"change-me-min-10-chars","workspaceName":"Acme"}'
+  -H "X-Initial-Setup-Token: $INITIAL_SETUP_TOKEN" \
+  -d '{"email":"owner@example.com","password":"change-me-min-12-chars","workspaceName":"Acme"}'
 ```
 
 ## Server Doctor

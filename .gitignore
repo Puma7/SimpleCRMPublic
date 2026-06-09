@@ -85,6 +85,8 @@ src/.DS_Store
 !docs/MIGRATION_STANDALONE_TO_SERVER.md
 !docs/BACKUP_AND_RESTORE.md
 !docs/THREAT_MODEL.md
+!docs/LOGIN_SECURITY.md
+!docs/LEARNINGS_AUTH.md
 !AGENTS.md
 
 coverage/

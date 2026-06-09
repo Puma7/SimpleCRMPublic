@@ -35,6 +35,9 @@ type AuthUserRecord = {
   displayName?: string | null
   role?: string | null
   disabledAt?: string | null
+  loginPinEnabled?: boolean | null
+  mfaEnabled?: boolean | null
+  mfaMethod?: "totp" | "email" | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -3821,6 +3824,9 @@ function mapAuthUserRecord(record: AuthUserRecord) {
     display_name: record.displayName ?? record.email ?? "",
     role: legacyAuthUserRole(record.role),
     is_active: record.disabledAt ? 0 : 1,
+    login_pin_enabled: Boolean(record.loginPinEnabled),
+    mfa_enabled: Boolean(record.mfaEnabled),
+    mfa_method: record.mfaMethod ?? null,
     created_at: record.createdAt ?? null,
     updated_at: record.updatedAt ?? null,
     last_login_at: null,
@@ -3914,12 +3920,19 @@ function mapAuthUserPayload(input: Record<string, any>): Record<string, unknown>
       ? authUserPasswordValue(input.passphrase)
       : undefined
 
+  const loginPin = Object.prototype.hasOwnProperty.call(input, "loginPin")
+    ? optionalAuthUserLoginPin(input.loginPin)
+    : Object.prototype.hasOwnProperty.call(input, "login_pin")
+      ? optionalAuthUserLoginPin(input.login_pin)
+      : undefined
+
   return pruneUndefined({
     email,
     displayName,
     role: authUserRoleValue(input.role),
     password,
     isActive: authUserActiveValue(input.isActive ?? input.is_active),
+    loginPin,
   })
 }
 
@@ -3964,6 +3977,16 @@ function authUserPasswordValue(value: unknown): string {
   if (typeof value !== "string") throw new Error("Invalid auth user password")
   if (!isPasswordLengthValid(value)) throw new Error("Invalid auth user password")
   return value
+}
+
+function optionalAuthUserLoginPin(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== "string") throw new Error("Invalid auth user login pin")
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!/^\d{6}$/.test(trimmed)) throw new Error("Invalid auth user login pin")
+  return trimmed
 }
 
 function optionalAuthUserText(value: unknown, label: string, maxLength: number): string | undefined {
@@ -4071,23 +4094,27 @@ async function attachCustomerCustomFields<T extends { id: number }>(
 
   const fields = await fetchAllCustomerCustomFields(context)
   const fieldNamesById = new Map(fields.map((field) => [field.id, field.name ?? ""]))
-  const customFieldsByCustomerId = new Map<number, Record<string, string>>()
+  const customFieldsByCustomerId = new Map<number, Record<string, string>>(
+    customers.map((customer) => [customer.id, {}]),
+  )
 
-  await Promise.all(customers.map(async (customer) => {
-    const body = await context.fetchJson({
-      method: "GET",
-      path: "/api/v1/customer-custom-field-values",
-      query: { limit: DEFAULT_LIST_LIMIT, customerId: customer.id },
-    })
-    const values = listItems<CustomFieldValueRecord>(body)
-    const customFields: Record<string, string> = {}
-    for (const value of values) {
-      const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
-      if (!fieldName) continue
-      customFields[fieldName] = value.value ?? ""
-    }
-    customFieldsByCustomerId.set(customer.id, customFields)
-  }))
+  const body = await context.fetchJson({
+    method: "GET",
+    path: "/api/v1/customer-custom-field-values",
+    query: {
+      limit: DEFAULT_LIST_LIMIT,
+      customerIds: customers.map((customer) => customer.id).join(","),
+    },
+  })
+  const values = listItems<CustomFieldValueRecord>(body)
+  for (const value of values) {
+    const customerId = Number(value.customerId ?? 0)
+    const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
+    if (!fieldName || !customFieldsByCustomerId.has(customerId)) continue
+    const customFields = customFieldsByCustomerId.get(customerId) ?? {}
+    customFields[fieldName] = value.value ?? ""
+    customFieldsByCustomerId.set(customerId, customFields)
+  }
 
   return customers.map((customer) => ({
     ...customer,

@@ -11,6 +11,7 @@ export type ServerDatabase = {
   auth_invitations: AuthInvitationsTable;
   refresh_tokens: RefreshTokensTable;
   auth_login_failures: AuthLoginFailuresTable;
+  auth_mfa_email_codes: AuthMfaEmailCodesTable;
   conversation_locks: ConversationLocksTable;
   job_queue: JobQueueTable;
   sync_info: SyncInfoTable;
@@ -149,8 +150,22 @@ export type UsersTable = {
   password_hash: string;
   role: 'owner' | 'admin' | 'user';
   disabled_at: TimestampColumn | null;
+  login_pin_hash: string | null;
+  login_pin_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  mfa_method: 'totp' | 'email' | null;
+  mfa_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  mfa_totp_secret_id: string | null;
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
+};
+
+export type AuthMfaEmailCodesTable = {
+  id: Generated<string>;
+  user_id: string;
+  code_hash: string;
+  expires_at: TimestampColumn;
+  consumed_at: TimestampColumn | null;
+  created_at: TimestampColumn;
 };
 
 export type AuthInvitationsTable = {

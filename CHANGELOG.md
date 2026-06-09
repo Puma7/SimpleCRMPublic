@@ -5,6 +5,30 @@ All notable changes to SimpleCRM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Login-Sicherheit (Server Edition):** Drei unabhängig schaltbare Layer für den öffentlichen Login — Cloudflare Turnstile CAPTCHA, 6-stelliges PIN-Keypad pro Benutzer, MFA per TOTP oder E-Mail-Code. Workspace-Toggles unter Einstellungen → Sicherheit; PIN/MFA-Verwaltung unter Einstellungen → Benutzer. Migration `0020_auth_login_security`.
+- **Login-Config API:** `GET /api/v1/auth/login-config` liefert pro E-Mail die aktiven Schichten (`pinRequired`, `mfaRequired`, CAPTCHA-Site-Key).
+- **Batch Custom Fields:** `GET /api/v1/customer-custom-field-values?customerIds=1,2,3` — ein Request für mehrere Kunden (Transport nutzt Batch statt N+1).
+- **Dokumentation:** [LOGIN_SECURITY.md](docs/LOGIN_SECURITY.md), [LEARNINGS_AUTH.md](docs/LEARNINGS_AUTH.md).
+
+### Changed
+- **Ersteinrichtung:** `INITIAL_SETUP_TOKEN` ist Pflicht in `docker/.env` vor `POST /api/v1/auth/initial-setup` (Header `X-Initial-Setup-Token`).
+- **Workflow IMAP:** `setSeen`, `move` und `delete` laufen nach Commit der Workflow-DB-Transaktion (deferred queue) — kein externes I/O mehr innerhalb langer Transaktionen.
+- **Compose SMTP:** Outbox-Claim (`sync_info` Wert `outbox`) vor Versand; Retry finalisiert ohne erneutes SMTP bei `outbox`/`1`.
+- **Forward-Copy:** Dedup-Zeile wird vor SMTP eingetragen und bei SMTP-Fehler wieder gelöscht (Retry-fähig).
+
+### Fixed
+- **Pre-Beta Audit:** MFA E-Mail Race (atomic consume), deaktivierte User nach MFA blockiert, MFA-Challenge single-use, partielles PATCH für Security-Settings, Login-Failure-Counter in einer Transaktion, Turnstile 5s-Timeout.
+- **CI:** `pnpm-lock.yaml` für `otplib`; Renderer-Transport-Test für MFA/PIN-Felder; TypeScript-Narrowing in `server-auth-client.ts` für MFA-Login-Union.
+
+### Security
+- Kein offenes Initial-Setup ohne Operator-Token.
+- CAPTCHA-Challenge serverseitig gebunden; PIN gehasht; TOTP-Secret über Secret-Port.
+
+---
+
 ## [0.1.7] - 2026-03-30
 
 ### Added

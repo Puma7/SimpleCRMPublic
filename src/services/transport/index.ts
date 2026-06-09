@@ -46,6 +46,9 @@ export {
   type ServerAuthSetupState,
   type ServerInitialOwnerInput,
   type ServerInvitationAcceptInput,
+  type ServerAuthSecuritySettings,
+  type ServerLoginConfig,
+  type ServerLoginResult,
 } from "./server-auth-client"
 
 export {

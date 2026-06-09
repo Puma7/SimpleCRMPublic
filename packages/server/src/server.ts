@@ -113,6 +113,7 @@ import {
   type AccessTokenSigner,
 } from './security';
 import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
+import { createLoginSecurityService } from './auth/login-security-service';
 import { createPostgresAiReplySuggestionPort } from './ai-reply-suggestion';
 import {
   createPostgresAiAgentPort,
@@ -168,6 +169,8 @@ export type PostgresServerApiPortsOptions = Readonly<{
   jobQueue?: ServerApiPorts['jobQueue'];
   secrets?: PostgresSecretPort;
   authInvitationMail?: AuthInvitationMailConfig;
+  turnstileSiteKey?: string;
+  turnstileSecretKey?: string;
   rspamdFetch?: typeof fetch;
 }>;
 
@@ -237,6 +240,8 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     createEventNotifications: options.createEventNotifications,
     masterKey: env.SIMPLECRM_MASTER_KEY,
     authInvitationMail,
+    turnstileSiteKey: env.TURNSTILE_SITE_KEY?.trim(),
+    turnstileSecretKey: env.TURNSTILE_SECRET_KEY?.trim(),
     onDatabaseCreated(database) {
       db = database;
     },
@@ -349,6 +354,21 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     db: options.db,
     accessTokenSigner: options.accessTokenSigner,
   });
+  const syncInfo = createPostgresSyncInfoPort({ db: options.db });
+  const loginSecurity = options.secrets
+    ? createLoginSecurityService({
+      db: options.db,
+      syncInfo,
+      secrets: options.secrets,
+      auth,
+      accessTokenSigner: options.accessTokenSigner,
+      config: {
+        turnstileSiteKey: options.turnstileSiteKey,
+        turnstileSecretKey: options.turnstileSecretKey,
+      },
+      ...(options.authInvitationMail ? { authInvitationSmtp: options.authInvitationMail } : {}),
+    })
+    : undefined;
   const maintenance = options.databaseUrl?.trim()
     ? createServerMaintenancePort({
       db: options.db,
@@ -377,6 +397,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     automationApiKeys: createPostgresAutomationApiKeyReadPort({ db: options.db, secrets: options.secrets }),
     calendarEvents: createPostgresCalendarEventReadPort({ db: options.db }),
     auth,
+    ...(loginSecurity ? { loginSecurity } : {}),
     ...(maintenance ? { maintenance } : {}),
     ...(options.authInvitationMail ? {
       authInvitationMailer: createAuthInvitationMailerPort(options.authInvitationMail),
@@ -453,7 +474,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     spamLearningEvents: createPostgresSpamLearningEventReadPort({ db: options.db }),
     spamListEntries: createPostgresSpamListEntryReadPort({ db: options.db }),
     savedViews: createPostgresSavedViewReadPort({ db: options.db }),
-    syncInfo: createPostgresSyncInfoPort({ db: options.db }),
+    syncInfo,
     tasks: createPostgresTaskReadPort({ db: options.db }),
     workflowDelayedJobs: createPostgresWorkflowDelayedJobReadPort({ db: options.db }),
     workflowExecution: {
@@ -489,6 +510,8 @@ async function createDefaultServerPorts(input: {
   createEventNotifications?: (options: { databaseUrl: string }) => Promise<PostgresServerEventNotificationChannel>;
   masterKey?: string;
   authInvitationMail?: AuthInvitationMailConfig;
+  turnstileSiteKey?: string;
+  turnstileSecretKey?: string;
   onDatabaseCreated(db: Kysely<ServerDatabase>): void;
   onSecretsCreated(secrets: PostgresSecretPort | undefined): void;
   onEventNotificationsCreated(notifications: PostgresServerEventNotificationChannel): void;
@@ -525,6 +548,8 @@ async function createDefaultServerPorts(input: {
     backupDir: input.backupDir,
     appVersion: input.appVersion,
     authInvitationMail: input.authInvitationMail,
+    turnstileSiteKey: input.turnstileSiteKey,
+    turnstileSecretKey: input.turnstileSecretKey,
     events: createPostgresServerEventPort({ db, notifications: eventNotifications }),
     secrets,
   });

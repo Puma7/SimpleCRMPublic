@@ -11,17 +11,26 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc } from "@/components/email/types"
 import { isValidEmail } from "@/lib/contact-utils"
 import {
+  LoginCaptchaGate,
+  readCaptchaChallenge,
+  storeCaptchaChallenge,
+} from "@/components/auth/login-captcha-gate"
+import { LoginMfaStep } from "@/components/auth/login-mfa-step"
+import { LoginPinKeypad } from "@/components/auth/login-pin-keypad"
+import {
   createServerAuthClient,
   getRendererTransport,
   ServerAuthClientError,
   type ServerAuthClient,
   type ServerAuthInvitation,
+  type ServerLoginConfig,
 } from "@/services/transport"
 import {
   getPasswordTooShortMessage,
   isPasswordLengthValid,
   MIN_PASSWORD_LENGTH,
 } from "@shared/auth-password-policy"
+import type { AuthMfaMethod } from "@shared/auth-login-security"
 
 const LAST_LOGIN_EMAIL_STORAGE_KEY = "simplecrm:last-login-email"
 
@@ -44,6 +53,12 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [isFetchingSetupToken, setIsFetchingSetupToken] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [loginConfig, setLoginConfig] = useState<ServerLoginConfig | null>(null)
+  const [loginConfigResolved, setLoginConfigResolved] = useState(false)
+  const [captchaPassed, setCaptchaPassed] = useState(false)
+  const [loginPin, setLoginPin] = useState("")
+  const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null)
+  const [mfaMethod, setMfaMethod] = useState<AuthMfaMethod | null>(null)
 
   useEffect(() => {
     const rememberedEmail = readRememberedLoginEmail()
@@ -116,6 +131,109 @@ export default function LoginPage() {
     })()
   }, [])
 
+  useEffect(() => {
+    setLoginPin("")
+  }, [username])
+
+  useEffect(() => {
+    if (needsSetup || inviteToken) {
+      setLoginConfigResolved(true)
+      return
+    }
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth) {
+      setLoginConfigResolved(true)
+      return
+    }
+    let cancelled = false
+    setLoginConfigResolved(false)
+    void (async () => {
+      try {
+        const config = await serverAuth.getLoginConfig(username.trim() || undefined)
+        if (cancelled) return
+        setLoginConfig(config)
+        const storedChallenge = readCaptchaChallenge()
+        setCaptchaPassed(!config.captcha.enabled || Boolean(storedChallenge))
+      } catch {
+        if (!cancelled) {
+          setLoginConfig({
+            captcha: { enabled: false, provider: null, siteKey: null },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          })
+          setCaptchaPassed(true)
+        }
+      } finally {
+        if (!cancelled) setLoginConfigResolved(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [needsSetup, inviteToken, username])
+
+  async function handleCaptchaVerify(token: string) {
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth) return
+    setIsLoading(true)
+    setError(null)
+    try {
+      const challenge = await serverAuth.verifyCaptcha(token)
+      storeCaptchaChallenge(challenge)
+      setCaptchaPassed(true)
+    } catch (err) {
+      setError(formatAuthError(err, serverSetupMode))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  async function performServerLogin(pinValue?: string) {
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth) {
+      setError("Server-URL fehlt. Anmeldung wurde nicht gestartet.")
+      return
+    }
+    const normalizedUsername = username.trim()
+    const loginIdentity = serverSetupMode ? normalizedUsername.toLowerCase() : normalizedUsername
+    const result = await serverAuth.loginAdvanced({
+      email: loginIdentity,
+      password: passphrase,
+      pin: pinValue,
+      captchaChallenge: readCaptchaChallenge() || undefined,
+    })
+    if (result.kind === "mfa_required") {
+      setMfaChallengeToken(result.mfaChallengeToken)
+      setMfaMethod(result.mfaMethod)
+      setLoginPin("")
+      return
+    }
+    await refresh()
+    rememberLoginEmail(loginIdentity)
+    navigate({ to: "/" })
+  }
+
+  async function handleMfaSubmit(code: string) {
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth || !mfaChallengeToken) return
+    setIsLoading(true)
+    setError(null)
+    try {
+      await serverAuth.verifyMfa({ mfaChallengeToken, code })
+      const loginIdentity = serverSetupMode ? username.trim().toLowerCase() : username.trim()
+      rememberLoginEmail(loginIdentity)
+      setMfaChallengeToken(null)
+      setMfaMethod(null)
+      await refresh()
+      navigate({ to: "/" })
+    } catch (err) {
+      setError(formatAuthError(err, serverSetupMode))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   async function handleAcceptInvite(e: React.FormEvent) {
     e.preventDefault()
     if (invitePass !== invitePass2) {
@@ -164,8 +282,10 @@ export default function LoginPage() {
       setError("Bitte geben Sie eine gueltige E-Mail-Adresse ein")
       return
     }
-    if (!serverSetupMode && !setupToken.trim()) {
-      setError("Setup-Token erforderlich (Einmal-Passwort abrufen)")
+    if (!setupToken.trim()) {
+      setError(serverSetupMode
+        ? "Initial-Setup-Token erforderlich (steht in INITIAL_SETUP_TOKEN auf dem Server)"
+        : "Setup-Token erforderlich (Einmal-Passwort abrufen)")
       return
     }
     setIsLoading(true)
@@ -178,6 +298,7 @@ export default function LoginPage() {
           email: setupEmail,
           password: setupPass,
           displayName: setupEmail,
+          setupToken: setupToken.trim(),
         })
         rememberLoginEmail(setupEmail)
         const loginResult = await login(setupEmail, setupPass)
@@ -251,9 +372,16 @@ export default function LoginPage() {
       setError("Bitte geben Sie eine gueltige E-Mail-Adresse ein")
       return
     }
+    if (loginPinRequired(loginConfig)) {
+      return
+    }
     setIsLoading(true)
     setError(null)
     try {
+      if (serverSetupMode && getActiveServerAuthClient()) {
+        await performServerLogin()
+        return
+      }
       const loginIdentity = serverSetupMode ? normalizedUsername.toLowerCase() : normalizedUsername
       const r = await login(loginIdentity, passphrase)
       if (!r.ok) {
@@ -278,6 +406,24 @@ export default function LoginPage() {
   const setupUsernameReady = setupUsername.trim().length > 0
   const setupTokenReady = serverSetupMode || setupToken.trim().length > 0
   const setupFormReady = setupUsernameReady && setupPasswordReady && setupTokenReady
+
+  async function handlePinComplete(pinValue: string) {
+    const normalizedUsername = username.trim()
+    if (serverSetupMode && normalizedUsername && !isValidEmail(normalizedUsername)) {
+      setError("Bitte geben Sie eine gueltige E-Mail-Adresse ein")
+      return
+    }
+    setIsLoading(true)
+    setError(null)
+    try {
+      await performServerLogin(pinValue)
+    } catch (err) {
+      setError(formatAuthError(err, serverSetupMode))
+      setLoginPin("")
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   if (!setupStateResolved && !inviteToken) {
     return (
@@ -410,29 +556,38 @@ export default function LoginPage() {
                   Mindestens {MIN_PASSWORD_LENGTH} Zeichen. Beide Felder muessen uebereinstimmen.
                 </p>
               </div>
-              {!serverSetupMode ? (
-                <div className="space-y-2">
-                  <Label htmlFor="setup-token">Setup-Token</Label>
+              <div className="space-y-2">
+                <Label htmlFor="setup-token">
+                  {serverSetupMode ? "Initial-Setup-Token" : "Setup-Token"}
+                </Label>
                 <Input
                   id="setup-token"
                   type="password"
                   value={setupToken}
                   onChange={(e) => setSetupToken(e.target.value)}
+                  autoComplete="off"
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={handleFetchSetupToken}
-                  disabled={isFetchingSetupToken || isLoading}
-                >
-                  {isFetchingSetupToken ? "..." : "Einmal-Passwort abrufen"}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  Das Token bestätigt nur diese erste Einrichtung und wird über den Button lokal abgerufen.
-                </p>
-                </div>
-              ) : null}
+                {serverSetupMode ? (
+                  <p className="text-xs text-muted-foreground">
+                    Wert aus der Server-Umgebungsvariable INITIAL_SETUP_TOKEN. Ohne dieses Token kann kein Owner-Konto angelegt werden.
+                  </p>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      onClick={handleFetchSetupToken}
+                      disabled={isFetchingSetupToken || isLoading}
+                    >
+                      {isFetchingSetupToken ? "..." : "Einmal-Passwort abrufen"}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      Das Token bestaetigt nur diese erste Einrichtung und wird ueber den Button lokal abgerufen.
+                    </p>
+                  </>
+                )}
+              </div>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={isLoading || !setupFormReady}>
                 {isLoading ? "…" : serverSetupMode ? "Owner-Konto anlegen" : "Passwort setzen"}
@@ -440,6 +595,51 @@ export default function LoginPage() {
             </form>
           </CardContent>
         </Card>
+      </div>
+    )
+  }
+
+  if (!loginConfigResolved) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Anmelden</CardTitle>
+            <CardDescription>Sicherheitseinstellungen werden geladen …</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    )
+  }
+
+  if (mfaChallengeToken && mfaMethod) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <LoginMfaStep
+          method={mfaMethod}
+          busy={isLoading}
+          error={error}
+          onSubmit={handleMfaSubmit}
+          onCancel={() => {
+            setMfaChallengeToken(null)
+            setMfaMethod(null)
+            setLoginPin("")
+            setError(null)
+          }}
+        />
+      </div>
+    )
+  }
+
+  if (loginConfig?.captcha.enabled && !captchaPassed) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <LoginCaptchaGate
+          config={loginConfig}
+          busy={isLoading}
+          error={error}
+          onVerify={handleCaptchaVerify}
+        />
       </div>
     )
   }
@@ -481,14 +681,34 @@ export default function LoginPage() {
               />
             </div>
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
-            <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "…" : "Anmelden"}
-            </Button>
+            {loginConfig?.pinKeypad.enabled && loginConfig.user && !loginConfig.user.pinRequired ? (
+              <p className="text-xs text-muted-foreground">
+                Fuer dieses Konto ist kein Login-PIN hinterlegt. Sie koennen sich mit dem normalen Anmelden-Button anmelden.
+              </p>
+            ) : null}
+            {loginPinRequired(loginConfig) ? (
+              <LoginPinKeypad
+                value={loginPin}
+                onChange={setLoginPin}
+                onComplete={(pinValue) => {
+                  void handlePinComplete(pinValue)
+                }}
+                disabled={isLoading || !username.trim() || !passphrase}
+              />
+            ) : (
+              <Button type="submit" className="w-full" disabled={isLoading}>
+                {isLoading ? "…" : "Anmelden"}
+              </Button>
+            )}
           </form>
         </CardContent>
       </Card>
     </div>
   )
+}
+
+function loginPinRequired(config: ServerLoginConfig | null): boolean {
+  return config?.user?.pinRequired === true
 }
 
 function getInviteTokenFromLocation(): string {
@@ -539,6 +759,12 @@ function formatAuthError(err: unknown, serverMode: boolean): string {
     }
     if (err.code === "rate_limited") {
       return "Zu viele Fehlversuche. Bitte kurz warten und es erneut versuchen."
+    }
+    if (err.code === "captcha_required" || err.code === "captcha_failed") {
+      return "CAPTCHA-Bestaetigung erforderlich. Bitte erneut bestaetigen."
+    }
+    if (err.code === "mfa_code_invalid" || err.code === "mfa_challenge_invalid") {
+      return "Sicherheitscode ist ungueltig oder abgelaufen."
     }
     if (err.code === "validation_error") {
       const passwordMessage = readValidationFieldMessage(err.details, "password")

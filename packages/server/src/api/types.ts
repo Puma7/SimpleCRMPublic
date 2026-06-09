@@ -56,6 +56,11 @@ export type AuthUserRecord = {
   role: AuthenticatedPrincipal['role'];
   passwordHash: string;
   disabledAt?: string | null;
+  loginPinHash?: string | null;
+  loginPinEnabled?: boolean;
+  mfaEnabled?: boolean;
+  mfaMethod?: 'totp' | 'email' | null;
+  mfaTotpSecretId?: string | null;
 };
 
 export type TokenPair = {
@@ -86,6 +91,9 @@ export type AuthUserAdminRecord = {
   displayName: string;
   role: AuthenticatedPrincipal['role'];
   disabledAt: string | null;
+  loginPinEnabled: boolean;
+  mfaEnabled: boolean;
+  mfaMethod: 'totp' | 'email' | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 };
@@ -112,6 +120,9 @@ export type AuthUserSaveInput = {
   role: AuthenticatedPrincipal['role'];
   password?: string;
   isActive?: boolean;
+  loginPin?: string | null;
+  mfaMethod?: 'totp' | 'email' | null;
+  disableMfa?: boolean;
 };
 
 export type AuthUserSaveResult =
@@ -159,6 +170,74 @@ export type AuthInvitationMailInput = {
 
 export type AuthInvitationMailerApiPort = Readonly<{
   sendInvitation(input: AuthInvitationMailInput): Promise<AuthInvitationDeliveryStatus>;
+}>;
+
+export type AuthSecurityWorkspaceSettings = {
+  captchaEnabled: boolean;
+  pinKeypadEnabled: boolean;
+  mfaEnabled: boolean;
+  mfaTotpEnabled: boolean;
+  mfaEmailEnabled: boolean;
+};
+
+export type LoginSecurityApiPort = Readonly<{
+  getWorkspaceSettings(workspaceId: string): Promise<AuthSecurityWorkspaceSettings>;
+  setWorkspaceSettings(
+    workspaceId: string,
+    settings: AuthSecurityWorkspaceSettings,
+  ): Promise<AuthSecurityWorkspaceSettings>;
+  getLoginConfig(email?: string): Promise<{
+    captcha: { enabled: boolean; provider: 'turnstile' | null; siteKey: string | null };
+    pinKeypad: { enabled: boolean };
+    mfa: { enabled: boolean; methods: readonly ('totp' | 'email')[] };
+    user: {
+      pinRequired: boolean;
+      mfaRequired: boolean;
+      mfaMethod: 'totp' | 'email' | null;
+    } | null;
+  }>;
+  verifyCaptcha(input: { token: string; ip: string }): Promise<
+    | { ok: true; challenge: string }
+    | { ok: false; code: string }
+  >;
+  assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): boolean;
+  assertLoginPin(input: {
+    user: AuthUserRecord;
+    workspaceSettings: AuthSecurityWorkspaceSettings;
+    pin: string | undefined;
+  }): Promise<boolean>;
+  beginMfaIfRequired(input: {
+    user: AuthUserRecord;
+    workspaceSettings: AuthSecurityWorkspaceSettings;
+    device?: string;
+  }): Promise<
+    | { kind: 'complete' }
+    | { kind: 'mfa_required'; mfaChallengeToken: string; mfaMethod: 'totp' | 'email' }
+    | { kind: 'mfa_delivery_failed' }
+  >;
+  completeMfaLogin(input: {
+    mfaChallengeToken: string;
+    code: string;
+    device?: string;
+    ip?: string;
+  }): Promise<
+    | { ok: true; user: AuthUserRecord; tokens: TokenPair }
+    | { ok: false; code: string }
+  >;
+  setUserPin(input: { workspaceId: string; userId: string; pin: string | null }): Promise<void>;
+  beginTotpSetup(input: {
+    workspaceId: string;
+    userId: string;
+    email: string;
+  }): Promise<{ secret: string; otpauthUri: string }>;
+  confirmTotpSetup(input: {
+    workspaceId: string;
+    userId: string;
+    secret: string;
+    code: string;
+  }): Promise<boolean>;
+  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
 }>;
 
 export type AuthApiPort = {
@@ -1141,6 +1220,7 @@ export type CustomerCustomFieldValueApiPort = {
   list(input: {
     workspaceId: string;
     customerId?: number;
+    customerIds?: number[];
     fieldId?: number;
     search?: string;
     cursor?: number;
@@ -4129,6 +4209,7 @@ export type ServerApiPorts = {
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;
+  loginSecurity?: LoginSecurityApiPort;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;
   calendarEvents?: CalendarEventApiPort;

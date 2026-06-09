@@ -121,6 +121,8 @@ async function handleInitialSetup(req: ApiRequest, ports: ServerApiPorts): Promi
 async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const email = getStringField(req.body, 'email')?.trim().toLowerCase();
   const password = getStringField(req.body, 'password');
+  const pin = getStringField(req.body, 'pin') ?? undefined;
+  const captchaChallenge = getStringField(req.body, 'captchaChallenge') ?? undefined;
   const device = getStringField(req.body, 'device')?.trim() || undefined;
   const ip = req.ip ?? '0.0.0.0';
 
@@ -142,6 +144,15 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   const user = await ports.auth.findUserByEmail(email);
   if (user?.disabledAt) {
     return error(403, 'user_disabled', 'Benutzer ist deaktiviert');
+  }
+
+  const workspaceSettings = user && ports.loginSecurity
+    ? await ports.loginSecurity.getWorkspaceSettings(user.workspaceId)
+    : null;
+  if (user && workspaceSettings && ports.loginSecurity) {
+    if (workspaceSettings.captchaEnabled && !ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip })) {
+      return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
+    }
   }
 
   const verified = user ? await ports.auth.verifyPassword(password, user.passwordHash) : false;
@@ -171,6 +182,40 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     return error(locked ? 423 : 401, locked ? 'account_locked' : 'invalid_credentials', 'Ungültige Zugangsdaten', {
       failedAttempts,
       penalty,
+    });
+  }
+
+  if (workspaceSettings && ports.loginSecurity) {
+    const pinOk = await ports.loginSecurity.assertLoginPin({
+      user,
+      workspaceSettings,
+      pin,
+    });
+    if (!pinOk) {
+      const failedAttempts = await ports.auth.recordFailedLogin({ email, ip, userId: user.id });
+      const penalty = calculateLoginPenalty(failedAttempts);
+      return error(401, 'invalid_credentials', 'Ungültige Zugangsdaten', {
+        failedAttempts,
+        penalty,
+      });
+    }
+  }
+
+  const mfaStep = workspaceSettings && ports.loginSecurity
+    ? await ports.loginSecurity.beginMfaIfRequired({ user, workspaceSettings, device })
+    : { kind: 'complete' as const };
+  if (mfaStep.kind === 'mfa_delivery_failed') {
+    return error(
+      503,
+      'mfa_delivery_failed',
+      'Der Anmeldecode konnte nicht per E-Mail versendet werden. Bitte den Administrator kontaktieren.',
+    );
+  }
+  if (mfaStep.kind === 'mfa_required') {
+    return data(200, {
+      mfaRequired: true,
+      mfaMethod: mfaStep.mfaMethod,
+      mfaChallengeToken: mfaStep.mfaChallengeToken,
     });
   }
 
@@ -243,16 +288,25 @@ async function handleSaveUser(
   const parsed = parseUserSaveBody(req.body, pathUserId);
   if ('response' in parsed) return parsed.response;
 
+  const { loginPin, ...saveValues } = parsed.values;
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    ...parsed.values,
+    ...saveValues,
   });
   if (!result.ok) {
     if (result.code === 'not_found') return error(404, 'auth_user_not_found', 'Benutzer nicht gefunden');
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
     if (result.code === 'password_required') return error(400, 'validation_error', 'Passwort ist fuer neue Benutzer erforderlich');
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
+  }
+
+  if (loginPin !== undefined && ports.loginSecurity) {
+    await ports.loginSecurity.setUserPin({
+      workspaceId: principal.workspaceId,
+      userId: result.user.id,
+      pin: loginPin,
+    });
   }
 
   await ports.audit?.record({
@@ -266,10 +320,13 @@ async function handleSaveUser(
       role: result.user.role,
       isActive: result.user.disabledAt === null,
       passwordChanged: Boolean(parsed.values.password),
+      loginPinChanged: loginPin !== undefined,
     },
   });
 
-  return data(parsed.values.id ? 200 : 201, publicAdminUser(result.user));
+  const refreshed = await ports.auth.listUsers?.({ workspaceId: principal.workspaceId });
+  const savedUser = refreshed?.find((row) => row.id === result.user.id) ?? result.user;
+  return data(parsed.values.id ? 200 : 201, publicAdminUser(savedUser));
 }
 
 async function handleCreateInvitation(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -477,6 +534,9 @@ function publicAdminUser(user: {
   displayName: string;
   role: string;
   disabledAt: string | null;
+  loginPinEnabled?: boolean;
+  mfaEnabled?: boolean;
+  mfaMethod?: 'totp' | 'email' | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }) {
@@ -486,6 +546,9 @@ function publicAdminUser(user: {
     displayName: user.displayName,
     role: user.role,
     disabledAt: user.disabledAt,
+    loginPinEnabled: Boolean(user.loginPinEnabled),
+    mfaEnabled: Boolean(user.mfaEnabled),
+    mfaMethod: user.mfaMethod ?? null,
     ...(user.createdAt === undefined ? {} : { createdAt: user.createdAt }),
     ...(user.updatedAt === undefined ? {} : { updatedAt: user.updatedAt }),
   };
@@ -651,7 +714,7 @@ function normalizeOptionalInt(value: unknown, min: number, max: number): number 
 }
 
 function parseUserSaveBody(body: unknown, pathUserId?: string):
-  | { values: { id?: string; email: string; displayName: string; role: 'owner' | 'admin' | 'user'; password?: string; isActive?: boolean } }
+  | { values: { id?: string; email: string; displayName: string; role: 'owner' | 'admin' | 'user'; password?: string; isActive?: boolean; loginPin?: string | null } }
   | { response: ApiResponse } {
   const bodyRecord = isRecord(body) ? body : null;
   const id = pathUserId || normalizeOptionalText(getStringField(body, 'id'), 120);
@@ -662,6 +725,12 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
   const role = normalizeServerUserRole(getStringField(body, 'role'));
   const password = getStringField(body, 'passphrase') ?? getStringField(body, 'password') ?? undefined;
   const isActive = normalizeOptionalBoolean(bodyRecord?.isActive ?? bodyRecord?.is_active);
+  const loginPinRaw = getStringField(body, 'loginPin') ?? getStringField(body, 'login_pin');
+  const loginPin = loginPinRaw === undefined || loginPinRaw === null
+    ? undefined
+    : loginPinRaw.trim() === ''
+      ? null
+      : loginPinRaw.trim();
   const errors: Array<{ field: string; message: string }> = [];
 
   if (!email) errors.push({ field: 'email', message: 'email muss eine gueltige E-Mail-Adresse sein' });
@@ -671,6 +740,9 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
     errors.push({ field: 'password', message: `password muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben` });
   } else if (password !== undefined && password.length > MAX_PASSWORD_LENGTH) {
     errors.push({ field: 'password', message: `password darf maximal ${MAX_PASSWORD_LENGTH} Zeichen haben` });
+  }
+  if (loginPin !== undefined && loginPin !== null && !/^\d{6}$/.test(loginPin)) {
+    errors.push({ field: 'loginPin', message: 'loginPin muss genau 6 Ziffern haben' });
   }
 
   if (errors.length > 0 || !email || !role) {
@@ -687,6 +759,7 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
       role,
       ...(password === undefined ? {} : { password }),
       ...(isActive === undefined ? {} : { isActive }),
+      ...(loginPin === undefined ? {} : { loginPin }),
     },
   };
 }
@@ -739,7 +812,13 @@ function verifyInitialSetupToken(
   configuredToken: string | undefined,
 ): ApiResponse | null {
   const expected = configuredToken?.trim();
-  if (!expected) return null;
+  if (!expected) {
+    return error(
+      503,
+      'initial_setup_token_required',
+      'INITIAL_SETUP_TOKEN muss auf dem Server gesetzt sein, bevor das erste Owner-Konto angelegt werden kann.',
+    );
+  }
 
   const headerToken = req.headers?.['x-initial-setup-token']?.trim();
   const bodyToken =

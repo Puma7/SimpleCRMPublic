@@ -272,23 +272,51 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
-      await smtpSend({
-        host: smtpHost,
-        port: prepared.account.smtpPort ?? 587,
-        tls: prepared.account.smtpTls,
-        user: auth.user,
-        envelopeFrom: prepared.account.emailAddress,
-        recipients: [...prepared.recipients],
-        rfc822: prepared.rfc822,
-        ...(auth.password !== undefined ? { password: auth.password } : {}),
-        ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
-      });
-
+      let dedupClaimed = false;
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           await insertForwardCopyDedup(trx, input, prepared, now());
+          dedupClaimed = true;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+
+      try {
+        await smtpSend({
+          host: smtpHost,
+          port: prepared.account.smtpPort ?? 587,
+          tls: prepared.account.smtpTls,
+          user: auth.user,
+          envelopeFrom: prepared.account.emailAddress,
+          recipients: [...prepared.recipients],
+          rfc822: prepared.rfc822,
+          ...(auth.password !== undefined ? { password: auth.password } : {}),
+          ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
+        });
+      } catch (error) {
+        if (dedupClaimed) {
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => deleteForwardCopyDedup(trx, input, prepared),
+            { applySession: options.applyWorkspaceSession },
+          );
+        }
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
+      await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
           await enqueueForwardCopyContinuationInTransaction(trx, input, {
             ok: true,
             error: null,
@@ -564,6 +592,20 @@ async function insertForwardCopyDedup(
       created_at: now,
       updated_at: now,
     })
+    .execute();
+}
+
+async function deleteForwardCopyDedup(
+  trx: WorkspaceTransaction,
+  input: WorkflowForwardCopyJobPlan,
+  prepared: Extract<PreparedForwardCopy, { ok: true }>,
+): Promise<void> {
+  await trx
+    .deleteFrom('email_workflow_forward_dedup')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_source_sqlite_id', '=', prepared.message.sourceSqliteId)
+    .where('workflow_source_sqlite_id', '=', prepared.workflowSourceSqliteId)
+    .where('dest', '=', prepared.destination)
     .execute();
 }
 
