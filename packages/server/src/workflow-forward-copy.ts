@@ -272,17 +272,6 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
-      let dedupClaimed = false;
-      await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          await insertForwardCopyDedup(trx, input, prepared, now());
-          dedupClaimed = true;
-        },
-        { applySession: options.applyWorkspaceSession },
-      );
-
       try {
         await smtpSend({
           host: smtpHost,
@@ -296,14 +285,6 @@ export function createPostgresWorkflowForwardCopyPort(
           ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
         });
       } catch (error) {
-        if (dedupClaimed) {
-          await withWorkspaceTransaction(
-            options.db,
-            { workspaceId: input.workspaceId, role: 'system' },
-            async (trx) => deleteForwardCopyDedup(trx, input, prepared),
-            { applySession: options.applyWorkspaceSession },
-          );
-        }
         await enqueueForwardCopyContinuation(options, input, {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
@@ -317,6 +298,7 @@ export function createPostgresWorkflowForwardCopyPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          await insertForwardCopyDedup(trx, input, prepared, now());
           await enqueueForwardCopyContinuationInTransaction(trx, input, {
             ok: true,
             error: null,
@@ -592,20 +574,6 @@ async function insertForwardCopyDedup(
       created_at: now,
       updated_at: now,
     })
-    .execute();
-}
-
-async function deleteForwardCopyDedup(
-  trx: WorkspaceTransaction,
-  input: WorkflowForwardCopyJobPlan,
-  prepared: Extract<PreparedForwardCopy, { ok: true }>,
-): Promise<void> {
-  await trx
-    .deleteFrom('email_workflow_forward_dedup')
-    .where('workspace_id', '=', input.workspaceId)
-    .where('message_source_sqlite_id', '=', prepared.message.sourceSqliteId)
-    .where('workflow_source_sqlite_id', '=', prepared.workflowSourceSqliteId)
-    .where('dest', '=', prepared.destination)
     .execute();
 }
 

@@ -383,7 +383,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           workspaceId: input.workspaceId,
           messageId: values.draftMessageId,
         });
-        if (smtpOutboxClaim !== 'claimed') {
+        if (smtpOutboxClaim === 'committed') {
           const sentCopy = await appendSentCopyAfterSmtp({
             append: sentCopyAppend,
             workspaceId: input.workspaceId,

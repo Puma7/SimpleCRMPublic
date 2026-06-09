@@ -146,14 +146,18 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     return error(403, 'user_disabled', 'Benutzer ist deaktiviert');
   }
 
-  const workspaceSettings = user && ports.loginSecurity
-    ? await ports.loginSecurity.getWorkspaceSettings(user.workspaceId)
+  const loginConfig = ports.loginSecurity
+    ? await ports.loginSecurity.getLoginConfig(email)
     : null;
-  if (user && workspaceSettings && ports.loginSecurity) {
-    if (workspaceSettings.captchaEnabled && !ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip })) {
+  if (loginConfig?.captcha.enabled && ports.loginSecurity) {
+    if (!ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip })) {
       return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
     }
   }
+
+  const workspaceSettings = user && ports.loginSecurity
+    ? await ports.loginSecurity.getWorkspaceSettings(user.workspaceId)
+    : null;
 
   const verified = user ? await ports.auth.verifyPassword(password, user.passwordHash) : false;
   if (!user || !verified) {
