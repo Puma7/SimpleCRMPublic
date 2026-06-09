@@ -193,9 +193,28 @@ type GraphRunResult = {
   log: string[];
 };
 
+type DeferredWorkflowImapEffect =
+  | { kind: 'set_seen'; workspaceId: string; messageId: number }
+  | {
+    kind: 'move';
+    workspaceId: string;
+    messageId: number;
+    targetFolderPath: string;
+    context: ServerWorkflowContext;
+    now: Date;
+  }
+  | {
+    kind: 'delete';
+    workspaceId: string;
+    messageId: number;
+    context: ServerWorkflowContext;
+    now: Date;
+  };
+
 type ServerWorkflowRuntimePorts = Readonly<{
   mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
   workflowImapActions?: ServerWorkflowImapActionPort;
+  deferredImapEffects?: DeferredWorkflowImapEffect[];
 }>;
 
 type ServerInboundBranchGate = {
@@ -215,6 +234,7 @@ export function createPostgresWorkflowExecutionJobPort(
 ): WorkflowExecutionJobPort {
   return {
     async execute(input) {
+      const deferredImapEffects: DeferredWorkflowImapEffect[] = [];
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -409,6 +429,7 @@ export function createPostgresWorkflowExecutionJobPort(
             ports: {
               mssql: options.mssql,
               workflowImapActions: options.workflowImapActions,
+              deferredImapEffects,
             },
           });
           await finishRun(trx, input.workspaceId, run.id, {
@@ -431,6 +452,12 @@ export function createPostgresWorkflowExecutionJobPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
+      await flushDeferredWorkflowImapEffects({
+        effects: deferredImapEffects,
+        db: options.db,
+        workflowImapActions: options.workflowImapActions,
+        applyWorkspaceSession: options.applyWorkspaceSession,
+      });
     },
 
     async dryRun(input) {
@@ -1470,7 +1497,7 @@ async function executeServerNode(
     const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
     if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
     if (moveImap.value && spam.value) {
-      const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap');
+      const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
       if (!moveResult.ok) return moveResult.node;
     }
     const tag = String(config.tag ?? 'auto-spam').trim();
@@ -1548,17 +1575,25 @@ async function markWorkflowMessageSeen(
 
   const variables: WorkflowVariableContext = { 'email.seen': true };
   if (ports.workflowImapActions && context.messageId !== null) {
-    const remoteResult = await ports.workflowImapActions.setSeen({
-      workspaceId: context.workspaceId,
-      messageId: context.messageId,
-      seen: true,
-    });
-    if (remoteResult.ok) {
-      variables['imap.seen_synced'] = true;
-      variables['imap.source_folder'] = remoteResult.sourceFolderPath;
+    if (ports.deferredImapEffects) {
+      ports.deferredImapEffects.push({
+        kind: 'set_seen',
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+      });
     } else {
-      variables['imap.seen_synced'] = false;
-      log.push(`imap_seen_sync_failed:${remoteResult.error}`);
+      const remoteResult = await ports.workflowImapActions.setSeen({
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        seen: true,
+      });
+      if (remoteResult.ok) {
+        variables['imap.seen_synced'] = true;
+        variables['imap.source_folder'] = remoteResult.sourceFolderPath;
+      } else {
+        variables['imap.seen_synced'] = false;
+        log.push(`imap_seen_sync_failed:${remoteResult.error}`);
+      }
     }
   }
 
@@ -1746,17 +1781,21 @@ async function moveWorkflowMessageOnImap(
   ).trim();
   if (!targetFolderPath) return { status: 'skipped', port: 'default', message: 'Zielordner leer' };
 
-  const moveResult = await runWorkflowImapMoveAction(context, targetFolderPath, ports, log, 'email.move_imap');
+  const moveResult = await runWorkflowImapMoveAction(context, targetFolderPath, ports, log, 'email.move_imap', now);
   if (!moveResult.ok) return moveResult.node;
 
-  const localResult = await applyWorkflowImapMoveLocalState(trx, context, targetFolderPath, now);
-  if (localResult) return localResult;
+  if (!ports.deferredImapEffects) {
+    const localResult = await applyWorkflowImapMoveLocalState(trx, context, targetFolderPath, now);
+    if (localResult) return localResult;
+  }
 
   return {
     status: 'ok',
     port: 'default',
     variables: {
-      'imap.source_folder': moveResult.value.sourceFolderPath,
+      ...(moveResult.value.sourceFolderPath
+        ? { 'imap.source_folder': moveResult.value.sourceFolderPath }
+        : {}),
       'imap.moved_to': moveResult.value.targetFolderPath ?? targetFolderPath,
       'message.id': context.messageId,
     },
@@ -1776,6 +1815,24 @@ async function deleteWorkflowMessageOnImap(
   if (!ports.workflowImapActions) {
     return unsupportedWorkflowNodeResult('email.delete_server', log);
   }
+  if (ports.deferredImapEffects) {
+    ports.deferredImapEffects.push({
+      kind: 'delete',
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      context,
+      now,
+    });
+    return {
+      status: 'ok',
+      port: 'default',
+      variables: {
+        'imap.deleted': true,
+        'message.id': context.messageId,
+      },
+    };
+  }
+
   const deleted = await ports.workflowImapActions.delete({
     workspaceId: context.workspaceId,
     messageId: context.messageId,
@@ -1802,6 +1859,7 @@ async function runWorkflowImapMoveAction(
   ports: ServerWorkflowRuntimePorts,
   log: string[],
   unsupportedType: string,
+  now: Date,
 ): Promise<
   | { ok: true; value: ServerWorkflowImapActionResult & { ok: true } }
   | { ok: false; node: NodeResult }
@@ -1812,6 +1870,24 @@ async function runWorkflowImapMoveAction(
   if (!ports.workflowImapActions) {
     return { ok: false, node: unsupportedWorkflowNodeResult(unsupportedType, log) };
   }
+  if (ports.deferredImapEffects) {
+    ports.deferredImapEffects.push({
+      kind: 'move',
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      targetFolderPath,
+      context,
+      now,
+    });
+    return {
+      ok: true,
+      value: {
+        ok: true,
+        sourceFolderPath: '',
+        targetFolderPath,
+      },
+    };
+  }
   const result = await ports.workflowImapActions.move({
     workspaceId: context.workspaceId,
     messageId: context.messageId,
@@ -1819,6 +1895,58 @@ async function runWorkflowImapMoveAction(
   });
   if (!result.ok) return { ok: false, node: { status: 'error', port: 'error', message: result.error } };
   return { ok: true, value: result };
+}
+
+async function flushDeferredWorkflowImapEffects(input: {
+  effects: readonly DeferredWorkflowImapEffect[];
+  db: Kysely<ServerDatabase>;
+  workflowImapActions?: ServerWorkflowImapActionPort;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+}): Promise<void> {
+  if (!input.workflowImapActions || input.effects.length === 0) return;
+
+  for (const effect of input.effects) {
+    if (effect.kind === 'set_seen') {
+      await input.workflowImapActions.setSeen({
+        workspaceId: effect.workspaceId,
+        messageId: effect.messageId,
+        seen: true,
+      });
+      continue;
+    }
+
+    if (effect.kind === 'move') {
+      const moved = await input.workflowImapActions.move({
+        workspaceId: effect.workspaceId,
+        messageId: effect.messageId,
+        targetFolderPath: effect.targetFolderPath,
+      });
+      if (!moved.ok) continue;
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId: effect.workspaceId, role: 'system' },
+        async (trx) => {
+          await applyWorkflowImapMoveLocalState(trx, effect.context, effect.targetFolderPath, effect.now);
+        },
+        { applySession: input.applyWorkspaceSession },
+      );
+      continue;
+    }
+
+    const deleted = await input.workflowImapActions.delete({
+      workspaceId: effect.workspaceId,
+      messageId: effect.messageId,
+    });
+    if (!deleted.ok) continue;
+    await withWorkspaceTransaction(
+      input.db,
+      { workspaceId: effect.workspaceId, role: 'system' },
+      async (trx) => {
+        await softDeleteWorkflowMessage(trx, effect.context, effect.now);
+      },
+      { applySession: input.applyWorkspaceSession },
+    );
+  }
 }
 
 async function applyWorkflowImapMoveLocalState(

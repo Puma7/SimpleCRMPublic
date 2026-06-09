@@ -9060,6 +9060,94 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow forward-copy port rolls back dedup when SMTP fails so retries can resend', async () => {
+    const now = new Date('2026-07-04T11:04:10.000Z');
+    let smtpAttempts = 0;
+    const smtpSends: unknown[] = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        account_id: 7,
+        subject: 'Retry forward',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        snippet: 'Kurzfassung',
+        body_text: 'Originaltext',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: {
+        async readSecret(input: { kind: string }) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+        },
+        async writeSecret() {
+          throw new Error('unexpected writeSecret');
+        },
+        async deleteSecret() {
+          return false;
+        },
+        async rotateSecret() {
+          return null;
+        },
+      },
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async (input) => {
+        smtpAttempts += 1;
+        if (smtpAttempts === 1) throw new Error('smtp transient');
+        smtpSends.push(input);
+      },
+    });
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 27,
+      to: 'retry@example.com',
+    });
+    expect(rows.forwardDedup).toEqual([]);
+    expect(smtpSends).toHaveLength(0);
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 27,
+      to: 'retry@example.com',
+    });
+    expect(smtpSends).toHaveLength(1);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({
+        dest: 'retry@example.com',
+        message_id: 27,
+        workflow_id: 39,
+      }),
+    ]);
+  });
+
   test('postgres workflow forward-copy port routes through composeSender.send when runOutboundReview=true', async () => {
     const now = new Date('2026-07-04T11:05:10.000Z');
     const composeCalls: Array<{ draftMessageId: number; to: string; attachmentPaths: readonly string[] | undefined }> = [];
@@ -16789,6 +16877,28 @@ describe('server edition foundation', () => {
       search: 'DE',
     }]);
 
+    const batchedCustomFieldValues = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customer-custom-field-values',
+      query: { customerIds: '7,8' },
+      principal,
+    });
+    expect(batchedCustomFieldValues.status).toBe(200);
+    expect(customFieldValueCalls.at(-1)).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      limit: 50,
+      customerIds: [7, 8],
+    });
+
+    const conflictingCustomerFilters = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customer-custom-field-values',
+      query: { customerId: '7', customerIds: '8' },
+      principal,
+    });
+    expect(conflictingCustomerFilters.status).toBe(400);
+    expect((conflictingCustomerFilters.body as any).error.code).toBe('invalid_customer_filter');
+
     const activityLog = await api.handle({
       method: 'GET',
       path: '/api/v1/activity-log',
@@ -19726,6 +19836,15 @@ describe('server edition foundation', () => {
           updates.push(['deleteSyncInfo', input]);
           for (const key of input.keys) syncInfo.delete(key);
         },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          const existing = syncInfo.get(key);
+          if (existing === '1') return 'committed';
+          if (existing === 'outbox') return 'outbox';
+          syncInfo.set(key, 'outbox');
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -19806,6 +19925,10 @@ describe('server edition foundation', () => {
         inReplyTo: '<parent@example.com>',
         references: '<root@example.com> <parent@example.com>',
       })],
+      ['claimSmtpOutbox', {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 44,
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: { 'email_compose_smtp_ok:44': '1' },
@@ -20084,6 +20207,10 @@ describe('server edition foundation', () => {
         async deleteSyncInfo(input) {
           updates.push(['deleteSyncInfo', input]);
         },
+        async claimSmtpOutbox(input) {
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -20221,6 +20348,10 @@ describe('server edition foundation', () => {
         async deleteSyncInfo(input) {
           updates.push(['deleteSyncInfo', input]);
         },
+        async claimSmtpOutbox(input) {
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -20275,6 +20406,141 @@ describe('server edition foundation', () => {
       messageId: 45,
       sentImapSyncFailed: false,
     }]);
+  });
+
+  test('server compose sender uses outbox claim and recovers without duplicate SMTP', async () => {
+    const smtpSends: unknown[] = [];
+    const syncInfo = new Map<string, string | null>();
+    let locked = false;
+    const draft = {
+      id: 48,
+      accountId: 7,
+      uid: -48,
+      folderKind: 'draft' as const,
+      subject: 'Outbox',
+      bodyText: 'Retry',
+      bodyHtml: null,
+      messageIdHeader: null,
+      inReplyToHeader: null,
+      referencesHeader: null,
+      ticketCode: null,
+      threadId: null,
+      draftAttachmentPathsJson: null,
+      outboundHold: false,
+      outboundBlockReason: null,
+    };
+    const account = {
+      id: 7,
+      sourceSqliteId: 70,
+      displayName: 'Support',
+      emailAddress: 'agent@example.com',
+      imapHost: 'imap.example.com',
+      imapUsername: 'agent@example.com',
+      smtpHost: 'smtp.example.com',
+      smtpPort: 587,
+      smtpTls: true,
+      smtpUsername: 'smtp-agent@example.com',
+      smtpUseImapAuth: false,
+      oauthProvider: null,
+      protocol: 'imap' as const,
+      requestReadReceipt: false,
+    };
+    let smtpAttempts = 0;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: async (input) => {
+        smtpAttempts += 1;
+        if (smtpAttempts === 1) throw new Error('smtp transient');
+        smtpSends.push(input);
+      },
+      store: {
+        async getDraft(input) {
+          return input.messageId === 48 ? draft : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7 ? account : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-outbox';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+        },
+        async setSyncInfo(input) {
+          for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        },
+        async deleteSyncInfo(input) {
+          for (const key of input.keys) syncInfo.delete(key);
+        },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          const existing = syncInfo.get(key);
+          if (existing === '1') return 'committed';
+          if (existing === 'outbox') return 'outbox';
+          syncInfo.set(key, 'outbox');
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend() {
+          return undefined;
+        },
+        async markDraftAsSent() {
+          return undefined;
+        },
+        async markMessageDone() {
+          return undefined;
+        },
+      },
+    });
+
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toEqual({
+      ok: false,
+      error: 'smtp transient',
+    });
+    expect(syncInfo.get('email_compose_smtp_ok:48')).toBeUndefined();
+    expect(smtpSends).toHaveLength(0);
+
+    syncInfo.set('email_compose_smtp_ok:48', 'outbox');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+      recoveredSentAppend: true,
+    });
+    expect(smtpSends).toHaveLength(0);
+    expect(smtpAttempts).toBe(1);
   });
 
   test('server read receipt responder validates MDN guards and sends through SMTP port', async () => {

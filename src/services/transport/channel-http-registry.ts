@@ -4066,23 +4066,27 @@ async function attachCustomerCustomFields<T extends { id: number }>(
 
   const fields = await fetchAllCustomerCustomFields(context)
   const fieldNamesById = new Map(fields.map((field) => [field.id, field.name ?? ""]))
-  const customFieldsByCustomerId = new Map<number, Record<string, string>>()
+  const customFieldsByCustomerId = new Map<number, Record<string, string>>(
+    customers.map((customer) => [customer.id, {}]),
+  )
 
-  await Promise.all(customers.map(async (customer) => {
-    const body = await context.fetchJson({
-      method: "GET",
-      path: "/api/v1/customer-custom-field-values",
-      query: { limit: DEFAULT_LIST_LIMIT, customerId: customer.id },
-    })
-    const values = listItems<CustomFieldValueRecord>(body)
-    const customFields: Record<string, string> = {}
-    for (const value of values) {
-      const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
-      if (!fieldName) continue
-      customFields[fieldName] = value.value ?? ""
-    }
-    customFieldsByCustomerId.set(customer.id, customFields)
-  }))
+  const body = await context.fetchJson({
+    method: "GET",
+    path: "/api/v1/customer-custom-field-values",
+    query: {
+      limit: DEFAULT_LIST_LIMIT,
+      customerIds: customers.map((customer) => customer.id).join(","),
+    },
+  })
+  const values = listItems<CustomFieldValueRecord>(body)
+  for (const value of values) {
+    const customerId = Number(value.customerId ?? 0)
+    const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
+    if (!fieldName || !customFieldsByCustomerId.has(customerId)) continue
+    const customFields = customFieldsByCustomerId.get(customerId) ?? {}
+    customFields[fieldName] = value.value ?? ""
+    customFieldsByCustomerId.set(customerId, customFields)
+  }
 
   return customers.map((customer) => ({
     ...customer,

@@ -620,7 +620,7 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerId=42',
+      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerIds=42',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result.items[0].customFields).toEqual({ vip_status: 'Gold' });

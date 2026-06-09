@@ -1220,6 +1220,7 @@ export type CustomerCustomFieldValueApiPort = {
   list(input: {
     workspaceId: string;
     customerId?: number;
+    customerIds?: number[];
     fieldId?: number;
     search?: string;
     cursor?: number;
