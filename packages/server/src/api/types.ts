@@ -4,6 +4,7 @@ import type { Readable } from 'node:stream';
 import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from '../jobs';
 import type { ConversationLockReason } from '../locks';
 import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
+import type { JtlOrderLookupApiPort } from '../jtl-order-lookup';
 import type { LoginPenalty } from '../auth';
 import type { ServerMaintenancePort } from '../maintenance/service';
 
@@ -4261,6 +4262,7 @@ export type ServerApiPorts = {
   jobQueue?: ServerJobQueueApiPort;
   jtlFirmen?: JtlReferenceApiPort;
   jtlOrders?: JtlOrderApiPort;
+  jtlOrderLookup?: JtlOrderLookupApiPort;
   jtlSync?: JtlSyncApiPort;
   jtlVersandarten?: JtlReferenceApiPort;
   jtlWarenlager?: JtlReferenceApiPort;

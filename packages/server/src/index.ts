@@ -15,6 +15,7 @@ export * from './diagnostics/server-log-store';
 export * from './diagnostics/server-log-capture';
 export * from './jobs';
 export * from './jtl-order';
+export * from './jtl-order-lookup';
 export * from './jtl-sync';
 export * from './locks';
 export * from './mail-compose-send';
