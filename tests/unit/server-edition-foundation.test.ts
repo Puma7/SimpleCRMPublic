@@ -9060,7 +9060,7 @@ describe('server edition foundation', () => {
     ]);
   });
 
-  test('postgres workflow forward-copy port rolls back dedup when SMTP fails so retries can resend', async () => {
+  test('postgres workflow forward-copy port leaves dedup empty when SMTP fails so retries can resend', async () => {
     const now = new Date('2026-07-04T11:04:10.000Z');
     let smtpAttempts = 0;
     const smtpSends: unknown[] = [];
@@ -13262,6 +13262,35 @@ describe('server edition foundation', () => {
         },
       })).resolves.toBeNull();
     }
+  });
+
+  test('server auth route requires captcha for unknown emails when workspace captcha is enabled', async () => {
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async getLoginConfig() {
+          return {
+            captcha: { enabled: true, provider: 'turnstile' as const, siteKey: 'site-key' },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          };
+        },
+        assertCaptchaChallenge() {
+          return false;
+        },
+      },
+    };
+    const api = createServerApi(ports);
+
+    const blocked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: { email: 'unknown@example.com', password: 'guess' },
+    });
+    expect(blocked.status).toBe(403);
+    expect((blocked.body as { error: { code: string } }).error.code).toBe('captcha_required');
   });
 
   test('server auth routes login, refresh, and logout without leaking password hash', async () => {
@@ -20579,10 +20608,29 @@ describe('server edition foundation', () => {
     })).resolves.toMatchObject({
       ok: true,
       messageId: 48,
+    });
+    expect(smtpSends).toHaveLength(1);
+    expect(smtpAttempts).toBe(2);
+
+    smtpSends.length = 0;
+    syncInfo.set('email_compose_smtp_ok:48', '1');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
       recoveredSentAppend: true,
     });
     expect(smtpSends).toHaveLength(0);
-    expect(smtpAttempts).toBe(1);
+    expect(smtpAttempts).toBe(2);
   });
 
   test('server read receipt responder validates MDN guards and sends through SMTP port', async () => {
