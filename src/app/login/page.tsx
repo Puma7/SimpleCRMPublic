@@ -127,6 +127,10 @@ export default function LoginPage() {
   }, [])
 
   useEffect(() => {
+    setLoginPin("")
+  }, [username])
+
+  useEffect(() => {
     if (needsSetup || inviteToken) {
       setLoginConfigResolved(true)
       return
@@ -137,6 +141,7 @@ export default function LoginPage() {
       return
     }
     let cancelled = false
+    setLoginConfigResolved(false)
     void (async () => {
       try {
         const config = await serverAuth.getLoginConfig(username.trim() || undefined)
@@ -351,7 +356,7 @@ export default function LoginPage() {
       setError("Bitte geben Sie eine gueltige E-Mail-Adresse ein")
       return
     }
-    if (loginConfig?.pinKeypad.enabled) {
+    if (loginPinRequired(loginConfig)) {
       return
     }
     setIsLoading(true)
@@ -635,7 +640,12 @@ export default function LoginPage() {
               />
             </div>
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
-            {loginConfig?.pinKeypad.enabled ? (
+            {loginConfig?.pinKeypad.enabled && loginConfig.user && !loginConfig.user.pinRequired ? (
+              <p className="text-xs text-muted-foreground">
+                Fuer dieses Konto ist kein Login-PIN hinterlegt. Sie koennen sich mit dem normalen Anmelden-Button anmelden.
+              </p>
+            ) : null}
+            {loginPinRequired(loginConfig) ? (
               <LoginPinKeypad
                 value={loginPin}
                 onChange={setLoginPin}
@@ -654,6 +664,10 @@ export default function LoginPage() {
       </Card>
     </div>
   )
+}
+
+function loginPinRequired(config: ServerLoginConfig | null): boolean {
+  return config?.user?.pinRequired === true
 }
 
 function getInviteTokenFromLocation(): string {

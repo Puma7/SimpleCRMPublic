@@ -172,6 +172,65 @@ describe('LoginPage server-client mode', () => {
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
   });
 
+  test('shows login button when pin keypad is enabled but account has no pin', async () => {
+    global.fetch = jest.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({
+          data: {
+            captcha: { enabled: false, provider: null, siteKey: null },
+            pinKeypad: { enabled: true },
+            mfa: { enabled: false, methods: [] },
+            user: {
+              pinRequired: false,
+              mfaRequired: false,
+              mfaMethod: null,
+            },
+          },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+
+    expect(await screen.findByRole('button', { name: 'Anmelden' })).toBeInTheDocument();
+    expect(screen.getByText(/kein Login-PIN hinterlegt/)).toBeInTheDocument();
+    expect(screen.queryByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).not.toBeInTheDocument();
+  });
+
+  test('shows pin keypad when account requires a login pin', async () => {
+    global.fetch = jest.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({
+          data: {
+            captcha: { enabled: false, provider: null, siteKey: null },
+            pinKeypad: { enabled: true },
+            mfa: { enabled: false, methods: [] },
+            user: {
+              pinRequired: true,
+              mfaRequired: false,
+              mfaMethod: null,
+            },
+          },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+
+    expect(await screen.findByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Anmelden' })).not.toBeInTheDocument();
+  });
+
   test('prefills remembered email on login form', async () => {
     window.localStorage.setItem('simplecrm:last-login-email', 'owner@example.com');
     global.fetch = jest.fn().mockImplementation((url: string) => {

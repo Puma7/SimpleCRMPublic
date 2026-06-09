@@ -77,11 +77,21 @@ export type ServerAuthClient = {
   getSecuritySettings(accessToken: string): Promise<{
     settings: ServerAuthSecuritySettings
     captchaProviderConfigured: boolean
+    currentUser: {
+      loginPinEnabled: boolean
+      mfaEnabled: boolean
+    }
   }>
   patchSecuritySettings(
     accessToken: string,
     settings: ServerAuthSecuritySettings,
-  ): Promise<{ settings: ServerAuthSecuritySettings }>
+  ): Promise<{
+    settings: ServerAuthSecuritySettings
+    currentUser: {
+      loginPinEnabled: boolean
+      mfaEnabled: boolean
+    }
+  }>
   beginUserTotpSetup(
     accessToken: string,
     userId: string,

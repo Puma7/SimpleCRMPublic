@@ -197,9 +197,16 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     }
   }
 
-  const mfaStep = ports.loginSecurity
-    ? await ports.loginSecurity.beginMfaIfRequired({ user, device })
+  const mfaStep = workspaceSettings && ports.loginSecurity
+    ? await ports.loginSecurity.beginMfaIfRequired({ user, workspaceSettings, device })
     : { kind: 'complete' as const };
+  if (mfaStep.kind === 'mfa_delivery_failed') {
+    return error(
+      503,
+      'mfa_delivery_failed',
+      'Der Anmeldecode konnte nicht per E-Mail versendet werden. Bitte den Administrator kontaktieren.',
+    );
+  }
   if (mfaStep.kind === 'mfa_required') {
     return data(200, {
       mfaRequired: true,

@@ -208,10 +208,12 @@ export type LoginSecurityApiPort = Readonly<{
   }): Promise<boolean>;
   beginMfaIfRequired(input: {
     user: AuthUserRecord;
+    workspaceSettings: AuthSecurityWorkspaceSettings;
     device?: string;
   }): Promise<
     | { kind: 'complete' }
     | { kind: 'mfa_required'; mfaChallengeToken: string; mfaMethod: 'totp' | 'email' }
+    | { kind: 'mfa_delivery_failed' }
   >;
   completeMfaLogin(input: {
     mfaChallengeToken: string;

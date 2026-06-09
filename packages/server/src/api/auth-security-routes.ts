@@ -128,9 +128,15 @@ async function handleGetSecuritySettings(req: ApiRequest, ports: ServerApiPorts)
   }
   const settings = await ports.loginSecurity.getWorkspaceSettings(principal.workspaceId);
   const loginConfig = await ports.loginSecurity.getLoginConfig();
+  const users = await ports.auth.listUsers?.({ workspaceId: principal.workspaceId });
+  const actor = users?.find((row) => row.id === principal.userId);
   return data(200, {
     settings,
     captchaProviderConfigured: loginConfig.captcha.provider === 'turnstile',
+    currentUser: {
+      loginPinEnabled: Boolean(actor?.loginPinEnabled),
+      mfaEnabled: Boolean(actor?.mfaEnabled),
+    },
   });
 }
 
@@ -155,7 +161,15 @@ async function handlePatchSecuritySettings(req: ApiRequest, ports: ServerApiPort
     entityId: principal.workspaceId,
     metadata: settings,
   });
-  return data(200, { settings });
+  const users = await ports.auth.listUsers?.({ workspaceId: principal.workspaceId });
+  const actor = users?.find((row) => row.id === principal.userId);
+  return data(200, {
+    settings,
+    currentUser: {
+      loginPinEnabled: Boolean(actor?.loginPinEnabled),
+      mfaEnabled: Boolean(actor?.mfaEnabled),
+    },
+  });
 }
 
 async function handleTotpSetup(

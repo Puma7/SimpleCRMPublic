@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { Shield } from "lucide-react"
+import { AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useAuth } from "@/components/auth/auth-context"
 import {
   createServerAuthClient,
@@ -23,6 +25,10 @@ export function AuthSecurityPanel() {
     mfaEmailEnabled: false,
   })
   const [captchaProviderConfigured, setCaptchaProviderConfigured] = useState(false)
+  const [currentUser, setCurrentUser] = useState({
+    loginPinEnabled: false,
+    mfaEnabled: false,
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -37,6 +43,7 @@ export function AuthSecurityPanel() {
     const response = await client.getSecuritySettings(accessToken)
     setSettings(response.settings)
     setCaptchaProviderConfigured(response.captchaProviderConfigured)
+    setCurrentUser(response.currentUser)
   }, [])
 
   useEffect(() => {
@@ -58,6 +65,7 @@ export function AuthSecurityPanel() {
       const client = createServerAuthClient({ baseUrl: transport.serverBaseUrl })
       const response = await client.patchSecuritySettings(accessToken, settings)
       setSettings(response.settings)
+      setCurrentUser(response.currentUser)
       setSaved(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Speichern fehlgeschlagen")
@@ -85,7 +93,8 @@ export function AuthSecurityPanel() {
           Login-Sicherheit
         </CardTitle>
         <CardDescription>
-          Drei optionale Schutzstufen fuer die oeffentliche Anmeldung: CAPTCHA, PIN-Tastenfeld und Zweitfaktor.
+          Drei optionale Schutzstufen fuer die oeffentliche Anmeldung. PIN und Zweitfaktor gelten nur fuer Konten,
+          bei denen Sie in der Benutzerverwaltung explizit hinterlegt wurden.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -104,15 +113,25 @@ export function AuthSecurityPanel() {
         <SettingToggle
           id="pin-keypad-enabled"
           label="PIN-Tastenfeld statt Login-Button"
-          description="Nutzer geben zusaetzlich einen 6-stelligen PIN pro Konto ein. PINs werden in der Benutzerverwaltung hinterlegt."
+          description="Aktiviert das Tastenfeld fuer Konten mit hinterlegtem 6-stelligen Login-PIN. Konten ohne PIN melden sich weiter mit dem normalen Button an."
           checked={settings.pinKeypadEnabled}
           disabled={busy}
           onCheckedChange={(checked) => setSettings((current) => ({ ...current, pinKeypadEnabled: checked }))}
         />
+        {settings.pinKeypadEnabled && !currentUser.loginPinEnabled ? (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              Ihr eigenes Konto hat noch keinen Login-PIN. Sie koennen die Funktion aktivieren und sich weiter
+              normal anmelden, sollten aber unter Benutzer einen PIN fuer Ihr Konto hinterlegen, wenn auch Admins
+              den PIN-Schutz nutzen sollen.
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <SettingToggle
           id="mfa-enabled"
           label="Zweitfaktor-Authentifizierung"
-          description="Nach E-Mail und Passwort ist ein zusaetzlicher Code erforderlich."
+          description="Erfordert einen zusaetzlichen Code nur fuer Konten, bei denen Authenticator oder E-Mail-2FA aktiviert wurde."
           checked={settings.mfaEnabled}
           disabled={busy}
           onCheckedChange={(checked) => setSettings((current) => ({ ...current, mfaEnabled: checked }))}

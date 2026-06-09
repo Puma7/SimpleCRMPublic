@@ -80,10 +80,12 @@ export type LoginSecurityService = Readonly<{
   }): Promise<boolean>;
   beginMfaIfRequired(input: {
     user: AuthUserRecord;
+    workspaceSettings: AuthSecurityWorkspaceSettings;
     device?: string;
   }): Promise<
     | { kind: 'complete' }
     | { kind: 'mfa_required'; mfaChallengeToken: string; mfaMethod: AuthMfaMethod }
+    | { kind: 'mfa_delivery_failed' }
   >;
   completeMfaLogin(input: {
     mfaChallengeToken: string;
@@ -201,8 +203,18 @@ export function createLoginSecurityService(input: {
       return verifyLoginPin(pin.trim(), user.loginPinHash ?? null);
     },
 
-    async beginMfaIfRequired({ user }) {
+    async beginMfaIfRequired({ user, workspaceSettings }) {
+      if (!workspaceSettings.mfaEnabled) {
+        return { kind: 'complete' };
+      }
       if (!user.mfaEnabled || !user.mfaMethod) {
+        return { kind: 'complete' };
+      }
+      const allowedMethods = resolveMfaMethods(
+        workspaceSettings,
+        Boolean(input.authInvitationSmtp),
+      );
+      if (!allowedMethods.includes(user.mfaMethod)) {
         return { kind: 'complete' };
       }
       if (user.mfaMethod === 'email') {
@@ -212,7 +224,7 @@ export function createLoginSecurityService(input: {
           user,
           now: now(),
         });
-        if (!sent) return { kind: 'complete' };
+        if (!sent) return { kind: 'mfa_delivery_failed' };
       }
       return {
         kind: 'mfa_required',

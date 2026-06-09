@@ -257,6 +257,8 @@ function UserSecurityActions(props: {
   const [totpSecret, setTotpSecret] = useState("")
   const [totpUri, setTotpUri] = useState("")
   const [totpCode, setTotpCode] = useState("")
+  const [pinOpen, setPinOpen] = useState(false)
+  const [pinValue, setPinValue] = useState("")
 
   function getClient() {
     const transport = getRendererTransport()
@@ -336,6 +338,28 @@ function UserSecurityActions(props: {
     }
   }
 
+  async function saveLoginPin(nextPin: string | null) {
+    setError(null)
+    setBusy(true)
+    try {
+      await invokeRenderer(IPCChannels.Auth.SaveUser, {
+        id: props.user.id,
+        username: props.user.username,
+        displayName: props.user.display_name,
+        role: props.user.role,
+        is_active: props.user.is_active,
+        loginPin: nextPin ?? "",
+      })
+      setPinOpen(false)
+      setPinValue("")
+      props.onChanged()
+    } catch (e) {
+      setError(describeUserSaveError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const securityBits = [
     props.user.login_pin_enabled ? "PIN" : null,
     props.user.mfa_enabled
@@ -351,6 +375,44 @@ function UserSecurityActions(props: {
         Login-Sicherheit: {securityBits.length > 0 ? securityBits.join(", ") : "keine Zusatzfaktoren"}
       </p>
       <div className="flex flex-wrap gap-2">
+        {props.user.login_pin_enabled ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => void saveLoginPin(null)}
+          >
+            PIN entfernen
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => {
+              setPinValue("")
+              setPinOpen(true)
+            }}
+          >
+            Login-PIN setzen
+          </Button>
+        )}
+        {props.user.login_pin_enabled ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => {
+              setPinValue("")
+              setPinOpen(true)
+            }}
+          >
+            PIN aendern
+          </Button>
+        ) : null}
         {!props.user.mfa_enabled ? (
           <>
             <Button
@@ -385,6 +447,40 @@ function UserSecurityActions(props: {
         )}
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      <Dialog open={pinOpen} onOpenChange={setPinOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Login-PIN {props.user.login_pin_enabled ? "aendern" : "setzen"}</DialogTitle>
+            <DialogDescription>
+              6-stelliger PIN fuer das optionale Login-Tastenfeld. Nur wirksam, wenn die Funktion in den
+              Login-Sicherheitseinstellungen aktiviert ist.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label htmlFor={`login-pin-${props.user.id}`}>6-stelliger PIN</Label>
+            <Input
+              id={`login-pin-${props.user.id}`}
+              inputMode="numeric"
+              maxLength={6}
+              value={pinValue}
+              onChange={(e) => setPinValue(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="123456"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPinOpen(false)}>
+              Abbrechen
+            </Button>
+            <Button
+              type="button"
+              disabled={busy || pinValue.length !== 6}
+              onClick={() => void saveLoginPin(pinValue)}
+            >
+              Speichern
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={totpOpen} onOpenChange={setTotpOpen}>
         <DialogContent>
           <DialogHeader>
