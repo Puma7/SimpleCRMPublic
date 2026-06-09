@@ -58,6 +58,12 @@ export function edgeLabelOptionsForSource(
   if (nt === "email.sender_filter") {
     return { restricted: true, labels: ["whitelist", "blacklist", "default"] }
   }
+  if (nt === "returns.evaluate") {
+    return {
+      restricted: true,
+      labels: ["refund", "exchange", "credit", "needs_review", "no_return"],
+    }
+  }
   if (nt === "logic.threshold") {
     return { restricted: true, labels: ["yes", "no"] }
   }
@@ -88,7 +94,7 @@ export function normalizeEdgeLabelForSource(
     if (["yes", "ja", "true"].includes(l)) return "yes"
     return l
   }
-  if (nt === "email.sender_filter" || nt === "logic.switch") return l
+  if (nt === "email.sender_filter" || nt === "logic.switch" || nt === "returns.evaluate") return l
   return raw
 }
 
@@ -121,7 +127,7 @@ export function edgeSourceHandleFromLabel(
     if (normalized === "yes") return "yes"
   }
   if (registryTypeOf(source) === "email.sender_filter") return normalized
-  if (registryTypeOf(source) === "logic.switch") {
+  if (registryTypeOf(source) === "logic.switch" || registryTypeOf(source) === "returns.evaluate") {
     return isEdgeLabelValidForSource(source, normalized) ? normalized : undefined
   }
   return undefined

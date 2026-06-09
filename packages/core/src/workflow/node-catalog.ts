@@ -393,6 +393,38 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: { kind: 'send_tracking', requireApproval: true },
   },
   {
+    type: 'returns.evaluate',
+    label: 'Retoure bewerten',
+    category: 'crm',
+    canvasType: 'registry',
+    description:
+      'Read-only-Entscheidung: schlägt aus Positionen/Gründen ein Outcome vor und verzweigt nach refund/exchange/credit/needs_review (no_return, wenn keine Retoure gefunden). Schreibt nichts.',
+    defaultConfig: {
+      reviewConditions: 'damaged',
+      exchangeReasonCodes: 'size_wrong,wrong_item',
+      creditReasonCodes: '',
+      defaultOutcome: 'refund',
+    },
+  },
+  {
+    type: 'returns.offer_exchange',
+    label: 'Retoure: Umtausch',
+    category: 'crm',
+    canvasType: 'action',
+    description:
+      'Setzt das Outcome der verknüpften Retoure auf „exchange" (optional Status via config.status). Idempotent. Schreibt nur in die eigene Retouren-Tabelle, nicht in JTL.',
+    defaultConfig: {},
+  },
+  {
+    type: 'returns.offer_credit',
+    label: 'Retoure: Gutschrift',
+    category: 'crm',
+    canvasType: 'action',
+    description:
+      'Setzt das Outcome der verknüpften Retoure auf „credit" (optional Status via config.status). Idempotent. Schreibt nur in die eigene Retouren-Tabelle, nicht in JTL.',
+    defaultConfig: {},
+  },
+  {
     type: 'ai.pick_canned',
     label: 'KI: Textbaustein wählen',
     category: 'ai',
