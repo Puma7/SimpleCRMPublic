@@ -30,6 +30,24 @@ Server-client auth uses:
 
 Invalid `Authorization` headers must not fall back to test/server principal headers.
 
+### Initial setup token
+
+`POST /api/v1/auth/initial-setup` requires `INITIAL_SETUP_TOKEN` (env + header `X-Initial-Setup-Token`). Without it, no owner account can be created. This closes unauthenticated workspace takeover on freshly deployed instances.
+
+### Optional login security layers
+
+Documented in [LOGIN_SECURITY.md](LOGIN_SECURITY.md). Summary:
+
+| Control | Mitigation | Residual risk |
+|---------|------------|---------------|
+| Turnstile CAPTCHA | Bot cost before password check | Provider outage; email hints in `login-config` |
+| 6-digit PIN | Second factor on shared workstations | Not mandatory per user; weak if workspace PIN on but user has no PIN |
+| TOTP / email MFA | Strong second factor | Email MFA needs invite SMTP; TOTP secret in encrypted store |
+| MFA challenge | Single-use in-memory token | Lost on process restart mid-login (user retries) |
+| Login failure counter | DB-backed lockout | In-memory rate limits not cluster-wide |
+
+Brute-force counters and CAPTCHA challenges are process-local unless extended for multi-node deployments.
+
 ## Workspace Isolation
 
 The server foundation uses:
