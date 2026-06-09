@@ -562,6 +562,8 @@ async function handlePortalCreate(
   // CAPTCHA: when the workspace has captcha enabled in its login security
   // settings, the public create endpoint also requires a fresh challenge.
   // assertCaptchaChallenge consumes the challenge so each one is single-use.
+  // Production deployments must wire loginSecurity — without it the portal is
+  // exposed without CAPTCHA or rate limiting.
   if (ports.loginSecurity) {
     const loginConfig = await ports.loginSecurity.getLoginConfig();
     if (loginConfig?.captcha.enabled) {
@@ -573,6 +575,10 @@ async function handlePortalCreate(
         return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
       }
     }
+  } else {
+    console.warn(
+      '[returns-portal] loginSecurity port is not configured; public portal create has no CAPTCHA or rate limiting',
+    );
   }
 
   const parsed = parsePortalCreateBody(req.body);
@@ -600,6 +606,8 @@ async function handlePortalLookup(
   token: string,
   returnNumber: string,
 ): Promise<ApiResponse> {
+  // Unauthenticated lookup is token-gated; brute-forcing return numbers still
+  // benefits from loginSecurity rate limits in production deployments.
   const resolved = await resolvePortal(ports, token);
   if ('status' in resolved) return resolved;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');

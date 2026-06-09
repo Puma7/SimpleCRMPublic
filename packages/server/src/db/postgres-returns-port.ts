@@ -428,12 +428,14 @@ async function getPublicReturn(
 ): Promise<PortalReturnRecord | null> {
   const trimmed = returnNumber.trim();
   if (!trimmed) return null;
-  // Case-insensitive lookup so links the customer mistypes still resolve.
+  // Exact match on the normalized form (R-HEX8). We normalize to uppercase
+  // so mistyped casing in portal URLs still resolves, but avoid ilike — its %
+  // and _ wildcards would let an attacker enumerate return numbers.
   const headerRow = await trx
     .selectFrom('returns')
     .selectAll()
     .where('workspace_id', '=', workspaceId)
-    .where('return_number', 'ilike', trimmed)
+    .where('return_number', '=', trimmed.toUpperCase())
     .executeTakeFirst();
   if (!headerRow) return null;
 

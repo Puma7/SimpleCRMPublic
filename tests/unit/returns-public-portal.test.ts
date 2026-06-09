@@ -123,6 +123,24 @@ describe('public portal dispatcher', () => {
     expect((result?.body as { error: { code: string } }).error.code).toBe('invalid_items');
   });
 
+  test('POST without loginSecurity logs a deployment warning', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const ports: ServerApiPorts = {
+      auth: {} as never,
+      returns: makeReturnsPort(),
+      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+    };
+    const result = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [{ quantity: 1 }] } }),
+      ports,
+    );
+    expect(result?.status).toBe(201);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('loginSecurity port is not configured'),
+    );
+    warn.mockRestore();
+  });
+
   test('POST with CAPTCHA enabled fails closed when no challenge is provided', async () => {
     const ports: ServerApiPorts = {
       auth: {} as never,

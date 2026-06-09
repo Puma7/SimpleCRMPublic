@@ -4332,8 +4332,8 @@ export type ReturnsApiPort = {
   /**
    * Public-shaped lookup by return_number. Returns the narrowed PortalReturnRecord
    * (no internal IDs, no customer PII beyond what the customer typed themselves),
-   * or null when not found. The lookup is case-insensitive on return_number so
-   * URLs printed in e-mails are forgiving.
+   * or null when not found. The lookup normalizes return_number to uppercase so
+   * URLs printed in e-mails are forgiving without using SQL ilike wildcards.
    */
   getPublicByReturnNumber(input: {
     workspaceId: string;
@@ -4428,6 +4428,7 @@ export type ServerApiPorts = {
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;
+  /** Required for production public portal: CAPTCHA on create and rate limiting on abuse-prone routes. */
   loginSecurity?: LoginSecurityApiPort;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;
