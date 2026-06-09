@@ -18,6 +18,7 @@ import { aiUsageEventsMigration } from './0017_ai_usage_events';
 import { aiReplyFeedbackMigration } from './0018_ai_reply_feedback';
 import { taskAssignmentScopeResetMigration } from './0019_task_assignment_scope_reset';
 import { authLoginSecurityMigration } from './0020_auth_login_security';
+import { returnsSchemaMigration } from './0021_returns_schema';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -42,6 +43,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   aiReplyFeedbackMigration,
   taskAssignmentScopeResetMigration,
   authLoginSecurityMigration,
+  returnsSchemaMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);
