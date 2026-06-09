@@ -36,6 +36,7 @@ describe('MainNav', () => {
     expect(screen.getByText('Produkte')).toBeTruthy();
     expect(screen.getByText('Kalender')).toBeTruthy();
     expect(screen.getByText('E-Mail')).toBeTruthy();
+    expect(screen.getByText('Retouren')).toBeTruthy();
   });
 
   test('renders settings link', () => {
@@ -57,6 +58,7 @@ describe('MainNav', () => {
     expect(hrefs).toContain('/products');
     expect(hrefs).toContain('/calendar');
     expect(hrefs).toContain('/email');
+    expect(hrefs).toContain('/returns');
     expect(hrefs).toContain('/settings');
   });
 

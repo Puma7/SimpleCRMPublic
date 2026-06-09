@@ -156,6 +156,15 @@ const AutomationChannels = literal({
   RevokeApiKey: 'automation:revoke-api-key',
 });
 
+const ReturnsChannels = literal({
+  List: 'returns:list',
+  Get: 'returns:get',
+  Create: 'returns:create',
+  Update: 'returns:update',
+  ListReasons: 'returns:list-reasons',
+  LookupJtlOrder: 'returns:lookup-jtl-order',
+});
+
 const FollowUpChannels = literal({
   GetItems: 'followup:get-items',
   GetQueueCounts: 'followup:get-queue-counts',
@@ -388,6 +397,7 @@ export const IPCChannels = {
   Pgp: PgpChannels,
   Automation: AutomationChannels,
   FollowUp: FollowUpChannels,
+  Returns: ReturnsChannels,
 } as const;
 
 // Flattened invoke list for preload allow-listing
@@ -410,6 +420,7 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Pgp),
   ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
+  ...Object.values(IPCChannels.Returns),
   ...Object.values(IPCChannels.Diagnostics),
   ...Object.values(IPCChannels.Maintenance),
 );

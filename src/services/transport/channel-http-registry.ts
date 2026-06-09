@@ -3703,6 +3703,58 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/saved-views/${positiveId(id, "saved view id")}`,
     transform: () => ({ success: true }),
   })],
+
+  // ---- Returns / RMA suite -------------------------------------------------
+  [IPCChannels.Returns.List, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "returns list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/returns",
+      query: {
+        limit: input.limit,
+        offset: input.offset,
+        status: input.status,
+        customerId: input.customerId,
+        search: input.search,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.Get, ([id]) => ({
+    method: "GET",
+    path: `/api/v1/returns/${positiveId(id, "return id")}`,
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Create, ([payload]) => ({
+    method: "POST",
+    path: "/api/v1/returns",
+    body: payload,
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Update, ([payload]) => {
+    const input = objectPayload(payload, "return update payload")
+    return {
+      method: "PATCH",
+      path: `/api/v1/returns/${positiveId(input.id, "return id")}`,
+      body: {
+        status: input.status,
+        outcome: input.outcome,
+        notes: input.notes,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.ListReasons, () => ({
+    method: "GET",
+    path: "/api/v1/return-reasons",
+    transform: (body) => dataBody<{ items: unknown[] }>(body).items,
+  })],
+  [IPCChannels.Returns.LookupJtlOrder, ([orderNumber]) => ({
+    method: "GET",
+    path: "/api/v1/returns/jtl-order-lookup",
+    query: { orderNumber: typeof orderNumber === "string" ? orderNumber : "" },
+    transform: (body) => dataBody<unknown>(body),
+  })],
 ])
 
 export function buildHttpInvocation(channel: InvokeChannel, args: unknown[]): HttpInvocationSpec {

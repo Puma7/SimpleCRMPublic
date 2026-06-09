@@ -51,6 +51,11 @@ export async function handleReturnsRoute(
     return handleListReasons(req, ports);
   }
 
+  if (req.path === '/api/v1/returns/jtl-order-lookup') {
+    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    return handleJtlOrderLookup(req, ports);
+  }
+
   if (req.path === '/api/v1/returns') {
     if (req.method === 'GET') return handleListReturns(req, ports);
     if (req.method === 'POST') return handleCreateReturn(req, ports);
@@ -79,6 +84,29 @@ async function handleListReasons(req: ApiRequest, ports: ServerApiPorts): Promis
   if (!ports.returnReasons) return error(503, 'return_reasons_unavailable', 'Return-Reasons API nicht konfiguriert');
   const items = await ports.returnReasons.list({ workspaceId: principal.workspaceId });
   return data(200, { items });
+}
+
+// ----------------------------------------------------------------------------
+// JTL order lookup (Phase 1 port surfaced for the create-return UI)
+// ----------------------------------------------------------------------------
+
+async function handleJtlOrderLookup(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.jtlOrderLookup) {
+    // Graceful "JTL nicht konfiguriert" — the UI falls back to manual entry.
+    return data(200, { configured: false, order: null });
+  }
+  const orderNumber = nullableTrimmedString(req.query?.orderNumber, MAX_TEXT_LEN);
+  if (!orderNumber) {
+    return error(400, 'invalid_order_number', 'orderNumber darf nicht leer sein');
+  }
+  const result = await ports.jtlOrderLookup.lookupOrderByNumber({
+    workspaceId: principal.workspaceId,
+    orderNumber,
+  });
+  if (!result.ok) return data(200, { configured: true, order: null, lookupError: result.error });
+  return data(200, { configured: true, order: result.order });
 }
 
 // ----------------------------------------------------------------------------
