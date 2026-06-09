@@ -263,6 +263,9 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
           mfaChallengeToken: body.mfaChallengeToken,
         }
       }
+      if (!("user" in body) || !("tokens" in body)) {
+        throw new ServerAuthClientError("Ungueltige Login-Antwort", { code: "invalid_login_response" })
+      }
       const session = buildServerAuthSession({
         user: body.user,
         tokens: body.tokens,
