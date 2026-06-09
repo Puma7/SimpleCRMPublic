@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { JobQueuePort } from './types';
+import type { JobWorkerLogFn } from './job-worker-log';
 import type { JobHandlerRegistry } from './worker';
 import { runJobQueueOnce } from './worker';
 
@@ -16,6 +17,7 @@ export type PostgresJobQueueWorkerOptions = Readonly<{
   staleLockIntervalMs?: number;
   staleLockAgeMs?: number;
   now?: () => Date;
+  log?: JobWorkerLogFn;
 }>;
 
 const DEFAULT_POLL_INTERVAL_MS = 750;
@@ -36,6 +38,7 @@ export function startPostgresJobQueueWorker(
   const staleLockIntervalMs = options.staleLockIntervalMs ?? DEFAULT_STALE_LOCK_INTERVAL_MS;
   const staleLockAgeMs = options.staleLockAgeMs ?? DEFAULT_STALE_LOCK_AGE_MS;
   const now = options.now ?? (() => new Date());
+  const log = options.log;
 
   let stopped = false;
   let pollPromise: Promise<void> | null = null;
@@ -43,6 +46,11 @@ export function startPostgresJobQueueWorker(
 
   const sleep = (ms: number) => new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
+  });
+
+  log?.({
+    level: 'info',
+    message: `Legacy job_queue Worker gestartet (${workerId}, Poll ${pollIntervalMs} ms, Stale-Lock ${Math.round(staleLockAgeMs / 60_000)} min)`,
   });
 
   async function pollLoop(): Promise<void> {
@@ -53,11 +61,16 @@ export function startPostgresJobQueueWorker(
           handlers: options.handlers,
           workerId,
           now: now(),
+          log,
         });
         if (result.status === 'idle') {
           await sleep(pollIntervalMs);
         }
-      } catch {
+      } catch (error) {
+        log?.({
+          level: 'error',
+          message: `Poll-Schleife Fehler: ${error instanceof Error ? error.message : String(error)}`,
+        });
         await sleep(pollIntervalMs);
       }
     }
@@ -66,12 +79,21 @@ export function startPostgresJobQueueWorker(
   async function releaseStaleLocks(): Promise<void> {
     if (stopped) return;
     try {
-      await options.queue.releaseStaleLocks({
+      const released = await options.queue.releaseStaleLocks({
         staleBefore: new Date(now().getTime() - staleLockAgeMs),
         limit: 100,
       });
-    } catch {
-      /* best effort */
+      if (released.length > 0) {
+        log?.({
+          level: 'warn',
+          message: `${released.length} veraltete job_queue-Sperre(n) freigegeben: ${released.map((job) => `${job.type}#${job.id}`).join(', ')}`,
+        });
+      }
+    } catch (error) {
+      log?.({
+        level: 'warn',
+        message: `Stale-Lock-Freigabe fehlgeschlagen: ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
   }
 
@@ -84,6 +106,7 @@ export function startPostgresJobQueueWorker(
   return {
     async stop() {
       stopped = true;
+      log?.({ level: 'info', message: `Legacy job_queue Worker gestoppt (${workerId})` });
       if (staleLockTimer) {
         clearInterval(staleLockTimer);
         staleLockTimer = null;

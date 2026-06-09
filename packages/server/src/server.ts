@@ -83,6 +83,7 @@ import {
 } from './db';
 import {
   createGraphileQueuePort,
+  createJobWorkerLogger,
   createJsonlAuditRetentionArchivePort,
   createFetchWebhookDispatchPort,
   createMaintenanceJobHandlers,
@@ -302,6 +303,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       postgresJobQueueWorker = startPostgresJobQueueWorker({
         queue: createPostgresJobQueuePort({ db }),
         handlers: jobHandlers,
+        log: createJobWorkerLogger(serverLogStore),
       });
     }
 

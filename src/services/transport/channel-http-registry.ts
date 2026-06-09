@@ -457,6 +457,13 @@ type EmailDiagnosticsRecord = {
     idleImapAccountIds?: unknown
   } | null
   accounts?: unknown
+  jobQueue?: {
+    ready?: number | null
+    locked?: number | null
+    lagSeconds?: number | null
+    oldestLockedSeconds?: number | null
+    samples?: unknown
+  } | null
 }
 
 type EmailReportingRecord = {
@@ -2840,6 +2847,26 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  [IPCChannels.Email.GetWorkflowRunLog, ([runId]) => ({
+    method: "GET",
+    path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}`,
+    query: { includeLog: true },
+    transform: (body) => {
+      const run = dataBody<WorkflowRunRecord>(body)
+      const log = run.log
+      if (log == null) return [] as string[]
+      if (Array.isArray(log)) return log.map((entry) => String(entry))
+      if (typeof log === "string") {
+        try {
+          const parsed = JSON.parse(log) as unknown
+          return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [log]
+        } catch {
+          return [log]
+        }
+      }
+      return [String(log)]
+    },
+  })],
   [IPCChannels.Email.ListWorkflowRunSteps, ([runId]) => ({
     method: "GET",
     path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}/steps`,
@@ -4720,6 +4747,27 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
         inboxLastSyncedAt: typeof account.inboxLastSyncedAt === "string" ? account.inboxLastSyncedAt : null,
       }))
       : [],
+    ...(record.jobQueue ? {
+      jobQueue: {
+        ready: countValue(record.jobQueue.ready),
+        locked: countValue(record.jobQueue.locked),
+        lagSeconds: countValue(record.jobQueue.lagSeconds),
+        oldestLockedSeconds: record.jobQueue.oldestLockedSeconds == null
+          ? null
+          : countValue(record.jobQueue.oldestLockedSeconds),
+        samples: Array.isArray(record.jobQueue.samples)
+          ? record.jobQueue.samples.filter(isRecord).map((job) => ({
+            id: countValue(job.id),
+            type: typeof job.type === "string" ? job.type : "",
+            attempts: countValue(job.attempts),
+            maxAttempts: countValue(job.maxAttempts),
+            lockedBy: typeof job.lockedBy === "string" ? job.lockedBy : null,
+            lockedSeconds: job.lockedSeconds == null ? null : countValue(job.lockedSeconds),
+            lastError: typeof job.lastError === "string" ? job.lastError : null,
+          }))
+          : [],
+      },
+    } : {}),
   }
 }
 

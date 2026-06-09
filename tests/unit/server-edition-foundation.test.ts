@@ -12414,7 +12414,7 @@ describe('server edition foundation', () => {
       expect(output.checks.find((check: { name: string }) => check.name === 'database').details)
         .toEqual({ databaseName: 'simplecrm', databaseSize: '42 MB' });
       expect(output.checks.find((check: { name: string }) => check.name === 'job_queue').details)
-        .toEqual({ readyJobs: 2, lagSeconds: 30 });
+        .toEqual({ readyJobs: 2, lockedJobs: 0, lagSeconds: 30, oldestLockedSeconds: null });
       expect(output.checks.find((check: { name: string }) => check.name === 'backups').message)
         .toContain('verified');
       expect(JSON.stringify(output.checks.find((check: { name: string }) => check.name === 'backups').details))
@@ -35688,7 +35688,7 @@ function makeDoctorPgClient(input: {
         if (input.failJobQueue) {
           throw new Error('job_queue missing');
         }
-        return { rows: [{ ready_jobs: 2, queue_lag_seconds: 30 } as T] };
+        return { rows: [{ ready_jobs: 2, locked_jobs: 0, queue_lag_seconds: 30, oldest_locked_seconds: null } as T] };
       }
       if (sql.includes('FROM conversation_locks')) {
         return { rows: [{ stale_locks: 0 } as T] };
