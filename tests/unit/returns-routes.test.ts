@@ -6,6 +6,7 @@ import type {
   ReturnReasonRecord,
   ReturnRecord,
   ReturnUpdateInput,
+  ReturnsAnalyticsInput,
   ReturnsApiPort,
   ReturnReasonsApiPort,
   ServerApiPorts,
@@ -41,11 +42,13 @@ function makeReturnsPort(overrides: Partial<ReturnsApiPort> = {}): {
   getCalls: Array<CapturedCall<{ workspaceId: string; id: number }>>;
   createCalls: Array<CapturedCall<{ workspaceId: string; actorUserId: string; input: ReturnCreateInput }>>;
   updateCalls: Array<CapturedCall<{ workspaceId: string; actorUserId: string; id: number; update: ReturnUpdateInput }>>;
+  analyticsCalls: Array<CapturedCall<ReturnsAnalyticsInput>>;
 } {
   const listCalls: Array<CapturedCall<ReturnListInput>> = [];
   const getCalls: Array<CapturedCall<{ workspaceId: string; id: number }>> = [];
   const createCalls: Array<CapturedCall<{ workspaceId: string; actorUserId: string; input: ReturnCreateInput }>> = [];
   const updateCalls: Array<CapturedCall<{ workspaceId: string; actorUserId: string; id: number; update: ReturnUpdateInput }>> = [];
+  const analyticsCalls: Array<CapturedCall<ReturnsAnalyticsInput>> = [];
   const port: ReturnsApiPort = {
     async list(input) {
       listCalls.push({ input });
@@ -63,9 +66,19 @@ function makeReturnsPort(overrides: Partial<ReturnsApiPort> = {}): {
       updateCalls.push({ input });
       return { ok: true, record: makeRecord({ id: input.id, status: input.update.status ?? 'pending' }) };
     },
+    async analytics(input) {
+      analyticsCalls.push({ input });
+      return {
+        totalCount: 0,
+        byStatus: [],
+        byOutcome: [],
+        topReasons: [],
+        generatedAt: '2026-06-09T00:00:00.000Z',
+      };
+    },
     ...overrides,
   };
-  return { port, listCalls, getCalls, createCalls, updateCalls };
+  return { port, listCalls, getCalls, createCalls, updateCalls, analyticsCalls };
 }
 
 function makeReasonsPort(reasons: ReturnReasonRecord[]): ReturnReasonsApiPort {
@@ -107,6 +120,44 @@ describe('handleReturnsRoute', () => {
     );
     expect(result?.status).toBe(200);
     expect((result?.body as { data: { items: ReturnReasonRecord[] } }).data.items).toEqual(reasons);
+  });
+
+  test('GET /api/v1/returns/analytics forwards an optional sinceDays window', async () => {
+    const harness = makeReturnsPort();
+    const ports: ServerApiPorts = { auth: {} as never, returns: harness.port };
+
+    const noWindow = await handleReturnsRoute(
+      makeBaseRequest({ path: '/api/v1/returns/analytics' }),
+      ports,
+    );
+    expect(noWindow?.status).toBe(200);
+    expect(harness.analyticsCalls).toEqual([{ input: { workspaceId: 'ws-1' } }]);
+
+    const windowed = await handleReturnsRoute(
+      makeBaseRequest({ path: '/api/v1/returns/analytics', query: { sinceDays: 90 } }),
+      ports,
+    );
+    expect(windowed?.status).toBe(200);
+    expect(harness.analyticsCalls[1]).toEqual({ input: { workspaceId: 'ws-1', sinceDays: 90 } });
+  });
+
+  test('GET /api/v1/returns/analytics rejects an out-of-range sinceDays', async () => {
+    const ports: ServerApiPorts = { auth: {} as never, returns: makeReturnsPort().port };
+    const bad = await handleReturnsRoute(
+      makeBaseRequest({ path: '/api/v1/returns/analytics', query: { sinceDays: 0 } }),
+      ports,
+    );
+    expect(bad?.status).toBe(400);
+    expect((bad?.body as { error: { code: string } }).error.code).toBe('invalid_since_days');
+  });
+
+  test('the analytics path is matched before the :id detail route', async () => {
+    const harness = makeReturnsPort();
+    const ports: ServerApiPorts = { auth: {} as never, returns: harness.port };
+    await handleReturnsRoute(makeBaseRequest({ path: '/api/v1/returns/analytics' }), ports);
+    // It must hit analytics(), never get() with id parsed from "analytics".
+    expect(harness.analyticsCalls).toHaveLength(1);
+    expect(harness.getCalls).toHaveLength(0);
   });
 
   test('requires auth for every returns endpoint', async () => {
@@ -265,6 +316,7 @@ describe('handleReturnsRoute', () => {
       async get() { return null; },
       async create() { return { ok: false, error: 'something broke' }; },
       async update() { return { ok: true, record: makeRecord() }; },
+      async analytics() { return { totalCount: 0, byStatus: [], byOutcome: [], topReasons: [], generatedAt: '' }; },
     };
     const ports: ServerApiPorts = { auth: {} as never, returns: port };
     const result = await handleReturnsRoute(
@@ -329,6 +381,7 @@ describe('handleReturnsRoute', () => {
       async get() { return null; },
       async create() { return { ok: false, error: 'x' }; },
       async update() { return { ok: false, error: 'Retoure nicht gefunden' }; },
+      async analytics() { return { totalCount: 0, byStatus: [], byOutcome: [], topReasons: [], generatedAt: '' }; },
     };
     const ports: ServerApiPorts = { auth: {} as never, returns: port };
     const result = await handleReturnsRoute(

@@ -14,6 +14,8 @@ import type {
   ReturnRecord,
   ReturnStatus,
   ReturnUpdateInput,
+  ReturnsAnalyticsInput,
+  ReturnsAnalyticsResult,
   ReturnsApiPort,
 } from '../api/types';
 import type { ServerDatabase } from './schema';
@@ -91,6 +93,15 @@ export function createPostgresReturnsPort(options: PostgresReturnsPortOptions): 
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => updateReturn(trx, input.workspaceId, input.id, input.update),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async analytics(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => analyticsReturns(trx, input),
         { applySession: options.applyWorkspaceSession },
       );
     },
@@ -299,6 +310,85 @@ async function updateReturn(
   const record = await getReturn(trx, workspaceId, id);
   if (!record) return { ok: false, error: 'Retoure nicht gefunden' };
   return { ok: true, record };
+}
+
+async function analyticsReturns(
+  trx: WorkspaceTransaction,
+  input: ReturnsAnalyticsInput,
+): Promise<ReturnsAnalyticsResult> {
+  const sinceDate = sinceDaysToDate(input.sinceDays);
+
+  // Header aggregations over the returns table, scoped to the workspace and the
+  // optional rolling window. Each builder is constructed fresh (Kysely builders
+  // are immutable and typed per-step, so a shared helper would fight the types).
+  const baseReturns = () => {
+    let query = trx.selectFrom('returns').where('workspace_id', '=', input.workspaceId);
+    if (sinceDate) query = query.where('created_at', '>=', sinceDate);
+    return query;
+  };
+
+  const [statusRows, outcomeRows, totalRow] = await Promise.all([
+    baseReturns()
+      .select((eb) => ['status', eb.fn.countAll<string>().as('count')])
+      .groupBy('status')
+      .execute(),
+    baseReturns()
+      .select((eb) => ['outcome', eb.fn.countAll<string>().as('count')])
+      .groupBy('outcome')
+      .execute(),
+    baseReturns()
+      .select((eb) => eb.fn.countAll<string>().as('count'))
+      .executeTakeFirst(),
+  ]);
+
+  // Top reasons: count return_items grouped by reason, joined to the (current)
+  // reason vocabulary for code/label. Restricted to the same return window via
+  // a join on the parent return. Left join keeps items whose reason was deleted.
+  let reasonQuery = trx
+    .selectFrom('return_items as ri')
+    .innerJoin('returns as r', (join) =>
+      join.onRef('r.id', '=', 'ri.return_id').on('r.workspace_id', '=', input.workspaceId))
+    .leftJoin('return_reasons as rr', (join) =>
+      join.onRef('rr.id', '=', 'ri.reason_id').on('rr.workspace_id', '=', input.workspaceId))
+    .where('ri.workspace_id', '=', input.workspaceId);
+  if (sinceDate) reasonQuery = reasonQuery.where('r.created_at', '>=', sinceDate);
+  const reasonRows = await reasonQuery
+    .select((eb) => [
+      'ri.reason_id as reason_id',
+      'rr.code as code',
+      'rr.label as label',
+      eb.fn.countAll<string>().as('count'),
+    ])
+    .groupBy(['ri.reason_id', 'rr.code', 'rr.label'])
+    .execute();
+
+  return {
+    totalCount: Number(totalRow?.count ?? 0),
+    byStatus: statusRows
+      .map((row) => ({ status: row.status as ReturnStatus, count: Number(row.count) }))
+      .sort((a, b) => b.count - a.count),
+    byOutcome: outcomeRows
+      .map((row) => ({
+        outcome: (row.outcome as ReturnOutcome | null | undefined) ?? null,
+        count: Number(row.count),
+      }))
+      .sort((a, b) => b.count - a.count),
+    topReasons: reasonRows
+      .map((row) => ({
+        reasonId: nullableNumber(row.reason_id),
+        code: typeof row.code === 'string' ? row.code : null,
+        label: typeof row.label === 'string' ? row.label : null,
+        count: Number(row.count),
+      }))
+      .sort((a, b) => b.count - a.count),
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function sinceDaysToDate(sinceDays: number | undefined): Date | null {
+  if (sinceDays === undefined || !Number.isFinite(sinceDays) || sinceDays <= 0) return null;
+  const days = Math.min(Math.floor(sinceDays), 3650);
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 }
 
 async function listReasons(

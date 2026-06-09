@@ -163,6 +163,7 @@ const ReturnsChannels = literal({
   Update: 'returns:update',
   ListReasons: 'returns:list-reasons',
   LookupJtlOrder: 'returns:lookup-jtl-order',
+  Analytics: 'returns:analytics',
 });
 
 const FollowUpChannels = literal({

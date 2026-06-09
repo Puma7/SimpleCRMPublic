@@ -51,6 +51,11 @@ export async function handleReturnsRoute(
     return handleListReasons(req, ports);
   }
 
+  if (req.path === '/api/v1/returns/analytics') {
+    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    return handleReturnsAnalytics(req, ports);
+  }
+
   if (req.path === '/api/v1/returns/jtl-order-lookup') {
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     return handleJtlOrderLookup(req, ports);
@@ -84,6 +89,36 @@ async function handleListReasons(req: ApiRequest, ports: ServerApiPorts): Promis
   if (!ports.returnReasons) return error(503, 'return_reasons_unavailable', 'Return-Reasons API nicht konfiguriert');
   const items = await ports.returnReasons.list({ workspaceId: principal.workspaceId });
   return data(200, { items });
+}
+
+// ----------------------------------------------------------------------------
+// Analytics (Phase 4 — Retourengründe reporting)
+// ----------------------------------------------------------------------------
+
+const MAX_ANALYTICS_SINCE_DAYS = 3650;
+
+async function handleReturnsAnalytics(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
+
+  const sinceDays = parseOptionalSinceDays(req.query?.sinceDays);
+  if (sinceDays === null) {
+    return error(400, 'invalid_since_days', `sinceDays muss zwischen 1 und ${MAX_ANALYTICS_SINCE_DAYS} liegen`);
+  }
+
+  const result = await ports.returns.analytics({
+    workspaceId: principal.workspaceId,
+    ...(sinceDays === undefined ? {} : { sinceDays }),
+  });
+  return data(200, result);
+}
+
+function parseOptionalSinceDays(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > MAX_ANALYTICS_SINCE_DAYS) return null;
+  return n;
 }
 
 // ----------------------------------------------------------------------------

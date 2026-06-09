@@ -4288,6 +4288,32 @@ export type ReturnListResult = {
   totalCount: number;
 };
 
+export type ReturnsAnalyticsInput = {
+  workspaceId: string;
+  /** Optional rolling window; when set, only returns created in the last N days count. */
+  sinceDays?: number;
+};
+
+export type ReturnsAnalyticsResult = {
+  totalCount: number;
+  /** Counts per status, descending by count. Only non-zero buckets are listed. */
+  byStatus: ReadonlyArray<{ status: ReturnStatus; count: number }>;
+  /** Counts per outcome; `outcome: null` is the not-yet-decided bucket. */
+  byOutcome: ReadonlyArray<{ outcome: ReturnOutcome | null; count: number }>;
+  /**
+   * Top return reasons by item count. `reasonId: null` groups items with no
+   * reason set; code/label are null for that bucket and for reasons that were
+   * since deleted.
+   */
+  topReasons: ReadonlyArray<{
+    reasonId: number | null;
+    code: string | null;
+    label: string | null;
+    count: number;
+  }>;
+  generatedAt: string;
+};
+
 export type ReturnsApiPort = {
   list(input: ReturnListInput): Promise<ReturnListResult>;
   get(input: { workspaceId: string; id: number }): Promise<ReturnRecord | null>;
@@ -4302,6 +4328,7 @@ export type ReturnsApiPort = {
     id: number;
     update: ReturnUpdateInput;
   }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+  analytics(input: ReturnsAnalyticsInput): Promise<ReturnsAnalyticsResult>;
 };
 
 export type ReturnReasonsApiPort = {

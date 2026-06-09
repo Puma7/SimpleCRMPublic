@@ -24,7 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { toast } from "sonner"
-import { Loader2, Plus, Search, X } from "lucide-react"
+import { BarChart3, Loader2, Plus, Search, X } from "lucide-react"
 import { invokeRenderer } from "@/services/transport"
 
 // Status + outcome enums mirror the server's column CHECK constraints.
@@ -101,6 +101,21 @@ type ReasonRecord = { id: number; code: string; label: string; isActive: boolean
 
 type ListResult = { items: ReturnRecord[]; totalCount: number }
 
+type AnalyticsResult = {
+  totalCount: number
+  byStatus: Array<{ status: Status; count: number }>
+  byOutcome: Array<{ outcome: Outcome | null; count: number }>
+  topReasons: Array<{ reasonId: number | null; code: string | null; label: string | null; count: number }>
+  generatedAt: string
+}
+
+const ANALYTICS_WINDOWS: Array<{ label: string; value: number | "all" }> = [
+  { label: "30 Tage", value: 30 },
+  { label: "90 Tage", value: 90 },
+  { label: "1 Jahr", value: 365 },
+  { label: "Alle", value: "all" },
+]
+
 type JtlLookupResult = {
   configured: boolean
   order: {
@@ -128,6 +143,7 @@ export default function ReturnsPage() {
   const [reasons, setReasons] = useState<ReasonRecord[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<ReturnRecord | null>(null)
+  const [analyticsOpen, setAnalyticsOpen] = useState(false)
 
   const loadList = useCallback(async () => {
     setLoading(true)
@@ -174,10 +190,20 @@ export default function ReturnsPage() {
             Positionen werden hier gepflegt.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" /> Neue Retoure
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={analyticsOpen ? "secondary" : "outline"}
+            onClick={() => setAnalyticsOpen((v) => !v)}
+          >
+            <BarChart3 className="mr-2 h-4 w-4" /> Auswertung
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" /> Neue Retoure
+          </Button>
+        </div>
       </div>
+
+      {analyticsOpen ? <ReturnsAnalyticsPanel reasons={reasons} /> : null}
 
       <Card>
         <CardHeader className="space-y-2">
@@ -308,6 +334,143 @@ export default function ReturnsPage() {
         }}
       />
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Analytics panel — Retourengründe + Status/Outcome-Verteilung
+// ---------------------------------------------------------------------------
+
+function ReturnsAnalyticsPanel({ reasons }: { reasons: ReasonRecord[] }) {
+  const [window, setWindow] = useState<number | "all">(90)
+  const [data, setData] = useState<AnalyticsResult | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const reasonLabelByCode = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const r of reasons) map.set(r.code, r.label)
+    return map
+  }, [reasons])
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const payload: Record<string, unknown> = {}
+      if (window !== "all") payload.sinceDays = window
+      const result = (await invokeRenderer(IPCChannels.Returns.Analytics, payload)) as AnalyticsResult
+      setData(result)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Auswertung fehlgeschlagen")
+    } finally {
+      setLoading(false)
+    }
+  }, [window])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const maxReasonCount = data ? Math.max(1, ...data.topReasons.map((r) => r.count)) : 1
+
+  const reasonDisplay = (r: AnalyticsResult["topReasons"][number]) => {
+    if (r.reasonId === null) return "Ohne Grund"
+    if (r.label) return r.label
+    if (r.code) return reasonLabelByCode.get(r.code) ?? r.code
+    return `#${r.reasonId} (gelöscht)`
+  }
+
+  return (
+    <Card data-testid="returns-analytics">
+      <CardHeader className="space-y-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base">Auswertung</CardTitle>
+          <div className="flex items-center gap-1">
+            {ANALYTICS_WINDOWS.map((w) => (
+              <Button
+                key={String(w.value)}
+                size="sm"
+                variant={window === w.value ? "secondary" : "ghost"}
+                onClick={() => setWindow(w.value)}
+              >
+                {w.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading && !data ? (
+          <div className="flex items-center justify-center py-8 text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> lädt...
+          </div>
+        ) : !data ? null : (
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs text-muted-foreground">Retouren gesamt</p>
+                <p className="text-2xl font-bold tabular-nums" data-testid="analytics-total">
+                  {data.totalCount}
+                </p>
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-medium text-muted-foreground">Nach Status</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {data.byStatus.length === 0 ? (
+                    <span className="text-sm text-muted-foreground">—</span>
+                  ) : (
+                    data.byStatus.map((s) => (
+                      <Badge key={s.status} variant={STATUS_VARIANT[s.status]}>
+                        {STATUS_LABEL[s.status]}: {s.count}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-medium text-muted-foreground">Nach Outcome</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {data.byOutcome.length === 0 ? (
+                    <span className="text-sm text-muted-foreground">—</span>
+                  ) : (
+                    data.byOutcome.map((o) => (
+                      <Badge key={o.outcome ?? "none"} variant="outline">
+                        {(o.outcome ?? "offen")}: {o.count}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">
+                Top Retourengründe (nach Positionen)
+              </p>
+              {data.topReasons.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Noch keine Positionen erfasst.</p>
+              ) : (
+                <ul className="space-y-1.5" data-testid="analytics-reasons">
+                  {data.topReasons.slice(0, 8).map((r) => (
+                    <li key={r.reasonId ?? "none"} className="space-y-0.5">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="truncate">{reasonDisplay(r)}</span>
+                        <span className="ml-2 tabular-nums text-muted-foreground">{r.count}</span>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
+                        <div
+                          className="h-full rounded bg-primary"
+                          style={{ width: `${Math.round((r.count / maxReasonCount) * 100)}%` }}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

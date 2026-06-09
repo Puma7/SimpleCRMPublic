@@ -160,4 +160,35 @@ describe('ReturnsPage', () => {
     const hint = await screen.findByTestId('lookup-hint');
     expect(hint.textContent).toMatch(/nicht gefunden/);
   });
+
+  test('the analytics panel loads on toggle and renders totals + top reasons', async () => {
+    setMockResponses({
+      [IPCChannels.Returns.List]: [EMPTY_LIST],
+      [IPCChannels.Returns.ListReasons]: [REASONS],
+      [IPCChannels.Returns.Analytics]: [{
+        totalCount: 12,
+        byStatus: [{ status: 'pending', count: 7 }, { status: 'refunded', count: 5 }],
+        byOutcome: [{ outcome: 'refund', count: 5 }, { outcome: null, count: 7 }],
+        topReasons: [
+          { reasonId: 1, code: 'size_wrong', label: 'Falsche Größe', count: 9 },
+          { reasonId: null, code: null, label: null, count: 3 },
+        ],
+        generatedAt: '2026-06-09T00:00:00.000Z',
+      }],
+    });
+    render(<ReturnsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Auswertung/ }));
+
+    const total = await screen.findByTestId('analytics-total');
+    expect(total.textContent).toBe('12');
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPCChannels.Returns.Analytics,
+      expect.objectContaining({ sinceDays: 90 }),
+    );
+
+    const reasons = await screen.findByTestId('analytics-reasons');
+    expect(reasons.textContent).toContain('Falsche Größe');
+    expect(reasons.textContent).toContain('Ohne Grund');
+  });
 });

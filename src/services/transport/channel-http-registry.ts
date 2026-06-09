@@ -3755,6 +3755,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     query: { orderNumber: typeof orderNumber === "string" ? orderNumber : "" },
     transform: (body) => dataBody<unknown>(body),
   })],
+  [IPCChannels.Returns.Analytics, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "returns analytics payload")
+    return {
+      method: "GET",
+      path: "/api/v1/returns/analytics",
+      query: { sinceDays: input.sinceDays },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
 ])
 
 export function buildHttpInvocation(channel: InvokeChannel, args: unknown[]): HttpInvocationSpec {
