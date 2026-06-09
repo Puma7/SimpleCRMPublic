@@ -164,6 +164,12 @@ const ReturnsChannels = literal({
   ListReasons: 'returns:list-reasons',
   LookupJtlOrder: 'returns:lookup-jtl-order',
   Analytics: 'returns:analytics',
+  GetPortalSettings: 'returns:get-portal-settings',
+  RotatePortalToken: 'returns:rotate-portal-token',
+  SetPortalEnabled: 'returns:set-portal-enabled',
+  RevokePortalToken: 'returns:revoke-portal-token',
+  PortalCreate: 'returns:portal-create',
+  PortalLookup: 'returns:portal-lookup',
 });
 
 const FollowUpChannels = literal({

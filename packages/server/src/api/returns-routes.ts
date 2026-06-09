@@ -2,12 +2,14 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  PortalReturnCreateInput,
   ReturnCreateInput,
   ReturnItemCondition,
   ReturnItemMutationInput,
   ReturnOutcome,
   ReturnStatus,
   ReturnUpdateInput,
+  ReturnsPortalResolveResult,
   ServerApiPorts,
 } from './types';
 import {
@@ -49,6 +51,10 @@ export async function handleReturnsRoute(
   if (req.path === '/api/v1/return-reasons') {
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     return handleListReasons(req, ports);
+  }
+
+  if (req.path === '/api/v1/returns/portal-settings') {
+    return handlePortalSettings(req, ports);
   }
 
   if (req.path === '/api/v1/returns/analytics') {
@@ -435,4 +441,200 @@ function nullableTrimmedString(value: unknown, maxLength: number): string | null
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// ============================================================================
+// Portal-Settings admin (Phase 5/6 — auth-gated)
+// ============================================================================
+
+async function handlePortalSettings(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.returnsPortalSettings) {
+    return error(503, 'portal_settings_unavailable', 'Portal-Einstellungen nicht konfiguriert');
+  }
+
+  if (req.method === 'GET') {
+    const settings = await ports.returnsPortalSettings.get({ workspaceId: principal.workspaceId });
+    return data(200, settings);
+  }
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+
+  if (!isRecord(req.body)) return error(400, 'invalid_body', 'Body muss ein JSON-Objekt sein');
+  const action = typeof req.body.action === 'string' ? req.body.action : '';
+  if (action !== 'rotate' && action !== 'set_enabled' && action !== 'revoke') {
+    return error(400, 'invalid_action', 'action muss rotate, set_enabled oder revoke sein');
+  }
+
+  let result;
+  if (action === 'rotate') {
+    const enable = typeof req.body.enable === 'boolean' ? req.body.enable : undefined;
+    result = await ports.returnsPortalSettings.rotate({
+      workspaceId: principal.workspaceId,
+      ...(enable === undefined ? {} : { enable }),
+    });
+  } else if (action === 'set_enabled') {
+    if (typeof req.body.enabled !== 'boolean') {
+      return error(400, 'invalid_enabled', 'enabled muss boolean sein');
+    }
+    result = await ports.returnsPortalSettings.setEnabled({
+      workspaceId: principal.workspaceId,
+      enabled: req.body.enabled,
+    });
+  } else {
+    result = await ports.returnsPortalSettings.revoke({ workspaceId: principal.workspaceId });
+  }
+
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: `returns.portal_settings.${action}`,
+    entityType: 'returns_portal_settings',
+    entityId: principal.workspaceId,
+    metadata: { enabled: result.enabled, hasToken: result.hasToken },
+  });
+  return data(200, result);
+}
+
+// ============================================================================
+// Public portal (Phase 5/6 — UNAUTHENTICATED)
+//
+// Two endpoints, both behind the per-workspace portal token:
+//   POST /api/v1/portal/returns/:token            — create a return (CAPTCHA)
+//   GET  /api/v1/portal/returns/:token/:returnNo  — public status lookup
+//
+// Token-in-path keeps the workspace resolution close to the URL the customer
+// pastes in (and makes it impossible to forget the token: an empty path
+// segment fails the path matcher before any port is called).
+// ============================================================================
+
+const MAX_PORTAL_TOKEN_LEN = 200;
+const MAX_PORTAL_ITEMS = 50;
+
+export async function handlePublicPortalRoute(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse | null> {
+  // Hot path matchers — same pattern as the authenticated dispatcher above.
+  const createMatch = /^\/api\/v1\/portal\/returns\/([^/]+)$/.exec(req.path);
+  if (createMatch && req.method === 'POST') {
+    return handlePortalCreate(req, ports, createMatch[1] ?? '');
+  }
+  const detailMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/([^/]+)$/.exec(req.path);
+  if (detailMatch && req.method === 'GET') {
+    return handlePortalLookup(req, ports, detailMatch[1] ?? '', detailMatch[2] ?? '');
+  }
+  // 405 on a wrong-method match against a known path; null otherwise so the
+  // outer dispatcher can fall through to its 404.
+  if (createMatch || detailMatch) return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  return null;
+}
+
+async function resolvePortal(
+  ports: ServerApiPorts,
+  token: string,
+): Promise<{ workspaceId: string } | ApiResponse> {
+  if (!ports.returnsPortalSettings) {
+    return error(503, 'portal_unavailable', 'Portal nicht konfiguriert');
+  }
+  if (!token || token.length > MAX_PORTAL_TOKEN_LEN) {
+    return error(404, 'portal_not_found', 'Portal nicht gefunden');
+  }
+  const resolved: ReturnsPortalResolveResult = await ports.returnsPortalSettings.resolveByToken({ token });
+  if (!resolved.ok) {
+    if (resolved.reason === 'portal_disabled') {
+      return error(403, 'portal_disabled', 'Portal aktuell deaktiviert');
+    }
+    return error(404, 'portal_not_found', 'Portal nicht gefunden');
+  }
+  return { workspaceId: resolved.workspaceId };
+}
+
+async function handlePortalCreate(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  token: string,
+): Promise<ApiResponse> {
+  const resolved = await resolvePortal(ports, token);
+  if ('status' in resolved) return resolved;
+  if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
+
+  // CAPTCHA: when the workspace has captcha enabled in its login security
+  // settings, the public create endpoint also requires a fresh challenge.
+  // assertCaptchaChallenge consumes the challenge so each one is single-use.
+  if (ports.loginSecurity) {
+    const loginConfig = await ports.loginSecurity.getLoginConfig();
+    if (loginConfig?.captcha.enabled) {
+      const challenge = isRecord(req.body) && typeof req.body.captchaChallenge === 'string'
+        ? req.body.captchaChallenge
+        : undefined;
+      const ip = req.ip ?? '0.0.0.0';
+      if (!ports.loginSecurity.assertCaptchaChallenge({ challenge, ip })) {
+        return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
+      }
+    }
+  }
+
+  const parsed = parsePortalCreateBody(req.body);
+  if (!parsed.ok) return error(400, parsed.code, parsed.message);
+
+  const result = await ports.returns.createPublic({
+    workspaceId: resolved.workspaceId,
+    input: parsed.input,
+  });
+  if (!result.ok) return error(400, 'create_failed', result.error);
+  await ports.audit?.record({
+    workspaceId: resolved.workspaceId,
+    actorUserId: 'portal',
+    action: 'returns.portal.create',
+    entityType: 'returns',
+    entityId: result.record.returnNumber,
+    metadata: { ip: req.ip ?? null },
+  });
+  return data(201, result.record);
+}
+
+async function handlePortalLookup(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  token: string,
+  returnNumber: string,
+): Promise<ApiResponse> {
+  const resolved = await resolvePortal(ports, token);
+  if ('status' in resolved) return resolved;
+  if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
+  if (!returnNumber || returnNumber.length > MAX_TEXT_LEN) {
+    return error(400, 'invalid_return_number', 'returnNumber ungueltig');
+  }
+  const record = await ports.returns.getPublicByReturnNumber({
+    workspaceId: resolved.workspaceId,
+    returnNumber,
+  });
+  if (!record) {
+    // 404 with the same body shape as a wrong-token-on-create so we don't
+    // leak which workspace exists vs. which return exists.
+    return error(404, 'return_not_found', 'Retoure nicht gefunden');
+  }
+  return data(200, record);
+}
+
+function parsePortalCreateBody(
+  body: unknown,
+): { ok: true; input: PortalReturnCreateInput } | ParseFailure {
+  if (!isRecord(body)) return { ok: false, code: 'invalid_body', message: 'Body muss ein JSON-Objekt sein' };
+  const items = parseItems(body.items);
+  if (!items.ok) return items;
+  if (items.value.length > MAX_PORTAL_ITEMS) {
+    return { ok: false, code: 'too_many_items', message: `max. ${MAX_PORTAL_ITEMS} Positionen` };
+  }
+  return {
+    ok: true,
+    input: {
+      jtlOrderNumber: nullableTrimmedString(body.jtlOrderNumber, MAX_TEXT_LEN),
+      customerEmail: nullableTrimmedString(body.customerEmail, MAX_TEXT_LEN),
+      customerName: nullableTrimmedString(body.customerName, MAX_TEXT_LEN),
+      notes: nullableTrimmedString(body.notes, MAX_NOTES_LEN),
+      items: items.value,
+    },
+  };
 }

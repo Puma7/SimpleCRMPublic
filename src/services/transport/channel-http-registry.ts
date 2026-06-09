@@ -3764,6 +3764,62 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => dataBody<unknown>(body),
     }
   }],
+  [IPCChannels.Returns.GetPortalSettings, () => ({
+    method: "GET",
+    path: "/api/v1/returns/portal-settings",
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.RotatePortalToken, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "rotate portal token payload")
+    return {
+      method: "POST",
+      path: "/api/v1/returns/portal-settings",
+      body: { action: "rotate", enable: input.enable },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.SetPortalEnabled, ([payload]) => {
+    const input = objectPayload(payload, "set portal enabled payload")
+    return {
+      method: "POST",
+      path: "/api/v1/returns/portal-settings",
+      body: { action: "set_enabled", enabled: input.enabled === true },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.RevokePortalToken, () => ({
+    method: "POST",
+    path: "/api/v1/returns/portal-settings",
+    body: { action: "revoke" },
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.PortalCreate, ([payload]) => {
+    const input = objectPayload(payload, "portal create payload")
+    const token = String(input.token ?? "")
+    return {
+      method: "POST",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}`,
+      body: {
+        jtlOrderNumber: input.jtlOrderNumber,
+        customerEmail: input.customerEmail,
+        customerName: input.customerName,
+        notes: input.notes,
+        captchaChallenge: input.captchaChallenge,
+        items: input.items,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.PortalLookup, ([payload]) => {
+    const input = objectPayload(payload, "portal lookup payload")
+    const token = String(input.token ?? "")
+    const returnNumber = String(input.returnNumber ?? "")
+    return {
+      method: "GET",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}/${encodeURIComponent(returnNumber)}`,
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
 ])
 
 export function buildHttpInvocation(channel: InvokeChannel, args: unknown[]): HttpInvocationSpec {

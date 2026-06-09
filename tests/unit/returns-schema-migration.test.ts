@@ -2,11 +2,15 @@ import { returnsSchemaMigration } from '../../packages/server/src/migrations/002
 import { serverMigrations } from '../../packages/server/src/migrations';
 
 describe('returnsSchemaMigration (0021)', () => {
-  test('is registered in the migration set', () => {
+  test('is registered in the migration set in numeric order', () => {
     expect(serverMigrations).toContain(returnsSchemaMigration);
-    // and registered LAST — preserves the strict numeric ordering enforced by
-    // assertValidMigrationSet (whose ids must be monotonically increasing).
-    expect(serverMigrations[serverMigrations.length - 1]).toBe(returnsSchemaMigration);
+    const index = serverMigrations.indexOf(returnsSchemaMigration);
+    // Every prior migration's numeric id must be smaller — assertValidMigrationSet
+    // already enforces this globally, but we keep the focused check so a future
+    // accidental reorder around this migration surfaces here too.
+    for (let i = 0; i < index; i += 1) {
+      expect(serverMigrations[i]!.id < returnsSchemaMigration.id).toBe(true);
+    }
   });
 
   test('id matches the four-digit migration naming convention', () => {

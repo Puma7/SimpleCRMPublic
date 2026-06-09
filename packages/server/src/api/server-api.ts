@@ -12,7 +12,7 @@ import { handleMailReadRoute } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
 import { handleNoticeRoute } from './notice-routes';
 import { handlePgpReadRoute } from './pgp-routes';
-import { handleReturnsRoute } from './returns-routes';
+import { handlePublicPortalRoute, handleReturnsRoute } from './returns-routes';
 import { handleSpamReadRoute } from './spam-routes';
 import { handleSettingsRoute } from './settings-routes';
 import { handleUserGroupRoute } from './user-group-routes';
@@ -36,6 +36,12 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
           version: 1,
         });
       }
+      // Public portal routes MUST be matched before the authenticated dispatchers,
+      // because they intentionally have no principal. They return null when the
+      // path is not /api/v1/portal/..., so the rest of the dispatcher is unaffected.
+      const publicPortal = await handlePublicPortalRoute(req, ports);
+      if (publicPortal) return publicPortal;
+
       if (req.path === '/health/ready' || req.path === '/api/v1/health/ready') {
         if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
         if (!ports.health) {

@@ -24,7 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { toast } from "sonner"
-import { BarChart3, Loader2, Plus, Search, X } from "lucide-react"
+import { BarChart3, Loader2, Plus, Search, Settings, X } from "lucide-react"
 import { invokeRenderer } from "@/services/transport"
 
 // Status + outcome enums mirror the server's column CHECK constraints.
@@ -144,6 +144,7 @@ export default function ReturnsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<ReturnRecord | null>(null)
   const [analyticsOpen, setAnalyticsOpen] = useState(false)
+  const [portalOpen, setPortalOpen] = useState(false)
 
   const loadList = useCallback(async () => {
     setLoading(true)
@@ -192,6 +193,12 @@ export default function ReturnsPage() {
         </div>
         <div className="flex items-center gap-2">
           <Button
+            variant={portalOpen ? "secondary" : "outline"}
+            onClick={() => setPortalOpen((v) => !v)}
+          >
+            <Settings className="mr-2 h-4 w-4" /> Portal
+          </Button>
+          <Button
             variant={analyticsOpen ? "secondary" : "outline"}
             onClick={() => setAnalyticsOpen((v) => !v)}
           >
@@ -203,6 +210,7 @@ export default function ReturnsPage() {
         </div>
       </div>
 
+      {portalOpen ? <PortalSettingsPanel /> : null}
       {analyticsOpen ? <ReturnsAnalyticsPanel reasons={reasons} /> : null}
 
       <Card>
@@ -334,6 +342,155 @@ export default function ReturnsPage() {
         }}
       />
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Portal-Settings panel — token rotation + enable/disable + URL preview
+// ---------------------------------------------------------------------------
+
+type PortalSettings = {
+  enabled: boolean
+  token: string | null
+  hasToken: boolean
+  updatedAt: string | null
+}
+
+function publicPortalUrl(token: string): string {
+  if (typeof window === "undefined") return ""
+  return `${window.location.origin}/portal/${token}/returns/new`
+}
+
+function PortalSettingsPanel() {
+  const [settings, setSettings] = useState<PortalSettings | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const result = (await invokeRenderer(IPCChannels.Returns.GetPortalSettings)) as PortalSettings
+      setSettings(result)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Portal-Einstellungen laden fehlgeschlagen")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  const rotate = useCallback(async () => {
+    setBusy(true)
+    try {
+      const result = (await invokeRenderer(
+        IPCChannels.Returns.RotatePortalToken,
+        { enable: true },
+      )) as PortalSettings
+      setSettings(result)
+      toast.success("Neuer Portal-Token erzeugt. Bitte URL kopieren — wird nicht erneut angezeigt.")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Token-Rotation fehlgeschlagen")
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const setEnabled = useCallback(async (enabled: boolean) => {
+    setBusy(true)
+    try {
+      const result = (await invokeRenderer(
+        IPCChannels.Returns.SetPortalEnabled,
+        { enabled },
+      )) as PortalSettings
+      setSettings(result)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Status setzen fehlgeschlagen")
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const revoke = useCallback(async () => {
+    if (!window.confirm("Portal-Token wirklich löschen? Alle bisher veröffentlichten URLs werden ungültig.")) return
+    setBusy(true)
+    try {
+      const result = (await invokeRenderer(IPCChannels.Returns.RevokePortalToken)) as PortalSettings
+      setSettings(result)
+      toast.success("Portal-Token gelöscht.")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Löschen fehlgeschlagen")
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  return (
+    <Card data-testid="portal-settings">
+      <CardHeader>
+        <CardTitle className="text-base">Kundenportal</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loading && !settings ? (
+          <div className="flex items-center text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" /> lädt...</div>
+        ) : !settings ? null : !settings.hasToken ? (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Noch kein Portal-Token. Beim Erzeugen erhältst du eine öffentliche URL, über die Kunden
+              ohne Login Retouren anlegen und den Status nachsehen können.
+            </p>
+            <Button onClick={() => void rotate()} disabled={busy}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Portal aktivieren
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Badge variant={settings.enabled ? "default" : "secondary"}>
+                  {settings.enabled ? "aktiv" : "deaktiviert"}
+                </Badge>
+                {settings.updatedAt ? (
+                  <span className="text-xs text-muted-foreground">
+                    zuletzt geändert {new Date(settings.updatedAt).toLocaleString()}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void setEnabled(!settings.enabled)}
+                  disabled={busy}
+                >
+                  {settings.enabled ? "Deaktivieren" : "Aktivieren"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void rotate()} disabled={busy}>
+                  Token rotieren
+                </Button>
+                <Button size="sm" variant="destructive" onClick={() => void revoke()} disabled={busy}>
+                  Löschen
+                </Button>
+              </div>
+            </div>
+            {settings.token ? (
+              <div className="rounded-md border bg-muted/30 p-3 space-y-1">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Öffentliche Portal-URL — kopiere sie jetzt, sie wird nicht erneut angezeigt:
+                </p>
+                <code className="block break-all text-xs" data-testid="portal-url">{publicPortalUrl(settings.token)}</code>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Token ist gesetzt, wird aber zur Sicherheit nicht erneut angezeigt. Bei Verlust einfach
+                rotieren — alte URLs werden dadurch ungültig.
+              </p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

@@ -329,6 +329,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0019_task_assignment_scope_reset',
   '0020_auth_login_security',
   '0021_returns_schema',
+  '0022_returns_portal_settings',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

@@ -76,6 +76,8 @@ function makeReturnsPort(overrides: Partial<ReturnsApiPort> = {}): {
         generatedAt: '2026-06-09T00:00:00.000Z',
       };
     },
+    async getPublicByReturnNumber() { return null; },
+    async createPublic() { return { ok: false, error: 'unused' }; },
     ...overrides,
   };
   return { port, listCalls, getCalls, createCalls, updateCalls, analyticsCalls };
@@ -317,6 +319,8 @@ describe('handleReturnsRoute', () => {
       async create() { return { ok: false, error: 'something broke' }; },
       async update() { return { ok: true, record: makeRecord() }; },
       async analytics() { return { totalCount: 0, byStatus: [], byOutcome: [], topReasons: [], generatedAt: '' }; },
+      async getPublicByReturnNumber() { return null; },
+      async createPublic() { return { ok: false, error: 'unused' }; },
     };
     const ports: ServerApiPorts = { auth: {} as never, returns: port };
     const result = await handleReturnsRoute(
@@ -382,6 +386,8 @@ describe('handleReturnsRoute', () => {
       async create() { return { ok: false, error: 'x' }; },
       async update() { return { ok: false, error: 'Retoure nicht gefunden' }; },
       async analytics() { return { totalCount: 0, byStatus: [], byOutcome: [], topReasons: [], generatedAt: '' }; },
+      async getPublicByReturnNumber() { return null; },
+      async createPublic() { return { ok: false, error: 'unused' }; },
     };
     const ports: ServerApiPorts = { auth: {} as never, returns: port };
     const result = await handleReturnsRoute(

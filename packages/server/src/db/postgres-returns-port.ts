@@ -17,6 +17,9 @@ import type {
   ReturnsAnalyticsInput,
   ReturnsAnalyticsResult,
   ReturnsApiPort,
+  PortalReturnCreateInput,
+  PortalReturnItem,
+  PortalReturnRecord,
 } from '../api/types';
 import type { ServerDatabase } from './schema';
 import {
@@ -102,6 +105,29 @@ export function createPostgresReturnsPort(options: PostgresReturnsPortOptions): 
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => analyticsReturns(trx, input),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async getPublicByReturnNumber(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => getPublicReturn(trx, input.workspaceId, input.returnNumber),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async createPublic(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => createPublicReturn(
+          trx,
+          input.workspaceId,
+          input.input,
+          generateReturnNumber,
+        ),
         { applySession: options.applyWorkspaceSession },
       );
     },
@@ -389,6 +415,96 @@ function sinceDaysToDate(sinceDays: number | undefined): Date | null {
   if (sinceDays === undefined || !Number.isFinite(sinceDays) || sinceDays <= 0) return null;
   const days = Math.min(Math.floor(sinceDays), 3650);
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Public-shaped helpers (Phase 5/6 — customer portal)
+// ---------------------------------------------------------------------------
+
+async function getPublicReturn(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  returnNumber: string,
+): Promise<PortalReturnRecord | null> {
+  const trimmed = returnNumber.trim();
+  if (!trimmed) return null;
+  // Case-insensitive lookup so links the customer mistypes still resolve.
+  const headerRow = await trx
+    .selectFrom('returns')
+    .selectAll()
+    .where('workspace_id', '=', workspaceId)
+    .where('return_number', 'ilike', trimmed)
+    .executeTakeFirst();
+  if (!headerRow) return null;
+
+  const returnId = Number(headerRow.id);
+  const itemRows = await trx
+    .selectFrom('return_items as ri')
+    .leftJoin('return_reasons as rr', (join) =>
+      join.onRef('rr.id', '=', 'ri.reason_id').on('rr.workspace_id', '=', workspaceId))
+    .select([
+      'ri.sku as sku',
+      'ri.product_name as product_name',
+      'ri.quantity as quantity',
+      'ri.condition as condition',
+      'rr.code as reason_code',
+      'rr.label as reason_label',
+    ])
+    .where('ri.workspace_id', '=', workspaceId)
+    .where('ri.return_id', '=', returnId)
+    .orderBy('ri.id', 'asc')
+    .execute();
+
+  return {
+    returnNumber: String(headerRow.return_number),
+    status: headerRow.status as ReturnStatus,
+    outcome: (headerRow.outcome as ReturnOutcome | null | undefined) ?? null,
+    jtlOrderNumber: typeof headerRow.jtl_order_number === 'string' ? headerRow.jtl_order_number : null,
+    createdAt: toIsoString(headerRow.created_at),
+    updatedAt: toIsoString(headerRow.updated_at),
+    items: itemRows.map(mapPublicItemRow),
+  };
+}
+
+async function createPublicReturn(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  input: PortalReturnCreateInput,
+  generateReturnNumber: () => string,
+): Promise<{ ok: true; record: PortalReturnRecord } | { ok: false; error: string }> {
+  // The public input never sets customerId / emailMessageId / jtlKauftrag.
+  // Reusing createReturn keeps the retry-on-unique-token + item insertion in
+  // one place; we just project the result down to the public-shape afterwards.
+  const created = await createReturn(
+    trx,
+    workspaceId,
+    {
+      jtlOrderNumber: input.jtlOrderNumber ?? null,
+      customerEmail: input.customerEmail ?? null,
+      customerName: input.customerName ?? null,
+      notes: input.notes ?? null,
+      items: input.items,
+    },
+    generateReturnNumber,
+  );
+  if (!created.ok) return created;
+
+  const publicRecord = await getPublicReturn(trx, workspaceId, created.record.returnNumber);
+  if (!publicRecord) {
+    return { ok: false, error: 'Retoure wurde angelegt, konnte aber nicht gelesen werden' };
+  }
+  return { ok: true, record: publicRecord };
+}
+
+function mapPublicItemRow(row: Record<string, unknown>): PortalReturnItem {
+  return {
+    sku: typeof row.sku === 'string' ? row.sku : null,
+    productName: typeof row.product_name === 'string' ? row.product_name : null,
+    quantity: Number(row.quantity ?? 0),
+    condition: (row.condition as ReturnItemRecord['condition']) ?? null,
+    reasonCode: typeof row.reason_code === 'string' ? row.reason_code : null,
+    reasonLabel: typeof row.reason_label === 'string' ? row.reason_label : null,
+  };
 }
 
 async function listReasons(

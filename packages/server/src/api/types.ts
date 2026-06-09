@@ -4329,6 +4329,24 @@ export type ReturnsApiPort = {
     update: ReturnUpdateInput;
   }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
   analytics(input: ReturnsAnalyticsInput): Promise<ReturnsAnalyticsResult>;
+  /**
+   * Public-shaped lookup by return_number. Returns the narrowed PortalReturnRecord
+   * (no internal IDs, no customer PII beyond what the customer typed themselves),
+   * or null when not found. The lookup is case-insensitive on return_number so
+   * URLs printed in e-mails are forgiving.
+   */
+  getPublicByReturnNumber(input: {
+    workspaceId: string;
+    returnNumber: string;
+  }): Promise<PortalReturnRecord | null>;
+  /**
+   * Public-shaped create. Same idempotency rules as create() but no actor,
+   * and the resulting record is the narrowed PortalReturnRecord.
+   */
+  createPublic(input: {
+    workspaceId: string;
+    input: PortalReturnCreateInput;
+  }): Promise<{ ok: true; record: PortalReturnRecord } | { ok: false; error: string }>;
 };
 
 export type ReturnReasonsApiPort = {
@@ -4338,6 +4356,71 @@ export type ReturnReasonsApiPort = {
    * first call when the workspace has none. Idempotent.
    */
   list(input: { workspaceId: string }): Promise<readonly ReturnReasonRecord[]>;
+};
+
+// ---------------------------------------------------------------------------
+// Portal settings (Phase 5/6: public customer portal)
+//
+// One row per workspace. The token is the sole credential the public portal
+// uses to resolve a workspace, so rotating it invalidates every public URL
+// previously printed. The `enabled` flag pauses public creates without
+// destroying the URL (useful for short maintenance windows).
+// ---------------------------------------------------------------------------
+
+export type ReturnsPortalSettings = {
+  enabled: boolean;
+  /** Present only when admin reads the settings; never echoed to public requests. */
+  token: string | null;
+  /** Stable identifier the admin UI shows ("•••• last 4") even when token is hidden. */
+  hasToken: boolean;
+  updatedAt: string | null;
+};
+
+export type ReturnsPortalResolveResult =
+  | { ok: true; workspaceId: string; enabled: true }
+  | { ok: false; reason: 'unknown_token' | 'portal_disabled' };
+
+export type ReturnsPortalSettingsApiPort = {
+  get(input: { workspaceId: string }): Promise<ReturnsPortalSettings>;
+  /** Rotates (or first-creates) the token. Returns the new settings including the cleartext token once. */
+  rotate(input: { workspaceId: string; enable?: boolean }): Promise<ReturnsPortalSettings>;
+  /** Sets `enabled` without touching the token. */
+  setEnabled(input: { workspaceId: string; enabled: boolean }): Promise<ReturnsPortalSettings>;
+  /** Clears the token entirely; the next public request fails until rotate() is called. */
+  revoke(input: { workspaceId: string }): Promise<ReturnsPortalSettings>;
+  /** Cross-workspace lookup used by the public dispatcher. Bypasses RLS by design. */
+  resolveByToken(input: { token: string }): Promise<ReturnsPortalResolveResult>;
+};
+
+// ---------------------------------------------------------------------------
+// Public portal records (a narrowed shape — never leaks internal fields)
+// ---------------------------------------------------------------------------
+
+export type PortalReturnItem = {
+  sku: string | null;
+  productName: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  reasonCode: string | null;
+  reasonLabel: string | null;
+};
+
+export type PortalReturnRecord = {
+  returnNumber: string;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  jtlOrderNumber: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: readonly PortalReturnItem[];
+};
+
+export type PortalReturnCreateInput = {
+  jtlOrderNumber?: string | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
+  notes?: string | null;
+  items: readonly ReturnItemMutationInput[];
 };
 
 export type ServerApiPorts = {
@@ -4409,6 +4492,7 @@ export type ServerApiPorts = {
   products?: ProductApiPort;
   returns?: ReturnsApiPort;
   returnReasons?: ReturnReasonsApiPort;
+  returnsPortalSettings?: ReturnsPortalSettingsApiPort;
   spamDecisions?: SpamDecisionApiPort;
   spamFeatureStats?: SpamFeatureStatApiPort;
   spamLearningEvents?: SpamLearningEventApiPort;

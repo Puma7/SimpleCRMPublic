@@ -9,6 +9,7 @@ export * from './postgres-email-reporting-port';
 export * from './postgres-mail-read-ports';
 export * from './postgres-pgp-read-ports';
 export * from './postgres-returns-port';
+export * from './postgres-returns-portal-port';
 export * from './postgres-workflow-security-import';
 export * from './postgres';
 export * from './postgres-audit-port';

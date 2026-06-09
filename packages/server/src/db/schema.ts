@@ -70,6 +70,7 @@ export type ServerDatabase = {
   return_reasons: ReturnReasonsTable;
   returns: ReturnsTable;
   return_items: ReturnItemsTable;
+  workspace_portal_settings: WorkspacePortalSettingsTable;
 };
 
 export type AiReplyFeedbackTable = {
@@ -1074,3 +1075,12 @@ export type ReturnItemsTable = {
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
 };
+
+export type WorkspacePortalSettingsTable = {
+  workspace_id: string;
+  returns_portal_token: string | null;
+  returns_portal_enabled: boolean;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+export type WorkspacePortalSettingsRow = Selectable<WorkspacePortalSettingsTable>;
