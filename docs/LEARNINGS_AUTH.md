@@ -20,6 +20,7 @@ Lessons from implementing optional CAPTCHA / PIN / MFA (PR #107) and the pre-bet
 2. **Challenge ≠ Login-Session** — `captcha-verify` gibt ein kurzlebiges serverseitiges Challenge-Token; Login muss es mitschicken. Replay der Turnstile-Antwort allein reicht nicht.
 3. **Timeout 5s** auf Provider-HTTP — ohne Timeout kann ein langsamer Turnstile-Endpunkt Login-Worker blockieren.
 4. **Account-Enumeration** über `login-config?email=` ist bewusst möglich (PIN/MFA-Hints). Für Single-Tenant-Beta akzeptiert; bei Multi-Tenant später einschränken.
+5. **CAPTCHA nur nach User-Lookup** — `handleLogin` prüft CAPTCHA nur, wenn `findUserByEmail` einen Treffer liefert. Unbekannte E-Mails erhalten sofort `invalid_credentials` ohne CAPTCHA; bekannte Accounts mit aktivem CAPTCHA erhalten `captcha_required`. Das schützt CAPTCHA primär gegen Passwort-Spray auf bekannte Accounts, nicht gegen Enumeration unbekannter Adressen. Zusätzlicher Enumeration-Hinweis: `captcha_required` impliziert „User existiert“. Für Single-Tenant-Beta akzeptiert; Fix wäre Workspace-CAPTCHA-Lookup ohne User (z. B. `workspaceId` im Login-Request) oder einheitliche `captcha_required`-Antwort auch bei unbekannter E-Mail.
 
 ---
 
@@ -86,6 +87,7 @@ Lessons from implementing optional CAPTCHA / PIN / MFA (PR #107) and the pre-bet
 
 - Multi-workspace `findUserByEmail` — für Multi-Tenant relevant, Single-Tenant-Beta ok
 - CAPTCHA replay über Challenge hinaus — durch Challenge-TTL abgefedert
+- CAPTCHA-Bypass bei unbekannter E-Mail + Login-Enumeration über `captcha_required` vs. `invalid_credentials` — dokumentiert (siehe CAPTCHA §5)
 - In-Memory rate limits bei Scale-out — dokumentiert
 - PIN/MFA nicht per-User mandatory erzwingen — Produktentscheidung + UX-Warnungen
 

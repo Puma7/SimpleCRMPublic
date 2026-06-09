@@ -236,7 +236,9 @@ async function handleEnableEmailMfa(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireAdmin(principal) && principal.userId !== userId) {
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
+  }
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
