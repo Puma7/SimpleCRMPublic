@@ -1,5 +1,5 @@
+import { guessSmtpHostFromImapHost } from '../../shared/mail-host-hints';
 import {
-  guessSmtpHostFromImapHost,
   resolveConfiguredSmtpHost,
 } from '../../packages/core/src/email/mail-host-hints';
 

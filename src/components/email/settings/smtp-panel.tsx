@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { invokeRenderer } from "@/services/transport"
 import { isServerClientMode } from "@/lib/runtime-mode"
-import { guessSmtpHostFromImapHost } from "@simplecrm/core"
+import { guessSmtpHostFromImapHost } from "@shared/mail-host-hints"
 import { type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 

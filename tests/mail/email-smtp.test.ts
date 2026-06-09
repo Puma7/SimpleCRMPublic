@@ -115,6 +115,7 @@ describe('email-smtp', () => {
     (getEmailAccountById as jest.Mock).mockReturnValue({
       id: 2,
       imap_host: 'imap.test',
+      smtp_host: 'smtp.test',
       smtp_port: 465,
       smtp_tls: true,
       smtp_use_imap_auth: true,
