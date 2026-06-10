@@ -512,6 +512,52 @@ const MAX_PORTAL_TOKEN_LEN = 200;
 const MAX_PORTAL_ITEMS = 50;
 const PORTAL_RETURN_NUMBER_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
+// In-process sliding-window rate limiter for the public endpoints. Applied at
+// dispatcher entry (before token resolution) so it also throttles token
+// probing. Keyed per client IP; the API runs as a single process in this
+// deployment, so process-local state is the right scope. Limits are generous
+// for a legitimate customer and hostile to enumeration.
+const PORTAL_CREATE_RATE = { limit: 10, windowMs: 60 * 60 * 1000 };
+const PORTAL_LOOKUP_RATE = { limit: 30, windowMs: 60 * 1000 };
+
+export type PortalRateLimiter = {
+  /** Records a hit for the key and reports whether it is within the window limit. */
+  check(key: string, now?: number): { ok: true } | { ok: false; retryAfterSeconds: number };
+};
+
+export function createPortalRateLimiter(options: { limit: number; windowMs: number }): PortalRateLimiter {
+  const hits = new Map<string, number[]>();
+  return {
+    check(key, nowInput) {
+      const now = nowInput ?? Date.now();
+      const cutoff = now - options.windowMs;
+      const recent = (hits.get(key) ?? []).filter((t) => t > cutoff);
+      if (recent.length >= options.limit) {
+        hits.set(key, recent);
+        const oldest = recent[0] ?? now;
+        return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil((oldest + options.windowMs - now) / 1000)) };
+      }
+      recent.push(now);
+      hits.set(key, recent);
+      if (hits.size > 10_000) {
+        for (const [k, v] of hits) {
+          if (v.every((t) => t <= cutoff)) hits.delete(k);
+        }
+      }
+      return { ok: true };
+    },
+  };
+}
+
+let portalCreateLimiter = createPortalRateLimiter(PORTAL_CREATE_RATE);
+let portalLookupLimiter = createPortalRateLimiter(PORTAL_LOOKUP_RATE);
+
+/** Test hook: module-level limiter state would otherwise leak between tests. */
+export function resetPortalRateLimitersForTests(): void {
+  portalCreateLimiter = createPortalRateLimiter(PORTAL_CREATE_RATE);
+  portalLookupLimiter = createPortalRateLimiter(PORTAL_LOOKUP_RATE);
+}
+
 export async function handlePublicPortalRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -519,10 +565,22 @@ export async function handlePublicPortalRoute(
   // Hot path matchers — same pattern as the authenticated dispatcher above.
   const createMatch = /^\/api\/v1\/portal\/returns\/([^/]+)$/.exec(req.path);
   if (createMatch && req.method === 'POST') {
+    const limited = portalCreateLimiter.check(`create:${req.ip ?? 'unknown'}`);
+    if (!limited.ok) {
+      return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
+        retryAfterSeconds: limited.retryAfterSeconds,
+      });
+    }
     return handlePortalCreate(req, ports, createMatch[1] ?? '');
   }
   const detailMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/([^/]+)$/.exec(req.path);
   if (detailMatch && req.method === 'GET') {
+    const limited = portalLookupLimiter.check(`lookup:${req.ip ?? 'unknown'}`);
+    if (!limited.ok) {
+      return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
+        retryAfterSeconds: limited.retryAfterSeconds,
+      });
+    }
     return handlePortalLookup(req, ports, detailMatch[1] ?? '', detailMatch[2] ?? '');
   }
   // 405 on a wrong-method match against a known path; null otherwise so the
@@ -563,6 +621,10 @@ async function handlePortalCreate(
   // CAPTCHA: when the workspace has captcha enabled in its login security
   // settings, the public create endpoint also requires a fresh challenge.
   // assertCaptchaChallenge consumes the challenge so each one is single-use.
+  // When loginSecurity is NOT wired at all the gate degrades open by design
+  // (matching the login flow) — but the audit record below carries
+  // captcha:'unavailable' so such deployments are visible, not silent.
+  let captchaStatus: 'passed' | 'not_required' | 'unavailable' = 'unavailable';
   if (ports.loginSecurity) {
     const loginConfig = await ports.loginSecurity.getLoginConfig();
     if (loginConfig?.captcha.enabled) {
@@ -573,6 +635,9 @@ async function handlePortalCreate(
       if (!ports.loginSecurity.assertCaptchaChallenge({ challenge, ip })) {
         return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
       }
+      captchaStatus = 'passed';
+    } else {
+      captchaStatus = 'not_required';
     }
   }
 
@@ -590,7 +655,7 @@ async function handlePortalCreate(
     action: 'returns.portal.create',
     entityType: 'returns',
     entityId: result.record.returnNumber,
-    metadata: { ip: req.ip ?? null },
+    metadata: { ip: req.ip ?? null, captcha: captchaStatus },
   });
   return data(201, result.record);
 }

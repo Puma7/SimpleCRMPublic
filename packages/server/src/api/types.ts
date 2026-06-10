@@ -4428,6 +4428,12 @@ export type ServerApiPorts = {
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;
+  /**
+   * Login hardening (CAPTCHA, PIN, MFA). Strongly recommended for deployments
+   * that enable the public returns portal: the portal's CAPTCHA gate degrades
+   * open when this port is missing (visible as captcha:'unavailable' in the
+   * returns.portal.create audit metadata).
+   */
   loginSecurity?: LoginSecurityApiPort;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;

@@ -1,6 +1,8 @@
 import {
+  createPortalRateLimiter,
   handlePublicPortalRoute,
   handleReturnsRoute,
+  resetPortalRateLimitersForTests,
 } from '../../packages/server/src/api/returns-routes';
 import type {
   ApiRequest,
@@ -58,6 +60,33 @@ function makePortalSettings(resolution: Resolution): ReturnsPortalSettingsApiPor
 function req(path: string, init: Partial<ApiRequest> = {}): ApiRequest {
   return { method: 'GET', path, ...init };
 }
+
+beforeEach(() => {
+  resetPortalRateLimitersForTests();
+});
+
+describe('createPortalRateLimiter', () => {
+  test('allows up to the limit within the window, then blocks with a retry hint', () => {
+    const limiter = createPortalRateLimiter({ limit: 3, windowMs: 60_000 });
+    const t0 = 1_000_000;
+    expect(limiter.check('k', t0)).toEqual({ ok: true });
+    expect(limiter.check('k', t0 + 1)).toEqual({ ok: true });
+    expect(limiter.check('k', t0 + 2)).toEqual({ ok: true });
+    const blocked = limiter.check('k', t0 + 3);
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
+    // Different key is unaffected.
+    expect(limiter.check('other', t0 + 3)).toEqual({ ok: true });
+  });
+
+  test('frees the slot once the window has passed', () => {
+    const limiter = createPortalRateLimiter({ limit: 1, windowMs: 60_000 });
+    const t0 = 1_000_000;
+    expect(limiter.check('k', t0)).toEqual({ ok: true });
+    expect(limiter.check('k', t0 + 30_000).ok).toBe(false);
+    expect(limiter.check('k', t0 + 60_001)).toEqual({ ok: true });
+  });
+});
 
 describe('public portal dispatcher', () => {
   test('returns null for non-portal paths so the outer dispatcher can match', async () => {
@@ -186,6 +215,120 @@ describe('public portal dispatcher', () => {
     expect((result?.body as { data: PortalReturnRecord }).data.returnNumber).toBe('R-CAFE0001');
     expect(captured).toHaveLength(1);
     expect(captured[0]!.workspaceId).toBe(WS_ID);
+  });
+
+  test('POST create is rate-limited per IP (10/hour) with a 429 + retry hint', async () => {
+    const ports: ServerApiPorts = {
+      auth: {} as never,
+      returns: makeReturnsPort(),
+      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+    };
+    const post = (ip: string) => handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', ip, body: { items: [{ quantity: 1 }] } }),
+      ports,
+    );
+    for (let i = 0; i < 10; i++) {
+      const result = await post('203.0.113.7');
+      expect(result?.status).toBe(201);
+    }
+    const blocked = await post('203.0.113.7');
+    expect(blocked?.status).toBe(429);
+    const body = blocked?.body as { error: { code: string; details?: { retryAfterSeconds?: number } } };
+    expect(body.error.code).toBe('rate_limited');
+    // A different client IP is not affected.
+    const otherIp = await post('203.0.113.8');
+    expect(otherIp?.status).toBe(201);
+  });
+
+  test('GET lookup is rate-limited per IP (30/minute)', async () => {
+    const ports: ServerApiPorts = {
+      auth: {} as never,
+      returns: makeReturnsPort({
+        async getPublicByReturnNumber() { return makeRecord(); },
+      }),
+      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+    };
+    const get = () => handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}/R-CAFE0001`, { method: 'GET', ip: '203.0.113.9' }),
+      ports,
+    );
+    for (let i = 0; i < 30; i++) {
+      const result = await get();
+      expect(result?.status).toBe(200);
+    }
+    const blocked = await get();
+    expect(blocked?.status).toBe(429);
+  });
+
+  test('rate limit applies before token resolution, throttling token probing too', async () => {
+    const resolveCalls: string[] = [];
+    const ports: ServerApiPorts = {
+      auth: {} as never,
+      returns: makeReturnsPort(),
+      returnsPortalSettings: {
+        ...makePortalSettings({ ok: false, reason: 'unknown_token' }),
+        async resolveByToken(input) {
+          resolveCalls.push(input.token);
+          return { ok: false, reason: 'unknown_token' };
+        },
+      },
+    };
+    for (let i = 0; i < 30; i++) {
+      await handlePublicPortalRoute(
+        req(`/api/v1/portal/returns/${'f'.repeat(64)}/R-PROBE`, { method: 'GET', ip: '203.0.113.10' }),
+        ports,
+      );
+    }
+    const blocked = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${'f'.repeat(64)}/R-PROBE`, { method: 'GET', ip: '203.0.113.10' }),
+      ports,
+    );
+    expect(blocked?.status).toBe(429);
+    // The resolver was never consulted for the blocked request.
+    expect(resolveCalls).toHaveLength(30);
+  });
+
+  test('create audit metadata records the captcha gate status', async () => {
+    const audits: Array<Record<string, unknown>> = [];
+    const auditPort = {
+      async record(input: { metadata: Record<string, unknown> }) { audits.push(input.metadata); },
+    } as never;
+    const base = {
+      auth: {} as never,
+      returns: makeReturnsPort(),
+      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+      audit: auditPort,
+    };
+    // No loginSecurity wired → the gate degrades open but the audit shows it.
+    await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', ip: '1.1.1.1', body: { items: [{ quantity: 1 }] } }),
+      base as ServerApiPorts,
+    );
+    expect(audits[0]!.captcha).toBe('unavailable');
+
+    // CAPTCHA enabled and passed → 'passed'.
+    await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, {
+        method: 'POST',
+        ip: '1.1.1.2',
+        body: { captchaChallenge: 'ok', items: [{ quantity: 1 }] },
+      }),
+      {
+        ...base,
+        loginSecurity: {
+          async getLoginConfig() {
+            return {
+              captcha: { enabled: true, provider: 'turnstile', siteKey: 's' },
+              pinKeypad: { enabled: false },
+              mfa: { enabled: false, methods: [] },
+              user: null,
+            };
+          },
+          assertCaptchaChallenge() { return true; },
+        } as never,
+      } as ServerApiPorts,
+    );
+    expect(audits[1]!.captcha).toBe('passed');
   });
 
   test('GET lookup rejects SQL-LIKE wildcards and junk shapes before the port is called', async () => {
