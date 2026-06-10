@@ -23,6 +23,10 @@ import MaintenancePage from './app/settings/maintenance/page'
 import ProductsPage from './app/products/page'
 import ProductsLoading from './app/products/loading'
 import FollowUpPage from './app/followup/page'
+import ReturnsPage from './app/returns/page'
+import PortalReturnsNewPage from './app/portal/returns-new/page'
+import PortalReturnsLookupPage from './app/portal/returns-lookup/page'
+import PortalReturnsStatusPage from './app/portal/returns-status/page'
 import EmailModuleLayout from './app/email/layout'
 import EmailPage from './app/email/page'
 import EmailWorkflowsPage from './app/email/workflows/page'
@@ -59,6 +63,26 @@ const maintenanceRoute = createRoute({ getParentRoute: () => settingsRoute, path
 
 const productsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/products', component: ProductsPage, pendingComponent: ProductsLoading })
 const followUpRoute = createRoute({ getParentRoute: () => rootRoute, path: '/followup', component: FollowUpPage })
+const returnsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/returns', component: ReturnsPage })
+
+// Public, unauthenticated customer portal. These routes intentionally do NOT
+// participate in the app's auth guard — the portal token in the path is the
+// sole credential the server uses to resolve a workspace.
+const portalReturnsNewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/portal/$token/returns/new',
+  component: PortalReturnsNewPage,
+})
+const portalReturnsLookupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/portal/$token/returns/lookup',
+  component: PortalReturnsLookupPage,
+})
+const portalReturnsStatusRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/portal/$token/returns/$returnNumber',
+  component: PortalReturnsStatusPage,
+})
 
 const emailLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -140,6 +164,10 @@ const routeTree = rootRoute.addChildren([
   settingsRoute.addChildren([settingsIndexRoute, customFieldsRoute, maintenanceRoute]),
   productsRoute,
   followUpRoute,
+  returnsRoute,
+  portalReturnsNewRoute,
+  portalReturnsLookupRoute,
+  portalReturnsStatusRoute,
   emailLayoutRoute.addChildren([
     emailIndexRoute,
     emailWorkflowsRoute,

@@ -39,6 +39,11 @@ import type {
   EmailMessagesTable,
   EmailWorkflowRunsTable,
   EmailWorkflowsTable,
+  ReturnItemCondition,
+  ReturnItemsTable,
+  ReturnOutcome,
+  ReturnsTable,
+  ReturnStatus,
   ServerDatabase,
   WorkflowDelayedJobsTable,
 } from './db';
@@ -1556,6 +1561,15 @@ async function executeServerNode(
   if (type === 'jtl.prepare_action') {
     return executeWorkflowJtlPrepareAction(context, config);
   }
+  if (type === 'returns.evaluate') {
+    return await evaluateWorkflowReturn(trx, context, config);
+  }
+  if (type === 'returns.offer_exchange') {
+    return await applyWorkflowReturnOutcome(trx, context, config, 'exchange', now);
+  }
+  if (type === 'returns.offer_credit') {
+    return await applyWorkflowReturnOutcome(trx, context, config, 'credit', now);
+  }
   if (type === 'workflow.subflow') {
     return await enqueueWorkflowSubflow(trx, context, node, config, now);
   }
@@ -1727,6 +1741,12 @@ function dryRunMutatingNodeResult(
       });
     case 'workflow.subflow':
       return dryRunSideEffectResult(type, log, { variables: { 'subflow.status': 'dry_run' } });
+    // returns.evaluate is intentionally NOT listed: it is read-only and runs live
+    // even in dry-run so the previewed routing port reflects the real decision.
+    case 'returns.offer_exchange':
+      return dryRunSideEffectResult(type, log, { variables: { 'returns.outcome': 'exchange' } });
+    case 'returns.offer_credit':
+      return dryRunSideEffectResult(type, log, { variables: { 'returns.outcome': 'credit' } });
     default:
       return null;
   }
@@ -2874,6 +2894,273 @@ function executeWorkflowJtlPrepareAction(
       'jtl.action.kind': kind,
       'jtl.action.payload': JSON.stringify(payload),
       'jtl.action.prepared': true,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Returns / RMA workflow nodes (Phase 3)
+//
+// These operate on the workspace's OWN returns table — JTL is never written.
+// A run resolves "its" return via (in order): config.returnId → the
+// `returns.id` variable set by a prior node → the return linked to the
+// triggering email (returns.email_message_id = context.messageId). When none
+// is found the nodes route to the `no_return` port instead of failing, so a
+// returns workflow placed on a generic inbox simply no-ops on unrelated mail.
+// ---------------------------------------------------------------------------
+
+type WorkflowReturnRow = Selectable<ReturnsTable>;
+type WorkflowReturnItemRow = Selectable<ReturnItemsTable>;
+
+const RETURN_OUTCOME_PORTS = new Set(['refund', 'exchange', 'credit', 'keep', 'needs_review']);
+const RETURN_STATUS_VALUES = new Set<ReturnStatus>([
+  'pending',
+  'approved',
+  'received',
+  'refunded',
+  'exchanged',
+  'credited',
+  'rejected',
+  'cancelled',
+]);
+
+function resolveWorkflowReturnId(
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): { ok: true; returnId: number | null } | { ok: false; message: string } {
+  const configured = optionalPositiveIntegerConfig(config.returnId, 'returnId');
+  if (!configured.ok) return { ok: false, message: configured.message };
+  if (configured.value !== undefined) return { ok: true, returnId: configured.value };
+  const fromVar = positiveIntegerVariable(context.variables['returns.id']);
+  return { ok: true, returnId: fromVar };
+}
+
+async function loadWorkflowReturn(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<
+  | { ok: true; row: WorkflowReturnRow; items: WorkflowReturnItemRow[] }
+  | { ok: true; row: null }
+  | { ok: false; message: string }
+> {
+  const resolved = resolveWorkflowReturnId(context, config);
+  if (!resolved.ok) return resolved;
+
+  let row: WorkflowReturnRow | undefined;
+  if (resolved.returnId !== null) {
+    row = await trx
+      .selectFrom('returns')
+      .selectAll()
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', resolved.returnId)
+      .executeTakeFirst();
+  } else if (context.messageId !== null) {
+    row = await trx
+      .selectFrom('returns')
+      .selectAll()
+      .where('workspace_id', '=', context.workspaceId)
+      .where('email_message_id', '=', context.messageId)
+      .orderBy('id', 'desc')
+      .executeTakeFirst();
+  }
+  if (!row) return { ok: true, row: null };
+
+  const items = await trx
+    .selectFrom('return_items')
+    .selectAll()
+    .where('workspace_id', '=', context.workspaceId)
+    .where('return_id', '=', Number(row.id))
+    .orderBy('id', 'asc')
+    .execute();
+  return { ok: true, row, items };
+}
+
+function returnCsvSet(value: unknown, fallback: readonly string[]): Set<string> {
+  if (typeof value !== 'string' || !value.trim()) return new Set(fallback);
+  return new Set(
+    value
+      .split(',')
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function normalizeReturnOutcomePort(value: unknown, fallback: string): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return RETURN_OUTCOME_PORTS.has(normalized) ? normalized : fallback;
+}
+
+function normalizeReturnStatusConfig(value: unknown): ReturnStatus | null {
+  if (value === undefined || value === null || value === '') return null;
+  const normalized = String(value).trim().toLowerCase();
+  return RETURN_STATUS_VALUES.has(normalized as ReturnStatus) ? (normalized as ReturnStatus) : null;
+}
+
+/**
+ * Pure decision rules for `returns.evaluate`, factored out so the policy can be
+ * unit-tested without a database. Precedence (fixed for safety):
+ *   1. needs_review — any item condition in `reviewConditions` (default: damaged)
+ *   2. exchange     — any item reason code in `exchangeReasonCodes`
+ *                     (default: size_wrong, wrong_item)
+ *   3. credit       — any item reason code in `creditReasonCodes` (default: none)
+ *   4. default      — `defaultOutcome` (default: refund)
+ * Conditions and reason codes are matched case-insensitively.
+ */
+export function decideWorkflowReturnOutcomePort(input: {
+  itemConditions: readonly string[];
+  itemReasonCodes: readonly string[];
+  config: Record<string, unknown>;
+}): string {
+  const reviewConditions = returnCsvSet(input.config.reviewConditions, ['damaged']);
+  const exchangeReasonCodes = returnCsvSet(input.config.exchangeReasonCodes, ['size_wrong', 'wrong_item']);
+  const creditReasonCodes = returnCsvSet(input.config.creditReasonCodes, []);
+  const defaultOutcome = normalizeReturnOutcomePort(input.config.defaultOutcome, 'refund');
+
+  const conditions = input.itemConditions.map((cond) => cond.toLowerCase());
+  const reasonCodes = input.itemReasonCodes.map((code) => code.toLowerCase());
+
+  if (conditions.some((cond) => reviewConditions.has(cond))) return 'needs_review';
+  if (reasonCodes.some((code) => exchangeReasonCodes.has(code))) return 'exchange';
+  if (reasonCodes.some((code) => creditReasonCodes.has(code))) return 'credit';
+  return defaultOutcome;
+}
+
+/**
+ * returns.evaluate — read-only decision node. Suggests an outcome from the
+ * return's items and routes to one of refund/exchange/credit/needs_review
+ * (or no_return when no return is found). Wire each port to the matching
+ * follow-up node. Rule precedence is fixed for safety:
+ *   1. needs_review  — any item condition in `reviewConditions` (default: damaged)
+ *   2. exchange      — any item reason code in `exchangeReasonCodes`
+ *                      (default: size_wrong, wrong_item)
+ *   3. credit        — any item reason code in `creditReasonCodes` (default: none)
+ *   4. default       — `defaultOutcome` (default: refund)
+ */
+export async function evaluateWorkflowReturn(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<NodeResult> {
+  const loaded = await loadWorkflowReturn(trx, context, config);
+  if (!loaded.ok) return { status: 'error', port: 'error', message: loaded.message };
+  if (loaded.row === null) {
+    return {
+      status: 'ok',
+      port: 'no_return',
+      message: 'Keine Retoure fuer diesen Lauf gefunden',
+      variables: { 'returns.found': false },
+    };
+  }
+  const { row, items } = loaded;
+
+  const reasonIds = [...new Set(items.map((it) => it.reason_id).filter((id): id is number => id !== null))];
+  const reasonCodeById = new Map<number, string>();
+  if (reasonIds.length > 0) {
+    const reasons = await trx
+      .selectFrom('return_reasons')
+      .select(['id', 'code'])
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', 'in', reasonIds)
+      .execute();
+    for (const reason of reasons) reasonCodeById.set(Number(reason.id), String(reason.code).toLowerCase());
+  }
+  const itemReasonCodes = new Set(
+    items
+      .map((it) => (it.reason_id !== null ? reasonCodeById.get(it.reason_id) : undefined))
+      .filter((code): code is string => Boolean(code)),
+  );
+  const itemConditions = new Set(
+    items
+      .map((it) => it.condition)
+      .filter((cond): cond is ReturnItemCondition => cond !== null)
+      .map((cond) => cond.toLowerCase()),
+  );
+
+  const port = decideWorkflowReturnOutcomePort({
+    itemConditions: [...itemConditions],
+    itemReasonCodes: [...itemReasonCodes],
+    config,
+  });
+
+  return {
+    status: 'ok',
+    port,
+    message: `returns_evaluated:${row.return_number}:${port}`,
+    variables: {
+      'returns.found': true,
+      'returns.id': Number(row.id),
+      'returns.number': String(row.return_number),
+      'returns.item_count': items.length,
+      'returns.status': String(row.status),
+      'returns.suggested_outcome': port,
+    },
+  };
+}
+
+/**
+ * returns.offer_exchange / returns.offer_credit — set the linked return's
+ * outcome (and optionally its status via config.status). Idempotent: a return
+ * already at the target outcome/status is left untouched. Writes only to the
+ * workspace's own returns table.
+ */
+export async function applyWorkflowReturnOutcome(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  outcome: Extract<ReturnOutcome, 'exchange' | 'credit'>,
+  now: Date,
+): Promise<NodeResult> {
+  const loaded = await loadWorkflowReturn(trx, context, config);
+  if (!loaded.ok) return { status: 'error', port: 'error', message: loaded.message };
+  if (loaded.row === null) {
+    return {
+      status: 'skipped',
+      port: 'no_return',
+      message: 'Keine Retoure fuer diesen Lauf gefunden',
+      variables: { 'returns.found': false },
+    };
+  }
+  const { row } = loaded;
+  const returnId = Number(row.id);
+
+  if (config.status !== undefined && config.status !== '' && normalizeReturnStatusConfig(config.status) === null) {
+    return { status: 'error', port: 'error', message: 'status ungueltig' };
+  }
+  const status = normalizeReturnStatusConfig(config.status);
+
+  if (row.outcome === outcome && (status === null || row.status === status)) {
+    return {
+      status: 'ok',
+      port: 'default',
+      message: `returns_outcome_unchanged:${row.return_number}:${outcome}`,
+      variables: { 'returns.found': true, 'returns.id': returnId, 'returns.outcome': outcome },
+    };
+  }
+
+  const patch: { outcome: ReturnOutcome; updated_at: Date; status?: ReturnStatus } = {
+    outcome,
+    updated_at: now,
+  };
+  if (status !== null) patch.status = status;
+
+  await trx
+    .updateTable('returns')
+    .set(patch)
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', returnId)
+    .execute();
+
+  return {
+    status: 'ok',
+    port: 'default',
+    message: `returns_outcome:${row.return_number}:${outcome}`,
+    variables: {
+      'returns.found': true,
+      'returns.id': returnId,
+      'returns.number': String(row.return_number),
+      'returns.outcome': outcome,
+      ...(status !== null ? { 'returns.status': status } : {}),
     },
   };
 }

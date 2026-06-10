@@ -3703,6 +3703,123 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/saved-views/${positiveId(id, "saved view id")}`,
     transform: () => ({ success: true }),
   })],
+
+  // ---- Returns / RMA suite -------------------------------------------------
+  [IPCChannels.Returns.List, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "returns list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/returns",
+      query: {
+        limit: input.limit,
+        offset: input.offset,
+        status: input.status,
+        customerId: input.customerId,
+        search: input.search,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.Get, ([id]) => ({
+    method: "GET",
+    path: `/api/v1/returns/${positiveId(id, "return id")}`,
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Create, ([payload]) => ({
+    method: "POST",
+    path: "/api/v1/returns",
+    body: payload,
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Update, ([payload]) => {
+    const input = objectPayload(payload, "return update payload")
+    return {
+      method: "PATCH",
+      path: `/api/v1/returns/${positiveId(input.id, "return id")}`,
+      body: {
+        status: input.status,
+        outcome: input.outcome,
+        notes: input.notes,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.ListReasons, () => ({
+    method: "GET",
+    path: "/api/v1/return-reasons",
+    transform: (body) => dataBody<{ items: unknown[] }>(body).items,
+  })],
+  [IPCChannels.Returns.LookupJtlOrder, ([orderNumber]) => ({
+    method: "GET",
+    path: "/api/v1/returns/jtl-order-lookup",
+    query: { orderNumber: typeof orderNumber === "string" ? orderNumber : "" },
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Analytics, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "returns analytics payload")
+    return {
+      method: "GET",
+      path: "/api/v1/returns/analytics",
+      query: { sinceDays: input.sinceDays },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.GetPortalSettings, () => ({
+    method: "GET",
+    path: "/api/v1/returns/portal-settings",
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.RotatePortalToken, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "rotate portal token payload")
+    return {
+      method: "POST",
+      path: "/api/v1/returns/portal-settings",
+      body: { action: "rotate", enable: input.enable },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.SetPortalEnabled, ([payload]) => {
+    const input = objectPayload(payload, "set portal enabled payload")
+    return {
+      method: "POST",
+      path: "/api/v1/returns/portal-settings",
+      body: { action: "set_enabled", enabled: input.enabled === true },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.RevokePortalToken, () => ({
+    method: "POST",
+    path: "/api/v1/returns/portal-settings",
+    body: { action: "revoke" },
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.PortalCreate, ([payload]) => {
+    const input = objectPayload(payload, "portal create payload")
+    const token = String(input.token ?? "")
+    return {
+      method: "POST",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}`,
+      body: {
+        jtlOrderNumber: input.jtlOrderNumber,
+        customerEmail: input.customerEmail,
+        customerName: input.customerName,
+        notes: input.notes,
+        captchaChallenge: input.captchaChallenge,
+        items: input.items,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.PortalLookup, ([payload]) => {
+    const input = objectPayload(payload, "portal lookup payload")
+    const token = String(input.token ?? "")
+    const returnNumber = String(input.returnNumber ?? "")
+    return {
+      method: "GET",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}/${encodeURIComponent(returnNumber)}`,
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
 ])
 
 export function buildHttpInvocation(channel: InvokeChannel, args: unknown[]): HttpInvocationSpec {

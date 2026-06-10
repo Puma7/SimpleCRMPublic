@@ -35,6 +35,32 @@ function AppMain() {
   )
 }
 
+function isPublicPortalPath(pathname: string): boolean {
+  return pathname.startsWith("/portal/")
+}
+
+function AppChrome({ openPalette }: { openPalette: () => void }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  if (isPublicPortalPath(pathname)) {
+    // No titlebar / nav / update banner on the public customer portal.
+    return (
+      <div className="flex h-screen min-h-0 flex-col overflow-y-auto bg-background font-sans antialiased">
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
+      </div>
+    )
+  }
+  return (
+    <div className="flex h-screen min-h-0 flex-col overflow-hidden font-sans antialiased">
+      <Titlebar />
+      <MainNav onOpenCommandPalette={openPalette} />
+      <UpdateStatusDisplay />
+      <AppMain />
+    </div>
+  )
+}
+
 export function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const openPalette = useCallback(() => setPaletteOpen(true), [])
@@ -44,15 +70,10 @@ export function AppShell() {
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
       <AuthProvider>
         <AuthGate>
-          <div className="flex h-screen min-h-0 flex-col overflow-hidden font-sans antialiased">
-            <Titlebar />
-            <MainNav onOpenCommandPalette={openPalette} />
-            <UpdateStatusDisplay />
-            <AppMain />
-        <SonnerToaster richColors closeButton position="bottom-right" />
-        <RadixToaster />
-            <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
-          </div>
+          <AppChrome openPalette={openPalette} />
+          <SonnerToaster richColors closeButton position="bottom-right" />
+          <RadixToaster />
+          <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
         </AuthGate>
       </AuthProvider>
     </ThemeProvider>

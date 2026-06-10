@@ -4,6 +4,7 @@ import type { Readable } from 'node:stream';
 import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from '../jobs';
 import type { ConversationLockReason } from '../locks';
 import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
+import type { JtlOrderLookupApiPort } from '../jtl-order-lookup';
 import type { LoginPenalty } from '../auth';
 import type { ServerMaintenancePort } from '../maintenance/service';
 
@@ -4204,11 +4205,235 @@ export type ServerLogReadPort = {
   count(): number;
 };
 
+/** Status lifecycle / outcome / condition enums live in the DB-schema module
+ *  so the Kysely table types and the API records share one source of truth. */
+export type { ReturnStatus, ReturnOutcome, ReturnItemCondition } from '../db/schema';
+import type { ReturnItemCondition, ReturnOutcome, ReturnStatus } from '../db/schema';
+
+export type ReturnReasonRecord = {
+  id: number;
+  code: string;
+  label: string;
+  isActive: boolean;
+  sortOrder: number;
+};
+
+export type ReturnItemRecord = {
+  id: number;
+  returnId: number;
+  productId: number | null;
+  reasonId: number | null;
+  sku: string | null;
+  productName: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  notes: string | null;
+};
+
+export type ReturnRecord = {
+  id: number;
+  returnNumber: string;
+  customerId: number | null;
+  emailMessageId: number | null;
+  jtlOrderNumber: string | null;
+  jtlKauftrag: number | null;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  customerEmail: string | null;
+  customerName: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: ReturnItemRecord[];
+};
+
+export type ReturnItemMutationInput = {
+  productId?: number | null;
+  reasonId?: number | null;
+  sku?: string | null;
+  productName?: string | null;
+  quantity: number;
+  condition?: ReturnItemCondition | null;
+  notes?: string | null;
+};
+
+export type ReturnCreateInput = {
+  customerId?: number | null;
+  emailMessageId?: number | null;
+  jtlOrderNumber?: string | null;
+  jtlKauftrag?: number | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
+  notes?: string | null;
+  items: readonly ReturnItemMutationInput[];
+};
+
+export type ReturnUpdateInput = {
+  status?: ReturnStatus;
+  outcome?: ReturnOutcome | null;
+  notes?: string | null;
+};
+
+export type ReturnListInput = {
+  workspaceId: string;
+  limit: number;
+  offset?: number;
+  status?: ReturnStatus;
+  customerId?: number;
+  search?: string;
+};
+
+export type ReturnListResult = {
+  items: readonly ReturnRecord[];
+  totalCount: number;
+};
+
+export type ReturnsAnalyticsInput = {
+  workspaceId: string;
+  /** Optional rolling window; when set, only returns created in the last N days count. */
+  sinceDays?: number;
+};
+
+export type ReturnsAnalyticsResult = {
+  totalCount: number;
+  /** Counts per status, descending by count. Only non-zero buckets are listed. */
+  byStatus: ReadonlyArray<{ status: ReturnStatus; count: number }>;
+  /** Counts per outcome; `outcome: null` is the not-yet-decided bucket. */
+  byOutcome: ReadonlyArray<{ outcome: ReturnOutcome | null; count: number }>;
+  /**
+   * Top return reasons by item count. `reasonId: null` groups items with no
+   * reason set; code/label are null for that bucket and for reasons that were
+   * since deleted.
+   */
+  topReasons: ReadonlyArray<{
+    reasonId: number | null;
+    code: string | null;
+    label: string | null;
+    count: number;
+  }>;
+  generatedAt: string;
+};
+
+export type ReturnsApiPort = {
+  list(input: ReturnListInput): Promise<ReturnListResult>;
+  get(input: { workspaceId: string; id: number }): Promise<ReturnRecord | null>;
+  create(input: {
+    workspaceId: string;
+    actorUserId: string;
+    input: ReturnCreateInput;
+  }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+  update(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    update: ReturnUpdateInput;
+  }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+  analytics(input: ReturnsAnalyticsInput): Promise<ReturnsAnalyticsResult>;
+  /**
+   * Public-shaped lookup by return_number. Returns the narrowed PortalReturnRecord
+   * (no internal IDs, no customer PII beyond what the customer typed themselves),
+   * or null when not found. The lookup is case-insensitive on return_number so
+   * URLs printed in e-mails are forgiving.
+   */
+  getPublicByReturnNumber(input: {
+    workspaceId: string;
+    returnNumber: string;
+  }): Promise<PortalReturnRecord | null>;
+  /**
+   * Public-shaped create. Same idempotency rules as create() but no actor,
+   * and the resulting record is the narrowed PortalReturnRecord.
+   */
+  createPublic(input: {
+    workspaceId: string;
+    input: PortalReturnCreateInput;
+  }): Promise<{ ok: true; record: PortalReturnRecord } | { ok: false; error: string }>;
+};
+
+export type ReturnReasonsApiPort = {
+  /**
+   * Returns the active reasons for the workspace, seeding a default vocabulary
+   * (size_wrong, not_liked, defective, wrong_item, late_delivery, other) on
+   * first call when the workspace has none. Idempotent.
+   */
+  list(input: { workspaceId: string }): Promise<readonly ReturnReasonRecord[]>;
+};
+
+// ---------------------------------------------------------------------------
+// Portal settings (Phase 5/6: public customer portal)
+//
+// One row per workspace. The token is the sole credential the public portal
+// uses to resolve a workspace, so rotating it invalidates every public URL
+// previously printed. The `enabled` flag pauses public creates without
+// destroying the URL (useful for short maintenance windows).
+// ---------------------------------------------------------------------------
+
+export type ReturnsPortalSettings = {
+  enabled: boolean;
+  /** Present only when admin reads the settings; never echoed to public requests. */
+  token: string | null;
+  /** Stable identifier the admin UI shows ("•••• last 4") even when token is hidden. */
+  hasToken: boolean;
+  updatedAt: string | null;
+};
+
+export type ReturnsPortalResolveResult =
+  | { ok: true; workspaceId: string; enabled: true }
+  | { ok: false; reason: 'unknown_token' | 'portal_disabled' };
+
+export type ReturnsPortalSettingsApiPort = {
+  get(input: { workspaceId: string }): Promise<ReturnsPortalSettings>;
+  /** Rotates (or first-creates) the token. Returns the new settings including the cleartext token once. */
+  rotate(input: { workspaceId: string; enable?: boolean }): Promise<ReturnsPortalSettings>;
+  /** Sets `enabled` without touching the token. */
+  setEnabled(input: { workspaceId: string; enabled: boolean }): Promise<ReturnsPortalSettings>;
+  /** Clears the token entirely; the next public request fails until rotate() is called. */
+  revoke(input: { workspaceId: string }): Promise<ReturnsPortalSettings>;
+  /** Cross-workspace lookup used by the public dispatcher. Bypasses RLS by design. */
+  resolveByToken(input: { token: string }): Promise<ReturnsPortalResolveResult>;
+};
+
+// ---------------------------------------------------------------------------
+// Public portal records (a narrowed shape — never leaks internal fields)
+// ---------------------------------------------------------------------------
+
+export type PortalReturnItem = {
+  sku: string | null;
+  productName: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  reasonCode: string | null;
+  reasonLabel: string | null;
+};
+
+export type PortalReturnRecord = {
+  returnNumber: string;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  jtlOrderNumber: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: readonly PortalReturnItem[];
+};
+
+export type PortalReturnCreateInput = {
+  jtlOrderNumber?: string | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
+  notes?: string | null;
+  items: readonly ReturnItemMutationInput[];
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;
+  /**
+   * Login hardening (CAPTCHA, PIN, MFA). Strongly recommended for deployments
+   * that enable the public returns portal: the portal's CAPTCHA gate degrades
+   * open when this port is missing (visible as captcha:'unavailable' in the
+   * returns.portal.create audit metadata).
+   */
   loginSecurity?: LoginSecurityApiPort;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;
@@ -4261,6 +4486,7 @@ export type ServerApiPorts = {
   jobQueue?: ServerJobQueueApiPort;
   jtlFirmen?: JtlReferenceApiPort;
   jtlOrders?: JtlOrderApiPort;
+  jtlOrderLookup?: JtlOrderLookupApiPort;
   jtlSync?: JtlSyncApiPort;
   jtlVersandarten?: JtlReferenceApiPort;
   jtlWarenlager?: JtlReferenceApiPort;
@@ -4270,6 +4496,9 @@ export type ServerApiPorts = {
   pgpMessages?: PgpMessageCryptoApiPort;
   pgpPeerKeys?: PgpPeerKeyApiPort;
   products?: ProductApiPort;
+  returns?: ReturnsApiPort;
+  returnReasons?: ReturnReasonsApiPort;
+  returnsPortalSettings?: ReturnsPortalSettingsApiPort;
   spamDecisions?: SpamDecisionApiPort;
   spamFeatureStats?: SpamFeatureStatApiPort;
   spamLearningEvents?: SpamLearningEventApiPort;

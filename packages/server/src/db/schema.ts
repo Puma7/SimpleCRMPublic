@@ -67,6 +67,10 @@ export type ServerDatabase = {
   automation_api_keys: AutomationApiKeysTable;
   ai_usage_events: AiUsageEventsTable;
   ai_reply_feedback: AiReplyFeedbackTable;
+  return_reasons: ReturnReasonsTable;
+  returns: ReturnsTable;
+  return_items: ReturnItemsTable;
+  workspace_portal_settings: WorkspacePortalSettingsTable;
 };
 
 export type AiReplyFeedbackTable = {
@@ -1013,3 +1017,70 @@ export type DealRow = Selectable<DealsTable>;
 export type TaskRow = Selectable<TasksTable>;
 export type CalendarEventRow = Selectable<CalendarEventsTable>;
 export type EmailMessageRow = Selectable<EmailMessagesTable>;
+export type ReturnReasonRow = Selectable<ReturnReasonsTable>;
+export type ReturnRow = Selectable<ReturnsTable>;
+export type ReturnItemRow = Selectable<ReturnItemsTable>;
+
+export type ReturnStatus =
+  | 'pending'
+  | 'approved'
+  | 'received'
+  | 'refunded'
+  | 'exchanged'
+  | 'credited'
+  | 'rejected'
+  | 'cancelled';
+export type ReturnOutcome = 'refund' | 'exchange' | 'credit' | 'keep';
+export type ReturnItemCondition = 'new' | 'opened' | 'used' | 'damaged';
+
+export type ReturnReasonsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  code: string;
+  label: string;
+  is_active: boolean;
+  sort_order: number;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type ReturnsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  return_number: string;
+  customer_id: number | null;
+  email_message_id: number | null;
+  jtl_order_number: string | null;
+  jtl_kauftrag: number | null;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  customer_email: string | null;
+  customer_name: string | null;
+  notes: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type ReturnItemsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  return_id: number;
+  product_id: number | null;
+  reason_id: number | null;
+  sku: string | null;
+  product_name: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  notes: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type WorkspacePortalSettingsTable = {
+  workspace_id: string;
+  returns_portal_token: string | null;
+  returns_portal_enabled: boolean;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+export type WorkspacePortalSettingsRow = Selectable<WorkspacePortalSettingsTable>;
