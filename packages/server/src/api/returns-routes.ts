@@ -510,6 +510,7 @@ async function handlePortalSettings(req: ApiRequest, ports: ServerApiPorts): Pro
 
 const MAX_PORTAL_TOKEN_LEN = 200;
 const MAX_PORTAL_ITEMS = 50;
+const PORTAL_RETURN_NUMBER_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export async function handlePublicPortalRoute(
   req: ApiRequest,
@@ -603,7 +604,11 @@ async function handlePortalLookup(
   const resolved = await resolvePortal(ports, token);
   if ('status' in resolved) return resolved;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
-  if (!returnNumber || returnNumber.length > MAX_TEXT_LEN) {
+  // Strict shape allowlist on the unauthenticated input. Generated numbers are
+  // R-<hex>; the allowlist gives headroom but excludes SQL-LIKE wildcards
+  // (%, _ is allowed and harmless under exact equality), path tricks and
+  // percent-encodings — defense in depth on top of the exact-match lookup.
+  if (!returnNumber || !PORTAL_RETURN_NUMBER_RE.test(returnNumber)) {
     return error(400, 'invalid_return_number', 'returnNumber ungueltig');
   }
   const record = await ports.returns.getPublicByReturnNumber({

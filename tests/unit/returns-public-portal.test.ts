@@ -188,6 +188,30 @@ describe('public portal dispatcher', () => {
     expect(captured[0]!.workspaceId).toBe(WS_ID);
   });
 
+  test('GET lookup rejects SQL-LIKE wildcards and junk shapes before the port is called', async () => {
+    const lookupCalls: string[] = [];
+    const ports: ServerApiPorts = {
+      auth: {} as never,
+      returns: makeReturnsPort({
+        async getPublicByReturnNumber(input) {
+          lookupCalls.push(input.returnNumber);
+          return makeRecord();
+        },
+      }),
+      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+    };
+    // %, dots, slashes-by-encoding, overlong — all must 400 without touching the port.
+    for (const bad of ['%', 'R-%', '%25', 'R-CAFE.0001', 'a'.repeat(65)]) {
+      const result = await handlePublicPortalRoute(
+        req(`/api/v1/portal/returns/${TOKEN}/${bad}`, { method: 'GET' }),
+        ports,
+      );
+      expect(result?.status).toBe(400);
+      expect((result?.body as { error: { code: string } }).error.code).toBe('invalid_return_number');
+    }
+    expect(lookupCalls).toHaveLength(0);
+  });
+
   test('GET lookup with a valid token returns the narrowed record on hit', async () => {
     const ports: ServerApiPorts = {
       auth: {} as never,

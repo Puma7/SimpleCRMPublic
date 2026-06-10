@@ -398,7 +398,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'crm',
     canvasType: 'registry',
     description:
-      'Read-only-Entscheidung: schlägt aus Positionen/Gründen ein Outcome vor und verzweigt nach refund/exchange/credit/needs_review (no_return, wenn keine Retoure gefunden). Schreibt nichts.',
+      'Read-only-Entscheidung: schlägt aus Positionen/Gründen ein Outcome vor und verzweigt nach refund/exchange/credit/keep/needs_review (no_return, wenn keine Retoure gefunden). Schreibt nichts.',
     defaultConfig: {
       reviewConditions: 'damaged',
       exchangeReasonCodes: 'size_wrong,wrong_item',

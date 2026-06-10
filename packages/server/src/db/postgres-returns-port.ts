@@ -428,12 +428,15 @@ async function getPublicReturn(
 ): Promise<PortalReturnRecord | null> {
   const trimmed = returnNumber.trim();
   if (!trimmed) return null;
-  // Case-insensitive lookup so links the customer mistypes still resolve.
+  // Case-insensitive EXACT match (lower() = lower()) so mistyped-case links
+  // still resolve. Deliberately not ilike: its %/_ wildcards would let a
+  // public caller match arbitrary returns in the workspace (cross-customer
+  // data exposure on this unauthenticated endpoint).
   const headerRow = await trx
     .selectFrom('returns')
     .selectAll()
     .where('workspace_id', '=', workspaceId)
-    .where('return_number', 'ilike', trimmed)
+    .where((eb) => eb(eb.fn('lower', ['return_number']), '=', trimmed.toLowerCase()))
     .executeTakeFirst();
   if (!headerRow) return null;
 

@@ -59,9 +59,11 @@ export function edgeLabelOptionsForSource(
     return { restricted: true, labels: ["whitelist", "blacklist", "default"] }
   }
   if (nt === "returns.evaluate") {
+    // Must cover every port the server can emit: the four outcomes
+    // (incl. "keep" via defaultOutcome) plus needs_review and no_return.
     return {
       restricted: true,
-      labels: ["refund", "exchange", "credit", "needs_review", "no_return"],
+      labels: ["refund", "exchange", "credit", "keep", "needs_review", "no_return"],
     }
   }
   if (nt === "logic.threshold") {
