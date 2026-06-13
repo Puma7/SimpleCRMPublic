@@ -63,6 +63,8 @@ jest.mock('../../electron/email/email-imap-flags', () => ({
   markMessageSeenWithOptionalServerSync: (...args: unknown[]) =>
     mockMarkMessageSeenWithOptionalServerSync(...args),
 }));
+
+jest.mock('../../electron/email/email-openai', () => ({
   runChatCompletion: (...args: unknown[]) => mockRunChatCompletion(...args),
 }));
 
