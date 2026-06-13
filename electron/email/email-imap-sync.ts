@@ -108,7 +108,7 @@ async function syncFolderImapInternal(
            )
            UPDATE ${EMAIL_MESSAGES_TABLE}
            SET uid = -(ABS(id) + (SELECT v FROM negative_uid_offset)),
-               soft_deleted = 1,
+               soft_deleted = 0,
                post_process_done = 1
            WHERE folder_id = ? AND uid >= 0`,
           )

@@ -4,7 +4,7 @@ import { normalizeEmailAddress } from './email-address-normalize';
  * Parse To/Cc fields: supports "a@b.de", "Name <a@b.de>", comma/semicolon lists.
  * Returns normalized address strings for comparison; empty entries dropped.
  */
-const ADDR_CORE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i
+const ADDR_CORE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/i
 
 export function extractEmailAddressesFromRecipientField(
   raw: string,

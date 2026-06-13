@@ -102,7 +102,7 @@ describe('email-workflow-graph-compile', () => {
     expect(steps.some((s) => s.type === 'stop')).toBe(true);
   });
 
-  test('compiles trigger-to-action paths as unconditional rules', () => {
+  test('drops trigger-to-action paths instead of emitting skipped unconditional rules', () => {
     const graph = {
       nodes: [
         { id: 't1', type: 'trigger', position: { x: 0, y: 0 }, data: { kind: 'inbound' } },
@@ -110,9 +110,7 @@ describe('email-workflow-graph-compile', () => {
       ],
       edges: [{ id: 'e0', source: 't1', target: 'a1' }],
     } as WorkflowGraphDocument;
-    expect(compileGraphToDefinition(graph).rules).toEqual([
-      { when: null, then: [{ type: 'tag', tag: 'orphan' }] },
-    ]);
+    expect(compileGraphToDefinition(graph).rules).toEqual([]);
   });
 
   test('definitionToJson serializes', () => {

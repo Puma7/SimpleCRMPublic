@@ -30,6 +30,8 @@ describe('email recipient mapping', () => {
 
   it('extractEmailAddresses rejects invalid tokens', () => {
     expect(extractEmailAddressesFromRecipientField('not-an-email')).toEqual([]);
+    expect(extractEmailAddressesFromRecipientField('bad<addr@example.com')).toEqual([]);
+    expect(extractEmailAddressesFromRecipientField('addr@example.com>')).toEqual([]);
   });
 
   it('extractEmailAddresses can preserve plus-addressed delivery mailboxes', () => {

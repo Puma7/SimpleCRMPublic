@@ -23,6 +23,17 @@ function requireMessage(ctx: WorkflowContext) {
   return { row: ctx.message, messageId: ctx.messageId };
 }
 
+function shouldSyncSeenStateToServer(row: { account_id?: number | null }): boolean {
+  const accountId = row.account_id;
+  if (accountId == null) return false;
+  const account = getEmailAccountById(accountId);
+  return (
+    account != null &&
+    (account.protocol || 'imap') === 'imap' &&
+    (account.imap_sync_seen_on_open ?? 1) !== 0
+  );
+}
+
 export function registerEmailNodes(register: Reg): void {
   register({
     type: 'email.tag',
@@ -47,11 +58,7 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx) => {
       const { row, messageId } = requireMessage(ctx);
       if (!ctx.dryRun) {
-        const account = row.account_id != null ? getEmailAccountById(row.account_id) : null;
-        const syncToServer =
-          account != null &&
-          (account.protocol || 'imap') === 'imap' &&
-          (account.imap_sync_seen_on_open ?? 1) !== 0;
+        const syncToServer = shouldSyncSeenStateToServer(row);
         setMessageSeenLocal(messageId, true, syncToServer);
         if (syncToServer) {
           try {

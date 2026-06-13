@@ -62,6 +62,8 @@ describe('email-forward-copy', () => {
 
   test('rejects invalid recipient strings before SMTP', async () => {
     expect(normalizeForwardCopyRecipients('not-an-email')).toEqual([]);
+    expect(normalizeForwardCopyRecipients('bad<addr@example.com')).toEqual([]);
+    expect(normalizeForwardCopyRecipients('addr@example.com>')).toEqual([]);
     expect(await sendWorkflowForwardCopy({ ...input, to: 'not-an-email' })).toEqual({
       ok: false,
       reason: 'Empfänger fehlt',
