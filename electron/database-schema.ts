@@ -331,6 +331,7 @@ export const createEmailMessagesTable = `
     body_text TEXT,
     body_html TEXT,
     seen_local INTEGER NOT NULL DEFAULT 0,
+    seen_sync_pending INTEGER NOT NULL DEFAULT 0,
     done_local INTEGER NOT NULL DEFAULT 0,
     sent_imap_sync_failed INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,

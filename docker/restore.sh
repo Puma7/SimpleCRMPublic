@@ -30,6 +30,19 @@ verify_backup_file() {
   fi
 }
 
+validate_tar_archive() {
+  archive_path="$1"
+  tar -tf "$archive_path" | while IFS= read -r entry; do
+    case "$entry" in
+      ""|/*|*"/../"*|../*|*"/.."|*"\\"*|[A-Za-z]:*)
+        echo "unsafe tar entry: $entry" >&2
+        exit 1
+        ;;
+    esac
+  done
+  tar -tvf "$archive_path" | awk '{ if ($1 !~ /^[-d]/) { print "unsafe tar entry: " $0 > "/dev/stderr"; exit 1 } }'
+}
+
 DUMP_DIR="$(dirname "$DUMP_PATH")"
 DUMP_FILE="$(basename "$DUMP_PATH")"
 CHECKSUM_MANIFEST=""
@@ -53,6 +66,14 @@ else
   echo "warning: checksum manifest not found; restoring without backup hash verification" >&2
 fi
 
+if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
+  validate_tar_archive "$ATTACHMENTS_ARCHIVE"
+fi
+
+if [ -n "$AUDIT_ARCHIVE" ]; then
+  validate_tar_archive "$AUDIT_ARCHIVE"
+fi
+
 if [ -n "$PG_RESTORE_ROLE" ]; then
   pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
 else
@@ -61,10 +82,10 @@ fi
 
 if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
   mkdir -p "$ATTACHMENTS_DIR"
-  tar -C "$ATTACHMENTS_DIR" -xf "$ATTACHMENTS_ARCHIVE"
+  tar -C "$ATTACHMENTS_DIR" --no-same-owner --no-same-permissions -xf "$ATTACHMENTS_ARCHIVE"
 fi
 
 if [ -n "$AUDIT_ARCHIVE" ]; then
   mkdir -p "$AUDIT_ARCHIVE_DIR"
-  tar -C "$AUDIT_ARCHIVE_DIR" -xf "$AUDIT_ARCHIVE"
+  tar -C "$AUDIT_ARCHIVE_DIR" --no-same-owner --no-same-permissions -xf "$AUDIT_ARCHIVE"
 fi

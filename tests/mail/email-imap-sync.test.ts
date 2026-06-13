@@ -155,6 +155,24 @@ describe('email-imap-sync', () => {
     expect(mockRestoreMeta).toHaveBeenCalled();
   });
 
+  test('syncInboxImap preserves local bodies during uid validity reset', async () => {
+    (mockFolder as { last_uid: number; uidvalidity_str: string }).last_uid = 5;
+    (mockFolder as { uidvalidity_str: string }).uidvalidity_str = '1';
+    client.status.mockResolvedValueOnce({ uidValidity: 2, uidNext: 3005, messages: 3004 });
+    stmt.get.mockReturnValueOnce({ c: 3004 });
+    client.search.mockResolvedValueOnce([]);
+
+    await syncInboxImap(1);
+
+    const preparedSql = db.prepare.mock.calls.map(([sql]) => String(sql));
+    expect(preparedSql).not.toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/DELETE\s+FROM\s+email_messages\s+WHERE\s+folder_id/i),
+      ]),
+    );
+    expect(mockRecordNotice).toHaveBeenCalledWith(expect.objectContaining({ messageCount: 3004 }));
+  });
+
   test('syncInboxImap first sync selects newest uids only', async () => {
     (mockFolder as { last_uid: number }).last_uid = 0;
     const many = Array.from({ length: 5 }, (_, i) => i + 1);

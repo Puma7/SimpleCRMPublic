@@ -407,6 +407,11 @@ export const IPCChannels = {
   Returns: ReturnsChannels,
 } as const;
 
+export const DesktopServerOnlyInvokeChannels = tuple(
+  ...Object.values(UserGroupChannels),
+  ...Object.values(ReturnsChannels),
+);
+
 // Flattened invoke list for preload allow-listing
 export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Window),
@@ -427,7 +432,6 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Pgp),
   ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
-  ...Object.values(IPCChannels.Returns),
   ...Object.values(IPCChannels.Diagnostics),
   ...Object.values(IPCChannels.Maintenance),
 );

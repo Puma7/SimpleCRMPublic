@@ -30,8 +30,9 @@ export type WorkflowThenStep =
   | { type: 'hold_outbound'; reason: string }
   | { type: 'set_category'; path: string }
   | { type: 'link_customer' }
-  | { type: 'forward_copy'; to: string }
+  | { type: 'forward_copy'; to: string; includeAttachments?: boolean; runOutboundReview?: boolean }
   | { type: 'tag_attachment_meta'; tag: string }
+  | { type: 'registry'; nodeType: string; config: Record<string, unknown> }
   | { type: 'ai_review'; promptId: number; blockKeyword?: string }
   | { type: 'stop' };
 
@@ -53,6 +54,10 @@ function isConditionData(d: unknown): d is GraphConditionNodeData {
   return Boolean(d && typeof d === 'object' && 'field' in d && 'op' in d && 'value' in d);
 }
 
+function isRegistryData(data: unknown): data is { nodeType: string; config?: Record<string, unknown> } {
+  return Boolean(data && typeof data === 'object' && 'nodeType' in data);
+}
+
 function isActionData(d: unknown): d is GraphActionNodeData {
   return Boolean(d && typeof d === 'object' && 'actionType' in d);
 }
@@ -72,7 +77,12 @@ function mapAction(data: GraphActionNodeData): WorkflowThenStep | null {
     case 'link_customer':
       return { type: 'link_customer' };
     case 'forward_copy':
-      return { type: 'forward_copy', to: data.to };
+      return {
+        type: 'forward_copy',
+        to: data.to,
+        includeAttachments: data.includeAttachments === true,
+        runOutboundReview: data.runOutboundReview === true,
+      };
     case 'tag_attachment_meta':
       return { type: 'tag_attachment_meta', tag: data.tag };
     case 'ai_review':
@@ -85,6 +95,46 @@ function mapAction(data: GraphActionNodeData): WorkflowThenStep | null {
       return { type: 'stop' };
     default:
       return null;
+  }
+}
+
+function mapRegistryAction(data: { nodeType: string; config?: Record<string, unknown> }): WorkflowThenStep | null {
+  const config = data.config && typeof data.config === 'object' ? data.config : {};
+  switch (data.nodeType) {
+    case 'email.tag':
+      return typeof config.tag === 'string' ? { type: 'tag', tag: config.tag } : null;
+    case 'email.mark_seen':
+      return { type: 'mark_seen' };
+    case 'email.archive':
+      return { type: 'archive' };
+    case 'email.hold_outbound':
+      return { type: 'hold_outbound', reason: String(config.reason ?? '') };
+    case 'email.set_category':
+      return typeof config.path === 'string' ? { type: 'set_category', path: config.path } : null;
+    case 'crm.link_customer':
+      return { type: 'link_customer' };
+    case 'email.forward_copy':
+      return typeof config.to === 'string'
+        ? {
+          type: 'forward_copy',
+          to: config.to,
+          includeAttachments: config.includeAttachments === true,
+          runOutboundReview: config.runOutboundReview === true,
+        }
+        : null;
+    case 'email.tag_attachment_meta':
+      return { type: 'tag_attachment_meta', tag: String(config.tag ?? 'attachment') };
+    case 'ai.review':
+    case 'ai.outbound_review': {
+      const promptId = Number(config.promptId ?? 0);
+      return Number.isFinite(promptId) && promptId > 0
+        ? { type: 'ai_review', promptId, blockKeyword: typeof config.blockKeyword === 'string' ? config.blockKeyword : undefined }
+        : { type: 'registry', nodeType: data.nodeType, config };
+    }
+    case 'logic.stop':
+      return { type: 'stop' };
+    default:
+      return { type: 'registry', nodeType: data.nodeType, config };
   }
 }
 
@@ -102,13 +152,18 @@ function edgeIsNo(e: WorkflowGraphEdge): boolean {
   return label === 'no' || label === 'nein' || label === 'false';
 }
 
-function conditionFromNode(data: GraphConditionNodeData): WorkflowCondition {
-  return {
+function conditionFromNode(data: GraphConditionNodeData): WorkflowConditionItem {
+  const condition: WorkflowCondition = {
     field: data.field,
     op: data.op,
     value: data.value,
     caseInsensitive: data.caseInsensitive,
   };
+  return data.negated === true ? { not: condition } : condition;
+}
+
+function invertConditionItem(condition: WorkflowConditionItem): WorkflowConditionItem {
+  return 'not' in condition ? condition.not : { not: condition };
 }
 
 type CompileState = {
@@ -155,7 +210,7 @@ function walkFrom(
           noEdge.target,
           nodesById,
           edges,
-          { conditions: [...state.conditions, { not: cond }], then: [] },
+          { conditions: [...state.conditions, invertConditionItem(cond)], then: [] },
           new Set(localVisited),
           rules,
         );
@@ -168,14 +223,16 @@ function walkFrom(
       continue;
     }
 
-    if (node.type === 'action' && isActionData(node.data)) {
-      const step = mapAction(node.data);
-      if (step) {
-        state.then.push(step);
-        if (step.type === 'stop') {
-          flushRule(state, rules);
-          return;
-        }
+    const step = node.type === 'action' && isActionData(node.data)
+      ? mapAction(node.data)
+      : node.type === 'registry' && isRegistryData(node.data)
+        ? mapRegistryAction(node.data)
+        : null;
+    if (step) {
+      state.then.push(step);
+      if (step.type === 'stop') {
+        flushRule(state, rules);
+        return;
       }
     }
 
@@ -189,7 +246,6 @@ function walkFrom(
 
 function flushRule(state: CompileState, rules: WorkflowRule[]): void {
   if (state.then.length === 0 && state.conditions.length === 0) return;
-  if (state.then.length > 0 && state.conditions.length === 0) return;
   const when =
     state.conditions.length === 0
       ? null

@@ -39,6 +39,7 @@ export type GraphConditionNodeData = {
   op: GraphConditionOp;
   value: string;
   caseInsensitive?: boolean;
+  negated?: boolean;
 };
 
 export type GraphActionNodeData =
@@ -48,7 +49,7 @@ export type GraphActionNodeData =
   | { actionType: 'hold_outbound'; reason: string }
   | { actionType: 'set_category'; path: string }
   | { actionType: 'link_customer' }
-  | { actionType: 'forward_copy'; to: string }
+  | { actionType: 'forward_copy'; to: string; includeAttachments?: boolean; runOutboundReview?: boolean }
   | { actionType: 'tag_attachment_meta'; tag: string }
   | { actionType: 'ai_review'; promptId: number; blockKeyword?: string }
   | { actionType: 'stop' };

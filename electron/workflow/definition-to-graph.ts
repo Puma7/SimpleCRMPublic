@@ -37,7 +37,12 @@ function stepToActionData(step: WorkflowThenStep): Record<string, unknown> | nul
     case 'link_customer':
       return { actionType: 'link_customer' };
     case 'forward_copy':
-      return { actionType: 'forward_copy', to: step.to };
+      return {
+        actionType: 'forward_copy',
+        to: step.to,
+        includeAttachments: step.includeAttachments === true,
+        runOutboundReview: step.runOutboundReview === true,
+      };
     case 'tag_attachment_meta':
       return { actionType: 'tag_attachment_meta', tag: step.tag };
     case 'ai_review':
@@ -46,6 +51,8 @@ function stepToActionData(step: WorkflowThenStep): Record<string, unknown> | nul
         promptId: step.promptId,
         blockKeyword: step.blockKeyword,
       };
+    case 'registry':
+      return { nodeType: step.nodeType, config: step.config };
     case 'stop':
       return { actionType: 'stop' };
     default:
@@ -102,7 +109,8 @@ export function definitionToGraphDocument(
       const data = stepToActionData(step);
       if (!data) return;
       const aid = `act-${ruleIdx}-${si}`;
-      nodes.push({ id: aid, type: 'action', data: data as WorkflowGraphNode['data'] });
+      const type = step.type === 'registry' ? 'registry' : 'action';
+      nodes.push({ id: aid, type, data: data as WorkflowGraphNode['data'] });
       edges.push({
         id: `e-${edgeSeq++}`,
         source: prev,

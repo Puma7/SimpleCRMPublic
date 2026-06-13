@@ -32,6 +32,18 @@ describe('email-workflow-graph-compile', () => {
     expect(rules[0]?.then[0]).toEqual({ type: 'tag', tag: 't' });
   });
 
+  test('preserves negated condition nodes as not conditions', () => {
+    const rules = compileGraphToDefinition(doc({
+      nodes: [
+        { id: 't1', type: 'trigger', position: { x: 0, y: 0 }, data: { kind: 'inbound' } },
+        { id: 'c1', type: 'condition', position: { x: 0, y: 0 }, data: { field: 'subject', op: 'contains', value: 'x', negated: true } },
+        { id: 'a1', type: 'action', position: { x: 0, y: 0 }, data: { actionType: 'tag', tag: 'not-x' } },
+      ],
+    })).rules;
+
+    expect(rules[0]?.when).toEqual({ not: { field: 'subject', op: 'contains', value: 'x' } });
+  });
+
   test('splits yes/no branches into separate rules', () => {
     const graph = doc({
       nodes: [
@@ -90,7 +102,7 @@ describe('email-workflow-graph-compile', () => {
     expect(steps.some((s) => s.type === 'stop')).toBe(true);
   });
 
-  test('ignores action-only path without conditions', () => {
+  test('compiles trigger-to-action paths as unconditional rules', () => {
     const graph = {
       nodes: [
         { id: 't1', type: 'trigger', position: { x: 0, y: 0 }, data: { kind: 'inbound' } },
@@ -98,7 +110,9 @@ describe('email-workflow-graph-compile', () => {
       ],
       edges: [{ id: 'e0', source: 't1', target: 'a1' }],
     } as WorkflowGraphDocument;
-    expect(compileGraphToDefinition(graph).rules).toEqual([]);
+    expect(compileGraphToDefinition(graph).rules).toEqual([
+      { when: null, then: [{ type: 'tag', tag: 'orphan' }] },
+    ]);
   });
 
   test('definitionToJson serializes', () => {

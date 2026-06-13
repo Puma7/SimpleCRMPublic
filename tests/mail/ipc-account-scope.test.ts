@@ -3,6 +3,7 @@ jest.mock('../../electron/email/email-store', () => ({
 }));
 
 import { getEmailMessageById } from '../../electron/email/email-store';
+import { IPCChannels } from '../../shared/ipc/channels';
 import {
   EMAIL_MULTI_ACCOUNT_CHANNELS,
   EMAIL_SKIP_ACCOUNT_SCOPE,
@@ -23,6 +24,13 @@ describe('resolveEmailChannelAccountId', () => {
   it('skips account scope for admin/global channels', () => {
     for (const ch of EMAIL_SKIP_ACCOUNT_SCOPE) {
       expect(resolveEmailChannelAccountId(ch, { accountId: 99 })).toBeUndefined();
+    }
+  });
+
+  it('only contains live email channel names in the skip list', () => {
+    const liveEmailChannels = new Set<string>(Object.values(IPCChannels.Email));
+    for (const ch of EMAIL_SKIP_ACCOUNT_SCOPE) {
+      expect(liveEmailChannels.has(ch)).toBe(true);
     }
   });
 

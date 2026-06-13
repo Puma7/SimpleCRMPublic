@@ -101,7 +101,9 @@ async function syncFolderImapInternal(
         const backedUp = backupFolderLocalMetaBeforeUidValidityReset(folderRow.id);
         getDb()
           .prepare(
-            `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ? AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+            `UPDATE ${EMAIL_MESSAGES_TABLE}
+             SET uid = -ABS(id)
+             WHERE folder_id = ? AND uid >= 0`,
           )
           .run(folderRow.id);
         recordUidValidityResetNotice({
@@ -114,7 +116,7 @@ async function syncFolderImapInternal(
         });
         console.warn(
           `[imap-sync] UIDVALIDITY changed account ${accountId} ${folderPath}: ` +
-            `${toDrop?.c ?? 0} messages re-indexed (${backedUp.length} metadata backups)`,
+            `${toDrop?.c ?? 0} local messages preserved for re-index (${backedUp.length} metadata backups)`,
         );
         lastUid = 0;
       }

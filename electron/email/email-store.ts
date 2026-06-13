@@ -94,6 +94,7 @@ export type EmailMessageRow = {
   body_text: string | null;
   body_html: string | null;
   seen_local: number;
+  seen_sync_pending?: number;
   done_local: number;
   sent_imap_sync_failed: number;
   archived: number;
@@ -1133,7 +1134,7 @@ export function createImapUpsertContext(folderId: number, uids: number[]): Messa
 
 function seenLocalOnConflictExpr(reconcileFromServer: boolean): string {
   return reconcileFromServer
-    ? 'seen_local = excluded.seen_local'
+    ? `seen_local = CASE WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.seen_sync_pending, 0) = 1 THEN ${EMAIL_MESSAGES_TABLE}.seen_local ELSE excluded.seen_local END`
     : `seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`;
 }
 
@@ -1604,10 +1605,16 @@ export function setMessageArchived(messageId: number, archived: boolean): void {
     .run(archived ? 1 : 0, archived ? 1 : 0, messageId);
 }
 
-export function setMessageSeenLocal(messageId: number, seen: boolean): void {
+export function setMessageSeenLocal(messageId: number, seen: boolean, pendingServerSync = false): void {
   getDb()
-    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ? WHERE id = ?`)
-    .run(seen ? 1 : 0, messageId);
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ?, seen_sync_pending = ? WHERE id = ?`)
+    .run(seen ? 1 : 0, pendingServerSync ? 1 : 0, messageId);
+}
+
+export function clearMessageSeenSyncPending(messageId: number): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_sync_pending = 0 WHERE id = ?`)
+    .run(messageId);
 }
 
 export function setMessageDoneLocal(messageId: number, done: boolean): void {

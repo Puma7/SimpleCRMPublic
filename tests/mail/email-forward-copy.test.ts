@@ -60,6 +60,27 @@ describe('email-forward-copy', () => {
     });
   });
 
+  test('rejects invalid recipient strings before SMTP', async () => {
+    expect(normalizeForwardCopyRecipients('not-an-email')).toEqual([]);
+    expect(await sendWorkflowForwardCopy({ ...input, to: 'not-an-email' })).toEqual({
+      ok: false,
+      reason: 'Empfänger fehlt',
+    });
+    expect(mockSendSmtp).not.toHaveBeenCalled();
+  });
+
+  test('rejects unsupported desktop forward_copy flags explicitly', async () => {
+    await expect(sendWorkflowForwardCopy({ ...input, includeAttachments: true })).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('Anhänge'),
+    });
+    await expect(sendWorkflowForwardCopy({ ...input, runOutboundReview: true })).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('Ausgangsprüfung'),
+    });
+    expect(mockSendSmtp).not.toHaveBeenCalled();
+  });
+
   test('returns error when account missing', async () => {
     mockGetAccount.mockReturnValue(undefined);
     expect(await sendWorkflowForwardCopy(input)).toEqual({ ok: false, reason: 'Konto fehlt' });

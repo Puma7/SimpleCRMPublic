@@ -47,8 +47,9 @@ export type WorkflowThenStep =
   | { type: 'hold_outbound'; reason: string }
   | { type: 'set_category'; path: string }
   | { type: 'link_customer' }
-  | { type: 'forward_copy'; to: string }
+  | { type: 'forward_copy'; to: string; includeAttachments?: boolean; runOutboundReview?: boolean }
   | { type: 'tag_attachment_meta'; tag: string }
+  | { type: 'registry'; nodeType: string; config: Record<string, unknown> }
   | { type: 'ai_review'; promptId: number; blockKeyword?: string }
   | { type: 'stop' };
 

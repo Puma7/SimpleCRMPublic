@@ -351,6 +351,29 @@ describe('email-compose-send expanded', () => {
     expect(mockSetSyncInfo).toHaveBeenCalledWith('email_compose_smtp_ok:10', '1');
   });
 
+  test('SMTP-committed crash recovery preserves readable attachment paths in sent copy', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-recover-'));
+    const fp = path.join(dir, 'recover.pdf');
+    fs.writeFileSync(fp, 'pdf');
+    mockGetSyncInfo.mockImplementation((key: string) => (key === 'email_compose_smtp_ok:10' ? '1' : null));
+
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+      attachmentPaths: [fp],
+    });
+
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(r).toEqual({ ok: true, recoveredSentAppend: true });
+    expect(mockSendSmtp).not.toHaveBeenCalled();
+    expect(mockPersistLocalComposeAttachments).toHaveBeenCalledWith(10, [
+      { filename: 'recover.pdf', path: fp },
+    ]);
+  });
+
   test('missing account after validation', async () => {
     mockGetAccount.mockReturnValueOnce(null);
     const r = await sendComposeDraft({

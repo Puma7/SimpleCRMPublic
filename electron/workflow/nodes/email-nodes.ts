@@ -122,6 +122,8 @@ export function registerEmailNodes(register: Reg): void {
         subject: subj,
         bodyText: body,
         originalFromLine: ctx.strings.from_address,
+        includeAttachments: config.includeAttachments === true,
+        runOutboundReview: config.runOutboundReview === true,
       });
       if (!sent.ok) {
         return { status: 'error', message: sent.reason };

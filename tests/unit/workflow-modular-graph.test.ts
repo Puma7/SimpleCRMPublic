@@ -26,4 +26,40 @@ describe('modular workflow graphs', () => {
     expect(doc).not.toBeNull();
     expect(doc!.nodes.some((n) => n.type === 'action')).toBe(true);
   });
+
+  test('definitionToGraphDocument preserves forward-copy options and registry steps', () => {
+    const doc = definitionToGraphDocument({
+      version: 1,
+      rules: [{
+        when: { field: 'subject', op: 'contains', value: 'Rechnung' },
+        then: [
+          { type: 'forward_copy', to: 'bank@example.com', includeAttachments: true, runOutboundReview: true },
+          { type: 'registry', nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false } },
+        ],
+      }],
+    }, 'inbound');
+
+    expect(doc).not.toBeNull();
+    expect(doc!.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'action',
+          data: expect.objectContaining({
+            actionType: 'forward_copy',
+            to: 'bank@example.com',
+            includeAttachments: true,
+            runOutboundReview: true,
+          }),
+        }),
+        expect.objectContaining({
+          type: 'registry',
+          data: expect.objectContaining({
+            nodeType: 'email.send_draft',
+            config: expect.objectContaining({ draftIdVariable: 'draft.id', runOutboundReview: false }),
+          }),
+        }),
+      ]),
+    );
+  });
+
 });

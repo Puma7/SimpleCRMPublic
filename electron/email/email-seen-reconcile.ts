@@ -7,7 +7,7 @@ const SEEN_RECONCILE_CHUNK = 200;
 
 /**
  * Align seen_local with server \\Seen for messages already in the folder (NF11).
- * Server flags win on reconcile — matches webmail read state after sync.
+ * Server flags win unless a local seen change is still waiting for IMAP push.
  */
 export async function reconcileSeenFlagsForFolder(
   client: ImapFlow,
@@ -24,7 +24,9 @@ export async function reconcileSeenFlagsForFolder(
   if (rows.length === 0) return 0;
 
   const updateStmt = getDb().prepare(
-    `UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ? WHERE folder_id = ? AND uid = ? AND seen_local != ?`,
+    `UPDATE ${EMAIL_MESSAGES_TABLE}
+     SET seen_local = ?
+     WHERE folder_id = ? AND uid = ? AND seen_local != ? AND COALESCE(seen_sync_pending, 0) = 0`,
   );
 
   let changed = 0;

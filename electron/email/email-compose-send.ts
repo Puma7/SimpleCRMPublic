@@ -250,6 +250,7 @@ async function finalizeCommittedSmtpDraft(
     bcc?: string;
     inReplyToMessageId?: number | null;
     requestReadReceipt?: boolean;
+    attachmentPaths?: string[];
   },
   draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
   html: string | null,
@@ -273,6 +274,15 @@ async function finalizeCommittedSmtpDraft(
   const ticket = draft.ticket_code?.trim();
   const finalSubject = ticket ? ensureTicketInSubject(subjectBase, ticket) : subjectBase;
   const requestReceipt = resolveRequestReadReceipt(acc, input.requestReadReceipt);
+  const recoveredAttachments = (input.attachmentPaths ?? [])
+    .filter((attachmentPath) => {
+      try {
+        return fs.statSync(attachmentPath).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .map((attachmentPath) => ({ filename: path.basename(attachmentPath), path: attachmentPath }));
 
   const fin = await finalizeSentDraft({
     accountId: input.accountId,
@@ -287,7 +297,7 @@ async function finalizeCommittedSmtpDraft(
     messageId: outboundMessageId,
     inReplyTo: draft.in_reply_to ?? undefined,
     references: draft.references_header ?? undefined,
-    attachments: [],
+    attachments: recoveredAttachments,
     requestReadReceipt: requestReceipt,
   });
   if (fin.sentAppendWarning) {
