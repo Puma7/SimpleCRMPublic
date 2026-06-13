@@ -35,6 +35,7 @@ jest.mock('../../electron/email/email-imap-flags', () => ({
 import {
   addMessageTag,
   clearMessageSeenSyncPending,
+  getEmailAccountById,
   setMessageSeenLocal,
 } from '../../electron/email/email-store';
 import { syncSeenFlagToServer } from '../../electron/email/email-imap-flags';
@@ -181,6 +182,11 @@ describe('workflow builtin nodes', () => {
   test('email.mark_seen keeps local seen state pending until IMAP push succeeds', async () => {
     const email = collect(registerEmailNodes).get('email.mark_seen')!;
     const message = { id: 42, account_id: 1, folder_id: 2, uid: 5, pop3_uidl: null } as never;
+    jest.mocked(getEmailAccountById).mockReturnValue({
+      id: 1,
+      protocol: 'imap',
+      imap_sync_seen_on_open: 1,
+    } as never);
 
     await expect(
       email.execute(ctx({ messageId: 42, message, dryRun: false }), {}, 'mark-seen'),
@@ -189,6 +195,24 @@ describe('workflow builtin nodes', () => {
     expect(setMessageSeenLocal).toHaveBeenCalledWith(42, true, true);
     expect(syncSeenFlagToServer).toHaveBeenCalledWith(message, true);
     expect(clearMessageSeenSyncPending).toHaveBeenCalledWith(42);
+  });
+
+  test('email.mark_seen skips IMAP sync when account disabled seen sync on open', async () => {
+    const email = collect(registerEmailNodes).get('email.mark_seen')!;
+    const message = { id: 42, account_id: 1, folder_id: 2, uid: 5, pop3_uidl: null } as never;
+    jest.mocked(getEmailAccountById).mockReturnValue({
+      id: 1,
+      protocol: 'imap',
+      imap_sync_seen_on_open: 0,
+    } as never);
+
+    await expect(
+      email.execute(ctx({ messageId: 42, message, dryRun: false }), {}, 'mark-seen-disabled'),
+    ).resolves.toMatchObject({ status: 'ok' });
+
+    expect(setMessageSeenLocal).toHaveBeenCalledWith(42, true, false);
+    expect(syncSeenFlagToServer).not.toHaveBeenCalled();
+    expect(clearMessageSeenSyncPending).not.toHaveBeenCalled();
   });
 
   test('integration nodes expose dry-run/error paths without external calls', async () => {

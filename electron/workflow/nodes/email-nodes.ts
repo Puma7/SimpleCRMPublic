@@ -23,6 +23,17 @@ function requireMessage(ctx: WorkflowContext) {
   return { row: ctx.message, messageId: ctx.messageId };
 }
 
+function shouldSyncSeenStateToServer(row: { account_id?: number | null }): boolean {
+  const accountId = row.account_id;
+  if (accountId == null) return false;
+  const account = getEmailAccountById(accountId);
+  return (
+    account != null &&
+    (account.protocol || 'imap') === 'imap' &&
+    (account.imap_sync_seen_on_open ?? 1) !== 0
+  );
+}
+
 export function registerEmailNodes(register: Reg): void {
   register({
     type: 'email.tag',
@@ -47,13 +58,16 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx) => {
       const { row, messageId } = requireMessage(ctx);
       if (!ctx.dryRun) {
-        setMessageSeenLocal(messageId, true, true);
-        try {
-          const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
-          await syncSeenFlagToServer(row, true);
-          clearMessageSeenSyncPending(messageId);
-        } catch {
-          /* best-effort */
+        const syncToServer = shouldSyncSeenStateToServer(row);
+        setMessageSeenLocal(messageId, true, syncToServer);
+        if (syncToServer) {
+          try {
+            const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
+            await syncSeenFlagToServer(row, true);
+            clearMessageSeenSyncPending(messageId);
+          } catch {
+            /* best-effort */
+          }
         }
       }
       return { status: 'ok' };
