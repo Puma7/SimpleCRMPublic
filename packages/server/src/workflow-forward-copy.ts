@@ -199,9 +199,6 @@ export function createPostgresWorkflowForwardCopyPort(
       }
 
       if (prepared.duplicate) {
-        if (input.runOutboundReview === true && !input.continuation) {
-          throw new Error('workflow forward-copy already materialised a review draft for this message/workflow/destination');
-        }
         await enqueueForwardCopyContinuation(options, input, {
           ok: true,
           error: null,

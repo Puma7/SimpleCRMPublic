@@ -185,6 +185,7 @@ describe('email-workflow-engine core', () => {
     mockSyncInboxPop3.mockResolvedValue({ fetched: 2 });
     mockSyncInboxImap.mockResolvedValue({ fetched: 3 });
     mockTryOutboundApprovalBypass.mockReturnValue(false);
+    mockGetEmailAccountById.mockReturnValue({ id: 1, protocol: 'imap', imap_sync_seen_on_open: 1 });
   });
 
   describe('outboundPayloadFromMessage', () => {

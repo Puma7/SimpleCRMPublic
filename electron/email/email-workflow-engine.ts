@@ -102,6 +102,17 @@ function buildOutboundContext(payload: OutboundDraftPayload) {
   };
 }
 
+function shouldSyncSeenStateToServer(row: EmailMessageRow): boolean {
+  const accountId = row.account_id;
+  if (accountId == null) return false;
+  const account = getEmailAccountById(accountId);
+  return (
+    account != null &&
+    (account.protocol || 'imap') === 'imap' &&
+    (account.imap_sync_seen_on_open ?? 1) !== 0
+  );
+}
+
 async function executeInboundStep(
   step: WorkflowThenStep,
   messageId: number,
@@ -115,7 +126,7 @@ async function executeInboundStep(
       log.push(`tag:${step.tag}`);
       return true;
     case 'mark_seen':
-      setMessageSeenLocal(messageId, true, true);
+      setMessageSeenLocal(messageId, true, shouldSyncSeenStateToServer(row));
       log.push('mark_seen');
       return true;
     case 'archive':

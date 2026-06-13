@@ -101,13 +101,18 @@ async function syncFolderImapInternal(
         const backedUp = backupFolderLocalMetaBeforeUidValidityReset(folderRow.id);
         getDb()
           .prepare(
-            `UPDATE ${EMAIL_MESSAGES_TABLE}
-           SET uid = -ABS(id),
+            `WITH negative_uid_offset(v) AS (
+             SELECT COALESCE(MAX(ABS(uid)), 0)
+             FROM ${EMAIL_MESSAGES_TABLE}
+             WHERE folder_id = ? AND uid < 0
+           )
+           UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET uid = -(ABS(id) + (SELECT v FROM negative_uid_offset)),
                soft_deleted = 1,
                post_process_done = 1
            WHERE folder_id = ? AND uid >= 0`,
           )
-          .run(folderRow.id);
+          .run(folderRow.id, folderRow.id);
         recordUidValidityResetNotice({
           accountId,
           folderPath,
@@ -272,11 +277,13 @@ async function syncFolderImapInternal(
       }
 
       try {
-        const seenPushed = await pushPendingSeenSyncsForFolder(client, folderRow.id, signal);
-        if (seenPushed > 0) {
-          console.log(
-            `[imap-sync] pushed pending seen flag(s) for ${seenPushed} message(s) in ${folderPath}`,
-          );
+        if ((account.imap_sync_seen_on_open ?? 1) !== 0) {
+          const seenPushed = await pushPendingSeenSyncsForFolder(client, folderRow.id, signal);
+          if (seenPushed > 0) {
+            console.log(
+              `[imap-sync] pushed pending seen flag(s) for ${seenPushed} message(s) in ${folderPath}`,
+            );
+          }
         }
         const seenReconciled = await reconcileSeenFlagsForFolder(
           client,

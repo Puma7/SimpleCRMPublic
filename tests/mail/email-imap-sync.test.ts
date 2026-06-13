@@ -172,7 +172,7 @@ describe('email-imap-sync', () => {
     );
     expect(preparedSql).toEqual(
       expect.arrayContaining([
-        expect.stringMatching(/SET\s+uid\s*=\s*-ABS\(id\),[\s\S]*soft_deleted\s*=\s*1,[\s\S]*post_process_done\s*=\s*1/i),
+        expect.stringMatching(/SET\s+uid\s*=\s*-\(ABS\(id\)\s*\+\s*\(SELECT\s+v\s+FROM\s+negative_uid_offset\)\),[\s\S]*soft_deleted\s*=\s*1,[\s\S]*post_process_done\s*=\s*1/i),
       ]),
     );
     expect(mockRecordNotice).toHaveBeenCalledWith(expect.objectContaining({ messageCount: 3004 }));
