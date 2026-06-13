@@ -47,13 +47,20 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx) => {
       const { row, messageId } = requireMessage(ctx);
       if (!ctx.dryRun) {
-        setMessageSeenLocal(messageId, true, true);
-        try {
-          const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
-          await syncSeenFlagToServer(row, true);
-          clearMessageSeenSyncPending(messageId);
-        } catch {
-          /* best-effort */
+        const account = row.account_id != null ? getEmailAccountById(row.account_id) : null;
+        const syncToServer =
+          account != null &&
+          (account.protocol || 'imap') === 'imap' &&
+          (account.imap_sync_seen_on_open ?? 1) !== 0;
+        setMessageSeenLocal(messageId, true, syncToServer);
+        if (syncToServer) {
+          try {
+            const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
+            await syncSeenFlagToServer(row, true);
+            clearMessageSeenSyncPending(messageId);
+          } catch {
+            /* best-effort */
+          }
         }
       }
       return { status: 'ok' };
