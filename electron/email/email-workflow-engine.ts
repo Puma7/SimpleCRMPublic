@@ -3,7 +3,6 @@ import {
   getEmailMessageById,
   addMessageTag,
   setMessageArchived,
-  setMessageSeenLocal,
   setOutboundHold,
   getEmailAccountById,
   listEmailAccounts,
@@ -114,10 +113,12 @@ async function executeInboundStep(
       addMessageTag(messageId, step.tag);
       log.push(`tag:${step.tag}`);
       return true;
-    case 'mark_seen':
-      setMessageSeenLocal(messageId, true);
+    case 'mark_seen': {
+      const { markMessageSeenWithOptionalServerSync } = await import('./email-imap-flags');
+      await markMessageSeenWithOptionalServerSync(row, true);
       log.push('mark_seen');
       return true;
+    }
     case 'archive':
       setMessageArchived(messageId, true);
       log.push('archive');

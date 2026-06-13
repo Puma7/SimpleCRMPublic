@@ -244,7 +244,8 @@ describe('server edition repository boundaries', () => {
     expect(restore.indexOf('validate_tar_archive "$ATTACHMENTS_ARCHIVE"')).toBeLessThan(
       restore.indexOf('pg_restore --clean --if-exists --no-owner'),
     );
-    expect(restore).toContain('unsafe tar entry');
+    expect(restore).toContain('".."');
+    expect(restore).toContain('"../"*');
     expect(restore).toContain('tar -C "$ATTACHMENTS_DIR" --no-same-owner --no-same-permissions -xf "$ATTACHMENTS_ARCHIVE"');
     expect(restore).toContain('tar -C "$AUDIT_ARCHIVE_DIR" --no-same-owner --no-same-permissions -xf "$AUDIT_ARCHIVE"');
     expect(restoreCompose).toContain('compose stop caddy api');

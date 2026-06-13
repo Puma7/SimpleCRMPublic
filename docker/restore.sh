@@ -34,7 +34,7 @@ validate_tar_archive() {
   archive_path="$1"
   tar -tf "$archive_path" | while IFS= read -r entry; do
     case "$entry" in
-      ""|/*|*"/../"*|../*|*"/.."|*"\\"*|[A-Za-z]:*)
+      ""|".."|"../"*|/*|*"/../"*|../*|*"/.."|*"\\"*|[A-Za-z]:*)
         echo "unsafe tar entry: $entry" >&2
         exit 1
         ;;

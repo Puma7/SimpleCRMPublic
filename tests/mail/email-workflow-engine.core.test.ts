@@ -5,6 +5,7 @@ const mockGetEmailMessageById = jest.fn();
 const mockAddMessageTag = jest.fn();
 const mockSetMessageArchived = jest.fn();
 const mockSetMessageSeenLocal = jest.fn();
+const mockMarkMessageSeenWithOptionalServerSync = jest.fn();
 const mockSetOutboundHold = jest.fn();
 const mockGetEmailAccountById = jest.fn();
 const mockListEmailAccounts = jest.fn(() => []);
@@ -58,7 +59,10 @@ jest.mock('../../electron/email/email-workflow-store', () => ({
   getWorkflowById: (...args: unknown[]) => mockGetWorkflowById(...args),
 }));
 
-jest.mock('../../electron/email/email-openai', () => ({
+jest.mock('../../electron/email/email-imap-flags', () => ({
+  markMessageSeenWithOptionalServerSync: (...args: unknown[]) =>
+    mockMarkMessageSeenWithOptionalServerSync(...args),
+}));
   runChatCompletion: (...args: unknown[]) => mockRunChatCompletion(...args),
 }));
 
@@ -241,7 +245,10 @@ describe('email-workflow-engine core', () => {
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
       expect(log).toContain('rule_matched');
       expect(mockAddMessageTag).toHaveBeenCalledWith(42, 'Amazon');
-      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true);
+      expect(mockMarkMessageSeenWithOptionalServerSync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 42 }),
+        true,
+      );
       expect(mockSetMessageArchived).toHaveBeenCalledWith(42, true);
       expect(mockAssignCategoryPathToMessage).toHaveBeenCalledWith(42, 'Shop/Amazon');
       expect(mockTryLinkMessageToCustomer).toHaveBeenCalledWith(42);
