@@ -10,7 +10,7 @@ import { redactOneTimeSetupTokenInDatabase } from '../auth/setup-token';
 import { MAIL_SCHEMA_GENERATION, MAIL_SCHEMA_GENERATION_LABEL } from '../db/mail-schema-version';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 
-const MAX_BACKUP_ATTACH_BYTES = 8 * 1024 * 1024 * 1024;
+export const MAX_BACKUP_ATTACH_BYTES = 8 * 1024 * 1024 * 1024;
 
 function dirSizeBytes(dir: string): number {
   if (!fs.existsSync(dir)) return 0;

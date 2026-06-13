@@ -50,7 +50,7 @@ export function registerWorkflowHandlers(options: {
       async (
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId: number; dryRun?: boolean },
-      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, payload.dryRun !== false),
+      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, true),
       { logger },
     ),
   );

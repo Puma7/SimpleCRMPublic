@@ -9,7 +9,7 @@ import { app, dialog, type OpenDialogReturnValue } from 'electron';
 import Database from 'better-sqlite3';
 import { MAIL_SCHEMA_GENERATION } from '../db/mail-schema-version';
 import { inspectZipBackup } from './email-local-backup';
-import { exportLocalMailBackupToPath } from './email-local-backup-export';
+import { exportLocalMailBackupToPath, MAX_BACKUP_ATTACH_BYTES } from './email-local-backup-export';
 import {
   findDatabaseSqliteInTree,
   resolveSafePathUnderDirectory,
@@ -24,8 +24,8 @@ import { closeDatabase, reopenDatabaseConnection } from '../sqlite-service';
 
 const RESTORE_CONFIRM_PHRASE = 'WIEDERHERSTELLEN';
 const RESTORE_ZIP_MAX_ENTRIES = 10_000;
-const RESTORE_ZIP_MAX_ENTRY_BYTES = 2_000 * 1024 * 1024;
-const RESTORE_ZIP_MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
+const RESTORE_ZIP_MAX_ENTRY_BYTES = MAX_BACKUP_ATTACH_BYTES;
+const RESTORE_ZIP_MAX_TOTAL_BYTES = MAX_BACKUP_ATTACH_BYTES + 1024 * 1024 * 1024;
 
 export { resolveSafePathUnderDirectory } from './email-zip-path-safety';
 

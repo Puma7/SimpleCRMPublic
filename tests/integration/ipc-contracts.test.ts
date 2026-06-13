@@ -134,6 +134,14 @@ describe('IPC contracts', () => {
     expect(source).toMatch(/IPCChannels\.Email\.ExecuteWorkflowNow[\s\S]*requireRole:\s*\['owner',\s*'admin'\]/);
   });
 
+  test('desktop workflow test-on-message IPC cannot opt into live execution', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'electron/ipc/workflow.ts'), 'utf8');
+    const handler = source.match(/IPCChannels\.Email\.TestWorkflowOnMessage[\s\S]*?\n\s*\),\n\s*\);/)?.[0] ?? '';
+    expect(handler).toContain('testWorkflowOnMessage');
+    expect(handler).not.toContain('payload.dryRun !== false');
+    expect(handler).toMatch(/testWorkflowOnMessage\(payload\.workflowId,\s*payload\.messageId,\s*true\)/);
+  });
+
   test('FollowUp channels are in AllowedInvokeChannels', () => {
     expect(AllowedInvokeChannels).toContain(IPCChannels.FollowUp.GetItems);
     expect(AllowedInvokeChannels).toContain(IPCChannels.FollowUp.GetQueueCounts);
