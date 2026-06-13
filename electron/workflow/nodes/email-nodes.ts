@@ -1,5 +1,6 @@
 import {
   addMessageTag,
+  clearMessageSeenSyncPending,
   setMessageArchived,
   setMessageSeenLocal,
   setMessageSpam,
@@ -46,10 +47,11 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx) => {
       const { row, messageId } = requireMessage(ctx);
       if (!ctx.dryRun) {
-        setMessageSeenLocal(messageId, true);
+        setMessageSeenLocal(messageId, true, true);
         try {
           const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
           await syncSeenFlagToServer(row, true);
+          clearMessageSeenSyncPending(messageId);
         } catch {
           /* best-effort */
         }

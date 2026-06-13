@@ -115,7 +115,7 @@ async function executeInboundStep(
       log.push(`tag:${step.tag}`);
       return true;
     case 'mark_seen':
-      setMessageSeenLocal(messageId, true);
+      setMessageSeenLocal(messageId, true, true);
       log.push('mark_seen');
       return true;
     case 'archive':

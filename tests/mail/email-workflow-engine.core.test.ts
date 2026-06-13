@@ -241,7 +241,7 @@ describe('email-workflow-engine core', () => {
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
       expect(log).toContain('rule_matched');
       expect(mockAddMessageTag).toHaveBeenCalledWith(42, 'Amazon');
-      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true);
+      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true, true);
       expect(mockSetMessageArchived).toHaveBeenCalledWith(42, true);
       expect(mockAssignCategoryPathToMessage).toHaveBeenCalledWith(42, 'Shop/Amazon');
       expect(mockTryLinkMessageToCustomer).toHaveBeenCalledWith(42);

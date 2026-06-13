@@ -7,6 +7,7 @@ jest.mock('../../electron/workflow/registry', () => ({
 
 jest.mock('../../electron/email/email-store', () => ({
   addMessageTag: jest.fn(),
+  clearMessageSeenSyncPending: jest.fn(),
   setMessageArchived: jest.fn(),
   setMessageSeenLocal: jest.fn(),
   setMessageSpam: jest.fn(),
@@ -27,7 +28,16 @@ jest.mock('../../electron/sqlite-service', () => ({
   updateDealStage: jest.fn(() => ({ success: true })),
 }));
 
-import { addMessageTag } from '../../electron/email/email-store';
+jest.mock('../../electron/email/email-imap-flags', () => ({
+  syncSeenFlagToServer: jest.fn().mockResolvedValue(undefined),
+}));
+
+import {
+  addMessageTag,
+  clearMessageSeenSyncPending,
+  setMessageSeenLocal,
+} from '../../electron/email/email-store';
+import { syncSeenFlagToServer } from '../../electron/email/email-imap-flags';
 import { tryLinkMessageToCustomer } from '../../electron/email/email-crm-store';
 import { registerCodeNodes } from '../../electron/workflow/nodes/code-nodes';
 import { registerCrmNodes } from '../../electron/workflow/nodes/crm-nodes';
@@ -166,6 +176,19 @@ describe('workflow builtin nodes', () => {
       crm.execute(ctx({ messageId: 42, message, dryRun: true }), {}, 'crm'),
     ).resolves.toMatchObject({ status: 'ok' });
     expect(tryLinkMessageToCustomer).not.toHaveBeenCalled();
+  });
+
+  test('email.mark_seen keeps local seen state pending until IMAP push succeeds', async () => {
+    const email = collect(registerEmailNodes).get('email.mark_seen')!;
+    const message = { id: 42, account_id: 1, folder_id: 2, uid: 5, pop3_uidl: null } as never;
+
+    await expect(
+      email.execute(ctx({ messageId: 42, message, dryRun: false }), {}, 'mark-seen'),
+    ).resolves.toMatchObject({ status: 'ok' });
+
+    expect(setMessageSeenLocal).toHaveBeenCalledWith(42, true, true);
+    expect(syncSeenFlagToServer).toHaveBeenCalledWith(message, true);
+    expect(clearMessageSeenSyncPending).toHaveBeenCalledWith(42);
   });
 
   test('integration nodes expose dry-run/error paths without external calls', async () => {
