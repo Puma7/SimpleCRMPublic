@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { pipeline } from 'stream/promises';
+import { Transform } from 'stream';
 import { createWriteStream } from 'fs';
 import yauzl from 'yauzl';
 import { app, dialog, type OpenDialogReturnValue } from 'electron';
@@ -22,8 +23,63 @@ import {
 import { closeDatabase, reopenDatabaseConnection } from '../sqlite-service';
 
 const RESTORE_CONFIRM_PHRASE = 'WIEDERHERSTELLEN';
+const RESTORE_ZIP_MAX_ENTRIES = 10_000;
+const RESTORE_ZIP_MAX_ENTRY_BYTES = 2_000 * 1024 * 1024;
+const RESTORE_ZIP_MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
 
 export { resolveSafePathUnderDirectory } from './email-zip-path-safety';
+
+export type RestoreZipValidationState = {
+  entries: number;
+  totalBytes: number;
+};
+
+export function validateRestoreZipEntry(
+  rel: string,
+  uncompressedSize: number,
+  state: RestoreZipValidationState,
+): void {
+  state.entries += 1;
+  if (state.entries > RESTORE_ZIP_MAX_ENTRIES) {
+    throw new Error('ZIP enthält zu viele Einträge.');
+  }
+  if (uncompressedSize > RESTORE_ZIP_MAX_ENTRY_BYTES) {
+    throw new Error('ZIP-Eintrag ist zu groß.');
+  }
+  state.totalBytes += uncompressedSize;
+  if (state.totalBytes > RESTORE_ZIP_MAX_TOTAL_BYTES) {
+    throw new Error('ZIP ist entpackt zu groß.');
+  }
+  resolveSafePathUnderDirectory('/', rel);
+}
+
+export function createRestoreZipEntryLimitStream(
+  _rel: string,
+  declaredUncompressedSize: number,
+  state: RestoreZipValidationState,
+): Transform {
+  let actualBytes = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      actualBytes += chunk.length;
+      const undeclaredExtra = Math.max(0, actualBytes - declaredUncompressedSize);
+      if (actualBytes > RESTORE_ZIP_MAX_ENTRY_BYTES) {
+        callback(new Error('ZIP-Eintrag ist zu groß.'));
+        return;
+      }
+      if (state.totalBytes + undeclaredExtra > RESTORE_ZIP_MAX_TOTAL_BYTES) {
+        callback(new Error('ZIP ist entpackt zu groß.'));
+        return;
+      }
+      callback(null, chunk);
+    },
+    flush(callback) {
+      const undeclaredExtra = Math.max(0, actualBytes - declaredUncompressedSize);
+      state.totalBytes += undeclaredExtra;
+      callback();
+    },
+  });
+}
 
 type BackupManifest = {
   type?: string;
@@ -43,6 +99,7 @@ function openZip(filePath: string): Promise<yauzl.ZipFile> {
 
 async function extractZipToDirectory(zipPath: string, destDir: string): Promise<void> {
   const zip = await openZip(zipPath);
+  const validationState: RestoreZipValidationState = { entries: 0, totalBytes: 0 };
   try {
     await new Promise<void>((resolve, reject) => {
       const next = () => zip.readEntry();
@@ -50,6 +107,7 @@ async function extractZipToDirectory(zipPath: string, destDir: string): Promise<
         const rel = entry.fileName.replace(/\\/g, '/');
         let outPath: string;
         try {
+          validateRestoreZipEntry(rel, entry.uncompressedSize, validationState);
           outPath = resolveSafePathUnderDirectory(destDir, rel);
         } catch (e) {
           reject(e);
@@ -66,8 +124,13 @@ async function extractZipToDirectory(zipPath: string, destDir: string): Promise<
             reject(err ?? new Error(`Eintrag ${rel} konnte nicht gelesen werden.`));
             return;
           }
+          const limitStream = createRestoreZipEntryLimitStream(
+            rel,
+            entry.uncompressedSize,
+            validationState,
+          );
           const writeStream = createWriteStream(outPath);
-          void pipeline(readStream, writeStream)
+          void pipeline(readStream, limitStream, writeStream)
             .then(() => next())
             .catch(reject);
         });

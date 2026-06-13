@@ -185,6 +185,7 @@ describe('email-workflow-engine core', () => {
     mockSyncInboxPop3.mockResolvedValue({ fetched: 2 });
     mockSyncInboxImap.mockResolvedValue({ fetched: 3 });
     mockTryOutboundApprovalBypass.mockReturnValue(false);
+    mockGetEmailAccountById.mockReturnValue({ id: 1, protocol: 'imap', imap_sync_seen_on_open: 1 });
   });
 
   describe('outboundPayloadFromMessage', () => {
@@ -241,14 +242,14 @@ describe('email-workflow-engine core', () => {
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
       expect(log).toContain('rule_matched');
       expect(mockAddMessageTag).toHaveBeenCalledWith(42, 'Amazon');
-      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true);
+      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true, true);
       expect(mockSetMessageArchived).toHaveBeenCalledWith(42, true);
       expect(mockAssignCategoryPathToMessage).toHaveBeenCalledWith(42, 'Shop/Amazon');
       expect(mockTryLinkMessageToCustomer).toHaveBeenCalledWith(42);
       expect(log).toContain('stop');
     });
 
-    test('skips unconditional rules without stop', async () => {
+    test('skips unconditional compiled inbound side-effect rules fail-closed', async () => {
       const msg = inboundRow();
       const def: WorkflowDefinitionV1 = {
         version: 1,
@@ -256,7 +257,7 @@ describe('email-workflow-engine core', () => {
       };
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
       expect(log).toContain('skip_rule:unconditional');
-      expect(mockAddMessageTag).not.toHaveBeenCalled();
+      expect(mockAddMessageTag).not.toHaveBeenCalledWith(42, 'X');
     });
 
     test('hold_outbound inbound and unknown step default', async () => {

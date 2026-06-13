@@ -7,7 +7,7 @@ const SEEN_RECONCILE_CHUNK = 200;
 
 /**
  * Align seen_local with server \\Seen for messages already in the folder (NF11).
- * Server flags win on reconcile — matches webmail read state after sync.
+ * Server flags win unless a local seen change is still waiting for IMAP push.
  */
 export async function reconcileSeenFlagsForFolder(
   client: ImapFlow,
@@ -24,7 +24,9 @@ export async function reconcileSeenFlagsForFolder(
   if (rows.length === 0) return 0;
 
   const updateStmt = getDb().prepare(
-    `UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_local = ? WHERE folder_id = ? AND uid = ? AND seen_local != ?`,
+    `UPDATE ${EMAIL_MESSAGES_TABLE}
+     SET seen_local = ?
+     WHERE folder_id = ? AND uid = ? AND seen_local != ? AND COALESCE(seen_sync_pending, 0) = 0`,
   );
 
   let changed = 0;
@@ -46,4 +48,44 @@ export async function reconcileSeenFlagsForFolder(
     lock.release();
   }
   return changed;
+}
+
+/**
+ * Retry local seen/unseen changes that previously failed to reach IMAP.
+ * Rows stay pending on failure so a later folder sync can retry them.
+ */
+export async function pushPendingSeenSyncsForFolder(
+  client: Pick<ImapFlow, 'messageFlagsAdd' | 'messageFlagsRemove'>,
+  folderId: number,
+  signal?: AbortSignal,
+): Promise<number> {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, uid, seen_local
+       FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE folder_id = ?
+         AND uid >= 0
+         AND (pop3_uidl IS NULL OR pop3_uidl = '')
+         AND COALESCE(seen_sync_pending, 0) = 1
+       ORDER BY id`,
+    )
+    .all(folderId) as { id: number; uid: number; seen_local: number }[];
+  if (rows.length === 0) return 0;
+
+  const clearStmt = getDb().prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE} SET seen_sync_pending = 0 WHERE id = ?`,
+  );
+
+  let pushed = 0;
+  for (const row of rows) {
+    assertSyncNotAborted(signal);
+    if (row.seen_local) {
+      await client.messageFlagsAdd({ uid: row.uid }, ['\\Seen'], { uid: true });
+    } else {
+      await client.messageFlagsRemove({ uid: row.uid }, ['\\Seen'], { uid: true });
+    }
+    clearStmt.run(row.id);
+    pushed += 1;
+  }
+  return pushed;
 }

@@ -63,6 +63,7 @@ import {
   deleteLocalComposeDraft,
   setMessageArchived,
   setMessageSeenLocal,
+  clearMessageSeenSyncPending,
   setMessageDoneLocal,
   setMessageSpam,
   setMessageSpamStatus,
@@ -2225,7 +2226,6 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       ) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        setMessageSeenLocal(payload.messageId, payload.seen);
         const acc = getEmailAccountById(row.account_id);
         const accountWantsSync =
           acc != null &&
@@ -2235,9 +2235,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           payload.syncToServer !== undefined
             ? payload.syncToServer
             : accountWantsSync;
+        setMessageSeenLocal(payload.messageId, payload.seen, syncToServer);
         if (syncToServer) {
           try {
             await syncSeenFlagToServer(row, payload.seen);
+            clearMessageSeenSyncPending(payload.messageId);
           } catch (e) {
             logger.warn('IMAP seen sync failed', e);
           }

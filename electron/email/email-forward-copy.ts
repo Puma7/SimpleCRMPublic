@@ -2,6 +2,7 @@ import { getDb } from '../sqlite-service';
 import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../database-schema';
 import { getEmailAccountById } from './email-store';
 import { sendSmtpForAccount } from './email-smtp';
+import { extractEmailAddressesFromRecipientField } from '../../shared/email-recipient-parse';
 
 export type ForwardCopyInput = {
   accountId: number;
@@ -11,20 +12,16 @@ export type ForwardCopyInput = {
   subject: string;
   bodyText: string;
   originalFromLine: string;
+  includeAttachments?: boolean;
+  runOutboundReview?: boolean;
 };
 
 const MAX_FORWARD_RECIPIENTS = 10;
 
 /** Parse comma/semicolon-separated forward targets (aligned with server edition). */
 export function normalizeForwardCopyRecipients(raw: string): string[] {
-  const parts = raw
-    .split(/[,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
   const out: string[] = [];
-  for (const part of parts.slice(0, MAX_FORWARD_RECIPIENTS)) {
-    const m = part.match(/<([^>]+)>/) ?? part.match(/^([^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)$/);
-    const addr = (m ? m[1]! : part).trim().toLowerCase();
+  for (const addr of extractEmailAddressesFromRecipientField(raw, { preservePlusAddressing: true }).slice(0, MAX_FORWARD_RECIPIENTS)) {
     if (addr && !out.includes(addr)) out.push(addr);
   }
   return out;
@@ -33,6 +30,12 @@ export function normalizeForwardCopyRecipients(raw: string): string[] {
 export async function sendWorkflowForwardCopy(
   input: ForwardCopyInput,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (input.includeAttachments === true) {
+    return { ok: false, reason: 'Anhänge werden für desktop forward_copy noch nicht unterstützt' };
+  }
+  if (input.runOutboundReview === true) {
+    return { ok: false, reason: 'Ausgangsprüfung wird für desktop forward_copy noch nicht unterstützt' };
+  }
   const recipients = normalizeForwardCopyRecipients(input.to);
   if (recipients.length === 0) {
     console.warn('[email] forward_copy skipped: no recipients', { messageId: input.sourceMessageId, workflowId: input.workflowId });

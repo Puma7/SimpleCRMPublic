@@ -171,6 +171,32 @@ describe('email-store expanded', () => {
     bulkSetMessagesArchived([], false);
   });
 
+  test('IMAP upsert preserves pending local seen state on conflict', () => {
+    mock.resetStmt();
+    const { insertOrUpdateEmailMessage } = require('../../electron/email/email-store') as typeof import('../../electron/email/email-store');
+    insertOrUpdateEmailMessage({
+      accountId: 1,
+      folderId: 10,
+      uid: 6,
+      messageId: '<x@y>',
+      inReplyTo: null,
+      referencesHeader: null,
+      subject: 'S',
+      fromJson: '[]',
+      toJson: '[]',
+      ccJson: '[]',
+      dateReceived: null,
+      snippet: 's',
+      bodyText: 't',
+      bodyHtml: null,
+      seenLocal: false,
+    }, createImapUpsertContext(10, [6]));
+
+    const preparedSql = mock.db.prepare.mock.calls.map(([sql]) => String(sql)).join('\n');
+    expect(preparedSql).toContain('seen_sync_pending');
+    expect(preparedSql).not.toContain('seen_local = excluded.seen_local');
+  });
+
   test('drafts conversation and views', () => {
     setMessageAssignedTo(100, 'agent-1');
     mock.stmt.get.mockImplementation(() => ({

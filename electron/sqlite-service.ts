@@ -642,6 +642,7 @@ function runMigrations() {
                 { name: 'reply_parent_message_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN reply_parent_message_id INTEGER` },
                 { name: 'done_local', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN done_local INTEGER NOT NULL DEFAULT 0` },
                 { name: 'sent_imap_sync_failed', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN sent_imap_sync_failed INTEGER NOT NULL DEFAULT 0` },
+                { name: 'seen_sync_pending', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN seen_sync_pending INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of extraMsg) {
                 if (!mcn.has(col.name)) {

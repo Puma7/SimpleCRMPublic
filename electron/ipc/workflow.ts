@@ -62,7 +62,7 @@ export function registerWorkflowHandlers(options: {
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId?: number | null; dryRun?: boolean },
       ) => executeWorkflowNow(payload.workflowId, payload),
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

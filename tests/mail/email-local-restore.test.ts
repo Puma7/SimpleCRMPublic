@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { resolveSafePathUnderDirectory } from '../../electron/email/email-zip-path-safety';
 import { findDatabaseSqliteInTree } from '../../electron/email/email-zip-path-safety';
+import { validateRestoreZipEntry } from '../../electron/email/email-local-restore';
 
 describe('email-local-restore path safety', () => {
   const dest = path.join(os.tmpdir(), 'crm-restore-safe');
@@ -53,5 +54,21 @@ describe('findDatabaseSqliteInTree', () => {
     const db = path.join(nestedDir, 'database.sqlite');
     fs.writeFileSync(db, '');
     expect(findDatabaseSqliteInTree(tmpDir)).toBe(db);
+  });
+});
+
+describe('restore zip extraction limits', () => {
+  test('rejects too many entries', () => {
+    const state = { entries: 10_000, totalBytes: 0 };
+    expect(() => validateRestoreZipEntry('database.sqlite', 1, state)).toThrow(/zu viele/i);
+  });
+
+  test('rejects oversized single entries', () => {
+    expect(() => validateRestoreZipEntry('database.sqlite', 2_001 * 1024 * 1024, { entries: 0, totalBytes: 0 })).toThrow(/zu groß/i);
+  });
+
+  test('rejects excessive total uncompressed size', () => {
+    const state = { entries: 1, totalBytes: 5 * 1024 * 1024 * 1024 };
+    expect(() => validateRestoreZipEntry('email-attachments/a.bin', 1, state)).toThrow(/zu groß/i);
   });
 });

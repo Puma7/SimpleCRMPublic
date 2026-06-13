@@ -102,6 +102,17 @@ function buildOutboundContext(payload: OutboundDraftPayload) {
   };
 }
 
+function shouldSyncSeenStateToServer(row: EmailMessageRow): boolean {
+  const accountId = row.account_id;
+  if (accountId == null) return false;
+  const account = getEmailAccountById(accountId);
+  return (
+    account != null &&
+    (account.protocol || 'imap') === 'imap' &&
+    (account.imap_sync_seen_on_open ?? 1) !== 0
+  );
+}
+
 async function executeInboundStep(
   step: WorkflowThenStep,
   messageId: number,
@@ -115,7 +126,7 @@ async function executeInboundStep(
       log.push(`tag:${step.tag}`);
       return true;
     case 'mark_seen':
-      setMessageSeenLocal(messageId, true);
+      setMessageSeenLocal(messageId, true, shouldSyncSeenStateToServer(row));
       log.push('mark_seen');
       return true;
     case 'archive':
@@ -151,6 +162,8 @@ async function executeInboundStep(
         subject: subj,
         bodyText: body,
         originalFromLine: buildInboundContext(row).from_address,
+        includeAttachments: step.includeAttachments === true,
+        runOutboundReview: step.runOutboundReview === true,
       });
       if (sent.ok) {
         log.push(`forward_copy:${step.to}`);
@@ -177,6 +190,8 @@ async function executeInboundStep(
       }
       return true;
     }
+    case 'registry':
+      throw new Error(`Compiled workflow cannot execute registry node ${step.nodeType}; use graph execution mode`);
     case 'stop':
       log.push('stop');
       return false;
@@ -235,6 +250,9 @@ async function executeOutboundStep(
   if (step.type === 'stop') {
     log.push('stop');
     return 'stop';
+  }
+  if (step.type === 'registry') {
+    throw new Error(`Compiled workflow cannot execute registry node ${step.nodeType}; use graph execution mode`);
   }
   log.push(`skip:${(step as WorkflowThenStep).type}`);
   return 'continue';

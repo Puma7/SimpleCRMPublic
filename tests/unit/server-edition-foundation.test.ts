@@ -8969,12 +8969,12 @@ describe('server edition foundation', () => {
       },
     });
 
-    await port.forwardCopy({
+    await expect(port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 39,
       messageId: 27,
       to: 'not-an-email',
-    });
+    })).rejects.toThrow(/Empfaenger/);
     expect(smtpSends).toHaveLength(0);
     expect(rows.forwardDedup).toEqual([]);
 
@@ -8982,7 +8982,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       workflowId: 39,
       messageId: 27,
-      to: 'audit@example.com',
+      to: 'Audit Team <audit@example.com>',
       continuation: {
         workflowId: 39,
         triggerName: 'inbound',
@@ -9125,12 +9125,12 @@ describe('server edition foundation', () => {
       },
     });
 
-    await port.forwardCopy({
+    await expect(port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 39,
       messageId: 27,
       to: 'retry@example.com',
-    });
+    })).rejects.toThrow('smtp transient');
     expect(rows.forwardDedup).toEqual([]);
     expect(smtpSends).toHaveLength(0);
 
@@ -9256,6 +9256,74 @@ describe('server edition foundation', () => {
     ]);
   });
 
+
+  test('postgres workflow forward-copy outbound-review send failures remain retryable', async () => {
+    const now = new Date('2026-07-04T11:05:20.000Z');
+    let draftCreates = 0;
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 51, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 510, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        account_id: 7,
+        subject: 'Review transient',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const composeSender = {
+      async send() {
+        return { ok: false as const, error: 'compose transient failure' };
+      },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender,
+      createDraft: async () => {
+        draftCreates += 1;
+        return { ok: true as const, draftMessageId: 54321 };
+      },
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 51,
+      messageId: 31,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    })).rejects.toThrow(/compose transient failure/);
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 51,
+      messageId: 31,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    })).rejects.toThrow(/compose transient failure/);
+
+    expect(draftCreates).toBe(2);
+    expect(rows.forwardDedup).toHaveLength(0);
+  });
+
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
     const now = new Date('2026-07-04T11:04:30.000Z');
     const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
@@ -9327,7 +9395,7 @@ describe('server edition foundation', () => {
     expect(smtpSends[0].rfc822).toContain('bank@example.com');
     expect(smtpSends[0].rfc822).toContain('buchhaltung@example.com');
     // The original attachment is read from disk and included as a MIME part.
-    expect(reads).toEqual(['/attachments/ws/28/rechnung.pdf']);
+    expect(reads.map((entry) => entry.replaceAll(String.fromCharCode(92), '/'))[0]).toEqual(expect.stringMatching(/(?:^|:)\/attachments\/ws\/28\/rechnung\.pdf$/));
     expect(smtpSends[0].rfc822).toContain('rechnung.pdf');
     expect(smtpSends[0].rfc822).toContain('Auto-Submitted: auto-forwarded');
     // Dedup over the sorted recipient set.
@@ -9450,6 +9518,54 @@ describe('server edition foundation', () => {
       to: 'audit@example.com',
     });
     expect(smtpSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('postgres workflow forward-copy last-node failures reject for job retry visibility', async () => {
+    const now = new Date('2026-07-04T11:05:10.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 42, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 420, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        account_id: 7,
+        subject: 'Forward last node',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        snippet: 'Kurzfassung',
+        body_text: 'Originaltext',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: jest.fn(),
+    });
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 42,
+      messageId: 29,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    })).rejects.toThrow(/composeSender/);
+
+    expect(rows.jobs).toEqual([]);
+    expect(rows.forwardDedup).toEqual([]);
   });
 
   test('postgres workflow execution job port queues AI review continuations', async () => {
