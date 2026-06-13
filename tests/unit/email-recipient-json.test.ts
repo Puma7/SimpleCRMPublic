@@ -32,6 +32,14 @@ describe('email recipient mapping', () => {
     expect(extractEmailAddressesFromRecipientField('not-an-email')).toEqual([]);
   });
 
+  it('extractEmailAddresses can preserve plus-addressed delivery mailboxes', () => {
+    expect(
+      extractEmailAddressesFromRecipientField('Audit <audit+invoices@example.com>', {
+        preservePlusAddressing: true,
+      }),
+    ).toEqual(['audit+invoices@example.com']);
+  });
+
   it('recipientFieldFromJson round-trips compose fields', () => {
     const json = recipientJsonFromField('Shop <shop@example.com>, b@example.com');
     expect(recipientFieldFromJson(json)).toBe('shop@example.com, b@example.com');

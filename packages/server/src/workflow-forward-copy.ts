@@ -658,18 +658,17 @@ async function forwardViaOutboundReview(args: {
     },
   });
 
-  // Record dedup once a draft exists. A retry cannot safely recreate the same
-  // review draft without a persisted draft id in the job payload; marking the
-  // forward as claimed avoids duplicate drafts/review artifacts. The error is
-  // still surfaced to the job/continuation below.
   const sent = sendResult.ok;
   const queuedForReview = !sendResult.ok && sendResult.workflowRunId != null;
-  await withWorkspaceTransaction(
-    args.db,
-    { workspaceId: input.workspaceId, role: 'system' },
-    async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
-    { applySession: args.applyWorkspaceSession },
-  );
+
+  if (sent || queuedForReview) {
+    await withWorkspaceTransaction(
+      args.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
+      { applySession: args.applyWorkspaceSession },
+    );
+  }
 
   if (sent) return { ok: true, error: null, reviewPending: false };
   if (queuedForReview) return { ok: true, error: null, reviewPending: true };
@@ -855,7 +854,7 @@ function normalizeForwardCopyRecipients(value: string): string[] {
   for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
     const angleMatch = part.match(/<([^>]+)>/);
     const candidate = (angleMatch?.[1] ?? part).trim();
-    const normalized = normalizeEmailAddress(candidate);
+    const normalized = candidate.toLowerCase();
     if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) && !out.includes(normalized)) {
       out.push(normalized);
     }

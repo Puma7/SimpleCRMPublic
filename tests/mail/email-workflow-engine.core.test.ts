@@ -248,15 +248,15 @@ describe('email-workflow-engine core', () => {
       expect(log).toContain('stop');
     });
 
-    test('executes unconditional compiled inbound rules like outbound rules', async () => {
+    test('skips unconditional compiled inbound side-effect rules fail-closed', async () => {
       const msg = inboundRow();
       const def: WorkflowDefinitionV1 = {
         version: 1,
         rules: [{ when: null, then: [{ type: 'tag', tag: 'X' }] }],
       };
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
-      expect(log).toContain('rule_matched');
-      expect(mockAddMessageTag).toHaveBeenCalledWith(42, 'X');
+      expect(log).toContain('skip_rule:unconditional');
+      expect(mockAddMessageTag).not.toHaveBeenCalledWith(42, 'X');
     });
 
     test('hold_outbound inbound and unknown step default', async () => {

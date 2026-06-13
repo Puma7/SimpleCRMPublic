@@ -32,15 +32,15 @@ verify_backup_file() {
 
 validate_tar_archive() {
   archive_path="$1"
-  tar -tf "$archive_path" | while IFS= read -r entry; do
-    case "$entry" in
-      ""|/*|*"/../"*|../*|*"/.."|*"\\"*|[A-Za-z]:*)
-        echo "unsafe tar entry: $entry" >&2
-        exit 1
-        ;;
-    esac
-  done
-  tar -tvf "$archive_path" | awk '{ if ($1 !~ /^[-d]/) { print "unsafe tar entry: " $0 > "/dev/stderr"; exit 1 } }'
+  archive_entries="$(tar -tf "$archive_path")"
+  printf '%s\n' "$archive_entries" | awk '
+    $0 == "" || $0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/ || $0 ~ /\\/ || $0 ~ /^[A-Za-z]:/ {
+      print "unsafe tar entry: " $0 > "/dev/stderr";
+      exit 1;
+    }
+  '
+  archive_listing="$(tar -tvf "$archive_path")"
+  printf '%s\n' "$archive_listing" | awk '{ if ($1 !~ /^[-d]/) { print "unsafe tar entry: " $0 > "/dev/stderr"; exit 1 } }'
 }
 
 DUMP_DIR="$(dirname "$DUMP_PATH")"

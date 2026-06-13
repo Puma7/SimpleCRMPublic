@@ -170,6 +170,11 @@ describe('email-imap-sync', () => {
         expect.stringMatching(/DELETE\s+FROM\s+email_messages\s+WHERE\s+folder_id/i),
       ]),
     );
+    expect(preparedSql).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/SET\s+uid\s*=\s*-ABS\(id\),[\s\S]*soft_deleted\s*=\s*1,[\s\S]*post_process_done\s*=\s*1/i),
+      ]),
+    );
     expect(mockRecordNotice).toHaveBeenCalledWith(expect.objectContaining({ messageCount: 3004 }));
   });
 

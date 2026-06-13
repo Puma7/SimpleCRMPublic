@@ -21,7 +21,7 @@ const MAX_FORWARD_RECIPIENTS = 10;
 /** Parse comma/semicolon-separated forward targets (aligned with server edition). */
 export function normalizeForwardCopyRecipients(raw: string): string[] {
   const out: string[] = [];
-  for (const addr of extractEmailAddressesFromRecipientField(raw).slice(0, MAX_FORWARD_RECIPIENTS)) {
+  for (const addr of extractEmailAddressesFromRecipientField(raw, { preservePlusAddressing: true }).slice(0, MAX_FORWARD_RECIPIENTS)) {
     if (addr && !out.includes(addr)) out.push(addr);
   }
   return out;

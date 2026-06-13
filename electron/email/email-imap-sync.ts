@@ -23,7 +23,7 @@ import {
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
 import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
-import { reconcileSeenFlagsForFolder } from './email-seen-reconcile';
+import { pushPendingSeenSyncsForFolder, reconcileSeenFlagsForFolder } from './email-seen-reconcile';
 import {
   assertSyncNotAborted,
   EmailSyncAbortedError,
@@ -102,8 +102,10 @@ async function syncFolderImapInternal(
         getDb()
           .prepare(
             `UPDATE ${EMAIL_MESSAGES_TABLE}
-             SET uid = -ABS(id)
-             WHERE folder_id = ? AND uid >= 0`,
+           SET uid = -ABS(id),
+               soft_deleted = 1,
+               post_process_done = 1
+           WHERE folder_id = ? AND uid >= 0`,
           )
           .run(folderRow.id);
         recordUidValidityResetNotice({
@@ -270,6 +272,12 @@ async function syncFolderImapInternal(
       }
 
       try {
+        const seenPushed = await pushPendingSeenSyncsForFolder(client, folderRow.id, signal);
+        if (seenPushed > 0) {
+          console.log(
+            `[imap-sync] pushed pending seen flag(s) for ${seenPushed} message(s) in ${folderPath}`,
+          );
+        }
         const seenReconciled = await reconcileSeenFlagsForFolder(
           client,
           folderRow.id,

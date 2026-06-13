@@ -6,7 +6,10 @@ import { normalizeEmailAddress } from './email-address-normalize';
  */
 const ADDR_CORE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i
 
-export function extractEmailAddressesFromRecipientField(raw: string): string[] {
+export function extractEmailAddressesFromRecipientField(
+  raw: string,
+  opts?: { preservePlusAddressing?: boolean },
+): string[] {
   const out: string[] = []
   const chunks = raw.split(/[,;]+/)
   for (const chunk of chunks) {
@@ -15,7 +18,7 @@ export function extractEmailAddressesFromRecipientField(raw: string): string[] {
     const m = t.match(/^(.+)<([^>]+)>$/)
     const candidate = (m ? m[2] : t).trim()
     if (ADDR_CORE.test(candidate)) {
-      out.push(normalizeEmailAddress(candidate))
+      out.push(opts?.preservePlusAddressing ? candidate.trim().toLowerCase() : normalizeEmailAddress(candidate))
     }
   }
   return out

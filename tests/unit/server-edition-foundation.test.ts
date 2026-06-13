@@ -9257,7 +9257,7 @@ describe('server edition foundation', () => {
   });
 
 
-  test('postgres workflow forward-copy outbound-review failures do not create duplicate drafts on retry', async () => {
+  test('postgres workflow forward-copy outbound-review send failures remain retryable', async () => {
     const now = new Date('2026-07-04T11:05:20.000Z');
     let draftCreates = 0;
     const { db, rows } = makeWorkflowExecutionDb({
@@ -9318,10 +9318,10 @@ describe('server edition foundation', () => {
       messageId: 31,
       to: 'audit@example.com',
       runOutboundReview: true,
-    })).rejects.toThrow(/already materialised/i);
+    })).rejects.toThrow(/compose transient failure/);
 
-    expect(draftCreates).toBe(1);
-    expect(rows.forwardDedup).toHaveLength(1);
+    expect(draftCreates).toBe(2);
+    expect(rows.forwardDedup).toHaveLength(0);
   });
 
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
