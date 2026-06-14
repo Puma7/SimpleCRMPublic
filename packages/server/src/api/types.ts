@@ -2737,6 +2737,29 @@ export type EmailCannedResponseApiPort = EmailNumericRecordApiPort<EmailCannedRe
   }): Promise<EmailCannedResponseRecord | null>;
 };
 
+
+export type EmailAccountMailSettingsRecord = {
+  accountId: number;
+  ticketPrefix: string;
+  ticketNextNumber: number;
+  ticketNumberPadding: number;
+  threadNamespace: string;
+  updatedAt: string | null;
+};
+
+export type EmailAccountMailSettingsMutationInput = {
+  accountId: number;
+  ticketPrefix?: string;
+  ticketNextNumber?: number;
+  ticketNumberPadding?: number;
+  threadNamespace?: string;
+};
+
+export type EmailAccountMailSettingsApiPort = {
+  get(input: { workspaceId: string; accountId: number }): Promise<EmailAccountMailSettingsRecord | null>;
+  set(input: { workspaceId: string; actorUserId: string; values: EmailAccountMailSettingsMutationInput }): Promise<EmailAccountMailSettingsRecord>;
+};
+
 export type EmailAccountSignatureRecord = {
   sourceSqliteId: number;
   accountSourceSqliteId: number;
@@ -3197,6 +3220,7 @@ export type WorkflowApiPort = {
     search?: string;
     triggerName?: string;
     enabled?: boolean;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<WorkflowListResult>;
@@ -4483,6 +4507,7 @@ export type ServerApiPorts = {
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
+  emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;
   emailAttachmentContent?: EmailAttachmentContentApiPort;
   emailAttachments?: EmailAttachmentApiPort;

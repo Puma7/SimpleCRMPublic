@@ -208,8 +208,14 @@ async function runAiReviewStep(
   log: string[],
   accountId?: number | null,
 ): Promise<boolean> {
+  const globalPrompts = listAiPrompts('all');
+  const configuredPrompt = globalPrompts.find((x) => x.id === step.promptId);
   const prompts = listAiPrompts(accountId);
-  const p = prompts.find((x) => x.id === step.promptId);
+  const p = prompts.find((x) => x.id === step.promptId)
+    ?? (configuredPrompt?.override_key
+      ? prompts.find((x) => x.override_key === configuredPrompt.override_key)
+      : undefined);
+
   if (!p) {
     log.push('ai_review:prompt_not_found');
     return false;

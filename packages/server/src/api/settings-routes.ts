@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   ApiRequest,
   ApiResponse,
+  EmailAccountMailSettingsMutationInput,
   MssqlSettingsInput,
   ServerApiPorts,
   SyncInfoRecord,
@@ -170,6 +171,10 @@ export async function handleSettingsRoute(
 
   if (req.path === '/api/v1/email/settings/security/test-rspamd') {
     return handleRspamdConnectionTest(req);
+  }
+
+  if (req.path === '/api/v1/email/settings/account-mail') {
+    return handleAccountMailSettings(req, ports);
   }
 
   if (req.path === '/api/v1/email/settings/snooze') {
@@ -372,6 +377,92 @@ async function handleRspamdConnectionTest(req: ApiRequest): Promise<ApiResponse>
   } finally {
     clearTimeout(timer);
   }
+}
+
+
+async function handleAccountMailSettings(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.emailAccountMailSettings) return error(503, 'account_mail_settings_unavailable', 'Account-Mail-Settings API nicht konfiguriert');
+
+  if (req.method === 'GET') {
+    const accountId = parseOptionalPositiveInt(req.query?.accountId);
+    if (accountId == null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+    const settings = await ports.emailAccountMailSettings.get({
+      workspaceId: principal.workspaceId,
+      accountId,
+    });
+    return data(200, settings ?? {
+      accountId,
+      ticketPrefix: `ACC${accountId}`,
+      ticketNextNumber: 1,
+      ticketNumberPadding: 6,
+      threadNamespace: `account-${accountId}`,
+      updatedAt: null,
+    });
+  }
+
+  if (req.method === 'PATCH') {
+    const parsed = parseAccountMailSettingsPayload(req.body);
+    if (!parsed.ok) return parsed.response;
+    const settings = await ports.emailAccountMailSettings.set({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      values: parsed.values,
+    });
+    return data(200, settings);
+  }
+
+  return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizeNullableBodyText(value: unknown, field: string, maxLength: number): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== 'string') return { ok: false, message: `${field} muss ein String sein` };
+  const text = value.trim();
+  if (text.length > maxLength) return { ok: false, message: `${field} darf maximal ${maxLength} Zeichen haben` };
+  return { ok: true, value: text || null };
+}
+
+type AccountMailSettingsPayloadParseResult =
+  | { ok: true; values: EmailAccountMailSettingsMutationInput }
+  | { ok: false; response: ApiResponse<ApiErrorBody> };
+
+function parseAccountMailSettingsPayload(body: unknown): AccountMailSettingsPayloadParseResult {
+  if (!isPlainObject(body)) return { ok: false, response: error(400, 'invalid_account_mail_settings_payload', 'Account-Mail-Settings payload muss ein JSON-Objekt sein') };
+  const accountId = parseOptionalPositiveInt(body.accountId);
+  if (accountId == null) return { ok: false, response: error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein') };
+  const values: EmailAccountMailSettingsMutationInput = { accountId };
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketPrefix')) {
+    const value = normalizeNullableBodyText(body.ticketPrefix, 'ticketPrefix', 12);
+    if (!value.ok || value.value == null) return { ok: false, response: error(400, 'invalid_ticket_prefix', 'ticketPrefix ist ungueltig') };
+    values.ticketPrefix = value.value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketNextNumber')) {
+    const value = parseOptionalPositiveInt(body.ticketNextNumber);
+    if (value == null) return { ok: false, response: error(400, 'invalid_ticket_next_number', 'ticketNextNumber muss eine positive Ganzzahl sein') };
+    values.ticketNextNumber = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketNumberPadding')) {
+    const value = parseOptionalPositiveInt(body.ticketNumberPadding);
+    if (value == null) return { ok: false, response: error(400, 'invalid_ticket_number_padding', 'ticketNumberPadding muss eine positive Ganzzahl sein') };
+    values.ticketNumberPadding = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'threadNamespace')) {
+    const value = normalizeNullableBodyText(body.threadNamespace, 'threadNamespace', 200);
+    if (!value.ok || value.value == null) return { ok: false, response: error(400, 'invalid_thread_namespace', 'threadNamespace ist ungueltig') };
+    values.threadNamespace = value.value;
+  }
+  return { ok: true, values };
 }
 
 async function handleSnoozeSettings(

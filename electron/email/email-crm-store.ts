@@ -339,7 +339,7 @@ export function listCannedResponses(scope?: AccountOverrideScope): CannedRow[] {
   const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_CANNED_RESPONSES_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as CannedRow[];
-  return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
+  return resolveScopedAccountOverrides(rows, scope ?? 'all');
 }
 
 export function createCannedResponse(title: string, body: string, opts: { accountId?: number | null; overrideKey?: string | null } = {}): number {
@@ -376,7 +376,13 @@ export function listAiPrompts(scope?: AccountOverrideScope): AiPromptRow[] {
   const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as AiPromptRow[];
-  return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
+  return resolveScopedAccountOverrides(rows, scope ?? 'all');
+}
+
+function listAllAiPromptRows(): AiPromptRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} ORDER BY sort_order ASC, id ASC`)
+    .all() as AiPromptRow[];
 }
 
 export function createAiPrompt(input: {
@@ -411,7 +417,7 @@ export function createAiPrompt(input: {
 
 /** Swap sort_order with neighbour inside the prompt's visible account scope. */
 export function moveAiPrompt(id: number, direction: 'up' | 'down'): boolean {
-  const allRows = listAiPrompts();
+  const allRows = listAllAiPromptRows();
   const current = allRows.find((r) => r.id === id);
   if (!current) return false;
   const scope: AccountOverrideScope = current.account_id == null ? 'all' : current.account_id;

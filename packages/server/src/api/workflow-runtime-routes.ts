@@ -1204,7 +1204,7 @@ function parseKnowledgeBaseMutationBody(
 
   const values: WorkflowKnowledgeBaseMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['name', 'description']);
+  const allowedFields = new Set(['name', 'description', 'accountId', 'overrideKey']);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -1218,6 +1218,16 @@ function parseKnowledgeBaseMutationBody(
     const description = normalizeNullableBodyText(body.description, 'description', 2000);
     if (description.ok) values.description = description.value;
     else errors.push({ field: 'description', message: description.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    const accountId = normalizeNullablePositiveBodyInt(body.accountId, 'accountId');
+    if (accountId.ok) values.accountId = accountId.value;
+    else errors.push({ field: 'accountId', message: accountId.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'overrideKey')) {
+    const overrideKey = normalizeNullableBodyText(body.overrideKey, 'overrideKey', 200);
+    if (overrideKey.ok) values.overrideKey = overrideKey.value;
+    else errors.push({ field: 'overrideKey', message: overrideKey.message });
   }
 
   if (errors.length > 0) {
@@ -1963,6 +1973,12 @@ function normalizeNullableBodyText(
 ): { ok: true; value: string | null } | { ok: false; message: string } {
   if (rawValue === null) return { ok: true, value: null };
   return normalizeRequiredBodyText(rawValue, field, maxLength);
+}
+
+function normalizeNullablePositiveBodyInt(value: unknown, field: string): { ok: true; value: number | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, value: null };
+  const result = normalizePositiveBodyInt(value, field);
+  return result.ok ? { ok: true, value: result.value } : result;
 }
 
 function normalizePositiveBodyInt(

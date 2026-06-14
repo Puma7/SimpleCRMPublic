@@ -49,7 +49,7 @@ export function extractTicketFromSubject(
   options?: ExtractTicketOptions,
 ): string | null {
   if (!subject) return null;
-  const match = subject.match(/\[([A-Z0-9]{2,12})-([A-Z0-9]{3,20})\]/i);
+  const match = subject.match(/\[([A-Z0-9]{1,12})-([A-Z0-9]{1,20})\]/i);
   if (!match) return null;
   const prefix = normalizeTicketPrefix(match[1]);
   const allowed = buildAllowedTicketPrefixes(options?.allowedPrefixes);

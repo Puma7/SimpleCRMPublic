@@ -32,7 +32,8 @@ describe('moveAiPrompt', () => {
 
   it('swaps sort_order with neighbour below', () => {
     expect(moveAiPrompt(1, 'down')).toBe(true);
-    expect(listAiPrompts().map((r) => r.label)).toEqual(['B', 'A', 'Account']);
+    expect(listAiPrompts().map((r) => r.label)).toEqual(['B', 'A']);
+    expect(listAiPrompts(7).map((r) => r.label)).toEqual(['B', 'A', 'Account']);
   });
 
   it('returns false when already at top', () => {

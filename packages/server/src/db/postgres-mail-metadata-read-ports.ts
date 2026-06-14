@@ -4,6 +4,9 @@ import { randomBytes } from 'crypto';
 import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
 
 import type {
+  EmailAccountMailSettingsApiPort,
+  EmailAccountMailSettingsMutationInput,
+  EmailAccountMailSettingsRecord,
   EmailAccountSignatureApiPort,
   EmailAccountSignatureListResult,
   EmailAccountSignatureMutationInput,
@@ -73,6 +76,7 @@ import type {
   EmailThreadSplitMessagePortResult,
 } from '../api/types';
 import type {
+  EmailAccountMailSettingsTable,
   EmailAccountSignaturesTable,
   EmailCannedResponsesTable,
   EmailCategoriesTable,
@@ -99,6 +103,7 @@ export type PostgresMailMetadataReadPortOptions = Readonly<{
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
 
+type EmailAccountMailSettingsRow = Selectable<EmailAccountMailSettingsTable>;
 type EmailAccountSignatureRow = Selectable<EmailAccountSignaturesTable>;
 type EmailCannedResponseRow = Selectable<EmailCannedResponsesTable>;
 type EmailCategoryRow = Selectable<EmailCategoriesTable>;
@@ -143,6 +148,15 @@ const emailFolderSelectColumns = [
   'last_uid',
   'last_synced_at',
   'pop3_uidl_str',
+  'updated_at',
+] as const;
+
+const emailAccountMailSettingsSelectColumns = [
+  'account_id',
+  'ticket_prefix',
+  'ticket_next_number',
+  'ticket_number_padding',
+  'thread_namespace',
   'updated_at',
 ] as const;
 
@@ -1302,6 +1316,98 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
         { applySession: options.applyWorkspaceSession },
       );
     },
+  };
+}
+
+
+export function createPostgresEmailAccountMailSettingsPort(options: PostgresMailMetadataReadPortOptions): EmailAccountMailSettingsApiPort {
+  return {
+    async get(input): Promise<EmailAccountMailSettingsRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const row = await trx
+            .selectFrom('email_account_mail_settings')
+            .select(emailAccountMailSettingsSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '=', input.accountId)
+            .executeTakeFirst();
+          return row ? mapEmailAccountMailSettingsRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async set(input): Promise<EmailAccountMailSettingsRecord> {
+      const values = normalizeEmailAccountMailSettingsMutation(input.values);
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+        async (trx) => {
+          const account = await trx
+            .selectFrom('email_accounts')
+            .select(['id', 'source_sqlite_id'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', values.accountId)
+            .executeTakeFirstOrThrow();
+          const now = new Date();
+          const current = await trx
+            .selectFrom('email_account_mail_settings')
+            .select(emailAccountMailSettingsSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '=', values.accountId)
+            .executeTakeFirst();
+          const next = {
+            ticket_prefix: values.ticketPrefix ?? current?.ticket_prefix ?? `ACC${values.accountId}`,
+            ticket_next_number: values.ticketNextNumber ?? Number(current?.ticket_next_number ?? 1),
+            ticket_number_padding: values.ticketNumberPadding ?? Number(current?.ticket_number_padding ?? 6),
+            thread_namespace: values.threadNamespace ?? current?.thread_namespace ?? `account-${values.accountId}`,
+          };
+          const row = await trx
+            .insertInto('email_account_mail_settings')
+            .values({
+              workspace_id: input.workspaceId,
+              account_source_sqlite_id: Number(account.source_sqlite_id ?? values.accountId),
+              account_id: values.accountId,
+              ...next,
+              source_row: serverApiSourceRow(),
+              imported_in_run_id: null,
+              created_at: current ? null : now,
+              updated_at: now,
+            })
+            .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doUpdateSet({
+              ...next,
+              updated_at: now,
+            }))
+            .returning(emailAccountMailSettingsSelectColumns)
+            .executeTakeFirstOrThrow();
+          return mapEmailAccountMailSettingsRow(row);
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+function normalizeEmailAccountMailSettingsMutation(values: EmailAccountMailSettingsMutationInput): EmailAccountMailSettingsMutationInput {
+  if (!Number.isSafeInteger(values.accountId) || values.accountId <= 0) throw new Error('accountId must be positive');
+  return {
+    accountId: values.accountId,
+    ...(values.ticketPrefix === undefined ? {} : { ticketPrefix: values.ticketPrefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'SCR' }),
+    ...(values.ticketNextNumber === undefined ? {} : { ticketNextNumber: Math.max(1, Math.floor(values.ticketNextNumber)) }),
+    ...(values.ticketNumberPadding === undefined ? {} : { ticketNumberPadding: Math.min(12, Math.max(1, Math.floor(values.ticketNumberPadding))) }),
+    ...(values.threadNamespace === undefined ? {} : { threadNamespace: values.threadNamespace.trim() || `account-${values.accountId}` }),
+  };
+}
+
+function mapEmailAccountMailSettingsRow(row: Pick<EmailAccountMailSettingsRow, typeof emailAccountMailSettingsSelectColumns[number]>): EmailAccountMailSettingsRecord {
+  return {
+    accountId: Number(row.account_id),
+    ticketPrefix: row.ticket_prefix,
+    ticketNextNumber: Number(row.ticket_next_number),
+    ticketNumberPadding: Number(row.ticket_number_padding),
+    threadNamespace: row.thread_namespace,
+    updatedAt: timestampToIsoOrNull(row.updated_at),
   };
 }
 
@@ -2608,6 +2714,7 @@ async function getOrCreateThreadForTicket(
     })
     .onConflict((oc) => oc
       .columns(['workspace_id', 'ticket_code'])
+      .where('account_id', 'is', null)
       .doNothing())
     .returning('id')
     .executeTakeFirst();

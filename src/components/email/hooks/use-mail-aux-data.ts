@@ -15,7 +15,7 @@ import { invokeRenderer } from "@/services/transport"
  * Loaded lazily on first compose open.
  */
 export function useMailAuxData() {
-  const { composeIntent } = useMailWorkspace()
+  const { composeIntent, selectedAccountScope } = useMailWorkspace()
   const [cannedList, setCannedList] = useState<CannedResponse[]>([])
   const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])
   const composeMessageAccountId =
@@ -23,7 +23,9 @@ export function useMailAuxData() {
     composeIntent.mode === "reply-all" ||
     composeIntent.mode === "forward"
       ? composeIntent.message.account_id ?? undefined
-      : undefined
+      : composeIntent.mode === "new" && typeof selectedAccountScope === "number"
+        ? selectedAccountScope
+        : undefined
 
   // Canned responses + AI prompts: lazy on first compose open
   // (parity with old page.tsx:286-297).

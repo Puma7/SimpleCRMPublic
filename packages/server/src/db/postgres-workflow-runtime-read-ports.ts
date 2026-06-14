@@ -72,6 +72,10 @@ type WorkflowKnowledgeBaseReference = Readonly<{
   id: number;
   sourceSqliteId: number;
 }>;
+type EmailAccountReference = Readonly<{
+  id: number;
+  sourceSqliteId: number | null;
+}>;
 type WorkflowKnowledgeChunkRow = Selectable<WorkflowKnowledgeChunksTable>;
 type WorkflowDelayedJobRow = Selectable<WorkflowDelayedJobsTable>;
 
@@ -630,6 +634,12 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
           role: 'user',
         },
         async (trx) => {
+          const account = values.accountId == null
+            ? null
+            : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            throw new Error('Workflow knowledge base accountId not found');
+          }
           const now = new Date();
           const row = await trx
             .insertInto('workflow_knowledge_bases')
@@ -638,6 +648,9 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
               source_sqlite_id: serverCreatedKnowledgeBaseSourceSqliteId(),
               name: values.name as string,
               description: values.description ?? null,
+              account_source_sqlite_id: account?.sourceSqliteId ?? null,
+              account_id: account?.id ?? null,
+              override_key: values.overrideKey ?? null,
               source_row: serverApiSourceRow(),
               created_at: now,
               updated_at: now,
@@ -662,10 +675,18 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
           role: 'user',
         },
         async (trx) => {
+          const account = values.accountId === undefined
+            ? undefined
+            : values.accountId === null
+              ? null
+              : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            throw new Error('Workflow knowledge base accountId not found');
+          }
           const row = await trx
             .updateTable('workflow_knowledge_bases')
             .set({
-              ...mutationToKnowledgeBasePatch(values),
+              ...mutationToKnowledgeBasePatch(values, account),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -1119,15 +1140,50 @@ function normalizeKnowledgeBaseMutation(
     if (!description) throw new Error('Workflow knowledge base description must not be empty');
     normalized.description = description;
   }
+  if (
+    normalized.accountId !== undefined
+    && normalized.accountId !== null
+    && (!Number.isSafeInteger(normalized.accountId) || normalized.accountId <= 0)
+  ) {
+    throw new Error('Workflow knowledge base accountId must be a positive integer');
+  }
+  if (normalized.overrideKey !== undefined && normalized.overrideKey !== null) {
+    const value = normalized.overrideKey.trim();
+    normalized.overrideKey = value || null;
+  }
   return normalized;
 }
 
 function mutationToKnowledgeBasePatch(
   values: WorkflowKnowledgeBaseMutationInput,
+  account: EmailAccountReference | null | undefined,
 ): Partial<Updateable<WorkflowKnowledgeBasesTable>> {
   return {
     ...(values.name === undefined ? {} : { name: values.name }),
     ...(values.description === undefined ? {} : { description: values.description }),
+    ...(values.accountId === undefined ? {} : {
+      account_id: account?.id ?? null,
+      account_source_sqlite_id: account?.sourceSqliteId ?? null,
+    }),
+    ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
+  };
+}
+
+async function resolveEmailAccountReference(
+  trx: import('./workspace-context').WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number,
+): Promise<EmailAccountReference | null> {
+  const row = await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', accountId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    sourceSqliteId: row.source_sqlite_id === null ? null : Number(row.source_sqlite_id),
   };
 }
 

@@ -16,32 +16,15 @@ function makeDb(input: {
 }) {
   const trx = {
     selectFrom(table: string) {
-      if (table === 'email_messages') {
-        return {
-          select: () => ({
-            where: () => ({
-              where: () => ({
-                executeTakeFirst: async () => input.message,
-              }),
-            }),
-          }),
-        };
-      }
-      return {
-        select: () => ({
-          where: () => ({
-            where: () => ({
-              where: () => ({
-                orderBy: () => ({
-                  orderBy: () => ({
-                    execute: async () => input.workflows ?? [],
-                  }),
-                }),
-              }),
-            }),
-          }),
-        }),
+      const builder: any = {
+        select: () => builder,
+        where: () => builder,
+        orderBy: () => builder,
+        executeTakeFirst: async () => input.message,
+        execute: async () => input.workflows ?? [],
       };
+      if (table === 'email_messages') return builder;
+      return builder;
     },
   };
   return {
