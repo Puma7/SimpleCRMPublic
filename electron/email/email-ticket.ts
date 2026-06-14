@@ -6,13 +6,17 @@ import {
   extractTicketFromSubject,
   generateTicketCode,
 } from '../../packages/core/src/email';
-import { allocateNextTicketCodeForAccount } from './account-mail-settings-store';
+import { allocateNextTicketCodeForAccount, listKnownTicketPrefixes } from './account-mail-settings-store';
 
 export {
   ensureTicketInSubject,
   extractTicketFromSubject,
   generateTicketCode,
 };
+
+export function extractKnownTicketFromSubject(subject: string | null): string | null {
+  return extractTicketFromSubject(subject, { allowedPrefixes: listKnownTicketPrefixes() });
+}
 
 export function getOrCreateThreadForTicket(ticketCode: string, accountId?: number | null): string {
   const accountValue = accountId ?? null;
@@ -22,29 +26,41 @@ export function getOrCreateThreadForTicket(ticketCode: string, accountId?: numbe
     )
     .get(ticketCode, accountValue, accountValue) as { id: string } | undefined;
   if (existing) return existing.id;
-  const id = `th-${accountValue ?? 'global'}-${randomBytes(8).toString('hex')}`;
+  const id = `th-${randomBytes(12).toString('hex')}`;
   getDb()
     .prepare(`INSERT INTO ${EMAIL_THREADS_TABLE} (id, ticket_code, account_id) VALUES (?, ?, ?)`)
     .run(id, ticketCode, accountValue);
   return id;
 }
 
+function isAccountMailSettingsUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /no such table:\s*email_account_mail_settings/i.test(error.message);
+}
+
 export function createTicketCodeForAccount(accountId?: number | null): string {
-  if (accountId != null) {
-    try {
-      return allocateNextTicketCodeForAccount(accountId);
-    } catch {
-      // Keep legacy/import/test paths functional when account settings are not available yet.
-    }
+  if (accountId == null) {
+    return generateTicketCode();
   }
-  return generateTicketCode();
+  try {
+    return allocateNextTicketCodeForAccount(accountId);
+  } catch (error) {
+    if (!isAccountMailSettingsUnavailable(error)) {
+      throw error;
+    }
+    console.warn(
+      '[email-ticket] account mail settings table unavailable; using legacy ticket code',
+      { accountId },
+    );
+    return generateTicketCode();
+  }
 }
 
 export function assignThreadAndTicketToMessage(
   messageId: number,
   input: { subject: string | null; inReplyTo: string | null; referencesHeader: string | null; accountId?: number | null; ticketPrefix?: string | null; ticketSequence?: number | string | null },
 ): void {
-  const fromSubj = extractTicketFromSubject(input.subject);
+  const fromSubj = extractKnownTicketFromSubject(input.subject);
   let ticket = fromSubj;
   if (!ticket) {
     ticket = generateTicketCode({ prefix: input.ticketPrefix, sequence: input.ticketSequence });
