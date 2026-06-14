@@ -834,6 +834,11 @@ type AutomationApiKeyRecord = {
 }
 
 const DEFAULT_LIST_LIMIT = 100
+// High limit for the per-message category list: the add/remove/set helpers
+// below need to see the COMPLETE assignment set (an unseen row leads to a
+// silent "removed: false" or a duplicate-POST 409). 1000 is well above any
+// realistic count of categories assigned to one message.
+const MESSAGE_CATEGORY_FETCH_LIMIT = 1000
 
 // Category list pre-checks (Add/Remove/Set) assume at most DEFAULT_LIST_LIMIT
 // assignments per message; pagination is not implemented for those idempotency paths.
@@ -3275,11 +3280,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     }
   }],
   // List all categories a message is in. Single source of truth for the
-  // category-chip UI on a row + the multi-select dialog.
+  // category-chip UI on a row + the multi-select dialog. The high limit
+  // matters: the check-then-act add/remove/set helpers below MUST see the
+  // entire assignment set, or they take wrong decisions (silent "removed:
+  // false" / duplicate-POST 409s). 1000 is well above any realistic count
+  // of categories assigned to a single message.
   [IPCChannels.Email.ListMessageCategories, ([messageId]) => ({
     method: "GET",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/categories`,
-    query: { limit: DEFAULT_LIST_LIMIT },
+    query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
     transform: (body) => listItems<EmailMessageCategoryRecord>(body),
   })],
   // Add a single category to a message. Idempotent: first checks whether the
@@ -3293,7 +3302,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     return {
       method: "GET",
       path: `/api/v1/email/messages/${messageId}/categories`,
-      query: { limit: DEFAULT_LIST_LIMIT },
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
       transform: async (body, context) => {
         const existing = listItems<EmailMessageCategoryRecord>(body)
         if (existing.some((r) => r.categoryId === categoryId)) {
@@ -3325,7 +3334,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     return {
       method: "GET",
       path: `/api/v1/email/messages/${messageId}/categories`,
-      query: { limit: DEFAULT_LIST_LIMIT },
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
       transform: async (body, context) => {
         const assignment = listItems<EmailMessageCategoryRecord>(body)
           .find((record) => record.categoryId === categoryId)
@@ -3350,7 +3359,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     return {
       method: "GET",
       path: `/api/v1/email/messages/${messageId}/categories`,
-      query: { limit: DEFAULT_LIST_LIMIT },
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
       transform: async (body, context) => {
         const existing = listItems<EmailMessageCategoryRecord>(body)
         const existingIds = new Set<number>(
