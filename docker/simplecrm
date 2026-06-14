@@ -3,13 +3,30 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-simplecrm}"
+# The compose file's directory is what Docker Compose itself uses to derive the
+# default project name and the project's .env file. Deriving from it keeps us
+# correct when COMPOSE_FILE points outside docker/, and --project-directory below
+# stops a stray .env in the caller's PWD from shadowing the real one. A hardcoded
+# name here previously created a second, parallel stack by surprise.
+COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "$COMPOSE_FILE")" && pwd)"
+# Track whether the operator explicitly chose a project (vs. us deriving it), so
+# delegated scripts can refuse to silently operate on a different stack.
+if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then SIMPLECRM_PROJECT_EXPLICIT=1; else SIMPLECRM_PROJECT_EXPLICIT=0; fi
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
+# Export so delegated host-side scripts (update.sh, restore-compose.sh) target
+# the SAME stack as this helper's own compose() calls.
+export COMPOSE_PROJECT_NAME COMPOSE_FILE SIMPLECRM_PROJECT_EXPLICIT
 
 usage() {
   cat <<'USAGE'
 usage: simplecrm <command> [args]
 
 Commands:
+  update [--no-pull] [--no-backup] [--repair-checksums] [--branch <name>]
+                                    Update this server: pull, backup, build,
+                                    migrate, restart, verify. Alias: upgrade.
+                                    --repair-checksums opts into re-stamping
+                                    upstream-redefined migration checksums.
   up                         Build and start the standard server stack.
   ps                         Show Compose service status.
   logs [service ...]          Show recent Compose logs.
@@ -23,15 +40,16 @@ Paths for restore and restore-drill are container paths inside the backups
 volume, for example /backups/db-2026-06-05T10-00-00Z.dump.
 
 Optional env:
-  COMPOSE_PROJECT_NAME=simplecrm
+  COMPOSE_PROJECT_NAME    Compose project (default: this file's directory name)
   COMPOSE_FILE=/path/to/docker-compose.yml
+  BRANCH                  Branch for `update` (default: main)
   RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health
   RESTORE_CADDY_INSECURE=true
 USAGE
 }
 
 compose() {
-  docker compose -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
+  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"
 }
 
 restore_drill() {
@@ -58,6 +76,21 @@ if [ -n "$command" ]; then
 fi
 
 case "$command" in
+  update|upgrade)
+    # Pass through flags/env to the standalone update script (single source of truth).
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --no-pull) export SKIP_PULL=1 ;;
+        --no-backup) export SKIP_BACKUP=1 ;;
+        --repair-checksums) export REPAIR_CHECKSUMS=1 ;;
+        --branch) shift; [ -n "${1:-}" ] || { echo "--branch requires a value" >&2; exit 2; }; export BRANCH="$1" ;;
+        --branch=*) export BRANCH="${1#--branch=}" ;;
+        *) echo "unknown update flag: $1" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    sh "$SCRIPT_DIR/update.sh"
+    ;;
   up)
     compose up -d --build
     ;;

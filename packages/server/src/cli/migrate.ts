@@ -3,6 +3,7 @@ import {
   collectMigrationSql,
   createPgMigrationDatabase,
   inspectServerMigrations,
+  reconcileAppliedChecksums,
   runServerMigrations,
   serverMigrations,
   type PgQueryClient,
@@ -15,6 +16,7 @@ export type MigrationCliOptions = Readonly<{
   mode: MigrationCliMode;
   direction: MigrationCliDirection;
   databaseUrl?: string;
+  repairChecksums: boolean;
   help: boolean;
 }>;
 
@@ -37,6 +39,7 @@ export type MigrationCliRunOptions = Partial<MigrationCliIo> & Readonly<{
 export function parseMigrationCliArgs(argv: readonly string[]): MigrationCliOptions {
   let direction: MigrationCliDirection = 'up';
   let databaseUrl: string | undefined;
+  let repairChecksums = false;
   let help = false;
   const modes = new Set<MigrationCliMode>();
 
@@ -48,6 +51,9 @@ export function parseMigrationCliArgs(argv: readonly string[]): MigrationCliOpti
         break;
       case '--down':
         direction = 'down';
+        break;
+      case '--repair-checksums':
+        repairChecksums = true;
         break;
       case '--help':
       case '-h':
@@ -81,11 +87,15 @@ export function parseMigrationCliArgs(argv: readonly string[]): MigrationCliOpti
   if (direction === 'down' && mode !== 'sql') {
     throw new Error('--down is only supported with --sql');
   }
+  if (repairChecksums && mode !== 'apply') {
+    throw new Error('--repair-checksums can only be combined with the default apply mode');
+  }
 
   return {
     mode,
     direction,
     databaseUrl,
+    repairChecksums,
     help,
   };
 }
@@ -143,9 +153,16 @@ export async function runMigrateCli(options: MigrationCliRunOptions = {}): Promi
       return plan.pendingIds.length === 0 ? 0 : 1;
     }
 
+    let repairedChecksums: readonly { id: string; oldChecksum: string; newChecksum: string }[] = [];
+    if (parsed.repairChecksums) {
+      const reconcile = await reconcileAppliedChecksums(database, serverMigrations);
+      repairedChecksums = reconcile.repaired;
+    }
+
     const result = await runServerMigrations(database, serverMigrations);
     stdout.write(`${JSON.stringify({
       status: 'applied',
+      repairedChecksums,
       appliedIds: result.appliedIds,
       skippedIds: result.skippedIds,
       plannedIds: result.plannedIds,
@@ -167,6 +184,10 @@ export function migrationCliHelp(): string {
     '',
     'Options:',
     '  --check                 Inspect migration status without applying pending migrations',
+    '  --repair-checksums      Re-stamp stored checksums of already-applied migrations whose',
+    '                          definition changed upstream, then apply pending migrations.',
+    '                          Use this when migrate fails with "Checksum mismatch" after an',
+    '                          upstream change re-defined an early migration.',
     '  --database-url <url>    PostgreSQL connection string; defaults to DATABASE_URL',
     '  --down                  Emit down SQL; only valid with --sql',
     '  --manifest             Print migration ids, descriptions, and checksums',
