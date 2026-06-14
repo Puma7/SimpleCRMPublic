@@ -51,6 +51,19 @@ export type MigrationRunResult = Readonly<{
   plannedIds: readonly string[];
 }>;
 
+export type ChecksumRepair = Readonly<{
+  id: string;
+  oldChecksum: string;
+  newChecksum: string;
+}>;
+
+export type ChecksumReconcileResult = Readonly<{
+  /** Applied migrations whose stored checksum was re-stamped to match the code. */
+  repaired: readonly ChecksumRepair[];
+  /** Applied migrations already matching the code (no change). */
+  unchanged: readonly string[];
+}>;
+
 export function createMigrationMetadataTableSql(): string {
   return `
 CREATE TABLE IF NOT EXISTS ${SERVER_MIGRATION_TABLE} (
@@ -72,6 +85,13 @@ export function insertAppliedMigrationSql(): string {
   return `
 INSERT INTO ${SERVER_MIGRATION_TABLE} (id, description, checksum)
 VALUES ($1, $2, $3);`.trim();
+}
+
+export function updateAppliedChecksumSql(): string {
+  return `
+UPDATE ${SERVER_MIGRATION_TABLE}
+SET checksum = $2, description = $3
+WHERE id = $1;`.trim();
 }
 
 export function checksumMigration(migration: SqlMigration): string {
@@ -214,6 +234,61 @@ export async function runServerMigrations(
     skippedIds: plan.appliedIds,
     plannedIds: plan.items.map((item) => item.id),
   };
+}
+
+/**
+ * Re-stamps the stored checksums of already-applied migrations whose *definition*
+ * changed in code but whose effect on existing databases is delivered elsewhere
+ * (the canonical case: an upstream change edits an early baseline migration for
+ * fresh installs, and a later migration re-applies the same delta idempotently
+ * for existing installs). Without this, planServerMigrations() correctly refuses
+ * to proceed with "Checksum mismatch", blocking every subsequent migration.
+ *
+ * Safety: only migrations that STILL EXIST in the configured list are reconciled.
+ * Rows referencing an unknown id (a deleted/renamed migration) are left untouched
+ * so planServerMigrations() still surfaces them as genuine corruption. All updates
+ * commit in a single transaction. This is an explicit, opt-in operation — callers
+ * gate it behind a flag and log every change.
+ */
+export async function reconcileAppliedChecksums(
+  database: MigrationDatabase,
+  migrations: readonly SqlMigration[],
+): Promise<ChecksumReconcileResult> {
+  assertValidMigrationSet(migrations);
+  await database.execute(createMigrationMetadataTableSql());
+  const appliedRows = await database.query<MigrationMetadataRow>(selectAppliedMigrationsSql());
+
+  const knownChecksums = new Map(migrations.map((migration) => [migration.id, checksumMigration(migration)]));
+  const knownDescriptions = new Map(migrations.map((migration) => [migration.id, migration.description]));
+
+  const repaired: ChecksumRepair[] = [];
+  const unchanged: string[] = [];
+  for (const row of appliedRows) {
+    const id = typeof row.id === 'string' ? row.id : '';
+    if (!id) continue;
+    const expected = knownChecksums.get(id);
+    if (expected === undefined) continue; // unknown migration — leave for the integrity check
+    const stored = typeof row.checksum === 'string' ? row.checksum : '';
+    if (stored === expected) {
+      unchanged.push(id);
+      continue;
+    }
+    repaired.push({ id, oldChecksum: stored, newChecksum: expected });
+  }
+
+  if (repaired.length > 0) {
+    await executeInMigrationTransaction(database, async (transaction) => {
+      for (const item of repaired) {
+        await transaction.execute(updateAppliedChecksumSql(), [
+          item.id,
+          item.newChecksum,
+          knownDescriptions.get(item.id) ?? '',
+        ]);
+      }
+    });
+  }
+
+  return { repaired, unchanged };
 }
 
 async function executeInMigrationTransaction<T>(

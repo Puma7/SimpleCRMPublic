@@ -21,12 +21,13 @@ describe('server operator CLI wrapper', () => {
     });
 
     expect(help).toEqual(expect.stringContaining('usage: simplecrm <command> [args]'));
+    expect(help).toEqual(expect.stringContaining('update'));
     expect(help).toEqual(expect.stringContaining('up'));
     expect(help).toEqual(expect.stringContaining('backup'));
     expect(help).toEqual(expect.stringContaining('backup-scheduler'));
     expect(help).toEqual(expect.stringContaining('doctor'));
     expect(help).toEqual(expect.stringContaining('restore [dump [att [audit]]]'));
     expect(help).toEqual(expect.stringContaining('restore-drill [dump [att [audit]]]'));
-    expect(help).toEqual(expect.stringContaining('COMPOSE_PROJECT_NAME=simplecrm'));
+    expect(help).toEqual(expect.stringContaining('COMPOSE_PROJECT_NAME'));
   });
 });

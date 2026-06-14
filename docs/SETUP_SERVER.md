@@ -148,14 +148,59 @@ npm run doctor:server -- --backup-dir C:\path\to\backups
 
 ## Upgrade / Restart
 
-After pulling new code (rebuild `caddy` too — it now contains the web app bundle):
+### One command (recommended)
+
+From the repository root:
+
+```sh
+sh docker/update.sh
+```
+
+This does the whole safe sequence in order and stops on the first failure:
+pull `origin/main` → back up the database → rebuild images → reconcile
+migration checksums and apply pending migrations → restart `api` + `caddy` →
+verify. Useful flags / env:
+
+```sh
+BRANCH=some-branch sh docker/update.sh   # update to a specific branch
+SKIP_PULL=1   sh docker/update.sh        # use the current checkout, don't git pull
+SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recommended)
+```
+
+The operator wrapper exposes the same thing as `sh docker/simplecrm update`
+(alias `upgrade`; accepts `--no-pull` / `--no-backup`).
+
+Both default the Compose project name to the compose file's directory
+(`docker`) — the same value plain `docker compose -f docker/docker-compose.yml`
+uses — so the helper and your manual compose commands always act on one stack.
+Override with `COMPOSE_PROJECT_NAME` if your deployment uses a different name.
+
+### Manual steps
+
+If you prefer to drive it yourself (rebuild `caddy` too — it contains the web bundle):
 
 ```sh
 cd docker
 docker compose build api migrate caddy
+docker compose run --rm migrate          # apply pending migrations first
 docker compose up -d
-docker compose run --rm migrate
 ```
+
+### "Checksum mismatch for server migration ..."
+
+This means an already-applied migration was re-defined upstream (its real
+schema delta for existing databases is delivered idempotently by a later
+migration). The migration runner blocks rather than silently diverge. Reconcile
+the stored checksums, then migrate — `docker/update.sh` does this automatically,
+or run it explicitly:
+
+```sh
+docker compose run --rm --entrypoint node migrate \
+  packages/server/dist/cli/migrate.js --repair-checksums
+```
+
+This only re-stamps migrations that still exist in code; rows for unknown
+migration ids are left untouched so genuine corruption stays visible.
 
 Data lives in Docker volumes:
 
