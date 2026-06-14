@@ -197,7 +197,11 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
         toast.success("Konto aktualisiert.")
         setImapPassword("")
         onCreated()
-        onCancelEdit?.()
+        // Deliberately do NOT call onCancelEdit() here: that would clear the
+        // master-detail's editAccount and blank the panel until the user
+        // clicks the account again. After an update the user wants to stay on
+        // the form with their values visible plus the success toast. The reset
+        // is correct on create (the form re-mounts for the next new account).
       } else {
         const res = await invokeRenderer(IPCChannels.Email.CreateAccount, {
           displayName: displayName.trim(),
