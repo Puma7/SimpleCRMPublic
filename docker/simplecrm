@@ -17,6 +17,8 @@ Commands:
   update [--no-pull] [--no-backup]  Update this server: pull, backup, build,
                                     reconcile migration checksums + migrate,
                                     restart, verify. Alias: upgrade.
+                                    If your stack uses project name "simplecrm",
+                                    set COMPOSE_PROJECT_NAME=simplecrm first.
   up                         Build and start the standard server stack.
   ps                         Show Compose service status.
   logs [service ...]          Show recent Compose logs.
@@ -30,7 +32,8 @@ Paths for restore and restore-drill are container paths inside the backups
 volume, for example /backups/db-2026-06-05T10-00-00Z.dump.
 
 Optional env:
-  COMPOSE_PROJECT_NAME    Compose project (default: this file's directory name)
+  COMPOSE_PROJECT_NAME    Compose project (default: this file's directory name).
+                          Set to simplecrm if you deployed before the default changed.
   COMPOSE_FILE=/path/to/docker-compose.yml
   BRANCH                  Branch for `update` (default: main)
   RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health

@@ -20,12 +20,25 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
+COMPOSE_PROJECT_NAME_WAS_SET=0
+if [ -n "${COMPOSE_PROJECT_NAME+x}" ]; then
+  COMPOSE_PROJECT_NAME_WAS_SET=1
+fi
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"
 BRANCH="${BRANCH:-main}"
 export COMPOSE_PROJECT_NAME
 
 compose() { docker compose -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" "$@"; }
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33mWARNING: %s\033[0m\n' "$*" >&2; }
+
+if [ "$COMPOSE_PROJECT_NAME_WAS_SET" = "0" ]; then
+  warn "COMPOSE_PROJECT_NAME is not set (using default \"$COMPOSE_PROJECT_NAME\")."
+  warn "If your stack was deployed under the old default name \"simplecrm\", run:"
+  warn "  COMPOSE_PROJECT_NAME=simplecrm sh docker/update.sh"
+  warn "Otherwise update may start a second stack on an empty database."
+  printf '\n' >&2
+fi
 
 # Run the migrate CLI inside a one-off container of the migrate service.
 # --entrypoint node lets us pass CLI flags (the service's default command takes none).

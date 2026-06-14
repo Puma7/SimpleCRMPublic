@@ -29,5 +29,6 @@ describe('server operator CLI wrapper', () => {
     expect(help).toEqual(expect.stringContaining('restore [dump [att [audit]]]'));
     expect(help).toEqual(expect.stringContaining('restore-drill [dump [att [audit]]]'));
     expect(help).toEqual(expect.stringContaining('COMPOSE_PROJECT_NAME'));
+    expect(help).toEqual(expect.stringContaining('COMPOSE_PROJECT_NAME=simplecrm'));
   });
 });
