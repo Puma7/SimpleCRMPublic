@@ -5,6 +5,12 @@ import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
 import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 import { RendererTransportError } from "./renderer-transport"
+import {
+  accountOverrideScopeFromPayload,
+  resolveScopedAccountOverrides,
+  type AccountOverrideScopePayload,
+  type ScopedAccountOverrideRow,
+} from "@shared/mail-account-overrides"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -302,6 +308,7 @@ type EmailAccountRecord = {
   vacationSubject?: string | null
   vacationBodyText?: string | null
   requestReadReceipt?: boolean | number | null
+  imapDeleteOptIn?: boolean | number | null
   updatedAt?: string | null
 }
 
@@ -708,6 +715,7 @@ type WorkflowKnowledgeBaseRecord = {
   accountSourceSqliteId?: number | null
   accountId?: number | null
   overrideKey?: string | null
+  knowledgeContext?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -2657,16 +2665,43 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   })],
   [IPCChannels.Email.GetComposeSignature, ([payload]) => {
     const input = objectPayload(payload, "email compose signature payload")
+    const accountId = positiveId(input.accountId, "email account id")
     return {
       method: "GET",
       path: "/api/v1/email/account-signatures",
       query: {
-        accountId: positiveId(input.accountId, "email account id"),
+        accountId,
         limit: 1,
       },
-      transform: (body) => {
+      transform: async (body, context) => {
         const signature = listItems<EmailAccountSignatureRecord>(body)[0]
-        return { html: signature?.signatureHtml ?? null }
+        if (signature?.signatureHtml?.trim()) {
+          return { html: signature.signatureHtml.trim() }
+        }
+        const teamBody = await context.fetchJson({
+          method: "GET",
+          path: "/api/v1/email/team-members",
+          query: { limit: DEFAULT_LIST_LIMIT },
+        })
+        const members = listItems<EmailTeamMemberRecord>(teamBody)
+        const withTeamSig = members.find((member) => member.signatureHtml?.trim())
+        if (withTeamSig?.signatureHtml) {
+          return { html: withTeamSig.signatureHtml.trim() }
+        }
+        if (members.length > 0 && members[0]?.displayName?.trim()) {
+          return { html: `<p>Mit freundlichen Grüßen<br/>${members[0]!.displayName}</p>` }
+        }
+        const accountsBody = await context.fetchJson({
+          method: "GET",
+          path: "/api/v1/email/accounts",
+        })
+        const account = listItems<EmailAccountRecord>(accountsBody)
+          .map(mapEmailAccountRecord)
+          .find((row) => row.id === accountId)
+        if (account?.display_name?.trim()) {
+          return { html: `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>` }
+        }
+        return { html: null }
       },
     }
   }],
@@ -2921,7 +2956,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/workflow-knowledge-bases",
     query: scopedListQuery(payload),
-    transform: (body) => listItems<WorkflowKnowledgeBaseRecord>(body).map(mapWorkflowKnowledgeBaseRecord),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapWorkflowKnowledgeBaseRecord),
   })],
   [IPCChannels.Email.CreateKnowledgeBase, ([payload]) => {
     const input = objectPayload(payload, "workflow knowledge base payload")
@@ -2933,6 +2968,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         const knowledgeBase = dataBody<WorkflowKnowledgeBaseRecord>(body)
         return { success: true, id: knowledgeBase.id }
       },
+    }
+  }],
+  [IPCChannels.Email.UpdateKnowledgeBase, ([payload]) => {
+    const input = objectPayload(payload, "workflow knowledge base update payload")
+    const id = positiveId(input.id, "workflow knowledge base id")
+    return {
+      method: "PATCH",
+      path: `/api/v1/workflow-knowledge-bases/${id}`,
+      body: mapWorkflowKnowledgeBaseMutation(input),
+      transform: () => ({ success: true }),
     }
   }],
   [IPCChannels.Email.DeleteKnowledgeBase, ([id]) => ({
@@ -3434,7 +3479,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/email/canned-responses",
     query: scopedListQuery(payload),
-    transform: (body) => listItems<EmailCannedResponseRecord>(body).map(mapEmailCannedResponseRecord),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapEmailCannedResponseRecord),
   })],
   [IPCChannels.Email.SaveCannedResponse, ([payload]) => {
     const input = objectPayload(payload, "email canned response payload")
@@ -3603,7 +3648,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/ai/prompts",
     query: scopedListQuery(payload),
-    transform: (body) => listItems<AiPromptRecord>(body).map(mapAiPromptRecord),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapAiPromptRecord),
   })],
   [IPCChannels.Email.SaveAiPrompt, ([payload]) => {
     const input = objectPayload(payload, "email ai prompt payload")
@@ -4824,6 +4869,7 @@ function mapEmailAccountRecord(record: EmailAccountRecord) {
     vacation_subject: record.vacationSubject ?? null,
     vacation_body_text: record.vacationBodyText ?? null,
     request_read_receipt: record.requestReadReceipt ? 1 : 0,
+    imap_delete_opt_in: record.imapDeleteOptIn ? 1 : 0,
     created_at: record.updatedAt ?? "",
     updated_at: record.updatedAt ?? "",
   }
@@ -4859,6 +4905,7 @@ function mapEmailAccountMutationPayload(value: Record<string, any>): Record<stri
     vacationSubject: value.vacationSubject === undefined ? undefined : nullableTrimmedText(value.vacationSubject, "vacation subject", 500),
     vacationBodyText: value.vacationBodyText === undefined ? undefined : nullableTrimmedText(value.vacationBodyText, "vacation body", 10000),
     requestReadReceipt: optionalBoolean(value.requestReadReceipt, "read receipt request flag"),
+    imapDeleteOptIn: optionalBoolean(value.imapDeleteOptIn, "imap delete opt-in flag"),
   })
 }
 
@@ -5238,10 +5285,18 @@ function mapEmailCannedResponseRecord(record: EmailCannedResponseRecord) {
 }
 
 function mapEmailCannedResponseMutation(value: Record<string, any>): Record<string, unknown> {
+  const accountId = Object.prototype.hasOwnProperty.call(value, 'accountId')
+    ? value.accountId
+    : value.account_id
+  const overrideKey = Object.prototype.hasOwnProperty.call(value, 'overrideKey')
+    ? value.overrideKey
+    : value.override_key
   return pruneUndefined({
     title: value.title === undefined || value.title === null ? undefined : String(value.title),
     body: value.body === undefined || value.body === null ? undefined : String(value.body),
     sortOrder: value.sortOrder ?? value.sort_order,
+    accountId,
+    overrideKey,
   })
 }
 
@@ -5366,12 +5421,20 @@ function mapAiPromptMutation(
   const profileId = Object.prototype.hasOwnProperty.call(value, "profileId")
     ? value.profileId
     : value.profile_id
+  const accountId = Object.prototype.hasOwnProperty.call(value, "accountId")
+    ? value.accountId
+    : value.account_id
+  const overrideKey = Object.prototype.hasOwnProperty.call(value, "overrideKey")
+    ? value.overrideKey
+    : value.override_key
   return pruneUndefined({
     label: value.label === undefined || value.label === null ? undefined : String(value.label),
     userTemplate: value.userTemplate ?? value.user_template,
     target,
     profileId,
     sortOrder: value.sortOrder ?? value.sort_order,
+    accountId,
+    overrideKey,
   })
 }
 
@@ -5637,6 +5700,7 @@ function mapWorkflowKnowledgeBaseRecord(record: WorkflowKnowledgeBaseRecord) {
     account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
     ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
     override_key: record.overrideKey ?? null,
+    knowledge_context: record.knowledgeContext ?? null,
   }
 }
 
@@ -5644,9 +5708,21 @@ function mapWorkflowKnowledgeBaseMutation(value: Record<string, any>): Record<st
   const description = Object.prototype.hasOwnProperty.call(value, "description")
     ? value.description
     : undefined
+  const accountId = Object.prototype.hasOwnProperty.call(value, "accountId")
+    ? value.accountId
+    : value.account_id
+  const overrideKey = Object.prototype.hasOwnProperty.call(value, "overrideKey")
+    ? value.overrideKey
+    : value.override_key
+  const knowledgeContext = Object.prototype.hasOwnProperty.call(value, "knowledgeContext")
+    ? value.knowledgeContext
+    : value.knowledge_context
   return pruneUndefined({
     name: stringPayloadField(value.name, "workflow knowledge base name"),
     description: description === undefined || description === null ? description : String(description),
+    accountId,
+    overrideKey,
+    knowledgeContext,
   })
 }
 
@@ -5943,6 +6019,18 @@ function scopedListQuery(
     limit: DEFAULT_LIST_LIMIT,
     accountId: accountScopeQueryValue(accountOverrideScopePayloadValue(payload)),
   })
+}
+
+function scopedAccountOverrideListTransform<TRow extends ScopedAccountOverrideRow>(
+  payload: unknown,
+  body: unknown,
+  mapRow: (record: never) => TRow,
+): TRow[] {
+  const scope = accountOverrideScopeFromPayload(
+    accountOverrideScopePayloadValue(payload) as AccountOverrideScopePayload,
+  );
+  const rows = listItems(body).map((record) => mapRow(record as never));
+  return resolveScopedAccountOverrides(rows, scope ?? "all");
 }
 
 function optionalPositiveQueryId(value: unknown, label: string): number | undefined {

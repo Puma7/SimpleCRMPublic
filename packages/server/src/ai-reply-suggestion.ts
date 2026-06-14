@@ -23,6 +23,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import type { AiReplySuggestionJobPort } from './jobs/production-handlers';
+import { buildKnowledgePromptAppend } from './knowledge-workflow-search';
 
 const REPLY_BODY_MAX = 12_000;
 const PENDING_STALE_MS = 15 * 60 * 1000;
@@ -464,11 +465,32 @@ async function generateReplyDraftText(
   context: GenerationContext,
   apiKey: string,
 ): Promise<EmailReplyDraftGenerationResult> {
-  const user = interpolateReplyTemplate(
+  let user = interpolateReplyTemplate(
     context.prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE,
     context.message,
     context.customer,
   );
+
+  const query = messageBodyForReply(context.message).slice(0, 2000);
+  if (query.length >= 8) {
+    try {
+      const kbBlock = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: context.message.workspace_id, role: 'system' },
+        async (trx) => buildKnowledgePromptAppend(
+          trx,
+          context.message.workspace_id,
+          context.message.account_id === null ? null : Number(context.message.account_id),
+          'inbound',
+          query,
+        ),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (kbBlock) user = `${user}${kbBlock}`;
+    } catch {
+      // KB lookup must not block reply generation.
+    }
+  }
 
   try {
     const started = Date.now();

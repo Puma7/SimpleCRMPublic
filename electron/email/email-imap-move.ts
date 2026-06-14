@@ -10,7 +10,11 @@ import { resolveImapAuth } from './email-imap-auth';
 
 const DELETE_OPT_IN_KEY = 'workflow_imap_delete_opt_in';
 
-export function isImapDeleteOptInEnabled(): boolean {
+export function isImapDeleteOptInEnabled(accountId?: number): boolean {
+  if (accountId != null) {
+    const acc = getEmailAccountById(accountId);
+    if (acc && (acc.imap_delete_opt_in ?? 0) === 1) return true;
+  }
   const v = (getSyncInfo(DELETE_OPT_IN_KEY) ?? '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
 }
@@ -70,8 +74,8 @@ export async function moveImapMessage(
 export async function deleteImapMessageOnServer(
   message: Pick<EmailMessageRow, 'account_id' | 'folder_id' | 'uid' | 'pop3_uidl'>,
 ): Promise<void> {
-  if (!isImapDeleteOptInEnabled()) {
-    throw new Error('Server-Löschung nicht aktiviert (workflow_imap_delete_opt_in)');
+  if (!isImapDeleteOptInEnabled(message.account_id)) {
+    throw new Error('Server-Löschung nicht aktiviert (Konto oder workflow_imap_delete_opt_in)');
   }
   if (message.uid < 0 || message.pop3_uidl) {
     throw new Error('POP3-/Entwurfs-Nachrichten können nicht auf dem Server gelöscht werden');

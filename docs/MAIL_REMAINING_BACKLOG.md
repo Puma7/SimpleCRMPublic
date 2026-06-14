@@ -97,6 +97,20 @@
 
 ---
 
+## Settings-Frontend (PR #122)
+
+| Thema | Status |
+|-------|--------|
+| Konten-Tabs Signatur / KI / Erweitert | ✅ |
+| Scoped Overrides UI (Prompts, Canned, KB) | ✅ |
+| Workflow-Liste Account-Filter | ✅ |
+| KB-Kontext Reply-Suggestion + Slots-Zuweisung | ✅ |
+| HTTP Signatur Team-Fallback | ✅ |
+
+Details: [`BACKLOG.md`](BACKLOG.md)
+
+---
+
 ## Empfohlene Reihenfolge (nach Alpha)
 
 1. PR **#84** mergen (Sidebar-Zähler)

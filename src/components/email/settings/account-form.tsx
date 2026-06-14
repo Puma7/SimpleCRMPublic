@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -16,9 +16,11 @@ type Props = {
   onCreated: () => void
   editAccount?: EmailAccount | null
   onCancelEdit?: () => void
+  /** Called after a successful update with refreshed account row (keeps edit mode active). */
+  onSaved?: (account: EmailAccount) => void
 }
 
-export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
+export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: Props) {
   const serverClientMode = getRendererTransport().kind === "http"
   const vacationTestAvailable = serverClientMode || hasLocalIpc()
   const [protocol, setProtocol] = useState<"imap" | "pop3">("imap")
@@ -44,6 +46,8 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
 
+  const lastInitializedAccountIdRef = useRef<number | null>(null)
+
   // Reset the form to server values ONLY when the account being edited changes
   // (different id), not on every editAccount object reference change. The parent
   // re-binds editAccount after a background list refresh (e.g. another account
@@ -51,7 +55,12 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   // away whatever the user had been typing. Keying on the id lets the form
   // stay dirty until the user explicitly switches accounts.
   useEffect(() => {
-    if (!editAccount) return
+    if (!editAccount) {
+      lastInitializedAccountIdRef.current = null
+      return
+    }
+    if (lastInitializedAccountIdRef.current === editAccount.id) return
+    lastInitializedAccountIdRef.current = editAccount.id
     setProtocol((editAccount.protocol as "imap" | "pop3") || "imap")
     setDisplayName(editAccount.display_name)
     setEmailAddress(editAccount.email_address)
@@ -202,6 +211,9 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
+        const refreshed = (await invokeRenderer(IPCChannels.Email.ListAccounts)) as EmailAccount[]
+        const updated = refreshed.find((a) => a.id === editAccount.id)
+        if (updated) onSaved?.(updated)
         onCreated()
         // Deliberately do NOT call onCancelEdit() here: that would clear the
         // master-detail's editAccount and blank the panel until the user

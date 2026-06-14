@@ -48,6 +48,10 @@ import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
 } from './workspace-context';
+import {
+  resolveEmailAccountReference,
+  type EmailAccountReference,
+} from './resolve-email-account-reference';
 
 export type PostgresWorkflowRuntimeReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -71,10 +75,6 @@ type WorkflowKnowledgeBaseRow = Selectable<WorkflowKnowledgeBasesTable>;
 type WorkflowKnowledgeBaseReference = Readonly<{
   id: number;
   sourceSqliteId: number;
-}>;
-type EmailAccountReference = Readonly<{
-  id: number;
-  sourceSqliteId: number | null;
 }>;
 type WorkflowKnowledgeChunkRow = Selectable<WorkflowKnowledgeChunksTable>;
 type WorkflowDelayedJobRow = Selectable<WorkflowDelayedJobsTable>;
@@ -161,6 +161,7 @@ const workflowKnowledgeBaseSelectColumns = [
   'account_source_sqlite_id',
   'account_id',
   'override_key',
+  'knowledge_context',
   'created_at',
   'updated_at',
 ] as const;
@@ -584,10 +585,14 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
-          if (input.accountId !== undefined) {
+          if (input.accountId === undefined) {
+            query = query.where('account_id', 'is', null);
+          } else {
+            const account = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
+            if (!account) return { items: [], nextCursor: null };
             query = query.where((eb) => eb.or([
               eb('account_id', 'is', null),
-              eb('account_id', '=', input.accountId!),
+              eb('account_id', '=', account.id),
             ]));
           }
           const search = input.search?.trim();
@@ -650,7 +655,8 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
               description: values.description ?? null,
               account_source_sqlite_id: account?.sourceSqliteId ?? null,
               account_id: account?.id ?? null,
-              override_key: values.overrideKey ?? null,
+              override_key: values.overrideKey ?? (values.knowledgeContext ? `kb.${values.knowledgeContext}` : null),
+              knowledge_context: values.knowledgeContext ?? null,
               source_row: serverApiSourceRow(),
               created_at: now,
               updated_at: now,
@@ -1151,6 +1157,10 @@ function normalizeKnowledgeBaseMutation(
     const value = normalized.overrideKey.trim();
     normalized.overrideKey = value || null;
   }
+  if (normalized.knowledgeContext !== undefined && normalized.knowledgeContext !== null) {
+    const value = String(normalized.knowledgeContext).trim();
+    normalized.knowledgeContext = value || null;
+  }
   return normalized;
 }
 
@@ -1158,7 +1168,7 @@ function mutationToKnowledgeBasePatch(
   values: WorkflowKnowledgeBaseMutationInput,
   account: EmailAccountReference | null | undefined,
 ): Partial<Updateable<WorkflowKnowledgeBasesTable>> {
-  return {
+  const patch: Partial<Updateable<WorkflowKnowledgeBasesTable>> = {
     ...(values.name === undefined ? {} : { name: values.name }),
     ...(values.description === undefined ? {} : { description: values.description }),
     ...(values.accountId === undefined ? {} : {
@@ -1166,25 +1176,13 @@ function mutationToKnowledgeBasePatch(
       account_source_sqlite_id: account?.sourceSqliteId ?? null,
     }),
     ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
+    ...(values.knowledgeContext === undefined ? {} : { knowledge_context: values.knowledgeContext }),
   };
-}
-
-async function resolveEmailAccountReference(
-  trx: import('./workspace-context').WorkspaceTransaction,
-  workspaceId: string,
-  accountId: number,
-): Promise<EmailAccountReference | null> {
-  const row = await trx
-    .selectFrom('email_accounts')
-    .select(['id', 'source_sqlite_id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', accountId)
-    .executeTakeFirst();
-  if (!row) return null;
-  return {
-    id: Number(row.id),
-    sourceSqliteId: row.source_sqlite_id === null ? null : Number(row.source_sqlite_id),
-  };
+  // Match Electron updateKnowledgeBase: context-only patches refresh kb.<ctx> override_key.
+  if (values.knowledgeContext !== undefined && values.overrideKey === undefined) {
+    patch.override_key = values.knowledgeContext ? `kb.${values.knowledgeContext}` : null;
+  }
+  return patch;
 }
 
 function normalizeKnowledgeChunkMutation(
@@ -1528,6 +1526,7 @@ function mapWorkflowKnowledgeBaseRow(
     accountSourceSqliteId: nullableNumber(row.account_source_sqlite_id),
     accountId: nullableNumber(row.account_id),
     overrideKey: row.override_key,
+    knowledgeContext: row.knowledge_context,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
   };

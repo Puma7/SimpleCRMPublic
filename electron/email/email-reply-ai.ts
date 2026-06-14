@@ -8,6 +8,8 @@ import { getEmailMessageById, type EmailMessageRow } from './email-store';
 import { hasAnyAiProfileWithKey } from './email-ai-profiles';
 import type { ReplySuggestionAutoTrigger } from '../../shared/reply-suggestion-settings';
 import { shouldAutoEnsureReplySuggestion } from './reply-suggestion-settings';
+import { searchKnowledgeForWorkflow } from '../workflow/knowledge-base';
+import { formatKnowledgeChunksForPrompt } from '../../shared/knowledge-prompt';
 
 const REPLY_BODY_MAX = 12_000;
 const INFLIGHT = new Set<number>();
@@ -216,7 +218,18 @@ export async function generateReplyDraftText(
     (opts?.promptId != null ? prompts.find((p) => p.id === opts.promptId) : undefined) ??
     findReplyPrompt(prompts);
   const template = prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE;
-  const user = interpolateReplyTemplate(template, row, customerId);
+  let user = interpolateReplyTemplate(template, row, customerId);
+
+  const query = messageBodyForReply(row).slice(0, 2000);
+  if (query.length >= 8) {
+    try {
+      const chunks = await searchKnowledgeForWorkflow(row.account_id, 'inbound', query, 5);
+      const kbBlock = formatKnowledgeChunksForPrompt(chunks);
+      if (kbBlock) user = `${user}${kbBlock}`;
+    } catch {
+      // KB lookup must not block reply generation.
+    }
+  }
 
   try {
     const profileId = prompt ? resolvePromptProfileId(prompt) : null;

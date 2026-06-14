@@ -595,6 +595,20 @@ function runMigrations() {
                 'imap_sync_spam',
                 `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_sync_spam INTEGER NOT NULL DEFAULT 0`,
             );
+            addAcc(
+                'imap_delete_opt_in',
+                `ALTER TABLE ${EMAIL_ACCOUNTS_TABLE} ADD COLUMN imap_delete_opt_in INTEGER NOT NULL DEFAULT 0`,
+            );
+        }
+
+        const kbTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(WORKFLOW_KNOWLEDGE_BASES_TABLE);
+        if (kbTable) {
+            const kbCols = db.prepare(`PRAGMA table_info(${WORKFLOW_KNOWLEDGE_BASES_TABLE})`).all() as { name: string }[];
+            const kbNames = new Set(kbCols.map((c) => c.name));
+            if (!kbNames.has('knowledge_context')) {
+                console.log('Adding knowledge_context to workflow_knowledge_bases...');
+                db.exec(`ALTER TABLE ${WORKFLOW_KNOWLEDGE_BASES_TABLE} ADD COLUMN knowledge_context TEXT`);
+            }
         }
 
         if (emailFolderExists) {

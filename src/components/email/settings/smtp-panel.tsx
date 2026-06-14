@@ -44,6 +44,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [importingInbox, setImportingInbox] = useState(false)
+  const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +76,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       setSyncSpam((a.imap_sync_spam ?? 0) === 1)
       setArchiveFolder(a.sync_archive_folder_path || "")
       setSpamFolder(a.sync_spam_folder_path || "")
+      setImapDeleteOptIn((a.imap_delete_opt_in ?? 0) === 1)
     }
   }, [accId, accounts])
 
@@ -101,6 +103,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         imapSyncSent: syncSent,
         imapSyncArchive: syncArchive,
         imapSyncSpam: syncSpam,
+        imapDeleteOptIn,
       })
       toast.success("SMTP gespeichert.")
       setSmtpPass("")
@@ -306,6 +309,22 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
                 </Button>
               </div>
               ) : null}
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="space-y-1">
+                  <Label htmlFor="imap-delete-account" className="text-xs font-medium">
+                    IMAP-Löschung auf dem Server (dieses Konto)
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Erlaubt den Workflow-Knoten „Auf Server löschen" für Nachrichten dieses Postfachs.
+                    Globaler Fallback unter Automatisierung bleibt möglich.
+                  </p>
+                </div>
+                <Switch
+                  id="imap-delete-account"
+                  checked={imapDeleteOptIn}
+                  onCheckedChange={setImapDeleteOptIn}
+                />
+              </div>
             </div>
           ) : null}
           <div className="flex gap-2">

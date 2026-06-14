@@ -21,6 +21,7 @@ import { authLoginSecurityMigration } from './0020_auth_login_security';
 import { returnsSchemaMigration } from './0021_returns_schema';
 import { returnsPortalSettingsMigration } from './0022_returns_portal_settings';
 import { accountScopeOverridesMigration } from './0023_account_scope_overrides';
+import { settingsKbContextImapMigration } from './0024_settings_kb_context_imap';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -48,6 +49,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   returnsSchemaMigration,
   returnsPortalSettingsMigration,
   accountScopeOverridesMigration,
+  settingsKbContextImapMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

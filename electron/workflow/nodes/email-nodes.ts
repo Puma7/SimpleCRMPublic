@@ -377,10 +377,10 @@ export function registerEmailNodes(register: Reg): void {
       const { deleteImapMessageOnServer, isImapDeleteOptInEnabled } = await import(
         '../../email/email-imap-move'
       );
-      if (!isImapDeleteOptInEnabled()) {
+      if (!isImapDeleteOptInEnabled(row.account_id)) {
         return {
           status: 'error',
-          message: 'Opt-in workflow_imap_delete_opt_in in sync_info erforderlich',
+          message: 'IMAP-Server-Löschung für dieses Konto nicht aktiviert',
         };
       }
       await deleteImapMessageOnServer(row);

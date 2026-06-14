@@ -1504,6 +1504,7 @@ export type EmailAccountRecord = {
   vacationSubject: string | null;
   vacationBodyText: string | null;
   requestReadReceipt: boolean;
+  imapDeleteOptIn: boolean;
   defaultRemoteContentPolicy: string;
   respondToReadReceipts: string;
   imapPasswordConfigured: boolean;
@@ -1574,6 +1575,7 @@ export type EmailAccountMutationInput = {
   vacationSubject?: string | null;
   vacationBodyText?: string | null;
   requestReadReceipt?: boolean;
+  imapDeleteOptIn?: boolean;
 };
 
 export type EmailAccountMutationPortResult =
@@ -3458,6 +3460,7 @@ export type WorkflowKnowledgeBaseRecord = {
   accountSourceSqliteId: number | null;
   accountId: number | null;
   overrideKey: string | null;
+  knowledgeContext: string | null;
   createdAt: string | null;
   updatedAt: string;
 };
@@ -3469,6 +3472,7 @@ export type WorkflowKnowledgeBaseMutationInput = {
   description?: string | null;
   accountId?: number | null;
   overrideKey?: string | null;
+  knowledgeContext?: string | null;
 };
 
 export type WorkflowKnowledgeBaseApiPort = {

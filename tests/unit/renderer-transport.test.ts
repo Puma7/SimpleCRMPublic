@@ -5857,6 +5857,7 @@ describe('renderer transport', () => {
       description: null,
       account_id: null,
       override_key: null,
+      knowledge_context: null,
     }]);
     await expect(transport.invoke(
       IPCChannels.Email.CreateKnowledgeBase,
@@ -8006,6 +8007,35 @@ describe('renderer transport', () => {
       .filter((channel) => !intentionallyUnsupported.has(channel));
 
     expect(missing).toEqual([]);
+  });
+
+  test('GetComposeSignature falls back to team member signature when account has none', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ displayName: 'Team Lead', signatureHtml: '<p>Team SIG</p>' }],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, { accountId: 7 })).resolves.toEqual({
+      html: '<p>Team SIG</p>',
+    });
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/email/account-signatures?accountId=7&limit=1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/email/team-members?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   test('rejects unsupported IPC channels in HTTP mode before fetching', async () => {

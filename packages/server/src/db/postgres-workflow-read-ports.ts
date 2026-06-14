@@ -29,6 +29,10 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './workspace-context';
+import {
+  resolveEmailAccountReference,
+  type EmailAccountReference,
+} from './resolve-email-account-reference';
 import type { PostgresSecretPort } from './postgres-secret-port';
 
 export type PostgresWorkflowReadPortOptions = Readonly<{
@@ -41,10 +45,6 @@ type AiProfileRow = Selectable<EmailAiProfilesTable>;
 type AiPromptRow = Selectable<EmailAiPromptsTable>;
 type WorkflowRow = Selectable<EmailWorkflowsTable>;
 type AiProfileReference = Readonly<{
-  id: number;
-  sourceSqliteId: number | null;
-}>;
-type EmailAccountReference = Readonly<{
   id: number;
   sourceSqliteId: number | null;
 }>;
@@ -356,10 +356,14 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.target !== undefined) query = query.where('target', '=', input.target);
           if (input.profileId !== undefined) query = query.where('profile_id', '=', input.profileId);
-          if (input.accountId !== undefined) {
+          if (input.accountId === undefined) {
+            query = query.where('account_id', 'is', null);
+          } else {
+            const account = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
+            if (!account) return { items: [], nextCursor: null };
             query = query.where((eb) => eb.or([
               eb('account_id', 'is', null),
-              eb('account_id', '=', input.accountId!),
+              eb('account_id', '=', account.id),
             ]));
           }
           const search = input.search?.trim();
@@ -1023,24 +1027,6 @@ function mutationToWorkflowPatch(
       account_source_sqlite_id: account?.sourceSqliteId ?? null,
     }),
     ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
-  };
-}
-
-async function resolveEmailAccountReference(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-  accountId: number,
-): Promise<EmailAccountReference | null> {
-  const row = await trx
-    .selectFrom('email_accounts')
-    .select(['id', 'source_sqlite_id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', accountId)
-    .executeTakeFirst();
-  if (!row) return null;
-  return {
-    id: Number(row.id),
-    sourceSqliteId: row.source_sqlite_id === null ? null : Number(row.source_sqlite_id),
   };
 }
 

@@ -103,8 +103,8 @@ export function ServerLogsSection({ desktopMode = false }: Props) {
           <p className="text-xs text-muted-foreground">
             Zentral gesammelt und über Neustarts hinweg gespeichert. {entries.length} Einträge.
             {desktopMode
-              ? " Enthält Hintergrund-Sync, Workflows und IPC-Warnungen aus dem Hauptprozess."
-              : " Mit „Selbsttest“ prüfst du, ob die Erfassung funktioniert."}
+              ? " Desktop: nur console.warn/error aus dem Renderer-Hauptprozess — kein Pino/job-worker. Filter „Info“ zeigt Server-Job-Logs nur im Server-Modus."
+              : " Mit „Selbsttest“ prüfst du, ob die Erfassung funktioniert. Filter „Info“ für Job-Worker (Pino)."}
             {" "}Filter „Alle“ zeigt auch Job-Worker-Fortschritt (Quelle job-worker).
           </p>
         </div>

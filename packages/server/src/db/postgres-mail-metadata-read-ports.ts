@@ -98,6 +98,10 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './workspace-context';
+import {
+  resolveEmailAccountReference,
+  type EmailAccountReference,
+} from './resolve-email-account-reference';
 
 export type PostgresMailMetadataReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -124,10 +128,6 @@ type EmailCategoryCountRow = {
   count: number | string | bigint | null;
 };
 type EmailMessageReference = Readonly<{
-  id: number;
-  sourceSqliteId: number;
-}>;
-type EmailAccountReference = Readonly<{
   id: number;
   sourceSqliteId: number;
 }>;
@@ -1212,10 +1212,14 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
-          if (input.accountId !== undefined) {
+          if (input.accountId === undefined) {
+            query = query.where('account_id', 'is', null);
+          } else {
+            const account = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
+            if (!account) return { items: [], nextCursor: null };
             query = query.where((eb) => eb.or([
               eb('account_id', 'is', null),
-              eb('account_id', '=', input.accountId!),
+              eb('account_id', '=', account.id),
             ]));
           }
           const search = input.search?.trim();
@@ -1250,6 +1254,12 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
         },
         async (trx) => {
           const now = new Date();
+          const account = values.accountId === undefined || values.accountId === null
+            ? null
+            : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            throw new Error('email account not found for canned response');
+          }
           const row = await trx
             .insertInto('email_canned_responses')
             .values({
@@ -1257,6 +1267,9 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
               source_sqlite_id: serverCreatedEmailCannedResponseSourceSqliteId(),
               title: values.title as string,
               body: values.body as string,
+              account_source_sqlite_id: account?.sourceSqliteId ?? null,
+              account_id: account?.id ?? null,
+              override_key: values.overrideKey ?? null,
               sort_order: values.sortOrder ?? 0,
               source_row: serverApiSourceRow(),
               created_at: now,
@@ -1282,10 +1295,18 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
           role: 'user',
         },
         async (trx) => {
+          const account = values.accountId === undefined
+            ? undefined
+            : values.accountId === null
+              ? null
+              : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            throw new Error('email account not found for canned response');
+          }
           const row = await trx
             .updateTable('email_canned_responses')
             .set({
-              ...mutationToEmailCannedResponsePatch(values),
+              ...mutationToEmailCannedResponsePatch(values, account),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -2480,11 +2501,19 @@ function normalizeEmailCannedResponseMutation(
 
 function mutationToEmailCannedResponsePatch(
   values: EmailCannedResponseMutationInput,
+  account?: EmailAccountReference | null,
 ): Partial<Updateable<EmailCannedResponsesTable>> {
   return {
     ...(values.title === undefined ? {} : { title: values.title }),
     ...(values.body === undefined ? {} : { body: values.body }),
     ...(values.sortOrder === undefined ? {} : { sort_order: values.sortOrder }),
+    ...(values.accountId === undefined
+      ? {}
+      : {
+          account_id: account?.id ?? null,
+          account_source_sqlite_id: account?.sourceSqliteId ?? null,
+        }),
+    ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
   };
 }
 
@@ -2561,24 +2590,6 @@ async function resolveEmailMessageReference(
     .select(['id', 'source_sqlite_id'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
-    .executeTakeFirst();
-  if (!row) return null;
-  return {
-    id: Number(row.id),
-    sourceSqliteId: Number(row.source_sqlite_id),
-  };
-}
-
-async function resolveEmailAccountReference(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-  accountId: number,
-): Promise<EmailAccountReference | null> {
-  const row = await trx
-    .selectFrom('email_accounts')
-    .select(['id', 'source_sqlite_id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', accountId)
     .executeTakeFirst();
   if (!row) return null;
   return {

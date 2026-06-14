@@ -49,6 +49,7 @@ export type SettingsTab =
   | "pgp"
   | "auditLog"
   | "threadTools"
+  | "snooze"
   | "misc"
 
 type MailWorkspaceState = {
@@ -190,6 +191,8 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "prompts",
   "export",
   "diagnostics",
+  "threadTools",
+  "snooze",
   "misc",
 ]
 

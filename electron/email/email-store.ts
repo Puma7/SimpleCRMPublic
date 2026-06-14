@@ -55,6 +55,7 @@ export type EmailAccountRow = {
   imap_sync_sent: number;
   imap_sync_archive: number;
   imap_sync_spam: number;
+  imap_delete_opt_in: number;
   imap_sync_seen_on_open: number;
   vacation_enabled: number;
   vacation_subject: string | null;
@@ -147,6 +148,7 @@ const ACCOUNT_SELECT = `id, display_name, email_address, imap_host, imap_port, i
             COALESCE(imap_sync_sent, 0) AS imap_sync_sent,
             COALESCE(imap_sync_archive, 0) AS imap_sync_archive,
             COALESCE(imap_sync_spam, 0) AS imap_sync_spam,
+            COALESCE(imap_delete_opt_in, 0) AS imap_delete_opt_in,
             COALESCE(imap_sync_seen_on_open, 1) AS imap_sync_seen_on_open,
             COALESCE(vacation_enabled, 0) AS vacation_enabled,
             vacation_subject, vacation_body_text,
@@ -251,6 +253,7 @@ export function updateEmailAccountRecord(
     imapSyncSent: boolean;
     imapSyncArchive: boolean;
     imapSyncSpam: boolean;
+    imapDeleteOptIn: boolean;
     imapSyncSeenOnOpen: boolean;
     vacationEnabled: boolean;
     vacationSubject: string | null;
@@ -304,6 +307,10 @@ export function updateEmailAccountRecord(
   if (input.imapSyncSpam !== undefined) {
     sets.push('imap_sync_spam = ?');
     vals.push(input.imapSyncSpam ? 1 : 0);
+  }
+  if (input.imapDeleteOptIn !== undefined) {
+    sets.push('imap_delete_opt_in = ?');
+    vals.push(input.imapDeleteOptIn ? 1 : 0);
   }
   if (input.imapSyncSeenOnOpen !== undefined) {
     sets.push('imap_sync_seen_on_open = ?');

@@ -49,7 +49,7 @@ import {
   parseCannedPickNumber,
   parseClassificationOutput,
 } from '../ai-classification-parse';
-import { searchKnowledgeChunks } from '../knowledge-base';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
@@ -340,9 +340,11 @@ export function registerAiNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const system = String(config.systemPrompt ?? '');
       const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
-      const chunks = kbId
-        ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
-        : [];
+      const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+      const chunks =
+        kbId != null && kbId > 0
+          ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
+          : await searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
       const kbText = chunks.map((c) => c.content).join('\n---\n');
       const user = [
         'Nachricht:',
@@ -354,6 +356,10 @@ export function registerAiNodes(register: Reg): void {
       ctx.ai.lastResponse = out;
       const variables: Record<string, string | number | boolean | null> = {
         'ai.agent.response': out,
+        'ai.agent.source_count': chunks.length,
+        'ai.agent.sources': chunks
+          .map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`))
+          .join(', '),
       };
       if (config.createDraft !== false && ctx.message) {
         const id = createComposeDraft({

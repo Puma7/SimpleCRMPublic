@@ -78,7 +78,7 @@ const mailImportSqlByTable: Record<typeof mailTableOrder[number], string> = {
   sync_archive_folder_path, imap_sync_sent, imap_sync_archive, imap_sync_spam, imap_sync_seen_on_open,
   vacation_enabled, vacation_subject, vacation_body_text, request_read_receipt,
   default_remote_content_policy, respond_to_read_receipts, read_receipt_trusted_domains,
-  source_row, imported_in_run_id, created_at, updated_at
+  imap_delete_opt_in, source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
   $1, (r.source_row->>'id')::bigint, COALESCE(NULLIF(r.source_row->>'display_name', ''), r.source_row->>'email_address'),
@@ -117,6 +117,7 @@ SELECT
   COALESCE(NULLIF(r.source_row->>'default_remote_content_policy', ''), 'blocked'),
   COALESCE(NULLIF(r.source_row->>'respond_to_read_receipts', ''), 'never'),
   NULLIF(r.source_row->>'read_receipt_trusted_domains', ''),
+  COALESCE(${sqliteBoolean('imap_delete_opt_in')}, false),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
 ${idRowsFilter}
 ON CONFLICT (workspace_id, source_sqlite_id)
@@ -154,6 +155,7 @@ DO UPDATE SET
   default_remote_content_policy = EXCLUDED.default_remote_content_policy,
   respond_to_read_receipts = EXCLUDED.respond_to_read_receipts,
   read_receipt_trusted_domains = EXCLUDED.read_receipt_trusted_domains,
+  imap_delete_opt_in = EXCLUDED.imap_delete_opt_in,
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   created_at = EXCLUDED.created_at,
