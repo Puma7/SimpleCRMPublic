@@ -33,7 +33,6 @@ describe('account-mail-settings-store', () => {
     const tx = db.transaction.mock.results[0]?.value as (() => string) & { immediate?: () => string };
     expect(tx.immediate).toBeDefined();
     expect(stmt.run).toHaveBeenCalledWith(
-      expect.any(String),
       1,
       'SHOP',
       2,
