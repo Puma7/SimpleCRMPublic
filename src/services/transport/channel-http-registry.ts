@@ -4,6 +4,7 @@ import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
 import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import { RendererTransportError } from "./renderer-transport"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -3247,7 +3248,14 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   // Add a single category to a message. Idempotent: first checks whether the
   // assignment already exists, then only POSTs if missing. Reports back
   // { added: false } in the "already assigned" case so the UI can show a
-  // dezenter Toast instead of an error (the server would reject with 409).
+  // dezenter Toast instead of an error.
+  //
+  // The pre-check + POST is NOT atomic. A concurrent request (another tab, a
+  // workflow node, a quick second drag-drop) can create the assignment in
+  // between, and the server then rejects our POST with 409. Catch exactly that
+  // case here and map it to { alreadyAssigned: true } so the user sees the
+  // same dezenter toast, never a red error — matches the same outcome the
+  // pre-check produces.
   [IPCChannels.Email.AddMessageCategory, ([payload]) => {
     const input = objectPayload(payload, "email add-message-category payload")
     const messageId = positiveId(input.messageId, "email message id")
@@ -3261,12 +3269,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         if (existing.some((r) => r.categoryId === categoryId)) {
           return { added: false, alreadyAssigned: true }
         }
-        const created = await context.fetchJson({
-          method: "POST",
-          path: `/api/v1/email/messages/${messageId}/categories`,
-          body: { categoryId },
-        })
-        return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+        try {
+          const created = await context.fetchJson({
+            method: "POST",
+            path: `/api/v1/email/messages/${messageId}/categories`,
+            body: { categoryId },
+          })
+          return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+        } catch (error) {
+          if (isAlreadyAssignedConflict(error)) {
+            return { added: false, alreadyAssigned: true }
+          }
+          throw error
+        }
       },
     }
   }],
@@ -3292,9 +3307,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
-  // Replace the message's category set with exactly the given ids. Used by the
-  // multi-select dialog. Computes the diff against the current assignments so
-  // unchanged rows are not touched (no spurious audit / event noise).
+  // Replace the message's category set with exactly the given ids. Computes
+  // the diff against the current assignments so unchanged rows are not touched
+  // (no spurious audit / event noise). Same TOCTOU 409 race as AddMessageCategory
+  // is swallowed per-row, since "set to {A,B,C}" doesn't care whether B was
+  // added by us or by a concurrent request a moment ago.
+  //
+  // Reserved for the multi-select dialog that will replace the single "+ Kategorie
+  // hinzufügen" dropdown in the metadata panel. Already exercised by the
+  // renderer-transport test so the future UI wiring stays cheap and safe.
   [IPCChannels.Email.SetMessageCategories, ([payload]) => {
     const input = objectPayload(payload, "email set-message-categories payload")
     const messageId = positiveId(input.messageId, "email message id")
@@ -3320,11 +3341,17 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         }
         for (const id of targetIds) {
           if (existingIds.has(id)) continue
-          await context.fetchJson({
-            method: "POST",
-            path: `/api/v1/email/messages/${messageId}/categories`,
-            body: { categoryId: id },
-          })
+          try {
+            await context.fetchJson({
+              method: "POST",
+              path: `/api/v1/email/messages/${messageId}/categories`,
+              body: { categoryId: id },
+            })
+          } catch (error) {
+            // Concurrent create — the row already exists, which is exactly
+            // what we wanted to achieve. Don't fail the whole set on it.
+            if (!isAlreadyAssignedConflict(error)) throw error
+          }
         }
         return { success: true }
       },
@@ -3983,6 +4010,11 @@ function listItems<T>(body: unknown): T[] {
   if (Array.isArray(data)) return data
   if (isRecord(data) && Array.isArray(data.items)) return data.items as T[]
   return []
+}
+
+/** True for an HTTP 409 thrown by fetchJson when posting a duplicate junction row. */
+function isAlreadyAssignedConflict(error: unknown): boolean {
+  return error instanceof RendererTransportError && error.status === 409
 }
 
 function listResult<T>(body: unknown): ListResult<T> {

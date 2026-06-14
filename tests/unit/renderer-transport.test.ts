@@ -6753,6 +6753,40 @@ describe('renderer transport', () => {
     }
   });
 
+  test('AddMessageCategory swallows a TOCTOU 409 from the server as alreadyAssigned', async () => {
+    // Race scenario: GET shows the category is not yet assigned, but between
+    // our GET and our POST a concurrent request (another tab, a workflow node,
+    // a quick second drag) creates the same assignment. The server then 409s
+    // our POST. The transform must map that to { alreadyAssigned: true } so
+    // the UI shows the same dezenter toast instead of a red error.
+    const fetchImpl = jest
+      .fn()
+      // 1) GET /messages/11/categories -> empty (the race hasn't happened yet locally)
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      // 2) POST /messages/11/categories -> 409 (the concurrent insert beat us)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_conflict', message: 'Email category ist dieser Message bereits zugeordnet' } },
+        409,
+      ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 99,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // Both the GET and the POST were issued (proving the swallow happens at
+    // the right layer — not by pre-empting the POST).
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'POST']);
+  });
+
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
     const fetchImpl = jest
       .fn()
