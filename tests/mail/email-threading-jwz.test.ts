@@ -25,6 +25,18 @@ describe('assignJwzThreadAndTicket', () => {
     expect(stmt.run).toHaveBeenCalled();
   });
 
+  test('uses the message account when creating a thread from a subject ticket', () => {
+    stmt.all.mockReturnValueOnce([]);
+    assignJwzThreadAndTicket(2, 10, {
+      messageIdHeader: '<a@test>',
+      inReplyTo: null,
+      referencesHeader: null,
+      subject: '[SHOPA-000123] Re: topic',
+    });
+
+    expect(stmt.run).toHaveBeenCalledWith(expect.any(String), 'SHOPA-000123', 10);
+  });
+
   test('merges when related thread found', () => {
     stmt.all.mockReturnValueOnce([{ thread_id: 'th-1', ticket_code: 'SCR-AAA' }]);
     assignJwzThreadAndTicket(2, 10, {

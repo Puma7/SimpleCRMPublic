@@ -53,6 +53,7 @@ export async function sendReadReceiptMdn(messageId: number): Promise<{ ok: true 
   const outbound = await evaluateOutboundWorkflows(
     {
       messageId: row.id,
+      accountId: row.account_id,
       subject,
       bodyText: body,
       to: recipient,

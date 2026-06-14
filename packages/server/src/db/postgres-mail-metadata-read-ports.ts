@@ -159,6 +159,8 @@ const emailTeamMemberSelectColumns = [
 const emailThreadSelectColumns = [
   'id',
   'ticket_code',
+  'account_source_sqlite_id',
+  'account_id',
   'root_message_source_sqlite_id',
   'root_message_id',
   'last_message_at',
@@ -216,6 +218,9 @@ const emailCannedResponseSelectColumns = [
   'source_sqlite_id',
   'title',
   'body',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'sort_order',
   'created_at',
   'updated_at',
@@ -262,6 +267,8 @@ const emailThreadEdgeSelectColumns = [
 const emailThreadAliasSelectColumns = [
   'id',
   'source_sqlite_id',
+  'account_source_sqlite_id',
+  'account_id',
   'alias_thread_id',
   'canonical_thread_id',
   'confidence',
@@ -1855,6 +1862,7 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             .values({
               workspace_id: input.workspaceId,
               source_sqlite_id: serverCreatedEmailThreadAliasSourceSqliteId(),
+              account_id: input.accountId,
               alias_thread_id: aliasThreadId,
               canonical_thread_id: canonicalThreadId,
               confidence: 'high',
@@ -1864,7 +1872,7 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
               updated_at: now,
             })
             .onConflict((oc) => oc
-              .columns(['workspace_id', 'alias_thread_id', 'canonical_thread_id'])
+              .columns(['workspace_id', 'account_id', 'alias_thread_id', 'canonical_thread_id'])
               .doUpdateSet({
                 confidence: 'high',
                 source: 'manual_merge',
@@ -2942,6 +2950,8 @@ function mapEmailThreadRow(row: Pick<EmailThreadRow, typeof emailThreadSelectCol
   return {
     id: row.id,
     ticketCode: row.ticket_code,
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
     rootMessageSourceSqliteId: row.root_message_source_sqlite_id === null ? null : Number(row.root_message_source_sqlite_id),
     rootMessageId: row.root_message_id === null ? null : Number(row.root_message_id),
     lastMessageAt: timestampToIsoOrNull(row.last_message_at),
@@ -3025,6 +3035,9 @@ function mapEmailCannedResponseRow(
     sourceSqliteId: Number(row.source_sqlite_id),
     title: row.title,
     body: row.body,
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
+    overrideKey: row.override_key,
     sortOrder: row.sort_order,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
@@ -3085,6 +3098,8 @@ function mapEmailThreadAliasRow(row: Pick<EmailThreadAliasRow, typeof emailThrea
   return {
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
     aliasThreadId: row.alias_thread_id,
     canonicalThreadId: row.canonical_thread_id,
     confidence: row.confidence,

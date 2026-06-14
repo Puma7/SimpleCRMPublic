@@ -252,12 +252,12 @@ const emailAttachmentSelectColumns = [
   'content_type',
   'size_bytes',
   'content_sha256',
+  'storage_path',
   'updated_at',
 ] as const;
 
 const emailAttachmentContentSelectColumns = [
   ...emailAttachmentSelectColumns,
-  'storage_path',
 ] as const;
 
 const MAX_EMAIL_MESSAGE_LIST_LIMIT = 500;
@@ -2401,6 +2401,7 @@ async function selectMailFolderCounts(
         and (uid >= 0 or pop3_uidl is not null)
         and is_spam = false
         and coalesce(spam_status, 'clean') = 'clean'
+        and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('archived'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
@@ -4147,6 +4148,7 @@ function mapEmailAttachmentRow(
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     contentSha256: row.content_sha256,
+    storagePath: row.storage_path,
     updatedAt: timestampToIso(row.updated_at),
   };
 }

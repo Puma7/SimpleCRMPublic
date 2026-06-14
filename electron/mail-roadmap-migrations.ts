@@ -7,6 +7,7 @@ import { setSyncInfo } from './sqlite-service';
 import {
   AUTH_AUDIT_LOG_TABLE,
   createAuthAuditLogTable,
+  createEmailAccountMailSettingsTable,
   createEmailReadReceiptLogTable,
   createEmailRemoteContentAllowlistTable,
   createEmailThreadAliasesTable,
@@ -19,6 +20,9 @@ import {
   createWorkspacesTable,
   CUSTOMERS_TABLE,
   EMAIL_ACCOUNTS_TABLE,
+  EMAIL_AI_PROMPTS_TABLE,
+  EMAIL_CANNED_RESPONSES_TABLE,
+  EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE,
   EMAIL_MESSAGES_TABLE,
   EMAIL_READ_RECEIPT_LOG_TABLE,
   EMAIL_REMOTE_CONTENT_ALLOWLIST_TABLE,
@@ -26,6 +30,7 @@ import {
   EMAIL_THREAD_EDGES_TABLE,
   EMAIL_THREADS_TABLE,
   EMAIL_WORKFLOWS_TABLE,
+  WORKFLOW_KNOWLEDGE_BASES_TABLE,
   PGP_IDENTITIES_TABLE,
   PGP_PEER_KEYS_TABLE,
   USERS_TABLE,
@@ -136,12 +141,25 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
     addCol(conn, EMAIL_THREADS_TABLE, 'has_attachments', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0`);
     addCol(conn, EMAIL_THREADS_TABLE, 'subject_normalized', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN subject_normalized TEXT`);
     addCol(conn, EMAIL_THREADS_TABLE, 'workspace_id', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN workspace_id TEXT`);
+    addCol(conn, EMAIL_THREADS_TABLE, 'account_id', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL`);
   }
 
   const wfExists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_WORKFLOWS_TABLE);
   if (wfExists) {
     addCol(conn, EMAIL_WORKFLOWS_TABLE, 'created_by_user_id', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN created_by_user_id TEXT`);
     addCol(conn, EMAIL_WORKFLOWS_TABLE, 'workspace_id', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN workspace_id TEXT`);
+    addCol(conn, EMAIL_WORKFLOWS_TABLE, 'account_id', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE`);
+    addCol(conn, EMAIL_WORKFLOWS_TABLE, 'override_key', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN override_key TEXT`);
+  }
+
+
+  for (const table of [EMAIL_CANNED_RESPONSES_TABLE, EMAIL_AI_PROMPTS_TABLE, WORKFLOW_KNOWLEDGE_BASES_TABLE]) {
+    const t = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table);
+    if (t) {
+      addCol(conn, table, 'account_id', `ALTER TABLE ${table} ADD COLUMN account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE`);
+      addCol(conn, table, 'override_key', `ALTER TABLE ${table} ADD COLUMN override_key TEXT`);
+      conn.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_account_override ON ${table}(account_id, override_key)`);
+    }
   }
 
   const custExists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(CUSTOMERS_TABLE);
@@ -150,11 +168,16 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
   }
 
   ensureTable(conn, EMAIL_REMOTE_CONTENT_ALLOWLIST_TABLE, createEmailRemoteContentAllowlistTable);
+  ensureTable(conn, EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE, createEmailAccountMailSettingsTable, [
+    `CREATE INDEX IF NOT EXISTS idx_email_account_mail_settings_prefix ON ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}(ticket_prefix)`,
+  ]);
   ensureTable(conn, EMAIL_READ_RECEIPT_LOG_TABLE, createEmailReadReceiptLogTable);
   ensureTable(conn, EMAIL_THREAD_EDGES_TABLE, createEmailThreadEdgesTable, [
     `CREATE INDEX IF NOT EXISTS idx_thread_edges_child ON ${EMAIL_THREAD_EDGES_TABLE}(child_message_id)`,
   ]);
   ensureTable(conn, EMAIL_THREAD_ALIASES_TABLE, createEmailThreadAliasesTable);
+  addCol(conn, EMAIL_THREAD_ALIASES_TABLE, 'account_id', `ALTER TABLE ${EMAIL_THREAD_ALIASES_TABLE} ADD COLUMN account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE`);
+  conn.exec(`CREATE INDEX IF NOT EXISTS idx_email_thread_aliases_account_pair ON ${EMAIL_THREAD_ALIASES_TABLE}(account_id, alias_thread_id, canonical_thread_id)`);
   const aliasCycleTrigger = conn
     .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='email_thread_alias_no_direct_cycle'")
     .get();

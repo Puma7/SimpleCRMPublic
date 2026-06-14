@@ -13,6 +13,7 @@ const workspacePolicyTables = [
   'email_internal_notes',
   'email_canned_responses',
   'email_account_signatures',
+  'email_account_mail_settings',
   'email_remote_content_allowlist',
   'email_read_receipt_log',
   'email_thread_edges',
@@ -71,6 +72,24 @@ export const coreMailSchemaMigration: SqlMigration = {
   UNIQUE (workspace_id, source_sqlite_id)
 );`,
     'CREATE INDEX IF NOT EXISTS email_accounts_workspace_address_idx ON email_accounts (workspace_id, lower(email_address));',
+    `CREATE TABLE IF NOT EXISTS email_account_mail_settings (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  account_source_sqlite_id bigint NOT NULL,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE,
+  ticket_prefix text NOT NULL,
+  ticket_next_number bigint NOT NULL DEFAULT 1,
+  ticket_number_padding integer NOT NULL DEFAULT 6,
+  thread_namespace text NOT NULL,
+  source_row jsonb NOT NULL DEFAULT '{}'::jsonb,
+  imported_in_run_id uuid REFERENCES sqlite_import_runs(id) ON DELETE SET NULL,
+  created_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, account_source_sqlite_id),
+  UNIQUE (workspace_id, account_id),
+  UNIQUE (workspace_id, ticket_prefix),
+  UNIQUE (workspace_id, thread_namespace)
+);`,
+    'CREATE INDEX IF NOT EXISTS email_account_mail_settings_account_idx ON email_account_mail_settings (workspace_id, account_id);',
     `CREATE TABLE IF NOT EXISTS email_folders (
   id bigserial PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -108,6 +127,8 @@ export const coreMailSchemaMigration: SqlMigration = {
   id text NOT NULL,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   ticket_code text NOT NULL,
+  account_source_sqlite_id bigint,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE SET NULL,
   root_message_source_sqlite_id bigint,
   root_message_id bigint,
   last_message_at timestamptz,
@@ -119,9 +140,10 @@ export const coreMailSchemaMigration: SqlMigration = {
   imported_in_run_id uuid REFERENCES sqlite_import_runs(id) ON DELETE SET NULL,
   created_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (workspace_id, id),
-  UNIQUE (workspace_id, ticket_code)
+  PRIMARY KEY (workspace_id, id)
 );`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_threads_workspace_account_ticket_idx ON email_threads (workspace_id, account_id, ticket_code);',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_threads_workspace_global_ticket_idx ON email_threads (workspace_id, ticket_code) WHERE account_id IS NULL;',
     'CREATE INDEX IF NOT EXISTS email_threads_workspace_last_idx ON email_threads (workspace_id, last_message_at DESC);',
     `CREATE TABLE IF NOT EXISTS email_messages (
   id bigserial PRIMARY KEY,
@@ -306,6 +328,9 @@ export const coreMailSchemaMigration: SqlMigration = {
   source_sqlite_id bigint NOT NULL,
   title text NOT NULL,
   body text NOT NULL,
+  account_source_sqlite_id bigint,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE,
+  override_key text,
   sort_order integer NOT NULL DEFAULT 0,
   source_row jsonb NOT NULL DEFAULT '{}'::jsonb,
   imported_in_run_id uuid REFERENCES sqlite_import_runs(id) ON DELETE SET NULL,
@@ -313,6 +338,9 @@ export const coreMailSchemaMigration: SqlMigration = {
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, source_sqlite_id)
 );`,
+    'CREATE INDEX IF NOT EXISTS email_canned_responses_scope_idx ON email_canned_responses (workspace_id, account_id, override_key, sort_order);',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_canned_responses_account_override_key_idx ON email_canned_responses (workspace_id, account_id, override_key) WHERE override_key IS NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_canned_responses_global_override_key_idx ON email_canned_responses (workspace_id, override_key) WHERE account_id IS NULL AND override_key IS NOT NULL;',
     `CREATE TABLE IF NOT EXISTS email_account_signatures (
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   source_sqlite_id bigint NOT NULL,
@@ -366,10 +394,12 @@ export const coreMailSchemaMigration: SqlMigration = {
   UNIQUE (workspace_id, source_sqlite_id),
   UNIQUE (workspace_id, parent_message_source_sqlite_id, child_message_source_sqlite_id)
 );`,
-    `CREATE TABLE IF NOT EXISTS email_thread_aliases (
+`CREATE TABLE IF NOT EXISTS email_thread_aliases (
   id bigserial PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   source_sqlite_id bigint NOT NULL,
+  account_source_sqlite_id bigint,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE,
   alias_thread_id text NOT NULL,
   canonical_thread_id text NOT NULL,
   confidence text NOT NULL DEFAULT 'high',
@@ -379,9 +409,11 @@ export const coreMailSchemaMigration: SqlMigration = {
   created_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, source_sqlite_id),
-  UNIQUE (workspace_id, alias_thread_id, canonical_thread_id),
   CHECK (alias_thread_id <> canonical_thread_id)
 );`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_account_pair_all_idx ON email_thread_aliases (workspace_id, account_id, alias_thread_id, canonical_thread_id);',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_account_pair_idx ON email_thread_aliases (workspace_id, account_id, alias_thread_id, canonical_thread_id) WHERE account_id IS NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_global_pair_idx ON email_thread_aliases (workspace_id, alias_thread_id, canonical_thread_id) WHERE account_id IS NULL;',
     `ALTER TABLE email_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_folders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_team_members ENABLE ROW LEVEL SECURITY;
@@ -394,6 +426,7 @@ ALTER TABLE email_message_categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_internal_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_canned_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_account_signatures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_account_mail_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_remote_content_allowlist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_read_receipt_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_thread_edges ENABLE ROW LEVEL SECURITY;
@@ -410,6 +443,7 @@ ALTER TABLE email_message_categories FORCE ROW LEVEL SECURITY;
 ALTER TABLE email_internal_notes FORCE ROW LEVEL SECURITY;
 ALTER TABLE email_canned_responses FORCE ROW LEVEL SECURITY;
 ALTER TABLE email_account_signatures FORCE ROW LEVEL SECURITY;
+ALTER TABLE email_account_mail_settings FORCE ROW LEVEL SECURITY;
 ALTER TABLE email_remote_content_allowlist FORCE ROW LEVEL SECURITY;
 ALTER TABLE email_read_receipt_log FORCE ROW LEVEL SECURITY;
 ALTER TABLE email_thread_edges FORCE ROW LEVEL SECURITY;
@@ -439,6 +473,7 @@ END $$;`,
     'DROP TABLE IF EXISTS email_thread_edges;',
     'DROP TABLE IF EXISTS email_read_receipt_log;',
     'DROP TABLE IF EXISTS email_remote_content_allowlist;',
+    'DROP TABLE IF EXISTS email_account_mail_settings;',
     'DROP TABLE IF EXISTS email_account_signatures;',
     'DROP TABLE IF EXISTS email_canned_responses;',
     'DROP TABLE IF EXISTS email_internal_notes;',

@@ -43,6 +43,7 @@ export type ServerDatabase = {
   email_internal_notes: EmailInternalNotesTable;
   email_canned_responses: EmailCannedResponsesTable;
   email_account_signatures: EmailAccountSignaturesTable;
+  email_account_mail_settings: EmailAccountMailSettingsTable;
   email_remote_content_allowlist: EmailRemoteContentAllowlistTable;
   email_read_receipt_log: EmailReadReceiptLogTable;
   email_thread_edges: EmailThreadEdgesTable;
@@ -555,6 +556,8 @@ export type EmailThreadsTable = {
   id: string;
   workspace_id: string;
   ticket_code: string;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
   root_message_source_sqlite_id: number | null;
   root_message_id: number | null;
   last_message_at: TimestampColumn | null;
@@ -704,6 +707,9 @@ export type EmailCannedResponsesTable = {
   source_sqlite_id: number;
   title: string;
   body: string;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   sort_order: number;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
@@ -719,6 +725,20 @@ export type EmailAccountSignaturesTable = {
   signature_html: string | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
+  updated_at: TimestampColumn;
+};
+
+export type EmailAccountMailSettingsTable = {
+  workspace_id: string;
+  account_source_sqlite_id: number;
+  account_id: number | null;
+  ticket_prefix: string;
+  ticket_next_number: number;
+  ticket_number_padding: number;
+  thread_namespace: string;
+  source_row: JsonColumn;
+  imported_in_run_id: string | null;
+  created_at: TimestampColumn | null;
   updated_at: TimestampColumn;
 };
 
@@ -757,6 +777,8 @@ export type EmailThreadAliasesTable = {
   id: Generated<number>;
   workspace_id: string;
   source_sqlite_id: number;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
   alias_thread_id: string;
   canonical_thread_id: string;
   confidence: string;
@@ -788,6 +810,9 @@ export type EmailAiPromptsTable = SourceImportedTable & {
   target: string;
   profile_source_sqlite_id: number | null;
   profile_id: number | null;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   sort_order: number;
   created_at: TimestampColumn | null;
 };
@@ -803,6 +828,9 @@ export type EmailWorkflowsTable = SourceImportedTable & {
   cron_expr: string | null;
   schedule_account_source_sqlite_id: number | null;
   schedule_account_id: number | null;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   execution_mode: string;
   engine_version: number;
   legacy_created_by_user_id: string | null;
@@ -866,6 +894,9 @@ export type WorkflowKnowledgeBasesTable = SourceImportedTable & {
   id: Generated<number>;
   name: string;
   description: string | null;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   created_at: TimestampColumn | null;
 };
 

@@ -85,6 +85,7 @@ const jtlReferenceTables: readonly SqliteMigrationTable[] = [
 
 const emailTables: readonly SqliteMigrationTable[] = [
   { name: 'email_accounts', category: 'mail', primaryKey: 'id', required: false },
+  { name: 'email_account_mail_settings', category: 'mail', primaryKey: 'account_id', required: false, dependsOn: ['email_accounts'] },
   { name: 'email_folders', category: 'mail', primaryKey: 'id', required: false, dependsOn: ['email_accounts'] },
   { name: 'email_messages', category: 'mail', primaryKey: 'id', required: false, dependsOn: ['email_accounts', 'email_folders'] },
   { name: 'email_threads', category: 'mail', primaryKey: 'id', required: false },

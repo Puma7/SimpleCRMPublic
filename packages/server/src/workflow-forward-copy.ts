@@ -291,6 +291,17 @@ export function createPostgresWorkflowForwardCopyPort(
           envelopeFrom: prepared.account.emailAddress,
           recipients: [...prepared.recipients],
           rfc822: prepared.rfc822,
+          diagnosticsContext: {
+            workflowId: input.workflowId,
+            messageId: input.messageId,
+            nodeType: 'workflow.forward_copy',
+            accountId: prepared.account.id,
+          },
+          onDiagnostic: (event) => {
+            // Redacted by mail-smtp-send: no auth data, raw message body, attachments,
+            // or full sender/recipient addresses are included in this payload.
+            console.warn('workflow.forward_copy SMTP diagnostic', JSON.stringify(event));
+          },
           ...(auth.password !== undefined ? { password: auth.password } : {}),
           ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
         });

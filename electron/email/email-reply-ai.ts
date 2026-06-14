@@ -52,8 +52,7 @@ function messageBodyForReply(row: EmailMessageRow): string {
   return raw.slice(0, REPLY_BODY_MAX);
 }
 
-function findReplyPrompt(): AiPromptRow | undefined {
-  const prompts = listAiPrompts();
+function findReplyPrompt(prompts: readonly AiPromptRow[]): AiPromptRow | undefined {
   return prompts.find((p) => p.target === 'reply') ?? prompts[0];
 }
 
@@ -212,10 +211,10 @@ export async function generateReplyDraftText(
   const customerId =
     opts?.customerId !== undefined ? opts.customerId : row.customer_id;
 
-  const prompts = listAiPrompts();
+  const prompts = listAiPrompts(row.account_id);
   const prompt =
     (opts?.promptId != null ? prompts.find((p) => p.id === opts.promptId) : undefined) ??
-    findReplyPrompt();
+    findReplyPrompt(prompts);
   const template = prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE;
   const user = interpolateReplyTemplate(template, row, customerId);
 

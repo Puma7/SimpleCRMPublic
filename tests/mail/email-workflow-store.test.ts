@@ -65,6 +65,72 @@ describe('email-workflow-store', () => {
     expect(rows[0].engine_version).toBe(1);
   });
 
+  test('listWorkflowsByTrigger applies account override precedence', () => {
+    stmt.get.mockReturnValue({ c: 1 });
+    stmt.all.mockReturnValue([
+      {
+        id: 1,
+        name: 'Global inbound',
+        trigger: 'inbound',
+        enabled: 1,
+        priority: 1,
+        definition_json: '{}',
+        graph_json: null,
+        cron_expr: null,
+        schedule_account_id: null,
+        account_id: null,
+        override_key: 'reply',
+        execution_mode: 'graph',
+        engine_version: 1,
+        created_at: 't',
+        updated_at: 't',
+      },
+      {
+        id: 2,
+        name: 'Shop inbound',
+        trigger: 'inbound',
+        enabled: 1,
+        priority: 1,
+        definition_json: '{}',
+        graph_json: null,
+        cron_expr: null,
+        schedule_account_id: null,
+        account_id: 7,
+        override_key: 'reply',
+        execution_mode: 'graph',
+        engine_version: 1,
+        created_at: 't',
+        updated_at: 't',
+      },
+      {
+        id: 3,
+        name: 'Global tagging',
+        trigger: 'inbound',
+        enabled: 1,
+        priority: 2,
+        definition_json: '{}',
+        graph_json: null,
+        cron_expr: null,
+        schedule_account_id: null,
+        account_id: null,
+        override_key: 'tagging',
+        execution_mode: 'graph',
+        engine_version: 1,
+        created_at: 't',
+        updated_at: 't',
+      },
+    ]);
+
+    expect(listWorkflowsByTrigger('inbound', 'all').map((row) => row.name)).toEqual([
+      'Global inbound',
+      'Global tagging',
+    ]);
+    expect(listWorkflowsByTrigger('inbound', 7).map((row) => row.name)).toEqual([
+      'Shop inbound',
+      'Global tagging',
+    ]);
+  });
+
   test('getWorkflowById returns undefined when missing', () => {
     stmt.get.mockReturnValue(undefined);
     expect(getWorkflowById(99)).toBeUndefined();

@@ -1,6 +1,6 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE, EMAIL_THREADS_TABLE } from '../database-schema';
-import { extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
+import { createTicketCodeForAccount, extractTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
 import { rebuildThreadEdges } from './email-thread-aggregate';
 import { applyMessageThreadMetadata, confidenceForJwzAssign } from './email-thread-metadata';
 
@@ -56,8 +56,8 @@ export function assignJwzThreadAndTicket(
   const myMid = normId(input.messageIdHeader);
 
   if (related.length === 0 && !ticketFromSubject) {
-    const ticket = generateTicketCode();
-    const threadId = getOrCreateThreadForTicket(ticket);
+    const ticket = createTicketCodeForAccount(accountId);
+    const threadId = getOrCreateThreadForTicket(ticket, accountId);
     getDb()
       .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ?, ticket_code = ? WHERE id = ?`)
       .run(threadId, ticket, messageId);
@@ -107,10 +107,10 @@ export function assignJwzThreadAndTicket(
   if (matches.length === 0) {
     if (ticketFromSubject) {
       ticketCode = ticketFromSubject;
-      threadId = getOrCreateThreadForTicket(ticketCode);
+      threadId = getOrCreateThreadForTicket(ticketCode, accountId);
     } else {
-      ticketCode = generateTicketCode();
-      threadId = getOrCreateThreadForTicket(ticketCode);
+      ticketCode = createTicketCodeForAccount(accountId);
+      threadId = getOrCreateThreadForTicket(ticketCode, accountId);
     }
   } else {
     const threadIds = [...new Set(matches.map((m) => m.thread_id))].sort();
@@ -121,10 +121,10 @@ export function assignJwzThreadAndTicket(
     } else if (existingTickets.length > 0) {
       ticketCode = [...new Set(existingTickets)].sort()[0]!;
     } else {
-      ticketCode = generateTicketCode();
+      ticketCode = createTicketCodeForAccount(accountId);
     }
 
-    const canonicalThread = getOrCreateThreadForTicket(ticketCode);
+    const canonicalThread = getOrCreateThreadForTicket(ticketCode, accountId);
 
     for (const tid of threadIds) {
       if (tid === canonicalThread) continue;

@@ -154,6 +154,9 @@ const workflowKnowledgeBaseSelectColumns = [
   'source_sqlite_id',
   'name',
   'description',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'created_at',
   'updated_at',
 ] as const;
@@ -1460,6 +1463,9 @@ function mapWorkflowKnowledgeBaseRow(
     sourceSqliteId: nullableNumber(row.source_sqlite_id),
     name: row.name,
     description: row.description,
+    accountSourceSqliteId: nullableNumber(row.account_source_sqlite_id),
+    accountId: nullableNumber(row.account_id),
+    overrideKey: row.override_key,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
   };

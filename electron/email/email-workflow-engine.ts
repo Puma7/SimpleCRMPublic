@@ -28,6 +28,7 @@ import { getLatestWorkflowRunForMessage } from '../workflow/run-steps';
 
 export type OutboundDraftPayload = {
   messageId: number;
+  accountId?: number | null;
   subject: string;
   bodyText: string;
   bodyHtml?: string;
@@ -47,6 +48,7 @@ export function outboundPayloadFromMessage(
   const cc = extractAddressList(row.cc_json);
   return {
     messageId: row.id,
+    accountId: row.account_id,
     subject: row.subject ?? '',
     bodyText: row.body_text ?? '',
     bodyHtml: row.body_html ?? undefined,
@@ -183,7 +185,7 @@ async function executeInboundStep(
     }
     case 'ai_review': {
       const ctx = buildInboundContext(row);
-      const blocked = await runAiReviewStep(step, ctx.combined_text, log);
+      const blocked = await runAiReviewStep(step, ctx.combined_text, log, row.account_id);
       if (blocked) {
         addMessageTag(messageId, 'ki-review-block');
         log.push('ai_review:inbound_tag');
@@ -204,8 +206,9 @@ async function runAiReviewStep(
   step: Extract<WorkflowThenStep, { type: 'ai_review' }>,
   text: string,
   log: string[],
+  accountId?: number | null,
 ): Promise<boolean> {
-  const prompts = listAiPrompts();
+  const prompts = listAiPrompts(accountId);
   const p = prompts.find((x) => x.id === step.promptId);
   if (!p) {
     log.push('ai_review:prompt_not_found');
@@ -240,7 +243,7 @@ async function executeOutboundStep(
   }
   if (step.type === 'ai_review') {
     const ctx = buildOutboundContext(payload);
-    const blocked = await runAiReviewStep(step, ctx.combined_text, log);
+    const blocked = await runAiReviewStep(step, ctx.combined_text, log, payload.accountId);
     if (blocked) {
       setOutboundHold(messageId, true, 'KI-Prüfung: Versand blockiert');
       return 'blocked';
@@ -336,7 +339,7 @@ export async function runInboundWorkflowsForMessage(
   const freshRow = getEmailMessageById(messageId) ?? row;
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
+  const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound', freshRow.account_id);
   const applied = opts?.appliedWorkflowIds;
   let inboundWorkflowDeferred = false;
   for (const wf of workflows) {
@@ -399,7 +402,7 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   if (!row || row.uid >= 0) return;
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = listWorkflowsByTrigger('draft_created');
+  const workflows = listWorkflowsByTrigger('draft_created', row.account_id);
   for (const wf of workflows) {
     if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
@@ -467,7 +470,7 @@ export async function evaluateOutboundWorkflows(
   }
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = listWorkflowsByTrigger('outbound');
+  const workflows = listWorkflowsByTrigger('outbound', row.account_id);
   let parseOrEngineError: string | null = null;
   for (const wf of workflows) {
     try {

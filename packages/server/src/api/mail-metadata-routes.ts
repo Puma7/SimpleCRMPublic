@@ -3504,6 +3504,8 @@ function sanitizeEmailThread(thread: EmailThreadRecord): EmailThreadRecord {
   return {
     id: thread.id,
     ticketCode: thread.ticketCode,
+    accountSourceSqliteId: thread.accountSourceSqliteId,
+    accountId: thread.accountId,
     rootMessageSourceSqliteId: thread.rootMessageSourceSqliteId,
     rootMessageId: thread.rootMessageId,
     lastMessageAt: thread.lastMessageAt,
@@ -3582,6 +3584,9 @@ function sanitizeEmailCannedResponse(response: EmailCannedResponseRecord): Email
     sourceSqliteId: response.sourceSqliteId,
     title: response.title,
     body: response.body,
+    accountSourceSqliteId: response.accountSourceSqliteId,
+    accountId: response.accountId,
+    overrideKey: response.overrideKey,
     sortOrder: response.sortOrder,
     createdAt: response.createdAt,
     updatedAt: response.updatedAt,
@@ -3638,6 +3643,8 @@ function sanitizeEmailThreadAlias(alias: EmailThreadAliasRecord): EmailThreadAli
   return {
     id: alias.id,
     sourceSqliteId: alias.sourceSqliteId,
+    accountSourceSqliteId: alias.accountSourceSqliteId,
+    accountId: alias.accountId,
     aliasThreadId: alias.aliasThreadId,
     canonicalThreadId: alias.canonicalThreadId,
     confidence: alias.confidence,

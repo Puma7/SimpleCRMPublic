@@ -1695,6 +1695,9 @@ function sanitizeKnowledgeBase(base: WorkflowKnowledgeBaseRecord): WorkflowKnowl
     sourceSqliteId: base.sourceSqliteId,
     name: base.name,
     description: base.description,
+    accountSourceSqliteId: base.accountSourceSqliteId,
+    accountId: base.accountId,
+    overrideKey: base.overrideKey,
     createdAt: base.createdAt,
     updatedAt: base.updatedAt,
   };

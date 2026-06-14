@@ -19,7 +19,8 @@ import {
 } from './compose-reply-done';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
-import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
+import { ensureTicketInSubject, extractTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
+import { allocateNextTicketCodeForAccount } from './account-mail-settings-store';
 import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
@@ -438,6 +439,7 @@ export async function sendComposeDraft(input: {
 
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,
+      accountId: input.accountId,
       subject: input.subject,
       bodyText,
       bodyHtml: html ?? undefined,
@@ -471,11 +473,11 @@ export async function sendComposeDraft(input: {
       if (fromSubj) {
         ticketCode = fromSubj;
       } else {
-        ticketCode = generateTicketCode();
+        ticketCode = allocateNextTicketCodeForAccount(input.accountId);
       }
     }
     if (!threadId && ticketCode) {
-      threadId = getOrCreateThreadForTicket(ticketCode);
+      threadId = getOrCreateThreadForTicket(ticketCode, input.accountId);
     }
 
     const finalSubject = ensureTicketInSubject(input.subject.trim() || '(Ohne Betreff)', ticketCode);

@@ -367,7 +367,13 @@ describe('email-compose-send expanded', () => {
     });
 
     fs.rmSync(dir, { recursive: true, force: true });
-    expect(r).toEqual({ ok: true, recoveredSentAppend: true });
+    expect(r).toEqual(expect.objectContaining({
+      ok: true,
+      recoveredSentAppend: true,
+    }));
+    if ('warning' in r) {
+      expect(r.warning).toContain('Kopie auf dem Server');
+    }
     expect(mockSendSmtp).not.toHaveBeenCalled();
     expect(mockPersistLocalComposeAttachments).toHaveBeenCalledWith(10, [
       { filename: 'recover.pdf', path: fp },

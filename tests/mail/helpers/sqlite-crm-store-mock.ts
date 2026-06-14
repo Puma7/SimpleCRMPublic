@@ -21,7 +21,7 @@ export function createSqliteCrmStoreMock() {
   const internalNotes: { id: number; message_id: number; body: string; created_at: string }[] = [];
   let nextNoteId = 1;
 
-  const cannedResponses: { id: number; title: string; body: string; sort_order: number }[] = [];
+  const cannedResponses: { id: number; title: string; body: string; account_id: number | null; override_key: string | null; sort_order: number }[] = [];
   let nextCannedId = 1;
 
   const aiPrompts: {
@@ -30,6 +30,8 @@ export function createSqliteCrmStoreMock() {
     user_template: string;
     target: string;
     profile_id: number | null;
+    account_id: number | null;
+    override_key: string | null;
     sort_order: number;
   }[] = [];
   let nextPromptId = 1;
@@ -180,7 +182,9 @@ export function createSqliteCrmStoreMock() {
         id,
         title: args[0] as string,
         body: args[1] as string,
-        sort_order: args[2] as number,
+        account_id: (args[2] as number | null) ?? null,
+        override_key: (args[3] as string | null) ?? null,
+        sort_order: args[4] as number,
       });
       return { changes: 1, lastInsertRowid: id };
     }
@@ -188,7 +192,7 @@ export function createSqliteCrmStoreMock() {
       promptCount += 1;
       const target = args[2] as string;
       if (target === 'reply') replyPromptCount += 1;
-      const sortOrder = args[4] as number;
+      const sortOrder = args[6] as number;
       maxPromptSort = Math.max(maxPromptSort, sortOrder);
       const id = nextPromptId++;
       aiPrompts.push({
@@ -197,6 +201,8 @@ export function createSqliteCrmStoreMock() {
         user_template: args[1] as string,
         target,
         profile_id: (args[3] as number | null) ?? null,
+        account_id: (args[4] as number | null) ?? null,
+        override_key: (args[5] as string | null) ?? null,
         sort_order: sortOrder,
       });
       return { changes: 1, lastInsertRowid: id };
