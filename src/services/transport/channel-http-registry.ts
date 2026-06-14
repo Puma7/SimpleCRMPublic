@@ -3365,19 +3365,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
             .map((r) => r.categoryId)
             .filter((id): id is number => typeof id === "number"),
         )
-        for (const record of existing) {
-          if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
-          try {
-            await context.fetchJson({
-              method: "DELETE",
-              path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
-            })
-          } catch (error) {
-            // Concurrent delete — desired end-state already in place. Don't
-            // fail the whole set on it.
-            if (!isNotFound(error)) throw error
-          }
-        }
+        // POST additions BEFORE DELETing removals: if any single POST fails
+        // (e.g. category was deleted between read and write, server rate-limits
+        // mid-batch), the user keeps the categories they had. The opposite
+        // order would silently drop their existing categorisation on a partial
+        // failure.
         for (const id of targetIds) {
           if (existingIds.has(id)) continue
           try {
@@ -3390,6 +3382,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
             // Concurrent create — the row already exists, which is exactly
             // what we wanted to achieve. Don't fail the whole set on it.
             if (!isAlreadyAssignedConflict(error)) throw error
+          }
+        }
+        for (const record of existing) {
+          if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
+          try {
+            await context.fetchJson({
+              method: "DELETE",
+              path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
+            })
+          } catch (error) {
+            // Concurrent delete — desired end-state already in place. Don't
+            // fail the whole set on it.
+            if (!isNotFound(error)) throw error
           }
         }
         return { success: true }

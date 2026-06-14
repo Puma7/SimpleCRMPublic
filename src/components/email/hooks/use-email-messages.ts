@@ -30,6 +30,7 @@ export function useEmailMessages() {
     listSortMode,
     messageListFilter,
     messageDoneFilter,
+    bumpCategoryAssignmentRevision,
   } = useMailWorkspace()
   const [messages, setMessages] = useState<EmailMessage[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
@@ -360,10 +361,14 @@ export function useEmailMessages() {
       if (failed > 0) {
         toast.error(`${failed} ${failed === 1 ? "Nachricht" : "Nachrichten"} fehlgeschlagen`)
       }
+      // Tell the metadata panel its chip list is stale — if any of the dropped
+      // messages happens to be the currently-selected one, its chips need to
+      // re-fetch (this hook doesn't know which message is open in the panel).
+      if (added > 0 || already > 0) bumpCategoryAssignmentRevision()
       await refreshList({ preserveSelection: true })
       return failed === 0
     },
-    [refreshList],
+    [refreshList, bumpCategoryAssignmentRevision],
   )
 
   const moveMessagesToView = useCallback(
@@ -507,6 +512,7 @@ export function useEmailMessages() {
         if (selectedMessage?.id === messageId) {
           await refreshCurrentMessage()
         }
+        bumpCategoryAssignmentRevision()
         await refreshList({ preserveSelection: true })
         return true
       } catch (e) {
@@ -514,7 +520,7 @@ export function useEmailMessages() {
         return false
       }
     },
-    [refreshList, refreshCurrentMessage, selectedMessage?.id],
+    [refreshList, refreshCurrentMessage, selectedMessage?.id, bumpCategoryAssignmentRevision],
   )
 
   const snoozeMessageUntilTomorrow = useCallback(
