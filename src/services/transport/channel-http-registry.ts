@@ -834,6 +834,15 @@ type AutomationApiKeyRecord = {
 
 const DEFAULT_LIST_LIMIT = 100
 
+// Category list pre-checks (Add/Remove/Set) assume at most DEFAULT_LIST_LIMIT
+// assignments per message; pagination is not implemented for those idempotency paths.
+
+function transportErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined
+  const status = (error as { status?: unknown }).status
+  return typeof status === "number" ? status : undefined
+}
+
 const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Sync.GetStatus, () => ({
     method: "GET",
@@ -3252,12 +3261,20 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         if (existing.some((r) => r.categoryId === categoryId)) {
           return { added: false, alreadyAssigned: true }
         }
-        const created = await context.fetchJson({
-          method: "POST",
-          path: `/api/v1/email/messages/${messageId}/categories`,
-          body: { categoryId },
-        })
-        return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+        try {
+          const created = await context.fetchJson({
+            method: "POST",
+            path: `/api/v1/email/messages/${messageId}/categories`,
+            body: { categoryId },
+          })
+          return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+        } catch (e) {
+          // GET pre-check is not atomic; a parallel assign can win the race → 409.
+          if (transportErrorStatus(e) === 409) {
+            return { added: false, alreadyAssigned: true }
+          }
+          throw e
+        }
       },
     }
   }],
@@ -3283,9 +3300,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
-  // Replace the message's category set with exactly the given ids. Used by the
-  // multi-select dialog. Computes the diff against the current assignments so
-  // unchanged rows are not touched (no spurious audit / event noise).
+  // Replace the message's category set with exactly the given ids. Reserved for
+  // a future multi-select dialog (not wired in the UI yet). Computes the diff
+  // against the current assignments so unchanged rows are not touched (no spurious
+  // audit / event noise).
   [IPCChannels.Email.SetMessageCategories, ([payload]) => {
     const input = objectPayload(payload, "email set-message-categories payload")
     const messageId = positiveId(input.messageId, "email message id")

@@ -607,6 +607,9 @@ export function MessageMetadataPanel({
                           if (r?.removed) {
                             await reloadMessageCategoryIds(selectedMessage.id)
                             toast.success("Kategorie entfernt")
+                          } else {
+                            await reloadMessageCategoryIds(selectedMessage.id)
+                            toast.info("Kategorie war bereits nicht mehr zugewiesen")
                           }
                         } catch (e) {
                           toast.error(e instanceof Error ? e.message : "Entfernen fehlgeschlagen")

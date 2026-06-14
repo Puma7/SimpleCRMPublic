@@ -6742,6 +6742,26 @@ describe('renderer transport', () => {
     expect(postsToCategories).toBe(2);
   });
 
+  test('AddMessageCategory treats POST 409 as already assigned (race after GET pre-check)', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 21, messageId: 11, categoryId: 61 }], nextCursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'conflict', message: 'Category already assigned' },
+      }, 409));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+  });
+
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
     const fetchImpl = jest
       .fn()
