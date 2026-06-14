@@ -174,6 +174,26 @@ describe('buildComposeRfc822', () => {
     ]);
   });
 
+  it('splits a mailbox list correctly even when a quoted name ends with an escaped backslash', async () => {
+    // The first display name's content is a literal backslash: `"ab\\"` — the \\
+    // is an escaped backslash, so the following `"` CLOSES the quoted-string and
+    // the comma still separates the two recipients. The old value[i-1] heuristic
+    // kept inQuotes on and merged both into one (broken) mailbox.
+    const raw = buildComposeRfc822({
+      from: 'sender@example.com',
+      to: '"ab\\\\" <first@example.com>, second@example.com',
+      subject: 'x',
+      text: 'b',
+      date: new Date('2026-06-14T00:00:00.000Z'),
+    }).toString('utf8');
+
+    const parsed = await simpleParser(Buffer.from(raw, 'utf8'));
+    expect((parsed.to?.value ?? []).map((v) => v.address)).toEqual([
+      'first@example.com',
+      'second@example.com',
+    ]);
+  });
+
   it('keeps atext-safe display names unquoted but quotes any other special', () => {
     // atom-safe -> unquoted
     expect(encodeMailboxListHeader('Mill and Maker <x@y.de>')).toBe('Mill and Maker <x@y.de>');

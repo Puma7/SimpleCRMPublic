@@ -227,12 +227,29 @@ function splitMailboxList(value: string): string[] {
     }
   };
 
+  // RFC 5322 quoted-pair: a backslash escapes the next character, but ONLY inside
+  // a quoted-string. Tracking this explicitly (rather than peeking at value[i-1])
+  // is what makes `\\"` close the quote — the backslash is itself escaped, so the
+  // quote is real. The old `value[i-1] !== '\\'` heuristic mis-read that and could
+  // leave inQuotes stuck on, swallowing the next mailbox in the list.
+  let escaped = false;
   for (let i = 0; i < value.length; i += 1) {
     const ch = value[i]!;
-    if (ch === '"' && value[i - 1] !== '\\') inQuotes = !inQuotes;
-    if (!inQuotes) {
+    if (escaped) {
+      escaped = false;
+      current += ch;
+      continue;
+    }
+    if (inQuotes && ch === '\\') {
+      escaped = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (!inQuotes) {
       if (ch === '<') angleDepth += 1;
-      if (ch === '>' && angleDepth > 0) angleDepth -= 1;
+      else if (ch === '>' && angleDepth > 0) angleDepth -= 1;
     }
     if (ch === ',' && !inQuotes && angleDepth === 0) {
       flushIfComplete();
