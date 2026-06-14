@@ -466,6 +466,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             imap_sync_sent: 0,
             imap_sync_archive: 0,
             imap_sync_spam: 0,
+            imap_delete_opt_in: 0,
             imap_sync_seen_on_open: 1,
             vacation_enabled: 0,
             vacation_subject: null,
