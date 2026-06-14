@@ -6742,6 +6742,59 @@ describe('renderer transport', () => {
     expect(postsToCategories).toBe(2);
   });
 
+  test('email category operations fetch all pages before check-then-act', async () => {
+    const fetchImpl = jest
+      .fn()
+      // AddMessageCategory: category 62 is on page 2 → must not POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 21, messageId: 11, categoryId: 61 }],
+          nextCursor: 100,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 22, messageId: 11, categoryId: 62 }],
+          nextCursor: null,
+        },
+      }))
+      // RemoveMessageCategory: assignment on page 2 → must DELETE
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 21, messageId: 11, categoryId: 61 }],
+          nextCursor: 100,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 22, messageId: 11, categoryId: 62 }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: true });
+
+    const posts = fetchImpl.mock.calls
+      .map((args: unknown[]) => args[1] as { method?: string } | undefined)
+      .filter((init) => init?.method === 'POST');
+    expect(posts).toHaveLength(0);
+  });
+
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
     const fetchImpl = jest
       .fn()

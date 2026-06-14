@@ -3248,7 +3248,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       path: `/api/v1/email/messages/${messageId}/categories`,
       query: { limit: DEFAULT_LIST_LIMIT },
       transform: async (body, context) => {
-        const existing = listItems<EmailMessageCategoryRecord>(body)
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(body, context, {
+          method: "GET",
+          path: `/api/v1/email/messages/${messageId}/categories`,
+          query: { limit: DEFAULT_LIST_LIMIT },
+        })
         if (existing.some((r) => r.categoryId === categoryId)) {
           return { added: false, alreadyAssigned: true }
         }
@@ -3272,8 +3276,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       path: `/api/v1/email/messages/${messageId}/categories`,
       query: { limit: DEFAULT_LIST_LIMIT },
       transform: async (body, context) => {
-        const assignment = listItems<EmailMessageCategoryRecord>(body)
-          .find((record) => record.categoryId === categoryId)
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(body, context, {
+          method: "GET",
+          path: `/api/v1/email/messages/${messageId}/categories`,
+          query: { limit: DEFAULT_LIST_LIMIT },
+        })
+        const assignment = existing.find((record) => record.categoryId === categoryId)
         if (!assignment) return { removed: false }
         await context.fetchJson({
           method: "DELETE",
@@ -3296,7 +3304,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       path: `/api/v1/email/messages/${messageId}/categories`,
       query: { limit: DEFAULT_LIST_LIMIT },
       transform: async (body, context) => {
-        const existing = listItems<EmailMessageCategoryRecord>(body)
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(body, context, {
+          method: "GET",
+          path: `/api/v1/email/messages/${messageId}/categories`,
+          query: { limit: DEFAULT_LIST_LIMIT },
+        })
         const existingIds = new Set<number>(
           existing
             .map((r) => r.categoryId)

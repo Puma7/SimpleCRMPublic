@@ -321,6 +321,10 @@ export function useEmailMessages() {
           if (result?.added) added += 1
           else if (result?.alreadyAssigned) already += 1
         }
+        if (added === 0 && already === 0) {
+          toast.error("Unbekannte Serverantwort — bitte Seite neu laden")
+          return false
+        }
         if (added === 0 && already > 0) {
           toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
         } else if (added > 0 && already > 0) {
