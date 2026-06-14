@@ -63,8 +63,14 @@ jest.mock('../../electron/sqlite-service', () => ({
 jest.mock('../../electron/email/email-ticket', () => ({
   ensureTicketInSubject: (s: string, t: string) => `${s} [${t}]`,
   extractTicketFromSubject: (s: string) => (s.includes('T-99') ? 'T-99' : null),
+  extractKnownTicketFromSubject: (s: string) => (s.includes('T-99') ? 'T-99' : null),
   generateTicketCode: () => 'T-NEW',
   getOrCreateThreadForTicket: () => 'thread-x',
+}));
+
+jest.mock('../../electron/email/account-mail-settings-store', () => ({
+  allocateNextTicketCodeForAccount: () => 'T-NEW',
+  listKnownTicketPrefixes: () => new Set(['T', 'SCR']),
 }));
 
 jest.mock('../../electron/email/email-outbound-threading', () => ({

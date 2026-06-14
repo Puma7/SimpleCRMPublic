@@ -13,6 +13,21 @@ describe('assignJwzThreadAndTicket', () => {
     stmt.all.mockReturnValue([]);
     stmt.get.mockReturnValue(undefined);
     stmt.run.mockReturnValue({ changes: 1, lastInsertRowid: 1 });
+    db.prepare.mockImplementation((sql: string) => {
+      if (sql.includes('FROM email_accounts')) {
+        return { ...stmt, get: jest.fn(() => ({ id: 2, email: 'shop@example.test' })) };
+      }
+      if (sql.includes('FROM email_account_mail_settings')) {
+        return { ...stmt, get: jest.fn(() => undefined), all: jest.fn(() => [{ ticket_prefix: 'SHOPA' }]) };
+      }
+      if (sql.includes('SELECT id FROM email_threads')) {
+        return { ...stmt, get: jest.fn(() => undefined) };
+      }
+      if (sql.includes('SELECT subject, from_json FROM email_messages')) {
+        return { ...stmt, get: jest.fn(() => ({ subject: 'Re: topic', from_json: null })) };
+      }
+      return stmt;
+    });
   });
 
   test('creates new ticket when no related headers', () => {

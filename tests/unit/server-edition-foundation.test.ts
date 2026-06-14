@@ -36694,6 +36694,7 @@ type WorkflowExecutionFakeRows = {
   delayedJobs: Array<Record<string, unknown>>;
   jobs: Array<Record<string, unknown>>;
   messageAttachments: Array<Record<string, unknown>>;
+  accountMailSettings: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -36729,6 +36730,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     delayedJobs: input.delayedJobs ?? [],
     jobs: input.jobs ?? [],
     messageAttachments: input.messageAttachments ?? [],
+    accountMailSettings: input.accountMailSettings ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
@@ -36788,6 +36790,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.delayedJobs;
       case 'job_queue':
         return rows.jobs;
+      case 'email_account_mail_settings':
+        return rows.accountMailSettings;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }
