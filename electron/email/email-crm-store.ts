@@ -142,6 +142,52 @@ export function getMessageCategoryId(messageId: number): number | null {
   return row?.category_id ?? null;
 }
 
+export function listMessageCategoryIds(messageId: number): { categoryId: number }[] {
+  return getDb()
+    .prepare(
+      `SELECT category_id AS categoryId FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? ORDER BY category_id`,
+    )
+    .all(messageId) as { categoryId: number }[];
+}
+
+export function addMessageCategory(
+  messageId: number,
+  categoryId: number,
+): { added: boolean; alreadyAssigned: boolean } {
+  const existing = getDb()
+    .prepare(
+      `SELECT 1 AS ok FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+    )
+    .get(messageId, categoryId) as { ok: number } | undefined;
+  if (existing) return { added: false, alreadyAssigned: true };
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO ${EMAIL_MESSAGE_CATEGORIES_TABLE} (message_id, category_id) VALUES (?, ?)`,
+      )
+      .run(messageId, categoryId);
+    return { added: true, alreadyAssigned: false };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('UNIQUE') || msg.includes('constraint')) {
+      return { added: false, alreadyAssigned: true };
+    }
+    throw e;
+  }
+}
+
+export function removeMessageCategory(
+  messageId: number,
+  categoryId: number,
+): { removed: boolean } {
+  const result = getDb()
+    .prepare(
+      `DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+    )
+    .run(messageId, categoryId);
+  return { removed: result.changes > 0 };
+}
+
 export function listCategoryCountsForMailScope(
   accountScope: number | 'all',
   access?: import('./email-store').MailScopeSession,

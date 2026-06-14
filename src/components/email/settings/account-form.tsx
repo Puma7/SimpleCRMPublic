@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -46,10 +46,15 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
 
-  const editAccountId = editAccount?.id ?? null
+  const lastInitializedAccountIdRef = useRef<number | null>(null)
 
   useEffect(() => {
-    if (!editAccount) return
+    if (!editAccount) {
+      lastInitializedAccountIdRef.current = null
+      return
+    }
+    if (lastInitializedAccountIdRef.current === editAccount.id) return
+    lastInitializedAccountIdRef.current = editAccount.id
     setProtocol((editAccount.protocol as "imap" | "pop3") || "imap")
     setDisplayName(editAccount.display_name)
     setEmailAddress(editAccount.email_address)
@@ -66,10 +71,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     setVacationSubject(editAccount.vacation_subject ?? "")
     setVacationBodyText(editAccount.vacation_body_text ?? "")
     setRequestReadReceipt((editAccount.request_read_receipt ?? 0) === 1)
-    // Re-init only when switching accounts (by id), not when the parent
-    // passes a fresh list object after save with the same id.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- editAccount identity is editAccountId
-  }, [editAccountId])
+  }, [editAccount])
 
   const handleTestImap = async () => {
     if (!imapHost.trim() || !imapUsername.trim()) {

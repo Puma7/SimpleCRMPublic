@@ -419,6 +419,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
                 vacation_subject: input.values.vacationSubject ?? null,
                 vacation_body_text: input.values.vacationBodyText ?? null,
                 request_read_receipt: input.values.requestReadReceipt ?? false,
+                imap_delete_opt_in: input.values.imapDeleteOptIn ?? false,
                 default_remote_content_policy: 'blocked',
                 respond_to_read_receipts: 'never',
                 read_receipt_trusted_domains: null,

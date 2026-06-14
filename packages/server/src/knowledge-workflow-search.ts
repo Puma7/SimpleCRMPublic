@@ -1,13 +1,39 @@
 import type { Kysely } from 'kysely';
 
-import {
-  knowledgeContextsForDirection,
-  type KnowledgeContext,
-  isKnowledgeContext,
-} from '../../../shared/knowledge-context';
-import { formatKnowledgeChunksForPrompt } from '../../../shared/knowledge-prompt';
 import type { ServerDatabase } from './db/schema';
 import type { WorkspaceTransaction } from './db/workspace-context';
+
+/** Mirrors shared/knowledge-context — inlined for packages/server Docker build (no /shared copy). */
+const KNOWLEDGE_CONTEXTS = ['inbound', 'outbound', 'general'] as const;
+type KnowledgeContext = (typeof KNOWLEDGE_CONTEXTS)[number];
+
+function isKnowledgeContext(value: unknown): value is KnowledgeContext {
+  return typeof value === 'string' && (KNOWLEDGE_CONTEXTS as readonly string[]).includes(value);
+}
+
+function knowledgeContextsForDirection(
+  direction: 'inbound' | 'outbound' | 'draft_created' | 'manual' | string | undefined,
+): KnowledgeContext[] {
+  if (direction === 'outbound' || direction === 'draft_created') {
+    return ['general', 'outbound'];
+  }
+  if (direction === 'inbound') {
+    return ['general', 'inbound'];
+  }
+  return ['general'];
+}
+
+function formatKnowledgeChunksForPrompt(
+  chunks: readonly { title?: string | null; content: string }[],
+): string {
+  if (chunks.length === 0) return '';
+  const blocks = chunks.map((chunk) => {
+    const title = chunk.title?.trim();
+    const body = chunk.content.trim();
+    return title ? `### ${title}\n${body}` : body;
+  });
+  return `\n\n---\nRelevante Wissensbasis:\n\n${blocks.join('\n\n')}\n---\n`;
+}
 
 export type WorkflowKnowledgeChunkMatch = {
   id: number;

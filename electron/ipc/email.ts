@@ -105,6 +105,9 @@ import {
   setMessageCategory,
   clearMessageCategory,
   getMessageCategoryId,
+  listMessageCategoryIds,
+  addMessageCategory,
+  removeMessageCategory,
   listCategoryCountsForAccount,
   listCategoryCountsForMailScope,
   addInternalNote,
@@ -1441,6 +1444,36 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.GetMessageCategory, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return { categoryId: getMessageCategoryId(messageId) };
     }, { logger }),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListMessageCategories,
+      async (_event: IpcMainInvokeEvent, messageId: number) => listMessageCategoryIds(messageId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.AddMessageCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryId: number },
+      ) => addMessageCategory(payload.messageId, payload.categoryId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RemoveMessageCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryId: number },
+      ) => removeMessageCategory(payload.messageId, payload.categoryId),
+      { logger },
+    ),
   );
 
   disposers.push(

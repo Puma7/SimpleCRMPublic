@@ -312,6 +312,7 @@ export function useEmailMessages() {
       // Idempotent per message: the transport reports { added, alreadyAssigned }.
       let added = 0
       let already = 0
+      let noop = 0
       try {
         for (const id of ids) {
           const result = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
@@ -320,6 +321,15 @@ export function useEmailMessages() {
           })) as { added?: boolean; alreadyAssigned?: boolean }
           if (result?.added) added += 1
           else if (result?.alreadyAssigned) already += 1
+          else noop += 1
+        }
+        if (added === 0 && already === 0) {
+          toast.error(
+            noop > 0
+              ? "Kategorisieren fehlgeschlagen"
+              : "Keine Nachricht konnte kategorisiert werden",
+          )
+          return false
         }
         if (added === 0 && already > 0) {
           toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
@@ -329,7 +339,7 @@ export function useEmailMessages() {
           toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
         }
         await refreshList({ preserveSelection: true })
-        return true
+        return added > 0 || already > 0
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Kategorisieren fehlgeschlagen")
         if (added > 0) await refreshList({ preserveSelection: true })
