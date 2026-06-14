@@ -146,4 +146,62 @@ describe('buildComposeRfc822', () => {
       { address: 'ops@example.com', name: '' },
     ]);
   });
+
+  it('quotes a display name that contains "@" so the From header stays RFC 5322 valid', async () => {
+    // Regression: a display name equal to the e-mail address (very common — the
+    // account name defaults to the address) contains "@", which is NOT atext.
+    // Left unquoted it produced `From: kontakt@x.com <kontakt@x.com>`, which
+    // strict relays (IONOS) reject with 554. It must be a quoted-string.
+    expect(encodeMailboxListHeader('kontakt@millandmaker.com <kontakt@millandmaker.com>')).toBe(
+      '"kontakt@millandmaker.com" <kontakt@millandmaker.com>',
+    );
+
+    const raw = buildComposeRfc822({
+      from: 'kontakt@millandmaker.com <kontakt@millandmaker.com>',
+      to: 'pascal@leinfelder.in',
+      subject: 'Test',
+      text: 'Body',
+      date: new Date('2026-06-14T17:13:31.000Z'),
+    }).toString('utf8');
+
+    expect(raw).toMatch(/^From: "kontakt@millandmaker\.com" <kontakt@millandmaker\.com>\r$/m);
+    // The header now parses cleanly into a single valid address (mailparser drops
+    // the display name as redundant since it equals the address — that's fine; the
+    // point is the From is well-formed, not rejected as malformed).
+    const parsed = await simpleParser(Buffer.from(raw, 'utf8'));
+    expect(parsed.from?.value).toEqual([
+      { address: 'kontakt@millandmaker.com', name: '' },
+    ]);
+  });
+
+  it('splits a mailbox list correctly even when a quoted name ends with an escaped backslash', async () => {
+    // The first display name's content is a literal backslash: `"ab\\"` — the \\
+    // is an escaped backslash, so the following `"` CLOSES the quoted-string and
+    // the comma still separates the two recipients. The old value[i-1] heuristic
+    // kept inQuotes on and merged both into one (broken) mailbox.
+    const raw = buildComposeRfc822({
+      from: 'sender@example.com',
+      to: '"ab\\\\" <first@example.com>, second@example.com',
+      subject: 'x',
+      text: 'b',
+      date: new Date('2026-06-14T00:00:00.000Z'),
+    }).toString('utf8');
+
+    const parsed = await simpleParser(Buffer.from(raw, 'utf8'));
+    expect((parsed.to?.value ?? []).map((v) => v.address)).toEqual([
+      'first@example.com',
+      'second@example.com',
+    ]);
+  });
+
+  it('keeps atext-safe display names unquoted but quotes any other special', () => {
+    // atom-safe -> unquoted
+    expect(encodeMailboxListHeader('Mill and Maker <x@y.de>')).toBe('Mill and Maker <x@y.de>');
+    expect(encodeMailboxListHeader('Mill & Maker <x@y.de>')).toBe('Mill & Maker <x@y.de>');
+    // specials -> quoted-string (with escaping for \ and ")
+    expect(encodeMailboxListHeader('John Q. Public <x@y.de>')).toBe('"John Q. Public" <x@y.de>');
+    expect(encodeMailboxListHeader('a:b <x@y.de>')).toBe('"a:b" <x@y.de>');
+    expect(encodeMailboxListHeader('back\\slash <x@y.de>')).toBe('"back\\\\slash" <x@y.de>');
+    expect(encodeMailboxListHeader('say "hi" <x@y.de>')).toBe('"say \\"hi\\"" <x@y.de>');
+  });
 });
