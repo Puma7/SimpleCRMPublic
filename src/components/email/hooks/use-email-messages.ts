@@ -321,6 +321,12 @@ export function useEmailMessages() {
           if (result?.added) added += 1
           else if (result?.alreadyAssigned) already += 1
         }
+        // Defensive: if every response had neither added nor alreadyAssigned set,
+        // something unexpected came back. Don't pretend success — surface it.
+        if (added === 0 && already === 0) {
+          toast.error("Kategorisieren fehlgeschlagen — unerwartete Serverantwort")
+          return false
+        }
         if (added === 0 && already > 0) {
           toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
         } else if (added > 0 && already > 0) {

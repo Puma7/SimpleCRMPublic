@@ -50,6 +50,16 @@ export function AccountsMasterDetailSettings() {
         setSelectedId(list[0]!.id)
         setEditAccount(list[0]!)
         setSettingsAccountId(list[0]!.id)
+        return
+      }
+      // After a save the edit view stays open. The form keys off editAccount,
+      // so a stale reference would let a later remount (tab switch / select +
+      // back) revert the form to pre-save values — and a second save would
+      // then overwrite the DB with those stale fields. Re-bind editAccount to
+      // the freshly-loaded row whenever the selected id is still in the list.
+      if (selectedId != null) {
+        const refreshed = list.find((a) => a.id === selectedId)
+        if (refreshed) setEditAccount(refreshed)
       }
     } catch {
       toast.error("Konten konnten nicht geladen werden.")

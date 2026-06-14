@@ -6740,6 +6740,17 @@ describe('renderer transport', () => {
       .filter((init) => init?.method === 'POST').length;
     // Expected: 2 POSTs total (add-new + set-add 63). Set-diff keeps 61 unchanged.
     expect(postsToCategories).toBe(2);
+
+    // Truncation guard: the check-then-act helpers MUST fetch with a high enough
+    // limit to see the whole assignment set, or they would silently miss rows
+    // beyond the default 100 (silent remove false / duplicate POST 409s).
+    const categoryListUrls = fetchImpl.mock.calls
+      .map((args: unknown[]) => String(args[0]))
+      .filter((url) => /\/messages\/11\/categories\?/.test(url));
+    expect(categoryListUrls.length).toBeGreaterThan(0);
+    for (const url of categoryListUrls) {
+      expect(url).toMatch(/limit=1000(\b|&)/);
+    }
   });
 
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {

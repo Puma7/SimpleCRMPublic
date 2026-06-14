@@ -105,6 +105,10 @@ import {
   setMessageCategory,
   clearMessageCategory,
   getMessageCategoryId,
+  listMessageCategoryAssignments,
+  addMessageCategoryAssignment,
+  removeMessageCategoryAssignment,
+  setMessageCategoriesExact,
   listCategoryCountsForAccount,
   listCategoryCountsForMailScope,
   addInternalNote,
@@ -1439,6 +1443,69 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.GetMessageCategory, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return { categoryId: getMessageCategoryId(messageId) };
     }, { logger }),
+  );
+
+  // M:N category assignments (drag-drop adds, ×-chip removes, multi-select dialog).
+  // Local-mode counterparts to the HTTP-transport mappings; UI shape matches so
+  // the same renderer code works in both modes.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListMessageCategories,
+      async (_event: IpcMainInvokeEvent, messageId: number) => {
+        return listMessageCategoryAssignments(messageId).map((categoryId) => ({
+          id: categoryId,
+          messageId,
+          categoryId,
+        }));
+      },
+      { logger },
+    ),
+  );
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.AddMessageCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryId: number },
+      ) => {
+        const result = addMessageCategoryAssignment(payload.messageId, payload.categoryId);
+        if (result.added) {
+          return {
+            added: true,
+            record: {
+              id: payload.categoryId,
+              messageId: payload.messageId,
+              categoryId: payload.categoryId,
+            },
+          };
+        }
+        return { added: false, alreadyAssigned: true };
+      },
+      { logger },
+    ),
+  );
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RemoveMessageCategory,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryId: number },
+      ) => removeMessageCategoryAssignment(payload.messageId, payload.categoryId),
+      { logger },
+    ),
+  );
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetMessageCategories,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; categoryIds: readonly number[] },
+      ) => {
+        setMessageCategoriesExact(payload.messageId, payload.categoryIds ?? []);
+        return { success: true as const };
+      },
+      { logger },
+    ),
   );
 
   disposers.push(

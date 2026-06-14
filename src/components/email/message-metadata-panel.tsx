@@ -134,7 +134,6 @@ export function MessageMetadataPanel({
   // is replaced by chips + a multi-select dropdown so a message can sit in any
   // number of categories at once.
   const [messageCategoryIds, setMessageCategoryIds] = useState<number[]>([])
-  const [addCategoryOpen, setAddCategoryOpen] = useState(false)
   const [categoryBusy, setCategoryBusy] = useState(false)
   const [conversation, setConversation] = useState<EmailMessage[]>([])
   const [security, setSecurity] = useState<MessageSecurityState | null>(null)
@@ -607,6 +606,11 @@ export function MessageMetadataPanel({
                           if (r?.removed) {
                             await reloadMessageCategoryIds(selectedMessage.id)
                             toast.success("Kategorie entfernt")
+                          } else {
+                            // Server didn't find the assignment — resync the UI
+                            // with reality so a stale chip can't sit there silently.
+                            await reloadMessageCategoryIds(selectedMessage.id)
+                            toast.info("Kategorie war bereits nicht mehr zugewiesen")
                           }
                         } catch (e) {
                           toast.error(e instanceof Error ? e.message : "Entfernen fehlgeschlagen")

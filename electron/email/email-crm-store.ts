@@ -124,6 +124,78 @@ export function setMessageCategory(messageId: number, categoryId: number): void 
   ).run(messageId, categoryId);
 }
 
+// ----- M:N category assignments (drag-drop multi-category) ----------------
+// The legacy setMessageCategory above stays as the "replace single value"
+// path used by the metadata-panel single-select + the email.set_category
+// workflow node. The helpers below are the additive M:N counterparts.
+
+export function listMessageCategoryAssignments(messageId: number): number[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT category_id FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? ORDER BY category_id`,
+    )
+    .all(messageId) as { category_id: number }[];
+  return rows.map((r) => r.category_id);
+}
+
+/** Idempotent: returns `{ added: false, alreadyAssigned: true }` if the assignment exists. */
+export function addMessageCategoryAssignment(
+  messageId: number,
+  categoryId: number,
+): { added: true } | { added: false; alreadyAssigned: true } {
+  const existing = getDb()
+    .prepare(
+      `SELECT 1 FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+    )
+    .get(messageId, categoryId) as { 1: number } | undefined;
+  if (existing) return { added: false, alreadyAssigned: true };
+  getDb()
+    .prepare(
+      `INSERT INTO ${EMAIL_MESSAGE_CATEGORIES_TABLE} (message_id, category_id) VALUES (?, ?)`,
+    )
+    .run(messageId, categoryId);
+  return { added: true };
+}
+
+/** Returns `{ removed: true }` if a row was deleted, otherwise `{ removed: false }`. */
+export function removeMessageCategoryAssignment(
+  messageId: number,
+  categoryId: number,
+): { removed: boolean } {
+  const result = getDb()
+    .prepare(
+      `DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+    )
+    .run(messageId, categoryId);
+  return { removed: Number(result.changes) > 0 };
+}
+
+/** Diff-replace: keeps current rows that are in `categoryIds`, deletes the rest, inserts missing ones. */
+export function setMessageCategoriesExact(messageId: number, categoryIds: readonly number[]): void {
+  const d = getDb();
+  const target = new Set(categoryIds);
+  const tx = d.transaction(() => {
+    const current = d
+      .prepare(`SELECT category_id FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ?`)
+      .all(messageId) as { category_id: number }[];
+    const currentIds = new Set(current.map((r) => r.category_id));
+    for (const id of currentIds) {
+      if (target.has(id)) continue;
+      d.prepare(
+        `DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+      ).run(messageId, id);
+    }
+    const insertStmt = d.prepare(
+      `INSERT INTO ${EMAIL_MESSAGE_CATEGORIES_TABLE} (message_id, category_id) VALUES (?, ?)`,
+    );
+    for (const id of target) {
+      if (currentIds.has(id)) continue;
+      insertStmt.run(messageId, id);
+    }
+  });
+  tx();
+}
+
 export function clearMessageCategory(messageId: number): void {
   getDb()
     .prepare(`DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ?`)
