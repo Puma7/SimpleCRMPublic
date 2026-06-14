@@ -32,6 +32,7 @@ export type EmailAccount = {
   vacation_subject?: string | null
   vacation_body_text?: string | null
   request_read_receipt?: number
+  imap_delete_opt_in?: number | null
   created_at: string
   updated_at: string
 }
@@ -124,7 +125,13 @@ export type CustomerOpt = {
   email?: string | null
   customerNumber?: string | null
 }
-export type CannedResponse = { id: number; title: string; body: string }
+export type CannedResponse = {
+  id: number
+  title: string
+  body: string
+  account_id?: number | null
+  override_key?: string | null
+}
 export type AiPrompt = {
   id: number
   label: string
@@ -132,6 +139,8 @@ export type AiPrompt = {
   target?: string
   profile_id?: number | null
   sort_order?: number
+  account_id?: number | null
+  override_key?: string | null
 }
 export type InternalNote = { id: number; body: string; created_at: string }
 export type MessageAttachment = {

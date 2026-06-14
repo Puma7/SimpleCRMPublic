@@ -15,8 +15,36 @@ import {
 } from "@/services/transport"
 import { hasLocalIpc, invokeIpc } from "../types"
 import { KnowledgeMarkdownEditor } from "./knowledge-markdown-editor"
+import {
+  AccountScopeToolbar,
+  ScopeBadge,
+  listPayloadForScope,
+  mutationScopeFields,
+  type AccountScopeValue,
+} from "./account-scope-toolbar"
+import { KNOWLEDGE_CONTEXT_LABELS, KNOWLEDGE_CONTEXTS, type KnowledgeContext } from "@shared/knowledge-context"
+import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { AccountOverrideActions } from "./account-override-actions"
+import {
+  createKnowledgeBaseAccountOverride,
+  resetKnowledgeBaseAccountOverride,
+} from "./account-override-mutations"
 
-type Kb = { id: number; name: string; description: string | null }
+type Kb = {
+  id: number
+  name: string
+  description: string | null
+  account_id?: number | null
+  override_key?: string | null
+  knowledge_context?: string | null
+}
 
 function safeMarkdownFileName(fileName: string, fallback: string): string {
   const base = (fileName.trim() || fallback)
@@ -55,16 +83,26 @@ export function KnowledgePanel() {
   const [dirty, setDirty] = useState(false)
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [scope, setScope] = useState<AccountScopeValue>("all")
+  const [contextFilter, setContextFilter] = useState<"all" | KnowledgeContext>("all")
+
+  const filteredList = list.filter((kb) => {
+    if (contextFilter === "all") return true
+    return kb.knowledge_context === contextFilter
+  })
 
   const loadList = useCallback(async () => {
     try {
-      const rows = await invokeRenderer(IPCChannels.Email.ListKnowledgeBases) as Kb[]
+      const rows = await invokeRenderer(
+        IPCChannels.Email.ListKnowledgeBases,
+        listPayloadForScope(scope),
+      ) as Kb[]
       setList(rows)
     } catch (e) {
       console.error(e)
       toast.error("Wissensbasen konnten nicht geladen werden.")
     }
-  }, [])
+  }, [scope])
 
   const loadDocument = useCallback(async (kbId: number) => {
     setLoadingDoc(true)
@@ -134,7 +172,10 @@ export function KnowledgePanel() {
     try {
       const r = (await invokeRenderer(
         IPCChannels.Email.CreateKnowledgeBase,
-        { name: newName.trim() },
+        {
+          name: newName.trim(),
+          ...mutationScopeFields(scope),
+        },
       )) as { success: boolean; id?: number; error?: string }
       if (r && "success" in r && r.success === false) {
         toast.error(r.error ?? "Anlegen fehlgeschlagen.")
@@ -289,6 +330,34 @@ export function KnowledgePanel() {
         </p>
       </div>
 
+      <AccountScopeToolbar
+        value={scope}
+        onChange={(next) => {
+          setScope(next)
+          setSelectedId(null)
+        }}
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Label className="text-xs text-muted-foreground">Kontext-Filter</Label>
+        <Select
+          value={contextFilter}
+          onValueChange={(v) => setContextFilter(v as "all" | KnowledgeContext)}
+        >
+          <SelectTrigger className="h-8 w-[200px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Alle Kontexte</SelectItem>
+            {KNOWLEDGE_CONTEXTS.map((ctx) => (
+              <SelectItem key={ctx} value={ctx}>
+                {KNOWLEDGE_CONTEXT_LABELS[ctx]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="flex gap-2">
         <Input
           placeholder="Neuer Bereich (z. B. Retouren, Versand)"
@@ -301,10 +370,12 @@ export function KnowledgePanel() {
       </div>
 
       <ul className="max-h-48 shrink-0 divide-y overflow-y-auto rounded-lg border lg:max-h-56">
-        {list.length === 0 ? (
-          <li className="px-3 py-4 text-sm text-muted-foreground">Noch keine Wissensbasis.</li>
+        {filteredList.length === 0 ? (
+          <li className="px-3 py-4 text-sm text-muted-foreground">
+            {list.length === 0 ? "Noch keine Wissensbasis." : "Keine Treffer für diesen Kontext."}
+          </li>
         ) : (
-          list.map((kb) => (
+          filteredList.map((kb) => (
             <li
               key={kb.id}
               className={`flex items-center gap-2 px-3 py-2 text-sm ${
@@ -316,7 +387,15 @@ export function KnowledgePanel() {
                 className="min-w-0 flex-1 text-left font-medium"
                 onClick={() => setSelectedId(kb.id)}
               >
-                {kb.name}
+                <span className="flex flex-wrap items-center gap-2">
+                  {kb.name}
+                  <ScopeBadge row={kb} />
+                  {kb.knowledge_context && kb.knowledge_context in KNOWLEDGE_CONTEXT_LABELS ? (
+                    <Badge variant="outline" className="text-[10px]">
+                      {KNOWLEDGE_CONTEXT_LABELS[kb.knowledge_context as KnowledgeContext]}
+                    </Badge>
+                  ) : null}
+                </span>
               </button>
               <Button
                 type="button"
@@ -335,6 +414,28 @@ export function KnowledgePanel() {
 
       {selectedId != null ? (
         <div className="flex min-h-0 flex-1 flex-col space-y-3 rounded-lg border p-4">
+          {(() => {
+            const selectedKb = list.find((k) => k.id === selectedId)
+            if (!selectedKb) return null
+            return (
+              <AccountOverrideActions
+                row={selectedKb}
+                scope={scope}
+                onCreateOverride={async (_row, accountId) => {
+                  const id = await createKnowledgeBaseAccountOverride(selectedKb, accountId)
+                  toast.success("Konto-Override angelegt.")
+                  await loadList()
+                  if (id) setSelectedId(id)
+                }}
+                onResetOverride={async (row) => {
+                  await resetKnowledgeBaseAccountOverride(row.id)
+                  toast.success("Auf globalen Eintrag zurückgesetzt.")
+                  await loadList()
+                  setSelectedId(null)
+                }}
+              />
+            )
+          })()}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium">

@@ -1204,7 +1204,7 @@ function parseKnowledgeBaseMutationBody(
 
   const values: WorkflowKnowledgeBaseMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['name', 'description', 'accountId', 'overrideKey']);
+  const allowedFields = new Set(['name', 'description', 'accountId', 'overrideKey', 'knowledgeContext']);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -1228,6 +1228,11 @@ function parseKnowledgeBaseMutationBody(
     const overrideKey = normalizeNullableBodyText(body.overrideKey, 'overrideKey', 200);
     if (overrideKey.ok) values.overrideKey = overrideKey.value;
     else errors.push({ field: 'overrideKey', message: overrideKey.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'knowledgeContext')) {
+    const knowledgeContext = normalizeNullableBodyText(body.knowledgeContext, 'knowledgeContext', 32);
+    if (knowledgeContext.ok) values.knowledgeContext = knowledgeContext.value;
+    else errors.push({ field: 'knowledgeContext', message: knowledgeContext.message });
   }
 
   if (errors.length > 0) {
@@ -1711,6 +1716,7 @@ function sanitizeKnowledgeBase(base: WorkflowKnowledgeBaseRecord): WorkflowKnowl
     accountSourceSqliteId: base.accountSourceSqliteId,
     accountId: base.accountId,
     overrideKey: base.overrideKey,
+    knowledgeContext: base.knowledgeContext,
     createdAt: base.createdAt,
     updatedAt: base.updatedAt,
   };

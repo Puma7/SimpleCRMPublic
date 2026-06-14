@@ -132,6 +132,7 @@ const emailAccountSelectColumns = [
   'vacation_subject',
   'vacation_body_text',
   'request_read_receipt',
+  'imap_delete_opt_in',
   'default_remote_content_policy',
   'respond_to_read_receipts',
   'updated_at',
@@ -3859,6 +3860,7 @@ function mutationToEmailAccountPatch(
     ...(values.vacationSubject === undefined ? {} : { vacation_subject: values.vacationSubject }),
     ...(values.vacationBodyText === undefined ? {} : { vacation_body_text: values.vacationBodyText }),
     ...(values.requestReadReceipt === undefined ? {} : { request_read_receipt: values.requestReadReceipt }),
+    ...(values.imapDeleteOptIn === undefined ? {} : { imap_delete_opt_in: values.imapDeleteOptIn }),
   };
 }
 
@@ -3923,6 +3925,7 @@ function mapEmailAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelect
     vacationSubject: row.vacation_subject,
     vacationBodyText: row.vacation_body_text,
     requestReadReceipt: row.request_read_receipt,
+    imapDeleteOptIn: row.imap_delete_opt_in,
     defaultRemoteContentPolicy: row.default_remote_content_policy,
     respondToReadReceipts: row.respond_to_read_receipts,
     imapPasswordConfigured: Boolean(row.imap_password_secret_id ?? row.keytar_account_key),

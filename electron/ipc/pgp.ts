@@ -17,6 +17,7 @@ import {
   listPgpPeerKeys,
   deletePgpPeerKey,
   checkRecipientKeys,
+  rotateIdentityPassphrase,
 } from '../pgp/pgp-service';
 
 function requireMessageAccountAccess(event: IpcMainInvokeEvent, messageId: number) {
@@ -158,6 +159,26 @@ export function registerPgpHandlers(options: {
       async (event, payload: { emails: string[] }) => {
         requireRealAuthSession(event);
         return checkRecipientKeys(payload.emails);
+      },
+      { logger, requireAuth: true, requireRealSession: true },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.RotateIdentityPassphrase,
+      async (
+        event,
+        payload: { id: number; currentPassphrase: string; nextPassphrase: string },
+      ) => {
+        const session = requireRealAuthSession(event);
+        await rotateIdentityPassphrase(
+          payload.id,
+          payload.currentPassphrase,
+          payload.nextPassphrase,
+          session.userId,
+        );
+        return { success: true as const };
       },
       { logger, requireAuth: true, requireRealSession: true },
     ),

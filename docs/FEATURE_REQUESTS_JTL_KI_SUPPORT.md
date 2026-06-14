@@ -1,7 +1,7 @@
 # Feature-Requests: KI-Kundensupport für JTL-Händler (Gap-Analyse + TODO)
 
 **Quelle:** Community-Diskussion (JTL-Software-Gruppe) + Aufarbeitung Pascal.
-**Stand:** 2026-06-06 · Branch `claude/epic-ramanujan-xPM8u`
+**Stand:** 2026-06-14 · Settings-Frontend: Wissens-Kontext (inbound/outbound/general) pro Konto ✅
 **Methode:** Jeder Request wurde **gegen den tatsächlichen Code abgeglichen** (nicht aus dem Bauch). Ziel: nichts doppelt bauen, was bereits existiert.
 
 ## Kernbedürfnis aus der Diskussion
@@ -19,7 +19,7 @@ Legende: ✅ vorhanden · 🟡 Bausteine da / teilweise · ❌ fehlt
 | 3 | Tickettyp automatisch erkennen | 🟡 | `ai.classify` (Label aus fester Liste → Tag/Kategorie, `ai-classification.ts`) | **Confidence/Sicherheit** (nur 1 Label, kein Prozentwert) |
 | 4 | Modi: Vorschlag / Freigabe / Auto | 🟡 | Vorschlag ✅ (`ai.agent` createDraft, reply_suggestion); Freigabe ✅ (`email.hold_outbound` + `ai.outbound_review`, fail-closed) | **Modus 3 Vollauto-Antwort ❌** (kein Auto-Versand) |
 | 5 | KI wählt Textbaustein statt Freitext | 🟡 | Canned Responses + `{{customer.*}}`-Platzhalter (Schema vorhanden) | KI-gestützte **Auswahl** des passenden Bausteins + Variablenfüllung |
-| 6 | Wissensdatenbank / RAG | ✅ | `workflow_knowledge_bases` / `workflow_knowledge_chunks` (Keyword-RAG, optional Embeddings) | **Quellen-Transparenz** in der Antwort („basiert auf …") |
+| 6 | Wissensdatenbank / RAG | ✅ | `workflow_knowledge_bases` + `knowledge_context` pro Konto (inbound/outbound/general), Runtime in `ai.agent` | **Quellen-Transparenz** in der Antwort („basiert auf …") |
 | 7 | Kostenkontrolle pro Antwort/Nutzer/Monat | ❌ | — (kein Token-/Kosten-Tracking gefunden) | Token-/Kosten-Erfassung, Budget- & Limit-Regeln |
 | 8 | Modell-Router / Multi-Provider / lokale KI | 🟡 | AI-Profile mit `base_url` → **OpenAI-kompatibel inkl. LM Studio/Ollama** (`ai-classification.ts:880`) | Native Anthropic/Gemini; **Modellwahl pro Tickettyp** (günstig vs. stark) |
 | 9 | Outbound-Workflow / Qualitätsprüfung | ✅ | `ai.outbound_review`, `email.hold_outbound`, fail-closed Hold+Banner (`OUTBOUND_EMAIL_WORKFLOW.md`) | — (starkes Bestandsfeature) |

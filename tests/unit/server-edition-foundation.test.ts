@@ -331,6 +331,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0021_returns_schema',
   '0022_returns_portal_settings',
   '0023_account_scope_overrides',
+  '0024_settings_kb_context_imap',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -36370,6 +36371,7 @@ type AiReplySuggestionFakeRows = {
   tags: Array<Record<string, unknown>>;
   jobs: Array<Record<string, unknown>>;
   knowledgeChunks: Array<Record<string, unknown>>;
+  knowledgeBases: Array<Record<string, unknown>>;
   activityLog: Array<Record<string, unknown>>;
   cannedResponses: Array<Record<string, unknown>>;
 };
@@ -36390,6 +36392,7 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
     tags: input.tags ?? [],
     jobs: input.jobs ?? [],
     knowledgeChunks: input.knowledgeChunks ?? [],
+    knowledgeBases: input.knowledgeBases ?? [],
     activityLog: input.activityLog ?? [],
     cannedResponses: input.cannedResponses ?? [],
   };
@@ -36417,6 +36420,8 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
         return rows.jobs;
       case 'workflow_knowledge_chunks':
         return rows.knowledgeChunks;
+      case 'workflow_knowledge_bases':
+        return rows.knowledgeBases;
       case 'activity_log':
         return rows.activityLog;
       case 'email_canned_responses':
