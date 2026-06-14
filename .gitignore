@@ -87,6 +87,8 @@ src/.DS_Store
 !docs/THREAT_MODEL.md
 !docs/LOGIN_SECURITY.md
 !docs/LEARNINGS_AUTH.md
+!docs/LEARNINGS_OPS.md
+!docs/RETURNS.md
 !AGENTS.md
 
 coverage/
