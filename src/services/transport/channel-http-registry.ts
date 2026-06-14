@@ -834,11 +834,15 @@ type AutomationApiKeyRecord = {
 }
 
 const DEFAULT_LIST_LIMIT = 100
-// High limit for the per-message category list: the add/remove/set helpers
-// below need to see the COMPLETE assignment set (an unseen row leads to a
-// silent "removed: false" or a duplicate-POST 409). 1000 is well above any
-// realistic count of categories assigned to one message.
-const MESSAGE_CATEGORY_FETCH_LIMIT = 1000
+// Per-message category assignments are loaded for every check-then-act helper
+// (Add/Remove/Set). The full set MUST be visible — an unseen row leads to a
+// silent "removed: false" or a duplicate-POST 409. The server caps list
+// limits at 100 (see normalizeLimit in postgres-mail-metadata-read-ports), so
+// we stay at DEFAULT_LIST_LIMIT and use the standard cursor-pagination helper
+// (collectPagedListItems) to assemble the complete list across pages. In the
+// realistic common case (<100 categories per message) that's still a single
+// request.
+const MESSAGE_CATEGORY_FETCH_LIMIT = DEFAULT_LIST_LIMIT
 
 const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Sync.GetStatus, () => ({
@@ -3234,38 +3238,44 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     }
   }],
   // List all categories a message is in. Single source of truth for the
-  // category-chip UI on a row + the multi-select dialog. The high limit
-  // matters: the check-then-act add/remove/set helpers below MUST see the
-  // entire assignment set, or they take wrong decisions (silent "removed:
-  // false" / duplicate-POST 409s). 1000 is well above any realistic count
-  // of categories assigned to a single message.
-  [IPCChannels.Email.ListMessageCategories, ([messageId]) => ({
-    method: "GET",
-    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/categories`,
-    query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
-    transform: (body) => listItems<EmailMessageCategoryRecord>(body),
-  })],
-  // Add a single category to a message. Idempotent: first checks whether the
-  // assignment already exists, then only POSTs if missing. Reports back
-  // { added: false } in the "already assigned" case so the UI can show a
-  // dezenter Toast instead of an error.
-  //
-  // The pre-check + POST is NOT atomic. A concurrent request (another tab, a
-  // workflow node, a quick second drag-drop) can create the assignment in
-  // between, and the server then rejects our POST with 409. Catch exactly that
-  // case here and map it to { alreadyAssigned: true } so the user sees the
-  // same dezenter toast, never a red error — matches the same outcome the
-  // pre-check produces.
+  // category-chip UI on a row + the multi-select dialog. Uses cursor pagination
+  // so the full set is returned even past the server's per-page cap (100).
+  [IPCChannels.Email.ListMessageCategories, ([messageId]) => {
+    const id = positiveId(messageId, "email message id")
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${id}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        collectPagedListItems<EmailMessageCategoryRecord>(body, context, request),
+    }
+  }],
+  // Add a single category to a message. Idempotent + race-safe: paginate the
+  // current assignments so the pre-check sees them all, then POST; if a
+  // concurrent request (another tab, a workflow node, a fast second drag)
+  // raced us between GET and POST and the server replies 409, map it to
+  // { added: false, alreadyAssigned: true } — same payload the pre-check
+  // produces, so the UI shows the same dezenter toast in either path.
   [IPCChannels.Email.AddMessageCategory, ([payload]) => {
     const input = objectPayload(payload, "email add-message-category payload")
     const messageId = positiveId(input.messageId, "email message id")
     const categoryId = positiveId(input.categoryId, "email category id")
-    return {
+    const listRequest: HttpRequestSpec = {
       method: "GET",
       path: `/api/v1/email/messages/${messageId}/categories`,
       query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
       transform: async (body, context) => {
-        const existing = listItems<EmailMessageCategoryRecord>(body)
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
         if (existing.some((r) => r.categoryId === categoryId)) {
           return { added: false, alreadyAssigned: true }
         }
@@ -3286,24 +3296,40 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     }
   }],
   // Remove one category assignment by message + category (UI doesn't track the
-  // junction-row id). We look it up first, then DELETE that row's id.
+  // junction-row id). Paginate the lookup so we don't miss the target row,
+  // then DELETE that row's id. Idempotent on a concurrent delete: if another
+  // client removed the row between our GET and our DELETE the server replies
+  // 404 — swallow it and report removed:false, exactly like the pre-GET miss
+  // path. The UI handles both as "war bereits nicht mehr zugewiesen".
   [IPCChannels.Email.RemoveMessageCategory, ([payload]) => {
     const input = objectPayload(payload, "email remove-message-category payload")
     const messageId = positiveId(input.messageId, "email message id")
     const categoryId = positiveId(input.categoryId, "email category id")
-    return {
+    const listRequest: HttpRequestSpec = {
       method: "GET",
       path: `/api/v1/email/messages/${messageId}/categories`,
       query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
       transform: async (body, context) => {
-        const assignment = listItems<EmailMessageCategoryRecord>(body)
-          .find((record) => record.categoryId === categoryId)
+        const all = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        const assignment = all.find((record) => record.categoryId === categoryId)
         if (!assignment) return { removed: false }
-        await context.fetchJson({
-          method: "DELETE",
-          path: `/api/v1/email/message-categories/${positiveId(assignment.id, "email message category id")}`,
-        })
-        return { removed: true }
+        try {
+          await context.fetchJson({
+            method: "DELETE",
+            path: `/api/v1/email/message-categories/${positiveId(assignment.id, "email message category id")}`,
+          })
+          return { removed: true }
+        } catch (error) {
+          if (isNotFound(error)) return { removed: false }
+          throw error
+        }
       },
     }
   }],
@@ -3321,12 +3347,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     const messageId = positiveId(input.messageId, "email message id")
     const rawIds = Array.isArray(input.categoryIds) ? input.categoryIds : []
     const targetIds = new Set(rawIds.map((id) => positiveId(id, "email category id")))
-    return {
+    const listRequest: HttpRequestSpec = {
       method: "GET",
       path: `/api/v1/email/messages/${messageId}/categories`,
       query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
       transform: async (body, context) => {
-        const existing = listItems<EmailMessageCategoryRecord>(body)
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
         const existingIds = new Set<number>(
           existing
             .map((r) => r.categoryId)
@@ -3334,10 +3367,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         )
         for (const record of existing) {
           if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
-          await context.fetchJson({
-            method: "DELETE",
-            path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
-          })
+          try {
+            await context.fetchJson({
+              method: "DELETE",
+              path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
+            })
+          } catch (error) {
+            // Concurrent delete — desired end-state already in place. Don't
+            // fail the whole set on it.
+            if (!isNotFound(error)) throw error
+          }
         }
         for (const id of targetIds) {
           if (existingIds.has(id)) continue
@@ -4015,6 +4054,11 @@ function listItems<T>(body: unknown): T[] {
 /** True for an HTTP 409 thrown by fetchJson when posting a duplicate junction row. */
 function isAlreadyAssignedConflict(error: unknown): boolean {
   return error instanceof RendererTransportError && error.status === 409
+}
+
+/** True for an HTTP 404 — the target row no longer exists (concurrent delete). */
+function isNotFound(error: unknown): boolean {
+  return error instanceof RendererTransportError && error.status === 404
 }
 
 function listResult<T>(body: unknown): ListResult<T> {

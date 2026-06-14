@@ -6741,15 +6741,18 @@ describe('renderer transport', () => {
     // Expected: 2 POSTs total (add-new + set-add 63). Set-diff keeps 61 unchanged.
     expect(postsToCategories).toBe(2);
 
-    // Truncation guard: the check-then-act helpers MUST fetch with a high enough
-    // limit to see the whole assignment set, or they would silently miss rows
-    // beyond the default 100 (silent remove false / duplicate POST 409s).
-    const categoryListUrls = fetchImpl.mock.calls
+    // The check-then-act helpers paginate with the server-respected cap of
+    // 100 — anything higher is rejected by normalizeLimit on the server. The
+    // full set is assembled across pages by collectPagedListItems, so the
+    // helpers see every assignment regardless of count.
+    const categoryListGetUrls = fetchImpl.mock.calls
+      .filter((args: unknown[]) => ((args[1] as { method?: string } | undefined)?.method ?? 'GET') === 'GET')
       .map((args: unknown[]) => String(args[0]))
-      .filter((url) => /\/messages\/11\/categories\?/.test(url));
-    expect(categoryListUrls.length).toBeGreaterThan(0);
-    for (const url of categoryListUrls) {
-      expect(url).toMatch(/limit=1000(\b|&)/);
+      .filter((url) => /\/messages\/11\/categories(\?|$)/.test(url));
+    expect(categoryListGetUrls.length).toBeGreaterThan(0);
+    for (const url of categoryListGetUrls) {
+      expect(url).toMatch(/limit=100(\b|&)/);
+      expect(url).not.toMatch(/limit=1000/);
     }
   });
 
@@ -6785,6 +6788,39 @@ describe('renderer transport', () => {
       (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
     );
     expect(methods).toEqual(['GET', 'POST']);
+  });
+
+  test('RemoveMessageCategory swallows a concurrent DELETE 404 as removed:false', async () => {
+    // Race: GET sees the assignment, but between GET and DELETE another client
+    // removes it. The server then 404s our DELETE. Without the swallow the
+    // metadata panel would show a red error and leave the (already-gone) chip
+    // sitting there; with it the channel reports removed:false and the UI
+    // resyncs via the existing reload-on-not-removed path.
+    const fetchImpl = jest
+      .fn()
+      // 1) GET /messages/11/categories -> assignment exists
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 22, messageId: 11, categoryId: 62 }], nextCursor: null },
+      }))
+      // 2) DELETE /message-categories/22 -> 404 (concurrent delete won the race)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_not_found', message: 'Email message category nicht gefunden' } },
+        404,
+      ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'DELETE']);
   });
 
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
