@@ -16,6 +16,12 @@ import type { EmailAccount } from "../types"
 import { isGlobalAccountOverride, type ScopedAccountOverrideRow } from "@shared/mail-account-overrides"
 export type AccountScopeValue = "all" | number
 
+/** UI rows may omit account_id until loaded from IPC/HTTP. */
+export type ScopedOverrideRowInput = {
+  account_id?: number | null
+  override_key?: string | null
+}
+
 type Props = {
   value: AccountScopeValue
   onChange: (scope: AccountScopeValue) => void
@@ -74,7 +80,7 @@ export function AccountScopeToolbar({ value, onChange, description }: Props) {
   )
 }
 
-export function ScopeBadge({ row }: { row: Pick<ScopedAccountOverrideRow, "account_id"> }) {
+export function ScopeBadge({ row }: { row: ScopedOverrideRowInput }) {
   if (isGlobalAccountOverride(row as ScopedAccountOverrideRow)) {
     return <Badge variant="secondary">Global</Badge>
   }
@@ -98,7 +104,7 @@ export function mutationScopeFields(
 /** Preserve global rows when the toolbar is in account scope (resolved inherited entry). */
 export function mutationScopeFieldsForRow(
   scope: AccountScopeValue,
-  row: Pick<ScopedAccountOverrideRow, "account_id" | "override_key">,
+  row: ScopedOverrideRowInput,
   overrideKey?: string | null,
 ): { accountId: number | null; overrideKey: string | null } {
   if (isGlobalAccountOverride(row as ScopedAccountOverrideRow)) {

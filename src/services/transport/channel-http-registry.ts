@@ -8,6 +8,7 @@ import { RendererTransportError } from "./renderer-transport"
 import {
   accountOverrideScopeFromPayload,
   resolveScopedAccountOverrides,
+  type AccountOverrideScopePayload,
   type ScopedAccountOverrideRow,
 } from "@shared/mail-account-overrides"
 
@@ -714,6 +715,7 @@ type WorkflowKnowledgeBaseRecord = {
   accountSourceSqliteId?: number | null
   accountId?: number | null
   overrideKey?: string | null
+  knowledgeContext?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -6024,7 +6026,9 @@ function scopedAccountOverrideListTransform<TRow extends ScopedAccountOverrideRo
   body: unknown,
   mapRow: (record: never) => TRow,
 ): TRow[] {
-  const scope = accountOverrideScopeFromPayload(accountOverrideScopePayloadValue(payload));
+  const scope = accountOverrideScopeFromPayload(
+    accountOverrideScopePayloadValue(payload) as AccountOverrideScopePayload,
+  );
   const rows = listItems(body).map((record) => mapRow(record as never));
   return resolveScopedAccountOverrides(rows, scope ?? "all");
 }

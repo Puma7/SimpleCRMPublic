@@ -8,9 +8,9 @@ import {
   isGlobalAccountOverride,
   type ScopedAccountOverrideRow,
 } from "@shared/mail-account-overrides"
-import type { AccountScopeValue } from "./account-scope-toolbar"
+import type { AccountScopeValue, ScopedOverrideRowInput } from "./account-scope-toolbar"
 
-type Row = Pick<ScopedAccountOverrideRow, "id" | "account_id" | "override_key">
+type Row = ScopedOverrideRowInput & { id: number }
 
 type Props = {
   row: Row

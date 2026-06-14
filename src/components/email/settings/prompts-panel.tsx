@@ -184,7 +184,7 @@ export function PromptsPanel() {
   }, [prompts, selectedId])
 
   const saveCurrent = async () => {
-    if (selectedId == null) return
+    if (selectedId == null || !selected) return
     if (!label.trim()) {
       toast.error("Bitte eine Bezeichnung eingeben.")
       return
