@@ -200,6 +200,50 @@ export function createKnowledgeBase(
   return id;
 }
 
+export function updateKnowledgeBase(
+  id: number,
+  opts: {
+    name?: string;
+    description?: string | null;
+    accountId?: number | null;
+    overrideKey?: string | null;
+    knowledgeContext?: KnowledgeContext | string | null;
+  },
+): void {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (opts.name !== undefined) {
+    sets.push('name = ?');
+    vals.push(opts.name.trim());
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'description')) {
+    sets.push('description = ?');
+    vals.push(opts.description ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'accountId')) {
+    sets.push('account_id = ?');
+    vals.push(opts.accountId ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'overrideKey')) {
+    sets.push('override_key = ?');
+    vals.push(opts.overrideKey ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'knowledgeContext')) {
+    const ctx = isKnowledgeContext(opts.knowledgeContext) ? opts.knowledgeContext : null;
+    sets.push('knowledge_context = ?');
+    vals.push(ctx);
+    if (!Object.prototype.hasOwnProperty.call(opts, 'overrideKey') && ctx) {
+      sets.push('override_key = ?');
+      vals.push(`kb.${ctx}`);
+    }
+  }
+  if (sets.length === 0) return;
+  vals.push(id);
+  getDb()
+    .prepare(`UPDATE ${WORKFLOW_KNOWLEDGE_BASES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
+}
+
 export function deleteKnowledgeBase(id: number): void {
   const filePath = knowledgeMarkdownPath(id);
   if (fs.existsSync(filePath)) {

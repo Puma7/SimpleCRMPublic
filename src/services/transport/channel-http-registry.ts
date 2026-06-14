@@ -2953,6 +2953,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  [IPCChannels.Email.UpdateKnowledgeBase, ([payload]) => {
+    const input = objectPayload(payload, "workflow knowledge base update payload")
+    const id = positiveId(input.id, "workflow knowledge base id")
+    return {
+      method: "PATCH",
+      path: `/api/v1/workflow-knowledge-bases/${id}`,
+      body: mapWorkflowKnowledgeBaseMutation(input),
+      transform: () => ({ success: true }),
+    }
+  }],
   [IPCChannels.Email.DeleteKnowledgeBase, ([id]) => ({
     method: "DELETE",
     path: `/api/v1/workflow-knowledge-bases/${positiveId(id, "workflow knowledge base id")}`,

@@ -22,8 +22,20 @@ import {
   mutationScopeFields,
   type AccountScopeValue,
 } from "./account-scope-toolbar"
-import { KNOWLEDGE_CONTEXT_LABELS, type KnowledgeContext } from "@shared/knowledge-context"
+import { KNOWLEDGE_CONTEXT_LABELS, KNOWLEDGE_CONTEXTS, type KnowledgeContext } from "@shared/knowledge-context"
 import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { AccountOverrideActions } from "./account-override-actions"
+import {
+  createKnowledgeBaseAccountOverride,
+  resetKnowledgeBaseAccountOverride,
+} from "./account-override-mutations"
 
 type Kb = {
   id: number
@@ -72,6 +84,12 @@ export function KnowledgePanel() {
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [saving, setSaving] = useState(false)
   const [scope, setScope] = useState<AccountScopeValue>("all")
+  const [contextFilter, setContextFilter] = useState<"all" | KnowledgeContext>("all")
+
+  const filteredList = list.filter((kb) => {
+    if (contextFilter === "all") return true
+    return kb.knowledge_context === contextFilter
+  })
 
   const loadList = useCallback(async () => {
     try {
@@ -320,6 +338,26 @@ export function KnowledgePanel() {
         }}
       />
 
+      <div className="flex flex-wrap items-center gap-2">
+        <Label className="text-xs text-muted-foreground">Kontext-Filter</Label>
+        <Select
+          value={contextFilter}
+          onValueChange={(v) => setContextFilter(v as "all" | KnowledgeContext)}
+        >
+          <SelectTrigger className="h-8 w-[200px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Alle Kontexte</SelectItem>
+            {KNOWLEDGE_CONTEXTS.map((ctx) => (
+              <SelectItem key={ctx} value={ctx}>
+                {KNOWLEDGE_CONTEXT_LABELS[ctx]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="flex gap-2">
         <Input
           placeholder="Neuer Bereich (z. B. Retouren, Versand)"
@@ -332,10 +370,12 @@ export function KnowledgePanel() {
       </div>
 
       <ul className="max-h-48 shrink-0 divide-y overflow-y-auto rounded-lg border lg:max-h-56">
-        {list.length === 0 ? (
-          <li className="px-3 py-4 text-sm text-muted-foreground">Noch keine Wissensbasis.</li>
+        {filteredList.length === 0 ? (
+          <li className="px-3 py-4 text-sm text-muted-foreground">
+            {list.length === 0 ? "Noch keine Wissensbasis." : "Keine Treffer für diesen Kontext."}
+          </li>
         ) : (
-          list.map((kb) => (
+          filteredList.map((kb) => (
             <li
               key={kb.id}
               className={`flex items-center gap-2 px-3 py-2 text-sm ${
@@ -374,6 +414,28 @@ export function KnowledgePanel() {
 
       {selectedId != null ? (
         <div className="flex min-h-0 flex-1 flex-col space-y-3 rounded-lg border p-4">
+          {(() => {
+            const selectedKb = list.find((k) => k.id === selectedId)
+            if (!selectedKb) return null
+            return (
+              <AccountOverrideActions
+                row={selectedKb}
+                scope={scope}
+                onCreateOverride={async (_row, accountId) => {
+                  const id = await createKnowledgeBaseAccountOverride(selectedKb, accountId)
+                  toast.success("Konto-Override angelegt.")
+                  await loadList()
+                  if (id) setSelectedId(id)
+                }}
+                onResetOverride={async (row) => {
+                  await resetKnowledgeBaseAccountOverride(row.id)
+                  toast.success("Auf globalen Eintrag zurückgesetzt.")
+                  await loadList()
+                  setSelectedId(null)
+                }}
+              />
+            )
+          })()}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium">

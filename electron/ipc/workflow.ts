@@ -15,6 +15,7 @@ import { exportWorkflowBundle, parseWorkflowImport } from '../workflow/export-im
 import {
   listKnowledgeBases,
   createKnowledgeBase,
+  updateKnowledgeBase,
   deleteKnowledgeBase,
   addTextChunk,
   getKnowledgeBaseDocument,
@@ -270,6 +271,33 @@ export function registerWorkflowHandlers(options: {
           knowledgeContext: payload.knowledgeContext ?? null,
         });
         return { success: true as const, id };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.UpdateKnowledgeBase,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id: number;
+          name?: string;
+          description?: string | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
+          knowledgeContext?: string | null;
+        },
+      ) => {
+        updateKnowledgeBase(payload.id, {
+          name: payload.name,
+          description: payload.description,
+          accountId: payload.accountId,
+          overrideKey: payload.overrideKey,
+          knowledgeContext: payload.knowledgeContext ?? null,
+        });
+        return { success: true as const };
       },
       { logger },
     ),

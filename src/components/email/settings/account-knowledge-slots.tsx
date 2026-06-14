@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Loader2, Plus } from "lucide-react"
@@ -20,6 +20,7 @@ import {
   type KnowledgeContext,
 } from "@shared/knowledge-context"
 import { invokeRenderer } from "@/services/transport"
+import { assignKnowledgeBaseToAccountSlot } from "./account-override-mutations"
 
 type KbRow = {
   id: number
@@ -33,22 +34,29 @@ type Props = {
   accountId: number
 }
 
+const ASSIGN_PLACEHOLDER = "__assign__"
+
 export function AccountKnowledgeSlots({ accountId }: Props) {
   const [rows, setRows] = useState<KbRow[]>([])
+  const [allKbs, setAllKbs] = useState<KbRow[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState<KnowledgeContext | null>(null)
+  const [assigning, setAssigning] = useState<KnowledgeContext | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const list = (await invokeRenderer(IPCChannels.Email.ListKnowledgeBases, {
-        accountId,
-      })) as KbRow[]
-      setRows(list)
+      const [scoped, global] = await Promise.all([
+        invokeRenderer(IPCChannels.Email.ListKnowledgeBases, { accountId }) as Promise<KbRow[]>,
+        invokeRenderer(IPCChannels.Email.ListKnowledgeBases, { accountId: "all" }) as Promise<KbRow[]>,
+      ])
+      setRows(scoped)
+      setAllKbs(global)
     } catch (e) {
       console.error(e)
       toast.error("Wissensbasen konnten nicht geladen werden.")
       setRows([])
+      setAllKbs([])
     } finally {
       setLoading(false)
     }
@@ -63,6 +71,10 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
 
   const globalFallback = (context: KnowledgeContext): KbRow | undefined =>
     rows.find((kb) => kb.knowledge_context === context && (kb.account_id == null || kb.account_id === 0))
+
+  const assignableKbs = useMemo(() => {
+    return allKbs.filter((kb) => kb.account_id == null || kb.account_id === 0)
+  }, [allKbs])
 
   const createSlot = async (context: KnowledgeContext) => {
     if (slotKb(context)) return
@@ -84,6 +96,22 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
       toast.error("Wissensbasis konnte nicht angelegt werden.")
     } finally {
       setCreating(null)
+    }
+  }
+
+  const assignExisting = async (context: KnowledgeContext, kbId: number) => {
+    const source = allKbs.find((kb) => kb.id === kbId)
+    if (!source || slotKb(context)) return
+    setAssigning(context)
+    try {
+      await assignKnowledgeBaseToAccountSlot(source, accountId, context)
+      toast.success(`${KNOWLEDGE_CONTEXT_LABELS[context]} zugewiesen.`)
+      await load()
+    } catch (e) {
+      console.error(e)
+      toast.error("Zuweisung fehlgeschlagen.")
+    } finally {
+      setAssigning(null)
     }
   }
 
@@ -130,28 +158,53 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
                   {active ? active.name : "Noch keine Wissensbasis für diesen Kontext."}
                 </p>
               </div>
-              <div className="flex shrink-0 gap-2">
+              <div className="flex shrink-0 flex-wrap gap-2">
                 {!assigned ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={creating === context}
-                    onClick={() => void createSlot(context)}
-                  >
-                    {creating === context ? (
-                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Plus className="mr-1 h-3.5 w-3.5" />
-                    )}
-                    Konto-Override anlegen
-                  </Button>
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={creating === context || assigning === context}
+                      onClick={() => void createSlot(context)}
+                    >
+                      {creating === context ? (
+                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Plus className="mr-1 h-3.5 w-3.5" />
+                      )}
+                      Neu anlegen
+                    </Button>
+                    {assignableKbs.length > 0 ? (
+                      <Select
+                        value={ASSIGN_PLACEHOLDER}
+                        disabled={assigning === context}
+                        onValueChange={(v) => {
+                          if (v === ASSIGN_PLACEHOLDER) return
+                          void assignExisting(context, Number(v))
+                        }}
+                      >
+                        <SelectTrigger className="h-8 w-[200px] text-xs">
+                          <SelectValue placeholder="Bestehende zuweisen…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={ASSIGN_PLACEHOLDER} disabled>
+                            Bestehende zuweisen…
+                          </SelectItem>
+                          {assignableKbs.map((kb) => (
+                            <SelectItem key={kb.id} value={String(kb.id)}>
+                              {kb.name}
+                              {kb.knowledge_context
+                                ? ` (${KNOWLEDGE_CONTEXT_LABELS[kb.knowledge_context as KnowledgeContext] ?? kb.knowledge_context})`
+                                : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : null}
+                  </>
                 ) : (
-                  <Select
-                    value={String(assigned.id)}
-                    onValueChange={() => undefined}
-                    disabled
-                  >
+                  <Select value={String(assigned.id)} disabled>
                     <SelectTrigger className="h-8 w-[180px] text-xs">
                       <SelectValue />
                     </SelectTrigger>

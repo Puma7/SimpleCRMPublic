@@ -16,9 +16,10 @@ import { OAuthAccountLinkPanel } from "./oauth-account-link-panel"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
 import { AccountSignaturesSection } from "./account-signatures-section"
 import { AccountKnowledgeSlots } from "./account-knowledge-slots"
+import { AccountAdvancedPanel } from "./account-advanced-panel"
 import { AccountsShippingHint } from "./accounts-shipping-hint"
 
-type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki"
+type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki" | "erweitert"
 
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
@@ -26,6 +27,7 @@ const TABS: { id: AccountTab; label: string }[] = [
   { id: "oauth", label: "OAuth" },
   { id: "signature", label: "Signatur" },
   { id: "ki", label: "KI" },
+  { id: "erweitert", label: "Erweitert" },
 ]
 
 function accountInitials(a: EmailAccount): string {
@@ -244,6 +246,8 @@ export function AccountsMasterDetailSettings() {
                     <ReplySuggestionSettingsSection accountId={selectedId} />
                     <AccountKnowledgeSlots accountId={selectedId} />
                   </div>
+                ) : tab === "erweitert" && selectedId != null ? (
+                  <AccountAdvancedPanel accountId={selectedId} />
                 ) : null}
               </div>
             </ScrollArea>

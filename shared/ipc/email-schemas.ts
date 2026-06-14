@@ -1296,6 +1296,16 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.UpdateKnowledgeBase, {
+    payload: z.object({
+      id: positiveInt,
+      name: nonEmptyString.optional(),
+      description: z.string().nullable().optional(),
+      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      ...accountOverrideMutationFields,
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.DeleteKnowledgeBase, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.AddKnowledgeChunk, {
     payload: z.object({

@@ -22,6 +22,11 @@ import {
   mutationScopeFields,
   type AccountScopeValue,
 } from "./account-scope-toolbar"
+import { AccountOverrideActions } from "./account-override-actions"
+import {
+  createCannedAccountOverride,
+  resetCannedAccountOverride,
+} from "./account-override-mutations"
 
 export function CannedPanel() {
   const [items, setItems] = useState<CannedResponse[]>([])
@@ -95,6 +100,20 @@ export function CannedPanel() {
               id={`cb-${c.id}`}
               className="min-h-[80px] font-mono text-sm"
               onBlur={() => void save(c.id, c)}
+            />
+            <AccountOverrideActions
+              row={c}
+              scope={scope}
+              onCreateOverride={async (row, accountId) => {
+                await createCannedAccountOverride(c, accountId)
+                toast.success("Konto-Override angelegt.")
+                await load()
+              }}
+              onResetOverride={async (row) => {
+                await resetCannedAccountOverride(row.id)
+                toast.success("Auf globalen Eintrag zurückgesetzt.")
+                await load()
+              }}
             />
           </div>
         ))}

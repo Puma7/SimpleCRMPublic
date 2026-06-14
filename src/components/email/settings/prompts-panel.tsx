@@ -39,6 +39,11 @@ import {
   mutationScopeFields,
   type AccountScopeValue,
 } from "./account-scope-toolbar"
+import { AccountOverrideActions } from "./account-override-actions"
+import {
+  createPromptAccountOverride,
+  resetPromptAccountOverride,
+} from "./account-override-mutations"
 
 type SortMode = "manual" | "label-asc" | "label-desc" | "newest"
 
@@ -444,6 +449,28 @@ export function PromptsPanel() {
                   <span className="text-xs text-amber-600 dark:text-amber-400">Ungespeichert</span>
                 ) : null}
               </div>
+
+              {selected ? (
+                <AccountOverrideActions
+                  row={selected}
+                  scope={scope}
+                  onCreateOverride={async (row, accountId) => {
+                    const id = await createPromptAccountOverride(selected, accountId)
+                    const rows = await load()
+                    const created = rows?.find((p) => p.id === id)
+                    if (created) selectPrompt(created)
+                    toast.success("Konto-Override angelegt.")
+                  }}
+                  onResetOverride={async (row) => {
+                    await resetPromptAccountOverride(row.id)
+                    toast.success("Auf globalen Eintrag zurückgesetzt.")
+                    const rows = await load()
+                    const next = rows?.[0]
+                    if (next) selectPrompt(next)
+                    else setSelectedId(null)
+                  }}
+                />
+              ) : null}
 
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
                 <div className="space-y-1.5">

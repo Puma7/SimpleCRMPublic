@@ -348,6 +348,7 @@ const EmailChannels = literal({
   SetWorkflowAutomationSettings: 'workflow:set-automation-settings',
   ListKnowledgeBases: 'workflow:list-knowledge-bases',
   CreateKnowledgeBase: 'workflow:create-knowledge-base',
+  UpdateKnowledgeBase: 'workflow:update-knowledge-base',
   DeleteKnowledgeBase: 'workflow:delete-knowledge-base',
   AddKnowledgeChunk: 'workflow:add-knowledge-chunk',
   GetKnowledgeBaseDocument: 'workflow:get-knowledge-base-document',

@@ -1,0 +1,91 @@
+import { IPCChannels } from "@shared/ipc/channels"
+import type { KnowledgeContext } from "@shared/knowledge-context"
+import { invokeRenderer } from "@/services/transport"
+import type { AiPrompt, CannedResponse } from "../types"
+import { defaultOverrideKey } from "./account-override-actions"
+
+type KbRow = {
+  id: number
+  name: string
+  description?: string | null
+  account_id?: number | null
+  override_key?: string | null
+  knowledge_context?: string | null
+}
+
+export async function createPromptAccountOverride(
+  prompt: AiPrompt,
+  accountId: number,
+): Promise<number | undefined> {
+  const r = (await invokeRenderer(IPCChannels.Email.SaveAiPrompt, {
+    label: prompt.label,
+    userTemplate: prompt.user_template,
+    profileId: prompt.profile_id ?? null,
+    target: prompt.target,
+    accountId,
+    overrideKey: defaultOverrideKey("prompt", prompt.id, prompt.override_key),
+  })) as { id?: number }
+  return r.id
+}
+
+export async function resetPromptAccountOverride(id: number): Promise<void> {
+  await invokeRenderer(IPCChannels.Email.DeleteAiPrompt, id)
+}
+
+export async function createCannedAccountOverride(
+  row: CannedResponse,
+  accountId: number,
+): Promise<number | undefined> {
+  const r = (await invokeRenderer(IPCChannels.Email.SaveCannedResponse, {
+    title: row.title,
+    body: row.body,
+    accountId,
+    overrideKey: defaultOverrideKey("canned", row.id, row.override_key),
+  })) as { id?: number }
+  return r.id
+}
+
+export async function resetCannedAccountOverride(id: number): Promise<void> {
+  await invokeRenderer(IPCChannels.Email.DeleteCannedResponse, id)
+}
+
+export async function createKnowledgeBaseAccountOverride(
+  kb: KbRow,
+  accountId: number,
+  knowledgeContext?: KnowledgeContext | null,
+): Promise<number | undefined> {
+  const doc = (await invokeRenderer(
+    IPCChannels.Email.GetKnowledgeBaseDocument,
+    kb.id,
+  )) as { success: true; content: string } | { success: false }
+  const ctx = knowledgeContext ?? (kb.knowledge_context as KnowledgeContext | undefined) ?? null
+  const r = (await invokeRenderer(IPCChannels.Email.CreateKnowledgeBase, {
+    name: kb.name,
+    description: kb.description ?? null,
+    accountId,
+    overrideKey: defaultOverrideKey("kb", kb.id, kb.override_key),
+    knowledgeContext: ctx,
+  })) as { id?: number }
+  if (r.id && doc.success) {
+    await invokeRenderer(IPCChannels.Email.SaveKnowledgeBaseDocument, {
+      knowledgeBaseId: r.id,
+      content: doc.content,
+    })
+  }
+  return r.id
+}
+
+export async function resetKnowledgeBaseAccountOverride(id: number): Promise<void> {
+  await invokeRenderer(IPCChannels.Email.DeleteKnowledgeBase, id)
+}
+
+export async function assignKnowledgeBaseToAccountSlot(
+  kb: KbRow,
+  accountId: number,
+  context: KnowledgeContext,
+): Promise<number | undefined> {
+  if (kb.account_id != null && kb.account_id === accountId && kb.knowledge_context === context) {
+    return kb.id
+  }
+  return createKnowledgeBaseAccountOverride(kb, accountId, context)
+}
