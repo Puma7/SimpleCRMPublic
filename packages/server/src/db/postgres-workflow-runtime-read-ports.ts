@@ -1168,7 +1168,7 @@ function mutationToKnowledgeBasePatch(
   values: WorkflowKnowledgeBaseMutationInput,
   account: EmailAccountReference | null | undefined,
 ): Partial<Updateable<WorkflowKnowledgeBasesTable>> {
-  return {
+  const patch: Partial<Updateable<WorkflowKnowledgeBasesTable>> = {
     ...(values.name === undefined ? {} : { name: values.name }),
     ...(values.description === undefined ? {} : { description: values.description }),
     ...(values.accountId === undefined ? {} : {
@@ -1178,6 +1178,11 @@ function mutationToKnowledgeBasePatch(
     ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
     ...(values.knowledgeContext === undefined ? {} : { knowledge_context: values.knowledgeContext }),
   };
+  // Match Electron updateKnowledgeBase: context-only patches refresh kb.<ctx> override_key.
+  if (values.knowledgeContext !== undefined && values.overrideKey === undefined) {
+    patch.override_key = values.knowledgeContext ? `kb.${values.knowledgeContext}` : null;
+  }
+  return patch;
 }
 
 function normalizeKnowledgeChunkMutation(

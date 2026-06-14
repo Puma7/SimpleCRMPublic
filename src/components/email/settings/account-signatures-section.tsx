@@ -49,7 +49,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
       const r = (await invokeRenderer(IPCChannels.Email.GetComposeSignature, {
         accountId,
       })) as { html: string | null }
-      setStatus(r.html?.trim() ? "empty_fallback" : "empty_fallback")
+      setStatus(r.html?.trim() ? "empty_fallback" : "unknown")
     } catch {
       setStatus("unknown")
     }

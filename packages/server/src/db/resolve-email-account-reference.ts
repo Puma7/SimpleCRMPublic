@@ -11,14 +11,17 @@ export async function resolveEmailAccountReference(
   workspaceId: string,
   accountId: number,
 ): Promise<EmailAccountReference | null> {
-  const row = await trx
+  const byId = await trx
     .selectFrom('email_accounts')
     .select(['id', 'source_sqlite_id'])
     .where('workspace_id', '=', workspaceId)
-    .where((eb) => eb.or([
-      eb('id', '=', accountId),
-      eb('source_sqlite_id', '=', accountId),
-    ]))
+    .where('id', '=', accountId)
+    .executeTakeFirst();
+  const row = byId ?? await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', accountId)
     .executeTakeFirst();
   if (!row) return null;
   return {

@@ -98,7 +98,11 @@ export async function rotateIdentityPassphrase(
   const privateKey = await openpgp.readPrivateKey({ armoredKey: privArmored });
   const decryptedKey = await openpgp.decryptKey({ privateKey, passphrase: currentPassphrase });
   const reencrypted = await openpgp.encryptKey({ privateKey: decryptedKey, passphrase: nextPassphrase });
-  await savePgpPrivateKey(identity.keytar_private_key_handle, reencrypted);
+  const armored =
+    typeof reencrypted === 'string'
+      ? reencrypted
+      : await reencrypted.armor();
+  await savePgpPrivateKey(identity.keytar_private_key_handle, armored);
 }
 
 export async function decryptMessageBody(
