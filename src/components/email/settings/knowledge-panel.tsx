@@ -15,8 +15,24 @@ import {
 } from "@/services/transport"
 import { hasLocalIpc, invokeIpc } from "../types"
 import { KnowledgeMarkdownEditor } from "./knowledge-markdown-editor"
+import {
+  AccountScopeToolbar,
+  ScopeBadge,
+  listPayloadForScope,
+  mutationScopeFields,
+  type AccountScopeValue,
+} from "./account-scope-toolbar"
+import { KNOWLEDGE_CONTEXT_LABELS, type KnowledgeContext } from "@shared/knowledge-context"
+import { Badge } from "@/components/ui/badge"
 
-type Kb = { id: number; name: string; description: string | null }
+type Kb = {
+  id: number
+  name: string
+  description: string | null
+  account_id?: number | null
+  override_key?: string | null
+  knowledge_context?: string | null
+}
 
 function safeMarkdownFileName(fileName: string, fallback: string): string {
   const base = (fileName.trim() || fallback)
@@ -55,16 +71,20 @@ export function KnowledgePanel() {
   const [dirty, setDirty] = useState(false)
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [scope, setScope] = useState<AccountScopeValue>("all")
 
   const loadList = useCallback(async () => {
     try {
-      const rows = await invokeRenderer(IPCChannels.Email.ListKnowledgeBases) as Kb[]
+      const rows = await invokeRenderer(
+        IPCChannels.Email.ListKnowledgeBases,
+        listPayloadForScope(scope),
+      ) as Kb[]
       setList(rows)
     } catch (e) {
       console.error(e)
       toast.error("Wissensbasen konnten nicht geladen werden.")
     }
-  }, [])
+  }, [scope])
 
   const loadDocument = useCallback(async (kbId: number) => {
     setLoadingDoc(true)
@@ -134,7 +154,10 @@ export function KnowledgePanel() {
     try {
       const r = (await invokeRenderer(
         IPCChannels.Email.CreateKnowledgeBase,
-        { name: newName.trim() },
+        {
+          name: newName.trim(),
+          ...mutationScopeFields(scope),
+        },
       )) as { success: boolean; id?: number; error?: string }
       if (r && "success" in r && r.success === false) {
         toast.error(r.error ?? "Anlegen fehlgeschlagen.")
@@ -289,6 +312,14 @@ export function KnowledgePanel() {
         </p>
       </div>
 
+      <AccountScopeToolbar
+        value={scope}
+        onChange={(next) => {
+          setScope(next)
+          setSelectedId(null)
+        }}
+      />
+
       <div className="flex gap-2">
         <Input
           placeholder="Neuer Bereich (z. B. Retouren, Versand)"
@@ -316,7 +347,15 @@ export function KnowledgePanel() {
                 className="min-w-0 flex-1 text-left font-medium"
                 onClick={() => setSelectedId(kb.id)}
               >
-                {kb.name}
+                <span className="flex flex-wrap items-center gap-2">
+                  {kb.name}
+                  <ScopeBadge row={kb} />
+                  {kb.knowledge_context && kb.knowledge_context in KNOWLEDGE_CONTEXT_LABELS ? (
+                    <Badge variant="outline" className="text-[10px]">
+                      {KNOWLEDGE_CONTEXT_LABELS[kb.knowledge_context as KnowledgeContext]}
+                    </Badge>
+                  ) : null}
+                </span>
               </button>
               <Button
                 type="button"

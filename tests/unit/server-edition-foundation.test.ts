@@ -331,6 +331,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0021_returns_schema',
   '0022_returns_portal_settings',
   '0023_account_scope_overrides',
+  '0024_settings_kb_context_imap',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

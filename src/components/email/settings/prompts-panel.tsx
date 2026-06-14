@@ -32,6 +32,13 @@ import {
   isMailComposeAuxDataRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import {
+  AccountScopeToolbar,
+  ScopeBadge,
+  listPayloadForScope,
+  mutationScopeFields,
+  type AccountScopeValue,
+} from "./account-scope-toolbar"
 
 type SortMode = "manual" | "label-asc" | "label-desc" | "newest"
 
@@ -68,6 +75,7 @@ export function PromptsPanel() {
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [scope, setScope] = useState<AccountScopeValue>("all")
 
   const loadProfiles = useCallback(async () => {
     try {
@@ -88,7 +96,10 @@ export function PromptsPanel() {
     setLoading(true)
     try {
       await loadProfiles()
-      const rows = await invokeRenderer(IPCChannels.Email.ListAiPrompts) as AiPrompt[]
+      const rows = await invokeRenderer(
+        IPCChannels.Email.ListAiPrompts,
+        listPayloadForScope(scope),
+      ) as AiPrompt[]
       setPrompts(rows)
       return rows
     } catch (e) {
@@ -98,7 +109,7 @@ export function PromptsPanel() {
     } finally {
       setLoading(false)
     }
-  }, [loadProfiles])
+  }, [loadProfiles, scope])
 
   useEffect(() => {
     void load()
@@ -179,6 +190,7 @@ export function PromptsPanel() {
         label: label.trim(),
         userTemplate,
         profileId,
+        ...mutationScopeFields(scope, selected.override_key),
       })
       setDirty(false)
       toast.success("Prompt gespeichert.")
@@ -197,7 +209,11 @@ export function PromptsPanel() {
     try {
       const r = await invokeRenderer(
         IPCChannels.Email.SaveAiPrompt,
-        { label: "Neuer Prompt", userTemplate: "{{text}}" },
+        {
+          label: "Neuer Prompt",
+          userTemplate: "{{text}}",
+          ...mutationScopeFields(scope),
+        },
       ) as { success: boolean; id?: number }
       const rows = await load()
       const id = r.id ?? rows?.[rows.length - 1]?.id
@@ -240,6 +256,7 @@ export function PromptsPanel() {
       const r = await invokeRenderer(IPCChannels.Email.SaveAiPrompt, {
         label: `${selected.label} (Kopie)`,
         userTemplate: userTemplate,
+        ...mutationScopeFields(scope, selected.override_key),
       }) as { id?: number }
       const rows = await load()
       const copy = rows?.find((p) => p.id === r.id)
@@ -287,6 +304,14 @@ export function PromptsPanel() {
           Composer.
         </p>
       </div>
+
+      <AccountScopeToolbar
+        value={scope}
+        onChange={(next) => {
+          setScope(next)
+          setSelectedId(null)
+        }}
+      />
 
       <div className="flex min-h-0 flex-1 gap-4 rounded-lg border">
         <div className="flex w-[min(100%,280px)] shrink-0 flex-col border-r bg-muted/20">
@@ -342,7 +367,10 @@ export function PromptsPanel() {
                             : "hover:bg-background/70",
                         )}
                       >
-                        <div className="truncate font-medium">{p.label}</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate font-medium">{p.label}</span>
+                          <ScopeBadge row={p} />
+                        </div>
                         <div className="truncate text-[11px] text-muted-foreground">
                           {snippet(p.user_template)}
                         </div>

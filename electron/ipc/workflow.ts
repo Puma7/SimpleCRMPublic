@@ -254,8 +254,21 @@ export function registerWorkflowHandlers(options: {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.CreateKnowledgeBase,
-      async (_event: IpcMainInvokeEvent, payload: { name: string; description?: string }) => {
-        const id = createKnowledgeBase(payload.name, payload.description ?? null);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          name: string;
+          description?: string | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
+          knowledgeContext?: string | null;
+        },
+      ) => {
+        const id = createKnowledgeBase(payload.name, payload.description ?? null, {
+          accountId: payload.accountId,
+          overrideKey: payload.overrideKey,
+          knowledgeContext: payload.knowledgeContext ?? null,
+        });
         return { success: true as const, id };
       },
       { logger },

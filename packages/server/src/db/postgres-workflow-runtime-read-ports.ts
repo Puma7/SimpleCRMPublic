@@ -161,6 +161,7 @@ const workflowKnowledgeBaseSelectColumns = [
   'account_source_sqlite_id',
   'account_id',
   'override_key',
+  'knowledge_context',
   'created_at',
   'updated_at',
 ] as const;
@@ -650,7 +651,8 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
               description: values.description ?? null,
               account_source_sqlite_id: account?.sourceSqliteId ?? null,
               account_id: account?.id ?? null,
-              override_key: values.overrideKey ?? null,
+              override_key: values.overrideKey ?? (values.knowledgeContext ? `kb.${values.knowledgeContext}` : null),
+              knowledge_context: values.knowledgeContext ?? null,
               source_row: serverApiSourceRow(),
               created_at: now,
               updated_at: now,
@@ -1151,6 +1153,10 @@ function normalizeKnowledgeBaseMutation(
     const value = normalized.overrideKey.trim();
     normalized.overrideKey = value || null;
   }
+  if (normalized.knowledgeContext !== undefined && normalized.knowledgeContext !== null) {
+    const value = String(normalized.knowledgeContext).trim();
+    normalized.knowledgeContext = value || null;
+  }
   return normalized;
 }
 
@@ -1166,6 +1172,7 @@ function mutationToKnowledgeBasePatch(
       account_source_sqlite_id: account?.sourceSqliteId ?? null,
     }),
     ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
+    ...(values.knowledgeContext === undefined ? {} : { knowledge_context: values.knowledgeContext }),
   };
 }
 
@@ -1528,6 +1535,7 @@ function mapWorkflowKnowledgeBaseRow(
     accountSourceSqliteId: nullableNumber(row.account_source_sqlite_id),
     accountId: nullableNumber(row.account_id),
     overrideKey: row.override_key,
+    knowledgeContext: row.knowledge_context,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
   };

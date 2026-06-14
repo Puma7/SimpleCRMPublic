@@ -2493,6 +2493,7 @@ function sanitizeEmailAccount(account: EmailAccountRecord): EmailAccountRecord {
     vacationSubject: account.vacationSubject,
     vacationBodyText: account.vacationBodyText,
     requestReadReceipt: account.requestReadReceipt,
+    imapDeleteOptIn: account.imapDeleteOptIn,
     defaultRemoteContentPolicy: account.defaultRemoteContentPolicy,
     respondToReadReceipts: account.respondToReadReceipts,
     imapPasswordConfigured: account.imapPasswordConfigured,
@@ -3678,6 +3679,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
     'vacationSubject',
     'vacationBodyText',
     'requestReadReceipt',
+    'imapDeleteOptIn',
   ]);
 
   for (const key of Object.keys(body)) {
@@ -3712,6 +3714,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
   assignParsed(values, errors, body, 'vacationSubject', (value) => normalizeNullableBodyText(value, 'vacationSubject', 500));
   assignParsed(values, errors, body, 'vacationBodyText', (value) => normalizeNullableBodyText(value, 'vacationBodyText', 10000));
   assignParsed(values, errors, body, 'requestReadReceipt', (value) => normalizeBooleanBody(value, 'requestReadReceipt'));
+  assignParsed(values, errors, body, 'imapDeleteOptIn', (value) => normalizeBooleanBody(value, 'imapDeleteOptIn'));
 
   if (errors.length > 0) {
     return {

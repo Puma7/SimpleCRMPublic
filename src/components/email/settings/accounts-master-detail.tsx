@@ -14,14 +14,17 @@ import { AccountForm } from "./account-form"
 import { SmtpPanel } from "./smtp-panel"
 import { OAuthAccountLinkPanel } from "./oauth-account-link-panel"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
+import { AccountSignaturesSection } from "./account-signatures-section"
+import { AccountKnowledgeSlots } from "./account-knowledge-slots"
 import { AccountsShippingHint } from "./accounts-shipping-hint"
 
-type AccountTab = "imap" | "smtp" | "oauth" | "ki"
+type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki"
 
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
   { id: "smtp", label: "SMTP" },
   { id: "oauth", label: "OAuth" },
+  { id: "signature", label: "Signatur" },
   { id: "ki", label: "KI" },
 ]
 
@@ -218,6 +221,7 @@ export function AccountsMasterDetailSettings() {
                       bumpAccountsRevision()
                       void load()
                     }}
+                    onSaved={(updated) => setEditAccount(updated)}
                     onCancelEdit={() => setEditAccount(null)}
                   />
                 ) : tab === "smtp" && selectedId != null ? (
@@ -227,9 +231,18 @@ export function AccountsMasterDetailSettings() {
                     accountId={selectedId}
                     emailAddress={selected?.email_address}
                   />
-                ) : tab === "ki" && selectedId != null ? (
+                ) : tab === "signature" && selectedId != null ? (
                   <div className="max-w-3xl">
+                    <AccountSignaturesSection embeddedAccountId={selectedId} />
+                  </div>
+                ) : tab === "ki" && selectedId != null ? (
+                  <div className="max-w-3xl space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      Kontospezifische KI-Antwortvorschläge. Globale Voreinstellungen (Profile,
+                      Modelle) unter Einstellungen → KI.
+                    </p>
                     <ReplySuggestionSettingsSection accountId={selectedId} />
+                    <AccountKnowledgeSlots accountId={selectedId} />
                   </div>
                 ) : null}
               </div>

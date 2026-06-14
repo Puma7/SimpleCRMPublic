@@ -115,7 +115,7 @@ export function PgpPanel() {
             </li>
           ))}
         </ul>
-        {serverClientMode && identities.some((i) => i.has_private_key) ? (
+        {identities.some((i) => i.has_private_key) ? (
           <div className="grid gap-2 border-t pt-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
             <div>
               <Label htmlFor="pgp-rotation-identity">Identitaet</Label>

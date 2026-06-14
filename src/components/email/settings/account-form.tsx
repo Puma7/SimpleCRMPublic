@@ -16,9 +16,11 @@ type Props = {
   onCreated: () => void
   editAccount?: EmailAccount | null
   onCancelEdit?: () => void
+  /** Called after a successful update with refreshed account row (keeps edit mode active). */
+  onSaved?: (account: EmailAccount) => void
 }
 
-export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
+export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: Props) {
   const serverClientMode = getRendererTransport().kind === "http"
   const vacationTestAvailable = serverClientMode || hasLocalIpc()
   const [protocol, setProtocol] = useState<"imap" | "pop3">("imap")
@@ -196,8 +198,10 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
+        const refreshed = (await invokeRenderer(IPCChannels.Email.ListAccounts)) as EmailAccount[]
+        const updated = refreshed.find((a) => a.id === editAccount.id)
+        if (updated) onSaved?.(updated)
         onCreated()
-        onCancelEdit?.()
       } else {
         const res = await invokeRenderer(IPCChannels.Email.CreateAccount, {
           displayName: displayName.trim(),

@@ -14,7 +14,6 @@ import {
   subscribeServerEvents,
 } from "@/services/transport"
 import type { TeamMember } from "../types"
-import { AccountSignaturesSection } from "./account-signatures-section"
 
 export function TeamPanel() {
   const [team, setTeam] = useState<TeamMember[]>([])
@@ -60,13 +59,12 @@ export function TeamPanel() {
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-base font-semibold">Team, Zuweisung &amp; Signaturen</h3>
+        <h3 className="text-base font-semibold">Team &amp; Zuweisung</h3>
         <p className="text-sm text-muted-foreground">
-          Mitglieder können Nachrichten zugewiesen bekommen. Unter „Signatur pro Konto“ legen Sie
-          Shop-spezifische Fußzeilen fest; die Team-Signatur dient als Fallback.
+          Mitglieder können Nachrichten zugewiesen bekommen. Die Team-Signatur dient als Fallback,
+          wenn für ein Postfach keine eigene Signatur hinterlegt ist (unter Konten → Signatur).
         </p>
       </div>
-      <AccountSignaturesSection />
       <div className="space-y-2">
         {team.length === 0 ? (
           <p className="text-sm text-muted-foreground">Noch keine Mitglieder.</p>

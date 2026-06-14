@@ -348,6 +348,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           vacationSubject?: string | null;
           vacationBodyText?: string | null;
           requestReadReceipt?: boolean;
+          imapDeleteOptIn?: boolean;
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
@@ -383,6 +384,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           vacationSubject: payload.vacationSubject,
           vacationBodyText: payload.vacationBodyText,
           requestReadReceipt: payload.requestReadReceipt,
+          imapDeleteOptIn: payload.imapDeleteOptIn,
           smtpHost: payload.smtpHost,
           smtpPort: payload.smtpPort ?? undefined,
           smtpTls: payload.smtpTls ?? undefined,
@@ -1517,12 +1519,25 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SaveCannedResponse,
-      async (_event: IpcMainInvokeEvent, payload: { id?: number; title: string; body: string }) => {
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id?: number;
+          title: string;
+          body: string;
+          accountId?: number | null;
+          overrideKey?: string | null;
+        },
+      ) => {
+        const scopeOpts = {
+          accountId: payload.accountId,
+          overrideKey: payload.overrideKey,
+        };
         if (payload.id) {
-          updateCannedResponse(payload.id, payload.title, payload.body);
+          updateCannedResponse(payload.id, payload.title, payload.body, scopeOpts);
           return { success: true as const, id: payload.id };
         }
-        const id = createCannedResponse(payload.title, payload.body);
+        const id = createCannedResponse(payload.title, payload.body, scopeOpts);
         return { success: true as const, id };
       },
       { logger },
@@ -1556,14 +1571,21 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           userTemplate: string;
           target?: string;
           profileId?: number | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
         },
       ) => {
+        const scopeFields = {
+          accountId: payload.accountId,
+          overrideKey: payload.overrideKey,
+        };
         if (payload.id) {
           updateAiPrompt(payload.id, {
             label: payload.label,
             userTemplate: payload.userTemplate,
             target: payload.target,
             profileId: payload.profileId,
+            ...scopeFields,
           });
           return { success: true as const, id: payload.id };
         }
@@ -1572,6 +1594,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           userTemplate: payload.userTemplate,
           target: payload.target,
           profileId: payload.profileId,
+          ...scopeFields,
         });
         return { success: true as const, id };
       },

@@ -77,6 +77,29 @@ export async function generatePgpIdentity(
   return { fingerprint: fp };
 }
 
+export async function rotateIdentityPassphrase(
+  identityId: number,
+  currentPassphrase: string,
+  nextPassphrase: string,
+  userId: string = LOCAL_OWNER_USER_ID,
+): Promise<void> {
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const identity = db
+    .prepare(
+      `SELECT keytar_private_key_handle FROM ${PGP_IDENTITIES_TABLE}
+       WHERE id = ? AND user_id = ? AND has_private_key = 1`,
+    )
+    .get(identityId, userId) as { keytar_private_key_handle: string | null } | undefined;
+  if (!identity?.keytar_private_key_handle) throw new Error('Identität nicht gefunden');
+  const privArmored = await getPgpPrivateKey(identity.keytar_private_key_handle);
+  if (!privArmored) throw new Error('Privater Schlüssel nicht in Keytar');
+  const privateKey = await openpgp.readPrivateKey({ armoredKey: privArmored });
+  const decryptedKey = await openpgp.decryptKey({ privateKey, passphrase: currentPassphrase });
+  const reencrypted = await openpgp.encryptKey({ privateKey: decryptedKey, passphrase: nextPassphrase });
+  await savePgpPrivateKey(identity.keytar_private_key_handle, reencrypted);
+}
+
 export async function decryptMessageBody(
   messageId: number,
   passphrase: string,

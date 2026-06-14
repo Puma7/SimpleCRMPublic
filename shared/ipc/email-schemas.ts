@@ -18,6 +18,10 @@ const failResult = z.object({ success: z.literal(false), error: z.string().optio
 const standardResult = z.union([successResult, failResult]);
 
 const mailAccountScopeSchema = z.union([z.literal('all'), positiveInt]);
+const accountOverrideMutationFields = {
+  accountId: z.number().int().positive().nullable().optional(),
+  overrideKey: z.string().max(120).nullable().optional(),
+};
 const accountOverrideScopePayloadSchema = z
   .union([
     mailAccountScopeSchema,
@@ -114,6 +118,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         vacationSubject: z.string().nullable().optional(),
         vacationBodyText: z.string().nullable().optional(),
         requestReadReceipt: z.boolean().optional(),
+        imapDeleteOptIn: z.boolean().optional(),
       })
       .passthrough(),
     result: standardResult,
@@ -972,6 +977,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       id: z.number().int().positive().optional(),
       title: nonEmptyString,
       body: z.string(),
+      ...accountOverrideMutationFields,
     }),
     result: standardResult,
   });
@@ -986,6 +992,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       userTemplate: z.string(),
       target: z.string().optional(),
       profileId: z.number().int().positive().nullable().optional(),
+      ...accountOverrideMutationFields,
     }),
     result: standardResult,
   });
@@ -1278,7 +1285,12 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.ListKnowledgeBases, { payload: accountOverrideScopePayloadSchema, result: recordArray });
   set(IPCChannels.Email.CreateKnowledgeBase, {
-    payload: z.object({ name: nonEmptyString }),
+    payload: z.object({
+      name: nonEmptyString,
+      description: z.string().nullable().optional(),
+      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      ...accountOverrideMutationFields,
+    }),
     result: z.union([
       z.object({ success: z.literal(true), id: positiveInt }),
       failResult,

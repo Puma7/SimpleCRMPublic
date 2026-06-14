@@ -317,19 +317,14 @@ export function AccountMailSettingsPanel() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Account-Overrides (in Vorbereitung)</CardTitle>
+              <CardTitle className="text-base">Overrides in den Ressourcen-Tabs</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-muted-foreground">
               <p>
-                Die Datenmodelle für kontospezifische Textbausteine, KI-Prompts, Wissensbasis und
-                Automationen sind vorbereitet. Die Editor-Oberflächen in den jeweiligen Tabs zeigen
-                aktuell noch die globalen Einträge; Konto-/Override-Key-Felder werden dort erst in
-                einem eigenen UI-Schritt freigeschaltet.
-              </p>
-              <p>
-                In der gemeinsamen Inbox (<strong>Alle Konten</strong>) werden weiterhin globale
-                Einträge verwendet. Kontospezifische Overrides greifen in Backend/Runtime-Pfaden,
-                sobald ein einzelnes Postfach als Scope übergeben wird.
+                Kontospezifische Textbausteine, KI-Prompts und Wissensbasen verwalten Sie in den
+                jeweiligen Tabs mit dem Filter <strong>Gültigkeitsbereich</strong>. Unter{" "}
+                <strong>Konten → KI</strong> weisen Sie Wissens-Kontexte (eingehend/ausgehend/allgemein)
+                pro Postfach zu.
               </p>
             </CardContent>
           </Card>

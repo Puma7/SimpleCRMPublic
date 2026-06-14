@@ -5857,6 +5857,7 @@ describe('renderer transport', () => {
       description: null,
       account_id: null,
       override_key: null,
+      knowledge_context: null,
     }]);
     await expect(transport.invoke(
       IPCChannels.Email.CreateKnowledgeBase,

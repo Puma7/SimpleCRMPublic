@@ -512,6 +512,7 @@ export type EmailAccountsTable = {
   vacation_subject: string | null;
   vacation_body_text: string | null;
   request_read_receipt: boolean;
+  imap_delete_opt_in: boolean;
   default_remote_content_policy: string;
   respond_to_read_receipts: string;
   read_receipt_trusted_domains: string | null;
@@ -897,6 +898,7 @@ export type WorkflowKnowledgeBasesTable = SourceImportedTable & {
   account_source_sqlite_id: number | null;
   account_id: number | null;
   override_key: string | null;
+  knowledge_context: string | null;
   created_at: TimestampColumn | null;
 };
 

@@ -707,6 +707,7 @@ export const createWorkflowKnowledgeBasesTable = `
     description TEXT,
     account_id INTEGER,
     override_key TEXT,
+    knowledge_context TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     UNIQUE(account_id, override_key)

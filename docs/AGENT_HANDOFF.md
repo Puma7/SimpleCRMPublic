@@ -1,6 +1,6 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-06-01 (main: Sprint #76, Restore/IMAP #77, CRM-Doku #78)  
+**Last updated:** 2026-06-14 (Settings-Frontend-Backlog: Konten-IA, Scoped Overrides, KB-Kontext)  
 **Integration branch:** `main`  
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 
@@ -69,7 +69,9 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 
 | Item | Doc |
 |------|-----|
-| Restore wizard (auto ZIP → userData) | `MAIL_BETA_PHASE3_PLAN.md` P3-4c |
+| Restore wizard (auto ZIP → userData) | ✅ `MAIL_BETA_PHASE3_PLAN.md` P3-4c |
+| Multi-Folder IMAP (Sent/Archive/Spam) | ✅ Konten → SMTP |
+| Settings: Konto-Overrides UI (Prompts/Canned/KB) | ✅ siehe `BACKLOG.md` |
 | IMAP multi-folder sync | `EMAIL_ROADMAP.md` |
 | Embeddings RAG | `WORKFLOW_VISION.md` (vision, not all 🔲 = todo) |
 
