@@ -6,7 +6,7 @@ import {
   type ReplySuggestionSettings,
 } from '../../shared/reply-suggestion-settings';
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
-import { getMessageCategoryId } from './email-crm-store';
+import { listMessageCategoryAssignments } from './email-crm-store';
 import { getEmailMessageById } from './email-store';
 import type { EmailMessageRow } from './email-store';
 
@@ -119,9 +119,14 @@ export function messageMatchesReplySuggestionCategories(
 ): boolean {
   if (settings.categoryMode !== 'only_listed') return true;
   if (settings.categoryIds.length === 0) return false;
-  const categoryId = getMessageCategoryId(messageId);
-  if (categoryId == null) return false;
-  return settings.categoryIds.includes(categoryId);
+  // Messages can now sit in MULTIPLE categories (M:N). The gate must match if
+  // ANY assigned category is in the allowlist — checking only the first/legacy
+  // single category would falsely skip a message that is in both an unlisted
+  // and a listed category.
+  const assigned = listMessageCategoryAssignments(messageId);
+  if (assigned.length === 0) return false;
+  const allow = new Set(settings.categoryIds);
+  return assigned.some((id) => allow.has(id));
 }
 
 /** Whether a background ensure should run for this trigger (not manual / force). */
