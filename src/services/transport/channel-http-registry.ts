@@ -4,6 +4,7 @@ import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
 import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import { RendererTransportError } from "./renderer-transport"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -833,6 +834,15 @@ type AutomationApiKeyRecord = {
 }
 
 const DEFAULT_LIST_LIMIT = 100
+// Per-message category assignments are loaded for every check-then-act helper
+// (Add/Remove/Set). The full set MUST be visible — an unseen row leads to a
+// silent "removed: false" or a duplicate-POST 409. The server caps list
+// limits at 100 (see normalizeLimit in postgres-mail-metadata-read-ports), so
+// we stay at DEFAULT_LIST_LIMIT and use the standard cursor-pagination helper
+// (collectPagedListItems) to assemble the complete list across pages. In the
+// realistic common case (<100 categories per message) that's still a single
+// request.
+const MESSAGE_CATEGORY_FETCH_LIMIT = DEFAULT_LIST_LIMIT
 
 const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Sync.GetStatus, () => ({
@@ -3227,6 +3237,170 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  // List all categories a message is in. Single source of truth for the
+  // category-chip UI on a row + the multi-select dialog. Uses cursor pagination
+  // so the full set is returned even past the server's per-page cap (100).
+  [IPCChannels.Email.ListMessageCategories, ([messageId]) => {
+    const id = positiveId(messageId, "email message id")
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${id}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        collectPagedListItems<EmailMessageCategoryRecord>(body, context, request),
+    }
+  }],
+  // Add a single category to a message. Idempotent + race-safe: paginate the
+  // current assignments so the pre-check sees them all, then POST; if a
+  // concurrent request (another tab, a workflow node, a fast second drag)
+  // raced us between GET and POST and the server replies 409, map it to
+  // { added: false, alreadyAssigned: true } — same payload the pre-check
+  // produces, so the UI shows the same dezenter toast in either path.
+  [IPCChannels.Email.AddMessageCategory, ([payload]) => {
+    const input = objectPayload(payload, "email add-message-category payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const categoryId = positiveId(input.categoryId, "email category id")
+    const listRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
+      transform: async (body, context) => {
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        if (existing.some((r) => r.categoryId === categoryId)) {
+          return { added: false, alreadyAssigned: true }
+        }
+        try {
+          const created = await context.fetchJson({
+            method: "POST",
+            path: `/api/v1/email/messages/${messageId}/categories`,
+            body: { categoryId },
+          })
+          return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+        } catch (error) {
+          if (isAlreadyAssignedConflict(error)) {
+            return { added: false, alreadyAssigned: true }
+          }
+          throw error
+        }
+      },
+    }
+  }],
+  // Remove one category assignment by message + category (UI doesn't track the
+  // junction-row id). Paginate the lookup so we don't miss the target row,
+  // then DELETE that row's id. Idempotent on a concurrent delete: if another
+  // client removed the row between our GET and our DELETE the server replies
+  // 404 — swallow it and report removed:false, exactly like the pre-GET miss
+  // path. The UI handles both as "war bereits nicht mehr zugewiesen".
+  [IPCChannels.Email.RemoveMessageCategory, ([payload]) => {
+    const input = objectPayload(payload, "email remove-message-category payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const categoryId = positiveId(input.categoryId, "email category id")
+    const listRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
+      transform: async (body, context) => {
+        const all = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        const assignment = all.find((record) => record.categoryId === categoryId)
+        if (!assignment) return { removed: false }
+        try {
+          await context.fetchJson({
+            method: "DELETE",
+            path: `/api/v1/email/message-categories/${positiveId(assignment.id, "email message category id")}`,
+          })
+          return { removed: true }
+        } catch (error) {
+          if (isNotFound(error)) return { removed: false }
+          throw error
+        }
+      },
+    }
+  }],
+  // Replace the message's category set with exactly the given ids. Computes
+  // the diff against the current assignments so unchanged rows are not touched
+  // (no spurious audit / event noise). Same TOCTOU 409 race as AddMessageCategory
+  // is swallowed per-row, since "set to {A,B,C}" doesn't care whether B was
+  // added by us or by a concurrent request a moment ago.
+  //
+  // Reserved for the multi-select dialog that will replace the single "+ Kategorie
+  // hinzufügen" dropdown in the metadata panel. Already exercised by the
+  // renderer-transport test so the future UI wiring stays cheap and safe.
+  [IPCChannels.Email.SetMessageCategories, ([payload]) => {
+    const input = objectPayload(payload, "email set-message-categories payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const rawIds = Array.isArray(input.categoryIds) ? input.categoryIds : []
+    const targetIds = new Set(rawIds.map((id) => positiveId(id, "email category id")))
+    const listRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
+      transform: async (body, context) => {
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        const existingIds = new Set<number>(
+          existing
+            .map((r) => r.categoryId)
+            .filter((id): id is number => typeof id === "number"),
+        )
+        // POST additions BEFORE DELETing removals: if any single POST fails
+        // (e.g. category was deleted between read and write, server rate-limits
+        // mid-batch), the user keeps the categories they had. The opposite
+        // order would silently drop their existing categorisation on a partial
+        // failure.
+        for (const id of targetIds) {
+          if (existingIds.has(id)) continue
+          try {
+            await context.fetchJson({
+              method: "POST",
+              path: `/api/v1/email/messages/${messageId}/categories`,
+              body: { categoryId: id },
+            })
+          } catch (error) {
+            // Concurrent create — the row already exists, which is exactly
+            // what we wanted to achieve. Don't fail the whole set on it.
+            if (!isAlreadyAssignedConflict(error)) throw error
+          }
+        }
+        for (const record of existing) {
+          if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
+          try {
+            await context.fetchJson({
+              method: "DELETE",
+              path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
+            })
+          } catch (error) {
+            // Concurrent delete — desired end-state already in place. Don't
+            // fail the whole set on it.
+            if (!isNotFound(error)) throw error
+          }
+        }
+        return { success: true }
+      },
+    }
+  }],
   [IPCChannels.Email.ListInternalNotes, ([messageId]) => ({
     method: "GET",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/internal-notes`,
@@ -3880,6 +4054,16 @@ function listItems<T>(body: unknown): T[] {
   if (Array.isArray(data)) return data
   if (isRecord(data) && Array.isArray(data.items)) return data.items as T[]
   return []
+}
+
+/** True for an HTTP 409 thrown by fetchJson when posting a duplicate junction row. */
+function isAlreadyAssignedConflict(error: unknown): boolean {
+  return error instanceof RendererTransportError && error.status === 409
+}
+
+/** True for an HTTP 404 — the target row no longer exists (concurrent delete). */
+function isNotFound(error: unknown): boolean {
+  return error instanceof RendererTransportError && error.status === 404
 }
 
 function listResult<T>(body: unknown): ListResult<T> {

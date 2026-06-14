@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Copy, Pencil, Trash2, X } from "lucide-react"
@@ -125,28 +125,60 @@ export function MessageMetadataPanel({
   refreshCurrentMessage,
   fillWidth = false,
 }: Props) {
-  const { selectedMessage, selectedAccountId, setSelectedMessage } = useMailWorkspace()
+  const {
+    selectedMessage,
+    selectedAccountId,
+    setSelectedMessage,
+    categoryAssignmentRevision,
+    bumpCategoryAssignmentRevision,
+  } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
   const [editingNoteBody, setEditingNoteBody] = useState("")
   const [newTag, setNewTag] = useState("")
-  const [messageCategoryId, setMessageCategoryId] = useState<number | null>(null)
+  // All categories a message is in (M:N). The legacy single-category select
+  // is replaced by chips + a multi-select dropdown so a message can sit in any
+  // number of categories at once.
+  const [messageCategoryIds, setMessageCategoryIds] = useState<number[]>([])
+  const [categoryBusy, setCategoryBusy] = useState(false)
   const [conversation, setConversation] = useState<EmailMessage[]>([])
   const [security, setSecurity] = useState<MessageSecurityState | null>(null)
   const [securityLoading, setSecurityLoading] = useState(false)
 
+  const reloadMessageCategoryIds = useCallback(async (messageId: number) => {
+    try {
+      const rows = (await invokeRenderer(
+        IPCChannels.Email.ListMessageCategories,
+        messageId,
+      )) as Array<{ categoryId: number | null }>
+      setMessageCategoryIds(
+        rows
+          .map((r) => r.categoryId)
+          .filter((id): id is number => typeof id === "number"),
+      )
+    } catch {
+      setMessageCategoryIds([])
+    }
+  }, [])
+
+  // Re-fetch chips on message switch AND whenever a sibling component (sidebar
+  // drag-drop, bulk-drop in the list, useEmailMessages.assignMessageCategory)
+  // bumps `categoryAssignmentRevision` — otherwise chips would show stale data
+  // until the user clicks back on the row.
   useEffect(() => {
     if (!selectedMessage) {
-      setMessageCategoryId(null)
+      setMessageCategoryIds([])
       return
     }
-    void invokeRenderer(
-      IPCChannels.Email.GetMessageCategory,
-      selectedMessage.id,
-    )
-      .then((r) => setMessageCategoryId((r as { categoryId: number | null }).categoryId))
-      .catch(() => setMessageCategoryId(null))
-  }, [selectedMessage?.id])
+    void reloadMessageCategoryIds(selectedMessage.id)
+  }, [selectedMessage?.id, reloadMessageCategoryIds, categoryAssignmentRevision])
+
+  // Categories the user has NOT yet assigned to this message — i.e. the
+  // "+ Kategorie hinzufügen" select only shows what's actually addable.
+  const availableCategoriesForAdd = useMemo(() => {
+    const assigned = new Set(messageCategoryIds)
+    return categories.filter((c) => !assigned.has(c.id))
+  }, [categories, messageCategoryIds])
 
   useEffect(() => {
     if (!selectedMessage) {
@@ -558,37 +590,97 @@ export function MessageMetadataPanel({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-xs">Kategorie</Label>
-            <Select
-              value={messageCategoryId != null ? String(messageCategoryId) : "none"}
-              onValueChange={async (v) => {
-                const categoryId = v === "none" ? null : parseInt(v, 10)
-                await invokeRenderer(IPCChannels.Email.SetMessageCategory, {
-                  messageId: selectedMessage.id,
-                  categoryId: Number.isFinite(categoryId) ? categoryId : null,
-                })
-                setMessageCategoryId(categoryId)
-                toast.success(
-                  categoryId == null
-                    ? "Kategorie entfernt"
-                    : `Kategorie: ${categoryPathLabel(categories, categoryId)}`,
-                )
-              }}
-            >
-              <SelectTrigger className="h-9">
-                <SelectValue placeholder="Kategorie" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">— keine —</SelectItem>
-                {categories.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>
-                    {categoryPathLabel(categories, c.id)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label className="text-xs">Kategorien</Label>
+            <div className="flex flex-wrap gap-1.5" data-testid="message-category-chips">
+              {messageCategoryIds.length === 0 ? (
+                <span className="text-[11px] text-muted-foreground">— keine zugewiesen —</span>
+              ) : (
+                messageCategoryIds.map((id) => (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-[11px]"
+                  >
+                    {categoryPathLabel(categories, id)}
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      disabled={categoryBusy}
+                      aria-label="Kategorie entfernen"
+                      onClick={async () => {
+                        setCategoryBusy(true)
+                        try {
+                          const r = (await invokeRenderer(IPCChannels.Email.RemoveMessageCategory, {
+                            messageId: selectedMessage.id,
+                            categoryId: id,
+                          })) as { removed?: boolean }
+                          if (r?.removed) {
+                            await reloadMessageCategoryIds(selectedMessage.id)
+                            bumpCategoryAssignmentRevision()
+                            toast.success("Kategorie entfernt")
+                          } else {
+                            // Server didn't find the assignment — resync the UI
+                            // with reality so a stale chip can't sit there silently.
+                            await reloadMessageCategoryIds(selectedMessage.id)
+                            bumpCategoryAssignmentRevision()
+                            toast.info("Kategorie war bereits nicht mehr zugewiesen")
+                          }
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "Entfernen fehlgeschlagen")
+                        } finally {
+                          setCategoryBusy(false)
+                        }
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Select
+                value="none"
+                onValueChange={async (v) => {
+                  if (v === "none") return
+                  const categoryId = parseInt(v, 10)
+                  if (!Number.isFinite(categoryId)) return
+                  setCategoryBusy(true)
+                  try {
+                    const r = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
+                      messageId: selectedMessage.id,
+                      categoryId,
+                    })) as { added?: boolean; alreadyAssigned?: boolean }
+                    await reloadMessageCategoryIds(selectedMessage.id)
+                    bumpCategoryAssignmentRevision()
+                    if (r?.added) {
+                      toast.success(`Kategorie hinzugefügt: ${categoryPathLabel(categories, categoryId)}`)
+                    } else if (r?.alreadyAssigned) {
+                      toast.info(`Bereits in „${categoryPathLabel(categories, categoryId)}"`)
+                    }
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Hinzufügen fehlgeschlagen")
+                  } finally {
+                    setCategoryBusy(false)
+                  }
+                }}
+                disabled={categoryBusy}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="+ Kategorie hinzufügen" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— wählen —</SelectItem>
+                  {availableCategoriesForAdd.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {categoryPathLabel(categories, c.id)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <p className="text-[10px] text-muted-foreground">
-              Neue Kategorien: Seitenleiste → Kategorien → Verwalten.
+              Tipp: Mails per Drag-Drop in eine Kategorie (Sidebar) fügen die Kategorie hinzu —
+              ohne andere zu entfernen.
             </p>
           </div>
 

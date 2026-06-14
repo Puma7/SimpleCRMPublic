@@ -6640,6 +6640,191 @@ describe('renderer transport', () => {
     );
   });
 
+  test('email category multi-assignment: list / add (idempotent) / remove / set', async () => {
+    const fetchImpl = jest
+      .fn()
+      // ListMessageCategories
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      // AddMessageCategory: not yet assigned (62 NOT yet present) → list, then POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 21, messageId: 11, categoryId: 61 }], nextCursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { id: 22, messageId: 11, categoryId: 62 },
+      }, 201))
+      // AddMessageCategory: already assigned (62 already present) → list only, no POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      // RemoveMessageCategory: list to find the junction row id, then DELETE
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }))
+      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, POST 63, DELETE 22.
+      // POSTs go BEFORE DELETEs so a mid-batch failure can't strand the message
+      // with fewer categories than the user started with.
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { id: 23, messageId: 11, categoryId: 63 },
+      }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    // 1. list
+    await expect(transport.invoke(IPCChannels.Email.ListMessageCategories, 11)).resolves.toEqual([
+      { id: 21, messageId: 11, categoryId: 61 },
+      { id: 22, messageId: 11, categoryId: 62 },
+    ]);
+
+    // 2. add new category
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: true, record: { id: 22, messageId: 11, categoryId: 62 } });
+
+    // 3. add already-assigned: idempotent, no POST issued
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // 4. remove
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: true });
+
+    // 5. set [61, 63] over current {61, 62} → DELETE 22, POST 63 (keep 21 alone)
+    await expect(transport.invoke(IPCChannels.Email.SetMessageCategories, {
+      messageId: 11,
+      categoryIds: [61, 63],
+    })).resolves.toEqual({ success: true });
+
+    // The 3rd Add call (already-assigned) must NOT have triggered a POST.
+    const postsToCategories = fetchImpl.mock.calls
+      .map((args: unknown[]) => args[1] as { method?: string } | undefined)
+      .filter((init) => init?.method === 'POST').length;
+    // Expected: 2 POSTs total (add-new + set-add 63). Set-diff keeps 61 unchanged.
+    expect(postsToCategories).toBe(2);
+
+    // The check-then-act helpers paginate with the server-respected cap of
+    // 100 — anything higher is rejected by normalizeLimit on the server. The
+    // full set is assembled across pages by collectPagedListItems, so the
+    // helpers see every assignment regardless of count.
+    const categoryListGetUrls = fetchImpl.mock.calls
+      .filter((args: unknown[]) => ((args[1] as { method?: string } | undefined)?.method ?? 'GET') === 'GET')
+      .map((args: unknown[]) => String(args[0]))
+      .filter((url) => /\/messages\/11\/categories(\?|$)/.test(url));
+    expect(categoryListGetUrls.length).toBeGreaterThan(0);
+    for (const url of categoryListGetUrls) {
+      expect(url).toMatch(/limit=100(\b|&)/);
+      expect(url).not.toMatch(/limit=1000/);
+    }
+  });
+
+  test('AddMessageCategory swallows a TOCTOU 409 from the server as alreadyAssigned', async () => {
+    // Race scenario: GET shows the category is not yet assigned, but between
+    // our GET and our POST a concurrent request (another tab, a workflow node,
+    // a quick second drag) creates the same assignment. The server then 409s
+    // our POST. The transform must map that to { alreadyAssigned: true } so
+    // the UI shows the same dezenter toast instead of a red error.
+    const fetchImpl = jest
+      .fn()
+      // 1) GET /messages/11/categories -> empty (the race hasn't happened yet locally)
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      // 2) POST /messages/11/categories -> 409 (the concurrent insert beat us)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_conflict', message: 'Email category ist dieser Message bereits zugeordnet' } },
+        409,
+      ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 99,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // Both the GET and the POST were issued (proving the swallow happens at
+    // the right layer — not by pre-empting the POST).
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'POST']);
+  });
+
+  test('RemoveMessageCategory swallows a concurrent DELETE 404 as removed:false', async () => {
+    // Race: GET sees the assignment, but between GET and DELETE another client
+    // removes it. The server then 404s our DELETE. Without the swallow the
+    // metadata panel would show a red error and leave the (already-gone) chip
+    // sitting there; with it the channel reports removed:false and the UI
+    // resyncs via the existing reload-on-not-removed path.
+    const fetchImpl = jest
+      .fn()
+      // 1) GET /messages/11/categories -> assignment exists
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 22, messageId: 11, categoryId: 62 }], nextCursor: null },
+      }))
+      // 2) DELETE /message-categories/22 -> 404 (concurrent delete won the race)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_not_found', message: 'Email message category nicht gefunden' } },
+        404,
+      ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'DELETE']);
+  });
+
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
     const fetchImpl = jest
       .fn()
