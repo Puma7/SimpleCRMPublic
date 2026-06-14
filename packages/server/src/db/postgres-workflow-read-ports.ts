@@ -361,8 +361,6 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
               eb('account_id', 'is', null),
               eb('account_id', '=', input.accountId!),
             ]));
-          } else {
-            query = query.where('account_id', 'is', null);
           }
           const search = input.search?.trim();
           if (search) {

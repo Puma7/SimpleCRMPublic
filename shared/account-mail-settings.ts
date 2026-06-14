@@ -7,6 +7,13 @@ function normalizeTicketPrefix(prefix?: string | null): string {
   return normalized || 'SCR';
 }
 
+function appendAccountSuffixToPrefix(prefix: string, accountId: number): string {
+  const suffix = String(Math.max(1, Math.floor(accountId))).replace(/[^0-9]/g, '') || '1';
+  const base = normalizeTicketPrefix(prefix);
+  const baseLength = Math.max(1, 12 - suffix.length);
+  return normalizeTicketPrefix(`${base.slice(0, baseLength)}${suffix}`);
+}
+
 export type AccountMailSettings = {
   accountId: number;
   /** Buchstabenkombi für Ticket-Codes, z. B. SHOPA. */
@@ -30,7 +37,7 @@ export function formatTicketSequence(sequence: number, padding: number): string 
 
 export function defaultThreadNamespace(accountId: number, ticketPrefix?: string | null): string {
   const prefix = normalizeTicketPrefix(ticketPrefix);
-  return prefix === 'SCR' ? `account-${accountId}` : prefix.toLowerCase();
+  return `${prefix.toLowerCase()}-${accountId}`;
 }
 
 export function deriveDefaultTicketPrefix(input: {
@@ -51,7 +58,7 @@ export function buildDefaultAccountMailSettings(account: {
   display_name?: string | null;
   email_address?: string | null;
 }): AccountMailSettings {
-  const ticketPrefix = deriveDefaultTicketPrefix(account);
+  const ticketPrefix = appendAccountSuffixToPrefix(deriveDefaultTicketPrefix(account), account.id);
   return {
     accountId: account.id,
     ticketPrefix,

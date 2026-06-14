@@ -12,10 +12,10 @@ describe('account mail settings', () => {
       display_name: 'Shop A',
       email_address: 'support@shop-a.example',
     });
-    expect(settings.ticketPrefix).toBe('SUPPORT');
+    expect(settings.ticketPrefix).toBe('SUPPORT3');
     expect(settings.ticketNextNumber).toBe(1);
     expect(settings.ticketNumberPadding).toBe(6);
-    expect(settings.threadNamespace).toBe('support');
+    expect(settings.threadNamespace).toBe('support3-3');
   });
 
   test('normalizeAccountMailSettings clamps padding and formats preview', () => {

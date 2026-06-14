@@ -409,9 +409,13 @@ export function createAiPrompt(input: {
   return Number(r.lastInsertRowid);
 }
 
-/** Swap sort_order with neighbour (Composer dropdown order). */
+/** Swap sort_order with neighbour inside the prompt's visible account scope. */
 export function moveAiPrompt(id: number, direction: 'up' | 'down'): boolean {
-  const rows = listAiPrompts();
+  const allRows = listAiPrompts();
+  const current = allRows.find((r) => r.id === id);
+  if (!current) return false;
+  const scope: AccountOverrideScope = current.account_id == null ? 'all' : current.account_id;
+  const rows = listAiPrompts(scope);
   const idx = rows.findIndex((r) => r.id === id);
   if (idx < 0) return false;
   const swapIdx = direction === 'up' ? idx - 1 : idx + 1;

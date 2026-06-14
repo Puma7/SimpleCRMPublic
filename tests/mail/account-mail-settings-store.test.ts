@@ -28,16 +28,16 @@ describe('account-mail-settings-store', () => {
       .mockReturnValueOnce(undefined);
 
     const code = allocateNextTicketCodeForAccount(1);
-    expect(code).toBe('SHOP-000001');
+    expect(code).toBe('SHOP1-000001');
     expect(db.transaction).toHaveBeenCalledTimes(1);
     const tx = db.transaction.mock.results[0]?.value as (() => string) & { immediate?: () => string };
     expect(tx.immediate).toBeDefined();
     expect(stmt.run).toHaveBeenCalledWith(
       1,
-      'SHOP',
+      'SHOP1',
       2,
       6,
-      'shop',
+      'shop1-1',
       expect.any(String),
       expect.any(String),
     );

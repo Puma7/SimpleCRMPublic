@@ -1202,8 +1202,6 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
               eb('account_id', 'is', null),
               eb('account_id', '=', input.accountId!),
             ]));
-          } else {
-            query = query.where('account_id', 'is', null);
           }
           const search = input.search?.trim();
           if (search) {

@@ -81,6 +81,19 @@ export function setAccountMailSettings(
     );
   }
 
+  const namespaceConflictStmt = getDb().prepare(
+    `SELECT account_id FROM ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}
+       WHERE thread_namespace = ? AND account_id != ?`,
+  );
+  const namespaceConflict = typeof namespaceConflictStmt.get === 'function'
+    ? namespaceConflictStmt.get(next.threadNamespace, accountId) as { account_id: number } | undefined
+    : undefined;
+  if (namespaceConflict) {
+    throw new Error(
+      `Der Thread-Namespace „${next.threadNamespace}“ wird bereits von einem anderen Konto verwendet.`,
+    );
+  }
+
   const now = new Date().toISOString();
   const writeStmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}

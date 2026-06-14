@@ -3470,13 +3470,17 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       query: { limit: DEFAULT_LIST_LIMIT },
       transform: async (body, context) => {
         const prompts = listItems<AiPromptRecord>(body)
-        const idx = prompts.findIndex((prompt) => prompt.id === id)
+        const currentPrompt = prompts.find((prompt) => prompt.id === id)
+        if (!currentPrompt) return { success: false, error: "Verschieben nicht möglich." }
+        const currentAccountId = currentPrompt.accountId ?? null
+        const visiblePrompts = prompts.filter((prompt) => (prompt.accountId ?? null) === currentAccountId)
+        const idx = visiblePrompts.findIndex((prompt) => prompt.id === id)
         const swapIdx = direction === "up" ? idx - 1 : idx + 1
-        if (idx < 0 || swapIdx < 0 || swapIdx >= prompts.length) {
+        if (idx < 0 || swapIdx < 0 || swapIdx >= visiblePrompts.length) {
           return { success: false, error: "Verschieben nicht möglich." }
         }
-        const current = prompts[idx]!
-        const other = prompts[swapIdx]!
+        const current = visiblePrompts[idx]!
+        const other = visiblePrompts[swapIdx]!
         await context.fetchJson({
           method: "POST",
           path: "/api/v1/ai/prompts/reorder",

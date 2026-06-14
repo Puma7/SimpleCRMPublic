@@ -1819,15 +1819,18 @@ function normalizeServerTicketPrefix(prefix?: string | null): string {
 function defaultServerTicketPrefix(account: ComposeSendAccount): string {
   const local = account.emailAddress.split('@')[0] ?? '';
   const fromEmail = local.replace(/[^a-z0-9]/gi, '').slice(0, 10);
-  if (fromEmail.length >= 2) return normalizeServerTicketPrefix(fromEmail);
-  const fromName = account.displayName.replace(/[^a-z0-9]/gi, '').slice(0, 10);
-  if (fromName.length >= 2) return normalizeServerTicketPrefix(fromName);
-  return normalizeServerTicketPrefix(`A${account.id}`);
+  const base = fromEmail.length >= 2
+    ? fromEmail
+    : account.displayName.replace(/[^a-z0-9]/gi, '').slice(0, 10);
+  const normalizedBase = normalizeServerTicketPrefix(base.length >= 2 ? base : `A${account.id}`);
+  const suffix = String(account.id);
+  const baseLength = Math.max(1, 12 - suffix.length);
+  return normalizeServerTicketPrefix(`${normalizedBase.slice(0, baseLength)}${suffix}`);
 }
 
 function defaultServerThreadNamespace(accountId: number, ticketPrefix: string): string {
   const prefix = normalizeServerTicketPrefix(ticketPrefix);
-  return prefix === 'SCR' ? `account-${accountId}` : prefix.toLowerCase();
+  return `${prefix.toLowerCase()}-${accountId}`;
 }
 
 async function allocateNextTicketCodeForAccount(
