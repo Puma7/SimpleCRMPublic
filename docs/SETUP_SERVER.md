@@ -165,10 +165,15 @@ verify. Useful flags / env:
 BRANCH=some-branch sh docker/update.sh   # update to a specific branch
 SKIP_PULL=1   sh docker/update.sh        # use the current checkout, don't git pull
 SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recommended)
+FORCE_RESET=1 sh docker/update.sh        # discard local changes to tracked files
 ```
 
 The operator wrapper exposes the same thing as `sh docker/simplecrm update`
-(alias `upgrade`; accepts `--no-pull` / `--no-backup`).
+(alias `upgrade`; accepts `--no-pull` / `--no-backup` / `--branch <name>`).
+
+If a stack from an older install still runs under the project name `simplecrm`,
+the updater refuses to proceed (it would otherwise start a second, empty stack)
+and tells you to re-run with `COMPOSE_PROJECT_NAME=simplecrm` to target it.
 
 Both default the Compose project name to the compose file's directory
 (`docker`) — the same value plain `docker compose -f docker/docker-compose.yml`

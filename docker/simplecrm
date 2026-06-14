@@ -7,14 +7,21 @@ COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 # `docker compose -f docker/docker-compose.yml ...` derives on its own. This keeps
 # this helper operating on the SAME stack as plain docker compose commands. A
 # hardcoded name here previously created a second, parallel stack by surprise.
+# Track whether the operator explicitly chose a project (vs. us deriving it), so
+# delegated scripts can refuse to silently operate on a different stack.
+if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then SIMPLECRM_PROJECT_EXPLICIT=1; else SIMPLECRM_PROJECT_EXPLICIT=0; fi
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"
+# Export so delegated host-side scripts (update.sh, restore-compose.sh) target
+# the SAME stack as this helper's own compose() calls.
+export COMPOSE_PROJECT_NAME COMPOSE_FILE SIMPLECRM_PROJECT_EXPLICIT
 
 usage() {
   cat <<'USAGE'
 usage: simplecrm <command> [args]
 
 Commands:
-  update [--no-pull] [--no-backup]  Update this server: pull, backup, build,
+  update [--no-pull] [--no-backup] [--branch <name>]
+                                    Update this server: pull, backup, build,
                                     reconcile migration checksums + migrate,
                                     restart, verify. Alias: upgrade.
   up                         Build and start the standard server stack.
@@ -68,15 +75,17 @@ fi
 case "$command" in
   update|upgrade)
     # Pass through flags/env to the standalone update script (single source of truth).
-    for arg in "$@"; do
-      case "$arg" in
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
         --no-pull) export SKIP_PULL=1 ;;
         --no-backup) export SKIP_BACKUP=1 ;;
-        *) echo "unknown update flag: $arg" >&2; exit 2 ;;
+        --branch) shift; [ -n "${1:-}" ] || { echo "--branch requires a value" >&2; exit 2; }; export BRANCH="$1" ;;
+        --branch=*) export BRANCH="${1#--branch=}" ;;
+        *) echo "unknown update flag: $1" >&2; exit 2 ;;
       esac
+      shift
     done
-    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" COMPOSE_FILE="$COMPOSE_FILE" \
-      sh "$SCRIPT_DIR/update.sh"
+    sh "$SCRIPT_DIR/update.sh"
     ;;
   up)
     compose up -d --build
