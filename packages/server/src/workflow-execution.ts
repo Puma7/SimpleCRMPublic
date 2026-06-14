@@ -7,7 +7,6 @@ import {
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
-  extractTicketFromSubject,
   generateTicketCode,
   normalizeMailboxName,
   normalizeEmailAddress,
@@ -54,6 +53,7 @@ import {
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { outboundReviewApprovedKey } from './mail-compose-send';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -3999,8 +3999,9 @@ async function releaseWorkflowOutboundHold(
   // add when scheduled-send finally calls composeSender.send. The marker must
   // be valid against that final subject so the retry bypasses the review.
   const storedSubject = draftRow?.subject?.trim() || '';
+  const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, context.workspaceId);
   const existingTicket = draftRow?.ticket_code?.trim()
-    || extractTicketFromSubject(draftRow?.subject ?? null);
+    || extractWorkspaceTicketFromSubject(draftRow?.subject ?? null, allowedPrefixes);
   const ticketCode = existingTicket || generateTicketCode();
   const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 
@@ -4167,8 +4168,9 @@ async function sendWorkflowDraft(
       body_html: draftRow.body_html ?? null,
     });
     const storedSubject = draftRow.subject?.trim() || '';
+    const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, context.workspaceId);
     const existingTicket = draftRow.ticket_code?.trim()
-      || extractTicketFromSubject(draftRow.subject ?? null);
+      || extractWorkspaceTicketFromSubject(draftRow.subject ?? null, allowedPrefixes);
     const ticketCode = existingTicket || generateTicketCode();
     const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 

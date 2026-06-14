@@ -108,10 +108,49 @@ export function setAccountMailSettings(
 }
 
 
+export function listKnownTicketPrefixes(): Set<string> {
+  const prefixes = new Set<string>(['SCR']);
+  try {
+    const rows = getDb()
+      .prepare(`SELECT DISTINCT ticket_prefix FROM ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}`)
+      .all() as { ticket_prefix: string }[];
+    for (const row of rows) {
+      const normalized = String(row.ticket_prefix ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '')
+        .slice(0, 12);
+      if (normalized) prefixes.add(normalized);
+    }
+  } catch {
+    // Settings table may be unavailable during migration/bootstrap.
+  }
+  return prefixes;
+}
+
 export function allocateNextTicketCodeForAccount(accountId: number): string {
-  const current = getAccountMailSettings(accountId);
-  const sequence = formatTicketSequence(current.ticketNextNumber, current.ticketNumberPadding);
-  const nextNumber = current.ticketNextNumber + 1;
-  setAccountMailSettings(accountId, { ...current, ticketNextNumber: nextNumber });
-  return generateTicketCode({ prefix: current.ticketPrefix, sequence });
+  const db = getDb();
+  return db.transaction(() => {
+    const current = getAccountMailSettings(accountId);
+    const sequence = formatTicketSequence(current.ticketNextNumber, current.ticketNumberPadding);
+    const nextNumber = current.ticketNextNumber + 1;
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}
+         (account_id, ticket_prefix, ticket_next_number, ticket_number_padding, thread_namespace, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account_id) DO UPDATE SET
+         ticket_next_number = excluded.ticket_next_number,
+         updated_at = excluded.updated_at`,
+    ).run(
+      accountId,
+      current.ticketPrefix,
+      nextNumber,
+      current.ticketNumberPadding,
+      current.threadNamespace,
+      now,
+      now,
+    );
+    return generateTicketCode({ prefix: current.ticketPrefix, sequence });
+  }).immediate();
 }

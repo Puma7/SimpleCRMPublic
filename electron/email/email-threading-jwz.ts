@@ -1,6 +1,6 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE, EMAIL_THREADS_TABLE } from '../database-schema';
-import { createTicketCodeForAccount, extractTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
+import { createTicketCodeForAccount, extractKnownTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
 import { rebuildThreadEdges } from './email-thread-aggregate';
 import { applyMessageThreadMetadata, confidenceForJwzAssign } from './email-thread-metadata';
 
@@ -51,7 +51,7 @@ export function assignJwzThreadAndTicket(
     subject: string | null;
   },
 ): void {
-  const ticketFromSubject = extractTicketFromSubject(input.subject);
+  const ticketFromSubject = extractKnownTicketFromSubject(input.subject);
   const related = collectRelatedIds(input.messageIdHeader, input.inReplyTo, input.referencesHeader);
   const myMid = normId(input.messageIdHeader);
 

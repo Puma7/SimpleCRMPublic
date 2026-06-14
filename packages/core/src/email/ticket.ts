@@ -28,10 +28,33 @@ export function generateTicketCode(options: TicketCodeOptions = {}): string {
   return `${prefix}-${part}`;
 }
 
-export function extractTicketFromSubject(subject: string | null): string | null {
+export type ExtractTicketOptions = {
+  /** When set, only prefixes in this list (plus legacy SCR) are accepted. */
+  allowedPrefixes?: ReadonlySet<string> | readonly string[];
+};
+
+function buildAllowedTicketPrefixes(
+  allowedPrefixes?: ReadonlySet<string> | readonly string[],
+): Set<string> {
+  const allowed = new Set<string>([DEFAULT_TICKET_PREFIX]);
+  if (!allowedPrefixes) return allowed;
+  for (const prefix of allowedPrefixes) {
+    allowed.add(normalizeTicketPrefix(prefix));
+  }
+  return allowed;
+}
+
+export function extractTicketFromSubject(
+  subject: string | null,
+  options?: ExtractTicketOptions,
+): string | null {
   if (!subject) return null;
   const match = subject.match(/\[([A-Z0-9]{2,12})-([A-Z0-9]{3,20})\]/i);
-  return match ? `${normalizeTicketPrefix(match[1])}-${match[2]!.toUpperCase()}` : null;
+  if (!match) return null;
+  const prefix = normalizeTicketPrefix(match[1]);
+  const allowed = buildAllowedTicketPrefixes(options?.allowedPrefixes);
+  if (!allowed.has(prefix)) return null;
+  return `${prefix}-${match[2]!.toUpperCase()}`;
 }
 
 export function ensureTicketInSubject(subject: string, ticketCode: string): string {

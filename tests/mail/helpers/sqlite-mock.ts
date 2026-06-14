@@ -21,7 +21,7 @@ export function createSqliteMock(): {
   };
 
   const transaction = jest.fn((fn: () => unknown) => {
-    const run = () => fn();
+    const run = Object.assign(() => fn(), { immediate: () => fn() });
     return run;
   });
   return {
