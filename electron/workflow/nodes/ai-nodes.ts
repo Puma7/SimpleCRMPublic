@@ -1,6 +1,7 @@
 import { listAiPrompts, type AiPromptRow } from '../../email/email-crm-store';
 import { resolvePromptProfileId } from '../../email/email-ai-profiles';
 import { runChatCompletion } from '../../email/email-openai';
+import type { AccountOverrideScope } from '../../../shared/mail-account-overrides';
 
 function profileIdFromConfig(config: Record<string, unknown>): number | null {
   const v = config.profileId;
@@ -22,8 +23,9 @@ function effectiveProfileId(
 /** Match UI default: first library prompt when promptId is missing or 0. */
 function resolvePromptForConfig(
   config: Record<string, unknown>,
+  scope?: AccountOverrideScope,
 ): AiPromptRow | undefined {
-  const prompts = listAiPrompts();
+  const prompts = listAiPrompts(scope);
   const id = Number(config.promptId ?? 0);
   if (id > 0) {
     const found = prompts.find((x) => x.id === id);
@@ -52,6 +54,10 @@ import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from 
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
+function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
+  return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+}
+
 export function registerAiNodes(register: Reg): void {
   register({
     type: 'ai.review',
@@ -60,7 +66,7 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'action',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
     execute: async (ctx, config) => {
-      const p = resolvePromptForConfig(config);
+      const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
       const blockKw = String(config.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
@@ -118,7 +124,7 @@ export function registerAiNodes(register: Reg): void {
       if (id == null) return { status: 'error', message: 'Kein Entwurf' };
 
       const promptId = Number(config.promptId ?? 0);
-      const prompts = listAiPrompts();
+      const prompts = listAiPrompts(accountScopeFromContext(ctx));
       const custom = promptId > 0 ? prompts.find((x) => x.id === promptId) : undefined;
 
       let parentBlock = '';
@@ -207,7 +213,7 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { promptId: 0, targetVariable: 'ai.text' },
     execute: async (ctx, config) => {
-      const p = resolvePromptForConfig(config);
+      const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template, ctx);
       if (ctx.dryRun) return { status: 'ok' };
@@ -456,7 +462,7 @@ export function registerAiNodes(register: Reg): void {
       }
       if (tool === 'get_canned') {
         const { listCannedResponses } = await import('../../email/email-crm-store');
-        const list = listCannedResponses().slice(0, 5);
+        const list = listCannedResponses(accountScopeFromContext(ctx)).slice(0, 5);
         return {
           status: 'ok',
           variables: { 'tool.result': list.map((c) => c.title).join(', ') },
@@ -478,7 +484,7 @@ export function registerAiNodes(register: Reg): void {
     defaultConfig: { createDraft: true },
     execute: async (ctx, config) => {
       const { listCannedResponses } = await import('../../email/email-crm-store');
-      const canned = listCannedResponses();
+      const canned = listCannedResponses(accountScopeFromContext(ctx));
       if (canned.length === 0) {
         return { status: 'error', message: 'Keine Textbausteine vorhanden' };
       }

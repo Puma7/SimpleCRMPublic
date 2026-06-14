@@ -50,3 +50,24 @@ describe('email-ticket', () => {
     expect(stmt.run).toHaveBeenCalled();
   });
 });
+
+
+describe('account-specific ticket namespaces', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stmt.get.mockReturnValue(undefined);
+    stmt.run.mockReturnValue({ changes: 1, lastInsertRowid: 1 });
+  });
+
+  test('generates account-specific prefix and sequence numbers', () => {
+    expect(generateTicketCode({ prefix: 'shopA', sequence: 42 })).toBe('SHOPA-42');
+    expect(generateTicketCode({ prefix: 'Shop-B', sequence: '0007' })).toBe('SHOPB-0007');
+  });
+
+  test('thread lookup is namespaced by account id', () => {
+    getOrCreateThreadForTicket('SHOPA-1', 1);
+    getOrCreateThreadForTicket('SHOPA-1', 2);
+    expect(stmt.run).toHaveBeenNthCalledWith(1, expect.any(String), 'SHOPA-1', 1);
+    expect(stmt.run).toHaveBeenNthCalledWith(2, expect.any(String), 'SHOPA-1', 2);
+  });
+});

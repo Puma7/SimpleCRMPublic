@@ -247,6 +247,8 @@ const EmailChannels = literal({
   SetEmailMiscSettings: 'email:set-misc-settings',
   GetSnoozeSettings: 'email:get-snooze-settings',
   SetSnoozeSettings: 'email:set-snooze-settings',
+  GetAccountMailSettings: 'email:get-account-mail-settings',
+  SetAccountMailSettings: 'email:set-account-mail-settings',
   ListUidValidityNotices: 'email:list-uidvalidity-notices',
   DismissUidValidityNotice: 'email:dismiss-uidvalidity-notice',
   ListImapAuthNotices: 'email:list-imap-auth-notices',

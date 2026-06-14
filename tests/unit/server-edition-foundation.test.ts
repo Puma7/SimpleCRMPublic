@@ -330,6 +330,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0020_auth_login_security',
   '0021_returns_schema',
   '0022_returns_portal_settings',
+  '0023_account_scope_overrides',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1441,6 +1442,10 @@ describe('server edition foundation', () => {
     expect(sql).toContain('last_heartbeat_at timestamptz NOT NULL DEFAULT now()');
     expect(sql).toContain('reply_suggestion_text text');
     expect(sql).toContain('email_messages_reply_suggestion_pending_idx');
+    expect(sql).toContain('email_threads_workspace_account_ticket_idx');
+    expect(sql).toContain('email_account_mail_settings_workspace_isolation');
+    expect(sql).toContain('email_thread_aliases_workspace_account_pair_idx');
+    expect(sql).toContain('email_ai_prompts_scope_idx');
     expect(sql).toContain('ENABLE ROW LEVEL SECURITY');
     expect(sql).toContain('FORCE ROW LEVEL SECURITY');
     expect(sql).toContain("current_setting('app.workspace_id', true)");
@@ -1448,6 +1453,22 @@ describe('server edition foundation', () => {
     expect(sql).toContain('CREATE OR REPLACE FUNCTION app.can_access_workspace(target_workspace_id uuid)');
     expect(sql).toContain("app.current_role() IN ('owner', 'admin', 'system')");
     expect(sql).not.toContain('INDEX (run_after, locked_at) WHERE locked_at IS NULL');
+  });
+
+  test('desktop SQLite schema strings include account-scope fresh-install and roadmap parity', () => {
+    const schemaSource = readFileSync(join(process.cwd(), 'electron', 'database-schema.ts'), 'utf8');
+    const roadmapSource = readFileSync(join(process.cwd(), 'electron', 'mail-roadmap-migrations.ts'), 'utf8');
+
+    expect(schemaSource).toContain("EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE = 'email_account_mail_settings'");
+    expect(schemaSource).toContain('CREATE TABLE IF NOT EXISTS ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}');
+    expect(schemaSource).toContain('ticket_prefix TEXT NOT NULL');
+    expect(schemaSource).toContain('ticket_next_number INTEGER NOT NULL DEFAULT 1');
+    expect(schemaSource).toContain('thread_namespace TEXT NOT NULL');
+    expect(schemaSource).toContain('account_id INTEGER,');
+    expect(schemaSource).toContain('idx_email_thread_aliases_account_pair');
+    expect(roadmapSource).toContain('ensureTable(conn, EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE, createEmailAccountMailSettingsTable');
+    expect(roadmapSource).toContain("addCol(conn, EMAIL_THREAD_ALIASES_TABLE, 'account_id'");
+    expect(roadmapSource).toContain('idx_email_thread_aliases_account_pair');
   });
 
   test('all RLS-enabled migration tables force owner-level policy enforcement', () => {
@@ -1482,7 +1503,7 @@ describe('server edition foundation', () => {
     expect(enabledTables.filter((tableName) => !forcedTables.has(tableName))).toEqual([]);
     expect(enabledTables.filter((tableName) => !policyTables.has(tableName))).toEqual([]);
     expect(RLS_POLICY_COVERAGE_TABLES.map((table) => table.tableName).toSorted()).toEqual(
-      enabledTables.toSorted(),
+      Array.from(new Set(enabledTables)).toSorted(),
     );
   });
 
@@ -1579,7 +1600,13 @@ describe('server edition foundation', () => {
     expect(sql).toContain('ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS vacation_enabled boolean NOT NULL DEFAULT false');
     expect(sql).toContain('ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS request_read_receipt boolean NOT NULL DEFAULT false');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_folders');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_account_mail_settings');
+    expect(sql).toContain('ticket_prefix text NOT NULL');
+    expect(sql).toContain('ticket_next_number bigint NOT NULL DEFAULT 1');
+    expect(sql).toContain('thread_namespace text NOT NULL');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_threads');
+    expect(sql).toContain('account_source_sqlite_id bigint');
+    expect(sql).toContain('account_id bigint REFERENCES email_accounts(id) ON DELETE SET NULL');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_messages');
     expect(sql).toContain('search_vector tsvector GENERATED ALWAYS AS');
     expect(sql).toContain('bcc_json jsonb');
@@ -1597,8 +1624,23 @@ describe('server edition foundation', () => {
     expect(sql).toContain('rspamd_score double precision');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_message_attachments');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_thread_aliases');
+    expect(sql).toContain('email_thread_aliases_workspace_account_pair_all_idx');
+    expect(sql).toContain('email_thread_aliases_workspace_global_pair_idx');
     expect(sql).toContain('CREATE POLICY email_messages_workspace_isolation');
+    expect(sql).toContain('CREATE POLICY email_account_mail_settings_workspace_isolation');
     expect(sql).toContain('conversation_locks_message_fk');
+  });
+
+  test('account-scope additive migration is idempotent and matches fresh mail schema', () => {
+    const sql = collectMigrationSql('up');
+    expect(sql).toContain('ALTER TABLE email_threads ADD COLUMN IF NOT EXISTS account_id bigint REFERENCES email_accounts(id) ON DELETE SET NULL;');
+    expect(sql).toContain('ALTER TABLE email_threads ADD COLUMN IF NOT EXISTS account_source_sqlite_id bigint;');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_account_mail_settings');
+    expect(sql).toContain('ALTER TABLE email_thread_aliases ADD COLUMN IF NOT EXISTS account_source_sqlite_id bigint;');
+    expect(sql).toContain('ALTER TABLE email_thread_aliases ADD COLUMN IF NOT EXISTS account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE;');
+    expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_account_pair_all_idx');
+    expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS email_canned_responses_account_override_key_idx');
+    expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS email_ai_prompts_account_override_key_idx');
   });
 
   test('workflow/security migration creates AI, workflow, spam, PGP, and automation tables with RLS', () => {
@@ -1606,7 +1648,11 @@ describe('server edition foundation', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_ai_profiles');
     expect(sql).toContain('legacy_keytar_account text');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_ai_prompts');
+    expect(sql).toContain('account_source_sqlite_id bigint');
+    expect(sql).toContain('override_key text');
+    expect(sql).toContain('email_ai_prompts_account_override_key_idx');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_workflows');
+    expect(sql).toContain('email_workflows_scope_idx');
     expect(sql).toContain('trigger_name text NOT NULL');
     expect(sql).toContain('legacy_created_by_user_id text');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_workflow_runs');
@@ -10984,6 +11030,11 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('scheduled-send Postgres store excludes outbound-held drafts from due scan', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
+    expect(source).toMatch(/\.where\('folder_kind', '=', 'draft'\)\s*\.where\('outbound_hold', '=', false\)\s*\.where\('scheduled_send_at', '<=', input\.dueBefore\)/);
+  });
+
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
     const now = new Date('2026-06-03T12:00:00.000Z');
     expect(buildLockCleanupPlan({
@@ -12017,12 +12068,13 @@ describe('server edition foundation', () => {
       workspaceId: 'workspace-a',
       runId: 'run-1',
     });
-    expect(commands).toHaveLength(48);
+    expect(commands).toHaveLength(49);
     expect(commands[0]).toMatchObject({ domain: 'core_crm', tableName: 'sync_info' });
     expect(commands[14]).toMatchObject({ domain: 'core_crm', tableName: 'jtl_versandarten' });
     expect(commands[15]).toMatchObject({ domain: 'core_mail', tableName: 'email_accounts' });
-    expect(commands[31]).toMatchObject({ domain: 'workflow_security', tableName: 'email_ai_profiles' });
-    expect(commands[47]).toMatchObject({ domain: 'workflow_security', tableName: 'pgp_peer_keys' });
+    expect(commands[16]).toMatchObject({ domain: 'core_mail', tableName: 'email_account_mail_settings' });
+    expect(commands[32]).toMatchObject({ domain: 'workflow_security', tableName: 'email_ai_profiles' });
+    expect(commands[48]).toMatchObject({ domain: 'workflow_security', tableName: 'pgp_peer_keys' });
     expect(commands.every((command) => command.params[0] === 'workspace-a' && command.params[2] === 'run-1'))
       .toBe(true);
     expect(commands.map((command) => command.sql).join('\n')).not.toContain('workspace-a');
@@ -12033,12 +12085,12 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(48);
+    expect(client.queries).toHaveLength(49);
     expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[47].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
+    expect(client.queries[48].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
     expect(result.domains.map((domain) => [domain.domain, domain.commandCount])).toEqual([
       ['core_crm', 15],
-      ['core_mail', 16],
+      ['core_mail', 17],
       ['workflow_security', 17],
     ]);
   });
@@ -12254,6 +12306,7 @@ describe('server edition foundation', () => {
 
     expect(commands.map((command) => command.tableName)).toEqual([
       'email_accounts',
+      'email_account_mail_settings',
       'email_folders',
       'email_team_members',
       'email_threads',
@@ -12277,20 +12330,25 @@ describe('server edition foundation', () => {
     expect(commands[0].sql).toContain('smtp_password_secret_id');
     expect(commands[0].sql).toContain('oauth_refresh_secret_id');
     expect(commands[0].sql).toContain('NULL::uuid');
-    expect(commands[1].sql).toContain('LEFT JOIN email_accounts a');
-    expect(commands[4].sql).toContain('LEFT JOIN email_folders f');
-    expect(commands[4].sql).toContain("r.source_row->>'from_json'");
-    expect(commands[4].sql).toContain("r.source_row->>'auth_spf'");
-    expect(commands[4].sql).toContain("r.source_row->>'rspamd_score'");
-    expect(commands[4].sql).toContain("r.source_row->>'reply_suggestion_text'");
-    expect(commands[4].sql).toContain('reply_suggestion_updated_at = EXCLUDED.reply_suggestion_updated_at');
-    expect(commands[4].sql).toContain('ON CONFLICT (workspace_id, source_sqlite_id)');
-    expect(commands[4].sql).toContain('legacy_assigned_to_user_id');
-    expect(commands[4].sql).not.toContain("assigned_to_user_id', '')::uuid");
-    expect(commands[5].sql).toContain('LEFT JOIN email_messages m');
-    expect(commands[8].sql).toContain('LEFT JOIN email_categories c');
-    expect(commands[14].sql).toContain('LEFT JOIN email_messages parent');
-    expect(commands[15].sql).toContain("r.source_row->>'alias_thread_id' <> r.source_row->>'canonical_thread_id'");
+    expect(commands[1].sql).toContain('INSERT INTO email_account_mail_settings');
+    expect(commands[1].sql).toContain("r.source_row->>'ticket_prefix'");
+    expect(commands[2].sql).toContain('LEFT JOIN email_accounts a');
+    expect(commands[4].sql).toContain('account_source_sqlite_id');
+    expect(commands[5].sql).toContain('LEFT JOIN email_folders f');
+    expect(commands[5].sql).toContain("r.source_row->>'from_json'");
+    expect(commands[5].sql).toContain("r.source_row->>'auth_spf'");
+    expect(commands[5].sql).toContain("r.source_row->>'rspamd_score'");
+    expect(commands[5].sql).toContain("r.source_row->>'reply_suggestion_text'");
+    expect(commands[5].sql).toContain('reply_suggestion_updated_at = EXCLUDED.reply_suggestion_updated_at');
+    expect(commands[5].sql).toContain('ON CONFLICT (workspace_id, source_sqlite_id)');
+    expect(commands[5].sql).toContain('legacy_assigned_to_user_id');
+    expect(commands[5].sql).not.toContain("assigned_to_user_id', '')::uuid");
+    expect(commands[6].sql).toContain('LEFT JOIN email_messages m');
+    expect(commands[9].sql).toContain('LEFT JOIN email_categories c');
+    expect(commands[11].sql).toContain('override_key');
+    expect(commands[15].sql).toContain('LEFT JOIN email_messages parent');
+    expect(commands[16].sql).toContain('account_source_sqlite_id');
+    expect(commands[16].sql).toContain("r.source_row->>'alias_thread_id' <> r.source_row->>'canonical_thread_id'");
     expect(commands.map((command) => command.sql).join('\n')).not.toContain('workspace-a');
   });
 
@@ -12302,11 +12360,11 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(16);
+    expect(client.queries).toHaveLength(17);
     expect(client.queries[0].params).toEqual(['workspace-a', 'email_accounts', 'run-1']);
-    expect(client.queries[15].params).toEqual(['workspace-a', 'email_thread_aliases', 'run-1']);
-    expect(client.queries[4].sql).not.toContain('workspace-a');
-    expect(client.queries[4].sql).not.toContain('run-1');
+    expect(client.queries[16].params).toEqual(['workspace-a', 'email_thread_aliases', 'run-1']);
+    expect(client.queries[5].sql).not.toContain('workspace-a');
+    expect(client.queries[5].sql).not.toContain('run-1');
     expect(() => buildCoreMailImportCommands({ workspaceId: ' ', runId: 'run-1' })).toThrow('workspaceId');
     expect(() => buildCoreMailImportCommands({ workspaceId: 'workspace-a', runId: ' ' })).toThrow('runId');
   });
@@ -12340,12 +12398,16 @@ describe('server edition foundation', () => {
       .toBe(true);
     expect(commands[0].sql).toContain('INSERT INTO email_ai_profiles');
     expect(commands[1].sql).toContain('LEFT JOIN email_ai_profiles p');
-    expect(commands[2].sql).toContain('LEFT JOIN email_accounts a');
+    expect(commands[1].sql).toContain('override_key');
+    expect(commands[2].sql).toContain('LEFT JOIN email_accounts schedule_account');
+    expect(commands[2].sql).toContain('LEFT JOIN email_accounts scope_account');
+    expect(commands[2].sql).toContain('override_key');
     expect(commands[2].sql).toContain('legacy_created_by_user_id');
     expect(commands[2].sql).not.toContain("created_by_user_id', '')::uuid");
     expect(commands[4].sql).toContain('LEFT JOIN email_messages m');
     expect(commands[5].sql).toContain('LEFT JOIN email_workflow_runs wr');
     expect(commands[7].sql).toContain('INSERT INTO email_workflow_forward_dedup');
+    expect(commands[8].sql).toContain('override_key');
     expect(commands[9].sql).toContain('LEFT JOIN workflow_knowledge_bases kb');
     expect(commands[11].sql).toContain('LEFT JOIN email_accounts a');
     expect(commands[13].sql).toContain('FROM sqlite_import_rows r');
@@ -13659,6 +13721,22 @@ describe('server edition foundation', () => {
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
     expect(listSection.indexOf('query = applyMessageCursor('))
       .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
+  });
+
+  test('postgres mail folder badge counts exclude done archived messages', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const countsSection = source.slice(
+      source.indexOf('async getFolderCounts(input): Promise<EmailMailFolderCounts>'),
+      source.indexOf('function normalizeRestoreFolderKind'),
+    );
+    const archivedAggregate = countsSection.slice(
+      countsSection.indexOf("`.as('archived')") - 450,
+      countsSection.indexOf("`.as('archived')"),
+    );
+
+    expect(archivedAggregate).toContain('and archived = true');
+    expect(archivedAggregate).toContain("and coalesce(spam_status, 'clean') = 'clean'");
+    expect(archivedAggregate).toContain('and coalesce(done_local, false) = false');
   });
 
   test('server auth user admin routes list, create, update, and protect owners without secret leakage', async () => {

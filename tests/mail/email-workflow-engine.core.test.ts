@@ -193,6 +193,7 @@ describe('email-workflow-engine core', () => {
       const row = draftRow();
       expect(outboundPayloadFromMessage(row, { attachmentCount: 2 })).toEqual({
         messageId: 10,
+        accountId: 1,
         subject: 'Subject',
         bodyText: 'Hello body',
         bodyHtml: '<p>Hello</p>',
@@ -430,11 +431,12 @@ describe('email-workflow-engine core', () => {
     });
 
     test('allows when workflows pass', async () => {
-      const row = draftRow();
+      const row = draftRow({ account_id: 9 });
       mockGetEmailMessageById.mockReturnValue(row);
       mockListWorkflowsByTrigger.mockReturnValue([{ id: 1, name: 'W', trigger: 'outbound', enabled: 1 }]);
       const r = await evaluateOutboundWorkflows(outboundPayloadFromMessage(row));
       expect(r).toEqual({ allowed: true, reason: null, workflowRunId: null });
+      expect(mockListWorkflowsByTrigger).toHaveBeenCalledWith('outbound', 9);
       expect(mockSetOutboundHold).toHaveBeenCalledWith(10, false, null);
     });
 
@@ -518,16 +520,13 @@ describe('email-workflow-engine core', () => {
     });
 
     test('runs workflows and claims applied slot', async () => {
-      const row = inboundRow();
+      const row = inboundRow({ account_id: 7 });
       const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
       mockListWorkflowsByTrigger.mockReturnValue([wf]);
       mockGetEmailMessageById.mockReturnValue(row);
-      await runInboundWorkflowsForMessage(row.id, {
-        row,
-        inboundWorkflows: [wf],
-        appliedWorkflowIds: new Set(),
-      });
+      await runInboundWorkflowsForMessage(row.id, { row, appliedWorkflowIds: new Set() });
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
+      expect(mockListWorkflowsByTrigger).toHaveBeenCalledWith('inbound', 7);
       expect(mockTryClaimInboundWorkflowForMessage).toHaveBeenCalledWith(row.id, 3);
       expect(mockMarkWorkflowAppliedToMessage).not.toHaveBeenCalled();
       expect(mockEnsureReplySuggestion).toHaveBeenCalled();
@@ -583,10 +582,11 @@ describe('email-workflow-engine core', () => {
     });
 
     test('runs draft_created workflows', async () => {
-      const row = draftRow();
+      const row = draftRow({ account_id: 8 });
       mockGetEmailMessageById.mockReturnValue(row);
       mockListWorkflowsByTrigger.mockReturnValue([{ id: 4, name: 'D', trigger: 'draft_created', enabled: 1 }]);
       await runDraftCreatedWorkflowsForMessage(row.id);
+      expect(mockListWorkflowsByTrigger).toHaveBeenCalledWith('draft_created', 8);
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalledWith(
         expect.objectContaining({ trigger: 'draft_created', direction: 'draft_created' }),
       );

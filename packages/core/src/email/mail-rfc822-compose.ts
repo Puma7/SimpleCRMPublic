@@ -33,21 +33,7 @@ export function encodeRfc2047(text: string): string {
 export function encodeMailboxListHeader(value: string): string {
   const trimmed = sanitizeHeaderValue(value);
   if (!trimmed) return trimmed;
-  const parts: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i]!;
-    if (ch === '"') inQuotes = !inQuotes;
-    if (ch === ',' && !inQuotes) {
-      parts.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += ch;
-  }
-  if (current.trim()) parts.push(current.trim());
-  return parts.map(encodeSingleMailbox).join(', ');
+  return splitMailboxList(trimmed).map(encodeSingleMailbox).join(', ');
 }
 
 /** Rough upper bound for RFC822 size (base64 overhead on attachments + headers). */
@@ -221,6 +207,48 @@ function boundary(prefix: string): string {
 
 function sanitizeHeaderValue(value: string): string {
   return value.replace(/[\r\n]+/g, ' ').trim();
+}
+
+function splitMailboxList(value: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let angleDepth = 0;
+
+  const flushIfComplete = (): void => {
+    const trimmed = current.trim();
+    if (!trimmed) {
+      current = '';
+      return;
+    }
+    if (isCompleteMailboxToken(trimmed)) {
+      parts.push(trimmed);
+      current = '';
+    }
+  };
+
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    if (ch === '"' && value[i - 1] !== '\\') inQuotes = !inQuotes;
+    if (!inQuotes) {
+      if (ch === '<') angleDepth += 1;
+      if (ch === '>' && angleDepth > 0) angleDepth -= 1;
+    }
+    if (ch === ',' && !inQuotes && angleDepth === 0) {
+      flushIfComplete();
+      if (current) current += ch;
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function isCompleteMailboxToken(value: string): boolean {
+  const angleMatch = /<([^>]+)>\s*$/.exec(value);
+  if (angleMatch?.[1]) return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(angleMatch[1].trim());
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value.trim());
 }
 
 function encodeSingleMailbox(mailbox: string): string {

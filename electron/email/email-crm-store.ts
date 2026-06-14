@@ -3,6 +3,7 @@ import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import { getDb } from '../sqlite-service';
+import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
 import { accountAccessSql } from './mail-scope-access';
 import {
   CUSTOMERS_TABLE,
@@ -333,22 +334,28 @@ export function reorderCategories(
   apply();
 }
 
-export type CannedRow = { id: number; title: string; body: string; sort_order: number };
-export function listCannedResponses(): CannedRow[] {
-  return getDb()
+export type CannedRow = { id: number; title: string; body: string; account_id: number | null; override_key: string | null; sort_order: number };
+export function listCannedResponses(scope?: AccountOverrideScope): CannedRow[] {
+  const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_CANNED_RESPONSES_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as CannedRow[];
+  return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
 }
 
-export function createCannedResponse(title: string, body: string): number {
+export function createCannedResponse(title: string, body: string, opts: { accountId?: number | null; overrideKey?: string | null } = {}): number {
   const r = getDb()
-    .prepare(`INSERT INTO ${EMAIL_CANNED_RESPONSES_TABLE} (title, body, sort_order) VALUES (?, ?, ?)`)
-    .run(title.trim(), body, 0);
+    .prepare(`INSERT INTO ${EMAIL_CANNED_RESPONSES_TABLE} (title, body, account_id, override_key, sort_order) VALUES (?, ?, ?, ?, ?)`)
+    .run(title.trim(), body, opts.accountId ?? null, opts.overrideKey ?? null, 0);
   return Number(r.lastInsertRowid);
 }
 
-export function updateCannedResponse(id: number, title: string, body: string): void {
-  getDb().prepare(`UPDATE ${EMAIL_CANNED_RESPONSES_TABLE} SET title = ?, body = ? WHERE id = ?`).run(title, body, id);
+export function updateCannedResponse(id: number, title: string, body: string, opts: { accountId?: number | null; overrideKey?: string | null } = {}): void {
+  const sets = ['title = ?', 'body = ?'];
+  const vals: unknown[] = [title, body];
+  if (Object.prototype.hasOwnProperty.call(opts, 'accountId')) { sets.push('account_id = ?'); vals.push(opts.accountId ?? null); }
+  if (Object.prototype.hasOwnProperty.call(opts, 'overrideKey')) { sets.push('override_key = ?'); vals.push(opts.overrideKey ?? null); }
+  vals.push(id);
+  getDb().prepare(`UPDATE ${EMAIL_CANNED_RESPONSES_TABLE} SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 }
 
 export function deleteCannedResponse(id: number): void {
@@ -361,12 +368,15 @@ export type AiPromptRow = {
   user_template: string;
   target: string;
   profile_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   sort_order: number;
 };
-export function listAiPrompts(): AiPromptRow[] {
-  return getDb()
+export function listAiPrompts(scope?: AccountOverrideScope): AiPromptRow[] {
+  const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as AiPromptRow[];
+  return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
 }
 
 export function createAiPrompt(input: {
@@ -374,6 +384,8 @@ export function createAiPrompt(input: {
   userTemplate: string;
   target?: string;
   profileId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
 }): number {
   const maxRow = getDb()
     .prepare(`SELECT COALESCE(MAX(sort_order), -1) AS m FROM ${EMAIL_AI_PROMPTS_TABLE}`)
@@ -383,13 +395,15 @@ export function createAiPrompt(input: {
     input.profileId != null && input.profileId > 0 ? input.profileId : null;
   const r = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, profile_id, sort_order) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, profile_id, account_id, override_key, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.label.trim(),
       input.userTemplate,
       input.target ?? 'full_body',
       profileId,
+      input.accountId ?? null,
+      input.overrideKey ?? null,
       sortOrder,
     );
   return Number(r.lastInsertRowid);
@@ -426,6 +440,8 @@ export function updateAiPrompt(
     target: string;
     profileId: number | null;
     sortOrder: number;
+    accountId: number | null;
+    overrideKey: string | null;
   }>,
 ): void {
   const sets: string[] = [];
@@ -438,6 +454,8 @@ export function updateAiPrompt(
     vals.push(input.profileId != null && input.profileId > 0 ? input.profileId : null);
   }
   if (input.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(input.sortOrder); }
+  if (input.accountId !== undefined) { sets.push('account_id = ?'); vals.push(input.accountId ?? null); }
+  if (input.overrideKey !== undefined) { sets.push('override_key = ?'); vals.push(input.overrideKey ?? null); }
   if (sets.length === 0) return;
   vals.push(id);
   getDb()

@@ -2800,7 +2800,7 @@ describe('renderer transport', () => {
     ]);
   });
 
-  test('maps message attachment metadata list to server mail route', async () => {
+  test('maps message attachment metadata list including forwardable storage paths to server mail route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {
         items: [
@@ -2813,6 +2813,31 @@ describe('renderer transport', () => {
             contentType: 'application/pdf',
             sizeBytes: 12345,
             contentSha256: 'sha256-31',
+            storagePath: 'workspace-a/mail-sync/701/invoice.pdf',
+            updatedAt: '2026-06-03T10:00:00.000Z',
+          },
+          {
+            id: 802,
+            sourceSqliteId: 32,
+            messageSourceSqliteId: 11,
+            messageId: 701,
+            filename: 'packing-slip.pdf',
+            contentType: 'application/pdf',
+            sizeBytes: 23456,
+            contentSha256: 'sha256-32',
+            storagePath: 'workspace-a/mail-sync/701/packing-slip.pdf',
+            updatedAt: '2026-06-03T10:00:00.000Z',
+          },
+          {
+            id: 803,
+            sourceSqliteId: 33,
+            messageSourceSqliteId: 11,
+            messageId: 701,
+            filename: 'photo.jpg',
+            contentType: 'image/jpeg',
+            sizeBytes: 34567,
+            contentSha256: 'sha256-33',
+            storagePath: 'workspace-a/mail-sync/701/photo.jpg',
             updatedAt: '2026-06-03T10:00:00.000Z',
           },
         ],
@@ -2830,6 +2855,23 @@ describe('renderer transport', () => {
         filename_display: 'invoice.pdf',
         size_bytes: 12345,
         content_type: 'application/pdf',
+        storage_path: 'workspace-a/mail-sync/701/invoice.pdf',
+      },
+      {
+        id: 802,
+        source_sqlite_id: 32,
+        filename_display: 'packing-slip.pdf',
+        size_bytes: 23456,
+        content_type: 'application/pdf',
+        storage_path: 'workspace-a/mail-sync/701/packing-slip.pdf',
+      },
+      {
+        id: 803,
+        source_sqlite_id: 33,
+        filename_display: 'photo.jpg',
+        size_bytes: 34567,
+        content_type: 'image/jpeg',
+        storage_path: 'workspace-a/mail-sync/701/photo.jpg',
       },
     ]);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -5219,6 +5261,44 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps scoped account list payloads to server account query', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.ListWorkflows, { accountId: 7 })).resolves.toEqual([]);
+    await expect(transport.invoke(IPCChannels.Email.ListKnowledgeBases, { accountId: 7 })).resolves.toEqual([]);
+    await expect(transport.invoke(IPCChannels.Email.ListCannedResponses, { accountId: 7 })).resolves.toEqual([]);
+    await expect(transport.invoke(IPCChannels.Email.ListAiPrompts, { accountId: 7 })).resolves.toEqual([]);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/workflows?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/workflow-knowledge-bases?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/email/canned-responses?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/ai/prompts?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps workflow CRUD and version channels through source-id server routes', async () => {
     const workflow = {
       id: 201,
@@ -5775,6 +5855,8 @@ describe('renderer transport', () => {
       id: 90,
       name: 'Returns',
       description: null,
+      account_id: null,
+      override_key: null,
     }]);
     await expect(transport.invoke(
       IPCChannels.Email.CreateKnowledgeBase,
@@ -6708,6 +6790,8 @@ describe('renderer transport', () => {
         id: 12,
         title: 'Shipping',
         body: 'Your package ships today.',
+        account_id: null,
+        override_key: null,
       },
     ]);
     await expect(transport.invoke(IPCChannels.Email.SaveCannedResponse, {

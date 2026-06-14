@@ -3,6 +3,10 @@ import { BrowserWindow, IpcMainInvokeEvent, dialog, shell, type SaveDialogReturn
 import fs from 'fs';
 import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
+import {
+  accountOverrideScopeFromPayload,
+  type AccountOverrideScopePayload,
+} from '../../shared/mail-account-overrides';
 import { registerIpcHandler } from './register';
 import {
   resolveAuthContext,
@@ -132,6 +136,10 @@ import { fireWebhookWorkflows } from '../email/email-webhook';
 import { clearEmailAccountSyncLock } from '../email/email-sync-mutex';
 import { readSyncInfo, writeSyncInfo } from '../sync-info-store';
 import { getSnoozeSettings, setSnoozeSettings } from '../snooze-settings';
+import {
+  getAccountMailSettings,
+  setAccountMailSettings,
+} from '../email/account-mail-settings-store';
 import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
 import {
   getEmailAiCustomerTemplateContext,
@@ -529,7 +537,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.ListWorkflows, async () => listAllWorkflows(), { logger }),
+    registerIpcHandler(
+      IPCChannels.Email.ListWorkflows,
+      async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
+        listAllWorkflows(accountOverrideScopeFromPayload(payload)),
+      { logger },
+    ),
   );
 
   disposers.push(
@@ -1147,6 +1160,35 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.GetAccountMailSettings,
+      async (_event, payload: { accountId: number }) =>
+        getAccountMailSettings(payload.accountId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SetAccountMailSettings,
+      async (
+        _event,
+        payload: {
+          accountId: number;
+          ticketPrefix?: string;
+          ticketNextNumber?: number;
+          ticketNumberPadding?: number;
+          threadNamespace?: string;
+        },
+      ) => {
+        const { accountId, ...partial } = payload;
+        return setAccountMailSettings(accountId, partial);
+      },
+      { logger, accountAccess: 'rw' },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.SetSnoozeSettings,
       async (_event, payload) => {
         setSnoozeSettings(payload);
@@ -1464,7 +1506,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.ListCannedResponses, async () => listCannedResponses(), { logger }),
+    registerIpcHandler(
+      IPCChannels.Email.ListCannedResponses,
+      async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
+        listCannedResponses(accountOverrideScopeFromPayload(payload)),
+      { logger },
+    ),
   );
 
   disposers.push(
@@ -1490,7 +1537,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.ListAiPrompts, async () => listAiPrompts(), { logger }),
+    registerIpcHandler(
+      IPCChannels.Email.ListAiPrompts,
+      async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
+        listAiPrompts(accountOverrideScopeFromPayload(payload)),
+      { logger },
+    ),
   );
 
   disposers.push(

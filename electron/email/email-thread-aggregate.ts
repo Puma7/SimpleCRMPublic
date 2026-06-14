@@ -7,7 +7,7 @@ import {
 } from '../database-schema';
 import type { AccountMailView, EmailMessageRow } from './email-store';
 import { listMessagesForMailScope } from './email-store';
-import { generateTicketCode } from './email-ticket';
+import { createTicketCodeForAccount } from './email-ticket';
 import { canonicalThreadId, resolveThreadListKey } from './email-thread-resolve';
 
 const MAX_REF_IDS = 64;
@@ -79,7 +79,8 @@ export function upsertThreadAggregates(threadId: string): void {
       `SELECT COUNT(*) AS cnt,
               MAX(date_received) AS last_at,
               MAX(CASE WHEN seen_local = 0 AND uid >= 0 THEN 1 ELSE 0 END) AS has_unread,
-              MAX(has_attachments) AS has_att
+              MAX(has_attachments) AS has_att,
+              MIN(account_id) AS account_id
        FROM ${EMAIL_MESSAGES_TABLE}
        WHERE thread_id = ? OR thread_id IN (
          SELECT alias_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE canonical_thread_id = ?
@@ -90,6 +91,7 @@ export function upsertThreadAggregates(threadId: string): void {
     last_at: string | null;
     has_unread: number;
     has_att: number;
+    account_id: number | null;
   };
   if (!stats || stats.cnt === 0) return;
   const ticketRow = db
@@ -98,16 +100,17 @@ export function upsertThreadAggregates(threadId: string): void {
        UNION SELECT ticket_code FROM ${EMAIL_MESSAGES_TABLE} WHERE thread_id = ? AND ticket_code IS NOT NULL LIMIT 1`,
     )
     .get(canon, canon) as { ticket_code: string } | undefined;
-  const ticketCode = ticketRow?.ticket_code ?? generateTicketCode();
+  const ticketCode = ticketRow?.ticket_code ?? createTicketCodeForAccount(stats.account_id);
   db.prepare(
-    `INSERT INTO ${EMAIL_THREADS_TABLE} (id, ticket_code, message_count, last_message_at, has_unread, has_attachments)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO ${EMAIL_THREADS_TABLE} (id, ticket_code, account_id, message_count, last_message_at, has_unread, has_attachments)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       account_id = COALESCE(${EMAIL_THREADS_TABLE}.account_id, excluded.account_id),
        message_count = excluded.message_count,
        last_message_at = excluded.last_message_at,
        has_unread = excluded.has_unread,
        has_attachments = excluded.has_attachments`,
-  ).run(canon, ticketCode, stats.cnt, stats.last_at, stats.has_unread, stats.has_att);
+  ).run(canon, ticketCode, stats.account_id, stats.cnt, stats.last_at, stats.has_unread, stats.has_att);
 }
 
 export function rebuildThreadAggregates(): void {

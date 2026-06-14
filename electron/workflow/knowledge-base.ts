@@ -7,11 +7,14 @@ import {
   WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
 } from '../database-schema';
 import { runEmbedding } from '../email/email-openai';
+import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
 
 export type KnowledgeBaseRow = {
   id: number;
   name: string;
   description: string | null;
+  account_id: number | null;
+  override_key: string | null;
   created_at: string;
 };
 
@@ -56,10 +59,11 @@ async function storeEmbedding(chunkId: number, text: string): Promise<void> {
     .run(JSON.stringify(vec), chunkId);
 }
 
-export function listKnowledgeBases(): KnowledgeBaseRow[] {
-  return getDb()
+export function listKnowledgeBases(scope?: AccountOverrideScope): KnowledgeBaseRow[] {
+  const rows = getDb()
     .prepare(`SELECT * FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} ORDER BY name ASC`)
     .all() as KnowledgeBaseRow[];
+  return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
 }
 
 function knowledgeMarkdownPath(knowledgeBaseId: number): string {
@@ -160,12 +164,12 @@ function syncChunksFromDocument(
   void storeEmbedding(id, capped.slice(0, 8000));
 }
 
-export function createKnowledgeBase(name: string, description?: string | null): number {
+export function createKnowledgeBase(name: string, description?: string | null, opts: { accountId?: number | null; overrideKey?: string | null } = {}): number {
   const r = getDb()
     .prepare(
-      `INSERT INTO ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (name, description, created_at) VALUES (?, ?, ?)`,
+      `INSERT INTO ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (name, description, account_id, override_key, created_at) VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(name.trim(), description ?? null, new Date().toISOString());
+    .run(name.trim(), description ?? null, opts.accountId ?? null, opts.overrideKey ?? null, new Date().toISOString());
   const id = Number(r.lastInsertRowid);
   const template = defaultMarkdownTemplate(name);
   fs.writeFileSync(knowledgeMarkdownPath(id), template, 'utf8');

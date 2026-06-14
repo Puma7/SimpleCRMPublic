@@ -20,6 +20,7 @@ import { taskAssignmentScopeResetMigration } from './0019_task_assignment_scope_
 import { authLoginSecurityMigration } from './0020_auth_login_security';
 import { returnsSchemaMigration } from './0021_returns_schema';
 import { returnsPortalSettingsMigration } from './0022_returns_portal_settings';
+import { accountScopeOverridesMigration } from './0023_account_scope_overrides';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -46,6 +47,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   authLoginSecurityMigration,
   returnsSchemaMigration,
   returnsPortalSettingsMigration,
+  accountScopeOverridesMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

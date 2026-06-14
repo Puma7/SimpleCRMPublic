@@ -401,7 +401,9 @@ async function request<T>(
   }
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "Content-Type": "application/json",
+  }
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json"
   }
   if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`
   const response = await fetchImpl(new URL(path, baseUrl).toString(), {
