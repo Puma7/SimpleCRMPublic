@@ -4,6 +4,7 @@ import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
 import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import { RendererTransportError } from "./renderer-transport"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
