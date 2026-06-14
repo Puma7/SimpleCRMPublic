@@ -64,6 +64,50 @@ describe('mail settings server-client UI', () => {
     expect(screen.queryByText(/lokale Anzeige/)).not.toBeInTheDocument();
   });
 
+  test('saving an existing account does NOT close the edit view (no onCancelEdit)', async () => {
+    // Regression: a successful update used to call onCancelEdit?.(), which the
+    // master-detail handled with setEditAccount(null) — the whole panel went
+    // blank until the user clicked the row again. After an update we want the
+    // form to stay on-screen with its values (plus a confirmation toast).
+    // Minimal Response-shape the transport expects (jsdom has no global Response).
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: { success: true } }),
+    } as Response);
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    }));
+    const onCreated = jest.fn();
+    const onCancelEdit = jest.fn();
+
+    render(
+      <AccountForm
+        onCreated={onCreated}
+        onCancelEdit={onCancelEdit}
+        editAccount={imapAccount()}
+      />,
+    );
+
+    // Change the display name + click "Aktualisieren".
+    const nameInput = await screen.findByLabelText(/Anzeigename/i);
+    fireEvent.change(nameInput, { target: { value: 'Neuer Name' } });
+
+    const saveBtn = screen.getByRole('button', { name: /Aktualisieren/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    // The critical assertion: the form must NOT request the parent to drop edit
+    // mode. (It used to call this and the master-detail blanked the panel.)
+    expect(onCancelEdit).not.toHaveBeenCalled();
+    // And the user's value is still on screen, not reset to whatever editAccount held.
+    expect((nameInput as HTMLInputElement).value).toBe('Neuer Name');
+  });
+
   test('export panel does not fall back to local IPC when HTTP transport has no server URL', async () => {
     const localInvoke = jest.fn();
     (window as any).electronAPI = { invoke: localInvoke };
@@ -401,6 +445,25 @@ function pop3Account() {
     keytar_account_key: '',
     protocol: 'pop3',
     pop3_host: 'pop.example.com',
+    pop3_port: 995,
+    pop3_tls: 1,
+    created_at: '',
+    updated_at: '',
+  };
+}
+
+function imapAccount() {
+  return {
+    id: 1,
+    display_name: 'Kontakt',
+    email_address: 'kontakt@example.com',
+    imap_host: 'imap.example.com',
+    imap_port: 993,
+    imap_tls: 1,
+    imap_username: 'kontakt@example.com',
+    keytar_account_key: '',
+    protocol: 'imap',
+    pop3_host: null,
     pop3_port: 995,
     pop3_tls: 1,
     created_at: '',
