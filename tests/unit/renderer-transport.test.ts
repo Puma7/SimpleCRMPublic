@@ -6640,6 +6640,108 @@ describe('renderer transport', () => {
     );
   });
 
+  test('email category multi-assignment: list / add (idempotent) / remove / set', async () => {
+    const fetchImpl = jest
+      .fn()
+      // ListMessageCategories
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      // AddMessageCategory: not yet assigned (62 NOT yet present) → list, then POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 21, messageId: 11, categoryId: 61 }], nextCursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { id: 22, messageId: 11, categoryId: 62 },
+      }, 201))
+      // AddMessageCategory: already assigned (62 already present) → list only, no POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      // RemoveMessageCategory: list to find the junction row id, then DELETE
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }))
+      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, DELETE 22, POST 63
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { id: 23, messageId: 11, categoryId: 63 },
+      }, 201));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    // 1. list
+    await expect(transport.invoke(IPCChannels.Email.ListMessageCategories, 11)).resolves.toEqual([
+      { id: 21, messageId: 11, categoryId: 61 },
+      { id: 22, messageId: 11, categoryId: 62 },
+    ]);
+
+    // 2. add new category
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: true, record: { id: 22, messageId: 11, categoryId: 62 } });
+
+    // 3. add already-assigned: idempotent, no POST issued
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // 4. remove
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: true });
+
+    // 5. set [61, 63] over current {61, 62} → DELETE 22, POST 63 (keep 21 alone)
+    await expect(transport.invoke(IPCChannels.Email.SetMessageCategories, {
+      messageId: 11,
+      categoryIds: [61, 63],
+    })).resolves.toEqual({ success: true });
+
+    // The 3rd Add call (already-assigned) must NOT have triggered a POST.
+    const postsToCategories = fetchImpl.mock.calls
+      .map((args: unknown[]) => args[1] as { method?: string } | undefined)
+      .filter((init) => init?.method === 'POST').length;
+    // Expected: 2 POSTs total (add-new + set-add 63). Set-diff keeps 61 unchanged.
+    expect(postsToCategories).toBe(2);
+  });
+
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
     const fetchImpl = jest
       .fn()

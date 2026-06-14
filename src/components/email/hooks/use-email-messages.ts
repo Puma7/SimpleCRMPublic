@@ -308,18 +308,31 @@ export function useEmailMessages() {
     async (messageIds: number[], categoryId: number) => {
       const ids = messageIds.filter((id) => typeof id === "number" && id > 0)
       if (ids.length === 0) return false
-      let ok = 0
+      // Drag-drop semantics: ADD the category (don't replace existing ones).
+      // Idempotent per message: the transport reports { added, alreadyAssigned }.
+      let added = 0
+      let already = 0
       try {
         for (const id of ids) {
-          await invokeRenderer(IPCChannels.Email.SetMessageCategory, { messageId: id, categoryId })
-          ok += 1
+          const result = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
+            messageId: id,
+            categoryId,
+          })) as { added?: boolean; alreadyAssigned?: boolean }
+          if (result?.added) added += 1
+          else if (result?.alreadyAssigned) already += 1
         }
-        toast.success(ok === 1 ? "Kategorie zugewiesen" : `${ok} Nachrichten kategorisiert`)
+        if (added === 0 && already > 0) {
+          toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
+        } else if (added > 0 && already > 0) {
+          toast.success(`${added} hinzugefügt, ${already} bereits drin`)
+        } else {
+          toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
+        }
         await refreshList({ preserveSelection: true })
         return true
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Kategorisieren fehlgeschlagen")
-        if (ok > 0) await refreshList({ preserveSelection: true })
+        if (added > 0) await refreshList({ preserveSelection: true })
         return false
       }
     },

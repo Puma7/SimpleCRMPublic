@@ -3227,6 +3227,100 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  // List all categories a message is in. Single source of truth for the
+  // category-chip UI on a row + the multi-select dialog.
+  [IPCChannels.Email.ListMessageCategories, ([messageId]) => ({
+    method: "GET",
+    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/categories`,
+    query: { limit: DEFAULT_LIST_LIMIT },
+    transform: (body) => listItems<EmailMessageCategoryRecord>(body),
+  })],
+  // Add a single category to a message. Idempotent: first checks whether the
+  // assignment already exists, then only POSTs if missing. Reports back
+  // { added: false } in the "already assigned" case so the UI can show a
+  // dezenter Toast instead of an error (the server would reject with 409).
+  [IPCChannels.Email.AddMessageCategory, ([payload]) => {
+    const input = objectPayload(payload, "email add-message-category payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const categoryId = positiveId(input.categoryId, "email category id")
+    return {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+      transform: async (body, context) => {
+        const existing = listItems<EmailMessageCategoryRecord>(body)
+        if (existing.some((r) => r.categoryId === categoryId)) {
+          return { added: false, alreadyAssigned: true }
+        }
+        const created = await context.fetchJson({
+          method: "POST",
+          path: `/api/v1/email/messages/${messageId}/categories`,
+          body: { categoryId },
+        })
+        return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+      },
+    }
+  }],
+  // Remove one category assignment by message + category (UI doesn't track the
+  // junction-row id). We look it up first, then DELETE that row's id.
+  [IPCChannels.Email.RemoveMessageCategory, ([payload]) => {
+    const input = objectPayload(payload, "email remove-message-category payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const categoryId = positiveId(input.categoryId, "email category id")
+    return {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+      transform: async (body, context) => {
+        const assignment = listItems<EmailMessageCategoryRecord>(body)
+          .find((record) => record.categoryId === categoryId)
+        if (!assignment) return { removed: false }
+        await context.fetchJson({
+          method: "DELETE",
+          path: `/api/v1/email/message-categories/${positiveId(assignment.id, "email message category id")}`,
+        })
+        return { removed: true }
+      },
+    }
+  }],
+  // Replace the message's category set with exactly the given ids. Used by the
+  // multi-select dialog. Computes the diff against the current assignments so
+  // unchanged rows are not touched (no spurious audit / event noise).
+  [IPCChannels.Email.SetMessageCategories, ([payload]) => {
+    const input = objectPayload(payload, "email set-message-categories payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const rawIds = Array.isArray(input.categoryIds) ? input.categoryIds : []
+    const targetIds = new Set(rawIds.map((id) => positiveId(id, "email category id")))
+    return {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+      transform: async (body, context) => {
+        const existing = listItems<EmailMessageCategoryRecord>(body)
+        const existingIds = new Set<number>(
+          existing
+            .map((r) => r.categoryId)
+            .filter((id): id is number => typeof id === "number"),
+        )
+        for (const record of existing) {
+          if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
+          await context.fetchJson({
+            method: "DELETE",
+            path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
+          })
+        }
+        for (const id of targetIds) {
+          if (existingIds.has(id)) continue
+          await context.fetchJson({
+            method: "POST",
+            path: `/api/v1/email/messages/${messageId}/categories`,
+            body: { categoryId: id },
+          })
+        }
+        return { success: true }
+      },
+    }
+  }],
   [IPCChannels.Email.ListInternalNotes, ([messageId]) => ({
     method: "GET",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/internal-notes`,
