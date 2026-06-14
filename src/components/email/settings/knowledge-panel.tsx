@@ -175,6 +175,7 @@ export function KnowledgePanel() {
         {
           name: newName.trim(),
           ...mutationScopeFields(scope),
+          ...(contextFilter !== "all" ? { knowledgeContext: contextFilter } : {}),
         },
       )) as { success: boolean; id?: number; error?: string }
       if (r && "success" in r && r.success === false) {

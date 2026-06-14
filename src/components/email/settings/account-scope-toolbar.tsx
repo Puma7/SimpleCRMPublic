@@ -14,7 +14,6 @@ import {
 import { invokeRenderer } from "@/services/transport"
 import type { EmailAccount } from "../types"
 import { isGlobalAccountOverride, type ScopedAccountOverrideRow } from "@shared/mail-account-overrides"
-
 export type AccountScopeValue = "all" | number
 
 type Props = {
@@ -94,4 +93,17 @@ export function mutationScopeFields(
     accountId: scope === "all" ? null : scope,
     overrideKey: overrideKey ?? null,
   }
+}
+
+/** Preserve global rows when the toolbar is in account scope (resolved inherited entry). */
+export function mutationScopeFieldsForRow(
+  scope: AccountScopeValue,
+  row: Pick<ScopedAccountOverrideRow, "account_id" | "override_key">,
+  overrideKey?: string | null,
+): { accountId: number | null; overrideKey: string | null } {
+  if (isGlobalAccountOverride(row as ScopedAccountOverrideRow)) {
+    return { accountId: null, overrideKey: overrideKey ?? row.override_key ?? null }
+  }
+  const accountId = row.account_id ?? (scope === "all" ? null : scope)
+  return { accountId, overrideKey: overrideKey ?? row.override_key ?? null }
 }

@@ -77,5 +77,5 @@ export function AccountOverrideActions({
 export function defaultOverrideKey(prefix: string, rowId: number, existing: string | null | undefined): string {
   const trimmed = existing?.trim()
   if (trimmed) return trimmed
-  return `${prefix}.${rowId}`
+  return `id:${rowId}`
 }

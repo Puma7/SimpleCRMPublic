@@ -473,19 +473,23 @@ async function generateReplyDraftText(
 
   const query = messageBodyForReply(context.message).slice(0, 2000);
   if (query.length >= 8) {
-    const kbBlock = await withWorkspaceTransaction(
-      options.db,
-      { workspaceId: context.message.workspace_id, role: 'system' },
-      async (trx) => buildKnowledgePromptAppend(
-        trx,
-        context.message.workspace_id,
-        context.message.account_id === null ? null : Number(context.message.account_id),
-        'inbound',
-        query,
-      ),
-      { applySession: options.applyWorkspaceSession },
-    );
-    if (kbBlock) user = `${user}${kbBlock}`;
+    try {
+      const kbBlock = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: context.message.workspace_id, role: 'system' },
+        async (trx) => buildKnowledgePromptAppend(
+          trx,
+          context.message.workspace_id,
+          context.message.account_id === null ? null : Number(context.message.account_id),
+          'inbound',
+          query,
+        ),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (kbBlock) user = `${user}${kbBlock}`;
+    } catch {
+      // KB lookup must not block reply generation.
+    }
   }
 
   try {

@@ -14,6 +14,8 @@ import { useMailWorkspace } from "../workspace-context"
 import { invokeRenderer } from "@/services/transport"
 
 const PAGE_SIZE = 100
+/** Parallel AddMessageCategory IPC calls during bulk drag-drop (HTTP: 2 req each). */
+const BULK_CATEGORY_ASSIGN_CONCURRENCY = 8
 
 type HandleSyncOptions = {
   onAfterSync?: (accountId: number) => void | Promise<void>
@@ -314,27 +316,30 @@ export function useEmailMessages() {
       let already = 0
       let noop = 0
       try {
-        for (const id of ids) {
-          const result = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
-            messageId: id,
-            categoryId,
-          })) as { added?: boolean; alreadyAssigned?: boolean }
-          if (result?.added) added += 1
-          else if (result?.alreadyAssigned) already += 1
-          else noop += 1
+        for (let offset = 0; offset < ids.length; offset += BULK_CATEGORY_ASSIGN_CONCURRENCY) {
+          const batch = ids.slice(offset, offset + BULK_CATEGORY_ASSIGN_CONCURRENCY)
+          const outcomes = await Promise.allSettled(
+            batch.map((id) =>
+              invokeRenderer(IPCChannels.Email.AddMessageCategory, {
+                messageId: id,
+                categoryId,
+              }),
+            ),
+          )
+          for (const outcome of outcomes) {
+            if (outcome.status === "rejected") throw outcome.reason
+            const result = outcome.value as { added?: boolean; alreadyAssigned?: boolean }
+            if (result?.added) added += 1
+            else if (result?.alreadyAssigned) already += 1
+            else noop += 1
+          }
         }
         if (added === 0 && already === 0) {
           toast.error(
             noop > 0
-              ? "Kategorisieren fehlgeschlagen"
+              ? "Kategorisieren fehlgeschlagen — unerwartete Serverantwort"
               : "Keine Nachricht konnte kategorisiert werden",
           )
-          return false
-        }
-        // Defensive: if every response had neither added nor alreadyAssigned set,
-        // something unexpected came back. Don't pretend success — surface it.
-        if (added === 0 && already === 0) {
-          toast.error("Kategorisieren fehlgeschlagen — unerwartete Serverantwort")
           return false
         }
         if (added === 0 && already > 0) {
@@ -345,7 +350,7 @@ export function useEmailMessages() {
           toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
         }
         await refreshList({ preserveSelection: true })
-        return added > 0 || already > 0
+        return true
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Kategorisieren fehlgeschlagen")
         if (added > 0) await refreshList({ preserveSelection: true })

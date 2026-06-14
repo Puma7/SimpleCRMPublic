@@ -32,6 +32,10 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './workspace-context';
+import {
+  resolveEmailAccountReference,
+  type EmailAccountReference,
+} from './resolve-email-account-reference';
 
 export type PostgresSpamReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -42,10 +46,6 @@ type SpamListEntryRow = Selectable<EmailSpamListEntriesTable>;
 type SpamLearningEventRow = Selectable<EmailSpamLearningEventsTable>;
 type SpamDecisionRow = Selectable<EmailSpamDecisionsTable>;
 type SpamFeatureStatRow = Selectable<EmailSpamFeatureStatsTable>;
-type EmailAccountReference = Readonly<{
-  id: number;
-  sourceSqliteId: number;
-}>;
 type EmailMessageReference = Readonly<{
   id: number;
   sourceSqliteId: number;
@@ -782,24 +782,6 @@ function mutationToSpamDecisionPatch(values: SpamDecisionMutationInput): Partial
     ...(values.source === undefined ? {} : { source: values.source }),
     ...(values.breakdown === undefined ? {} : { breakdown_json: values.breakdown }),
     ...(values.modelVersion === undefined ? {} : { model_version: values.modelVersion }),
-  };
-}
-
-async function resolveEmailAccountReference(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-  accountId: number,
-): Promise<EmailAccountReference | null> {
-  const row = await trx
-    .selectFrom('email_accounts')
-    .select(['id', 'source_sqlite_id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', accountId)
-    .executeTakeFirst();
-  if (!row) return null;
-  return {
-    id: Number(row.id),
-    sourceSqliteId: Number(row.source_sqlite_id),
   };
 }
 

@@ -222,9 +222,13 @@ export async function generateReplyDraftText(
 
   const query = messageBodyForReply(row).slice(0, 2000);
   if (query.length >= 8) {
-    const chunks = await searchKnowledgeForWorkflow(row.account_id, 'inbound', query, 5);
-    const kbBlock = formatKnowledgeChunksForPrompt(chunks);
-    if (kbBlock) user = `${user}${kbBlock}`;
+    try {
+      const chunks = await searchKnowledgeForWorkflow(row.account_id, 'inbound', query, 5);
+      const kbBlock = formatKnowledgeChunksForPrompt(chunks);
+      if (kbBlock) user = `${user}${kbBlock}`;
+    } catch {
+      // KB lookup must not block reply generation.
+    }
   }
 
   try {

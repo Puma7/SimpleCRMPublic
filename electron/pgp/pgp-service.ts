@@ -83,6 +83,7 @@ export async function rotateIdentityPassphrase(
   nextPassphrase: string,
   userId: string = LOCAL_OWNER_USER_ID,
 ): Promise<void> {
+  if (!nextPassphrase.trim()) throw new Error('Neue Passphrase darf nicht leer sein');
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   const identity = db

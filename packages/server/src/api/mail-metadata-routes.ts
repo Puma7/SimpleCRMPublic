@@ -2766,7 +2766,7 @@ function parseEmailCannedResponseMutationBody(
 
   const values: EmailCannedResponseMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['title', 'body', 'sortOrder']);
+  const allowedFields = new Set(['title', 'body', 'sortOrder', 'accountId', 'overrideKey']);
   let hasBody = false;
 
   for (const key of Object.keys(body)) {
@@ -2790,6 +2790,25 @@ function parseEmailCannedResponseMutationBody(
     const sortOrder = normalizeIntegerBody(body.sortOrder, 'sortOrder', 0);
     if (sortOrder.ok) values.sortOrder = sortOrder.value;
     else errors.push({ field: 'sortOrder', message: sortOrder.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    if (body.accountId === null) {
+      values.accountId = null;
+    } else {
+      const accountId = normalizePositiveBodyInt(body.accountId, 'accountId');
+      if (accountId.ok) values.accountId = accountId.value;
+      else errors.push({ field: 'accountId', message: accountId.message });
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'overrideKey')) {
+    if (body.overrideKey === null) {
+      values.overrideKey = null;
+    } else if (typeof body.overrideKey === 'string') {
+      const trimmed = body.overrideKey.trim();
+      values.overrideKey = trimmed || null;
+    } else {
+      errors.push({ field: 'overrideKey', message: 'overrideKey muss ein String oder null sein' });
+    }
   }
 
   if (errors.length > 0) {

@@ -241,7 +241,7 @@ DO UPDATE SET
   email_workflow_forward_dedup: workflowForwardDedupSql(),
   workflow_knowledge_bases: `INSERT INTO workflow_knowledge_bases (
   workspace_id, source_sqlite_id, name, description, account_source_sqlite_id, account_id, override_key,
-  source_row, imported_in_run_id, created_at, updated_at
+  knowledge_context, source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
   $1, (r.source_row->>'id')::bigint,
@@ -250,6 +250,7 @@ SELECT
   NULLIF(r.source_row->>'account_id', '')::bigint,
   a.id,
   NULLIF(r.source_row->>'override_key', ''),
+  NULLIF(r.source_row->>'knowledge_context', ''),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
 ${rowsFrom}
 LEFT JOIN email_accounts a
@@ -264,6 +265,7 @@ DO UPDATE SET
   account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
   account_id = EXCLUDED.account_id,
   override_key = EXCLUDED.override_key,
+  knowledge_context = EXCLUDED.knowledge_context,
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   created_at = EXCLUDED.created_at,

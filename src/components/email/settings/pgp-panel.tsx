@@ -163,6 +163,10 @@ export function PgpPanel() {
                 disabled={rotationIdentityId === null}
                 onClick={async () => {
                   if (rotationIdentityId === null) return
+                  if (!rotationNextPassphrase.trim()) {
+                    toast.error("Neue Passphrase darf nicht leer sein")
+                    return
+                  }
                   try {
                     await invokeRenderer(IPCChannels.Pgp.RotateIdentityPassphrase, {
                       id: rotationIdentityId,

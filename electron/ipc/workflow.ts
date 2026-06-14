@@ -290,13 +290,27 @@ export function registerWorkflowHandlers(options: {
           knowledgeContext?: string | null;
         },
       ) => {
-        updateKnowledgeBase(payload.id, {
-          name: payload.name,
-          description: payload.description,
-          accountId: payload.accountId,
-          overrideKey: payload.overrideKey,
-          knowledgeContext: payload.knowledgeContext ?? null,
-        });
+        const patch: {
+          name?: string;
+          description?: string | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
+          knowledgeContext?: string | null;
+        } = {};
+        if (payload.name !== undefined) patch.name = payload.name;
+        if (Object.prototype.hasOwnProperty.call(payload, 'description')) {
+          patch.description = payload.description ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'accountId')) {
+          patch.accountId = payload.accountId ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'overrideKey')) {
+          patch.overrideKey = payload.overrideKey ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'knowledgeContext')) {
+          patch.knowledgeContext = payload.knowledgeContext ?? null;
+        }
+        updateKnowledgeBase(payload.id, patch);
         return { success: true as const };
       },
       { logger },

@@ -5,6 +5,11 @@ import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
 import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 import { RendererTransportError } from "./renderer-transport"
+import {
+  accountOverrideScopeFromPayload,
+  resolveScopedAccountOverrides,
+  type ScopedAccountOverrideRow,
+} from "@shared/mail-account-overrides"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -2958,7 +2963,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/workflow-knowledge-bases",
     query: scopedListQuery(payload),
-    transform: (body) => listItems<WorkflowKnowledgeBaseRecord>(body).map(mapWorkflowKnowledgeBaseRecord),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapWorkflowKnowledgeBaseRecord),
   })],
   [IPCChannels.Email.CreateKnowledgeBase, ([payload]) => {
     const input = objectPayload(payload, "workflow knowledge base payload")
@@ -3467,7 +3472,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/email/canned-responses",
     query: scopedListQuery(payload),
-    transform: (body) => listItems<EmailCannedResponseRecord>(body).map(mapEmailCannedResponseRecord),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapEmailCannedResponseRecord),
   })],
   [IPCChannels.Email.SaveCannedResponse, ([payload]) => {
     const input = objectPayload(payload, "email canned response payload")
@@ -3636,7 +3641,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/ai/prompts",
     query: scopedListQuery(payload),
-    transform: (body) => listItems<AiPromptRecord>(body).map(mapAiPromptRecord),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapAiPromptRecord),
   })],
   [IPCChannels.Email.SaveAiPrompt, ([payload]) => {
     const input = objectPayload(payload, "email ai prompt payload")
@@ -6007,6 +6012,16 @@ function scopedListQuery(
     limit: DEFAULT_LIST_LIMIT,
     accountId: accountScopeQueryValue(accountOverrideScopePayloadValue(payload)),
   })
+}
+
+function scopedAccountOverrideListTransform<TRow extends ScopedAccountOverrideRow>(
+  payload: unknown,
+  body: unknown,
+  mapRow: (record: never) => TRow,
+): TRow[] {
+  const scope = accountOverrideScopeFromPayload(accountOverrideScopePayloadValue(payload));
+  const rows = listItems(body).map((record) => mapRow(record as never));
+  return resolveScopedAccountOverrides(rows, scope ?? "all");
 }
 
 function optionalPositiveQueryId(value: unknown, label: string): number | undefined {

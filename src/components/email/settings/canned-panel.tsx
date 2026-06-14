@@ -20,6 +20,7 @@ import {
   ScopeBadge,
   listPayloadForScope,
   mutationScopeFields,
+  mutationScopeFieldsForRow,
   type AccountScopeValue,
 } from "./account-scope-toolbar"
 import { AccountOverrideActions } from "./account-override-actions"
@@ -47,7 +48,7 @@ export function CannedPanel() {
         id,
         title,
         body,
-        ...mutationScopeFields(scope, row.override_key),
+        ...mutationScopeFieldsForRow(scope, row, row.override_key),
       })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Textbaustein konnte nicht gespeichert werden.")

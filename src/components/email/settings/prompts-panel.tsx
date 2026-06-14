@@ -37,6 +37,7 @@ import {
   ScopeBadge,
   listPayloadForScope,
   mutationScopeFields,
+  mutationScopeFieldsForRow,
   type AccountScopeValue,
 } from "./account-scope-toolbar"
 import { AccountOverrideActions } from "./account-override-actions"
@@ -195,7 +196,7 @@ export function PromptsPanel() {
         label: label.trim(),
         userTemplate,
         profileId,
-        ...mutationScopeFields(scope, selected.override_key),
+        ...mutationScopeFieldsForRow(scope, selected, selected.override_key),
       })
       setDirty(false)
       toast.success("Prompt gespeichert.")

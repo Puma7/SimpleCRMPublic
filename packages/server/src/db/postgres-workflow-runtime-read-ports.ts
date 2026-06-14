@@ -48,6 +48,10 @@ import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
 } from './workspace-context';
+import {
+  resolveEmailAccountReference,
+  type EmailAccountReference,
+} from './resolve-email-account-reference';
 
 export type PostgresWorkflowRuntimeReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -71,10 +75,6 @@ type WorkflowKnowledgeBaseRow = Selectable<WorkflowKnowledgeBasesTable>;
 type WorkflowKnowledgeBaseReference = Readonly<{
   id: number;
   sourceSqliteId: number;
-}>;
-type EmailAccountReference = Readonly<{
-  id: number;
-  sourceSqliteId: number | null;
 }>;
 type WorkflowKnowledgeChunkRow = Selectable<WorkflowKnowledgeChunksTable>;
 type WorkflowDelayedJobRow = Selectable<WorkflowDelayedJobsTable>;
@@ -585,10 +585,14 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
-          if (input.accountId !== undefined) {
+          if (input.accountId === undefined) {
+            query = query.where('account_id', 'is', null);
+          } else {
+            const account = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
+            if (!account) return { items: [], nextCursor: null };
             query = query.where((eb) => eb.or([
               eb('account_id', 'is', null),
-              eb('account_id', '=', input.accountId!),
+              eb('account_id', '=', account.id),
             ]));
           }
           const search = input.search?.trim();
@@ -1173,24 +1177,6 @@ function mutationToKnowledgeBasePatch(
     }),
     ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
     ...(values.knowledgeContext === undefined ? {} : { knowledge_context: values.knowledgeContext }),
-  };
-}
-
-async function resolveEmailAccountReference(
-  trx: import('./workspace-context').WorkspaceTransaction,
-  workspaceId: string,
-  accountId: number,
-): Promise<EmailAccountReference | null> {
-  const row = await trx
-    .selectFrom('email_accounts')
-    .select(['id', 'source_sqlite_id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', accountId)
-    .executeTakeFirst();
-  if (!row) return null;
-  return {
-    id: Number(row.id),
-    sourceSqliteId: row.source_sqlite_id === null ? null : Number(row.source_sqlite_id),
   };
 }
 
