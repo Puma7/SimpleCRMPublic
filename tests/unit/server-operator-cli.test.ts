@@ -32,6 +32,13 @@ function runWithFakeDocker(
         'esac',
         // restore-compose.sh probes `docker inspect` for health.
         'case "$1" in inspect) echo "healthy"; exit 0 ;; esac',
+        // Optionally fail the plain migrate-apply (but not --check / --repair-checksums).
+        'if [ -n "${FAKE_FAIL_MIGRATE:-}" ]; then',
+        '  case "$*" in',
+        '    *--check*|*--repair-checksums*) : ;;',
+        '    *migrate.js*) exit 1 ;;',
+        '  esac',
+        'fi',
         'exit 0',
         '',
       ].join('\n'),
@@ -137,5 +144,45 @@ describe('operator CLI compose-project consistency', () => {
     );
     expect(ok.status).toBe(0);
     expect(new Set(ok.projectFlags)).toEqual(new Set(['docker']));
+  }));
+
+  test('the default update does NOT repair checksums; --repair-checksums opts in', ranOrSkipped(() => {
+    const plain = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup']);
+    expect(plain.status).toBe(0);
+    expect(plain.log).not.toContain('--repair-checksums');
+
+    const repair = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup', '--repair-checksums'],
+    );
+    expect(repair.status).toBe(0);
+    expect(repair.log).toContain('--repair-checksums');
+  }));
+
+  test('a failed migration points the operator at REPAIR_CHECKSUMS instead of auto-blessing drift', ranOrSkipped(() => {
+    const failed = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { FAKE_FAIL_MIGRATE: '1' } },
+    );
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('REPAIR_CHECKSUMS=1');
+    // It must not have started api/caddy after a failed migration.
+    expect(failed.log).not.toContain('up -d api caddy');
+  }));
+
+  test('default-project derivation follows COMPOSE_FILE, not the script location', ranOrSkipped(() => {
+    // A compose file in a directory named "custom" must yield project "custom".
+    const dir = mkdtempSync(join(tmpdir(), 'simplecrm-customcompose-'));
+    try {
+      const customDir = join(dir, 'custom');
+      const composeFile = join(customDir, 'docker-compose.yml');
+      execFileSync('mkdir', ['-p', customDir]);
+      writeFileSync(composeFile, "services: {}\n");
+      const res = runWithFakeDocker(['docker/simplecrm', 'ps'], { env: { COMPOSE_FILE: composeFile } });
+      expect(new Set(res.projectFlags)).toEqual(new Set(['custom']));
+      // --project-directory pins the project (and its .env) to that directory.
+      expect(res.log).toContain(`--project-directory ${customDir}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }));
 });

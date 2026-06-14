@@ -157,19 +157,24 @@ sh docker/update.sh
 ```
 
 This does the whole safe sequence in order and stops on the first failure:
-pull `origin/main` → back up the database → rebuild images → reconcile
-migration checksums and apply pending migrations → restart `api` + `caddy` →
-verify. Useful flags / env:
+pull `origin/main` → back up the database → rebuild images → apply pending
+migrations → restart `api` + `caddy` → verify. Useful flags / env:
 
 ```sh
 BRANCH=some-branch sh docker/update.sh   # update to a specific branch
 SKIP_PULL=1   sh docker/update.sh        # use the current checkout, don't git pull
 SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recommended)
 FORCE_RESET=1 sh docker/update.sh        # discard local changes to tracked files
+REPAIR_CHECKSUMS=1 sh docker/update.sh   # opt into the checksum repair (see below)
 ```
 
 The operator wrapper exposes the same thing as `sh docker/simplecrm update`
-(alias `upgrade`; accepts `--no-pull` / `--no-backup` / `--branch <name>`).
+(alias `upgrade`; accepts `--no-pull` / `--no-backup` / `--repair-checksums` /
+`--branch <name>`).
+
+The updater does NOT repair checksums by default — that would silently bless a
+genuine migration drift. If migrate fails with "Checksum mismatch", review the
+change and re-run once with `REPAIR_CHECKSUMS=1` (the error message points here).
 
 If a stack from an older install still runs under the project name `simplecrm`,
 the updater refuses to proceed (it would otherwise start a second, empty stack)
