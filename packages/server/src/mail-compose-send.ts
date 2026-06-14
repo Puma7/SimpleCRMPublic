@@ -36,6 +36,7 @@ import {
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
+import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
 import type {
   ServerImapSentCopyAppendInput,
   ServerImapSentCopyAppendResult,
@@ -1807,32 +1808,6 @@ function formatServerTicketSequence(value: number, padding: number): string {
   return String(normalizedValue).padStart(normalizedPadding, '0');
 }
 
-function normalizeServerTicketPrefix(prefix?: string | null): string {
-  const normalized = String(prefix ?? 'SCR')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '')
-    .slice(0, 12);
-  return normalized || 'SCR';
-}
-
-function defaultServerTicketPrefix(account: ComposeSendAccount): string {
-  const local = account.emailAddress.split('@')[0] ?? '';
-  const fromEmail = local.replace(/[^a-z0-9]/gi, '').slice(0, 10);
-  const base = fromEmail.length >= 2
-    ? fromEmail
-    : account.displayName.replace(/[^a-z0-9]/gi, '').slice(0, 10);
-  const normalizedBase = normalizeServerTicketPrefix(base.length >= 2 ? base : `A${account.id}`);
-  const suffix = String(account.id);
-  const baseLength = Math.max(1, 12 - suffix.length);
-  return normalizeServerTicketPrefix(`${normalizedBase.slice(0, baseLength)}${suffix}`);
-}
-
-function defaultServerThreadNamespace(accountId: number, ticketPrefix: string): string {
-  const prefix = normalizeServerTicketPrefix(ticketPrefix);
-  return `${prefix.toLowerCase()}-${accountId}`;
-}
-
 async function allocateNextTicketCodeForAccount(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -1840,17 +1815,17 @@ async function allocateNextTicketCodeForAccount(
   nowInput?: Date,
 ): Promise<string> {
   const now = nowInput ?? new Date();
-  const defaultPrefix = defaultServerTicketPrefix(account);
+  const defaultSettings = buildDefaultServerAccountMailSettings(account);
   await trx
     .insertInto('email_account_mail_settings')
     .values({
       workspace_id: workspaceId,
       account_source_sqlite_id: account.sourceSqliteId,
       account_id: account.id,
-      ticket_prefix: defaultPrefix,
-      ticket_next_number: 1,
-      ticket_number_padding: 6,
-      thread_namespace: defaultServerThreadNamespace(account.id, defaultPrefix),
+      ticket_prefix: defaultSettings.ticketPrefix,
+      ticket_next_number: defaultSettings.ticketNextNumber,
+      ticket_number_padding: defaultSettings.ticketNumberPadding,
+      thread_namespace: defaultSettings.threadNamespace,
       source_row: serverApiSourceRow(),
       imported_in_run_id: null,
       created_at: now,

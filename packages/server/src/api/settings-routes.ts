@@ -3,10 +3,12 @@ import type {
   ApiRequest,
   ApiResponse,
   EmailAccountMailSettingsMutationInput,
+  EmailAccountRecord,
   MssqlSettingsInput,
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
+import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import {
   data,
   error,
@@ -380,39 +382,55 @@ async function handleRspamdConnectionTest(req: ApiRequest): Promise<ApiResponse>
 }
 
 
+async function resolveEmailAccountByPublicId(
+  emailAccounts: NonNullable<ServerApiPorts['emailAccounts']>,
+  workspaceId: string,
+  accountId: number,
+): Promise<EmailAccountRecord | null> {
+  const direct = await emailAccounts.get({ workspaceId, id: accountId });
+  if (direct) return direct;
+  const accounts = await emailAccounts.list({ workspaceId });
+  return accounts.items.find((account) => account.sourceSqliteId === accountId) ?? null;
+}
+
 async function handleAccountMailSettings(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!ports.emailAccountMailSettings) return error(503, 'account_mail_settings_unavailable', 'Account-Mail-Settings API nicht konfiguriert');
+  if (!ports.emailAccountMailSettings || !ports.emailAccounts) return error(503, 'account_mail_settings_unavailable', 'Account-Mail-Settings API nicht konfiguriert');
 
   if (req.method === 'GET') {
     const accountId = parseOptionalPositiveInt(req.query?.accountId);
     if (accountId == null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+    const account = await resolveEmailAccountByPublicId(ports.emailAccounts, principal.workspaceId, accountId);
+    if (!account) return error(404, 'email_account_not_found', 'E-Mail-Konto wurde nicht gefunden');
     const settings = await ports.emailAccountMailSettings.get({
       workspaceId: principal.workspaceId,
-      accountId,
+      accountId: account.id,
     });
-    return data(200, settings ?? {
-      accountId,
-      ticketPrefix: `ACC${accountId}`,
-      ticketNextNumber: 1,
-      ticketNumberPadding: 6,
-      threadNamespace: `account-${accountId}`,
-      updatedAt: null,
-    });
+    return data(200, settings ?? buildDefaultServerAccountMailSettings(account));
   }
 
   if (req.method === 'PATCH') {
     const parsed = parseAccountMailSettingsPayload(req.body);
     if (!parsed.ok) return parsed.response;
-    const settings = await ports.emailAccountMailSettings.set({
-      workspaceId: principal.workspaceId,
-      actorUserId: principal.userId,
-      values: parsed.values,
-    });
+    const account = await resolveEmailAccountByPublicId(ports.emailAccounts, principal.workspaceId, parsed.values.accountId);
+    if (!account) return error(404, 'email_account_not_found', 'E-Mail-Konto wurde nicht gefunden');
+    let settings;
+    try {
+      settings = await ports.emailAccountMailSettings.set({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        values: { ...parsed.values, accountId: account.id },
+      });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      if (message.includes('ticketPrefix already used')) return error(409, 'duplicate_ticket_prefix', 'Ticket-Prefix ist bereits fuer ein anderes Konto vergeben');
+      if (message.includes('threadNamespace already used')) return error(409, 'duplicate_thread_namespace', 'Thread-Namespace ist bereits fuer ein anderes Konto vergeben');
+      throw caught;
+    }
     return data(200, settings);
   }
 

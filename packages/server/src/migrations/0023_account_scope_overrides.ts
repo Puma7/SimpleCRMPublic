@@ -46,6 +46,8 @@ END $$;`,
 
     'ALTER TABLE email_thread_aliases ADD COLUMN IF NOT EXISTS account_source_sqlite_id bigint;',
     'ALTER TABLE email_thread_aliases ADD COLUMN IF NOT EXISTS account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE;',
+    'ALTER TABLE email_thread_aliases DROP CONSTRAINT IF EXISTS email_thread_aliases_workspace_id_alias_thread_id_canonical_thread_id_key;',
+    'ALTER TABLE email_thread_aliases DROP CONSTRAINT IF EXISTS email_thread_aliases_workspace_alias_canonical_key;',
     'CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_account_pair_all_idx ON email_thread_aliases (workspace_id, account_id, alias_thread_id, canonical_thread_id);',
     'CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_account_pair_idx ON email_thread_aliases (workspace_id, account_id, alias_thread_id, canonical_thread_id) WHERE account_id IS NOT NULL;',
     'CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_global_pair_idx ON email_thread_aliases (workspace_id, alias_thread_id, canonical_thread_id) WHERE account_id IS NULL;',

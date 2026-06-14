@@ -75,6 +75,7 @@ import type {
   EmailThreadRecord,
   EmailThreadSplitMessagePortResult,
 } from '../api/types';
+import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import type {
   EmailAccountMailSettingsTable,
   EmailAccountSignaturesTable,
@@ -1331,7 +1332,10 @@ export function createPostgresEmailAccountMailSettingsPort(options: PostgresMail
             .selectFrom('email_account_mail_settings')
             .select(emailAccountMailSettingsSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('account_id', '=', input.accountId)
+            .where((eb) => eb.or([
+              eb('account_id', '=', input.accountId),
+              eb('account_source_sqlite_id', '=', input.accountId),
+            ]))
             .executeTakeFirst();
           return row ? mapEmailAccountMailSettingsRow(row) : null;
         },
@@ -1346,29 +1350,51 @@ export function createPostgresEmailAccountMailSettingsPort(options: PostgresMail
         async (trx) => {
           const account = await trx
             .selectFrom('email_accounts')
-            .select(['id', 'source_sqlite_id'])
+            .select(['id', 'source_sqlite_id', 'display_name', 'email_address'])
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', values.accountId)
+            .where((eb) => eb.or([
+              eb('id', '=', values.accountId),
+              eb('source_sqlite_id', '=', values.accountId),
+            ]))
             .executeTakeFirstOrThrow();
           const now = new Date();
           const current = await trx
             .selectFrom('email_account_mail_settings')
             .select(emailAccountMailSettingsSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('account_id', '=', values.accountId)
+            .where('account_id', '=', account.id)
             .executeTakeFirst();
+          const defaultSettings = buildDefaultServerAccountMailSettings({
+            id: Number(account.id),
+            displayName: account.display_name,
+            emailAddress: account.email_address,
+          });
           const next = {
-            ticket_prefix: values.ticketPrefix ?? current?.ticket_prefix ?? `ACC${values.accountId}`,
-            ticket_next_number: values.ticketNextNumber ?? Number(current?.ticket_next_number ?? 1),
-            ticket_number_padding: values.ticketNumberPadding ?? Number(current?.ticket_number_padding ?? 6),
-            thread_namespace: values.threadNamespace ?? current?.thread_namespace ?? `account-${values.accountId}`,
+            ticket_prefix: values.ticketPrefix ?? current?.ticket_prefix ?? defaultSettings.ticketPrefix,
+            ticket_next_number: values.ticketNextNumber ?? Number(current?.ticket_next_number ?? defaultSettings.ticketNextNumber),
+            ticket_number_padding: values.ticketNumberPadding ?? Number(current?.ticket_number_padding ?? defaultSettings.ticketNumberPadding),
+            thread_namespace: values.threadNamespace ?? current?.thread_namespace ?? defaultSettings.threadNamespace,
           };
+          const conflicting = await trx
+            .selectFrom('email_account_mail_settings')
+            .select(['account_id', 'ticket_prefix', 'thread_namespace'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '!=', account.id)
+            .where((eb) => eb.or([
+              eb('ticket_prefix', '=', next.ticket_prefix),
+              eb('thread_namespace', '=', next.thread_namespace),
+            ]))
+            .executeTakeFirst();
+          if (conflicting) {
+            if (conflicting.ticket_prefix === next.ticket_prefix) throw new Error('ticketPrefix already used by another account');
+            throw new Error('threadNamespace already used by another account');
+          }
           const row = await trx
             .insertInto('email_account_mail_settings')
             .values({
               workspace_id: input.workspaceId,
-              account_source_sqlite_id: Number(account.source_sqlite_id ?? values.accountId),
-              account_id: values.accountId,
+              account_source_sqlite_id: Number(account.source_sqlite_id ?? account.id),
+              account_id: account.id,
               ...next,
               source_row: serverApiSourceRow(),
               imported_in_run_id: null,
@@ -2690,6 +2716,7 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
+    .where('account_id', 'is', null)
     .executeTakeFirst();
   if (existing?.id) return existing.id;
 
@@ -2725,6 +2752,7 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
+    .where('account_id', 'is', null)
     .executeTakeFirst();
   if (existingAfterConflict?.id) return existingAfterConflict.id;
   throw new Error('email thread ticket insert failed');

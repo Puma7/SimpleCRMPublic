@@ -65,6 +65,7 @@ jest.mock('../../electron/email/email-ticket', () => ({
   extractTicketFromSubject: (s: string) => (s.includes('T-99') ? 'T-99' : null),
   extractKnownTicketFromSubject: (s: string) => (s.includes('T-99') ? 'T-99' : null),
   generateTicketCode: () => 'T-NEW',
+  createTicketCodeForAccount: () => 'T-NEW',
   getOrCreateThreadForTicket: () => 'thread-x',
 }));
 

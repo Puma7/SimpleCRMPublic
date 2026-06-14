@@ -5,7 +5,12 @@ import {
   type AccountMailSettings,
 } from '../../shared/account-mail-settings';
 import { generateTicketCode } from '../../packages/core/src/email';
-import { EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE, EMAIL_ACCOUNTS_TABLE } from '../database-schema';
+import {
+  EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE,
+  EMAIL_ACCOUNTS_TABLE,
+  EMAIL_MESSAGES_TABLE,
+  EMAIL_THREADS_TABLE,
+} from '../database-schema';
 import { getDb } from '../sqlite-service';
 
 type AccountRow = {
@@ -44,6 +49,35 @@ function rowToSettings(row: SettingsRow): AccountMailSettings {
     },
     row.account_id,
   );
+}
+
+function maxIssuedTicketSequence(accountId: number, prefix: string): number {
+  const likePattern = `${prefix}-%`;
+  let maxSequence = 0;
+  const threadStmt = getDb().prepare(
+    `SELECT ticket_code FROM ${EMAIL_THREADS_TABLE}
+       WHERE account_id = ? AND ticket_code LIKE ?`,
+  );
+  const messageStmt = getDb().prepare(
+    `SELECT ticket_code FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND ticket_code LIKE ?`,
+  );
+  const rows = [
+    ...(typeof threadStmt.all === 'function'
+      ? threadStmt.all(accountId, likePattern) as { ticket_code?: string | null }[]
+      : []),
+    ...(typeof messageStmt.all === 'function'
+      ? messageStmt.all(accountId, likePattern) as { ticket_code?: string | null }[]
+      : []),
+  ];
+  for (let index = 0; index < rows.length; index += 1) {
+    const code = String(rows[index]?.ticket_code ?? '').toUpperCase();
+    if (!code.startsWith(`${prefix}-`)) continue;
+    const suffix = code.slice(prefix.length + 1);
+    if (!/^\d+$/.test(suffix)) continue;
+    maxSequence = Math.max(maxSequence, Number(suffix));
+  }
+  return maxSequence;
 }
 
 export function getAccountMailSettings(accountId: number): AccountMailSettings {
@@ -94,6 +128,13 @@ export function setAccountMailSettings(
     );
   }
 
+  const issuedMax = maxIssuedTicketSequence(accountId, next.ticketPrefix);
+  if (next.ticketNextNumber <= issuedMax) {
+    throw new Error(
+      `Die nächste Ticketnummer muss größer als die bereits vergebene Nummer ${issuedMax} für Präfix „${next.ticketPrefix}“ sein.`,
+    );
+  }
+
   const now = new Date().toISOString();
   const writeStmt = getDb().prepare(
     `INSERT INTO ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}
@@ -124,11 +165,18 @@ export function setAccountMailSettings(
 export function listKnownTicketPrefixes(): Set<string> {
   const prefixes = new Set<string>(['SCR']);
   try {
-    const rows = getDb()
+    const settingsRows = getDb()
       .prepare(`SELECT DISTINCT ticket_prefix FROM ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}`)
       .all() as { ticket_prefix: string }[];
-    for (const row of rows) {
-      const normalized = String(row.ticket_prefix ?? '')
+    const accountRows = getDb()
+      .prepare(`SELECT id, display_name, email_address FROM ${EMAIL_ACCOUNTS_TABLE}`)
+      .all() as AccountRow[];
+    const rows = [
+      ...settingsRows.map((row) => row.ticket_prefix),
+      ...accountRows.map((account) => buildDefaultAccountMailSettings(account).ticketPrefix),
+    ];
+    for (const value of rows) {
+      const normalized = String(value ?? '')
         .trim()
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, '')

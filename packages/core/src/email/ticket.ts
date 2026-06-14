@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 
 const DEFAULT_TICKET_PREFIX = 'SCR';
+const TICKET_PATTERN = /\[([A-Z0-9]{1,12})-([A-Z0-9]{1,20})\]/gi;
 
 export type TicketCodeOptions = {
   /** Account-specific letter combination/prefix. Defaults to the legacy SCR prefix. */
@@ -38,8 +39,11 @@ function buildAllowedTicketPrefixes(
 ): Set<string> {
   const allowed = new Set<string>([DEFAULT_TICKET_PREFIX]);
   if (!allowedPrefixes) return allowed;
-  for (const prefix of allowedPrefixes) {
-    allowed.add(normalizeTicketPrefix(prefix));
+  const values = Array.isArray(allowedPrefixes)
+    ? allowedPrefixes
+    : Array.from(allowedPrefixes);
+  for (let index = 0; index < values.length; index += 1) {
+    allowed.add(normalizeTicketPrefix(values[index]));
   }
   return allowed;
 }
@@ -49,12 +53,17 @@ export function extractTicketFromSubject(
   options?: ExtractTicketOptions,
 ): string | null {
   if (!subject) return null;
-  const match = subject.match(/\[([A-Z0-9]{1,12})-([A-Z0-9]{1,20})\]/i);
-  if (!match) return null;
-  const prefix = normalizeTicketPrefix(match[1]);
   const allowed = buildAllowedTicketPrefixes(options?.allowedPrefixes);
-  if (!allowed.has(prefix)) return null;
-  return `${prefix}-${match[2]!.toUpperCase()}`;
+  const pattern = new RegExp(TICKET_PATTERN.source, TICKET_PATTERN.flags);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(subject)) !== null) {
+    const prefix = normalizeTicketPrefix(match[1]);
+    if (!allowed.has(prefix)) continue;
+    const suffix = match[2]!.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!suffix) continue;
+    return `${prefix}-${suffix}`;
+  }
+  return null;
 }
 
 export function ensureTicketInSubject(subject: string, ticketCode: string): string {

@@ -19,8 +19,7 @@ import {
 } from './compose-reply-done';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
-import { ensureTicketInSubject, extractKnownTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
-import { allocateNextTicketCodeForAccount } from './account-mail-settings-store';
+import { ensureTicketInSubject, extractKnownTicketFromSubject, getOrCreateThreadForTicket, createTicketCodeForAccount } from './email-ticket';
 import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
@@ -473,7 +472,7 @@ export async function sendComposeDraft(input: {
       if (fromSubj) {
         ticketCode = fromSubj;
       } else {
-        ticketCode = allocateNextTicketCodeForAccount(input.accountId);
+        ticketCode = createTicketCodeForAccount(input.accountId);
       }
     }
     if (!threadId && ticketCode) {

@@ -1,5 +1,7 @@
 import { extractTicketFromSubject } from '@simplecrm/core';
 
+import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
+
 import type { WorkspaceTransaction } from './db/workspace-context';
 
 function normalizeTicketPrefix(prefix: string): string {
@@ -15,15 +17,29 @@ export async function listWorkspaceTicketPrefixes(
   trx: WorkspaceTransaction,
   workspaceId: string,
 ): Promise<Set<string>> {
-  const rows = await trx
-    .selectFrom('email_account_mail_settings')
-    .select('ticket_prefix')
-    .where('workspace_id', '=', workspaceId)
-    .execute();
+  const [settingsRows, accountRows] = await Promise.all([
+    trx
+      .selectFrom('email_account_mail_settings')
+      .select('ticket_prefix')
+      .where('workspace_id', '=', workspaceId)
+      .execute(),
+    trx
+      .selectFrom('email_accounts')
+      .select(['id', 'display_name', 'email_address'])
+      .where('workspace_id', '=', workspaceId)
+      .execute(),
+  ]);
   const prefixes = new Set<string>(['SCR']);
-  for (const row of rows) {
+  for (const row of settingsRows) {
     const normalized = normalizeTicketPrefix(row.ticket_prefix);
     prefixes.add(normalized);
+  }
+  for (const account of accountRows) {
+    prefixes.add(buildDefaultServerAccountMailSettings({
+      id: account.id,
+      displayName: account.display_name ?? '',
+      emailAddress: account.email_address ?? '',
+    }).ticketPrefix);
   }
   return prefixes;
 }
