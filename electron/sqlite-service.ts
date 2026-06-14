@@ -41,6 +41,8 @@ import {
     createEmailMessageWorkflowAppliedTable,
     createEmailMessageTagsTable,
     createEmailThreadsTable,
+    createEmailThreadAliasesTable,
+    createEmailThreadEdgesTable,
     createEmailCategoriesTable,
     createEmailMessageCategoriesTable,
     createEmailInternalNotesTable,
@@ -48,6 +50,7 @@ import {
     createEmailAiPromptsTable,
     createEmailTeamMembersTable,
     createEmailAccountSignaturesTable,
+    createEmailAccountMailSettingsTable,
     createEmailAiProfilesTable,
     EMAIL_AI_PROFILES_TABLE,
     createEmailMessageAttachmentsTable,
@@ -86,6 +89,7 @@ import {
     EMAIL_AI_PROMPTS_TABLE,
     EMAIL_TEAM_MEMBERS_TABLE,
     EMAIL_ACCOUNT_SIGNATURES_TABLE,
+    EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE,
     EMAIL_MESSAGE_ATTACHMENTS_TABLE,
     EMAIL_MESSAGES_FTS_TABLE,
     EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE,
@@ -156,6 +160,8 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailMessageWorkflowAppliedTable);
         connection.exec(createEmailMessageTagsTable);
         connection.exec(createEmailThreadsTable);
+        connection.exec(createEmailThreadAliasesTable);
+        connection.exec(createEmailThreadEdgesTable);
         connection.exec(createEmailCategoriesTable);
         connection.exec(createEmailMessageCategoriesTable);
         connection.exec(createEmailInternalNotesTable);
@@ -163,6 +169,7 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailAiProfilesTable);
         connection.exec(createEmailAiPromptsTable);
         connection.exec(createEmailAccountSignaturesTable);
+        connection.exec(createEmailAccountMailSettingsTable);
         connection.exec(createEmailMessageAttachmentsTable);
         connection.exec(createEmailWorkflowForwardDedupTable);
         connection.exec(createEmailWorkflowRunStepsTable);
@@ -321,6 +328,9 @@ export function initializeDatabase() {
         ensureTableExists(EMAIL_AI_PROMPTS_TABLE, createEmailAiPromptsTable, []);
         ensureTableExists(EMAIL_TEAM_MEMBERS_TABLE, createEmailTeamMembersTable, []);
         ensureTableExists(EMAIL_ACCOUNT_SIGNATURES_TABLE, createEmailAccountSignaturesTable, []);
+        ensureTableExists(EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE, createEmailAccountMailSettingsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_account_mail_settings_prefix ON ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}(ticket_prefix);`,
+        ]);
         ensureTableExists(EMAIL_AI_PROFILES_TABLE, createEmailAiProfilesTable, []);
         ensureTableExists(EMAIL_MESSAGE_ATTACHMENTS_TABLE, createEmailMessageAttachmentsTable, [
             `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
@@ -740,6 +750,9 @@ function runMigrations() {
             }
         };
         ensureMigrationTable(EMAIL_ACCOUNT_SIGNATURES_TABLE, createEmailAccountSignaturesTable, []);
+        ensureMigrationTable(EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE, createEmailAccountMailSettingsTable, [
+            `CREATE INDEX IF NOT EXISTS idx_email_account_mail_settings_prefix ON ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}(ticket_prefix);`,
+        ]);
         ensureMigrationTable(EMAIL_WORKFLOW_RUN_STEPS_TABLE, createEmailWorkflowRunStepsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_run_steps_run ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(run_id);`,
         ]);

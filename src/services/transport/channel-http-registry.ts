@@ -310,6 +310,7 @@ type EmailAttachmentRecord = {
   filename?: string | null
   contentType?: string | null
   sizeBytes?: number | null
+  storagePath?: string | null
 }
 
 type EmailMessageRecord = {
@@ -554,6 +555,9 @@ type EmailCannedResponseRecord = {
   id: number
   title?: string | null
   body?: string | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   sortOrder?: number | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -592,6 +596,9 @@ type AiPromptRecord = {
   target?: string | null
   profileSourceSqliteId?: number | null
   profileId?: number | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   sortOrder?: number | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -622,6 +629,9 @@ type WorkflowRecord = {
   cronExpr?: string | null
   scheduleAccountSourceSqliteId?: number | null
   scheduleAccountId?: number | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   executionMode?: string | null
   engineVersion?: number | null
   legacyCreatedByUserId?: string | null
@@ -694,6 +704,9 @@ type WorkflowKnowledgeBaseRecord = {
   sourceSqliteId?: number | null
   name?: string | null
   description?: string | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -2538,6 +2551,23 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     body: mapSnoozeSettingsPayload(payload),
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.GetAccountMailSettings, ([payload]) => {
+    const input = objectPayload(payload, "email account mail settings query")
+    return {
+      method: "GET",
+      path: "/api/v1/email/settings/account-mail",
+      query: pruneQueryUndefined({
+        accountId: positiveId(input.accountId, "email account id"),
+      }),
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.SetAccountMailSettings, ([payload]) => ({
+    method: "PATCH",
+    path: "/api/v1/email/settings/account-mail",
+    body: mapAccountMailSettingsPayload(payload),
+    transform: (body) => dataBody<Record<string, unknown>>(body),
+  })],
   [IPCChannels.Email.GetReplySuggestionSettings, ([payload]) => {
     const input = objectPayload(payload, "email reply suggestion settings query")
     return {
@@ -2707,10 +2737,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: "/api/v1/workflow/plugins",
     transform: (body) => dataBody<Record<string, unknown>[]>(body),
   })],
-  [IPCChannels.Email.ListWorkflows, () => ({
+  [IPCChannels.Email.ListWorkflows, ([payload]) => ({
     method: "GET",
     path: "/api/v1/workflows",
-    query: { limit: DEFAULT_LIST_LIMIT },
+    query: scopedListQuery(payload),
     transform: (body) => listItems<WorkflowRecord>(body).map(mapWorkflowRecord),
   })],
   [IPCChannels.Email.GetWorkflow, ([id]) => ({
@@ -2877,10 +2907,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     query: { limit: DEFAULT_LIST_LIMIT },
     transform: (body) => listItems<WorkflowRunStepRecord>(body).map(mapWorkflowRunStepRecord),
   })],
-  [IPCChannels.Email.ListKnowledgeBases, () => ({
+  [IPCChannels.Email.ListKnowledgeBases, ([payload]) => ({
     method: "GET",
     path: "/api/v1/workflow-knowledge-bases",
-    query: { limit: DEFAULT_LIST_LIMIT },
+    query: scopedListQuery(payload),
     transform: (body) => listItems<WorkflowKnowledgeBaseRecord>(body).map(mapWorkflowKnowledgeBaseRecord),
   })],
   [IPCChannels.Email.CreateKnowledgeBase, ([payload]) => {
@@ -3226,10 +3256,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/email/internal-notes/${positiveId(noteId, "email internal note id")}`,
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Email.ListCannedResponses, () => ({
+  [IPCChannels.Email.ListCannedResponses, ([payload]) => ({
     method: "GET",
     path: "/api/v1/email/canned-responses",
-    query: { limit: DEFAULT_LIST_LIMIT },
+    query: scopedListQuery(payload),
     transform: (body) => listItems<EmailCannedResponseRecord>(body).map(mapEmailCannedResponseRecord),
   })],
   [IPCChannels.Email.SaveCannedResponse, ([payload]) => {
@@ -3395,10 +3425,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     body: { apiKey: null },
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Email.ListAiPrompts, () => ({
+  [IPCChannels.Email.ListAiPrompts, ([payload]) => ({
     method: "GET",
     path: "/api/v1/ai/prompts",
-    query: { limit: DEFAULT_LIST_LIMIT },
+    query: scopedListQuery(payload),
     transform: (body) => listItems<AiPromptRecord>(body).map(mapAiPromptRecord),
   })],
   [IPCChannels.Email.SaveAiPrompt, ([payload]) => {
@@ -3440,13 +3470,17 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       query: { limit: DEFAULT_LIST_LIMIT },
       transform: async (body, context) => {
         const prompts = listItems<AiPromptRecord>(body)
-        const idx = prompts.findIndex((prompt) => prompt.id === id)
+        const currentPrompt = prompts.find((prompt) => prompt.id === id)
+        if (!currentPrompt) return { success: false, error: "Verschieben nicht möglich." }
+        const currentAccountId = currentPrompt.accountId ?? null
+        const visiblePrompts = prompts.filter((prompt) => (prompt.accountId ?? null) === currentAccountId)
+        const idx = visiblePrompts.findIndex((prompt) => prompt.id === id)
         const swapIdx = direction === "up" ? idx - 1 : idx + 1
-        if (idx < 0 || swapIdx < 0 || swapIdx >= prompts.length) {
+        if (idx < 0 || swapIdx < 0 || swapIdx >= visiblePrompts.length) {
           return { success: false, error: "Verschieben nicht möglich." }
         }
-        const current = prompts[idx]!
-        const other = prompts[swapIdx]!
+        const current = visiblePrompts[idx]!
+        const other = visiblePrompts[swapIdx]!
         await context.fetchJson({
           method: "POST",
           path: "/api/v1/ai/prompts/reorder",
@@ -4750,6 +4784,7 @@ function mapEmailAttachmentRecord(record: EmailAttachmentRecord) {
     filename_display: record.filename ?? "",
     size_bytes: record.sizeBytes ?? 0,
     content_type: record.contentType ?? null,
+    storage_path: record.storagePath ?? undefined,
   }
 }
 
@@ -5012,6 +5047,9 @@ function mapEmailCannedResponseRecord(record: EmailCannedResponseRecord) {
     id: record.id,
     title: record.title ?? "",
     body: record.body ?? "",
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
   }
 }
 
@@ -5124,6 +5162,9 @@ function mapAiPromptRecord(record: AiPromptRecord) {
     profile_source_sqlite_id: record.profileSourceSqliteId ?? undefined,
     profile_id: record.profileId ?? null,
     profileId: record.profileId ?? null,
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
     sort_order: record.sortOrder ?? 0,
     sortOrder: record.sortOrder ?? 0,
     created_at: record.createdAt ?? undefined,
@@ -5157,7 +5198,7 @@ function mapSpamListEntryRecord(record: SpamListEntryRecord) {
     list_type: record.listType ?? "block",
     pattern_type: record.patternType ?? "domain",
     pattern: record.pattern ?? "",
-    account_source_sqlite_id: record.accountSourceSqliteId ?? undefined,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
     account_id: record.accountId ?? null,
     note: record.note ?? null,
     created_at: record.createdAt ?? undefined,
@@ -5274,6 +5315,9 @@ function mapWorkflowRecord(record: WorkflowRecord) {
     cron_expr: record.cronExpr ?? null,
     schedule_account_id: record.scheduleAccountSourceSqliteId ?? record.scheduleAccountId ?? null,
     schedule_account_source_sqlite_id: record.scheduleAccountSourceSqliteId ?? undefined,
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
     execution_mode: record.executionMode ?? "graph",
     engine_version: record.engineVersion ?? 1,
     legacy_created_by_user_id: record.legacyCreatedByUserId ?? null,
@@ -5406,6 +5450,9 @@ function mapWorkflowKnowledgeBaseRecord(record: WorkflowKnowledgeBaseRecord) {
     id: record.id,
     name: record.name ?? "",
     description: record.description ?? null,
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
   }
 }
 
@@ -5700,6 +5747,20 @@ function accountScopeQueryValue(value: unknown): number | undefined {
   return positiveId(value, "email account id")
 }
 
+function accountOverrideScopePayloadValue(value: unknown): unknown {
+  if (isRecord(value)) return value.accountId ?? value.accountScope
+  return value
+}
+
+function scopedListQuery(
+  payload: unknown,
+): Record<string, string | number | boolean | null | undefined> {
+  return pruneQueryUndefined({
+    limit: DEFAULT_LIST_LIMIT,
+    accountId: accountScopeQueryValue(accountOverrideScopePayloadValue(payload)),
+  })
+}
+
 function optionalPositiveQueryId(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) return undefined
   return positiveId(value, label)
@@ -5950,6 +6011,17 @@ function mapReplySuggestionSettingsPayload(value: unknown): Record<string, unkno
     triggerOnOpen: optionalBoolean(input.triggerOnOpen, "reply suggestion open trigger flag"),
     categoryMode: input.categoryMode === undefined ? undefined : replySuggestionCategoryMode(input.categoryMode),
     categoryIds: input.categoryIds === undefined ? undefined : positiveIdArray(input.categoryIds, "reply suggestion category id", 500),
+  })
+}
+
+function mapAccountMailSettingsPayload(value: unknown): Record<string, unknown> {
+  const input = objectPayload(value, "email account mail settings payload")
+  return pruneUndefined({
+    accountId: positiveId(input.accountId, "email account id"),
+    ticketPrefix: input.ticketPrefix === undefined ? undefined : optionalStringPayloadField(input.ticketPrefix, "ticket prefix", 12),
+    ticketNextNumber: input.ticketNextNumber === undefined ? undefined : boundedNumber(input.ticketNextNumber, "ticket next number", 1, 999_999_999, true),
+    ticketNumberPadding: input.ticketNumberPadding === undefined ? undefined : boundedNumber(input.ticketNumberPadding, "ticket number padding", 1, 12, true),
+    threadNamespace: input.threadNamespace === undefined ? undefined : optionalStringPayloadField(input.threadNamespace, "thread namespace", 64),
   })
 }
 

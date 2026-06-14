@@ -11,6 +11,7 @@ import {
 } from '../workflow/graph-presets';
 import { migrateLegacyWorkflowsWithoutGraph } from '../workflow/workflow-graph-resolve';
 import { WORKFLOW_TEMPLATES } from '../workflow/templates';
+import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
 
 export type EmailWorkflowRow = {
   id: number;
@@ -22,6 +23,8 @@ export type EmailWorkflowRow = {
   graph_json: string | null;
   cron_expr: string | null;
   schedule_account_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   execution_mode: string;
   engine_version: number;
   created_at: string;
@@ -87,13 +90,17 @@ function touchWorkflowListMigration(): void {
   migrateLegacyWorkflowsWithoutGraph();
 }
 
-export function listWorkflowsByTrigger(trigger: string): EmailWorkflowRow[] {
+export function listWorkflowsByTrigger(
+  trigger: string,
+  scope?: AccountOverrideScope,
+): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
   touchWorkflowListMigration();
   const stmt = getDb().prepare(
     `SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} WHERE trigger = ? AND enabled = 1 ORDER BY priority ASC, id ASC`,
   );
-  return (stmt.all(trigger) as Record<string, unknown>[]).map(mapWorkflowRow);
+  const mapped = (stmt.all(trigger) as Record<string, unknown>[]).map(mapWorkflowRow);
+  return scope === undefined ? mapped : resolveScopedAccountOverrides(mapped, scope);
 }
 
 export function listWorkflowsWithCron(): EmailWorkflowRow[] {
@@ -106,13 +113,14 @@ export function listWorkflowsWithCron(): EmailWorkflowRow[] {
   return rows.map(mapWorkflowRow);
 }
 
-export function listAllWorkflows(): EmailWorkflowRow[] {
+export function listAllWorkflows(scope?: AccountOverrideScope): EmailWorkflowRow[] {
   ensureDefaultWorkflowsSeeded();
   touchWorkflowListMigration();
   const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_WORKFLOWS_TABLE} ORDER BY trigger ASC, priority ASC, id ASC`)
     .all() as Record<string, unknown>[];
-  return rows.map(mapWorkflowRow);
+  const mapped = rows.map(mapWorkflowRow);
+  return scope === undefined ? mapped : resolveScopedAccountOverrides(mapped, scope);
 }
 
 export function getWorkflowById(id: number): EmailWorkflowRow | undefined {
@@ -130,6 +138,8 @@ export function createWorkflow(input: {
   graphJson?: string | null;
   cronExpr?: string | null;
   scheduleAccountId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
   executionMode?: string;
   engineVersion?: number;
   enabled?: boolean;
@@ -137,8 +147,8 @@ export function createWorkflow(input: {
   const t = nowIso();
   const result = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, execution_mode, engine_version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_WORKFLOWS_TABLE} (name, trigger, enabled, priority, definition_json, graph_json, cron_expr, schedule_account_id, account_id, override_key, execution_mode, engine_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.name,
@@ -149,6 +159,8 @@ export function createWorkflow(input: {
       input.graphJson ?? null,
       input.cronExpr ?? null,
       input.scheduleAccountId ?? null,
+      input.accountId ?? null,
+      input.overrideKey ?? null,
       input.executionMode ?? 'graph',
       input.engineVersion ?? 1,
       t,
@@ -166,6 +178,8 @@ export type WorkflowUpdateInput = Partial<{
   graphJson: string | null;
   cronExpr: string | null;
   scheduleAccountId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   executionMode: string;
   engineVersion: number;
   enabled: boolean;
@@ -208,6 +222,14 @@ export function updateWorkflow(id: number, input: WorkflowUpdateInput): void {
   if (input.scheduleAccountId !== undefined) {
     sets.push('schedule_account_id = ?');
     vals.push(input.scheduleAccountId);
+  }
+  if (input.accountId !== undefined) {
+    sets.push('account_id = ?');
+    vals.push(input.accountId);
+  }
+  if (input.overrideKey !== undefined) {
+    sets.push('override_key = ?');
+    vals.push(input.overrideKey);
   }
   if (input.executionMode !== undefined) {
     sets.push('execution_mode = ?');

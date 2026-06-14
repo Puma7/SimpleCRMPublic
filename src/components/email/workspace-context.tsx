@@ -34,6 +34,7 @@ export type SettingsTab =
   | "accounts"
   | "oauthApps"
   | "ai"
+  | "accountMail"
   | "knowledge"
   | "mailSecurity"
   | "automation"
@@ -169,6 +170,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "accounts",
   "oauthApps",
   "ai",
+  "accountMail",
   "knowledge",
   "mailSecurity",
   "automation",
@@ -193,7 +195,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
         const n = parseInt(raw, 10)
         return Number.isFinite(n) ? n : null
       },
-      null,
+      "all",
     ),
   )
   const [mailView, setMailView] = useState<MailView>(() =>

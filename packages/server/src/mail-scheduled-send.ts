@@ -279,6 +279,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             .where('workspace_id', '=', input.workspaceId)
             .where('uid', '<', 0)
             .where('folder_kind', '=', 'draft')
+            .where('outbound_hold', '=', false)
             .where('scheduled_send_at', '<=', input.dueBefore)
             .orderBy('scheduled_send_at', 'asc')
             .orderBy('id', 'asc')

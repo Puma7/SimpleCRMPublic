@@ -7,7 +7,6 @@ import {
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
-  extractTicketFromSubject,
   generateTicketCode,
   normalizeMailboxName,
   normalizeEmailAddress,
@@ -54,6 +53,7 @@ import {
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { outboundReviewApprovedKey } from './mail-compose-send';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -3944,6 +3944,64 @@ async function updateWorkflowMessage(
  * a re-entry loop from the scheduled-send cron) and (b) sets scheduled_send_at
  * = now so the scheduled-send job picks the draft up immediately.
  */
+
+async function allocateWorkflowTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+  now: Date,
+): Promise<string> {
+  if (accountId == null) return generateTicketCode();
+  const numericAccountId = Number(accountId);
+  if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) return generateTicketCode();
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', numericAccountId)
+    .executeTakeFirst();
+  if (!account) return generateTicketCode();
+  const defaultPrefix = `ACC${numericAccountId}`.slice(0, 12);
+  await trx
+    .insertInto('email_account_mail_settings')
+    .values({
+      workspace_id: workspaceId,
+      account_source_sqlite_id: Number(account.source_sqlite_id ?? numericAccountId),
+      account_id: numericAccountId,
+      ticket_prefix: defaultPrefix,
+      ticket_next_number: 1,
+      ticket_number_padding: 6,
+      thread_namespace: `account-${numericAccountId}`,
+      source_row: { source: 'server.workflow.ticket' },
+      imported_in_run_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+  const settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!settings) return generateTicketCode({ prefix: defaultPrefix });
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Math.min(12, Math.max(1, Math.floor(Number(settings.ticket_number_padding) || 6)));
+  const ticketCode = generateTicketCode({
+    prefix: settings.ticket_prefix || defaultPrefix,
+    sequence: String(Math.max(1, currentNumber || 1)).padStart(padding, '0'),
+  });
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: Math.max(1, currentNumber || 1) + 1, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .execute();
+  return ticketCode;
+}
+
 async function releaseWorkflowOutboundHold(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -3983,7 +4041,7 @@ async function releaseWorkflowOutboundHold(
   //     otherwise hash mismatches every retry and bypass is denied.
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', context.messageId)
     .executeTakeFirst();
@@ -3999,9 +4057,10 @@ async function releaseWorkflowOutboundHold(
   // add when scheduled-send finally calls composeSender.send. The marker must
   // be valid against that final subject so the retry bypasses the review.
   const storedSubject = draftRow?.subject?.trim() || '';
+  const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, context.workspaceId);
   const existingTicket = draftRow?.ticket_code?.trim()
-    || extractTicketFromSubject(draftRow?.subject ?? null);
-  const ticketCode = existingTicket || generateTicketCode();
+    || extractWorkspaceTicketFromSubject(draftRow?.subject ?? null, allowedPrefixes);
+  const ticketCode = existingTicket || await allocateWorkflowTicketCode(trx, context.workspaceId, draftRow?.account_id ?? null, now);
   const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 
   await trx
@@ -4141,7 +4200,7 @@ async function sendWorkflowDraft(
   }
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', draftId)
     .executeTakeFirst();
@@ -4167,9 +4226,10 @@ async function sendWorkflowDraft(
       body_html: draftRow.body_html ?? null,
     });
     const storedSubject = draftRow.subject?.trim() || '';
+    const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, context.workspaceId);
     const existingTicket = draftRow.ticket_code?.trim()
-      || extractTicketFromSubject(draftRow.subject ?? null);
-    const ticketCode = existingTicket || generateTicketCode();
+      || extractWorkspaceTicketFromSubject(draftRow.subject ?? null, allowedPrefixes);
+    const ticketCode = existingTicket || await allocateWorkflowTicketCode(trx, context.workspaceId, draftRow.account_id ?? null, now);
     const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 
     await trx

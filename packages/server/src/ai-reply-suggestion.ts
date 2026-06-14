@@ -111,6 +111,9 @@ const aiPromptColumns = [
   'target',
   'profile_source_sqlite_id',
   'profile_id',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'sort_order',
   'source_sqlite_id',
   'source_row',
@@ -267,7 +270,7 @@ async function loadGenerationContext(
         }
       }
 
-      const prompt = await selectReplyPrompt(trx, input.workspaceId, input.promptId);
+      const prompt = await selectReplyPrompt(trx, input.workspaceId, input.promptId, message.account_id);
       const profile = await selectReplyProfile(trx, input.workspaceId, input.profileId, prompt?.profile_id ?? null);
       const customerId = input.customerId === undefined ? message.customer_id : input.customerId;
       const customer = customerId
@@ -302,33 +305,61 @@ async function selectReplyPrompt(
   trx: WorkspaceTransaction,
   workspaceId: string,
   promptId: number | undefined,
+  accountId: number | null,
 ): Promise<AiPromptRow | null> {
   if (promptId !== undefined) {
-    return await trx
+    let explicit = trx
       .selectFrom('email_ai_prompts')
       .select(aiPromptColumns)
       .where('workspace_id', '=', workspaceId)
-      .where('id', '=', promptId)
-      .executeTakeFirst() ?? null;
+      .where('id', '=', promptId);
+    explicit = accountId == null
+      ? explicit.where('account_id', 'is', null)
+      : explicit.where((eb) => eb.or([
+        eb('account_id', 'is', null),
+        eb('account_id', '=', accountId),
+      ]));
+    return await explicit.executeTakeFirst() ?? null;
   }
 
-  const reply = await trx
-    .selectFrom('email_ai_prompts')
-    .select(aiPromptColumns)
-    .where('workspace_id', '=', workspaceId)
+  const replyRows = await scopedPromptQuery(trx, workspaceId, accountId)
     .where('target', '=', 'reply')
     .orderBy('sort_order', 'asc')
     .orderBy('id', 'asc')
-    .executeTakeFirst();
+    .execute();
+  const reply = firstScopedPrompt(replyRows, accountId);
   if (reply) return reply;
 
-  return await trx
-    .selectFrom('email_ai_prompts')
-    .select(aiPromptColumns)
-    .where('workspace_id', '=', workspaceId)
+  const fallbackRows = await scopedPromptQuery(trx, workspaceId, accountId)
     .orderBy('sort_order', 'asc')
     .orderBy('id', 'asc')
-    .executeTakeFirst() ?? null;
+    .execute();
+  return firstScopedPrompt(fallbackRows, accountId);
+}
+
+function scopedPromptQuery(trx: WorkspaceTransaction, workspaceId: string, accountId: number | null) {
+  const base = trx
+    .selectFrom('email_ai_prompts')
+    .select(aiPromptColumns)
+    .where('workspace_id', '=', workspaceId);
+  return accountId == null
+    ? base.where('account_id', 'is', null)
+    : base.where((eb) => eb.or([
+      eb('account_id', 'is', null),
+      eb('account_id', '=', accountId),
+    ]));
+}
+
+function firstScopedPrompt(rows: readonly AiPromptRow[], accountId: number | null): AiPromptRow | null {
+  if (accountId == null) return rows[0] ?? null;
+  const byKey = new Map<string, AiPromptRow>();
+  for (const row of rows) {
+    if (row.account_id == null) byKey.set(row.override_key?.trim() || `id:${row.id}`, row);
+  }
+  for (const row of rows) {
+    if (row.account_id === accountId) byKey.set(row.override_key?.trim() || `id:${row.id}`, row);
+  }
+  return [...byKey.values()].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || Number(a.id) - Number(b.id))[0] ?? null;
 }
 
 async function selectReplyProfile(

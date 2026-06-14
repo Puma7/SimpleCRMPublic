@@ -631,7 +631,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       if (!saved) return
 
       type WfRow = { trigger: string; enabled: number }
-      const workflows = await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
+      const workflows = composeAccountId != null
+        ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: composeAccountId }) as WfRow[]
+        : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
       const outboundActive = workflows.filter(
         (w) => w.trigger === "outbound" && w.enabled === 1,
       )
@@ -1176,55 +1178,6 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         </div>
 
         <div className="flex shrink-0 flex-col gap-2 border-t bg-muted/30 px-6 py-3">
-          <div className="flex flex-wrap items-center gap-4 text-xs">
-            <label className="flex items-center gap-2">
-              <Checkbox checked={pgpEncrypt} onCheckedChange={(v) => setPgpEncrypt(v === true)} />
-              PGP verschlüsseln
-            </label>
-            <label className="flex items-center gap-2">
-              <Checkbox checked={pgpSign} onCheckedChange={(v) => setPgpSign(v === true)} />
-              PGP signieren
-            </label>
-            {pgpSign ? (
-              <Input
-                type="password"
-                placeholder="PGP-Passphrase"
-                className="h-8 max-w-[200px]"
-                value={pgpPassphrase}
-                onChange={(e) => setPgpPassphrase(e.target.value)}
-              />
-            ) : null}
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-8"
-              onClick={async () => {
-                if (!to.trim()) return
-                const { extractEmailAddressesFromRecipientField } = await import(
-                  "@shared/email-recipient-parse"
-                )
-                const emails = extractEmailAddressesFromRecipientField(to)
-                const status = await invokeRenderer(
-                  IPCChannels.Pgp.CheckRecipientKeys,
-                  { emails },
-                ) as { email: string; hasKey: boolean }[]
-                if (Array.isArray(status)) {
-                  const missing = status.filter((s) => !s.hasKey).map((s) => s.email)
-                  setRecipientKeyHint(
-                    missing.length
-                      ? `Ohne Schlüssel: ${missing.join(", ")}`
-                      : "Alle Empfänger haben Schlüssel",
-                  )
-                }
-              }}
-            >
-              Schlüssel prüfen
-            </Button>
-            {recipientKeyHint ? (
-              <span className="text-muted-foreground">{recipientKeyHint}</span>
-            ) : null}
-          </div>
           {attachmentPaths.length > 0 ? (
             <ul className="max-h-24 space-y-1 overflow-y-auto">
               {attachmentPaths.map((p) => (
@@ -1292,6 +1245,71 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 )}
                 Anhang hinzufügen
               </Button>
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={pgpEncrypt} onCheckedChange={(v) => setPgpEncrypt(v === true)} />
+                  PGP verschlüsseln
+                </label>
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={pgpSign} onCheckedChange={(v) => setPgpSign(v === true)} />
+                  PGP signieren
+                </label>
+                {pgpSign ? (
+                  <Input
+                    type="password"
+                    placeholder="PGP-Passphrase"
+                    className="h-8 max-w-[200px]"
+                    value={pgpPassphrase}
+                    onChange={(e) => setPgpPassphrase(e.target.value)}
+                  />
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-8"
+                  disabled={!to.trim()}
+                  title={to.trim() ? "PGP-Schlüssel der Empfänger prüfen" : "Erst Empfänger eintragen"}
+                  onClick={async () => {
+                    if (!to.trim()) {
+                      setRecipientKeyHint("Erst Empfänger eintragen")
+                      return
+                    }
+                    try {
+                      const { extractEmailAddressesFromRecipientField } = await import(
+                        "@shared/email-recipient-parse"
+                      )
+                      const emails = extractEmailAddressesFromRecipientField(to)
+                      if (emails.length === 0) {
+                        setRecipientKeyHint("Keine gültige Empfängeradresse gefunden")
+                        return
+                      }
+                      const status = await invokeRenderer(
+                        IPCChannels.Pgp.CheckRecipientKeys,
+                        { emails },
+                      ) as { email: string; hasKey: boolean }[]
+                      if (Array.isArray(status)) {
+                        const missing = status.filter((s) => !s.hasKey).map((s) => s.email)
+                        const hint = missing.length
+                          ? `Ohne Schlüssel: ${missing.join(", ")}`
+                          : "Alle Empfänger haben Schlüssel"
+                        setRecipientKeyHint(hint)
+                        if (missing.length) toast.warning(hint)
+                        else toast.success(hint)
+                      }
+                    } catch (err) {
+                      console.error("PGP recipient key check failed", err)
+                      setRecipientKeyHint("Schlüsselprüfung fehlgeschlagen")
+                      toast.error("PGP-Schlüsselprüfung fehlgeschlagen")
+                    }
+                  }}
+                >
+                  Schlüssel prüfen
+                </Button>
+                {recipientKeyHint ? (
+                  <span className="text-muted-foreground">{recipientKeyHint}</span>
+                ) : null}
+              </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button type="button" variant="ghost" onClick={requestClose}>

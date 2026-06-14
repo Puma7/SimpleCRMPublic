@@ -1,6 +1,10 @@
 import fs from 'fs';
 import { IpcMainInvokeEvent, dialog } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
+import {
+  accountOverrideScopeFromPayload,
+  type AccountOverrideScopePayload,
+} from '../../shared/mail-account-overrides';
 import { registerIpcHandler } from './register';
 import { getWorkflowById, createWorkflow, updateWorkflow } from '../email/email-workflow-store';
 import { listWorkflowNodeCatalog, ensureBuiltinWorkflowNodes } from '../workflow/registry';
@@ -50,7 +54,7 @@ export function registerWorkflowHandlers(options: {
       async (
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId: number; dryRun?: boolean },
-      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, payload.dryRun !== false),
+      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, true),
       { logger },
     ),
   );
@@ -239,9 +243,12 @@ export function registerWorkflowHandlers(options: {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.ListKnowledgeBases, async () => listKnowledgeBases(), {
-      logger,
-    }),
+    registerIpcHandler(
+      IPCChannels.Email.ListKnowledgeBases,
+      async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
+        listKnowledgeBases(accountOverrideScopeFromPayload(payload)),
+      { logger },
+    ),
   );
 
   disposers.push(

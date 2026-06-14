@@ -177,6 +177,17 @@ describe('email-crm-store', () => {
     });
   });
 
+
+
+    test('supports global + account overrides for shared canned responses', () => {
+      createCannedResponse('Global reply', 'global', { overrideKey: 'reply' });
+      createCannedResponse('Shop reply', 'shop', { accountId: 2, overrideKey: 'reply' });
+      createCannedResponse('Global shipping', 'shipping', { overrideKey: 'shipping' });
+
+      expect(listCannedResponses('all').map((r) => r.title)).toEqual(['Global reply', 'Global shipping']);
+      expect(listCannedResponses(2).map((r) => r.title)).toEqual(['Shop reply', 'Global shipping']);
+    });
+
   describe('ai prompts', () => {
     test('create list update delete and reorder', () => {
       const id1 = createAiPrompt({ label: 'A', userTemplate: 'a', target: 'full_body' });
@@ -186,8 +197,8 @@ describe('email-crm-store', () => {
       deleteAiPrompt(id1);
       mock.aiPrompts.length = 0;
       mock.aiPrompts.push(
-        { id: 10, label: 'X', user_template: 'x', target: 'full_body', profile_id: null, sort_order: 0 },
-        { id: 11, label: 'Y', user_template: 'y', target: 'full_body', profile_id: null, sort_order: 1 },
+        { id: 10, label: 'X', user_template: 'x', target: 'full_body', profile_id: null, account_id: null, override_key: null, sort_order: 0 },
+        { id: 11, label: 'Y', user_template: 'y', target: 'full_body', profile_id: null, account_id: null, override_key: null, sort_order: 1 },
       );
       expect(moveAiPrompt(10, 'up')).toBe(false);
       expect(moveAiPrompt(11, 'down')).toBe(false);
@@ -196,6 +207,17 @@ describe('email-crm-store', () => {
       updateAiPrompt(11, {});
     });
   });
+
+
+
+    test('supports global + account overrides for AI prompts', () => {
+      createAiPrompt({ label: 'Global reply', userTemplate: 'global', target: 'reply', overrideKey: 'reply' });
+      createAiPrompt({ label: 'Shop reply', userTemplate: 'shop', target: 'reply', accountId: 3, overrideKey: 'reply' });
+      createAiPrompt({ label: 'Global summary', userTemplate: 'summary', target: 'full_body', overrideKey: 'summary' });
+
+      expect(listAiPrompts('all').map((r) => r.label)).toEqual(['Global reply', 'Global summary']);
+      expect(listAiPrompts(3).map((r) => r.label)).toEqual(['Shop reply', 'Global summary']);
+    });
 
   describe('customer linking', () => {
     test('buildCustomerEmailMap via tryLink and backfill', () => {

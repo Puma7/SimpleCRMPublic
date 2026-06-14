@@ -15,6 +15,7 @@ export type CoreMailImportCommand = Readonly<{
 
 const mailTableOrder = [
   'email_accounts',
+  'email_account_mail_settings',
   'email_folders',
   'email_team_members',
   'email_threads',
@@ -157,6 +158,34 @@ DO UPDATE SET
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   created_at = EXCLUDED.created_at,
   updated_at = now()`,
+  email_account_mail_settings: `INSERT INTO email_account_mail_settings (
+  workspace_id, account_source_sqlite_id, account_id, ticket_prefix, ticket_next_number,
+  ticket_number_padding, thread_namespace, source_row, imported_in_run_id, created_at, updated_at
+)
+SELECT
+  $1, (r.source_row->>'account_id')::bigint, a.id,
+  COALESCE(NULLIF(r.source_row->>'ticket_prefix', ''), 'ACC' || (r.source_row->>'account_id')),
+  COALESCE(NULLIF(r.source_row->>'ticket_next_number', '')::bigint, 1),
+  COALESCE(NULLIF(r.source_row->>'ticket_number_padding', '')::integer, 6),
+  COALESCE(NULLIF(r.source_row->>'thread_namespace', ''), 'account:' || (r.source_row->>'account_id')),
+  r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
+${rowsFrom}
+LEFT JOIN email_accounts a
+  ON a.workspace_id = $1
+ AND a.source_sqlite_id = (r.source_row->>'account_id')::bigint
+${rowsWhere}
+  AND r.source_row ? 'account_id'
+ON CONFLICT (workspace_id, account_source_sqlite_id)
+DO UPDATE SET
+  account_id = EXCLUDED.account_id,
+  ticket_prefix = EXCLUDED.ticket_prefix,
+  ticket_next_number = EXCLUDED.ticket_next_number,
+  ticket_number_padding = EXCLUDED.ticket_number_padding,
+  thread_namespace = EXCLUDED.thread_namespace,
+  source_row = EXCLUDED.source_row,
+  imported_in_run_id = EXCLUDED.imported_in_run_id,
+  created_at = EXCLUDED.created_at,
+  updated_at = now()`,
   email_folders: `INSERT INTO email_folders (
   workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, path, delimiter,
   uidvalidity, uidvalidity_str, last_uid, last_synced_at, pop3_uidl_str,
@@ -214,12 +243,13 @@ DO UPDATE SET
   created_at = EXCLUDED.created_at,
   updated_at = now()`,
   email_threads: `INSERT INTO email_threads (
-  workspace_id, id, ticket_code, root_message_source_sqlite_id, root_message_id, last_message_at,
+  workspace_id, id, ticket_code, account_source_sqlite_id, account_id, root_message_source_sqlite_id, root_message_id, last_message_at,
   message_count, has_unread, has_attachments, subject_normalized,
   source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
   $1, r.source_row->>'id', COALESCE(NULLIF(r.source_row->>'ticket_code', ''), r.source_row->>'id'),
+  NULLIF(r.source_row->>'account_id', '')::bigint, a.id,
   NULLIF(r.source_row->>'root_message_id', '')::bigint, m.id,
   NULLIF(r.source_row->>'last_message_at', '')::timestamptz,
   COALESCE(NULLIF(r.source_row->>'message_count', '')::integer, 0),
@@ -228,6 +258,9 @@ SELECT
   NULLIF(r.source_row->>'subject_normalized', ''),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
 ${rowsFrom}
+LEFT JOIN email_accounts a
+  ON a.workspace_id = $1
+ AND a.source_sqlite_id = NULLIF(r.source_row->>'account_id', '')::bigint
 LEFT JOIN email_messages m
   ON m.workspace_id = $1
  AND m.source_sqlite_id = NULLIF(r.source_row->>'root_message_id', '')::bigint
@@ -236,6 +269,8 @@ ${rowsWhere}
 ON CONFLICT (workspace_id, id)
 DO UPDATE SET
   ticket_code = EXCLUDED.ticket_code,
+  account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
+  account_id = EXCLUDED.account_id,
   root_message_source_sqlite_id = EXCLUDED.root_message_source_sqlite_id,
   root_message_id = EXCLUDED.root_message_id,
   last_message_at = EXCLUDED.last_message_at,
@@ -420,18 +455,28 @@ DO UPDATE SET
   email_message_categories: messageCategorySql(),
   email_internal_notes: messageChildSql('email_internal_notes', ['body'], `COALESCE(NULLIF(r.source_row->>'body', ''), '')`),
   email_canned_responses: `INSERT INTO email_canned_responses (
-  workspace_id, source_sqlite_id, title, body, sort_order, source_row, imported_in_run_id, created_at, updated_at
+  workspace_id, source_sqlite_id, title, body, account_source_sqlite_id, account_id, override_key,
+  sort_order, source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
   $1, (r.source_row->>'id')::bigint, COALESCE(NULLIF(r.source_row->>'title', ''), 'Response ' || (r.source_row->>'id')),
   COALESCE(NULLIF(r.source_row->>'body', ''), ''),
+  NULLIF(r.source_row->>'account_id', '')::bigint, a.id, NULLIF(r.source_row->>'override_key', ''),
   COALESCE(NULLIF(r.source_row->>'sort_order', '')::integer, 0),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
-${idRowsFilter}
+${rowsFrom}
+LEFT JOIN email_accounts a
+  ON a.workspace_id = $1
+ AND a.source_sqlite_id = NULLIF(r.source_row->>'account_id', '')::bigint
+${rowsWhere}
+  AND r.source_row ? 'id'
 ON CONFLICT (workspace_id, source_sqlite_id)
 DO UPDATE SET
   title = EXCLUDED.title,
   body = EXCLUDED.body,
+  account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
+  account_id = EXCLUDED.account_id,
+  override_key = EXCLUDED.override_key,
   sort_order = EXCLUDED.sort_order,
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
@@ -466,20 +511,27 @@ DO UPDATE SET
   NULLIF(r.source_row->>'at', '')::timestamptz`),
   email_thread_edges: threadEdgeSql(),
   email_thread_aliases: `INSERT INTO email_thread_aliases (
-  workspace_id, source_sqlite_id, alias_thread_id, canonical_thread_id, confidence, source,
+  workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, alias_thread_id, canonical_thread_id, confidence, source,
   source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
-  $1, r.source_pk::bigint, r.source_row->>'alias_thread_id', r.source_row->>'canonical_thread_id',
+  $1, r.source_pk::bigint, NULLIF(r.source_row->>'account_id', '')::bigint, a.id,
+  r.source_row->>'alias_thread_id', r.source_row->>'canonical_thread_id',
   COALESCE(NULLIF(r.source_row->>'confidence', ''), 'high'),
   COALESCE(NULLIF(r.source_row->>'source', ''), 'manual'),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
-${rowsFilter}
+${rowsFrom}
+LEFT JOIN email_accounts a
+  ON a.workspace_id = $1
+ AND a.source_sqlite_id = NULLIF(r.source_row->>'account_id', '')::bigint
+${rowsWhere}
   AND NULLIF(r.source_row->>'alias_thread_id', '') IS NOT NULL
   AND NULLIF(r.source_row->>'canonical_thread_id', '') IS NOT NULL
   AND r.source_row->>'alias_thread_id' <> r.source_row->>'canonical_thread_id'
 ON CONFLICT (workspace_id, source_sqlite_id)
 DO UPDATE SET
+  account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
+  account_id = EXCLUDED.account_id,
   alias_thread_id = EXCLUDED.alias_thread_id,
   canonical_thread_id = EXCLUDED.canonical_thread_id,
   confidence = EXCLUDED.confidence,

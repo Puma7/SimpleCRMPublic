@@ -73,6 +73,9 @@ const aiPromptSelectColumns = [
   'target',
   'profile_source_sqlite_id',
   'profile_id',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'sort_order',
   'created_at',
   'updated_at',
@@ -90,6 +93,9 @@ const workflowSelectColumns = [
   'cron_expr',
   'schedule_account_source_sqlite_id',
   'schedule_account_id',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'execution_mode',
   'engine_version',
   'legacy_created_by_user_id',
@@ -350,6 +356,12 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.target !== undefined) query = query.where('target', '=', input.target);
           if (input.profileId !== undefined) query = query.where('profile_id', '=', input.profileId);
+          if (input.accountId !== undefined) {
+            query = query.where((eb) => eb.or([
+              eb('account_id', 'is', null),
+              eb('account_id', '=', input.accountId!),
+            ]));
+          }
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;
@@ -406,6 +418,12 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
           if (values.profileId !== undefined && values.profileId !== null && !profile) {
             return { ok: false, code: 'profile_not_found' };
           }
+          const account = values.accountId === undefined || values.accountId === null
+            ? null
+            : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            return { ok: false, code: 'profile_not_found' };
+          }
 
           const now = new Date();
           const row = await trx
@@ -418,6 +436,9 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
               target: values.target as string,
               profile_source_sqlite_id: profile?.sourceSqliteId ?? null,
               profile_id: profile?.id ?? null,
+              account_source_sqlite_id: account?.sourceSqliteId ?? null,
+              account_id: account?.id ?? null,
+              override_key: values.overrideKey ?? null,
               sort_order: values.sortOrder ?? 0,
               source_row: serverApiSourceRow(),
               created_at: now,
@@ -461,11 +482,19 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
           if (values.profileId !== undefined && values.profileId !== null && !profile) {
             return { ok: false, code: 'profile_not_found' };
           }
+          const account = values.accountId === undefined
+            ? undefined
+            : values.accountId === null
+              ? null
+              : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            return { ok: false, code: 'profile_not_found' };
+          }
 
           const row = await trx
             .updateTable('email_ai_prompts')
             .set({
-              ...mutationToAiPromptPatch(values, profile),
+              ...mutationToAiPromptPatch(values, profile, account),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -560,6 +589,12 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.triggerName !== undefined) query = query.where('trigger_name', '=', input.triggerName);
           if (input.enabled !== undefined) query = query.where('enabled', '=', input.enabled);
+          if (input.accountId !== undefined) {
+            query = query.where((eb) => eb.or([
+              eb('account_id', 'is', null),
+              eb('account_id', '=', input.accountId!),
+            ]));
+          }
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;
@@ -616,6 +651,12 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           if (values.scheduleAccountId !== undefined && values.scheduleAccountId !== null && !scheduleAccount) {
             return { ok: false, code: 'schedule_account_not_found' };
           }
+          const account = values.accountId === undefined || values.accountId === null
+            ? null
+            : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            return { ok: false, code: 'schedule_account_not_found' };
+          }
 
           const now = new Date();
           const row = await trx
@@ -632,6 +673,9 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
               cron_expr: values.cronExpr ?? null,
               schedule_account_source_sqlite_id: scheduleAccount?.sourceSqliteId ?? null,
               schedule_account_id: scheduleAccount?.id ?? null,
+              account_source_sqlite_id: account?.sourceSqliteId ?? null,
+              account_id: account?.id ?? null,
+              override_key: values.overrideKey ?? null,
               execution_mode: values.executionMode ?? 'graph',
               engine_version: values.engineVersion ?? 1,
               legacy_created_by_user_id: null,
@@ -678,11 +722,19 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           if (values.scheduleAccountId !== undefined && values.scheduleAccountId !== null && !scheduleAccount) {
             return { ok: false, code: 'schedule_account_not_found' };
           }
+          const account = values.accountId === undefined
+            ? undefined
+            : values.accountId === null
+              ? null
+              : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            return { ok: false, code: 'schedule_account_not_found' };
+          }
 
           const row = await trx
             .updateTable('email_workflows')
             .set({
-              ...mutationToWorkflowPatch(values, scheduleAccount),
+              ...mutationToWorkflowPatch(values, scheduleAccount, account),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -928,6 +980,17 @@ function normalizeWorkflowMutation(
     throw new Error('Workflow scheduleAccountId must be a positive integer');
   }
   if (
+    normalized.accountId !== undefined
+    && normalized.accountId !== null
+    && (!Number.isSafeInteger(normalized.accountId) || normalized.accountId <= 0)
+  ) {
+    throw new Error('Workflow accountId must be a positive integer');
+  }
+  if (normalized.overrideKey !== undefined && normalized.overrideKey !== null) {
+    const value = normalized.overrideKey.trim();
+    normalized.overrideKey = value || null;
+  }
+  if (
     normalized.engineVersion !== undefined
     && (!Number.isSafeInteger(normalized.engineVersion) || normalized.engineVersion <= 0)
   ) {
@@ -939,6 +1002,7 @@ function normalizeWorkflowMutation(
 function mutationToWorkflowPatch(
   values: WorkflowMutationInput,
   scheduleAccount: EmailAccountReference | null | undefined,
+  account: EmailAccountReference | null | undefined,
 ): Partial<Updateable<EmailWorkflowsTable>> {
   return {
     ...(values.name === undefined ? {} : { name: values.name }),
@@ -954,6 +1018,11 @@ function mutationToWorkflowPatch(
       schedule_account_id: scheduleAccount?.id ?? null,
       schedule_account_source_sqlite_id: scheduleAccount?.sourceSqliteId ?? null,
     }),
+    ...(values.accountId === undefined ? {} : {
+      account_id: account?.id ?? null,
+      account_source_sqlite_id: account?.sourceSqliteId ?? null,
+    }),
+    ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
   };
 }
 
@@ -1035,6 +1104,17 @@ function normalizeAiPromptMutation(
     throw new Error('AI prompt profileId must be a positive integer');
   }
   if (
+    normalized.accountId !== undefined
+    && normalized.accountId !== null
+    && (!Number.isSafeInteger(normalized.accountId) || normalized.accountId <= 0)
+  ) {
+    throw new Error('AI prompt accountId must be a positive integer');
+  }
+  if (normalized.overrideKey !== undefined && normalized.overrideKey !== null) {
+    const value = normalized.overrideKey.trim();
+    normalized.overrideKey = value || null;
+  }
+  if (
     normalized.sortOrder !== undefined
     && (!Number.isSafeInteger(normalized.sortOrder) || normalized.sortOrder < 0)
   ) {
@@ -1046,6 +1126,7 @@ function normalizeAiPromptMutation(
 function mutationToAiPromptPatch(
   values: AiPromptMutationInput,
   profile: AiProfileReference | null | undefined,
+  account: EmailAccountReference | null | undefined,
 ): Partial<Updateable<EmailAiPromptsTable>> {
   return {
     ...(values.label === undefined ? {} : { label: values.label }),
@@ -1056,6 +1137,11 @@ function mutationToAiPromptPatch(
       profile_id: profile?.id ?? null,
       profile_source_sqlite_id: profile?.sourceSqliteId ?? null,
     }),
+    ...(values.accountId === undefined ? {} : {
+      account_id: account?.id ?? null,
+      account_source_sqlite_id: account?.sourceSqliteId ?? null,
+    }),
+    ...(values.overrideKey === undefined ? {} : { override_key: values.overrideKey }),
   };
 }
 
@@ -1123,6 +1209,9 @@ function mapAiPromptRow(row: Pick<AiPromptRow, typeof aiPromptSelectColumns[numb
     target: row.target,
     profileSourceSqliteId: row.profile_source_sqlite_id === null ? null : Number(row.profile_source_sqlite_id),
     profileId: row.profile_id === null ? null : Number(row.profile_id),
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
+    overrideKey: row.override_key,
     sortOrder: row.sort_order,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
@@ -1144,6 +1233,9 @@ function mapWorkflowRow(row: Pick<WorkflowRow, typeof workflowSelectColumns[numb
       ? null
       : Number(row.schedule_account_source_sqlite_id),
     scheduleAccountId: row.schedule_account_id === null ? null : Number(row.schedule_account_id),
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
+    overrideKey: row.override_key,
     executionMode: row.execution_mode,
     engineVersion: row.engine_version,
     legacyCreatedByUserId: row.legacy_created_by_user_id,

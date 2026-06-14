@@ -4,6 +4,9 @@ import { randomBytes } from 'crypto';
 import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
 
 import type {
+  EmailAccountMailSettingsApiPort,
+  EmailAccountMailSettingsMutationInput,
+  EmailAccountMailSettingsRecord,
   EmailAccountSignatureApiPort,
   EmailAccountSignatureListResult,
   EmailAccountSignatureMutationInput,
@@ -72,7 +75,9 @@ import type {
   EmailThreadRecord,
   EmailThreadSplitMessagePortResult,
 } from '../api/types';
+import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import type {
+  EmailAccountMailSettingsTable,
   EmailAccountSignaturesTable,
   EmailCannedResponsesTable,
   EmailCategoriesTable,
@@ -99,6 +104,7 @@ export type PostgresMailMetadataReadPortOptions = Readonly<{
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
 
+type EmailAccountMailSettingsRow = Selectable<EmailAccountMailSettingsTable>;
 type EmailAccountSignatureRow = Selectable<EmailAccountSignaturesTable>;
 type EmailCannedResponseRow = Selectable<EmailCannedResponsesTable>;
 type EmailCategoryRow = Selectable<EmailCategoriesTable>;
@@ -146,6 +152,15 @@ const emailFolderSelectColumns = [
   'updated_at',
 ] as const;
 
+const emailAccountMailSettingsSelectColumns = [
+  'account_id',
+  'ticket_prefix',
+  'ticket_next_number',
+  'ticket_number_padding',
+  'thread_namespace',
+  'updated_at',
+] as const;
+
 const emailTeamMemberSelectColumns = [
   'id',
   'display_name',
@@ -159,6 +174,8 @@ const emailTeamMemberSelectColumns = [
 const emailThreadSelectColumns = [
   'id',
   'ticket_code',
+  'account_source_sqlite_id',
+  'account_id',
   'root_message_source_sqlite_id',
   'root_message_id',
   'last_message_at',
@@ -216,6 +233,9 @@ const emailCannedResponseSelectColumns = [
   'source_sqlite_id',
   'title',
   'body',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'sort_order',
   'created_at',
   'updated_at',
@@ -262,6 +282,8 @@ const emailThreadEdgeSelectColumns = [
 const emailThreadAliasSelectColumns = [
   'id',
   'source_sqlite_id',
+  'account_source_sqlite_id',
+  'account_id',
   'alias_thread_id',
   'canonical_thread_id',
   'confidence',
@@ -1190,6 +1212,12 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+          if (input.accountId !== undefined) {
+            query = query.where((eb) => eb.or([
+              eb('account_id', 'is', null),
+              eb('account_id', '=', input.accountId!),
+            ]));
+          }
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;
@@ -1289,6 +1317,123 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
         { applySession: options.applyWorkspaceSession },
       );
     },
+  };
+}
+
+
+export function createPostgresEmailAccountMailSettingsPort(options: PostgresMailMetadataReadPortOptions): EmailAccountMailSettingsApiPort {
+  return {
+    async get(input): Promise<EmailAccountMailSettingsRecord | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const row = await trx
+            .selectFrom('email_account_mail_settings')
+            .select(emailAccountMailSettingsSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where((eb) => eb.or([
+              eb('account_id', '=', input.accountId),
+              eb('account_source_sqlite_id', '=', input.accountId),
+            ]))
+            .executeTakeFirst();
+          return row ? mapEmailAccountMailSettingsRow(row) : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async set(input): Promise<EmailAccountMailSettingsRecord> {
+      const values = normalizeEmailAccountMailSettingsMutation(input.values);
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+        async (trx) => {
+          const account = await trx
+            .selectFrom('email_accounts')
+            .select(['id', 'source_sqlite_id', 'display_name', 'email_address'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where((eb) => eb.or([
+              eb('id', '=', values.accountId),
+              eb('source_sqlite_id', '=', values.accountId),
+            ]))
+            .executeTakeFirstOrThrow();
+          const now = new Date();
+          const current = await trx
+            .selectFrom('email_account_mail_settings')
+            .select(emailAccountMailSettingsSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '=', account.id)
+            .executeTakeFirst();
+          const defaultSettings = buildDefaultServerAccountMailSettings({
+            id: Number(account.id),
+            displayName: account.display_name,
+            emailAddress: account.email_address,
+          });
+          const next = {
+            ticket_prefix: values.ticketPrefix ?? current?.ticket_prefix ?? defaultSettings.ticketPrefix,
+            ticket_next_number: values.ticketNextNumber ?? Number(current?.ticket_next_number ?? defaultSettings.ticketNextNumber),
+            ticket_number_padding: values.ticketNumberPadding ?? Number(current?.ticket_number_padding ?? defaultSettings.ticketNumberPadding),
+            thread_namespace: values.threadNamespace ?? current?.thread_namespace ?? defaultSettings.threadNamespace,
+          };
+          const conflicting = await trx
+            .selectFrom('email_account_mail_settings')
+            .select(['account_id', 'ticket_prefix', 'thread_namespace'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '!=', account.id)
+            .where((eb) => eb.or([
+              eb('ticket_prefix', '=', next.ticket_prefix),
+              eb('thread_namespace', '=', next.thread_namespace),
+            ]))
+            .executeTakeFirst();
+          if (conflicting) {
+            if (conflicting.ticket_prefix === next.ticket_prefix) throw new Error('ticketPrefix already used by another account');
+            throw new Error('threadNamespace already used by another account');
+          }
+          const row = await trx
+            .insertInto('email_account_mail_settings')
+            .values({
+              workspace_id: input.workspaceId,
+              account_source_sqlite_id: Number(account.source_sqlite_id ?? account.id),
+              account_id: account.id,
+              ...next,
+              source_row: serverApiSourceRow(),
+              imported_in_run_id: null,
+              created_at: current ? null : now,
+              updated_at: now,
+            })
+            .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doUpdateSet({
+              ...next,
+              updated_at: now,
+            }))
+            .returning(emailAccountMailSettingsSelectColumns)
+            .executeTakeFirstOrThrow();
+          return mapEmailAccountMailSettingsRow(row);
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+function normalizeEmailAccountMailSettingsMutation(values: EmailAccountMailSettingsMutationInput): EmailAccountMailSettingsMutationInput {
+  if (!Number.isSafeInteger(values.accountId) || values.accountId <= 0) throw new Error('accountId must be positive');
+  return {
+    accountId: values.accountId,
+    ...(values.ticketPrefix === undefined ? {} : { ticketPrefix: values.ticketPrefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'SCR' }),
+    ...(values.ticketNextNumber === undefined ? {} : { ticketNextNumber: Math.max(1, Math.floor(values.ticketNextNumber)) }),
+    ...(values.ticketNumberPadding === undefined ? {} : { ticketNumberPadding: Math.min(12, Math.max(1, Math.floor(values.ticketNumberPadding))) }),
+    ...(values.threadNamespace === undefined ? {} : { threadNamespace: values.threadNamespace.trim() || `account-${values.accountId}` }),
+  };
+}
+
+function mapEmailAccountMailSettingsRow(row: Pick<EmailAccountMailSettingsRow, typeof emailAccountMailSettingsSelectColumns[number]>): EmailAccountMailSettingsRecord {
+  return {
+    accountId: Number(row.account_id),
+    ticketPrefix: row.ticket_prefix,
+    ticketNextNumber: Number(row.ticket_next_number),
+    ticketNumberPadding: Number(row.ticket_number_padding),
+    threadNamespace: row.thread_namespace,
+    updatedAt: timestampToIsoOrNull(row.updated_at),
   };
 }
 
@@ -1855,6 +2000,7 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             .values({
               workspace_id: input.workspaceId,
               source_sqlite_id: serverCreatedEmailThreadAliasSourceSqliteId(),
+              account_id: input.accountId,
               alias_thread_id: aliasThreadId,
               canonical_thread_id: canonicalThreadId,
               confidence: 'high',
@@ -1864,7 +2010,7 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
               updated_at: now,
             })
             .onConflict((oc) => oc
-              .columns(['workspace_id', 'alias_thread_id', 'canonical_thread_id'])
+              .columns(['workspace_id', 'account_id', 'alias_thread_id', 'canonical_thread_id'])
               .doUpdateSet({
                 confidence: 'high',
                 source: 'manual_merge',
@@ -2570,6 +2716,7 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
+    .where('account_id', 'is', null)
     .executeTakeFirst();
   if (existing?.id) return existing.id;
 
@@ -2594,6 +2741,7 @@ async function getOrCreateThreadForTicket(
     })
     .onConflict((oc) => oc
       .columns(['workspace_id', 'ticket_code'])
+      .where('account_id', 'is', null)
       .doNothing())
     .returning('id')
     .executeTakeFirst();
@@ -2604,6 +2752,7 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
+    .where('account_id', 'is', null)
     .executeTakeFirst();
   if (existingAfterConflict?.id) return existingAfterConflict.id;
   throw new Error('email thread ticket insert failed');
@@ -2942,6 +3091,8 @@ function mapEmailThreadRow(row: Pick<EmailThreadRow, typeof emailThreadSelectCol
   return {
     id: row.id,
     ticketCode: row.ticket_code,
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
     rootMessageSourceSqliteId: row.root_message_source_sqlite_id === null ? null : Number(row.root_message_source_sqlite_id),
     rootMessageId: row.root_message_id === null ? null : Number(row.root_message_id),
     lastMessageAt: timestampToIsoOrNull(row.last_message_at),
@@ -3025,6 +3176,9 @@ function mapEmailCannedResponseRow(
     sourceSqliteId: Number(row.source_sqlite_id),
     title: row.title,
     body: row.body,
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
+    overrideKey: row.override_key,
     sortOrder: row.sort_order,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
@@ -3085,6 +3239,8 @@ function mapEmailThreadAliasRow(row: Pick<EmailThreadAliasRow, typeof emailThrea
   return {
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
+    accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
+    accountId: row.account_id === null ? null : Number(row.account_id),
     aliasThreadId: row.alias_thread_id,
     canonicalThreadId: row.canonical_thread_id,
     confidence: row.confidence,

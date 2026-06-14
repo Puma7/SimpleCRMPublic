@@ -32,6 +32,7 @@ export const EMAIL_CANNED_RESPONSES_TABLE = 'email_canned_responses';
 export const EMAIL_AI_PROMPTS_TABLE = 'email_ai_prompts';
 export const EMAIL_TEAM_MEMBERS_TABLE = 'email_team_members';
 export const EMAIL_ACCOUNT_SIGNATURES_TABLE = 'email_account_signatures';
+export const EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE = 'email_account_mail_settings';
 export const EMAIL_MESSAGE_ATTACHMENTS_TABLE = 'email_message_attachments';
 export const EMAIL_MESSAGES_FTS_TABLE = 'email_messages_fts';
 export const EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE = 'email_workflow_forward_dedup';
@@ -397,7 +398,8 @@ export const createEmailWorkflowForwardDedupTable = `
 export const createEmailThreadsTable = `
   CREATE TABLE IF NOT EXISTS ${EMAIL_THREADS_TABLE} (
     id TEXT PRIMARY KEY,
-    ticket_code TEXT NOT NULL UNIQUE,
+    ticket_code TEXT NOT NULL,
+    account_id INTEGER,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     root_message_id INTEGER,
     last_message_at TEXT,
@@ -405,7 +407,8 @@ export const createEmailThreadsTable = `
     has_unread INTEGER NOT NULL DEFAULT 0,
     has_attachments INTEGER NOT NULL DEFAULT 0,
     subject_normalized TEXT,
-    workspace_id TEXT
+    workspace_id TEXT,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL
   );
 `;
 
@@ -444,9 +447,11 @@ export const createEmailThreadAliasesTable = `
   CREATE TABLE IF NOT EXISTS ${EMAIL_THREAD_ALIASES_TABLE} (
     alias_thread_id TEXT NOT NULL,
     canonical_thread_id TEXT NOT NULL,
+    account_id INTEGER,
     confidence TEXT NOT NULL DEFAULT 'high',
     source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
     PRIMARY KEY (alias_thread_id, canonical_thread_id)
   );
 `;
@@ -577,8 +582,12 @@ export const createEmailCannedResponsesTable = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
+    account_id INTEGER,
+    override_key TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, override_key)
   );
 `;
 
@@ -600,6 +609,21 @@ export const createEmailAccountSignaturesTable = `
     signature_html TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const createEmailAccountMailSettingsTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE} (
+    account_id INTEGER PRIMARY KEY,
+    ticket_prefix TEXT NOT NULL,
+    ticket_next_number INTEGER NOT NULL DEFAULT 1,
+    ticket_number_padding INTEGER NOT NULL DEFAULT 6,
+    thread_namespace TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(ticket_prefix),
+    UNIQUE(thread_namespace)
   );
 `;
 
@@ -628,8 +652,12 @@ export const createEmailAiPromptsTable = `
     user_template TEXT NOT NULL,
     target TEXT NOT NULL DEFAULT 'full_body',
     profile_id INTEGER REFERENCES ${EMAIL_AI_PROFILES_TABLE}(id) ON DELETE SET NULL,
+    account_id INTEGER,
+    override_key TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, override_key)
   );
 `;
 
@@ -644,11 +672,15 @@ export const createEmailWorkflowsTable = `
     graph_json TEXT,
     cron_expr TEXT,
     schedule_account_id INTEGER,
+    account_id INTEGER,
+    override_key TEXT,
     execution_mode TEXT NOT NULL DEFAULT 'graph',
     engine_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (schedule_account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL
+    FOREIGN KEY (schedule_account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, override_key)
   );
 `;
 
@@ -673,7 +705,11 @@ export const createWorkflowKnowledgeBasesTable = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     description TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    account_id INTEGER,
+    override_key TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE,
+    UNIQUE(account_id, override_key)
   );
 `;
 
@@ -869,6 +905,15 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON ${EMAIL_MESSAGES_TABLE}(thread_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_ticket ON ${EMAIL_MESSAGES_TABLE}(ticket_code);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_threads_account_ticket_unique ON ${EMAIL_THREADS_TABLE}(account_id, ticket_code) WHERE account_id IS NOT NULL;`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_threads_global_ticket_unique ON ${EMAIL_THREADS_TABLE}(ticket_code) WHERE account_id IS NULL;`,
+    `CREATE INDEX IF NOT EXISTS idx_email_account_mail_settings_prefix ON ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}(ticket_prefix);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_thread_aliases_account_pair ON ${EMAIL_THREAD_ALIASES_TABLE}(account_id, alias_thread_id, canonical_thread_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_canned_account_override ON ${EMAIL_CANNED_RESPONSES_TABLE}(account_id, override_key);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_prompts_account_override ON ${EMAIL_AI_PROMPTS_TABLE}(account_id, override_key);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_workflows_account_override ON ${EMAIL_WORKFLOWS_TABLE}(account_id, override_key);`,
+    `CREATE INDEX IF NOT EXISTS idx_kb_account_override ON ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(account_id, override_key);`,
+    `CREATE INDEX IF NOT EXISTS idx_email_account_mail_settings_prefix ON ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}(ticket_prefix);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_customer ON ${EMAIL_MESSAGES_TABLE}(customer_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_folder_kind ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_kind);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_spam_status ON ${EMAIL_MESSAGES_TABLE}(account_id, spam_status);`,

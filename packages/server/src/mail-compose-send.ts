@@ -36,11 +36,13 @@ import {
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
+import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
 import type {
   ServerImapSentCopyAppendInput,
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -138,7 +140,15 @@ export type ComposeSenderStore = Readonly<{
   getOrCreateThreadForTicket(input: {
     workspaceId: string;
     ticketCode: string;
+    accountId?: number | null;
     subject: string;
+  }): Promise<string>;
+  listKnownTicketPrefixes?(input: {
+    workspaceId: string;
+  }): Promise<readonly string[]>;
+  allocateNextTicketCodeForAccount?(input: {
+    workspaceId: string;
+    account: ComposeSendAccount;
   }): Promise<string>;
   readSecret?(input: SecretIdentifier): Promise<Buffer | null>;
   writeSecret?(input: SecretIdentifier & { value: string | Buffer }): Promise<unknown>;
@@ -867,7 +877,21 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => getOrCreateThreadForTicket(trx, input.workspaceId, input.ticketCode, input.subject, options.now?.()),
+        async (trx) => getOrCreateThreadForTicket(trx, input.workspaceId, input.ticketCode, input.subject, input.accountId ?? null, options.now?.()),
+      );
+    },
+    async listKnownTicketPrefixes(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => [...(await listWorkspaceTicketPrefixes(trx, input.workspaceId))],
+      );
+    },
+    async allocateNextTicketCodeForAccount(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => allocateNextTicketCodeForAccount(trx, input.workspaceId, input.account, options.now?.()),
       );
     },
     async readSecret(input) {
@@ -1116,11 +1140,25 @@ async function prepareDraftForSend(input: {
       threadId = parentForThreading.threadId;
     }
   }
-  if (!ticketCode) ticketCode = extractTicketFromSubject(values.subject) ?? generateTicketCode();
+  if (!ticketCode) {
+    const allowedPrefixes = await input.store.listKnownTicketPrefixes?.({
+      workspaceId: input.workspaceId,
+    });
+    ticketCode = extractTicketFromSubject(
+      values.subject,
+      allowedPrefixes ? { allowedPrefixes } : undefined,
+    )
+      ?? (await input.store.allocateNextTicketCodeForAccount?.({
+        workspaceId: input.workspaceId,
+        account: input.account,
+      }))
+      ?? generateTicketCode({ prefix: `ACC${input.account.id}` });
+  }
   if (!threadId) {
     threadId = await input.store.getOrCreateThreadForTicket({
       workspaceId: input.workspaceId,
       ticketCode,
+      accountId: input.account.id,
       subject: values.subject,
     });
   }
@@ -1701,6 +1739,7 @@ async function getOrCreateThreadForTicket(
   workspaceId: string,
   ticketCode: string,
   subject: string,
+  accountId?: number | null,
   nowInput?: Date,
 ): Promise<string> {
   const existing = await trx
@@ -1708,33 +1747,119 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
+    .where('account_id', accountId == null ? 'is' : '=', accountId ?? null)
     .executeTakeFirst();
   if (existing?.id) return existing.id;
 
   const now = nowInput ?? new Date();
-  const threadId = `th-${randomBytes(8).toString('hex')}`;
-  const inserted = await trx
-    .insertInto('email_threads')
+  const threadId = `th-${randomBytes(12).toString('hex')}`;
+  const values = {
+    id: threadId,
+    workspace_id: workspaceId,
+    ticket_code: ticketCode,
+    account_id: accountId ?? null,
+    root_message_source_sqlite_id: null,
+    root_message_id: null,
+    last_message_at: null,
+    message_count: 0,
+    has_unread: false,
+    has_attachments: false,
+    subject_normalized: normalizeThreadSubject(subject),
+    source_row: serverApiSourceRow(),
+    imported_in_run_id: null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const inserted = accountId == null
+    ? await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'ticket_code'])
+        .where('account_id', 'is', null)
+        .doUpdateSet({ updated_at: now }))
+      .returning('id')
+      .executeTakeFirst()
+    : await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'account_id', 'ticket_code'])
+        .doUpdateSet({ updated_at: now }))
+      .returning('id')
+      .executeTakeFirst();
+
+  if (inserted?.id) return inserted.id;
+
+  const existingAfterConflict = await trx
+    .selectFrom('email_threads')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('ticket_code', '=', ticketCode)
+    .where('account_id', accountId == null ? 'is' : '=', accountId ?? null)
+    .executeTakeFirst();
+  return existingAfterConflict?.id ?? threadId;
+}
+
+function formatServerTicketSequence(value: number, padding: number): string {
+  const normalizedValue = Number.isSafeInteger(value) && value > 0 ? value : 1;
+  const normalizedPadding = Number.isSafeInteger(padding) && padding > 0 ? Math.min(padding, 12) : 6;
+  return String(normalizedValue).padStart(normalizedPadding, '0');
+}
+
+async function allocateNextTicketCodeForAccount(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  account: ComposeSendAccount,
+  nowInput?: Date,
+): Promise<string> {
+  const now = nowInput ?? new Date();
+  const defaultSettings = buildDefaultServerAccountMailSettings(account);
+  await trx
+    .insertInto('email_account_mail_settings')
     .values({
-      id: threadId,
       workspace_id: workspaceId,
-      ticket_code: ticketCode,
-      root_message_source_sqlite_id: null,
-      root_message_id: null,
-      last_message_at: null,
-      message_count: 0,
-      has_unread: false,
-      has_attachments: false,
-      subject_normalized: normalizeThreadSubject(subject),
+      account_source_sqlite_id: account.sourceSqliteId,
+      account_id: account.id,
+      ticket_prefix: defaultSettings.ticketPrefix,
+      ticket_next_number: defaultSettings.ticketNextNumber,
+      ticket_number_padding: defaultSettings.ticketNumberPadding,
+      thread_namespace: defaultSettings.threadNamespace,
       source_row: serverApiSourceRow(),
       imported_in_run_id: null,
       created_at: now,
       updated_at: now,
     })
-    .onConflict((oc) => oc.columns(['workspace_id', 'ticket_code']).doUpdateSet({ updated_at: now }))
-    .returning('id')
-    .executeTakeFirst();
-  return inserted?.id ?? threadId;
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+
+  const row = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', account.id)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
+  const prefix = row.ticket_prefix.trim() || `ACC${account.id}`;
+  const currentNumber = Number(row.ticket_next_number);
+  const padding = Number(row.ticket_number_padding);
+  const ticketCode = generateTicketCode({
+    prefix,
+    sequence: formatServerTicketSequence(currentNumber, padding),
+  });
+  const nextNumber = (Number.isSafeInteger(currentNumber) && currentNumber > 0 ? currentNumber : 1) + 1;
+
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({
+      ticket_next_number: nextNumber,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', account.id)
+    .execute();
+  return ticketCode;
 }
 
 async function upsertSyncInfo(

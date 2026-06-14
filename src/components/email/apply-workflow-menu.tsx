@@ -67,7 +67,9 @@ export function ApplyWorkflowMenu({
   const loadWorkflows = useCallback(async () => {
     setLoadingList(true)
     try {
-      const list = await invokeRenderer(IPCChannels.Email.ListWorkflows) as WorkflowRow[]
+      const list = message.account_id != null
+        ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: message.account_id }) as WorkflowRow[]
+        : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WorkflowRow[]
       setWorkflows(list)
     } catch {
       toast.error("Workflows konnten nicht geladen werden.")

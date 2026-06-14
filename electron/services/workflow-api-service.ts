@@ -4,10 +4,11 @@ import { executeWorkflowForTrigger } from '../workflow/workflow-executor';
 import { workflowDirectionForTrigger } from '../workflow/workflow-trigger-utils';
 import { listRecentWorkflowRuns } from '../workflow/run-steps';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
+import type { AccountOverrideScope } from '../../shared/mail-account-overrides';
 
 export const WorkflowApiService = {
-  list() {
-    return listAllWorkflows().map((w) => ({
+  list(scope?: AccountOverrideScope) {
+    return listAllWorkflows(scope).map((w) => ({
       id: w.id,
       name: w.name,
       trigger: w.trigger,
@@ -16,6 +17,8 @@ export const WorkflowApiService = {
       execution_mode: w.execution_mode,
       cron_expr: w.cron_expr,
       schedule_account_id: w.schedule_account_id,
+      account_id: w.account_id,
+      override_key: w.override_key,
       updated_at: w.updated_at,
     }));
   },

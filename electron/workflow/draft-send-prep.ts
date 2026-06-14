@@ -6,7 +6,7 @@ import {
 } from '../email/email-store';
 import { setDraftScheduledSendAt } from '../email/email-message-features';
 import { stampOutboundApprovalMarker } from '../email/outbound-approval';
-import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode } from '../email/email-ticket';
+import { createTicketCodeForAccount, ensureTicketInSubject, extractKnownTicketFromSubject } from '../email/email-ticket';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 import { getDb } from '../sqlite-service';
@@ -52,8 +52,8 @@ export function prepareDraftForWorkflowSend(
   });
   const storedSubject = draftRow.subject?.trim() || '';
   const existingTicket =
-    draftRow.ticket_code?.trim() || extractTicketFromSubject(draftRow.subject ?? null);
-  const ticketCode = existingTicket || generateTicketCode();
+    draftRow.ticket_code?.trim() || extractKnownTicketFromSubject(draftRow.subject ?? null);
+  const ticketCode = existingTicket || createTicketCodeForAccount(draftRow.account_id);
   const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 
   if (opts.dryRun) {

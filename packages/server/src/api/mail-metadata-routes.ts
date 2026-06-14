@@ -3398,10 +3398,12 @@ function parseEmailInternalNoteMutationBody(
   return { ok: true, values };
 }
 
-function parseCannedResponseFilters(req: ApiRequest): ParseResult<{ search?: string }> {
+function parseCannedResponseFilters(req: ApiRequest): ParseResult<{ search?: string; accountId?: number }> {
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return parseError('invalid_search', 'search darf maximal 200 Zeichen haben');
-  return { ok: true, filters: omitUndefined({ search }) };
+  const accountId = parseOptionalPositiveInt(req.query?.accountId);
+  if (accountId === null) return parseError('invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+  return { ok: true, filters: omitUndefined({ search, accountId }) };
 }
 
 function parseAccountSignatureFilters(req: ApiRequest): ParseResult<{ accountId?: number }> {
@@ -3504,6 +3506,8 @@ function sanitizeEmailThread(thread: EmailThreadRecord): EmailThreadRecord {
   return {
     id: thread.id,
     ticketCode: thread.ticketCode,
+    accountSourceSqliteId: thread.accountSourceSqliteId,
+    accountId: thread.accountId,
     rootMessageSourceSqliteId: thread.rootMessageSourceSqliteId,
     rootMessageId: thread.rootMessageId,
     lastMessageAt: thread.lastMessageAt,
@@ -3582,6 +3586,9 @@ function sanitizeEmailCannedResponse(response: EmailCannedResponseRecord): Email
     sourceSqliteId: response.sourceSqliteId,
     title: response.title,
     body: response.body,
+    accountSourceSqliteId: response.accountSourceSqliteId,
+    accountId: response.accountId,
+    overrideKey: response.overrideKey,
     sortOrder: response.sortOrder,
     createdAt: response.createdAt,
     updatedAt: response.updatedAt,
@@ -3638,6 +3645,8 @@ function sanitizeEmailThreadAlias(alias: EmailThreadAliasRecord): EmailThreadAli
   return {
     id: alias.id,
     sourceSqliteId: alias.sourceSqliteId,
+    accountSourceSqliteId: alias.accountSourceSqliteId,
+    accountId: alias.accountId,
     aliasThreadId: alias.aliasThreadId,
     canonicalThreadId: alias.canonicalThreadId,
     confidence: alias.confidence,

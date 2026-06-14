@@ -171,9 +171,7 @@ export function MailSidebar({
             />
           </SelectTrigger>
           <SelectContent>
-            {accounts.length > 1 ? (
-              <SelectItem value="all">Alle Konten</SelectItem>
-            ) : null}
+            <SelectItem value="all">Alle Konten</SelectItem>
             {accounts.map((a) => (
               <SelectItem key={a.id} value={String(a.id)}>
                 {a.display_name}

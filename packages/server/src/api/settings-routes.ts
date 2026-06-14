@@ -2,10 +2,13 @@ import type {
   ApiErrorBody,
   ApiRequest,
   ApiResponse,
+  EmailAccountMailSettingsMutationInput,
+  EmailAccountRecord,
   MssqlSettingsInput,
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
+import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import {
   data,
   error,
@@ -170,6 +173,10 @@ export async function handleSettingsRoute(
 
   if (req.path === '/api/v1/email/settings/security/test-rspamd') {
     return handleRspamdConnectionTest(req);
+  }
+
+  if (req.path === '/api/v1/email/settings/account-mail') {
+    return handleAccountMailSettings(req, ports);
   }
 
   if (req.path === '/api/v1/email/settings/snooze') {
@@ -372,6 +379,108 @@ async function handleRspamdConnectionTest(req: ApiRequest): Promise<ApiResponse>
   } finally {
     clearTimeout(timer);
   }
+}
+
+
+async function resolveEmailAccountByPublicId(
+  emailAccounts: NonNullable<ServerApiPorts['emailAccounts']>,
+  workspaceId: string,
+  accountId: number,
+): Promise<EmailAccountRecord | null> {
+  const direct = await emailAccounts.get({ workspaceId, id: accountId });
+  if (direct) return direct;
+  const accounts = await emailAccounts.list({ workspaceId });
+  return accounts.items.find((account) => account.sourceSqliteId === accountId) ?? null;
+}
+
+async function handleAccountMailSettings(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.emailAccountMailSettings || !ports.emailAccounts) return error(503, 'account_mail_settings_unavailable', 'Account-Mail-Settings API nicht konfiguriert');
+
+  if (req.method === 'GET') {
+    const accountId = parseOptionalPositiveInt(req.query?.accountId);
+    if (accountId == null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+    const account = await resolveEmailAccountByPublicId(ports.emailAccounts, principal.workspaceId, accountId);
+    if (!account) return error(404, 'email_account_not_found', 'E-Mail-Konto wurde nicht gefunden');
+    const settings = await ports.emailAccountMailSettings.get({
+      workspaceId: principal.workspaceId,
+      accountId: account.id,
+    });
+    return data(200, settings ?? buildDefaultServerAccountMailSettings(account));
+  }
+
+  if (req.method === 'PATCH') {
+    const parsed = parseAccountMailSettingsPayload(req.body);
+    if (!parsed.ok) return parsed.response;
+    const account = await resolveEmailAccountByPublicId(ports.emailAccounts, principal.workspaceId, parsed.values.accountId);
+    if (!account) return error(404, 'email_account_not_found', 'E-Mail-Konto wurde nicht gefunden');
+    let settings;
+    try {
+      settings = await ports.emailAccountMailSettings.set({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        values: { ...parsed.values, accountId: account.id },
+      });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      if (message.includes('ticketPrefix already used')) return error(409, 'duplicate_ticket_prefix', 'Ticket-Prefix ist bereits fuer ein anderes Konto vergeben');
+      if (message.includes('threadNamespace already used')) return error(409, 'duplicate_thread_namespace', 'Thread-Namespace ist bereits fuer ein anderes Konto vergeben');
+      throw caught;
+    }
+    return data(200, settings);
+  }
+
+  return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizeNullableBodyText(value: unknown, field: string, maxLength: number): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== 'string') return { ok: false, message: `${field} muss ein String sein` };
+  const text = value.trim();
+  if (text.length > maxLength) return { ok: false, message: `${field} darf maximal ${maxLength} Zeichen haben` };
+  return { ok: true, value: text || null };
+}
+
+type AccountMailSettingsPayloadParseResult =
+  | { ok: true; values: EmailAccountMailSettingsMutationInput }
+  | { ok: false; response: ApiResponse<ApiErrorBody> };
+
+function parseAccountMailSettingsPayload(body: unknown): AccountMailSettingsPayloadParseResult {
+  if (!isPlainObject(body)) return { ok: false, response: error(400, 'invalid_account_mail_settings_payload', 'Account-Mail-Settings payload muss ein JSON-Objekt sein') };
+  const accountId = parseOptionalPositiveInt(body.accountId);
+  if (accountId == null) return { ok: false, response: error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein') };
+  const values: EmailAccountMailSettingsMutationInput = { accountId };
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketPrefix')) {
+    const value = normalizeNullableBodyText(body.ticketPrefix, 'ticketPrefix', 12);
+    if (!value.ok || value.value == null) return { ok: false, response: error(400, 'invalid_ticket_prefix', 'ticketPrefix ist ungueltig') };
+    values.ticketPrefix = value.value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketNextNumber')) {
+    const value = parseOptionalPositiveInt(body.ticketNextNumber);
+    if (value == null) return { ok: false, response: error(400, 'invalid_ticket_next_number', 'ticketNextNumber muss eine positive Ganzzahl sein') };
+    values.ticketNextNumber = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketNumberPadding')) {
+    const value = parseOptionalPositiveInt(body.ticketNumberPadding);
+    if (value == null) return { ok: false, response: error(400, 'invalid_ticket_number_padding', 'ticketNumberPadding muss eine positive Ganzzahl sein') };
+    values.ticketNumberPadding = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'threadNamespace')) {
+    const value = normalizeNullableBodyText(body.threadNamespace, 'threadNamespace', 200);
+    if (!value.ok || value.value == null) return { ok: false, response: error(400, 'invalid_thread_namespace', 'threadNamespace ist ungueltig') };
+    values.threadNamespace = value.value;
+  }
+  return { ok: true, values };
 }
 
 async function handleSnoozeSettings(

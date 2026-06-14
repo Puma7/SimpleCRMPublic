@@ -2309,6 +2309,7 @@ export type EmailAttachmentRecord = {
   filename: string;
   contentType: string | null;
   sizeBytes: number;
+  storagePath?: string | null;
   contentSha256: string | null;
   updatedAt: string;
 };
@@ -2465,6 +2466,8 @@ export type EmailTeamMemberApiPort = EmailStringRecordApiPort<EmailTeamMemberRec
 export type EmailThreadRecord = {
   id: string;
   ticketCode: string;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
   rootMessageSourceSqliteId: number | null;
   rootMessageId: number | null;
   lastMessageAt: string | null;
@@ -2694,6 +2697,9 @@ export type EmailCannedResponseRecord = {
   sourceSqliteId: number;
   title: string;
   body: string;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   sortOrder: number;
   createdAt: string | null;
   updatedAt: string;
@@ -2704,11 +2710,14 @@ export type EmailCannedResponseListResult = EmailNumericCursorListResult<EmailCa
 export type EmailCannedResponseMutationInput = {
   title?: string;
   body?: string;
+  accountId?: number | null;
+  overrideKey?: string | null;
   sortOrder?: number;
 };
 
 export type EmailCannedResponseApiPort = EmailNumericRecordApiPort<EmailCannedResponseRecord, {
   search?: string;
+  accountId?: number;
 }> & {
   create?(input: {
     workspaceId: string;
@@ -2726,6 +2735,29 @@ export type EmailCannedResponseApiPort = EmailNumericRecordApiPort<EmailCannedRe
     actorUserId: string;
     id: number;
   }): Promise<EmailCannedResponseRecord | null>;
+};
+
+
+export type EmailAccountMailSettingsRecord = {
+  accountId: number;
+  ticketPrefix: string;
+  ticketNextNumber: number;
+  ticketNumberPadding: number;
+  threadNamespace: string;
+  updatedAt: string | null;
+};
+
+export type EmailAccountMailSettingsMutationInput = {
+  accountId: number;
+  ticketPrefix?: string;
+  ticketNextNumber?: number;
+  ticketNumberPadding?: number;
+  threadNamespace?: string;
+};
+
+export type EmailAccountMailSettingsApiPort = {
+  get(input: { workspaceId: string; accountId: number }): Promise<EmailAccountMailSettingsRecord | null>;
+  set(input: { workspaceId: string; actorUserId: string; values: EmailAccountMailSettingsMutationInput }): Promise<EmailAccountMailSettingsRecord>;
 };
 
 export type EmailAccountSignatureRecord = {
@@ -2893,6 +2925,8 @@ export type EmailThreadEdgeApiPort = EmailNumericRecordApiPort<EmailThreadEdgeRe
 export type EmailThreadAliasRecord = {
   id: number;
   sourceSqliteId: number;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
   aliasThreadId: string;
   canonicalThreadId: string;
   confidence: string;
@@ -2913,6 +2947,7 @@ export type EmailThreadAliasWarningRecord = {
 export type EmailThreadAliasListResult = EmailNumericCursorListResult<EmailThreadAliasRecord>;
 
 export type EmailThreadAliasMutationInput = {
+  accountId?: number | null;
   aliasThreadId?: string;
   canonicalThreadId?: string;
   confidence?: string;
@@ -3039,6 +3074,9 @@ export type AiPromptRecord = {
   target: string;
   profileSourceSqliteId: number | null;
   profileId: number | null;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   sortOrder: number;
   createdAt: string | null;
   updatedAt: string;
@@ -3054,6 +3092,8 @@ export type AiPromptMutationInput = {
   userTemplate?: string;
   target?: string;
   profileId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
   sortOrder?: number;
 };
 
@@ -3076,6 +3116,7 @@ export type AiPromptApiPort = {
     search?: string;
     target?: string;
     profileId?: number;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<AiPromptListResult>;
@@ -3138,6 +3179,9 @@ export type WorkflowRecord = {
   cronExpr: string | null;
   scheduleAccountSourceSqliteId: number | null;
   scheduleAccountId: number | null;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   executionMode: string;
   engineVersion: number;
   legacyCreatedByUserId: string | null;
@@ -3160,6 +3204,8 @@ export type WorkflowMutationInput = {
   graph?: unknown | null;
   cronExpr?: string | null;
   scheduleAccountId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
   executionMode?: string;
   engineVersion?: number;
 };
@@ -3174,6 +3220,7 @@ export type WorkflowApiPort = {
     search?: string;
     triggerName?: string;
     enabled?: boolean;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<WorkflowListResult>;
@@ -3408,6 +3455,9 @@ export type WorkflowKnowledgeBaseRecord = {
   sourceSqliteId: number | null;
   name: string;
   description: string | null;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   createdAt: string | null;
   updatedAt: string;
 };
@@ -3417,12 +3467,15 @@ export type WorkflowKnowledgeBaseListResult = WorkflowRuntimeListResult<Workflow
 export type WorkflowKnowledgeBaseMutationInput = {
   name?: string;
   description?: string | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
 };
 
 export type WorkflowKnowledgeBaseApiPort = {
   list(input: {
     workspaceId: string;
     search?: string;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<WorkflowKnowledgeBaseListResult>;
@@ -4454,6 +4507,7 @@ export type ServerApiPorts = {
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
+  emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;
   emailAttachmentContent?: EmailAttachmentContentApiPort;
   emailAttachments?: EmailAttachmentApiPort;

@@ -58,17 +58,24 @@ describe('findDatabaseSqliteInTree', () => {
 });
 
 describe('restore zip extraction limits', () => {
+  const gib = 1024 * 1024 * 1024;
+
   test('rejects too many entries', () => {
     const state = { entries: 10_000, totalBytes: 0 };
     expect(() => validateRestoreZipEntry('database.sqlite', 1, state)).toThrow(/zu viele/i);
   });
 
+  test('accepts app-produced backups up to the exporter attachment limit', () => {
+    expect(() => validateRestoreZipEntry('email-attachments/large.bin', 6 * gib, { entries: 0, totalBytes: 0 })).not.toThrow();
+    expect(() => validateRestoreZipEntry('email-attachments/chunk.bin', 3 * gib, { entries: 1, totalBytes: 5 * gib })).not.toThrow();
+  });
+
   test('rejects oversized single entries', () => {
-    expect(() => validateRestoreZipEntry('database.sqlite', 2_001 * 1024 * 1024, { entries: 0, totalBytes: 0 })).toThrow(/zu groß/i);
+    expect(() => validateRestoreZipEntry('database.sqlite', 8 * gib + 1, { entries: 0, totalBytes: 0 })).toThrow(/zu groß/i);
   });
 
   test('rejects excessive total uncompressed size', () => {
-    const state = { entries: 1, totalBytes: 5 * 1024 * 1024 * 1024 };
+    const state = { entries: 1, totalBytes: 9 * gib };
     expect(() => validateRestoreZipEntry('email-attachments/a.bin', 1, state)).toThrow(/zu groß/i);
   });
 });

@@ -4,7 +4,7 @@ import {
   EMAIL_THREAD_ALIASES_TABLE,
   EMAIL_THREADS_TABLE,
 } from '../database-schema';
-import { generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
+import { createTicketCodeForAccount, getOrCreateThreadForTicket } from './email-ticket';
 import { rebuildThreadEdges, upsertThreadAggregates } from './email-thread-aggregate';
 import { canonicalThreadId, wouldCreateThreadAliasCycle } from './email-thread-resolve';
 
@@ -27,9 +27,9 @@ export function mergeThreads(
 
   db.prepare(
     `INSERT OR REPLACE INTO ${EMAIL_THREAD_ALIASES_TABLE}
-     (alias_thread_id, canonical_thread_id, confidence, source)
-     VALUES (?, ?, 'high', ?)`,
-  ).run(alias, canon, source);
+     (alias_thread_id, canonical_thread_id, account_id, confidence, source)
+     VALUES (?, ?, ?, 'high', ?)`,
+  ).run(alias, canon, accountId, source);
 
   db.prepare(
     `UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ? WHERE thread_id = ? AND account_id = ?`,
@@ -50,12 +50,12 @@ export function splitMessageToOwnThread(messageId: number): { ok: true; threadId
   const db = getDb();
   if (!db) return { ok: false, error: 'Database not initialized' };
   const row = db
-    .prepare(`SELECT thread_id, ticket_code FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
-    .get(messageId) as { thread_id: string | null; ticket_code: string | null } | undefined;
+    .prepare(`SELECT thread_id, ticket_code, account_id FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
+    .get(messageId) as { thread_id: string | null; ticket_code: string | null; account_id: number | null } | undefined;
   if (!row) return { ok: false, error: 'Nachricht nicht gefunden' };
 
-  const ticket = generateTicketCode();
-  const threadId = getOrCreateThreadForTicket(ticket);
+  const ticket = createTicketCodeForAccount(row.account_id);
+  const threadId = getOrCreateThreadForTicket(ticket, row.account_id);
   db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ?, ticket_code = ? WHERE id = ?`).run(
     threadId,
     ticket,

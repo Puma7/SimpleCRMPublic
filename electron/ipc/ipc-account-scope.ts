@@ -10,13 +10,15 @@ export const EMAIL_MULTI_ACCOUNT_CHANNELS = new Set<string>([
   'email:mail-folder-counts',
   'email:list-threads-by-view',
   'email:reporting',
+  'email:list-workflows',
+  'email:list-canned',
+  'email:list-ai-prompts',
 ]);
 
 /** Global / admin — no accountScope from payload. */
 export const EMAIL_SKIP_ACCOUNT_SCOPE = new Set<string>([
   'email:list-accounts',
   'email:create-account',
-  'email:list-workflows',
   'email:get-workflow',
   'email:create-workflow',
   'email:update-workflow',
@@ -25,8 +27,6 @@ export const EMAIL_SKIP_ACCOUNT_SCOPE = new Set<string>([
   'email:backfill-inbound-workflows',
   'email:fire-webhook-workflow',
   'email:list-categories',
-  'email:list-canned',
-  'email:list-ai-prompts',
   'email:list-team-members',
   'email:get-mail-diagnostics',
   'email:get-google-oauth-app',
