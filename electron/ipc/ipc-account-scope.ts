@@ -62,6 +62,7 @@ const EMAIL_BARE_MESSAGE_ID_CHANNELS = new Set<string>([
   'email:get-message',
   'email:list-message-tags',
   'email:get-message-category',
+  'email:list-message-categories',
   'email:list-internal-notes',
   'email:get-reply-suggestion',
   'email:soft-delete-message',
