@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { AccountForm } from '@/components/email/settings/account-form';
@@ -105,6 +106,44 @@ describe('mail settings server-client UI', () => {
     // mode. (It used to call this and the master-detail blanked the panel.)
     expect(onCancelEdit).not.toHaveBeenCalled();
     // And the user's value is still on screen, not reset to whatever editAccount held.
+    expect((nameInput as HTMLInputElement).value).toBe('Neuer Name');
+  });
+
+  test('account form keeps user edits when parent refreshes editAccount with new reference', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: { success: true } }),
+    } as Response);
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    }));
+
+    function Harness() {
+      const [editAccount, setEditAccount] = useState(imapAccount());
+      return (
+        <AccountForm
+          editAccount={editAccount}
+          onCreated={() => {
+            // Simulate list refresh passing a fresh object for the same account.
+            setEditAccount({ ...imapAccount(), display_name: 'Server Name' });
+          }}
+        />
+      );
+    }
+
+    render(<Harness />);
+
+    const nameInput = await screen.findByLabelText(/Anzeigename/i);
+    fireEvent.change(nameInput, { target: { value: 'Neuer Name' } });
+
+    const saveBtn = screen.getByRole('button', { name: /Aktualisieren/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
     expect((nameInput as HTMLInputElement).value).toBe('Neuer Name');
   });
 

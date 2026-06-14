@@ -44,6 +44,8 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
 
+  const editAccountId = editAccount?.id ?? null
+
   useEffect(() => {
     if (!editAccount) return
     setProtocol((editAccount.protocol as "imap" | "pop3") || "imap")
@@ -62,7 +64,10 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setVacationSubject(editAccount.vacation_subject ?? "")
     setVacationBodyText(editAccount.vacation_body_text ?? "")
     setRequestReadReceipt((editAccount.request_read_receipt ?? 0) === 1)
-  }, [editAccount])
+    // Re-init only when switching accounts (by id), not when the parent
+    // passes a fresh list object after save with the same id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- editAccount identity is editAccountId
+  }, [editAccountId])
 
   const handleTestImap = async () => {
     if (!imapHost.trim() || !imapUsername.trim()) {
