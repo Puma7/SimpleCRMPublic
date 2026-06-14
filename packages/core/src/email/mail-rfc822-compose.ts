@@ -259,9 +259,25 @@ function encodeSingleMailbox(mailbox: string): string {
   if (!rawName) return `<${email}>`;
   const encoded = encodeRfc2047(rawName);
   if (encoded === rawName) {
-    return /[,;"]/.test(rawName) ? `"${rawName.replace(/"/g, '\\"')}" <${email}>` : `${rawName} <${email}>`;
+    // Pure-ASCII display name. RFC 5322 lets it appear unquoted only if every
+    // character is "atext" (or a separating space). Anything else — @ . , ; :
+    // < > ( ) [ ] \ " etc. — must be a quoted-string, or strict relays (IONOS,
+    // …) reject the whole From header as syntactically invalid. A display name
+    // that equals the e-mail address (contains '@') is the common trigger.
+    return displayNameIsAtomSafe(rawName)
+      ? `${rawName} <${email}>`
+      : `"${rawName.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" <${email}>`;
   }
   return `${encoded} <${email}>`;
+}
+
+/**
+ * True when a pure-ASCII display name may appear unquoted in an RFC 5322
+ * mailbox (a phrase of space-separated atoms). atext is ALPHA / DIGIT plus
+ * ! # $ % & ' * + - / = ? ^ _ ` { | } ~ ; everything else needs quoting.
+ */
+function displayNameIsAtomSafe(name: string): boolean {
+  return /^[A-Za-z0-9 !#$%&'*+/=?^_`{|}~-]+$/.test(name);
 }
 
 function sanitizeFilename(filename: string): string {
