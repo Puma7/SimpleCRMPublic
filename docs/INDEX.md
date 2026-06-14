@@ -15,6 +15,8 @@
 | [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md) | Auth hardening pitfalls + audit learnings |
 | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) | E-mail / IMAP / POP3 / SQLite pitfalls |
 | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) | Workflow engine, modular graphs, outbound/spam |
+| [**LEARNINGS_OPS.md**](LEARNINGS_OPS.md) | **Server updates, migrations, Compose** — checksum repair, dual-stack trap, RLS-zero gotcha |
+| [RETURNS.md](RETURNS.md) | Returns / RMA suite — data model, API, workflow nodes, public portal |
 
 ## CRM core
 

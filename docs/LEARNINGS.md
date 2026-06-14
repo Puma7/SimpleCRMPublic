@@ -13,6 +13,8 @@ Short, durable facts discovered during implementation. **Read before refactoring
 | CRM (Kunden, Deals, Follow-up, JTL) | [CRM_PRODUCT_GUIDE.md](CRM_PRODUCT_GUIDE.md), [DEVELOPER_CRM.md](DEVELOPER_CRM.md) |
 | E-mail / sync / SQLite / UI | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) |
 | Workflows / graphs / outbound / spam | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) |
+| Server updates / migrations / Compose / RLS | [LEARNINGS_OPS.md](LEARNINGS_OPS.md) |
+| Returns / RMA suite | [RETURNS.md](RETURNS.md) |
 | Doc map | [INDEX.md](INDEX.md) |
 
 ---
