@@ -10,6 +10,7 @@ import {
   createEmailAccountMailSettingsTable,
   createEmailReadReceiptLogTable,
   createEmailRemoteContentAllowlistTable,
+  createEmailThreadsTable,
   createEmailThreadAliasesTable,
   createEmailThreadEdgesTable,
   createPgpIdentitiesTable,
@@ -61,6 +62,54 @@ function ensureTable(conn: Database.Database, name: string, createSql: string, i
     conn.exec(createSql);
     for (const idx of indexes) conn.exec(idx);
   }
+}
+
+function ensureEmailThreadTicketIndexes(conn: Database.Database): void {
+  conn.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_threads_account_ticket_unique ON ${EMAIL_THREADS_TABLE}(account_id, ticket_code) WHERE account_id IS NOT NULL`,
+  );
+  conn.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_threads_global_ticket_unique ON ${EMAIL_THREADS_TABLE}(ticket_code) WHERE account_id IS NULL`,
+  );
+}
+
+function migrateLegacyEmailThreadsTicketUniqueness(conn: Database.Database): void {
+  const row = conn
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
+    .get(EMAIL_THREADS_TABLE) as { sql?: string } | undefined;
+  const sql = row?.sql ?? '';
+  const hasLegacyGlobalUnique = /ticket_code\s+TEXT\s+(?:NOT\s+NULL\s+)?UNIQUE/i.test(sql)
+    || /UNIQUE\s*\(\s*ticket_code\s*\)/i.test(sql);
+  if (!hasLegacyGlobalUnique) {
+    ensureEmailThreadTicketIndexes(conn);
+    return;
+  }
+
+  const allowedColumns = new Set([
+    'id',
+    'ticket_code',
+    'account_id',
+    'created_at',
+    'root_message_id',
+    'last_message_at',
+    'message_count',
+    'has_unread',
+    'has_attachments',
+    'subject_normalized',
+    'workspace_id',
+  ]);
+  const cols = (conn.prepare(`PRAGMA table_info(${EMAIL_THREADS_TABLE})`).all() as { name: string }[])
+    .map((col) => col.name)
+    .filter((name) => allowedColumns.has(name));
+  const backup = `${EMAIL_THREADS_TABLE}_legacy_${Date.now()}`;
+  conn.exec(`ALTER TABLE ${EMAIL_THREADS_TABLE} RENAME TO ${backup}`);
+  conn.exec(createEmailThreadsTable);
+  if (cols.length > 0) {
+    const list = cols.join(', ');
+    conn.exec(`INSERT OR IGNORE INTO ${EMAIL_THREADS_TABLE} (${list}) SELECT ${list} FROM ${backup}`);
+  }
+  conn.exec(`DROP TABLE ${backup}`);
+  ensureEmailThreadTicketIndexes(conn);
 }
 
 function bootstrapLocalOwner(conn: Database.Database): void {
@@ -142,6 +191,7 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
     addCol(conn, EMAIL_THREADS_TABLE, 'subject_normalized', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN subject_normalized TEXT`);
     addCol(conn, EMAIL_THREADS_TABLE, 'workspace_id', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN workspace_id TEXT`);
     addCol(conn, EMAIL_THREADS_TABLE, 'account_id', `ALTER TABLE ${EMAIL_THREADS_TABLE} ADD COLUMN account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL`);
+    migrateLegacyEmailThreadsTicketUniqueness(conn);
   }
 
   const wfExists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_WORKFLOWS_TABLE);

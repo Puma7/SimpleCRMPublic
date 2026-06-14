@@ -27,9 +27,9 @@ export function mergeThreads(
 
   db.prepare(
     `INSERT OR REPLACE INTO ${EMAIL_THREAD_ALIASES_TABLE}
-     (alias_thread_id, canonical_thread_id, confidence, source)
-     VALUES (?, ?, 'high', ?)`,
-  ).run(alias, canon, source);
+     (alias_thread_id, canonical_thread_id, account_id, confidence, source)
+     VALUES (?, ?, ?, 'high', ?)`,
+  ).run(alias, canon, accountId, source);
 
   db.prepare(
     `UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ? WHERE thread_id = ? AND account_id = ?`,

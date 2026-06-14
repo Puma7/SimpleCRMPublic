@@ -1775,7 +1775,8 @@ async function getOrCreateThreadForTicket(
       .insertInto('email_threads')
       .values(values)
       .onConflict((oc) => oc
-        .constraint('email_threads_workspace_global_ticket_idx')
+        .columns(['workspace_id', 'ticket_code'])
+        .where('account_id', 'is', null)
         .doUpdateSet({ updated_at: now }))
       .returning('id')
       .executeTakeFirst()

@@ -255,6 +255,8 @@ async function handleListRoute(
       if (target === null) return error(400, 'invalid_target', 'target darf maximal 100 Zeichen haben');
       const profileId = parseOptionalPositiveInt(req.query?.profileId);
       if (profileId === null) return error(400, 'invalid_profile_id', 'profileId muss eine positive Ganzzahl sein');
+      const accountId = parseOptionalPositiveInt(req.query?.accountId);
+      if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
       if (!ports.aiPrompts) return error(503, 'ai_prompts_unavailable', 'AI prompt API nicht konfiguriert');
       const result = await ports.aiPrompts.list({
         workspaceId: principal.workspaceId,
@@ -263,6 +265,7 @@ async function handleListRoute(
         ...(search === undefined ? {} : { search }),
         ...(target === undefined ? {} : { target }),
         ...(profileId === undefined ? {} : { profileId }),
+        ...(accountId === undefined ? {} : { accountId }),
       });
       return data(200, sanitizeAiPromptList(result));
     }

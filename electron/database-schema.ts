@@ -408,7 +408,6 @@ export const createEmailThreadsTable = `
     has_attachments INTEGER NOT NULL DEFAULT 0,
     subject_normalized TEXT,
     workspace_id TEXT,
-    UNIQUE(account_id, ticket_code),
     FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL
   );
 `;
@@ -906,7 +905,8 @@ export const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON ${EMAIL_MESSAGES_TABLE}(thread_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_messages_ticket ON ${EMAIL_MESSAGES_TABLE}(ticket_code);`,
-    `CREATE INDEX IF NOT EXISTS idx_email_threads_account_ticket ON ${EMAIL_THREADS_TABLE}(account_id, ticket_code);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_threads_account_ticket_unique ON ${EMAIL_THREADS_TABLE}(account_id, ticket_code) WHERE account_id IS NOT NULL;`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_threads_global_ticket_unique ON ${EMAIL_THREADS_TABLE}(ticket_code) WHERE account_id IS NULL;`,
     `CREATE INDEX IF NOT EXISTS idx_email_account_mail_settings_prefix ON ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}(ticket_prefix);`,
     `CREATE INDEX IF NOT EXISTS idx_email_thread_aliases_account_pair ON ${EMAIL_THREAD_ALIASES_TABLE}(account_id, alias_thread_id, canonical_thread_id);`,
     `CREATE INDEX IF NOT EXISTS idx_email_canned_account_override ON ${EMAIL_CANNED_RESPONSES_TABLE}(account_id, override_key);`,

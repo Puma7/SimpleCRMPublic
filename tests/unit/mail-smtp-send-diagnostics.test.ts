@@ -108,6 +108,7 @@ describe('server SMTP diagnostics', () => {
       recipientCount: 1,
       recipientDomains: ['example.com'],
     });
+    expect(events[0].smtpResponse).toBe('554 5.6.0 Reject due to policy restrictions');
     const serialized = JSON.stringify(events[0]);
     expect(serialized).not.toContain('super-secret-password');
     expect(serialized).not.toContain('secret body');

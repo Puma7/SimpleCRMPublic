@@ -1163,7 +1163,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.GetAccountMailSettings,
       async (_event, payload: { accountId: number }) =>
         getAccountMailSettings(payload.accountId),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 

@@ -639,11 +639,14 @@ async function handleKnowledgeBaseList(req: ApiRequest, ports: ServerApiPorts): 
   if (!base.ok) return base.response;
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return error(400, 'invalid_search', 'search darf maximal 200 Zeichen haben');
+  const accountId = parseOptionalPositiveInt(req.query?.accountId);
+  if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
   if (!ports.workflowKnowledgeBases) return unavailable('workflow_knowledge_bases_unavailable', 'Workflow knowledge base API nicht konfiguriert');
   const result = await ports.workflowKnowledgeBases.list({
     workspaceId: principal.workspaceId,
     ...base.filters,
     ...(search === undefined ? {} : { search }),
+    ...(accountId === undefined ? {} : { accountId }),
   });
   return data(200, sanitizeKnowledgeBaseList(result));
 }

@@ -580,6 +580,14 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+          if (input.accountId !== undefined) {
+            query = query.where((eb) => eb.or([
+              eb('account_id', 'is', null),
+              eb('account_id', '=', input.accountId!),
+            ]));
+          } else {
+            query = query.where('account_id', 'is', null);
+          }
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;

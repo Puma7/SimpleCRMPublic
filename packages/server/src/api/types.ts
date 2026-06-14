@@ -2717,6 +2717,7 @@ export type EmailCannedResponseMutationInput = {
 
 export type EmailCannedResponseApiPort = EmailNumericRecordApiPort<EmailCannedResponseRecord, {
   search?: string;
+  accountId?: number;
 }> & {
   create?(input: {
     workspaceId: string;
@@ -3092,6 +3093,7 @@ export type AiPromptApiPort = {
     search?: string;
     target?: string;
     profileId?: number;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<AiPromptListResult>;
@@ -3449,6 +3451,7 @@ export type WorkflowKnowledgeBaseApiPort = {
   list(input: {
     workspaceId: string;
     search?: string;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<WorkflowKnowledgeBaseListResult>;

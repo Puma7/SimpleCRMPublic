@@ -2,7 +2,7 @@ import { compileGraphToDefinition } from '../../packages/core/src/workflow/graph
 import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
 
 describe('core workflow graph compile', () => {
-  test('drops trigger-to-action paths instead of emitting server-inconsistent unconditional rules', () => {
+  test('keeps trigger-to-action fallback rules for UI/server compiler parity', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,
       nodes: [
@@ -12,7 +12,9 @@ describe('core workflow graph compile', () => {
       edges: [{ id: 'e0', source: 't1', target: 'a1' }],
     };
 
-    expect(compileGraphToDefinition(graph).rules).toEqual([]);
+    expect(compileGraphToDefinition(graph).rules).toEqual([
+      { when: null, then: [{ type: 'tag', tag: 'direct' }] },
+    ]);
   });
 
   test('keeps registry-only fallback rules without conditions', () => {

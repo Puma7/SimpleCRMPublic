@@ -3398,10 +3398,12 @@ function parseEmailInternalNoteMutationBody(
   return { ok: true, values };
 }
 
-function parseCannedResponseFilters(req: ApiRequest): ParseResult<{ search?: string }> {
+function parseCannedResponseFilters(req: ApiRequest): ParseResult<{ search?: string; accountId?: number }> {
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return parseError('invalid_search', 'search darf maximal 200 Zeichen haben');
-  return { ok: true, filters: omitUndefined({ search }) };
+  const accountId = parseOptionalPositiveInt(req.query?.accountId);
+  if (accountId === null) return parseError('invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+  return { ok: true, filters: omitUndefined({ search, accountId }) };
 }
 
 function parseAccountSignatureFilters(req: ApiRequest): ParseResult<{ accountId?: number }> {

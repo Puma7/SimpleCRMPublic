@@ -247,9 +247,7 @@ function walkFrom(
 function flushRule(state: CompileState, rules: WorkflowRule[]): void {
   if (state.then.length === 0 && state.conditions.length === 0) return;
   if (state.conditions.length === 0) {
-    if (state.then.every((step) => step.type === 'registry')) {
-      rules.push({ when: null, then: [...state.then] });
-    }
+    rules.push({ when: null, then: [...state.then] });
     return;
   }
   const when =

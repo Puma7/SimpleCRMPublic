@@ -396,7 +396,14 @@ function unfoldHeaderLines(headerSection: string): string[] {
 }
 
 function sanitizeSmtpResponse(value: string): string {
-  return value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const redacted = normalized
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ip]')
+    .replace(/\b[0-9A-F]{1,4}(?::[0-9A-F]{1,4}){2,7}\b/gi, '[ip]')
+    .replace(/"[^"]{2,120}"/g, '"[text]"')
+    .replace(/'[^']{2,120}'/g, "'[text]'");
+  return redacted.length > 300 ? `${redacted.slice(0, 300)}…` : redacted;
 }
 
 function emailDomain(value: string): string | null {
