@@ -850,15 +850,6 @@ const DEFAULT_LIST_LIMIT = 100
 // request.
 const MESSAGE_CATEGORY_FETCH_LIMIT = DEFAULT_LIST_LIMIT
 
-// Category list pre-checks (Add/Remove/Set) assume at most DEFAULT_LIST_LIMIT
-// assignments per message; pagination is not implemented for those idempotency paths.
-
-function transportErrorStatus(error: unknown): number | undefined {
-  if (typeof error !== "object" || error === null) return undefined
-  const status = (error as { status?: unknown }).status
-  return typeof status === "number" ? status : undefined
-}
-
 const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Sync.GetStatus, () => ({
     method: "GET",
@@ -3307,8 +3298,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   // Add a single category to a message. Idempotent + race-safe: paginate the
   // current assignments so the pre-check sees them all, then POST; if a
-  // concurrent request raced us between GET and POST and the server replies 409,
-  // map it to { added: false, alreadyAssigned: true }.
+  // concurrent request (another tab, a workflow node, a fast second drag)
+  // raced us between GET and POST and the server replies 409, map it to
+  // { added: false, alreadyAssigned: true } — same payload the pre-check
+  // produces, so the UI shows the same dezenter toast in either path.
   [IPCChannels.Email.AddMessageCategory, ([payload]) => {
     const input = objectPayload(payload, "email add-message-category payload")
     const messageId = positiveId(input.messageId, "email message id")
@@ -3383,10 +3376,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
-  // Replace the message's category set with exactly the given ids. Reserved for
-  // a future multi-select dialog (not wired in the UI yet). Computes the diff
-  // against the current assignments so unchanged rows are not touched (no spurious
-  // audit / event noise).
+  // Replace the message's category set with exactly the given ids. Computes
+  // the diff against the current assignments so unchanged rows are not touched
+  // (no spurious audit / event noise). Same TOCTOU 409 race as AddMessageCategory
+  // is swallowed per-row, since "set to {A,B,C}" doesn't care whether B was
+  // added by us or by a concurrent request a moment ago.
+  //
+  // Reserved for the multi-select dialog that will replace the single "+ Kategorie
+  // hinzufügen" dropdown in the metadata panel. Already exercised by the
+  // renderer-transport test so the future UI wiring stays cheap and safe.
   [IPCChannels.Email.SetMessageCategories, ([payload]) => {
     const input = objectPayload(payload, "email set-message-categories payload")
     const messageId = positiveId(input.messageId, "email message id")
@@ -3410,6 +3408,25 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
             .map((r) => r.categoryId)
             .filter((id): id is number => typeof id === "number"),
         )
+        // POST additions BEFORE DELETing removals: if any single POST fails
+        // (e.g. category was deleted between read and write, server rate-limits
+        // mid-batch), the user keeps the categories they had. The opposite
+        // order would silently drop their existing categorisation on a partial
+        // failure.
+        for (const id of targetIds) {
+          if (existingIds.has(id)) continue
+          try {
+            await context.fetchJson({
+              method: "POST",
+              path: `/api/v1/email/messages/${messageId}/categories`,
+              body: { categoryId: id },
+            })
+          } catch (error) {
+            // Concurrent create — the row already exists, which is exactly
+            // what we wanted to achieve. Don't fail the whole set on it.
+            if (!isAlreadyAssignedConflict(error)) throw error
+          }
+        }
         for (const record of existing) {
           if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
           try {
@@ -3421,18 +3438,6 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
             // Concurrent delete — desired end-state already in place. Don't
             // fail the whole set on it.
             if (!isNotFound(error)) throw error
-          }
-        }
-        for (const id of targetIds) {
-          if (existingIds.has(id)) continue
-          try {
-            await context.fetchJson({
-              method: "POST",
-              path: `/api/v1/email/messages/${messageId}/categories`,
-              body: { categoryId: id },
-            })
-          } catch (error) {
-            if (!isAlreadyAssignedConflict(error)) throw error
           }
         }
         return { success: true }

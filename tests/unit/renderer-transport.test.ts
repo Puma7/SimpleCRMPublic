@@ -6684,7 +6684,9 @@ describe('renderer transport', () => {
       .mockResolvedValueOnce(jsonResponse({
         data: { deleted: true, messageCategory: { id: 22 } },
       }))
-      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, DELETE 22, POST 63
+      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, POST 63, DELETE 22.
+      // POSTs go BEFORE DELETEs so a mid-batch failure can't strand the message
+      // with fewer categories than the user started with.
       .mockResolvedValueOnce(jsonResponse({
         data: {
           items: [
@@ -6695,11 +6697,11 @@ describe('renderer transport', () => {
         },
       }))
       .mockResolvedValueOnce(jsonResponse({
-        data: { deleted: true, messageCategory: { id: 22 } },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
         data: { id: 23, messageId: 11, categoryId: 63 },
-      }, 201));
+      }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }));
     const transport = createHttpRendererTransport({
       baseUrl: 'https://crm.example.com',
       fetchImpl,
@@ -6757,15 +6759,21 @@ describe('renderer transport', () => {
     }
   });
 
-  test('AddMessageCategory treats POST 409 as already assigned (race after GET pre-check)', async () => {
+  test('AddMessageCategory swallows a TOCTOU 409 from the server as alreadyAssigned', async () => {
+    // Race scenario: GET shows the category is not yet assigned, but between
+    // our GET and our POST a concurrent request (another tab, a workflow node,
+    // a quick second drag) creates the same assignment. The server then 409s
+    // our POST. The transform must map that to { alreadyAssigned: true } so
+    // the UI shows the same dezenter toast instead of a red error.
     const fetchImpl = jest
       .fn()
-      .mockResolvedValueOnce(jsonResponse({
-        data: { items: [{ id: 21, messageId: 11, categoryId: 61 }], nextCursor: null },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        error: { code: 'conflict', message: 'Category already assigned' },
-      }, 409));
+      // 1) GET /messages/11/categories -> empty (the race hasn't happened yet locally)
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      // 2) POST /messages/11/categories -> 409 (the concurrent insert beat us)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_conflict', message: 'Email category ist dieser Message bereits zugeordnet' } },
+        409,
+      ));
     const transport = createHttpRendererTransport({
       baseUrl: 'https://crm.example.com',
       fetchImpl,
@@ -6773,8 +6781,16 @@ describe('renderer transport', () => {
 
     await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
       messageId: 11,
-      categoryId: 62,
+      categoryId: 99,
     })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // Both the GET and the POST were issued (proving the swallow happens at
+    // the right layer — not by pre-empting the POST).
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'POST']);
   });
 
   test('RemoveMessageCategory swallows a concurrent DELETE 404 as removed:false', async () => {

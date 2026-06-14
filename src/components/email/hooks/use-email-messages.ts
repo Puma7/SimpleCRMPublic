@@ -14,8 +14,6 @@ import { useMailWorkspace } from "../workspace-context"
 import { invokeRenderer } from "@/services/transport"
 
 const PAGE_SIZE = 100
-/** Parallel AddMessageCategory IPC calls during bulk drag-drop (HTTP: 2 req each). */
-const BULK_CATEGORY_ASSIGN_CONCURRENCY = 8
 
 type HandleSyncOptions = {
   onAfterSync?: (accountId: number) => void | Promise<void>
@@ -32,6 +30,7 @@ export function useEmailMessages() {
     listSortMode,
     messageListFilter,
     messageDoneFilter,
+    bumpCategoryAssignmentRevision,
   } = useMailWorkspace()
   const [messages, setMessages] = useState<EmailMessage[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
@@ -312,52 +311,64 @@ export function useEmailMessages() {
       if (ids.length === 0) return false
       // Drag-drop semantics: ADD the category (don't replace existing ones).
       // Idempotent per message: the transport reports { added, alreadyAssigned }.
+      // Run with a small concurrency cap so a 50-mail bulk-drop doesn't take
+      // 100 sequential HTTP round-trips, but also doesn't stampede the server
+      // with 50 parallel requests. 6 is a pragmatic compromise.
+      const CONCURRENCY = 6
       let added = 0
       let already = 0
-      let noop = 0
-      try {
-        for (let offset = 0; offset < ids.length; offset += BULK_CATEGORY_ASSIGN_CONCURRENCY) {
-          const batch = ids.slice(offset, offset + BULK_CATEGORY_ASSIGN_CONCURRENCY)
-          const outcomes = await Promise.allSettled(
-            batch.map((id) =>
-              invokeRenderer(IPCChannels.Email.AddMessageCategory, {
-                messageId: id,
-                categoryId,
-              }),
-            ),
-          )
-          for (const outcome of outcomes) {
-            if (outcome.status === "rejected") throw outcome.reason
-            const result = outcome.value as { added?: boolean; alreadyAssigned?: boolean }
-            if (result?.added) added += 1
-            else if (result?.alreadyAssigned) already += 1
-            else noop += 1
-          }
+      let failed = 0
+      let firstError: unknown
+      const runOne = async (id: number) => {
+        try {
+          const result = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
+            messageId: id,
+            categoryId,
+          })) as { added?: boolean; alreadyAssigned?: boolean }
+          if (result?.added) added += 1
+          else if (result?.alreadyAssigned) already += 1
+        } catch (e) {
+          failed += 1
+          if (firstError === undefined) firstError = e
         }
-        if (added === 0 && already === 0) {
-          toast.error(
-            noop > 0
-              ? "Kategorisieren fehlgeschlagen — unerwartete Serverantwort"
-              : "Keine Nachricht konnte kategorisiert werden",
-          )
-          return false
+      }
+      // Simple worker pool: CONCURRENCY workers pull from a shared queue.
+      const queue = [...ids]
+      const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+        for (;;) {
+          const id = queue.shift()
+          if (id === undefined) return
+          await runOne(id)
         }
-        if (added === 0 && already > 0) {
-          toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
-        } else if (added > 0 && already > 0) {
-          toast.success(`${added} hinzugefügt, ${already} bereits drin`)
-        } else {
-          toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
-        }
-        await refreshList({ preserveSelection: true })
-        return true
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Kategorisieren fehlgeschlagen")
-        if (added > 0) await refreshList({ preserveSelection: true })
+      })
+      await Promise.all(workers)
+
+      // Defensive: if every response had neither added nor alreadyAssigned set,
+      // something unexpected came back. Don't pretend success — surface it.
+      if (added === 0 && already === 0) {
+        toast.error(failed > 0
+          ? (firstError instanceof Error ? firstError.message : "Kategorisieren fehlgeschlagen")
+          : "Kategorisieren fehlgeschlagen — unerwartete Serverantwort")
         return false
       }
+      if (added === 0 && already > 0) {
+        toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
+      } else if (added > 0 && already > 0) {
+        toast.success(`${added} hinzugefügt, ${already} bereits drin`)
+      } else {
+        toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
+      }
+      if (failed > 0) {
+        toast.error(`${failed} ${failed === 1 ? "Nachricht" : "Nachrichten"} fehlgeschlagen`)
+      }
+      // Tell the metadata panel its chip list is stale — if any of the dropped
+      // messages happens to be the currently-selected one, its chips need to
+      // re-fetch (this hook doesn't know which message is open in the panel).
+      if (added > 0 || already > 0) bumpCategoryAssignmentRevision()
+      await refreshList({ preserveSelection: true })
+      return failed === 0
     },
-    [refreshList],
+    [refreshList, bumpCategoryAssignmentRevision],
   )
 
   const moveMessagesToView = useCallback(
@@ -501,6 +512,7 @@ export function useEmailMessages() {
         if (selectedMessage?.id === messageId) {
           await refreshCurrentMessage()
         }
+        bumpCategoryAssignmentRevision()
         await refreshList({ preserveSelection: true })
         return true
       } catch (e) {
@@ -508,7 +520,7 @@ export function useEmailMessages() {
         return false
       }
     },
-    [refreshList, refreshCurrentMessage, selectedMessage?.id],
+    [refreshList, refreshCurrentMessage, selectedMessage?.id, bumpCategoryAssignmentRevision],
   )
 
   const snoozeMessageUntilTomorrow = useCallback(

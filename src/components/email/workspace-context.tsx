@@ -108,6 +108,15 @@ type MailWorkspaceState = {
    */
   mailMetricsRevision: number
   bumpMailMetricsRevision: () => void
+  /**
+   * Bumps after add/remove/set on `email_message_categories` from anywhere
+   * in the app (sidebar drag-drop, bulk drop, metadata panel select).
+   * The metadata panel chip list keys off this so it re-fetches its chips
+   * when a sibling component mutated the M:N assignment for the selected
+   * message — otherwise the chips would only refresh on message switch.
+   */
+  categoryAssignmentRevision: number
+  bumpCategoryAssignmentRevision: () => void
 }
 
 const MailWorkspaceContext = createContext<MailWorkspaceState | null>(null)
@@ -246,6 +255,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
   const [mailMetricsRevision, setMailMetricsRevision] = useState(0)
+  const [categoryAssignmentRevision, setCategoryAssignmentRevision] = useState(0)
 
   const bumpAccountsRevision = useCallback(() => {
     setAccountsRevision((v) => v + 1)
@@ -253,6 +263,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
 
   const bumpMailMetricsRevision = useCallback(() => {
     setMailMetricsRevision((v) => v + 1)
+  }, [])
+
+  const bumpCategoryAssignmentRevision = useCallback(() => {
+    setCategoryAssignmentRevision((v) => v + 1)
   }, [])
 
   const upsertConversationLock = useCallback((lock: ConversationLockRecord) => {
@@ -330,6 +344,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       bumpAccountsRevision,
       mailMetricsRevision,
       bumpMailMetricsRevision,
+      categoryAssignmentRevision,
+      bumpCategoryAssignmentRevision,
     }),
     [
       selectedAccountScope,
@@ -352,6 +368,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       bumpAccountsRevision,
       mailMetricsRevision,
       bumpMailMetricsRevision,
+      categoryAssignmentRevision,
+      bumpCategoryAssignmentRevision,
     ],
   )
 
