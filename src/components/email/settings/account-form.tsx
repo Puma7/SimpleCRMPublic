@@ -44,6 +44,12 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
 
+  // Reset the form to server values ONLY when the account being edited changes
+  // (different id), not on every editAccount object reference change. The parent
+  // re-binds editAccount after a background list refresh (e.g. another account
+  // was deleted) — if we depended on the whole object, that refresh would blow
+  // away whatever the user had been typing. Keying on the id lets the form
+  // stay dirty until the user explicitly switches accounts.
   useEffect(() => {
     if (!editAccount) return
     setProtocol((editAccount.protocol as "imap" | "pop3") || "imap")
@@ -62,7 +68,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit }: Props) {
     setVacationSubject(editAccount.vacation_subject ?? "")
     setVacationBodyText(editAccount.vacation_body_text ?? "")
     setRequestReadReceipt((editAccount.request_read_receipt ?? 0) === 1)
-  }, [editAccount])
+  }, [editAccount?.id])
 
   const handleTestImap = async () => {
     if (!imapHost.trim() || !imapUsername.trim()) {

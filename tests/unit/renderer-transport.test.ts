@@ -6683,7 +6683,9 @@ describe('renderer transport', () => {
       .mockResolvedValueOnce(jsonResponse({
         data: { deleted: true, messageCategory: { id: 22 } },
       }))
-      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, DELETE 22, POST 63
+      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, POST 63, DELETE 22.
+      // POSTs go BEFORE DELETEs so a mid-batch failure can't strand the message
+      // with fewer categories than the user started with.
       .mockResolvedValueOnce(jsonResponse({
         data: {
           items: [
@@ -6694,11 +6696,11 @@ describe('renderer transport', () => {
         },
       }))
       .mockResolvedValueOnce(jsonResponse({
-        data: { deleted: true, messageCategory: { id: 22 } },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
         data: { id: 23, messageId: 11, categoryId: 63 },
-      }, 201));
+      }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }));
     const transport = createHttpRendererTransport({
       baseUrl: 'https://crm.example.com',
       fetchImpl,

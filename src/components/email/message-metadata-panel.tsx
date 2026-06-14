@@ -125,7 +125,13 @@ export function MessageMetadataPanel({
   refreshCurrentMessage,
   fillWidth = false,
 }: Props) {
-  const { selectedMessage, selectedAccountId, setSelectedMessage } = useMailWorkspace()
+  const {
+    selectedMessage,
+    selectedAccountId,
+    setSelectedMessage,
+    categoryAssignmentRevision,
+    bumpCategoryAssignmentRevision,
+  } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
   const [editingNoteBody, setEditingNoteBody] = useState("")
@@ -155,13 +161,17 @@ export function MessageMetadataPanel({
     }
   }, [])
 
+  // Re-fetch chips on message switch AND whenever a sibling component (sidebar
+  // drag-drop, bulk-drop in the list, useEmailMessages.assignMessageCategory)
+  // bumps `categoryAssignmentRevision` — otherwise chips would show stale data
+  // until the user clicks back on the row.
   useEffect(() => {
     if (!selectedMessage) {
       setMessageCategoryIds([])
       return
     }
     void reloadMessageCategoryIds(selectedMessage.id)
-  }, [selectedMessage?.id, reloadMessageCategoryIds])
+  }, [selectedMessage?.id, reloadMessageCategoryIds, categoryAssignmentRevision])
 
   // Categories the user has NOT yet assigned to this message — i.e. the
   // "+ Kategorie hinzufügen" select only shows what's actually addable.
@@ -605,11 +615,13 @@ export function MessageMetadataPanel({
                           })) as { removed?: boolean }
                           if (r?.removed) {
                             await reloadMessageCategoryIds(selectedMessage.id)
+                            bumpCategoryAssignmentRevision()
                             toast.success("Kategorie entfernt")
                           } else {
                             // Server didn't find the assignment — resync the UI
                             // with reality so a stale chip can't sit there silently.
                             await reloadMessageCategoryIds(selectedMessage.id)
+                            bumpCategoryAssignmentRevision()
                             toast.info("Kategorie war bereits nicht mehr zugewiesen")
                           }
                         } catch (e) {
@@ -639,6 +651,7 @@ export function MessageMetadataPanel({
                       categoryId,
                     })) as { added?: boolean; alreadyAssigned?: boolean }
                     await reloadMessageCategoryIds(selectedMessage.id)
+                    bumpCategoryAssignmentRevision()
                     if (r?.added) {
                       toast.success(`Kategorie hinzugefügt: ${categoryPathLabel(categories, categoryId)}`)
                     } else if (r?.alreadyAssigned) {

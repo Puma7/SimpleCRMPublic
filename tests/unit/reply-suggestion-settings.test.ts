@@ -1,6 +1,6 @@
 const mockGetSyncInfo = jest.fn();
 const mockSetSyncInfo = jest.fn();
-const mockGetMessageCategoryId = jest.fn();
+const mockListMessageCategoryAssignments = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: (key: string) => mockGetSyncInfo(key),
@@ -8,7 +8,7 @@ jest.mock('../../electron/sqlite-service', () => ({
 }));
 
 jest.mock('../../electron/email/email-crm-store', () => ({
-  getMessageCategoryId: (id: number) => mockGetMessageCategoryId(id),
+  listMessageCategoryAssignments: (id: number) => mockListMessageCategoryAssignments(id),
 }));
 
 const mockGetEmailMessageById = jest.fn();
@@ -53,8 +53,9 @@ describe('reply suggestion settings (electron)', () => {
   beforeEach(() => {
     mockGetSyncInfo.mockReset();
     mockSetSyncInfo.mockReset();
-    mockGetMessageCategoryId.mockReset();
+    mockListMessageCategoryAssignments.mockReset();
     mockGetSyncInfo.mockReturnValue(null);
+    mockListMessageCategoryAssignments.mockReturnValue([]);
   });
 
   it('getReplySuggestionSettings uses defaults when sync_info empty', () => {
@@ -117,16 +118,26 @@ describe('reply suggestion settings (electron)', () => {
     expect(shouldAutoEnsureReplySuggestion(1, 'open')).toBe(false);
   });
 
-  it('messageMatchesReplySuggestionCategories with only_listed', () => {
+  it('messageMatchesReplySuggestionCategories with only_listed matches ANY assigned category', () => {
     const settings = normalizeReplySuggestionSettings({
       categoryMode: 'only_listed',
       categoryIds: [2],
     });
-    mockGetMessageCategoryId.mockReturnValue(2);
+    // Single assigned, hits allowlist.
+    mockListMessageCategoryAssignments.mockReturnValue([2]);
     expect(messageMatchesReplySuggestionCategories(10, settings)).toBe(true);
-    mockGetMessageCategoryId.mockReturnValue(9);
+    // Single assigned, misses allowlist.
+    mockListMessageCategoryAssignments.mockReturnValue([9]);
     expect(messageMatchesReplySuggestionCategories(10, settings)).toBe(false);
-    mockGetMessageCategoryId.mockReturnValue(null);
+    // None assigned.
+    mockListMessageCategoryAssignments.mockReturnValue([]);
     expect(messageMatchesReplySuggestionCategories(10, settings)).toBe(false);
+    // Regression for the multi-category bug (Codex P2 on PR #120): a message
+    // in BOTH an unlisted (9) and a listed (2) category must still pass.
+    mockListMessageCategoryAssignments.mockReturnValue([9, 2]);
+    expect(messageMatchesReplySuggestionCategories(10, settings)).toBe(true);
+    // Order independent.
+    mockListMessageCategoryAssignments.mockReturnValue([2, 9]);
+    expect(messageMatchesReplySuggestionCategories(10, settings)).toBe(true);
   });
 });
