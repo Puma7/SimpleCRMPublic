@@ -1,4 +1,6 @@
 import {
+  SCHEDULED_SEND_CLAIMED_AT_PREFIX,
+  scheduledSendClaimedAtKey,
   scheduledSendFailuresKey,
   scheduledSendLastErrorKey,
   scheduledSendStatusKey,
@@ -46,6 +48,10 @@ export type ScheduledSendStore = Readonly<{
   setSyncInfo(input: {
     workspaceId: string;
     values: Readonly<Record<string, string | null>>;
+  }): Promise<void>;
+  deleteSyncInfo(input: {
+    workspaceId: string;
+    keys: readonly string[];
   }): Promise<void>;
 }>;
 
@@ -109,6 +115,7 @@ async function processScheduledDraft(input: {
       draftId: draft.id,
       sendAt: null,
     });
+    await clearClaimedScheduledSendAt(input.store, input.workspaceId, draft.id);
     return;
   }
 
@@ -168,6 +175,18 @@ async function restoreClaimedScheduledSendAt(
     draftId: draft.id,
     sendAt: draft.claimedSendAt,
   });
+  await clearClaimedScheduledSendAt(store, workspaceId, draft.id);
+}
+
+async function clearClaimedScheduledSendAt(
+  store: ScheduledSendStore,
+  workspaceId: string,
+  draftId: number,
+): Promise<void> {
+  await store.deleteSyncInfo({
+    workspaceId,
+    keys: [scheduledSendClaimedAtKey(draftId)],
+  });
 }
 
 async function recordScheduledAttemptFailure(
@@ -200,6 +219,7 @@ async function giveUpScheduledDraft(
   error: string,
 ): Promise<void> {
   await store.setDraftScheduledAt({ workspaceId, draftId, sendAt: null });
+  await clearClaimedScheduledSendAt(store, workspaceId, draftId);
   await store.setSyncInfo({
     workspaceId,
     values: {
@@ -215,6 +235,7 @@ async function clearScheduledDraftMeta(
   workspaceId: string,
   draftId: number,
 ): Promise<void> {
+  await clearClaimedScheduledSendAt(store, workspaceId, draftId);
   await store.setSyncInfo({
     workspaceId,
     values: {
@@ -281,6 +302,113 @@ function parseDraftAttachmentPaths(value: unknown): readonly string[] {
   return paths;
 }
 
+function parseScheduledSendClaimedAt(value: string | null | undefined): Date | null {
+  if (!value?.trim()) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+async function recoverOrphanedScheduledClaims(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+): Promise<void> {
+  const claimRows = await trx
+    .selectFrom('sync_info')
+    .select(['key', 'value'])
+    .where('workspace_id', '=', workspaceId)
+    .where('key', 'like', `${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`)
+    .execute();
+
+  if (claimRows.length === 0) return;
+
+  const now = new Date();
+  for (const row of claimRows) {
+    const match = /^scheduled_send_claimed_at:(\d+)$/.exec(row.key);
+    if (!match) continue;
+    const draftId = Number(match[1]);
+    if (!Number.isSafeInteger(draftId) || draftId <= 0) continue;
+
+    const message = await trx
+      .selectFrom('email_messages')
+      .select(['scheduled_send_at'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', draftId)
+      .where('uid', '<', 0)
+      .where('folder_kind', '=', 'draft')
+      .executeTakeFirst();
+
+    if (!message) {
+      await trx
+        .deleteFrom('sync_info')
+        .where('workspace_id', '=', workspaceId)
+        .where('key', '=', row.key)
+        .execute();
+      continue;
+    }
+
+    if (message.scheduled_send_at !== null) {
+      await trx
+        .deleteFrom('sync_info')
+        .where('workspace_id', '=', workspaceId)
+        .where('key', '=', row.key)
+        .execute();
+      continue;
+    }
+
+    const claimedSendAt = parseScheduledSendClaimedAt(row.value);
+    if (claimedSendAt) {
+      await trx
+        .updateTable('email_messages')
+        .set({
+          scheduled_send_at: claimedSendAt,
+          updated_at: now,
+        })
+        .where('workspace_id', '=', workspaceId)
+        .where('id', '=', draftId)
+        .execute();
+    }
+
+    await trx
+      .deleteFrom('sync_info')
+      .where('workspace_id', '=', workspaceId)
+      .where('key', '=', row.key)
+      .execute();
+  }
+}
+
+async function persistScheduledSendClaims(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+  drafts: readonly ScheduledDraft[],
+): Promise<void> {
+  const entries = drafts
+    .filter((draft): draft is ScheduledDraft & { claimedSendAt: Date } => draft.claimedSendAt !== null)
+    .map((draft) => ({
+      key: scheduledSendClaimedAtKey(draft.id),
+      value: draft.claimedSendAt.toISOString(),
+    }));
+  if (entries.length === 0) return;
+
+  const now = new Date();
+  await trx
+    .insertInto('sync_info')
+    .values(entries.map((entry) => ({
+      workspace_id: workspaceId,
+      key: entry.key,
+      value: entry.value,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })))
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: (eb) => eb.ref('excluded.value'),
+      last_updated: now,
+      updated_at: now,
+    }))
+    .execute();
+}
+
 function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): ScheduledSendStore {
   return {
     async claimDueDrafts(input) {
@@ -288,6 +416,8 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
         db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          await recoverOrphanedScheduledClaims(trx, input.workspaceId);
+
           const accountFilter = input.accountId !== undefined
             ? sql`AND account_id = ${input.accountId}`
             : sql``;
@@ -341,7 +471,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
               m.reply_parent_message_id,
               c.claimed_send_at
           `.execute(trx);
-          return result.rows.map((row) => ({
+          const drafts = result.rows.map((row) => ({
             id: Number(row.id),
             accountId: row.account_id === null ? null : Number(row.account_id),
             subject: row.subject,
@@ -354,6 +484,8 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
             claimedSendAt: row.claimed_send_at,
           }));
+          await persistScheduledSendClaims(trx, input.workspaceId, drafts);
+          return drafts;
         },
       );
     },
@@ -416,6 +548,20 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
               last_updated: now,
               updated_at: now,
             }))
+            .execute();
+        },
+      );
+    },
+    async deleteSyncInfo(input) {
+      if (input.keys.length === 0) return;
+      await withWorkspaceTransaction(
+        db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          await trx
+            .deleteFrom('sync_info')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', 'in', [...input.keys])
             .execute();
         },
       );

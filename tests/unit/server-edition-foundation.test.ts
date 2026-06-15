@@ -10976,6 +10976,9 @@ describe('server edition foundation', () => {
           storeCalls.push(['setSyncInfo', input]);
           for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
         },
+        async deleteSyncInfo(input) {
+          storeCalls.push(['deleteSyncInfo', input]);
+        },
       },
     });
 
@@ -11033,6 +11036,10 @@ describe('server edition foundation', () => {
         limit: 10,
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 101, sendAt: null }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:101'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -11042,6 +11049,10 @@ describe('server edition foundation', () => {
         },
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 102, sendAt: null }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:102'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -11051,6 +11062,10 @@ describe('server edition foundation', () => {
         },
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 103, sendAt: claimedSendAt }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:103'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -11060,6 +11075,10 @@ describe('server edition foundation', () => {
         },
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 104, sendAt: null }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:104'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -11077,6 +11096,9 @@ describe('server edition foundation', () => {
     expect(source).toMatch(/claimDueDrafts/);
     expect(source).toMatch(/outbound_hold = false/);
     expect(source).toMatch(/SET scheduled_send_at = NULL/);
+    expect(source).toMatch(/scheduled_send_claimed_at:/);
+    expect(source).toMatch(/recoverOrphanedScheduledClaims/);
+    expect(source).toMatch(/persistScheduledSendClaims/);
   });
 
   test('thread list predicates align scheduled_send filters with message list', () => {
@@ -11138,6 +11160,9 @@ describe('server edition foundation', () => {
         async setSyncInfo(input) {
           storeCalls.push(['setSyncInfo', input]);
         },
+        async deleteSyncInfo(input) {
+          storeCalls.push(['deleteSyncInfo', input]);
+        },
       },
     });
 
@@ -11149,6 +11174,10 @@ describe('server edition foundation', () => {
 
     expect(storeCalls).toEqual([
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 201, sendAt: claimedSendAt }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:201'],
+      }],
     ]);
   });
 

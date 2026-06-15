@@ -1,5 +1,6 @@
 import {
   parseScheduledSendDraftStateFromValues,
+  scheduledSendClaimedAtKey,
   scheduledSendFailuresKey,
   scheduledSendLastErrorKey,
   scheduledSendStatusKey,
@@ -14,6 +15,7 @@ describe('core scheduled send state helpers', () => {
       'scheduled_send_status:42',
       'scheduled_send_last_error:42',
     ]);
+    expect(scheduledSendClaimedAtKey(42)).toBe('scheduled_send_claimed_at:42');
   });
 
   test('normalizes scheduled-send state from sync-info values', () => {
