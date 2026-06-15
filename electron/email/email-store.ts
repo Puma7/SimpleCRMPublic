@@ -2001,7 +2001,7 @@ export function markDraftAsSent(draftMessageId: number): void {
   const fromJson =
     row?.from_json?.trim() ||
     (acc ? senderJsonFromMailbox(acc.email_address, acc.display_name) : null);
-  getDb()
+  const result = getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
        SET folder_kind = 'sent',
@@ -2013,6 +2013,9 @@ export function markDraftAsSent(draftMessageId: number): void {
        WHERE id = ?`,
     )
     .run(fromJson, draftMessageId);
+  if (result.changes === 0) {
+    console.error('markDraftAsSent: no row updated for messageId', draftMessageId);
+  }
 }
 
 export function updateComposeDraft(

@@ -514,7 +514,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             signatureHtml: sigHtml || undefined,
           })
           const split = splitEditorAndSignature(composed || sigHtml || "")
-          setEditorHtml(split.editorHtml || sigHtml || "")
+          setEditorHtml(split.editorHtml)
           setSignatureHtml(split.signatureHtml || sigHtml || "")
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
@@ -793,17 +793,22 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         toast.error("Anhänge per Drag & Drop sind nur für lokale Dateien verfügbar.")
         return
       }
-      const nextPaths = [...new Set([...attachmentPaths, ...paths])]
-      setAttachmentPaths(nextPaths)
-      await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
-        messageId: draftId,
-        draftAttachmentPaths: nextPaths,
-      })
-      toast.success(
-        paths.length === 1
-          ? "Anhang hinzugefügt"
-          : `${paths.length} Anhänge hinzugefügt`,
-      )
+      try {
+        const nextPaths = [...new Set([...attachmentPaths, ...paths])]
+        setAttachmentPaths(nextPaths)
+        await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+          messageId: draftId,
+          draftAttachmentPaths: nextPaths,
+        })
+        toast.success(
+          paths.length === 1
+            ? "Anhang hinzugefügt"
+            : `${paths.length} Anhänge hinzugefügt`,
+        )
+      } catch (e) {
+        logError("compose-dialog: drop local attachment", e)
+        toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hinzugefügt werden.")
+      }
     },
     [
       attachmentPaths,

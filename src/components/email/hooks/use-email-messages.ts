@@ -93,6 +93,12 @@ export function useEmailMessages() {
     }
   }, [searchQuery])
 
+  useEffect(() => {
+    return () => {
+      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current)
+    }
+  }, [])
+
   const selectMessageById = useCallback(
     async (targetId: number | null, scroll = false) => {
       if (targetId == null) {
@@ -668,6 +674,8 @@ export function useEmailMessages() {
             return mailView === "snoozed"
           case "mark-done":
             return mailView === "inbox" && messageDoneFilter === "open"
+          case "mark-open":
+            return mailView === "inbox" && messageDoneFilter === "done"
           default:
             return false
         }
