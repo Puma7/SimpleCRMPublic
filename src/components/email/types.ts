@@ -1,6 +1,15 @@
 import { getRendererTransport } from "@/services/transport"
 
-export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed"
+export type MailView =
+  | "inbox"
+  | "sent"
+  | "archived"
+  | "drafts"
+  | "scheduled_send"
+  | "spam_review"
+  | "spam"
+  | "trash"
+  | "snoozed"
 
 export type EmailAccount = {
   id: number

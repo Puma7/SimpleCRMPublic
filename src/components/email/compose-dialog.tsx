@@ -1620,7 +1620,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       messageId: draftId,
                       sendAt: iso,
                     })
-                    toast.success("Versand geplant — Entwurf bleibt gespeichert.")
+                    toast.success("Versand geplant — siehe „Späterer Versand“.")
+                    setMailView("scheduled_send")
                     const contextId = getComposeContextMessageId(composeIntent, replyToId)
                     void finishComposeClose(contextId)
                   })()

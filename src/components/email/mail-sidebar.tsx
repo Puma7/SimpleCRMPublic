@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useState } from "react"
-import { Archive, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Trash2 } from "lucide-react"
+import { Archive, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Timer, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -45,6 +45,7 @@ const FOLDERS: {
   { id: "snoozed", label: "Zurückgestellt", icon: Clock, countKey: "snoozed" },
   { id: "sent", label: "Gesendet", icon: Send, countKey: "sentFailed" },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
+  { id: "scheduled_send", label: "Späterer Versand", icon: Timer, countKey: "scheduledSend" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
   { id: "spam_review", label: "Spam prüfen", icon: ShieldQuestion, countKey: "spamReview" },
   { id: "spam", label: "Spam", icon: ShieldAlert, countKey: "spam" },

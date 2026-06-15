@@ -372,3 +372,66 @@ function serverApiSourceRow(): RawBuilder<unknown> {
   const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`'{"origin":"server_api"}'::jsonb`;
 }
+
+const DEFAULT_SCHEDULED_SEND_TICKER_MS = 30_000;
+
+export type ScheduledSendTickerRuntime = Readonly<{
+  stop(): void;
+}>;
+
+/** Polls Postgres for due scheduled drafts and sends them in-process (API server). */
+export function startScheduledSendTicker(input: {
+  db: Kysely<ServerDatabase>;
+  composeSender: EmailComposeSenderApiPort;
+  pollIntervalMs?: number;
+}): ScheduledSendTickerRuntime {
+  const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_SCHEDULED_SEND_TICKER_MS;
+  const port = createPostgresScheduledSendJobPort({
+    db: input.db,
+    composeSender: input.composeSender,
+  });
+  let stopped = false;
+  let inFlight = false;
+
+  const tick = async () => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      const dueBefore = new Date();
+      const rows = await input.db
+        .selectFrom('email_messages')
+        .select('workspace_id')
+        .where('uid', '<', 0)
+        .where('folder_kind', '=', 'draft')
+        .where('outbound_hold', '=', false)
+        .where('scheduled_send_at', 'is not', null)
+        .where('scheduled_send_at', '<=', dueBefore)
+        .groupBy('workspace_id')
+        .execute();
+      for (const row of rows) {
+        await port.processDue({
+          workspaceId: String(row.workspace_id),
+          dueBefore,
+          limit: 30,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[mail] scheduled send ticker: ${message}`);
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void tick();
+  const timer = setInterval(() => {
+    void tick();
+  }, pollIntervalMs);
+
+  return {
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+}

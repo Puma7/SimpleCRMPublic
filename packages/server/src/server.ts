@@ -136,7 +136,7 @@ import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import { createPostgresServerImapSentCopyAppenderPort } from './mail-imap-append';
 import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt-responder';
-import { createPostgresScheduledSendJobPort } from './mail-scheduled-send';
+import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
 import { createPostgresMailSyncJobPort } from './mail-sync';
 import { createPostgresMailSyncPostProcessor } from './mail-sync-post-process';
 import {
@@ -230,6 +230,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let jobWorker: GraphileWorkerRuntime | undefined;
   let postgresJobQueueWorker: PostgresJobQueueWorkerRuntime | undefined;
   let eventNotifications: PostgresServerEventNotificationChannel | undefined;
+  let scheduledSendTicker: ReturnType<typeof startScheduledSendTicker> | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
     accessTokenSigner,
@@ -288,6 +289,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   });
 
   app.addHook('onClose', async () => {
+    scheduledSendTicker?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
   });
 
@@ -321,6 +323,12 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       createGraphileQueue: options.createGraphileQueue,
       createJobWorker: options.createJobWorker,
     });
+    if (db && ports.emailComposeSender) {
+      scheduledSendTicker = startScheduledSendTicker({
+        db,
+        composeSender: ports.emailComposeSender,
+      });
+    }
     await app.listen({ host, port });
   } catch (error) {
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);

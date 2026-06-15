@@ -1061,6 +1061,21 @@ async function handleScheduledSendDraftSchedule(
     sendAt: parsed.sendAt,
   });
   if (!result.ok) return composeDraftMutationError(result.reason);
+  if (parsed.sendAt && ports.jobQueue) {
+    const sendAt = new Date(parsed.sendAt);
+    if (!Number.isNaN(sendAt.getTime())) {
+      await ports.jobQueue.enqueue({
+        workspaceId: principal.workspaceId,
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: principal.workspaceId,
+          draftId: messageId,
+          dueBefore: sendAt.toISOString(),
+        },
+        runAfter: sendAt,
+      });
+    }
+  }
   return data(200, { success: true });
 }
 
@@ -2637,6 +2652,7 @@ function sanitizeMailFolderCounts(counts: EmailMailFolderCounts): EmailMailFolde
     inboxUnread: safeCount(counts.inboxUnread),
     sentFailed: safeCount(counts.sentFailed),
     drafts: safeCount(counts.drafts),
+    scheduledSend: safeCount(counts.scheduledSend),
     archived: safeCount(counts.archived),
     spamReview: safeCount(counts.spamReview),
     spam: safeCount(counts.spam),
@@ -4598,7 +4614,7 @@ function textIdFromPath(value: string | undefined, maxLength: number): string | 
 
 function parseOptionalMessageView(value: string | undefined) {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

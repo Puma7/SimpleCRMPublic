@@ -423,6 +423,7 @@ type EmailMailFolderCountsRecord = {
   inboxUnread?: number | null
   sentFailed?: number | null
   drafts?: number | null
+  scheduledSend?: number | null
   archived?: number | null
   spamReview?: number | null
   spam?: number | null
@@ -5131,6 +5132,7 @@ function mapMailFolderCounts(record: EmailMailFolderCountsRecord) {
     inboxUnread: countValue(record.inboxUnread),
     sentFailed: countValue(record.sentFailed),
     drafts: countValue(record.drafts),
+    scheduledSend: countValue(record.scheduledSend),
     archived: countValue(record.archived),
     spamReview: countValue(record.spamReview),
     spam: countValue(record.spam),

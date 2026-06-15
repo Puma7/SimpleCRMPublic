@@ -163,6 +163,7 @@ const VALID_MAIL_VIEWS: MailView[] = [
   "sent",
   "archived",
   "drafts",
+  "scheduled_send",
   "spam_review",
   "spam",
   "trash",

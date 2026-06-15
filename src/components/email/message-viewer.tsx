@@ -481,10 +481,10 @@ export function MessageViewer(props: Props) {
   const isDraft =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
-    (mailView === "drafts" || isOutboundHeld)
+    (mailView === "drafts" || mailView === "scheduled_send" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
-  const inDraftsView = mailView === "drafts"
+  const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"
   const inSnoozed = mailView === "snoozed"
 
   const handleSnoozeMessage = async (until: string | null) => {

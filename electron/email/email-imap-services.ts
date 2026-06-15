@@ -15,6 +15,8 @@ import {
 
 let idleClients: Map<number, ImapFlow> = new Map();
 let globalCron: ScheduledTask | null = null;
+let scheduledSendInterval: ReturnType<typeof setInterval> | null = null;
+let scheduledSendTickInFlight = false;
 const workflowCrons: Map<number, ScheduledTask> = new Map();
 const workflowCronInFlight = new Set<number>();
 
@@ -205,6 +207,21 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
 
   scheduleWorkflowCrons(logger);
 
+  scheduledSendInterval = setInterval(() => {
+    if (scheduledSendTickInFlight) return;
+    scheduledSendTickInFlight = true;
+    void (async () => {
+      try {
+        const { processDueScheduledSends } = await import('./email-scheduled-send');
+        await processDueScheduledSends(logger);
+      } catch (e) {
+        logger.warn('[email] scheduled send', e);
+      } finally {
+        scheduledSendTickInFlight = false;
+      }
+    })();
+  }, 30_000);
+
   const accounts = listEmailAccounts();
   for (const acc of accounts) {
     if ((acc.protocol || 'imap') !== 'imap') {
@@ -220,6 +237,11 @@ export function isEmailBackgroundSyncBusy(): boolean {
 
 export function stopEmailBackgroundServices(): void {
   globalCronTickInFlight = false;
+  scheduledSendTickInFlight = false;
+  if (scheduledSendInterval) {
+    clearInterval(scheduledSendInterval);
+    scheduledSendInterval = null;
+  }
   if (globalCron) {
     globalCron.stop();
     globalCron = null;
