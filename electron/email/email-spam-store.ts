@@ -7,6 +7,7 @@ import {
   EMAIL_SPAM_LIST_ENTRIES_TABLE,
 } from '../database-schema';
 import type { EmailMessageRow } from './email-store';
+import { isSpamLearningFeatureKey } from '../../packages/core/src/email/spam-engine';
 import { buildFeaturePreview, normalizeSenderEmail, senderDomain } from './email-spam-features';
 import type {
   SpamListEntry,
@@ -228,7 +229,7 @@ export function recordSpamLearningForMessage(
   label: SpamTrainingLabel,
   source: string,
 ): void {
-  const featureKeys = buildFeaturePreview(row).featureKeys;
+  const featureKeys = buildFeaturePreview(row).featureKeys.filter(isSpamLearningFeatureKey);
   const db = getDb();
   const spamInc = label === 'spam' ? 1 : 0;
   const hamInc = label === 'ham' ? 1 : 0;
@@ -253,6 +254,39 @@ export function recordSpamLearningForMessage(
     }
   });
   tx();
+}
+
+export function applyAutomatedSpamStatusFromDecision(
+  messageId: number,
+  status: SpamStatus,
+): void {
+  if (status !== 'review' && status !== 'spam') return;
+  const db = getDb();
+  if (status === 'review') {
+    db.prepare(
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+         SET is_spam = 0,
+             spam_status = 'review',
+             soft_deleted = 0,
+             archived = 0,
+             done_local = 0,
+             seen_local = 0,
+             folder_kind = 'inbox',
+             spam_decided_at = COALESCE(spam_decided_at, datetime('now'))
+       WHERE id = ?`,
+    ).run(messageId);
+    return;
+  }
+  db.prepare(
+    `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET is_spam = 1,
+           spam_status = 'spam',
+           soft_deleted = 0,
+           archived = 0,
+           done_local = 1,
+           spam_decided_at = COALESCE(spam_decided_at, datetime('now'))
+     WHERE id = ?`,
+  ).run(messageId);
 }
 
 export function saveSpamDecision(

@@ -2,6 +2,7 @@ const mockGetEmailMessageById = jest.fn();
 const mockEvaluateSpamListMatch = jest.fn();
 const mockLoadSpamFeatureStats = jest.fn(() => new Map());
 const mockSaveSpamDecision = jest.fn();
+const mockApplyAutomatedSpamStatus = jest.fn();
 
 let mockSettings = {
   mailauthEnabled: true,
@@ -37,9 +38,15 @@ jest.mock('../../electron/email/email-spam-store', () => ({
   evaluateSpamListMatch: (...args: unknown[]) => mockEvaluateSpamListMatch(...args),
   loadSpamFeatureStats: (...args: unknown[]) => mockLoadSpamFeatureStats(...args),
   saveSpamDecision: (...args: unknown[]) => mockSaveSpamDecision(...args),
+  applyAutomatedSpamStatusFromDecision: (...args: unknown[]) => mockApplyAutomatedSpamStatus(...args),
 }));
 
 import { buildSpamDecision, evaluateAndSaveSpamDecision } from '../../electron/email/email-spam-engine';
+import {
+  isSpamLearningFeatureKey,
+  shouldAutoApplySpamStatus,
+  shouldRunInitialSpamScoring,
+} from '../../packages/core/src/email/spam-engine';
 
 function message(overrides: Record<string, unknown> = {}): never {
   return {
@@ -65,6 +72,7 @@ function message(overrides: Record<string, unknown> = {}): never {
 describe('email spam decision engine', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockApplyAutomatedSpamStatus.mockReset();
     mockSettings = {
       ...mockSettings,
       spamEngineEnabled: true,
@@ -178,5 +186,101 @@ describe('email spam decision engine', () => {
 
     expect(decision).not.toBeNull();
     expect(mockSaveSpamDecision).toHaveBeenCalledWith(99, row, decision);
+  });
+
+  test('applies folder status when a new message scores as review', () => {
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        if (key === 'sender:domain:spammy.test' || key === 'content:suspicious_terms') {
+          stats.set(key, { feature_key: key, spam_count: 10, ham_count: 0 });
+        }
+      }
+      return stats;
+    });
+    const row = message({
+      id: 102,
+      from_json: JSON.stringify({ value: [{ address: 'offer@spammy.test' }] }),
+      subject: 'Urgent crypto',
+      body_text: 'Bitte sofort https://spammy.test klicken',
+    });
+    mockGetEmailMessageById.mockReturnValue(row);
+
+    const decision = evaluateAndSaveSpamDecision(102);
+
+    expect(decision?.status).toBe('review');
+    expect(mockApplyAutomatedSpamStatus).toHaveBeenCalledWith(102, 'review');
+    expect(mockSaveSpamDecision).toHaveBeenCalledWith(102, row, decision);
+  });
+
+  test('does not rescore messages that already have spam_decided_at', () => {
+    const stored = {
+      score: 12,
+      status: 'clean',
+      source: 'local',
+      reasons: [],
+      featureKeys: [],
+      modelVersion: 1,
+    };
+    const row = message({
+      id: 101,
+      spam_decided_at: '2026-06-01 12:00:00',
+      spam_score_breakdown_json: JSON.stringify(stored),
+    });
+    mockGetEmailMessageById.mockReturnValue(row);
+
+    const decision = evaluateAndSaveSpamDecision(101);
+
+    expect(decision).toMatchObject(stored);
+    expect(mockSaveSpamDecision).not.toHaveBeenCalled();
+  });
+
+  test('ignores auth pass features in local learning stats', () => {
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        if (key.startsWith('auth:') && key.endsWith(':pass')) {
+          stats.set(key, { feature_key: key, spam_count: 20, ham_count: 0 });
+        }
+      }
+      return stats;
+    });
+
+    const decision = buildSpamDecision(
+      message({
+        auth_spf: 'pass',
+        auth_dkim: 'pass',
+        auth_dmarc: 'pass',
+        auth_arc: 'pass',
+      }),
+    );
+
+    expect(decision.status).toBe('clean');
+    expect(decision.reasons.some((r) => r.code.startsWith('learning.'))).toBe(false);
+    expect(decision.reasons.some((r) => r.code === 'auth.dmarc.pass')).toBe(true);
+  });
+
+  test('isSpamLearningFeatureKey excludes auth pass but keeps auth fail', () => {
+    expect(isSpamLearningFeatureKey('auth:dkim:pass')).toBe(false);
+    expect(isSpamLearningFeatureKey('auth:spf:fail')).toBe(true);
+    expect(isSpamLearningFeatureKey('sender:domain:example.com')).toBe(true);
+  });
+
+  test('shouldAutoApplySpamStatus keeps handled mail out of automated review/spam moves', () => {
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'review')).toBe(false);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'spam')).toBe(false);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 0, spamStatus: 'clean' }, 'review')).toBe(true);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'clean')).toBe(true);
+    expect(shouldAutoApplySpamStatus({
+      doneLocal: 0,
+      spamStatus: 'clean',
+      spamDecidedAt: '2026-06-01T12:00:00.000Z',
+    }, 'review')).toBe(false);
+  });
+
+  test('shouldRunInitialSpamScoring allows only the first inbound scoring pass', () => {
+    expect(shouldRunInitialSpamScoring({ spamDecidedAt: null })).toBe(true);
+    expect(shouldRunInitialSpamScoring({ spamDecidedAt: '2026-06-01T12:00:00.000Z' })).toBe(false);
+    expect(shouldRunInitialSpamScoring({ spamDecidedAt: new Date('2026-06-01T12:00:00.000Z') })).toBe(false);
   });
 });

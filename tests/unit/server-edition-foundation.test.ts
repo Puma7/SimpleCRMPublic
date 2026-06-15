@@ -4268,19 +4268,6 @@ describe('server edition foundation', () => {
     expect(enqueued).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
-        type: 'mail.spam.score',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          messageId: 31,
-          actorUserId: USER_A_ID,
-          applyStatus: true,
-          runSecurityCheck: true,
-          enqueueInboundWorkflows: true,
-        },
-        maxAttempts: 3,
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
         type: 'ai.reply_suggestion',
         payload: {
           workspaceId: WORKSPACE_A_ID,
@@ -4319,7 +4306,7 @@ describe('server edition foundation', () => {
     });
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+      .map((item) => (item as any).payload.messageId)).toEqual([43, 44]);
     expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);

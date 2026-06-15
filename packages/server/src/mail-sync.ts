@@ -22,6 +22,7 @@ import {
   uidValidityMismatch,
   type MailboxListEntry,
 } from '@simplecrm/core';
+import { mergeSeenLocalOnMailSync } from '../../shared/mail-sync-seen';
 import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 
 import type { EmailOAuthProvider } from './api';
@@ -1539,7 +1540,12 @@ async function updateExistingPostgresMailSyncMessage(
       snippet: input.snippet,
       body_text: input.bodyText,
       body_html: input.bodyHtml,
-      seen_local: reconcileSeenFromServer ? input.seenLocal : Boolean(current?.seen_local || input.seenLocal),
+      seen_local: mergeSeenLocalOnMailSync({
+        currentSeenLocal: Boolean(current?.seen_local),
+        incomingSeenLocal: input.seenLocal,
+        spamStatus: current?.spam_status,
+        reconcileSeenFromServer,
+      }),
       imap_thread_id: input.imapThreadId ?? undefined,
       has_attachments: input.hasAttachments,
       attachments_json: input.attachmentsJson ?? undefined,

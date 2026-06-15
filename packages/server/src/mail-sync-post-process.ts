@@ -28,17 +28,10 @@ export function createPostgresMailSyncPostProcessor(
   const limit = normalizeLimit(options.limit);
   return {
     async afterSync(input) {
-      const explicitIds = explicitReplySuggestionMessageIds(input.result);
-      const messageIds = explicitIds.length > 0
-        ? explicitIds.slice(0, limit)
-        : await selectPostSyncInboundMessageIds(options, {
-          workspaceId: input.workspaceId,
-          accountId: input.accountId,
-          syncStartedAt: input.syncStartedAt,
-          limit,
-        });
+      const postSyncMessageIds = await resolvePostSyncMessageIds(options, input, limit);
+      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
 
-      for (const messageId of messageIds) {
+      for (const messageId of spamScoringMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.spam.score',
@@ -55,7 +48,7 @@ export function createPostgresMailSyncPostProcessor(
       }
 
       const replySuggestionRunAfter = new Date(input.syncFinishedAt.getTime() + REPLY_SUGGESTION_DELAY_MS);
-      for (const messageId of messageIds) {
+      for (const messageId of postSyncMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'ai.reply_suggestion',
@@ -72,7 +65,7 @@ export function createPostgresMailSyncPostProcessor(
       }
 
       const vacationRunAfter = new Date(input.syncFinishedAt.getTime() + VACATION_AUTO_REPLY_DELAY_MS);
-      for (const messageId of messageIds) {
+      for (const messageId of postSyncMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.vacation.auto_reply',
@@ -87,6 +80,31 @@ export function createPostgresMailSyncPostProcessor(
       }
     },
   };
+}
+
+function inboundSpamScoringMessageIds(result: MailSyncJobResult | null): number[] {
+  if (!result) return [];
+  return uniquePositiveIds(result.inboundMessageIds ?? []);
+}
+
+async function resolvePostSyncMessageIds(
+  options: PostgresMailSyncPostProcessorOptions,
+  input: {
+    workspaceId: string;
+    accountId: number;
+    syncStartedAt: Date;
+    result: MailSyncJobResult | null;
+    limit: number;
+  },
+): Promise<number[]> {
+  const explicitIds = explicitReplySuggestionMessageIds(input.result);
+  if (explicitIds.length > 0) return explicitIds.slice(0, input.limit);
+  return selectPostSyncInboundMessageIds(options, {
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    syncStartedAt: input.syncStartedAt,
+    limit: input.limit,
+  });
 }
 
 function explicitReplySuggestionMessageIds(result: MailSyncJobResult | null): number[] {
