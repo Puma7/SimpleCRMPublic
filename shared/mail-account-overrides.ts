@@ -62,7 +62,9 @@ export function resolveScopedAccountOverrides<T extends ScopedAccountOverrideRow
 
   if (accountId != null) {
     for (const row of rows) {
-      if (row.account_id === accountId) effective.set(rowKey(row), row);
+      if (row.account_id != null && Number(row.account_id) === Number(accountId)) {
+        effective.set(rowKey(row), row);
+      }
     }
   }
 

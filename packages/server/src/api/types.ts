@@ -3165,6 +3165,8 @@ export type AiTextTransformInput = {
   inboundContextText?: string;
   userContext?: string;
   customerId?: number | null;
+  /** Generate new text to insert without replacing the existing draft. */
+  insertMode?: boolean;
 };
 
 export type AiTextTransformResult =

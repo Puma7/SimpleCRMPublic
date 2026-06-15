@@ -550,21 +550,42 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       const aiContext = composeAiContextText(zones)
       const selectionText = editorRef.current?.getSelectionText() ?? null
       const useSelection = !opts.rewriteBody && !!selectionText?.trim()
-      const src = opts.rewriteBody ? bodyText : useSelection ? selectionText! : bodyText
-      if (!src.trim()) {
-        toast.error(
-          "Bitte zuerst Ihren Antworttext eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
-        )
-        return false
-      }
+      const insertMode = !opts.rewriteBody && !useSelection
       const sourceMsg = getComposeSourceMessage(composeIntent)
+      const inboundContext = getInboundContextText(sourceMsg) || undefined
+
+      let src: string
+      if (opts.rewriteBody) {
+        if (!bodyText.trim()) {
+          toast.error(
+            "Bitte zuerst Ihren Antworttext eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
+          )
+          return false
+        }
+        src = bodyText
+      } else if (useSelection) {
+        src = selectionText!
+      } else {
+        const hasContext = Boolean(
+          bodyText.trim() || aiContext.trim() || inboundContext?.trim() || opts.userContext?.trim(),
+        )
+        if (!hasContext) {
+          toast.error(
+            "Bitte zuerst Ihren Antworttext eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
+          )
+          return false
+        }
+        src = bodyText.trim() || "(neuer Absatz)"
+      }
+
       const r = await invokeRenderer(IPCChannels.Email.AiTransformText, {
         promptId: opts.promptId,
         text: src,
         contextText: aiContext || undefined,
-        inboundContextText: getInboundContextText(sourceMsg) || undefined,
+        inboundContextText: inboundContext,
         userContext: opts.userContext?.trim() || undefined,
         customerId: resolveComposeCustomerId(),
+        insertMode: insertMode || undefined,
       }) as { success: boolean; text?: string; error?: string }
       if (r.success && r.text?.trim()) {
         if (useSelection && editorRef.current?.replaceSelectionText(r.text.trim())) {
@@ -577,14 +598,18 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           })
           setEditorHtml(nextEditor)
           toast.success("KI hat den Haupttext neu geschrieben (Anrede, Signatur und Zitat unverändert)")
+        } else if (editorRef.current?.hasKnownCursor() && editorRef.current.insertTextAtCursor(r.text.trim())) {
+          toast.success("KI-Text an der Cursor-Position eingefügt")
         } else {
           const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
+          const currentZones = splitComposeZones(editorRef.current?.getHtml() ?? editorHtml)
+          const gap = currentZones.bodyHtml.trim() ? "<p><br></p>" : ""
           const nextEditor = mergeComposeZones({
-            ...splitComposeZones(editorRef.current?.getHtml() ?? editorHtml),
-            bodyHtml: transformed,
+            ...currentZones,
+            bodyHtml: `${transformed}${gap}${currentZones.bodyHtml}`,
           })
           setEditorHtml(nextEditor)
-          toast.success("KI-Text eingefügt (Signatur und Zitat unverändert)")
+          toast.success("KI-Text am Anfang eingefügt (bestehender Text bleibt erhalten)")
         }
         return true
       }
@@ -1265,10 +1290,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[280px] text-xs">
-                    Formuliert den Haupttext Ihrer Antwort mit einem Prompt aus Einstellungen →
-                    E-Mail → KI-Prompts. Anrede, Signatur und Zitat bleiben geschützt. Markieren Sie
-                    nur eine Stelle, um ausschließlich diese umzuschreiben — die KI kennt den
-                    restlichen Antwortentwurf und die eingehende Kundenmail als Kontext.
+                    Formuliert Text mit einem Prompt aus Einstellungen → E-Mail → KI-Prompts.
+                    Ohne Markierung wird neuer Text eingefügt (an der Cursor-Position oder am
+                    Anfang des Haupttexts) — bestehender Text bleibt erhalten. Markieren Sie eine
+                    Stelle, um nur diese umzuschreiben. Anrede, Signatur und Zitat bleiben geschützt.
                   </TooltipContent>
                 </Tooltip>
               </div>

@@ -112,6 +112,17 @@ describe('ai-transform-prompt', () => {
     expect(prompt).toContain('Kundenmail');
     expect(prompt).toContain('Storno möglich');
   });
+
+  it('insert mode asks for new text only', () => {
+    const prompt = buildAiTransformSystemPrompt({
+      sourceText: '(neuer Absatz)',
+      contextText: 'Guten Tag,\n\nBestehender Text',
+      insertMode: true,
+    });
+    expect(prompt).toContain('EINFÜGEN');
+    expect(prompt).toContain('BESTEHENDER ANTWORT-ENTWURF');
+    expect(prompt).not.toContain('markierten Abschnitt');
+  });
 });
 
 describe('signature-template', () => {

@@ -1882,6 +1882,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           inboundContextText?: string;
           userContext?: string;
           customerId?: number | null;
+          insertMode?: boolean;
         },
       ) => {
         const prompts = listAiPrompts();
@@ -1906,6 +1907,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               contextText: payload.contextText,
               inboundContextText: payload.inboundContextText,
               userContext: payload.userContext,
+              insertMode: payload.insertMode,
             }),
             user,
             profileId,

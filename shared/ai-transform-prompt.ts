@@ -3,9 +3,13 @@ export function buildAiTransformSystemPrompt(input: {
   contextText?: string;
   inboundContextText?: string;
   userContext?: string;
+  /** Generate new text to insert — do not rewrite or repeat the existing draft. */
+  insertMode?: boolean;
 }): string {
   const contextText = input.contextText?.trim() ?? '';
-  const selectionMode = contextText.length > 0 && contextText !== input.sourceText.trim();
+  const selectionMode = !input.insertMode
+    && contextText.length > 0
+    && contextText !== input.sourceText.trim();
 
   const inbound = input.inboundContextText?.trim();
   const userCtx = input.userContext?.trim();
@@ -16,7 +20,14 @@ export function buildAiTransformSystemPrompt(input: {
       + 'umgeschriebenen markierten Abschnitt — kein zusätzlicher Text, keine Einleitung, keine Anrede oder '
       + 'Grußformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamter Antwort-Entwurf, nicht erneut ausgeben):\n'
       + contextText
-    : 'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+    : input.insertMode
+      ? 'Du bist ein Assistent für geschäftliche E-Mails. Der Nutzer möchte NEUEN Text in seine Antwort EINFÜGEN '
+        + '(nicht den bestehenden ersetzen). Antworte NUR mit dem neuen Textabschnitt — ohne Einleitung, ohne '
+        + 'Wiederholung des bestehenden Entwurfs, ohne Anrede oder Signatur (die sind bereits vorhanden).\n\n'
+        + (contextText
+          ? 'BESTEHENDER ANTWORT-ENTWURF (nur Kontext, nicht erneut ausgeben):\n' + contextText
+          : '')
+      : 'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
 
   if (inbound) {
     prompt +=

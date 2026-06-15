@@ -339,9 +339,12 @@ function buildAiTransformSystemPromptForServer(input: {
   contextText?: string;
   inboundContextText?: string;
   userContext?: string;
+  insertMode?: boolean;
 }): string {
   const contextText = input.contextText?.trim() ?? '';
-  const selectionMode = contextText.length > 0 && contextText !== input.sourceText.trim();
+  const selectionMode = !input.insertMode
+    && contextText.length > 0
+    && contextText !== input.sourceText.trim();
   const inbound = input.inboundContextText?.trim();
   const userCtx = input.userContext?.trim();
 
@@ -351,7 +354,14 @@ function buildAiTransformSystemPromptForServer(input: {
       + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
       + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamter Antwort-Entwurf, nicht erneut ausgeben):\n'
       + contextText
-    : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+    : input.insertMode
+      ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer moechte NEUEN Text in seine Antwort EINFUEGEN '
+        + '(nicht den bestehenden ersetzen). Antworte NUR mit dem neuen Textabschnitt — ohne Einleitung, ohne '
+        + 'Wiederholung des bestehenden Entwurfs, ohne Anrede oder Signatur (die sind bereits vorhanden).\n\n'
+        + (contextText
+          ? 'BESTEHENDER ANTWORT-ENTWURF (nur Kontext, nicht erneut ausgeben):\n' + contextText
+          : '')
+      : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
 
   if (inbound) {
     prompt +=
@@ -369,7 +379,8 @@ export function createPostgresAiTextTransformApiPort(
   return {
     async transformText(input) {
       const sourceText = input.text.trim();
-      if (!sourceText) return { success: false, error: 'Text fehlt' };
+      if (!sourceText && !input.insertMode) return { success: false, error: 'Text fehlt' };
+      const effectiveSource = sourceText || '(neuer Absatz)';
 
       try {
         const context = await withWorkspaceTransaction(
@@ -406,10 +417,11 @@ export function createPostgresAiTextTransformApiPort(
 
         const contextText = input.contextText?.trim() ?? '';
         const systemPrompt = buildAiTransformSystemPromptForServer({
-          sourceText,
+          sourceText: effectiveSource,
           contextText: contextText || undefined,
           inboundContextText: input.inboundContextText,
           userContext: input.userContext,
+          insertMode: input.insertMode,
         });
         const output = await runTrackedChatCompletion(
           options,
@@ -427,8 +439,8 @@ export function createPostgresAiTextTransformApiPort(
             user: interpolateWorkflowTemplate(
               context.prompt.user_template,
               {
-                text: sourceText,
-                combined_text: sourceText,
+                text: effectiveSource,
+                combined_text: effectiveSource,
                 'customer.name': context.customer?.name ?? '',
                 'customer.firstName': context.customer?.first_name ?? '',
                 'customer.email': context.customer?.email ?? '',

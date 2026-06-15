@@ -1671,7 +1671,7 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   }
 
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['promptId', 'text', 'contextText', 'inboundContextText', 'userContext', 'customerId']);
+  const allowedFields = new Set(['promptId', 'text', 'contextText', 'inboundContextText', 'userContext', 'customerId', 'insertMode']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
@@ -1683,6 +1683,7 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     inboundContextText?: string;
     userContext?: string;
     customerId?: number | null;
+    insertMode?: boolean;
   } = {};
   const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
   if (promptId.ok) values.promptId = promptId.value;
@@ -1716,6 +1717,11 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     else errors.push({ field: 'customerId', message: customerId.message });
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'insertMode')) {
+    if (typeof body.insertMode === 'boolean') values.insertMode = body.insertMode;
+    else errors.push({ field: 'insertMode', message: 'insertMode muss ein Boolean sein' });
+  }
+
   if (errors.length > 0 || values.promptId === undefined || values.text === undefined) {
     return {
       ok: false,
@@ -1729,7 +1735,10 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
       promptId: values.promptId,
       text: values.text,
       ...(values.contextText === undefined ? {} : { contextText: values.contextText }),
+      ...(values.inboundContextText === undefined ? {} : { inboundContextText: values.inboundContextText }),
+      ...(values.userContext === undefined ? {} : { userContext: values.userContext }),
       ...(values.customerId === undefined ? {} : { customerId: values.customerId }),
+      ...(values.insertMode === undefined ? {} : { insertMode: values.insertMode }),
     },
   };
 }

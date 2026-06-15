@@ -13,6 +13,25 @@ type KbRow = {
   knowledge_context?: string | null
 }
 
+type KnowledgeBaseCreateResult = {
+  success?: boolean
+  id?: number
+  error?: string
+}
+
+function assertKnowledgeBaseCreated(
+  r: KnowledgeBaseCreateResult | null | undefined,
+  fallbackMessage: string,
+): number {
+  if (r && "success" in r && r.success === false) {
+    throw new Error(r.error ?? fallbackMessage)
+  }
+  if (r?.id == null || !Number.isFinite(r.id) || r.id <= 0) {
+    throw new Error(fallbackMessage)
+  }
+  return r.id
+}
+
 export async function createPromptAccountOverride(
   prompt: AiPrompt,
   accountId: number,
@@ -53,7 +72,8 @@ export async function createKnowledgeBaseAccountOverride(
   kb: KbRow,
   accountId: number,
   knowledgeContext?: KnowledgeContext | null,
-): Promise<number | undefined> {
+  overrideKey?: string | null,
+): Promise<number> {
   const doc = (await invokeRenderer(
     IPCChannels.Email.GetKnowledgeBaseDocument,
     kb.id,
@@ -63,16 +83,17 @@ export async function createKnowledgeBaseAccountOverride(
     name: kb.name,
     description: kb.description ?? null,
     accountId,
-    overrideKey: defaultOverrideKey("kb", kb.id, kb.override_key),
+    overrideKey: overrideKey ?? defaultOverrideKey("kb", kb.id, kb.override_key),
     knowledgeContext: ctx,
-  })) as { id?: number }
-  if (r.id && doc.success) {
+  })) as KnowledgeBaseCreateResult
+  const createdId = assertKnowledgeBaseCreated(r, "Wissensbasis konnte nicht angelegt werden.")
+  if (doc.success) {
     await invokeRenderer(IPCChannels.Email.SaveKnowledgeBaseDocument, {
-      knowledgeBaseId: r.id,
+      knowledgeBaseId: createdId,
       content: doc.content,
     })
   }
-  return r.id
+  return createdId
 }
 
 export async function resetKnowledgeBaseAccountOverride(id: number): Promise<void> {
@@ -83,9 +104,13 @@ export async function assignKnowledgeBaseToAccountSlot(
   kb: KbRow,
   accountId: number,
   context: KnowledgeContext,
-): Promise<number | undefined> {
-  if (kb.account_id != null && kb.account_id === accountId && kb.knowledge_context === context) {
+): Promise<number> {
+  if (
+    kb.account_id != null
+    && Number(kb.account_id) === Number(accountId)
+    && kb.knowledge_context === context
+  ) {
     return kb.id
   }
-  return createKnowledgeBaseAccountOverride(kb, accountId, context)
+  return createKnowledgeBaseAccountOverride(kb, accountId, context, `kb.${context}`)
 }

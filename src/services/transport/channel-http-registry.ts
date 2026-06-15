@@ -3763,6 +3763,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),
+        insertMode: input.insertMode === true ? true : undefined,
       }),
       transform: (body) => dataBody<{ success: boolean; text?: string; error?: string }>(body),
     }
@@ -5728,12 +5729,16 @@ function mapWorkflowRunStepRecord(record: WorkflowRunStepRecord) {
 }
 
 function mapWorkflowKnowledgeBaseRecord(record: WorkflowKnowledgeBaseRecord) {
+  const accountSourceSqliteId = record.accountSourceSqliteId ?? null
+  const accountId = accountSourceSqliteId != null && accountSourceSqliteId > 0
+    ? accountSourceSqliteId
+    : record.accountId ?? null
   return {
     id: record.id,
     name: record.name ?? "",
     description: record.description ?? null,
-    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
-    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    account_id: accountId,
+    ...(accountSourceSqliteId == null ? {} : { account_source_sqlite_id: accountSourceSqliteId }),
     override_key: record.overrideKey ?? null,
     knowledge_context: record.knowledgeContext ?? null,
   }
