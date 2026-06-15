@@ -91,13 +91,14 @@ export function shouldAutoApplySpamStatus(
   message: SpamStatusApplyMessageInput,
   nextStatus: SpamStatus,
 ): boolean {
-  if (nextStatus === 'clean') return true;
-  if (hasSpamDecision(message)) return false;
   const done =
     message.doneLocal === true ||
     message.doneLocal === 1 ||
     message.doneLocal === '1';
-  return !done;
+  if (done) return false;
+  if (nextStatus === 'clean') return true;
+  if (hasSpamDecision(message)) return false;
+  return true;
 }
 
 export const DEFAULT_SPAM_ENGINE_SETTINGS: SpamEngineSettings = {

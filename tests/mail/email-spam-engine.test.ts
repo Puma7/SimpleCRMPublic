@@ -296,7 +296,7 @@ describe('email spam decision engine', () => {
     expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'review')).toBe(false);
     expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'spam')).toBe(false);
     expect(shouldAutoApplySpamStatus({ doneLocal: 0, spamStatus: 'clean' }, 'review')).toBe(true);
-    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'clean')).toBe(true);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'clean')).toBe(false);
     expect(shouldAutoApplySpamStatus({
       doneLocal: 0,
       spamStatus: 'clean',

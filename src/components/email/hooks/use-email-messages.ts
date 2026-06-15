@@ -681,7 +681,7 @@ export function useEmailMessages() {
           case "unsnooze":
             return mailView === "snoozed"
           case "mark-done":
-            return mailView === "inbox" && messageDoneFilter === "open"
+            return (mailView === "inbox" && messageDoneFilter === "open") || mailView === "spam_review"
           case "mark-open":
             return mailView === "inbox" && messageDoneFilter === "done"
           default:

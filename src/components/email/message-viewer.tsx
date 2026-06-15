@@ -576,8 +576,9 @@ export function MessageViewer(props: Props) {
       done: !done,
     })
     toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
-    const hideFromInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
-    if (hideFromInbox) {
+    const hideFromOpenInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
+    const hideFromSpamReview = !done && mailView === "spam_review"
+    if (hideFromOpenInbox || hideFromSpamReview) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
       patchMessageInList?.(selectedMessage.id, { done_local: done ? 0 : 1 })
