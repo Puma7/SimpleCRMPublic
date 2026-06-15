@@ -4,7 +4,7 @@ import {
   scheduledSendStatusKey,
   truncateScheduledSendError,
 } from '@simplecrm/core';
-import type { Kysely, RawBuilder } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 
 import type { EmailComposeSenderApiPort } from './api';
 import type { ScheduledSendJobPlan, ScheduledSendJobPort } from './jobs';
@@ -29,10 +29,11 @@ type ScheduledDraft = Readonly<{
   bccJson: unknown | null;
   draftAttachmentPathsJson: unknown | null;
   replyParentMessageId: number | null;
+  claimedSendAt: Date | null;
 }>;
 
 export type ScheduledSendStore = Readonly<{
-  listDueDrafts(input: ScheduledSendJobPlan): Promise<readonly ScheduledDraft[]>;
+  claimDueDrafts(input: ScheduledSendJobPlan): Promise<readonly ScheduledDraft[]>;
   setDraftScheduledAt(input: {
     workspaceId: string;
     draftId: number;
@@ -64,7 +65,7 @@ export function createScheduledSendJobPort(options: ScheduledSendJobPortOptions)
   const actorUserId = options.actorUserId ?? 'system';
   return {
     async processDue(input) {
-      const drafts = await options.store.listDueDrafts(input);
+      const drafts = await options.store.claimDueDrafts(input);
       for (const draft of drafts) {
         await processScheduledDraft({
           store: options.store,
@@ -139,6 +140,7 @@ async function processScheduledDraft(input: {
   }
 
   if (isComposeSendAlreadyInProgressError(result.error)) {
+    await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
     return;
   }
 
@@ -150,7 +152,22 @@ async function processScheduledDraft(input: {
   );
   if (failures >= MAX_SCHEDULED_SEND_FAILURES) {
     await giveUpScheduledDraft(input.store, input.workspaceId, draft.id, result.error);
+    return;
   }
+  await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
+}
+
+async function restoreClaimedScheduledSendAt(
+  store: ScheduledSendStore,
+  workspaceId: string,
+  draft: ScheduledDraft,
+): Promise<void> {
+  if (draft.claimedSendAt === null) return;
+  await store.setDraftScheduledAt({
+    workspaceId,
+    draftId: draft.id,
+    sendAt: draft.claimedSendAt,
+  });
 }
 
 async function recordScheduledAttemptFailure(
@@ -266,37 +283,65 @@ function parseDraftAttachmentPaths(value: unknown): readonly string[] {
 
 function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): ScheduledSendStore {
   return {
-    async listDueDrafts(input) {
+    async claimDueDrafts(input) {
       return withWorkspaceTransaction(
         db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          let query = trx
-            .selectFrom('email_messages')
-            .select([
-              'id',
-              'account_id',
-              'subject',
-              'body_text',
-              'body_html',
-              'to_json',
-              'cc_json',
-              'bcc_json',
-              'draft_attachment_paths_json',
-              'reply_parent_message_id',
-            ])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('uid', '<', 0)
-            .where('folder_kind', '=', 'draft')
-            .where('outbound_hold', '=', false)
-            .where('scheduled_send_at', '<=', input.dueBefore)
-            .orderBy('scheduled_send_at', 'asc')
-            .orderBy('id', 'asc')
-            .limit(input.limit);
-          if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
-          if (input.draftId !== undefined) query = query.where('id', '=', input.draftId);
-          const rows = await query.execute();
-          return rows.map((row) => ({
+          const accountFilter = input.accountId !== undefined
+            ? sql`AND account_id = ${input.accountId}`
+            : sql``;
+          const draftFilter = input.draftId !== undefined
+            ? sql`AND id = ${input.draftId}`
+            : sql``;
+          const now = new Date();
+          const result = await sql<{
+            id: number | string | bigint;
+            account_id: number | string | bigint | null;
+            subject: string | null;
+            body_text: string | null;
+            body_html: string | null;
+            to_json: unknown | null;
+            cc_json: unknown | null;
+            bcc_json: unknown | null;
+            draft_attachment_paths_json: unknown | null;
+            reply_parent_message_id: number | string | bigint | null;
+            claimed_send_at: Date | null;
+          }>`
+            WITH candidates AS (
+              SELECT id, scheduled_send_at AS claimed_send_at
+              FROM email_messages
+              WHERE workspace_id = ${input.workspaceId}
+                AND uid < 0
+                AND folder_kind = 'draft'
+                AND outbound_hold = false
+                AND scheduled_send_at IS NOT NULL
+                AND scheduled_send_at <= ${input.dueBefore}
+                ${accountFilter}
+                ${draftFilter}
+              ORDER BY scheduled_send_at ASC, id ASC
+              LIMIT ${input.limit}
+              FOR UPDATE SKIP LOCKED
+            )
+            UPDATE email_messages AS m
+            SET scheduled_send_at = NULL, updated_at = ${now}
+            FROM candidates AS c
+            WHERE m.id = c.id
+              AND m.workspace_id = ${input.workspaceId}
+            RETURNING
+              m.id,
+              m.account_id,
+              m.subject,
+              m.body_text,
+              m.body_html,
+              m.to_json,
+              m.cc_json,
+              m.bcc_json,
+              m.draft_attachment_paths_json,
+              m.reply_parent_message_id,
+              c.claimed_send_at
+          `.execute(trx);
+          return result.rows.map((row) => ({
             id: Number(row.id),
             accountId: row.account_id === null ? null : Number(row.account_id),
             subject: row.subject,
@@ -307,6 +352,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             bccJson: row.bcc_json,
             draftAttachmentPathsJson: row.draft_attachment_paths_json,
             replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
+            claimedSendAt: row.claimed_send_at,
           }));
         },
       );

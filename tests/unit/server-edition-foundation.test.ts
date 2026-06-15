@@ -10889,6 +10889,7 @@ describe('server edition foundation', () => {
     const syncInfo = new Map<string, string | null>([
       ['scheduled_send_failures:104', '4'],
     ]);
+    const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
     const drafts = [
       {
         id: 101,
@@ -10901,6 +10902,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: null,
         replyParentMessageId: 11,
+        claimedSendAt,
       },
       {
         id: 102,
@@ -10913,6 +10915,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: null,
         replyParentMessageId: null,
+        claimedSendAt,
       },
       {
         id: 103,
@@ -10925,6 +10928,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: JSON.stringify([{ path: 'C:\\local\\blocked.pdf' }]),
         replyParentMessageId: null,
+        claimedSendAt,
       },
       {
         id: 104,
@@ -10937,6 +10941,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: null,
         replyParentMessageId: null,
+        claimedSendAt,
       },
     ];
     const port = createScheduledSendJobPort({
@@ -10957,8 +10962,8 @@ describe('server edition foundation', () => {
         },
       },
       store: {
-        async listDueDrafts(input) {
-          storeCalls.push(['listDueDrafts', input]);
+        async claimDueDrafts(input) {
+          storeCalls.push(['claimDueDrafts', input]);
           return drafts;
         },
         async setDraftScheduledAt(input) {
@@ -11021,7 +11026,7 @@ describe('server edition foundation', () => {
       },
     ]);
     expect(storeCalls).toEqual([
-      ['listDueDrafts', {
+      ['claimDueDrafts', {
         workspaceId: WORKSPACE_A_ID,
         accountId: 7,
         dueBefore: new Date('2026-06-03T12:00:00.000Z'),
@@ -11045,6 +11050,7 @@ describe('server edition foundation', () => {
           'scheduled_send_status:103': 'pending',
         },
       }],
+      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 103, sendAt: claimedSendAt }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -11065,9 +11071,12 @@ describe('server edition foundation', () => {
     ]);
   });
 
-  test('scheduled-send Postgres store excludes outbound-held drafts from due scan', () => {
+  test('scheduled-send Postgres store atomically claims due drafts with SKIP LOCKED', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
-    expect(source).toMatch(/\.where\('folder_kind', '=', 'draft'\)\s*\.where\('outbound_hold', '=', false\)\s*\.where\('scheduled_send_at', '<=', input\.dueBefore\)/);
+    expect(source).toMatch(/FOR UPDATE SKIP LOCKED/);
+    expect(source).toMatch(/claimDueDrafts/);
+    expect(source).toMatch(/outbound_hold = false/);
+    expect(source).toMatch(/SET scheduled_send_at = NULL/);
   });
 
   test('thread list predicates align scheduled_send filters with message list', () => {
@@ -11097,6 +11106,7 @@ describe('server edition foundation', () => {
 
   test('scheduled-send job ignores compose send already in progress errors', async () => {
     const storeCalls: unknown[] = [];
+    const claimedSendAt = new Date('2026-06-03T11:45:00.000Z');
     const port = createScheduledSendJobPort({
       composeSender: {
         async send() {
@@ -11104,7 +11114,7 @@ describe('server edition foundation', () => {
         },
       },
       store: {
-        async listDueDrafts() {
+        async claimDueDrafts() {
           return [{
             id: 201,
             accountId: 7,
@@ -11116,6 +11126,7 @@ describe('server edition foundation', () => {
             bccJson: null,
             draftAttachmentPathsJson: null,
             replyParentMessageId: null,
+            claimedSendAt,
           }];
         },
         async setDraftScheduledAt(input) {
@@ -11136,7 +11147,9 @@ describe('server edition foundation', () => {
       limit: 10,
     });
 
-    expect(storeCalls).toEqual([]);
+    expect(storeCalls).toEqual([
+      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 201, sendAt: claimedSendAt }],
+    ]);
   });
 
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
