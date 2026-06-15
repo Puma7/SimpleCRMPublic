@@ -471,20 +471,21 @@ function interpolateComposeSignatureHtml(
 export function getComposeSignatureHtml(accountId: number): string | null {
   const acc = getEmailAccountById(accountId);
   if (!acc) return null;
-  const teamMembers = listEmailTeamMembers();
   const row = getDb()
     .prepare(
       `SELECT signature_html FROM ${EMAIL_ACCOUNT_SIGNATURES_TABLE} WHERE account_id = ?`,
     )
     .get(accountId) as { signature_html: string | null } | undefined;
+  let rawHtml: string | null = null;
   if (row?.signature_html?.trim()) {
-    return interpolateComposeSignatureHtml(row.signature_html.trim(), acc, teamMembers);
+    rawHtml = row.signature_html.trim();
+  } else {
+    const teamFallback = getTeamFallbackSignatureHtml();
+    if (teamFallback) rawHtml = teamFallback;
+    else rawHtml = `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
   }
-  const teamFallback = getTeamFallbackSignatureHtml();
-  if (teamFallback) {
-    return interpolateComposeSignatureHtml(teamFallback, acc, teamMembers);
-  }
-  return `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
+  const teamMembers = listEmailTeamMembers();
+  return interpolateComposeSignatureHtml(rawHtml, acc, teamMembers);
 }
 
 /** @deprecated Use getComposeSignatureHtml(accountId) */
