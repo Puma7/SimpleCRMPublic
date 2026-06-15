@@ -47,6 +47,7 @@ import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
 import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 import { invokeRenderer } from "@/services/transport"
+import type { BulkListAction } from "./hooks/use-email-messages"
 
 type Props = {
   messages: EmailMessage[]
@@ -56,6 +57,11 @@ type Props = {
   onMoveMessageToView?: (messageId: number, view: MailView) => Promise<boolean>
   onListChanged?: (opts?: {
     advanceFromMessageId?: number
+    selectMessageId?: number | null
+  }) => void | Promise<void>
+  onBulkListChanged?: (opts: {
+    action: BulkListAction
+    messageIds: number[]
     selectMessageId?: number | null
   }) => void | Promise<void>
   loadMore?: () => void
@@ -90,6 +96,7 @@ export function MessageList({
   loading,
   onOpen,
   onListChanged,
+  onBulkListChanged,
   loadMore,
   hasMore,
   loadingMore,
@@ -399,7 +406,17 @@ export function MessageList({
         ]
         const advanceTargetId = pickBulkAdvanceTargetId(visibleMessages, selectedIds)
         setSelectedIds(new Set())
-        if (advanceActions.includes(action)) {
+        if (onBulkListChanged) {
+          if (advanceActions.includes(action)) {
+            onBulkListChanged({
+              action,
+              messageIds: ids,
+              selectMessageId: advanceTargetId,
+            })
+          } else {
+            onBulkListChanged({ action, messageIds: ids })
+          }
+        } else if (advanceActions.includes(action)) {
           await onListChanged?.({ selectMessageId: advanceTargetId })
         } else {
           await onListChanged?.()
@@ -414,6 +431,7 @@ export function MessageList({
       selectedIds,
       bulkAccountId,
       onListChanged,
+      onBulkListChanged,
       visibleMessages,
       mailView,
       messageDoneFilter,

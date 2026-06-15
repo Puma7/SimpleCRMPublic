@@ -312,6 +312,13 @@ export function ensureReplySuggestion(
     .catch(() => undefined);
 }
 
+export async function generateReplyDraftOnly(
+  messageId: number,
+  opts?: { promptId?: number; customerId?: number | null; userContext?: string },
+): Promise<{ success: true; text: string } | { success: false; error: string }> {
+  return generateReplyDraftText(messageId, opts);
+}
+
 export async function generateAndStoreReplySuggestion(
   messageId: number,
   opts?: { promptId?: number; customerId?: number | null; userContext?: string },

@@ -174,7 +174,14 @@ type EmailReplySuggestionEnsureParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type EmailReplyDraftGenerateParseResult =
-  | { ok: true; promptId?: number; profileId?: number; customerId?: number | null; userContext?: string }
+  | {
+    ok: true;
+    promptId?: number;
+    profileId?: number;
+    customerId?: number | null;
+    userContext?: string;
+    persistSuggestion?: boolean;
+  }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type EmailMessageCustomerLinkMutationParseResult =
@@ -1678,6 +1685,7 @@ async function handleMessageReplyDraftGenerate(
     ...(parsed.profileId === undefined ? {} : { profileId: parsed.profileId }),
     ...(parsed.customerId === undefined ? {} : { customerId: parsed.customerId }),
     ...(parsed.userContext === undefined ? {} : { userContext: parsed.userContext }),
+    ...(parsed.persistSuggestion === undefined ? {} : { persistSuggestion: parsed.persistSuggestion }),
   });
   return data(200, sanitizeEmailReplyDraftGeneration(result));
 }
@@ -4174,7 +4182,13 @@ function parseEmailReplyDraftGenerateBody(body: unknown): EmailReplyDraftGenerat
       response: error(400, 'invalid_reply_draft_payload', 'Reply draft payload muss ein JSON-Objekt sein'),
     };
   }
-  const result: { promptId?: number; profileId?: number; customerId?: number | null; userContext?: string } = {};
+  const result: {
+    promptId?: number;
+    profileId?: number;
+    customerId?: number | null;
+    userContext?: string;
+    persistSuggestion?: boolean;
+  } = {};
   if (Object.prototype.hasOwnProperty.call(body, 'promptId')) {
     const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
     if (!promptId.ok) return { ok: false, response: error(400, 'invalid_prompt_id', promptId.message) };
@@ -4194,6 +4208,15 @@ function parseEmailReplyDraftGenerateBody(body: unknown): EmailReplyDraftGenerat
     const userContext = normalizeRequiredBodyText(body.userContext, 'userContext', 4000);
     if (!userContext.ok) return { ok: false, response: error(400, 'invalid_user_context', userContext.message) };
     result.userContext = userContext.value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'persistSuggestion')) {
+    if (typeof body.persistSuggestion !== 'boolean') {
+      return {
+        ok: false,
+        response: error(400, 'invalid_persist_suggestion', 'persistSuggestion muss ein Boolean sein'),
+      };
+    }
+    result.persistSuggestion = body.persistSuggestion;
   }
   return { ok: true, ...result };
 }

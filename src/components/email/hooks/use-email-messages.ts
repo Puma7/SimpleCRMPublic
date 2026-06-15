@@ -28,6 +28,18 @@ type LoadMessagesOpts = {
   advanceFromRemovedId?: number
 }
 
+export type BulkListAction =
+  | "archive"
+  | "unarchive"
+  | "delete"
+  | "spam"
+  | "not-spam"
+  | "restore"
+  | "delete-drafts"
+  | "unsnooze"
+  | "mark-done"
+  | "mark-open"
+
 export function useEmailMessages() {
   const {
     selectedAccountId,
@@ -629,6 +641,83 @@ export function useEmailMessages() {
     [mailView, refreshList, selectedMessage?.id, advanceSelectionAfterMessageRemoved],
   )
 
+  const applyBulkListMutation = useCallback(
+    (opts: {
+      action: BulkListAction
+      messageIds: number[]
+      selectMessageId?: number | null
+    }) => {
+      const idSet = new Set(opts.messageIds)
+      const shouldRemove = (m: EmailMessage): boolean => {
+        if (!idSet.has(m.id)) return false
+        switch (opts.action) {
+          case "delete":
+          case "delete-drafts":
+            return true
+          case "archive":
+            return mailView === "inbox"
+          case "unarchive":
+            return mailView === "archived"
+          case "spam":
+            return mailView === "inbox" || mailView === "spam_review"
+          case "not-spam":
+            return mailView === "spam" || mailView === "spam_review"
+          case "restore":
+            return mailView === "trash"
+          case "unsnooze":
+            return mailView === "snoozed"
+          case "mark-done":
+            return mailView === "inbox" && messageDoneFilter === "open"
+          default:
+            return false
+        }
+      }
+      const idsToRemove = messagesRef.current.filter(shouldRemove).map((m) => m.id)
+      if (idsToRemove.length > 0) removeMessagesFromList(idsToRemove)
+
+      const patchForAction = (): Partial<EmailMessage> | null => {
+        switch (opts.action) {
+          case "mark-done":
+            return { done_local: 1 }
+          case "mark-open":
+            return { done_local: 0 }
+          case "archive":
+            return { archived: 1 }
+          case "unarchive":
+            return { archived: 0 }
+          case "spam":
+            return { spam_status: "spam", is_spam: 1 }
+          case "not-spam":
+            return { spam_status: "clean", is_spam: 0 }
+          case "unsnooze":
+            return { snoozed_until: null }
+          default:
+            return null
+        }
+      }
+      const patch = patchForAction()
+      if (patch) {
+        const removed = new Set(idsToRemove)
+        for (const id of opts.messageIds) {
+          if (!removed.has(id)) patchMessageInList(id, patch)
+        }
+      }
+
+      if (opts.selectMessageId !== undefined) {
+        void selectMessageById(opts.selectMessageId, true)
+      }
+      scheduleSilentReconcile()
+    },
+    [
+      mailView,
+      messageDoneFilter,
+      removeMessagesFromList,
+      patchMessageInList,
+      selectMessageById,
+      scheduleSilentReconcile,
+    ],
+  )
+
   return {
     messages,
     loadingMessages,
@@ -648,6 +737,7 @@ export function useEmailMessages() {
     advanceSelectionAfterMessageRemoved,
     removeMessagesFromList,
     patchMessageInList,
+    applyBulkListMutation,
     scrollToMessageId,
     clearScrollToMessage,
   }

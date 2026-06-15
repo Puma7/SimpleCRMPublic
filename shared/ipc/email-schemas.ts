@@ -1062,6 +1062,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       promptId: positiveInt.optional(),
       customerId: z.number().int().positive().nullable().optional(),
       userContext: z.string().max(4000).optional(),
+      persistSuggestion: z.boolean().optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), text: z.string() }),

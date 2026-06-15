@@ -27,6 +27,10 @@ import { accountAccessSql, type MailScopeSession } from './mail-scope-access';
 export { doneFilterSql };
 export type { MailScopeSession };
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from '../../shared/signature-template';
 
 export type EmailAccountRow = {
   id: number;
@@ -447,20 +451,39 @@ function getTeamFallbackSignatureHtml(): string | null {
   return null;
 }
 
+function interpolateComposeSignatureHtml(
+  html: string,
+  account: EmailAccountRow,
+  teamMembers: EmailTeamMemberRow[],
+): string {
+  const teamMember = teamMembers[0];
+  return interpolateSignatureTemplate(
+    html,
+    buildSignatureTemplateContext({
+      accountDisplayName: account.display_name,
+      accountEmail: account.email_address,
+      teamMemberDisplayName: teamMember?.display_name ?? null,
+    }),
+  );
+}
+
 /** Compose footer for a specific mail account (per-account → team → account display name). */
 export function getComposeSignatureHtml(accountId: number): string | null {
   const acc = getEmailAccountById(accountId);
   if (!acc) return null;
+  const teamMembers = listEmailTeamMembers();
   const row = getDb()
     .prepare(
       `SELECT signature_html FROM ${EMAIL_ACCOUNT_SIGNATURES_TABLE} WHERE account_id = ?`,
     )
     .get(accountId) as { signature_html: string | null } | undefined;
   if (row?.signature_html?.trim()) {
-    return row.signature_html.trim();
+    return interpolateComposeSignatureHtml(row.signature_html.trim(), acc, teamMembers);
   }
   const teamFallback = getTeamFallbackSignatureHtml();
-  if (teamFallback) return teamFallback;
+  if (teamFallback) {
+    return interpolateComposeSignatureHtml(teamFallback, acc, teamMembers);
+  }
   return `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
 }
 

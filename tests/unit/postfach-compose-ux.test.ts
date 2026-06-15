@@ -5,7 +5,9 @@ import {
   buildReplyComposeHtml,
   composeAiContextText,
   mergeComposeZones,
+  mergeEditorAndSignature,
   splitComposeZones,
+  splitEditorAndSignature,
 } from '../../shared/compose-body';
 import {
   aiDraftLikelyIncludesGreeting,
@@ -13,7 +15,10 @@ import {
   replyGreetingPlainToHtml,
 } from '../../shared/email-reply-greeting';
 import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
-import { interpolateSignatureTemplate } from '../../shared/signature-template';
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from '../../shared/signature-template';
 
 describe('compose-body zones', () => {
   it('splits and merges greeting, body, signature and quote', () => {
@@ -50,6 +55,22 @@ describe('compose-body zones', () => {
     expect(merged).toContain(COMPOSE_BODY_MARKER);
     expect(merged).toContain(COMPOSE_SIGNATURE_MARKER);
     expect(merged).toContain(COMPOSE_QUOTE_MARKER);
+  });
+
+  it('splitEditorAndSignature isolates signature from Quill content', () => {
+    const full = buildReplyComposeHtml({
+      greetingHtml: '<p>Hi</p>',
+      replyHtml: '<p>Body</p>',
+      signatureHtml: '<p>Sig</p>',
+      quotedPlain: 'Original',
+    });
+    const split = splitEditorAndSignature(full);
+    expect(split.signatureHtml).toContain('Sig');
+    expect(split.editorHtml).toContain('Body');
+    expect(split.editorHtml).not.toContain('Sig');
+    const merged = mergeEditorAndSignature(split.editorHtml, split.signatureHtml);
+    expect(merged).toContain(COMPOSE_SIGNATURE_MARKER);
+    expect(merged).toContain('Sig');
   });
 });
 
@@ -100,5 +121,18 @@ describe('signature-template', () => {
       { accountDisplayName: 'Shop', customerName: 'Müller GmbH' },
     );
     expect(out).toBe('Grüße Shop / Müller GmbH');
+  });
+
+  it('buildSignatureTemplateContext resolves user from team or account', () => {
+    const ctx = buildSignatureTemplateContext({
+      accountDisplayName: 'Shop Nord',
+      accountEmail: 'nord@example.com',
+      teamMemberDisplayName: 'Anna Agent',
+    });
+    expect(ctx.userName).toBe('Anna Agent');
+    expect(ctx.userEmail).toBe('nord@example.com');
+    expect(interpolateSignatureTemplate('{{user.name}} <{{user.email}}>', ctx)).toBe(
+      'Anna Agent <nord@example.com>',
+    );
   });
 });

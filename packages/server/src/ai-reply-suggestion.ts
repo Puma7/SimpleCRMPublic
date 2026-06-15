@@ -205,6 +205,7 @@ export function createPostgresAiReplySuggestionPort(
     },
 
     async generate(input): Promise<EmailReplyDraftGenerationResult> {
+      const persist = input.persistSuggestion !== false;
       const context = await loadGenerationContext(options, {
         workspaceId: input.workspaceId,
         messageId: input.messageId,
@@ -218,29 +219,35 @@ export function createPostgresAiReplySuggestionPort(
       if (!context) return { success: false, error: 'Nachricht nicht gefunden' };
       if (!canSuggestReplyForMessage(context.message)) {
         const result = { success: false as const, error: 'Fuer diese Nachricht ist keine KI-Antwort vorgesehen' };
-        await setReplySuggestion(options, input.workspaceId, input.messageId, {
-          status: 'failed',
-          text: null,
-          error: result.error,
-        });
+        if (persist) {
+          await setReplySuggestion(options, input.workspaceId, input.messageId, {
+            status: 'failed',
+            text: null,
+            error: result.error,
+          });
+        }
         return result;
       }
 
       const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
       if (!apiKey) {
         const result = { success: false as const, error: 'Kein KI-API-Schluessel konfiguriert' };
-        await setReplySuggestion(options, input.workspaceId, input.messageId, {
-          status: 'skipped',
-          text: null,
-          error: 'Kein API-Schluessel',
-        });
+        if (persist) {
+          await setReplySuggestion(options, input.workspaceId, input.messageId, {
+            status: 'skipped',
+            text: null,
+            error: 'Kein API-Schluessel',
+          });
+        }
         return result;
       }
 
       const result = await generateReplyDraftText(options, context, apiKey);
-      await setReplySuggestion(options, input.workspaceId, input.messageId, result.success
-        ? { status: 'ready', text: result.text, error: null }
-        : { status: 'failed', text: null, error: result.error });
+      if (persist) {
+        await setReplySuggestion(options, input.workspaceId, input.messageId, result.success
+          ? { status: 'ready', text: result.text, error: null }
+          : { status: 'failed', text: null, error: result.error });
+      }
       return result;
     },
   };

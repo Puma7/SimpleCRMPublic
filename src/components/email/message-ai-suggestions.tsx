@@ -115,6 +115,7 @@ export function MessageAiSuggestions({
       messageId: requestId,
       customerId: message.customer_id ?? null,
       ...(opts?.userContext?.trim() ? { userContext: opts.userContext.trim() } : {}),
+      ...(opts?.userContext?.trim() ? { persistSuggestion: false } : {}),
     }) as {
       success: boolean
       text?: string

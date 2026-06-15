@@ -161,6 +161,7 @@ import {
 import {
   ensureReplySuggestion,
   generateAndStoreReplySuggestion,
+  generateReplyDraftOnly,
   getReplySuggestion,
 } from '../email/email-reply-ai';
 import {
@@ -1971,12 +1972,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.GenerateReplyDraft,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; promptId?: number; customerId?: number | null; userContext?: string },
-      ) => generateAndStoreReplySuggestion(payload.messageId, {
-        promptId: payload.promptId,
-        customerId: payload.customerId,
-        userContext: payload.userContext,
-      }),
+        payload: {
+          messageId: number;
+          promptId?: number;
+          customerId?: number | null;
+          userContext?: string;
+          persistSuggestion?: boolean;
+        },
+      ) => {
+        const opts = {
+          promptId: payload.promptId,
+          customerId: payload.customerId,
+          userContext: payload.userContext,
+        };
+        if (payload.persistSuggestion === false) {
+          return generateReplyDraftOnly(payload.messageId, opts);
+        }
+        return generateAndStoreReplySuggestion(payload.messageId, opts);
+      },
       { logger },
     ),
   );

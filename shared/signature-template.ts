@@ -7,6 +7,28 @@ export type SignatureTemplateContext = {
   customerEmail?: string | null
 }
 
+/** Resolves account/user placeholders; customer fields stay empty unless provided. */
+export function buildSignatureTemplateContext(input: {
+  accountDisplayName?: string | null
+  accountEmail?: string | null
+  teamMemberDisplayName?: string | null
+  customerName?: string | null
+  customerFirstName?: string | null
+  customerEmail?: string | null
+}): SignatureTemplateContext {
+  const accountDisplayName = (input.accountDisplayName ?? '').trim()
+  const accountEmail = (input.accountEmail ?? '').trim()
+  const teamName = (input.teamMemberDisplayName ?? '').trim()
+  return {
+    accountDisplayName,
+    userName: teamName || accountDisplayName || '',
+    userEmail: accountEmail,
+    customerName: input.customerName ?? '',
+    customerFirstName: input.customerFirstName ?? '',
+    customerEmail: input.customerEmail ?? '',
+  }
+}
+
 export function interpolateSignatureTemplate(
   html: string,
   ctx: SignatureTemplateContext,

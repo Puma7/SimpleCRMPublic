@@ -1732,6 +1732,8 @@ export type AiReplySuggestionApiPort = {
     profileId?: number;
     customerId?: number | null;
     userContext?: string;
+    /** When false, returns draft text without updating stored suggestion. Default true. */
+    persistSuggestion?: boolean;
   }): Promise<EmailReplyDraftGenerationResult>;
 };
 

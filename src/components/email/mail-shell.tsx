@@ -85,6 +85,7 @@ function MailShellInner() {
     snoozeMessageUntilTomorrow: snoozeMessageUntilTomorrowBase,
     advanceSelectionAfterMessageRemoved: advanceSelectionAfterMessageRemovedBase,
     patchMessageInList: patchMessageInListBase,
+    applyBulkListMutation,
     loadMore,
     hasMore,
     loadingMore,
@@ -135,6 +136,14 @@ function MailShellInner() {
       }
     },
     [refreshList, advanceSelectionAfterMessageRemoved],
+  )
+
+  const handleBulkListChanged = useCallback(
+    (opts: Parameters<typeof applyBulkListMutation>[0]) => {
+      applyBulkListMutation(opts)
+      invalidateMailMetrics()
+    },
+    [applyBulkListMutation, invalidateMailMetrics],
   )
 
   const moveMessageToView = useCallback(
@@ -398,6 +407,7 @@ function MailShellInner() {
             onOpen={openMessage}
             onMoveMessageToView={moveMessageToView}
             onListChanged={handleListChanged}
+            onBulkListChanged={handleBulkListChanged}
             loadMore={loadMore}
             hasMore={hasMore}
             loadingMore={loadingMore}
@@ -460,6 +470,7 @@ function MailShellInner() {
 
       <ComposeDialog
         accounts={accounts}
+        teamMembers={teamMembers}
         cannedList={cannedList}
         aiPrompts={aiPrompts}
         onSent={() => refreshList({ preserveSelection: true })}

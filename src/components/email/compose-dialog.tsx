@@ -61,16 +61,21 @@ import {
   composeAiContextText,
   mergeComposeHtml,
   mergeComposeZones,
+  mergeEditorAndSignature,
   plainTextToReplyHtml,
   splitComposeHtml,
   splitComposeZones,
+  splitEditorAndSignature,
 } from "@shared/compose-body"
 import {
   aiDraftLikelyIncludesGreeting,
   buildReplyGreeting,
   replyGreetingPlainToHtml,
 } from "@shared/email-reply-greeting"
-import { interpolateSignatureTemplate } from "@shared/signature-template"
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from "@shared/signature-template"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   applyCannedTemplate,
@@ -82,6 +87,7 @@ import {
   stripHtmlToText,
   type AiPrompt,
   type CannedResponse,
+  type TeamMember,
   type CustomerOpt,
   type EmailMessage,
 } from "./types"
@@ -118,6 +124,7 @@ import { useComposeDialogSize } from "./use-compose-dialog-size"
 
 type Props = {
   accounts: EmailAccount[]
+  teamMembers: TeamMember[]
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
   onSent: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
@@ -156,7 +163,7 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props) {
+export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, onSent }: Props) {
   const {
     composeIntent,
     setComposeIntent,
@@ -179,7 +186,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [cc, setCc] = useState("")
   const [bcc, setBcc] = useState("")
   const [subject, setSubject] = useState("")
-  const [bodyHtml, setBodyHtml] = useState("")
+  const [editorHtml, setEditorHtml] = useState("")
+  const [signatureHtml, setSignatureHtml] = useState("")
   const [sending, setSending] = useState(false)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
@@ -338,7 +346,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   `<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`,
                 )
               : ""
-          setBodyHtml(html)
+          const split = splitEditorAndSignature(html)
+          setEditorHtml(split.editorHtml)
+          setSignatureHtml(split.signatureHtml)
           setAttachmentPaths(parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json))
           return
         }
@@ -405,12 +415,14 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
         const accountRow = accounts.find((a) => a.id === accountIdAtOpen)
         const sigRaw =
           sigRes.html && composeIntent.mode !== "forward"
-            ? interpolateSignatureTemplate(sigRes.html, {
+            ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
                 accountDisplayName: accountRow?.display_name ?? "",
+                accountEmail: accountRow?.email_address ?? "",
+                teamMemberDisplayName: teamMembers[0]?.display_name ?? null,
                 customerName: customerForSig?.name ?? "",
                 customerFirstName: customerForSig?.firstName ?? "",
                 customerEmail: customerForSig?.email ?? "",
-              })
+              }))
             : ""
         const sigHtml = sigRaw ? sanitizeComposeHtml(sigRaw) : ""
         const res = await invokeRenderer(IPCChannels.Email.CreateComposeDraft, {
@@ -487,7 +499,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
             quotedPlain: quoted,
             signatureHtml: sigHtml || undefined,
           })
-          setBodyHtml(composed || sigHtml || "")
+          const split = splitEditorAndSignature(composed || sigHtml || "")
+          setEditorHtml(split.editorHtml || sigHtml || "")
+          setSignatureHtml(split.signatureHtml || sigHtml || "")
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -500,9 +514,14 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts, draftBootstrapGen])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen])
 
-  const getEditorHtml = useCallback(() => editorRef.current?.getHtml() ?? bodyHtml, [bodyHtml])
+  const getFullComposeHtml = useCallback(() => {
+    const editable = editorRef.current?.getHtml() ?? editorHtml
+    return mergeEditorAndSignature(editable, signatureHtml)
+  }, [editorHtml, signatureHtml])
+
+  const getEditorHtml = getFullComposeHtml
 
   const resolveComposeCustomerId = useCallback(() => {
     const src = getComposeSourceMessage(composeIntent)
@@ -511,7 +530,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
 
   const runAiComposeTransform = useCallback(
     async (opts: { promptId: number; userContext?: string; rewriteBody?: boolean }) => {
-      const rawHtml = getEditorHtml()
+      const rawHtml = getFullComposeHtml()
       const zones = splitComposeZones(rawHtml)
       const bodyText = stripHtmlToText(zones.bodyHtml)
       const aiContext = composeAiContextText(zones)
@@ -538,21 +557,19 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           toast.success("KI hat den markierten Text ersetzt")
         } else if (opts.rewriteBody) {
           const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
-          setBodyHtml(
-            mergeComposeZones({
-              ...zones,
-              bodyHtml: transformed,
-            }),
-          )
+          const nextEditor = mergeComposeZones({
+            ...splitComposeZones(editorRef.current?.getHtml() ?? editorHtml),
+            bodyHtml: transformed,
+          })
+          setEditorHtml(nextEditor)
           toast.success("KI hat den Haupttext neu geschrieben (Anrede, Signatur und Zitat unverändert)")
         } else {
           const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
-          setBodyHtml(
-            mergeComposeZones({
-              ...zones,
-              bodyHtml: transformed,
-            }),
-          )
+          const nextEditor = mergeComposeZones({
+            ...splitComposeZones(editorRef.current?.getHtml() ?? editorHtml),
+            bodyHtml: transformed,
+          })
+          setEditorHtml(nextEditor)
           toast.success("KI-Text eingefügt (Signatur und Zitat unverändert)")
         }
         return true
@@ -563,7 +580,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       )
       return false
     },
-    [composeIntent, getEditorHtml, resolveComposeCustomerId],
+    [composeIntent, getFullComposeHtml, editorHtml, resolveComposeCustomerId],
   )
 
   const closeDialog = () => {
@@ -575,7 +592,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     setCc("")
     setBcc("")
     setSubject("")
-    setBodyHtml("")
+    setEditorHtml("")
+    setSignatureHtml("")
     setAttachmentPaths([])
     closingRef.current = false
   }
@@ -654,8 +672,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     async (opts?: { silent?: boolean }) => {
       if (draftId == null) return false
       try {
-        const rawHtml = getEditorHtml()
-        if (rawHtml !== bodyHtml) setBodyHtml(rawHtml)
+        const rawHtml = getFullComposeHtml()
         const safeHtml = sanitizeComposeHtml(rawHtml)
         const plain = stripHtmlToText(safeHtml)
         await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
@@ -686,9 +703,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       to,
       cc,
       bcc,
-      bodyHtml,
+      editorHtml,
+      signatureHtml,
       attachmentPaths,
-      getEditorHtml,
+      getFullComposeHtml,
       isReplyCompose,
       keepReplyOpenInInbox,
       replyToId,
@@ -744,7 +762,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     }
-  }, [isOpen, draftId, to, cc, bcc, subject, bodyHtml, attachmentPaths, saveDraft])
+  }, [isOpen, draftId, to, cc, bcc, subject, editorHtml, signatureHtml, attachmentPaths, saveDraft])
 
   const handleCheckOutbound = async () => {
     if (draftId == null) return
@@ -1115,7 +1133,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const frag = sanitizeComposeHtml(
                     `<p>${block.replace(/\n/g, "<br/>")}</p>`,
                   )
-                  setBodyHtml((prev) => {
+                  setEditorHtml((prev) => {
                     const zones = splitComposeZones(prev)
                     return mergeComposeZones({
                       ...zones,
@@ -1277,14 +1295,21 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           </div>
 
           <div
-            className="compose-quill compose-editor-fill min-h-0 flex-1 rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
+            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
             title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
           >
             <ComposeQuillEditor
               ref={editorRef}
-              value={bodyHtml}
-              onChange={setBodyHtml}
+              value={editorHtml}
+              onChange={setEditorHtml}
+              className="min-h-0 flex-1"
             />
+            {signatureHtml ? (
+              <div
+                className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground [&_a]:text-primary"
+                dangerouslySetInnerHTML={{ __html: signatureHtml }}
+              />
+            ) : null}
           </div>
         </div>
 
