@@ -16,6 +16,13 @@ export function scheduledSendLastErrorKey(messageId: number): string {
   return `scheduled_send_last_error:${messageId}`;
 }
 
+/** Durable in-flight claim timestamp while `scheduled_send_at` is cleared for atomic send. */
+export function scheduledSendClaimedAtKey(messageId: number): string {
+  return `scheduled_send_claimed_at:${messageId}`;
+}
+
+export const SCHEDULED_SEND_CLAIMED_AT_PREFIX = 'scheduled_send_claimed_at:';
+
 export function scheduledSendSyncInfoKeys(messageId: number): readonly [string, string, string] {
   return [
     scheduledSendFailuresKey(messageId),
