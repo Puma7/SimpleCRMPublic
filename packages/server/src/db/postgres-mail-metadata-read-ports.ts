@@ -630,7 +630,7 @@ function threadMessageViewPredicate(
   if (view === 'inbox') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND (
       ((${nonDraftMail}) AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = false AND m.is_spam = false AND coalesce(m.spam_status, 'clean') = 'clean')
-      OR (m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = true)
+      OR (m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = true AND m.scheduled_send_at IS NULL)
     )`;
   }
   if (view === 'sent') {
@@ -640,10 +640,13 @@ function threadMessageViewPredicate(
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND m.archived = true AND m.is_spam = false AND coalesce(m.spam_status, 'clean') = 'clean'`;
   }
   if (view === 'drafts') {
-    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'draft'`;
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'draft' AND m.scheduled_send_at IS NULL`;
+  }
+  if (view === 'scheduled_send') {
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'draft' AND m.scheduled_send_at IS NOT NULL`;
   }
   if (view === 'spam_review') {
-    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND coalesce(m.spam_status, 'clean') = 'review' AND coalesce(m.done_local, false) = false`;
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND coalesce(m.spam_status, 'clean') = 'review'`;
   }
   if (view === 'spam') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND (m.is_spam = true OR coalesce(m.spam_status, 'clean') = 'spam')`;

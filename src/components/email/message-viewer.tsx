@@ -481,10 +481,10 @@ export function MessageViewer(props: Props) {
   const isDraft =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
-    (mailView === "drafts" || isOutboundHeld)
+    (mailView === "drafts" || mailView === "scheduled_send" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
-  const inDraftsView = mailView === "drafts"
+  const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"
   const inSnoozed = mailView === "snoozed"
 
   const handleSnoozeMessage = async (until: string | null) => {
@@ -577,8 +577,7 @@ export function MessageViewer(props: Props) {
     })
     toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
     const hideFromOpenInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
-    const hideFromSpamReview = !done && mailView === "spam_review"
-    if (hideFromOpenInbox || hideFromSpamReview) {
+    if (hideFromOpenInbox) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
       patchMessageInList?.(selectedMessage.id, { done_local: done ? 0 : 1 })

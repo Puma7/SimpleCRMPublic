@@ -625,11 +625,15 @@ export type AccountMailView =
   | 'sent'
   | 'archived'
   | 'drafts'
+  | 'scheduled_send'
   | 'spam_review'
   | 'spam'
   | 'trash'
   | 'snoozed'
   | 'all';
+
+const SCHEDULED_SEND_SQL = `(m.scheduled_send_at IS NOT NULL AND m.scheduled_send_at != '')`;
+const NOT_SCHEDULED_SEND_SQL = `(m.scheduled_send_at IS NULL OR m.scheduled_send_at = '')`;
 
 function orderClauseForSort(sort?: MessageListSortMode): string {
   if (sort === 'priority') {
@@ -700,7 +704,7 @@ export function listMessagesForAccountView(
   }
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
-  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND ${NOT_SCHEDULED_SEND_SQL})`;
   if (view === 'trash') {
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
@@ -708,6 +712,14 @@ export function listMessagesForAccountView(
   }
   if (view === 'snoozed') {
     sql += ` ORDER BY datetime(m.snoozed_until) ASC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+  }
+  if (view === 'scheduled_send') {
+    sql += ` AND m.folder_kind = 'draft' AND ${SCHEDULED_SEND_SQL}`;
+    sql += listFilterSql(opts.listFilter);
+    sql += doneFilterSql(opts.doneFilter, view);
+    sql += ` ORDER BY datetime(m.scheduled_send_at) ASC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
   }
@@ -721,9 +733,9 @@ export function listMessagesForAccountView(
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
-    sql += ` AND m.folder_kind = 'draft'`;
+    sql += ` AND m.folder_kind = 'draft' AND ${NOT_SCHEDULED_SEND_SQL}`;
   } else if (view === 'spam_review') {
-    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
+    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
   } else if (view === 'spam') {
     sql += ` AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
   } else {
@@ -770,7 +782,7 @@ export function listMessagesForAllAccountsView(
     sql += ` WHERE m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}`;
   }
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
-  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND ${NOT_SCHEDULED_SEND_SQL})`;
   if (view === 'trash') {
     sql += accessSql;
     params.push(...accessParams);
@@ -785,6 +797,16 @@ export function listMessagesForAllAccountsView(
     params.push(limit, offset);
     return getDb().prepare(sql).all(...params) as EmailMessageRow[];
   }
+  if (view === 'scheduled_send') {
+    sql += ` AND m.folder_kind = 'draft' AND ${SCHEDULED_SEND_SQL}`;
+    sql += accessSql;
+    params.push(...accessParams);
+    sql += listFilterSql(opts.listFilter);
+    sql += doneFilterSql(opts.doneFilter, view);
+    sql += ` ORDER BY datetime(m.scheduled_send_at) ASC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return getDb().prepare(sql).all(...params) as EmailMessageRow[];
+  }
   if (view === 'inbox') {
     sql += ` AND (
       (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
@@ -795,9 +817,9 @@ export function listMessagesForAllAccountsView(
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
-    sql += ` AND m.folder_kind = 'draft'`;
+    sql += ` AND m.folder_kind = 'draft' AND ${NOT_SCHEDULED_SEND_SQL}`;
   } else if (view === 'spam_review') {
-    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
+    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
   } else if (view === 'spam') {
     sql += ` AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
   } else {
@@ -913,6 +935,7 @@ export type MailFolderCounts = {
   /** Sent messages where IMAP server copy failed (not total sent). */
   sentFailed: number;
   drafts: number;
+  scheduledSend: number;
   archived: number;
   spamReview: number;
   spam: number;
@@ -923,7 +946,7 @@ export type MailFolderCounts = {
 /** Per-folder message totals for sidebar badges (current account). */
 export function getMailFolderCountsForAccount(accountId: number): MailFolderCounts {
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
-  const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
+  const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1 AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
   const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean')
@@ -937,9 +960,10 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
         SUM(CASE WHEN ${inboxOpen} THEN 1 ELSE 0 END) AS inbox,
         SUM(CASE WHEN ${inboxOpen} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' AND (scheduled_send_at IS NULL OR scheduled_send_at = '') THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' AND scheduled_send_at IS NOT NULL AND scheduled_send_at != '' THEN 1 ELSE 0 END) AS scheduled_send,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS spam_review,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' THEN 1 ELSE 0 END) AS spam_review,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND (is_spam = 1 OR COALESCE(spam_status, 'clean') = 'spam') THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
@@ -951,6 +975,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     inbox_unread: number | null;
     sent_failed: number | null;
     drafts: number | null;
+    scheduled_send: number | null;
     archived: number | null;
     spam_review: number | null;
     spam: number | null;
@@ -962,6 +987,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
     inboxUnread: Number(row?.inbox_unread) || 0,
     sentFailed: Number(row?.sent_failed) || 0,
     drafts: Number(row?.drafts) || 0,
+    scheduledSend: Number(row?.scheduled_send) || 0,
     archived: Number(row?.archived) || 0,
     spamReview: Number(row?.spam_review) || 0,
     spam: Number(row?.spam) || 0,
@@ -980,7 +1006,7 @@ export function getMailFolderCountsForAllAccounts(
     'account_id',
   );
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
-  const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1)`;
+  const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1 AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
   const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean')
@@ -994,9 +1020,10 @@ export function getMailFolderCountsForAllAccounts(
         SUM(CASE WHEN ${inboxOpen} THEN 1 ELSE 0 END) AS inbox,
         SUM(CASE WHEN ${inboxOpen} AND seen_local = 0 THEN 1 ELSE 0 END) AS inbox_unread,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' AND (scheduled_send_at IS NULL OR scheduled_send_at = '') THEN 1 ELSE 0 END) AS drafts,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' AND scheduled_send_at IS NOT NULL AND scheduled_send_at != '' THEN 1 ELSE 0 END) AS scheduled_send,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS spam_review,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' THEN 1 ELSE 0 END) AS spam_review,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND (is_spam = 1 OR COALESCE(spam_status, 'clean') = 'spam') THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
@@ -1008,6 +1035,7 @@ export function getMailFolderCountsForAllAccounts(
     inbox_unread: number | null;
     sent_failed: number | null;
     drafts: number | null;
+    scheduled_send: number | null;
     archived: number | null;
     spam_review: number | null;
     spam: number | null;
@@ -1019,6 +1047,7 @@ export function getMailFolderCountsForAllAccounts(
     inboxUnread: Number(row?.inbox_unread) || 0,
     sentFailed: Number(row?.sent_failed) || 0,
     drafts: Number(row?.drafts) || 0,
+    scheduledSend: Number(row?.scheduled_send) || 0,
     archived: Number(row?.archived) || 0,
     spamReview: Number(row?.spam_review) || 0,
     spam: Number(row?.spam) || 0,

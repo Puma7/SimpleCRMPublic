@@ -2439,7 +2439,7 @@ function parseTeamMemberFilters(req: ApiRequest): ParseResult<{ search?: string;
 
 function parseThreadFilters(req: ApiRequest): ParseResult<{
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -3739,6 +3739,7 @@ function parseOptionalThreadView(value: string | undefined):
   | 'sent'
   | 'archived'
   | 'drafts'
+  | 'scheduled_send'
   | 'spam_review'
   | 'spam'
   | 'trash'
@@ -3747,7 +3748,7 @@ function parseOptionalThreadView(value: string | undefined):
   | undefined
   | null {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

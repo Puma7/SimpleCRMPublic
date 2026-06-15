@@ -11,6 +11,7 @@ export type MailFolderCounts = {
   inboxUnread: number
   sentFailed: number
   drafts: number
+  scheduledSend: number
   archived: number
   spamReview: number
   spam: number
@@ -23,6 +24,7 @@ const EMPTY: MailFolderCounts = {
   inboxUnread: 0,
   sentFailed: 0,
   drafts: 0,
+  scheduledSend: 0,
   archived: 0,
   spamReview: 0,
   spam: 0,

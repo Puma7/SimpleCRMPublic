@@ -1762,6 +1762,7 @@ export type EmailMailFolderCounts = {
   inboxUnread: number;
   sentFailed: number;
   drafts: number;
+  scheduledSend: number;
   archived: number;
   spamReview: number;
   spam: number;
@@ -2110,7 +2111,7 @@ export type EmailMessageApiPort = {
     done?: boolean;
     spam?: boolean;
     search?: string;
-    view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+    view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
     categoryId?: number;
     sort?: 'date_desc' | 'date_asc' | 'priority';
     listFilter?: 'all' | 'unread' | 'attachment' | 'customer' | 'workflow';
@@ -2499,7 +2500,7 @@ export type EmailThreadSplitMessagePortResult =
 
 export type EmailThreadApiPort = EmailStringRecordApiPort<EmailThreadRecord, {
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -4225,6 +4226,10 @@ export type AutomationApiKeyApiPort = {
 
 export type ServerJobQueueApiPort = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<unknown>;
+  clearScheduledSendJob?(input: {
+    workspaceId: string;
+    draftId: number;
+  }): Promise<void>;
   releaseAccountSyncLocks?(input: {
     workspaceId: string;
     accountId: number;

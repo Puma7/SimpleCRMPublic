@@ -792,7 +792,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessagesByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -820,7 +820,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessageIdsByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'all';
+          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;

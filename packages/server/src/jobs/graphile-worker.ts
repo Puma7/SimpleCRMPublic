@@ -7,6 +7,7 @@ import {
   type ServerJobType,
 } from './policy';
 import type { EnqueueJobInput, JobPayload } from './types';
+import { scheduledSendDraftIdFromPayload, scheduledSendJobKey } from './scheduled-send-job-key';
 import type { JobHandlerRegistry } from './worker';
 
 export type GraphileTaskSpec = Readonly<{
@@ -42,6 +43,10 @@ export type GraphileWorkerUtilsFactory = (options: {
 
 export type GraphileQueuePort = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<void>;
+  clearScheduledSendJob?(input: {
+    workspaceId: string;
+    draftId: number;
+  }): Promise<void>;
   release(): Promise<void>;
   migrate(): Promise<void>;
 }>;
@@ -76,6 +81,17 @@ export async function createGraphileQueuePort(input: {
     async enqueue(job) {
       const type = assertServerJobType(job.type);
       await utils.addJob(type, job.payload, graphileSpecFromJob(job));
+    },
+    async clearScheduledSendJob(input) {
+      const jobKey = scheduledSendJobKey(input.workspaceId, input.draftId);
+      if (!jobKey) return;
+      const withPgClient = (utils as { withPgClient?: (callback: (client: {
+        query: (sql: string, values?: readonly unknown[]) => Promise<unknown>;
+      }) => Promise<void>) => Promise<void> }).withPgClient;
+      if (!withPgClient) return;
+      await withPgClient(async (client) => {
+        await client.query('select graphile_worker.remove_job($1)', [jobKey]);
+      });
     },
     async migrate() {
       await utils.migrate?.();
@@ -206,6 +222,10 @@ export function graphileJobKeyForJob(
   if (type === 'mail.vacation.auto_reply') {
     const messageId = graphileKeyScalar(payload.messageId);
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
+  }
+  if (type === 'mail.send.scheduled') {
+    const draftId = graphileKeyScalar(payload.draftId);
+    if (workspaceKey && draftId) return scheduledSendJobKey(workspaceKey, draftId);
   }
   if (type === 'ai.reply_suggestion') {
     const messageId = graphileKeyScalar(payload.messageId);

@@ -1,5 +1,5 @@
 import type { Kysely, Selectable } from 'kysely';
-import { addressesFromRecipientJson } from '@simplecrm/core';
+import { addressesFromRecipientJson, parseOutboundReviewResponse } from '@simplecrm/core';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type {
@@ -102,6 +102,27 @@ export type AiReviewJobPlan = Readonly<{
 export type AiReviewJobPort = Readonly<{
   review(input: AiReviewJobPlan): Promise<void>;
 }>;
+
+export type AiReviewPreviewInput = Readonly<{
+  workspaceId: string;
+  direction: 'inbound' | 'outbound';
+  promptId?: number;
+  profileId?: number;
+  blockKeyword?: string;
+  systemPrompt?: string;
+  fallbackUserTemplate?: string;
+  eventStrings?: Record<string, string>;
+  eventVariables?: Record<string, string | number | boolean | null>;
+  parseMode: 'outbound_structured' | 'block_keyword';
+}>;
+
+export type AiReviewPreviewResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+export type AiReviewPreviewRunner = (
+  input: AiReviewPreviewInput,
+) => Promise<AiReviewPreviewResult>;
 
 export type AiAgentJobPlan = Readonly<{
   workspaceId: string;
@@ -455,6 +476,85 @@ export function createPostgresAiTextTransformApiPort(
         return { success: false, error: error instanceof Error ? error.message : String(error) };
       }
     },
+  };
+}
+
+export function createAiReviewPreviewRunner(
+  options: PostgresAiClassificationPortOptions,
+): AiReviewPreviewRunner {
+  return async (input) => {
+    try {
+      const context = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const prompt = input.promptId === undefined && input.fallbackUserTemplate
+            ? null
+            : await selectAiPrompt(trx, input.workspaceId, input.promptId);
+          if (!prompt && !input.fallbackUserTemplate) return null;
+          const profile = await selectAiProfile(
+            trx,
+            input.workspaceId,
+            input.profileId,
+            prompt?.profile_id === null || prompt?.profile_id === undefined
+              ? null
+              : Number(prompt.profile_id),
+          );
+          return { prompt, profile };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!context) return { ok: false, reason: 'Prompt nicht gefunden' };
+      if (!context.profile) return { ok: false, reason: 'AI-Profil nicht gefunden' };
+
+      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+      if (!apiKey) return { ok: false, reason: 'Kein KI-API-Schluessel konfiguriert' };
+
+      const strings = stringPayload(input.eventStrings);
+      const variables = variablePayload(input.eventVariables);
+      const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
+        .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      const output = await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.review.preview',
+          messageId: null,
+          actorUserId: null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: input.systemPrompt
+            ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
+          user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+        },
+      );
+
+      if (input.parseMode === 'outbound_structured') {
+        const parsed = parseOutboundReviewResponse(output);
+        if (!parsed.ok) {
+          return {
+            ok: false,
+            reason: parsed.reason ?? 'Ausgehende KI-Pruefung: Versand wuerde blockiert',
+          };
+        }
+        return { ok: true };
+      }
+
+      const blockKeyword = (input.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
+      if (output.toUpperCase().includes(blockKeyword.toUpperCase())) {
+        return { ok: false, reason: 'KI-Pruefung: Versand wuerde blockiert' };
+      }
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : 'KI-Vorschau fehlgeschlagen',
+      };
+    }
   };
 }
 

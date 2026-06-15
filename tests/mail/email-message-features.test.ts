@@ -37,6 +37,13 @@ describe('email-message-features', () => {
     stmt.run.mockReturnValue({ changes: 1 });
   });
 
+  test('setDraftScheduledSendAt clears outbound hold when scheduling', () => {
+    setDraftScheduledSendAt(2, '2026-06-14T21:05:00.000Z');
+    const sql = String(db.prepare.mock.calls.at(-1)?.[0] ?? '');
+    expect(sql).toContain('outbound_hold = 0');
+    expect(stmt.run).toHaveBeenCalledWith('2026-06-14T21:05:00.000Z', 2);
+  });
+
   test('snooze and scheduled draft sql helpers', () => {
     setMessageSnoozedUntil(1, '2026-01-01T00:00:00.000Z');
     setDraftScheduledSendAt(2, null);

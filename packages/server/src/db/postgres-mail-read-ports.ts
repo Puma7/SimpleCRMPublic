@@ -295,6 +295,7 @@ type EmailMailFolderCountsRow = {
   inbox_unread: number | string | bigint | null;
   sent_failed: number | string | bigint | null;
   drafts: number | string | bigint | null;
+  scheduled_send: number | string | bigint | null;
   archived: number | string | bigint | null;
   spam_review: number | string | bigint | null;
   spam: number | string | bigint | null;
@@ -819,6 +820,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .updateTable('email_messages')
             .set({
               scheduled_send_at: input.sendAt,
+              outbound_hold: false,
+              outbound_block_reason: null,
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -2532,7 +2535,7 @@ async function selectMailFolderCounts(
             and archived = false
             and is_spam = false
             and coalesce(spam_status, 'clean') = 'clean')
-          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true)
+          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true and scheduled_send_at is null)
         )
         and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('inbox'),
@@ -2545,7 +2548,7 @@ async function selectMailFolderCounts(
             and archived = false
             and is_spam = false
             and coalesce(spam_status, 'clean') = 'clean')
-          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true)
+          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true and scheduled_send_at is null)
         )
         and coalesce(done_local, false) = false
         and seen_local = false
@@ -2561,7 +2564,14 @@ async function selectMailFolderCounts(
         soft_deleted = false
         and (snoozed_until is null or snoozed_until <= now())
         and folder_kind = 'draft'
+        and scheduled_send_at is null
       ) then 1 else 0 end), 0)`.as('drafts'),
+      kyselySql<number | string | bigint | null>`coalesce(sum(case when (
+        soft_deleted = false
+        and (snoozed_until is null or snoozed_until <= now())
+        and folder_kind = 'draft'
+        and scheduled_send_at is not null
+      ) then 1 else 0 end), 0)`.as('scheduled_send'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
         and (snoozed_until is null or snoozed_until <= now())
@@ -2576,7 +2586,6 @@ async function selectMailFolderCounts(
         and (snoozed_until is null or snoozed_until <= now())
         and (uid >= 0 or pop3_uidl is not null)
         and coalesce(spam_status, 'clean') = 'review'
-        and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('spam_review'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
@@ -2639,7 +2648,7 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
   if (view === 'inbox') {
     return query.where(kyselySql<boolean>`(
       ((${nonDraftMail}) AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = false AND is_spam = false AND coalesce(spam_status, 'clean') = 'clean')
-      OR (uid < 0 AND folder_kind = 'draft' AND outbound_hold = true)
+      OR (uid < 0 AND folder_kind = 'draft' AND outbound_hold = true AND scheduled_send_at IS NULL)
     )`);
   }
   if (view === 'sent') {
@@ -2653,13 +2662,19 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
       .where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'clean'`);
   }
   if (view === 'drafts') {
-    return query.where('folder_kind', '=', 'draft');
+    return query
+      .where('folder_kind', '=', 'draft')
+      .where('scheduled_send_at', 'is', null);
+  }
+  if (view === 'scheduled_send') {
+    return query
+      .where('folder_kind', '=', 'draft')
+      .where('scheduled_send_at', 'is not', null);
   }
   if (view === 'spam_review') {
     return query
       .where(nonDraftMail)
-      .where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'review'`)
-      .where(kyselySql<boolean>`coalesce(done_local, false) = false`);
+      .where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'review'`);
   }
   if (view === 'spam') {
     return query.where(nonDraftMail).where(kyselySql<boolean>`(is_spam = true OR coalesce(spam_status, 'clean') = 'spam')`);
@@ -2900,6 +2915,7 @@ function applyMessageListOrder(
   view: Parameters<EmailMessageApiPort['list']>[0]['view'],
 ): any {
   if (view === 'snoozed') return query.orderBy('snoozed_until', 'asc').orderBy('id', 'desc');
+  if (view === 'scheduled_send') return query.orderBy('scheduled_send_at', 'asc').orderBy('id', 'asc');
   if (sort === 'priority') {
     return query
       .orderBy(messagePriorityRankSql, 'asc')
@@ -4199,6 +4215,7 @@ function mapEmailMailFolderCountsRow(row: EmailMailFolderCountsRow | undefined):
     inboxUnread: countValue(row?.inbox_unread),
     sentFailed: countValue(row?.sent_failed),
     drafts: countValue(row?.drafts),
+    scheduledSend: countValue(row?.scheduled_send),
     archived: countValue(row?.archived),
     spamReview: countValue(row?.spam_review),
     spam: countValue(row?.spam),

@@ -1,4 +1,5 @@
 export * from './audit-archive';
+export * from './scheduled-send-job-key';
 export * from './graphile-worker';
 export * from './job-worker-log';
 export * from './maintenance-handlers';

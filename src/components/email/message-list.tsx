@@ -177,7 +177,7 @@ export function MessageList({
   }, [selectedIds.size, bulkBusy])
 
   const isMessageSelectable = (m: EmailMessage) =>
-    mailView === "drafts"
+    mailView === "drafts" || mailView === "scheduled_send"
       ? m.uid < 0 && m.folder_kind === "draft"
       : m.uid >= 0 || Boolean(m.pop3_uidl)
 
@@ -441,7 +441,7 @@ export function MessageList({
   )
 
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =
-    mailView === "drafts"
+    mailView === "drafts" || mailView === "scheduled_send"
       ? [{ action: "delete-drafts", label: "Entwürfe löschen", variant: "outline" }]
       : mailView === "spam_review"
         ? [

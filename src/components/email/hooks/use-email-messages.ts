@@ -15,6 +15,8 @@ import { invokeRenderer } from "@/services/transport"
 
 const PAGE_SIZE = 100
 const SILENT_RECONCILE_MS = 800
+/** Parallel AddMessageCategory IPC calls during bulk drag-drop (HTTP: 2 req each). */
+const BULK_CATEGORY_ASSIGN_CONCURRENCY = 8
 
 type HandleSyncOptions = {
   onAfterSync?: (accountId: number) => void | Promise<void>
@@ -399,6 +401,7 @@ export function useEmailMessages() {
           snoozed: "Zurückgestellt",
           sent: "Gesendet",
           drafts: "Entwürfe",
+          scheduled_send: "Späterer Versand",
           archived: "Archiv",
           spam_review: "Spam prüfen",
           spam: "Spam",
@@ -426,53 +429,68 @@ export function useEmailMessages() {
     async (messageIds: number[], categoryId: number) => {
       const ids = messageIds.filter((id) => typeof id === "number" && id > 0)
       if (ids.length === 0) return false
-      const CONCURRENCY = 6
       let added = 0
       let already = 0
+      let noop = 0
       let failed = 0
-      let firstError: unknown
-      const runOne = async (id: number) => {
-        try {
-          const result = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
-            messageId: id,
-            categoryId,
-          })) as { added?: boolean; alreadyAssigned?: boolean }
-          if (result?.added) added += 1
-          else if (result?.alreadyAssigned) already += 1
-        } catch (e) {
-          failed += 1
-          if (firstError === undefined) firstError = e
+      let lastError: unknown = null
+      try {
+        for (let offset = 0; offset < ids.length; offset += BULK_CATEGORY_ASSIGN_CONCURRENCY) {
+          const batch = ids.slice(offset, offset + BULK_CATEGORY_ASSIGN_CONCURRENCY)
+          const outcomes = await Promise.allSettled(
+            batch.map((id) =>
+              invokeRenderer(IPCChannels.Email.AddMessageCategory, {
+                messageId: id,
+                categoryId,
+              }),
+            ),
+          )
+          for (const outcome of outcomes) {
+            if (outcome.status === "rejected") {
+              failed += 1
+              lastError = outcome.reason
+              continue
+            }
+            const result = outcome.value as { added?: boolean; alreadyAssigned?: boolean }
+            if (result?.added) added += 1
+            else if (result?.alreadyAssigned) already += 1
+            else noop += 1
+          }
         }
-      }
-      const queue = [...ids]
-      const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
-        for (;;) {
-          const id = queue.shift()
-          if (id === undefined) return
-          await runOne(id)
+        if (added === 0 && already === 0) {
+          toast.error(
+            failed > 0
+              ? (lastError instanceof Error ? lastError.message : "Kategorisieren fehlgeschlagen")
+              : noop > 0
+                ? "Kategorisieren fehlgeschlagen — unerwartete Serverantwort"
+                : "Keine Nachricht konnte kategorisiert werden",
+          )
+          return false
         }
-      })
-      await Promise.all(workers)
-
-      if (added === 0 && already === 0) {
-        toast.error(failed > 0
-          ? (firstError instanceof Error ? firstError.message : "Kategorisieren fehlgeschlagen")
-          : "Kategorisieren fehlgeschlagen — unerwartete Serverantwort")
+        if (added === 0 && already > 0) {
+          toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
+        } else if (added > 0 && already > 0) {
+          const suffix = failed > 0 ? `, ${failed} fehlgeschlagen` : ""
+          toast.success(`${added} hinzugefügt, ${already} bereits drin${suffix}`)
+        } else {
+          const suffix = failed > 0 ? `, ${failed} fehlgeschlagen` : ""
+          toast.success(
+            added === 1
+              ? `Kategorie hinzugefügt${suffix}`
+              : `${added} Nachrichten kategorisiert${suffix}`,
+          )
+        }
+        if (added > 0 || already > 0) bumpCategoryAssignmentRevision()
+        await refreshList({ preserveSelection: true })
+        return true
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Kategorisieren fehlgeschlagen")
+        if (added > 0) {
+          bumpCategoryAssignmentRevision()
+          await refreshList({ preserveSelection: true })
+        }
         return false
       }
-      if (added === 0 && already > 0) {
-        toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
-      } else if (added > 0 && already > 0) {
-        toast.success(`${added} hinzugefügt, ${already} bereits drin`)
-      } else {
-        toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
-      }
-      if (failed > 0) {
-        toast.error(`${failed} ${failed === 1 ? "Nachricht" : "Nachrichten"} fehlgeschlagen`)
-      }
-      if (added > 0 || already > 0) bumpCategoryAssignmentRevision()
-      await refreshList({ preserveSelection: true })
-      return failed === 0
     },
     [refreshList, bumpCategoryAssignmentRevision],
   )
@@ -486,6 +504,7 @@ export function useEmailMessages() {
         snoozed: "Zurückgestellt",
         sent: "Gesendet",
         drafts: "Entwürfe",
+        scheduled_send: "Späterer Versand",
         archived: "Archiv",
         spam_review: "Spam prüfen",
         spam: "Spam",
@@ -681,7 +700,7 @@ export function useEmailMessages() {
           case "unsnooze":
             return mailView === "snoozed"
           case "mark-done":
-            return (mailView === "inbox" && messageDoneFilter === "open") || mailView === "spam_review"
+            return mailView === "inbox" && messageDoneFilter === "open"
           case "mark-open":
             return mailView === "inbox" && messageDoneFilter === "done"
           default:

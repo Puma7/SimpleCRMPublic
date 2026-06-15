@@ -7,7 +7,17 @@ export type MessageDoneFilter = z.infer<typeof messageDoneFilterSchema>;
 
 export const DEFAULT_MESSAGE_DONE_FILTER: MessageDoneFilter = 'open';
 
-type MailViewForDone = 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+type MailViewForDone =
+  | 'inbox'
+  | 'sent'
+  | 'archived'
+  | 'drafts'
+  | 'scheduled_send'
+  | 'spam_review'
+  | 'spam'
+  | 'trash'
+  | 'snoozed'
+  | 'all';
 
 /** SQL fragment for list/search queries (table alias `m`). */
 export function doneFilterSql(

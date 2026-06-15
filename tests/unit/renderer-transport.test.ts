@@ -3169,6 +3169,7 @@ describe('renderer transport', () => {
           inboxUnread: 2,
           sentFailed: 1,
           drafts: 4,
+          scheduledSend: 0,
           archived: 5,
           spamReview: 6,
           spam: 7,
@@ -3182,6 +3183,7 @@ describe('renderer transport', () => {
           inboxUnread: 0,
           sentFailed: 0,
           drafts: 1,
+          scheduledSend: 0,
           archived: 2,
           spamReview: 0,
           spam: 3,
@@ -3199,6 +3201,7 @@ describe('renderer transport', () => {
       inboxUnread: 2,
       sentFailed: 1,
       drafts: 4,
+      scheduledSend: 0,
       archived: 5,
       spamReview: 6,
       spam: 7,
@@ -3210,6 +3213,7 @@ describe('renderer transport', () => {
       inboxUnread: 0,
       sentFailed: 0,
       drafts: 1,
+      scheduledSend: 0,
       archived: 2,
       spamReview: 0,
       spam: 3,
@@ -4392,6 +4396,28 @@ describe('renderer transport', () => {
     ]);
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://crm.example.com/api/v1/email/messages?view=inbox&limit=100&offset=20&categoryId=5&sort=priority&listFilter=unread&doneFilter=open',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('maps scheduled_send view lists to server query parameters', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { items: [], nextCursor: null },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await transport.invoke(IPCChannels.Email.ListMessagesByView, {
+      accountId: 101,
+      view: 'scheduled_send',
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages?accountId=101&view=scheduled_send&limit=50&offset=0',
       expect.objectContaining({ method: 'GET' }),
     );
   });

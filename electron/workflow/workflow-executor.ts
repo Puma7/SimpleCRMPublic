@@ -26,6 +26,7 @@ export async function executeWorkflowForTrigger(input: {
   message?: EmailMessageRow | null;
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
+  previewOutbound?: boolean;
   eventStrings?: Record<string, string>;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -57,6 +58,7 @@ export async function executeWorkflowForTrigger(input: {
         message: input.message,
         outbound: input.outbound,
         dryRun: input.dryRun,
+        previewOutbound: input.previewOutbound,
         eventStrings: input.eventStrings,
         eventVariables: input.eventVariables,
         initialVariables: input.initialVariables,

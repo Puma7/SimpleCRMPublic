@@ -11,6 +11,7 @@ import {
   type JobQueuePort,
   type QueuedJob,
 } from '../jobs';
+import { scheduledSendDraftIdFromPayload } from '../jobs/scheduled-send-job-key';
 import type { JobQueueRow, ServerDatabase } from './schema';
 import {
   withWorkspaceTransaction,
@@ -35,6 +36,15 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
         workspaceId: input.workspaceId,
         role: 'system',
       }, (db) => enqueueJob(db, input, now()), { applySession: options.applyWorkspaceSession });
+    },
+
+    async clearScheduledSendJob(input) {
+      await withWorkspaceTransaction(options.db, {
+        workspaceId: input.workspaceId,
+        role: 'system',
+      }, (db) => deletePendingScheduledSendJobs(db, input.workspaceId, input.draftId), {
+        applySession: options.applyWorkspaceSession,
+      });
     },
 
     async claimNext(input) {
@@ -188,6 +198,12 @@ async function enqueueJob(
 ): Promise<QueuedJob> {
   const type = assertValidJobType(input.type);
   const maxAttempts = normalizeMaxAttempts(input.maxAttempts);
+  if (type === 'mail.send.scheduled') {
+    const draftId = scheduledSendDraftIdFromPayload(input.payload);
+    if (draftId) {
+      await deletePendingScheduledSendJobs(db, input.workspaceId, Number(draftId));
+    }
+  }
   const row = await db
     .insertInto('job_queue')
     .values({
@@ -202,6 +218,22 @@ async function enqueueJob(
     .executeTakeFirstOrThrow();
 
   return mapJob(row);
+}
+
+async function deletePendingScheduledSendJobs(
+  db: WorkspaceTransaction,
+  workspaceId: string,
+  draftId: number,
+): Promise<void> {
+  if (!Number.isFinite(draftId) || draftId <= 0) return;
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  await db
+    .deleteFrom('job_queue')
+    .where('workspace_id', '=', workspaceId)
+    .where('type', '=', 'mail.send.scheduled')
+    .where('locked_at', 'is', null)
+    .where(kyselySql<boolean>`payload->>'draftId' = ${String(draftId)}`)
+    .execute();
 }
 
 async function failJob(

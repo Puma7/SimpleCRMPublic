@@ -26,8 +26,10 @@ import type {
   EmailComposeSendResult,
   EmailOAuthProvider,
   EmailOutboundValidationApiPort,
+  EmailOutboundValidationInput,
   PgpMessageCryptoApiPort,
 } from './api';
+import type { WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from './jobs';
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
 import {
@@ -532,32 +534,102 @@ export function createPostgresEmailComposeSenderPort(
 
 export function createPostgresEmailOutboundValidationPort(options: {
   db: Kysely<ServerDatabase>;
+  workflowDryRun: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   now?: () => Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): EmailOutboundValidationApiPort {
-  const outboundReview = createPostgresComposeOutboundReviewPort(options);
   return {
     async validate(input) {
-      const result = await outboundReview.review({
-        workspaceId: input.workspaceId,
-        actorUserId: input.actorUserId,
-        draftMessageId: input.values.messageId,
-        subject: input.values.subject,
-        bodyText: input.values.bodyText,
-        bodyHtml: input.values.bodyHtml ?? null,
-        to: input.values.to,
-        ...(input.values.cc === undefined ? {} : { cc: input.values.cc }),
-        ...(input.values.bcc === undefined ? {} : { bcc: input.values.bcc }),
-        ...(input.values.inReplyToMessageId === undefined
-          ? {}
-          : { inReplyToMessageId: input.values.inReplyToMessageId }),
-        attachmentCount: input.values.attachmentCount ?? 0,
-      });
-      if (result.allowed) return { allowed: true, reason: null };
-      return {
-        allowed: false,
-        reason: result.error,
-        ...(result.workflowRunId === undefined ? {} : { workflowRunId: result.workflowRunId }),
+      const draft = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('email_messages')
+          .select(['id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.values.messageId)
+          .where('uid', '<', 0)
+          .where('folder_kind', '=', 'draft')
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!draft) {
+        return { allowed: false, reason: 'Entwurf nicht gefunden' };
+      }
+
+      const workflows = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('email_workflows')
+          .select(['id', 'name'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('trigger_name', '=', 'outbound')
+          .where('enabled', '=', true)
+          .orderBy('priority', 'asc')
+          .orderBy('id', 'asc')
+          .limit(MAX_OUTBOUND_WORKFLOWS_PER_SEND)
+          .execute(),
+        { applySession: options.applyWorkspaceSession },
+      );
+
+      if (workflows.length === 0) {
+        return { allowed: true, reason: null };
+      }
+
+      const eventStrings = outboundValidationEventStrings(input.values);
+      const outboundContext = {
+        outbound: {
+          messageId: input.values.messageId,
+          subject: input.values.subject,
+          bodyText: truncateContextText(input.values.bodyText),
+          bodyHtml: input.values.bodyHtml === null || input.values.bodyHtml === undefined
+            ? null
+            : truncateContextText(input.values.bodyHtml),
+          to: input.values.to,
+          cc: input.values.cc ?? '',
+          bcc: input.values.bcc ?? '',
+          inReplyToMessageId: input.values.inReplyToMessageId ?? null,
+          attachmentCount: input.values.attachmentCount ?? 0,
+          attachmentPaths: [],
+        },
+        previewOutbound: true,
+        eventStrings,
+        source: 'server_compose_outbound_validate',
       };
+
+      let firstBlockReason: string | null = null;
+      for (const workflow of workflows) {
+        const result = await options.workflowDryRun({
+          workspaceId: input.workspaceId,
+          workflowId: Number(workflow.id),
+          messageId: input.values.messageId,
+          triggerName: 'outbound',
+          actorUserId: input.actorUserId,
+          context: outboundContext,
+        });
+        if (!result.success) {
+          return {
+            allowed: false,
+            reason: result.error ?? 'Ausgangspruefung fehlgeschlagen',
+          };
+        }
+        if (result.blocked) {
+          const reason = result.blockReason?.trim()
+            || `Workflow „${workflow.name}" wuerde den Versand blockieren`;
+          if (!firstBlockReason) firstBlockReason = reason;
+        } else if (result.status === 'error') {
+          return {
+            allowed: false,
+            reason: result.error ?? 'Ausgehender Workflow fehlgeschlagen',
+          };
+        }
+      }
+
+      if (firstBlockReason) {
+        return { allowed: false, reason: firstBlockReason };
+      }
+      return { allowed: true, reason: null };
     },
   };
 }
@@ -1534,6 +1606,34 @@ function truncateContextText(value: string): string {
   return value.length > MAX_OUTBOUND_CONTEXT_TEXT
     ? `${value.slice(0, MAX_OUTBOUND_CONTEXT_TEXT)}...`
     : value;
+}
+
+function outboundValidationEventStrings(
+  values: EmailOutboundValidationInput,
+): Record<string, string> {
+  const bodyText = values.bodyText ?? '';
+  const bodyHtml = values.bodyHtml ?? '';
+  const htmlPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const attachmentCount = values.attachmentCount ?? 0;
+  return {
+    subject: values.subject ?? '',
+    body_text: bodyText,
+    snippet: bodyText.slice(0, 500),
+    from_address: '',
+    to_address: values.to ?? '',
+    cc_address: values.cc ?? '',
+    combined_text: [
+      values.subject,
+      bodyText,
+      htmlPlain,
+      values.to,
+      values.cc,
+      values.bcc,
+    ].filter(Boolean).join('\n'),
+    has_attachments: attachmentCount > 0 ? 'true' : 'false',
+    attachment_names: '',
+    attachment_types: '',
+  };
 }
 
 function escapeHtml(value: string): string {

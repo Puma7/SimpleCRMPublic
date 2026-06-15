@@ -423,6 +423,7 @@ type EmailMailFolderCountsRecord = {
   inboxUnread?: number | null
   sentFailed?: number | null
   drafts?: number | null
+  scheduledSend?: number | null
   archived?: number | null
   spamReview?: number | null
   spam?: number | null
@@ -5131,6 +5132,7 @@ function mapMailFolderCounts(record: EmailMailFolderCountsRecord) {
     inboxUnread: countValue(record.inboxUnread),
     sentFailed: countValue(record.sentFailed),
     drafts: countValue(record.drafts),
+    scheduledSend: countValue(record.scheduledSend),
     archived: countValue(record.archived),
     spamReview: countValue(record.spamReview),
     spam: countValue(record.spam),
@@ -6082,19 +6084,20 @@ function optionalPositiveQueryId(value: unknown, label: string): number | undefi
   return positiveId(value, label)
 }
 
-function messageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
+function messageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
   const view = optionalMessageViewValue(value)
   if (!view) throw new Error("Invalid email message view")
   return view
 }
 
-function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
+function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
   if (value === undefined || value === null) return undefined
   if (
     value === "inbox"
     || value === "sent"
     || value === "archived"
     || value === "drafts"
+    || value === "scheduled_send"
     || value === "spam_review"
     || value === "spam"
     || value === "trash"

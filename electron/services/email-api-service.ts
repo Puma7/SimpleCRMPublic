@@ -20,6 +20,7 @@ const ALLOWED_VIEWS: AccountMailView[] = [
   'sent',
   'archived',
   'drafts',
+  'scheduled_send',
   'spam_review',
   'spam',
   'trash',
