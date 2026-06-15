@@ -40,6 +40,10 @@ jest.mock('../../electron/email/email-spam-store', () => ({
 }));
 
 import { buildSpamDecision, evaluateAndSaveSpamDecision } from '../../electron/email/email-spam-engine';
+import {
+  isSpamLearningFeatureKey,
+  shouldAutoApplySpamStatus,
+} from '../../packages/core/src/email/spam-engine';
 
 function message(overrides: Record<string, unknown> = {}): never {
   return {
@@ -178,5 +182,43 @@ describe('email spam decision engine', () => {
 
     expect(decision).not.toBeNull();
     expect(mockSaveSpamDecision).toHaveBeenCalledWith(99, row, decision);
+  });
+
+  test('ignores auth pass features in local learning stats', () => {
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        if (key.startsWith('auth:') && key.endsWith(':pass')) {
+          stats.set(key, { feature_key: key, spam_count: 20, ham_count: 0 });
+        }
+      }
+      return stats;
+    });
+
+    const decision = buildSpamDecision(
+      message({
+        auth_spf: 'pass',
+        auth_dkim: 'pass',
+        auth_dmarc: 'pass',
+        auth_arc: 'pass',
+      }),
+    );
+
+    expect(decision.status).toBe('clean');
+    expect(decision.reasons.some((r) => r.code.startsWith('learning.'))).toBe(false);
+    expect(decision.reasons.some((r) => r.code === 'auth.dmarc.pass')).toBe(true);
+  });
+
+  test('isSpamLearningFeatureKey excludes auth pass but keeps auth fail', () => {
+    expect(isSpamLearningFeatureKey('auth:dkim:pass')).toBe(false);
+    expect(isSpamLearningFeatureKey('auth:spf:fail')).toBe(true);
+    expect(isSpamLearningFeatureKey('sender:domain:example.com')).toBe(true);
+  });
+
+  test('shouldAutoApplySpamStatus keeps handled mail out of automated review/spam moves', () => {
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'review')).toBe(false);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'spam')).toBe(false);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 0, spamStatus: 'clean' }, 'review')).toBe(true);
+    expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'clean')).toBe(true);
   });
 });

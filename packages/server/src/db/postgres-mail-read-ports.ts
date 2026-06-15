@@ -7,6 +7,7 @@ import {
   evaluatePreWorkflowMailSecurity,
   evaluateSenderFilterFromLists,
   isCorruptRawHeaders,
+  isSpamLearningFeatureKey,
   normalizeAddressJson,
   normalizeEmailAddress,
   parseSenderList,
@@ -15,6 +16,7 @@ import {
   scheduledSendLastErrorKey,
   scheduledSendStatusKey,
   scheduledSendSyncInfoKeys,
+  shouldAutoApplySpamStatus,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
@@ -1556,6 +1558,16 @@ async function evaluateSpamDecisionForMessage(
     listMatch,
     featureStats,
   });
+  const shouldApplyStatus =
+    applyStatus &&
+    shouldAutoApplySpamStatus(
+      {
+        doneLocal: current.done_local,
+        spamStatus: current.spam_status,
+        isSpam: current.is_spam,
+      },
+      decision.status,
+    );
   const messagePatch: Partial<Updateable<EmailMessagesTable>> = {
     spam_score: decision.score,
     spam_score_label: decision.status,
@@ -1563,7 +1575,7 @@ async function evaluateSpamDecisionForMessage(
     spam_score_breakdown_json: decision,
     spam_decided_at: now,
     updated_at: now,
-    ...(applyStatus ? spamStatusPatch(decision.status, current.folder_kind) : {}),
+    ...(shouldApplyStatus ? spamStatusPatch(decision.status, current.folder_kind) : {}),
   };
 
   const updated = await trx
@@ -3379,6 +3391,7 @@ async function insertSpamLearningEventForMessage(
     .execute();
 
   for (const featureKey of input.featureKeys) {
+    if (!isSpamLearningFeatureKey(featureKey)) continue;
     await trx
       .insertInto('email_spam_feature_stats')
       .values({

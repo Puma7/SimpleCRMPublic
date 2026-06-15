@@ -7,6 +7,7 @@ import {
   EMAIL_SPAM_LIST_ENTRIES_TABLE,
 } from '../database-schema';
 import type { EmailMessageRow } from './email-store';
+import { isSpamLearningFeatureKey } from '../../packages/core/src/email/spam-engine';
 import { buildFeaturePreview, normalizeSenderEmail, senderDomain } from './email-spam-features';
 import type {
   SpamListEntry,
@@ -228,7 +229,7 @@ export function recordSpamLearningForMessage(
   label: SpamTrainingLabel,
   source: string,
 ): void {
-  const featureKeys = buildFeaturePreview(row).featureKeys;
+  const featureKeys = buildFeaturePreview(row).featureKeys.filter(isSpamLearningFeatureKey);
   const db = getDb();
   const spamInc = label === 'spam' ? 1 : 0;
   const hamInc = label === 'ham' ? 1 : 0;

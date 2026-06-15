@@ -63,6 +63,30 @@ export type BuildSpamDecisionOptions = {
 
 export const SPAM_ENGINE_MODEL_VERSION = 1;
 
+export type SpamStatusApplyMessageInput = {
+  doneLocal?: boolean | number | string | null;
+  spamStatus?: string | null;
+  isSpam?: boolean | number | null;
+};
+
+/** Passing auth checks correlate with ham; they must not feed local learning stats. */
+export function isSpamLearningFeatureKey(featureKey: string): boolean {
+  return !(featureKey.startsWith('auth:') && featureKey.endsWith(':pass'));
+}
+
+/** Keep handled inbox mail in place when automated rescoring would move it to review/spam. */
+export function shouldAutoApplySpamStatus(
+  message: SpamStatusApplyMessageInput,
+  nextStatus: SpamStatus,
+): boolean {
+  if (nextStatus === 'clean') return true;
+  const done =
+    message.doneLocal === true ||
+    message.doneLocal === 1 ||
+    message.doneLocal === '1';
+  return !done;
+}
+
 export const DEFAULT_SPAM_ENGINE_SETTINGS: SpamEngineSettings = {
   spamEngineEnabled: true,
   spamReviewThreshold: 45,
@@ -149,6 +173,7 @@ function learningReasons(
 ): SpamScoreReason[] {
   const out: SpamScoreReason[] = [];
   for (const key of featureKeys) {
+    if (!isSpamLearningFeatureKey(key)) continue;
     const s = featureStats.get(key);
     if (!s) continue;
     const spamCount = s.spamCount ?? s.spam_count ?? 0;
