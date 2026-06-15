@@ -84,11 +84,22 @@ function MailShellInner() {
     assignMessagesCategory: assignMessagesCategoryBase,
     snoozeMessageUntilTomorrow: snoozeMessageUntilTomorrowBase,
     advanceSelectionAfterMessageRemoved: advanceSelectionAfterMessageRemovedBase,
+    patchMessageInList: patchMessageInListBase,
     loadMore,
     hasMore,
     loadingMore,
+    scrollToMessageId,
+    clearScrollToMessage,
   } = useEmailMessages()
   const { acquireConversationLock } = useConversationLocks(messages)
+
+  const patchMessageInList = useCallback(
+    (messageId: number, partial: Parameters<typeof patchMessageInListBase>[1]) => {
+      patchMessageInListBase(messageId, partial)
+      invalidateMailMetrics()
+    },
+    [patchMessageInListBase, invalidateMailMetrics],
+  )
 
   const advanceSelectionAfterMessageRemoved = useCallback(
     async (removedId: number) => {
@@ -390,6 +401,8 @@ function MailShellInner() {
             loadMore={loadMore}
             hasMore={hasMore}
             loadingMore={loadingMore}
+            scrollToMessageId={scrollToMessageId}
+            onScrolledToMessage={clearScrollToMessage}
           />
         </ResizablePanel>
         <ResizableHandle />
@@ -410,6 +423,7 @@ function MailShellInner() {
             refreshCurrentMessage={refreshCurrentMessage}
             refreshList={refreshList}
             advanceSelectionAfterMessageRemoved={advanceSelectionAfterMessageRemoved}
+            patchMessageInList={patchMessageInList}
             onReply={(m, initialReplyHtml) => void startLockedCompose("reply", m, initialReplyHtml)}
             onReplyAll={(m, initialReplyHtml) => void startLockedCompose("reply-all", m, initialReplyHtml)}
             onForward={(m) => void startLockedCompose("forward", m)}
@@ -448,7 +462,7 @@ function MailShellInner() {
         accounts={accounts}
         cannedList={cannedList}
         aiPrompts={aiPrompts}
-        onSent={refreshList}
+        onSent={() => refreshList({ preserveSelection: true })}
       />
     </div>
   )

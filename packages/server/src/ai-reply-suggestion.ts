@@ -137,6 +137,7 @@ type GenerationContext = Readonly<{
   prompt: AiPromptRow | null;
   profile: AiProfileRow | null;
   customer: Pick<CustomerRow, 'name' | 'first_name' | 'email'> | null;
+  userContext?: string;
 }>;
 
 const DEFAULT_REPLY_SETTINGS: ReplySettings = {
@@ -210,6 +211,7 @@ export function createPostgresAiReplySuggestionPort(
         promptId: input.promptId,
         profileId: input.profileId,
         customerId: input.customerId,
+        userContext: input.userContext,
         honorAuto: false,
         trigger: 'open',
       });
@@ -252,6 +254,7 @@ async function loadGenerationContext(
     promptId?: number;
     profileId?: number;
     customerId?: number | null;
+    userContext?: string;
     honorAuto: boolean;
     trigger: EmailReplySuggestionTrigger;
   }>,
@@ -283,7 +286,13 @@ async function loadGenerationContext(
           .executeTakeFirst() ?? null
         : null;
 
-      return { message, prompt, profile, customer };
+      return {
+        message,
+        prompt,
+        profile,
+        customer,
+        userContext: input.userContext,
+      };
     },
     { applySession: options.applyWorkspaceSession },
   );
@@ -470,6 +479,11 @@ async function generateReplyDraftText(
     context.message,
     context.customer,
   );
+
+  const userContext = context.userContext?.trim();
+  if (userContext) {
+    user = `${user}\n\nZusätzlicher Kontext vom Bearbeiter:\n${userContext}`;
+  }
 
   const query = messageBodyForReply(context.message).slice(0, 2000);
   if (query.length >= 8) {

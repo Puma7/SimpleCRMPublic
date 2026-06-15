@@ -1008,6 +1008,9 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       promptId: positiveInt,
       text: z.string(),
+      contextText: z.string().max(40000).optional(),
+      inboundContextText: z.string().max(40000).optional(),
+      userContext: z.string().max(4000).optional(),
       customerId: z.number().int().positive().nullable().optional(),
     }),
     result: z.union([
@@ -1058,6 +1061,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       messageId: positiveInt,
       promptId: positiveInt.optional(),
       customerId: z.number().int().positive().nullable().optional(),
+      userContext: z.string().max(4000).optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), text: z.string() }),

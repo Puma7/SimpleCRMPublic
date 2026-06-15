@@ -1,22 +1,62 @@
 /** Separates user reply from quoted original mail in compose HTML. */
 export const COMPOSE_QUOTE_MARKER = '<!-- simplecrm-quote -->';
+export const COMPOSE_BODY_MARKER = '<!-- simplecrm-body -->';
+export const COMPOSE_SIGNATURE_MARKER = '<!-- simplecrm-signature -->';
 
 export type SplitComposeHtml = {
-  /** Content above the quote (user reply + optional signature). */
+  /** Content above the quote (greeting + body + optional signature). */
   editableHtml: string;
   /** Quoted thread / forwarded block below the marker (may be empty). */
   quotedHtml: string;
 };
 
+export type ComposeZones = {
+  greetingHtml: string;
+  bodyHtml: string;
+  signatureHtml: string;
+  quotedHtml: string;
+};
+
 export function splitComposeHtml(html: string): SplitComposeHtml {
-  const raw = html ?? '';
-  const idx = raw.indexOf(COMPOSE_QUOTE_MARKER);
-  if (idx < 0) {
-    return { editableHtml: raw.trim(), quotedHtml: '' };
-  }
+  const zones = splitComposeZones(html);
+  const editableParts = [zones.greetingHtml, zones.bodyHtml, zones.signatureHtml].filter(Boolean);
   return {
-    editableHtml: raw.slice(0, idx).trim(),
-    quotedHtml: raw.slice(idx + COMPOSE_QUOTE_MARKER.length).trim(),
+    editableHtml: editableParts.join('').trim(),
+    quotedHtml: zones.quotedHtml,
+  };
+}
+
+export function splitComposeZones(html: string): ComposeZones {
+  const raw = html ?? '';
+  const quoteIdx = raw.indexOf(COMPOSE_QUOTE_MARKER);
+  const quotedHtml =
+    quoteIdx < 0 ? '' : raw.slice(quoteIdx + COMPOSE_QUOTE_MARKER.length).trim();
+  const aboveQuote = quoteIdx < 0 ? raw : raw.slice(0, quoteIdx);
+
+  const sigIdx = aboveQuote.indexOf(COMPOSE_SIGNATURE_MARKER);
+  let beforeSig = aboveQuote;
+  let signatureHtml = '';
+  if (sigIdx >= 0) {
+    beforeSig = aboveQuote.slice(0, sigIdx);
+    signatureHtml = aboveQuote.slice(sigIdx + COMPOSE_SIGNATURE_MARKER.length).trim();
+  }
+
+  const bodyIdx = beforeSig.indexOf(COMPOSE_BODY_MARKER);
+  if (bodyIdx >= 0) {
+    return {
+      greetingHtml: beforeSig.slice(0, bodyIdx).trim(),
+      bodyHtml: beforeSig.slice(bodyIdx + COMPOSE_BODY_MARKER.length).trim(),
+      signatureHtml,
+      quotedHtml,
+    };
+  }
+
+  // Legacy: no zone markers — treat editable block as body only.
+  return {
+    greetingHtml: '',
+    bodyHtml: beforeSig.trim(),
+    signatureHtml,
+    quotedHtml,
   };
 }
 
@@ -26,6 +66,29 @@ export function mergeComposeHtml(editableHtml: string, quotedHtml: string): stri
   if (!bottom) return top;
   if (!top) return `${COMPOSE_QUOTE_MARKER}${bottom}`;
   return `${top}${COMPOSE_QUOTE_MARKER}${bottom}`;
+}
+
+export function mergeComposeZones(parts: Partial<ComposeZones>): string {
+  const greeting = (parts.greetingHtml ?? '').trim();
+  const body = (parts.bodyHtml ?? '').trim();
+  const signature = (parts.signatureHtml ?? '').trim();
+  const quoted = (parts.quotedHtml ?? '').trim();
+
+  let top = '';
+  if (greeting) top += greeting;
+  if (body) {
+    if (top) top += COMPOSE_BODY_MARKER;
+    top += body;
+  } else if (greeting && (signature || quoted)) {
+    top += COMPOSE_BODY_MARKER;
+  }
+  if (signature) {
+    if (top) top += COMPOSE_SIGNATURE_MARKER;
+    top += signature;
+  }
+  if (!quoted) return top;
+  if (!top) return `${COMPOSE_QUOTE_MARKER}${quoted}`;
+  return `${top}${COMPOSE_QUOTE_MARKER}${quoted}`;
 }
 
 export function plainTextToReplyHtml(text: string): string {
@@ -45,14 +108,34 @@ export function buildQuotedBlockHtml(quotedPlain: string): string {
 }
 
 export function buildReplyComposeHtml(parts: {
+  greetingHtml?: string;
   replyHtml?: string;
   quotedPlain?: string;
   signatureHtml?: string;
 }): string {
+  const greeting = (parts.greetingHtml ?? '').trim();
   const reply = (parts.replyHtml ?? '').trim();
   const sig = (parts.signatureHtml ?? '').trim();
   const quoteBlock = buildQuotedBlockHtml(parts.quotedPlain ?? '');
-  const editable = [reply, sig].filter(Boolean).join('<br/><br/>');
-  if (!quoteBlock) return editable;
-  return mergeComposeHtml(editable, quoteBlock);
+  return mergeComposeZones({
+    greetingHtml: greeting,
+    bodyHtml: reply || '<p><br></p>',
+    signatureHtml: sig,
+    quotedHtml: quoteBlock,
+  });
+}
+
+/** Text context for KI transforms: greeting + body (no signature). */
+export function composeAiContextText(zones: ComposeZones): string {
+  const strip = (html: string) =>
+    html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  return [zones.greetingHtml, zones.bodyHtml]
+    .map(strip)
+    .filter(Boolean)
+    .join('\n\n');
 }

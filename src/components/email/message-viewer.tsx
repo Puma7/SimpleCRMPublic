@@ -105,6 +105,7 @@ type Props = {
     advanceFromRemovedId?: number
   }) => void | Promise<void>
   advanceSelectionAfterMessageRemoved: (removedId: number) => void | Promise<void>
+  patchMessageInList?: (messageId: number, partial: Partial<EmailMessage>) => void
   categories: CategoryRow[]
   reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage, initialReplyHtml?: string) => void
@@ -219,6 +220,7 @@ export function MessageViewer(props: Props) {
     refreshCurrentMessage,
     refreshList,
     advanceSelectionAfterMessageRemoved,
+    patchMessageInList,
     onReply,
     onReplyAll,
     onForward,
@@ -529,8 +531,7 @@ export function MessageViewer(props: Props) {
       seen: !seen,
     })
     toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
-    await refreshCurrentMessage()
-    await refreshList({ preserveSelection: true })
+    patchMessageInList?.(selectedMessage.id, { seen_local: seen ? 0 : 1 })
   }
 
   const handleToggleDone = async () => {
@@ -544,8 +545,7 @@ export function MessageViewer(props: Props) {
     if (hideFromInbox) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
-      await refreshCurrentMessage()
-      await refreshList({ preserveSelection: true })
+      patchMessageInList?.(selectedMessage.id, { done_local: done ? 0 : 1 })
     }
   }
 
@@ -575,8 +575,9 @@ export function MessageViewer(props: Props) {
     if (targetView !== mailView) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
-      await refreshCurrentMessage()
-      await refreshList({ preserveSelection: true })
+      patchMessageInList?.(selectedMessage.id, {
+        spam_status: status,
+      } as Partial<EmailMessage>)
     }
   }
 

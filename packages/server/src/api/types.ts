@@ -1731,6 +1731,7 @@ export type AiReplySuggestionApiPort = {
     promptId?: number;
     profileId?: number;
     customerId?: number | null;
+    userContext?: string;
   }): Promise<EmailReplyDraftGenerationResult>;
 };
 
@@ -3158,6 +3159,8 @@ export type AiTextTransformInput = {
    *  surrounding email used as context. The AI returns only the rewritten
    *  selection. */
   contextText?: string;
+  inboundContextText?: string;
+  userContext?: string;
   customerId?: number | null;
 };
 

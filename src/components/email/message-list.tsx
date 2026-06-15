@@ -61,6 +61,8 @@ type Props = {
   loadMore?: () => void
   hasMore?: boolean
   loadingMore?: boolean
+  scrollToMessageId?: number | null
+  onScrolledToMessage?: () => void
 }
 
 function threadKey(m: EmailMessage): string {
@@ -91,6 +93,8 @@ export function MessageList({
   loadMore,
   hasMore,
   loadingMore,
+  scrollToMessageId,
+  onScrolledToMessage,
 }: Props) {
   const {
     searchQuery,
@@ -129,6 +133,15 @@ export function MessageList({
   const [pendingSelectAllCount, setPendingSelectAllCount] = useState(0)
   const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set())
   const [threadChildren, setThreadChildren] = useState<Record<string, EmailMessage[]>>({})
+
+  useEffect(() => {
+    if (scrollToMessageId == null) return
+    const el = document.querySelector(`[data-message-id="${scrollToMessageId}"]`)
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: "nearest" })
+      onScrolledToMessage?.()
+    }
+  }, [scrollToMessageId, messages, onScrolledToMessage])
   const searchInputRef = useRef<HTMLInputElement>(null)
   const lastSelectionAnchorRef = useRef<number | null>(null)
   const pendingFolderSelectIdsRef = useRef<number[]>([])
@@ -651,6 +664,7 @@ export function MessageList({
                     )}
                     <button
                       type="button"
+                      data-message-id={m.id}
                       draggable={m.uid >= 0 && !bulkBusy}
                       disabled={bulkBusy}
                       onDragStart={(e) => {

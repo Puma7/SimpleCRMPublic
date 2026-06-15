@@ -199,7 +199,7 @@ function setReplySuggestionDb(
 
 export async function generateReplyDraftText(
   messageId: number,
-  opts?: { promptId?: number; customerId?: number | null },
+  opts?: { promptId?: number; customerId?: number | null; userContext?: string },
 ): Promise<{ success: true; text: string } | { success: false; error: string }> {
   const row = getEmailMessageById(messageId);
   if (!row) return { success: false, error: 'Nachricht nicht gefunden' };
@@ -219,6 +219,11 @@ export async function generateReplyDraftText(
     findReplyPrompt(prompts);
   const template = prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE;
   let user = interpolateReplyTemplate(template, row, customerId);
+
+  const userContext = opts?.userContext?.trim();
+  if (userContext) {
+    user = `${user}\n\nZusätzlicher Kontext vom Bearbeiter:\n${userContext}`;
+  }
 
   const query = messageBodyForReply(row).slice(0, 2000);
   if (query.length >= 8) {
@@ -309,7 +314,7 @@ export function ensureReplySuggestion(
 
 export async function generateAndStoreReplySuggestion(
   messageId: number,
-  opts?: { promptId?: number; customerId?: number | null },
+  opts?: { promptId?: number; customerId?: number | null; userContext?: string },
 ): Promise<{ success: true; text: string } | { success: false; error: string }> {
   const result = await generateReplyDraftText(messageId, opts);
   if (result.success) {

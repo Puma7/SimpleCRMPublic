@@ -1838,6 +1838,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         customerId: input.customerId === undefined || input.customerId === null
           ? input.customerId ?? undefined
           : positiveId(input.customerId, "customer id"),
+        userContext: input.userContext === undefined || input.userContext === null
+          ? undefined
+          : stringPayloadField(input.userContext, "email reply draft user context"),
       }),
       transform: (body) => dataBody<{ success: boolean; text?: string; error?: string }>(body),
     }
@@ -3725,6 +3728,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         contextText: input.contextText === undefined || input.contextText === null
           ? undefined
           : stringPayloadField(input.contextText, "email ai transform context"),
+        inboundContextText: input.inboundContextText === undefined || input.inboundContextText === null
+          ? undefined
+          : stringPayloadField(input.inboundContextText, "email ai transform inbound context"),
+        userContext: input.userContext === undefined || input.userContext === null
+          ? undefined
+          : stringPayloadField(input.userContext, "email ai transform user context"),
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),

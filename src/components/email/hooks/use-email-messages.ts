@@ -14,9 +14,18 @@ import { useMailWorkspace } from "../workspace-context"
 import { invokeRenderer } from "@/services/transport"
 
 const PAGE_SIZE = 100
+const SILENT_RECONCILE_MS = 800
 
 type HandleSyncOptions = {
   onAfterSync?: (accountId: number) => void | Promise<void>
+}
+
+type LoadMessagesOpts = {
+  preserveSelection?: boolean
+  append?: boolean
+  silent?: boolean
+  selectMessageId?: number | null
+  advanceFromRemovedId?: number
 }
 
 export function useEmailMessages() {
@@ -37,11 +46,22 @@ export function useEmailMessages() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [scrollToMessageId, setScrollToMessageId] = useState<number | null>(null)
   const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
+  const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadMessagesRef = useRef<(
+    accountScope: MailAccountScope,
+    view: MailView,
+    catId: number | null,
+    query: string,
+    sort: MessageListSortMode,
+    listFilter: MessageListFilter,
+    opts?: LoadMessagesOpts,
+  ) => Promise<void>>(async () => {})
 
   useEffect(() => {
     messagesRef.current = messages
@@ -61,6 +81,74 @@ export function useEmailMessages() {
     }
   }, [searchQuery])
 
+  const selectMessageById = useCallback(
+    async (targetId: number | null, scroll = false) => {
+      if (targetId == null) {
+        setSelectedMessage(null)
+        return
+      }
+      const row = messagesRef.current.find((m) => m.id === targetId)
+      if (!row) {
+        setSelectedMessage(null)
+        return
+      }
+      if (scroll) setScrollToMessageId(targetId)
+      try {
+        const full = await invokeRenderer(
+          IPCChannels.Email.GetMessage,
+          row.id,
+        ) as EmailMessage | null
+        setSelectedMessage(full ?? row)
+      } catch {
+        setSelectedMessage(row)
+      }
+    },
+    [setSelectedMessage],
+  )
+
+  const scheduleSilentReconcile = useCallback(() => {
+    if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current)
+    reconcileTimerRef.current = setTimeout(() => {
+      reconcileTimerRef.current = null
+      if (selectedAccountId == null) return
+      void loadMessagesRef.current(
+        selectedAccountId,
+        mailView,
+        categoryFilterId,
+        debouncedSearchQ,
+        listSortMode,
+        messageListFilter,
+        { preserveSelection: true, silent: true },
+      )
+    }, SILENT_RECONCILE_MS)
+  }, [
+    selectedAccountId,
+    mailView,
+    categoryFilterId,
+    debouncedSearchQ,
+    listSortMode,
+    messageListFilter,
+  ])
+
+  const removeMessagesFromList = useCallback((ids: number[]) => {
+    const idSet = new Set(ids)
+    if (idSet.size === 0) return
+    setMessages((prev) => prev.filter((m) => !idSet.has(m.id)))
+    offsetRef.current = Math.max(0, offsetRef.current - ids.length)
+  }, [])
+
+  const patchMessageInList = useCallback(
+    (messageId: number, partial: Partial<EmailMessage>) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, ...partial } : m)),
+      )
+      setSelectedMessage((prev) =>
+        prev?.id === messageId ? { ...prev, ...partial } : prev,
+      )
+    },
+    [setSelectedMessage],
+  )
+
   const loadMessages = useCallback(
     async (
       accountScope: MailAccountScope,
@@ -69,20 +157,14 @@ export function useEmailMessages() {
       query: string,
       sort: MessageListSortMode,
       listFilter: MessageListFilter,
-      opts?: {
-        preserveSelection?: boolean
-        append?: boolean
-        /** After reload, select this id (full fetch). Falls back if id missing. */
-        selectMessageId?: number | null
-        /** Used with selectMessageId when preferred row is no longer in the list. */
-        advanceFromRemovedId?: number
-      },
+      opts?: LoadMessagesOpts,
     ) => {
       const append = opts?.append ?? false
-      const offset = append ? offsetRef.current : 0
+      const silent = opts?.silent ?? false
+      const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
       if (append) setLoadingMore(true)
-      else setLoadingMessages(true)
+      else if (!silent) setLoadingMessages(true)
       try {
         let list: EmailMessage[]
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
@@ -101,13 +183,15 @@ export function useEmailMessages() {
             hasMore?: boolean
           }
           list = res.messages
-          if (res.searchMode === "like") {
-            toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
-              id: "search-like-fallback",
-              duration: 4000,
-            })
-          } else if (res.searchMode === "regex") {
-            toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
+          if (!silent) {
+            if (res.searchMode === "like") {
+              toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
+                id: "search-like-fallback",
+                duration: 4000,
+              })
+            } else if (res.searchMode === "regex") {
+              toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
+            }
           }
           setHasMore(Boolean(res.hasMore))
         } else {
@@ -129,54 +213,53 @@ export function useEmailMessages() {
             return [...prev, ...list.filter((m) => !ids.has(m.id))]
           })
           offsetRef.current = offset + list.length
+        } else if (silent && keepId != null) {
+          setMessages((prev) => {
+            const byId = new Map(list.map((m) => [m.id, m]))
+            const merged = prev.map((m) => byId.get(m.id) ?? m)
+            for (const m of list) {
+              if (!prev.some((p) => p.id === m.id)) merged.push(m)
+            }
+            return merged
+          })
+          offsetRef.current = Math.max(offsetRef.current, list.length)
         } else {
           setMessages(list)
           offsetRef.current = list.length
         }
         if (!append && opts?.selectMessageId !== undefined) {
           let targetId = opts.selectMessageId
-          if (targetId != null && !list.some((m) => m.id === targetId)) {
+          if (targetId != null && !messagesRef.current.some((m) => m.id === targetId)) {
             const removed = opts.advanceFromRemovedId ?? targetId
-            targetId = pickAdjacentMessageId(list, removed)
+            targetId = pickAdjacentMessageId(messagesRef.current, removed)
           }
-          if (targetId == null) {
-            setSelectedMessage(null)
-          } else {
-            const row = list.find((m) => m.id === targetId)
-            if (row) {
-              try {
-                const full = await invokeRenderer(
-                  IPCChannels.Email.GetMessage,
-                  row.id,
-                ) as EmailMessage | null
-                setSelectedMessage(full ?? row)
-              } catch {
-                setSelectedMessage(row)
-              }
-            } else {
-              setSelectedMessage(null)
-            }
-          }
+          await selectMessageById(targetId, true)
         } else if (keepId != null && !append) {
-          const still = list.find((m) => m.id === keepId)
+          const still =
+            messagesRef.current.find((m) => m.id === keepId) ??
+            list.find((m) => m.id === keepId)
           if (still) {
             setSelectedMessage((prev) =>
               prev?.id === keepId ? { ...prev, ...still } : still,
             )
           }
-        } else if (!append && keepId == null) {
+        } else if (!append && keepId == null && !silent) {
           setSelectedMessage(null)
         }
       } catch (e) {
         logError("use-email-messages: load", e)
-        toast.error("Nachrichten konnten nicht geladen werden.")
+        if (!silent) toast.error("Nachrichten konnten nicht geladen werden.")
       } finally {
         setLoadingMessages(false)
         setLoadingMore(false)
       }
     },
-    [setSelectedMessage, messageDoneFilter],
+    [setSelectedMessage, messageDoneFilter, selectMessageById],
   )
+
+  useEffect(() => {
+    loadMessagesRef.current = loadMessages
+  }, [loadMessages])
 
   useEffect(() => {
     offsetRef.current = 0
@@ -230,8 +313,9 @@ export function useEmailMessages() {
       preserveSelection?: boolean
       selectMessageId?: number | null
       advanceFromRemovedId?: number
+      silent?: boolean
     }) => {
-      offsetRef.current = 0
+      if (!opts?.silent) offsetRef.current = 0
       if (selectedAccountId == null) return
       await loadMessages(
         selectedAccountId,
@@ -240,7 +324,10 @@ export function useEmailMessages() {
         debouncedSearchQ,
         listSortMode,
         messageListFilter,
-        opts,
+        {
+          ...opts,
+          silent: opts?.silent ?? Boolean(opts?.preserveSelection),
+        },
       )
     },
     [
@@ -257,14 +344,18 @@ export function useEmailMessages() {
 
   const advanceSelectionAfterMessageRemoved = useCallback(
     async (removedId: number) => {
-      const preferredId = pickAdjacentMessageId(messagesRef.current, removedId)
-      await refreshList({
-        selectMessageId: preferredId,
-        advanceFromRemovedId: removedId,
-      })
+      const current = messagesRef.current
+      const preferredId = pickAdjacentMessageId(current, removedId)
+      removeMessagesFromList([removedId])
+      await selectMessageById(preferredId, true)
+      scheduleSilentReconcile()
     },
-    [refreshList],
+    [removeMessagesFromList, selectMessageById, scheduleSilentReconcile],
   )
+
+  const clearScrollToMessage = useCallback(() => {
+    setScrollToMessageId(null)
+  }, [])
 
   const moveMessageToView = useCallback(
     async (messageId: number, targetView: MailView) => {
@@ -309,11 +400,6 @@ export function useEmailMessages() {
     async (messageIds: number[], categoryId: number) => {
       const ids = messageIds.filter((id) => typeof id === "number" && id > 0)
       if (ids.length === 0) return false
-      // Drag-drop semantics: ADD the category (don't replace existing ones).
-      // Idempotent per message: the transport reports { added, alreadyAssigned }.
-      // Run with a small concurrency cap so a 50-mail bulk-drop doesn't take
-      // 100 sequential HTTP round-trips, but also doesn't stampede the server
-      // with 50 parallel requests. 6 is a pragmatic compromise.
       const CONCURRENCY = 6
       let added = 0
       let already = 0
@@ -332,7 +418,6 @@ export function useEmailMessages() {
           if (firstError === undefined) firstError = e
         }
       }
-      // Simple worker pool: CONCURRENCY workers pull from a shared queue.
       const queue = [...ids]
       const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
         for (;;) {
@@ -343,8 +428,6 @@ export function useEmailMessages() {
       })
       await Promise.all(workers)
 
-      // Defensive: if every response had neither added nor alreadyAssigned set,
-      // something unexpected came back. Don't pretend success — surface it.
       if (added === 0 && already === 0) {
         toast.error(failed > 0
           ? (firstError instanceof Error ? firstError.message : "Kategorisieren fehlgeschlagen")
@@ -361,9 +444,6 @@ export function useEmailMessages() {
       if (failed > 0) {
         toast.error(`${failed} ${failed === 1 ? "Nachricht" : "Nachrichten"} fehlgeschlagen`)
       }
-      // Tell the metadata panel its chip list is stale — if any of the dropped
-      // messages happens to be the currently-selected one, its chips need to
-      // re-fetch (this hook doesn't know which message is open in the panel).
       if (added > 0 || already > 0) bumpCategoryAssignmentRevision()
       await refreshList({ preserveSelection: true })
       return failed === 0
@@ -476,16 +556,14 @@ export function useEmailMessages() {
         setSelectedMessage(full ?? m)
         if (!m.seen_local && m.uid >= 0) {
           await invokeRenderer(IPCChannels.Email.SetMessageSeen, { messageId: m.id, seen: true })
-          setMessages((prev) =>
-            prev.map((row) => (row.id === m.id ? { ...row, seen_local: 1 } : row)),
-          )
+          patchMessageInList(m.id, { seen_local: 1 })
         }
       } catch (e) {
         logError("use-email-messages: open message", e)
         setSelectedMessage(m)
       }
     },
-    [setSelectedMessage],
+    [setSelectedMessage, patchMessageInList],
   )
 
   const refreshCurrentMessage = useCallback(async () => {
@@ -495,11 +573,14 @@ export function useEmailMessages() {
         IPCChannels.Email.GetMessage,
         selectedMessage.id,
       ) as EmailMessage | null
-      setSelectedMessage(full ?? selectedMessage)
+      if (full) {
+        setSelectedMessage(full)
+        patchMessageInList(full.id, full)
+      }
     } catch (e) {
       logError("use-email-messages: refresh current", e)
     }
-  }, [selectedMessage, setSelectedMessage])
+  }, [selectedMessage, setSelectedMessage, patchMessageInList])
 
   const assignMessageCategory = useCallback(
     async (messageId: number, categoryId: number) => {
@@ -565,5 +646,9 @@ export function useEmailMessages() {
     assignMessagesCategory,
     snoozeMessageUntilTomorrow,
     advanceSelectionAfterMessageRemoved,
+    removeMessagesFromList,
+    patchMessageInList,
+    scrollToMessageId,
+    clearScrollToMessage,
   }
 }
