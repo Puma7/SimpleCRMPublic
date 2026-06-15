@@ -517,6 +517,7 @@ describe('email-store branches', () => {
       });
       const id = createComposeDraft({ accountId: 1 });
       expect(getEmailMessageById(id)?.folder_kind).toBe('draft');
+      expect(getEmailMessageById(id)?.from_json).toContain('a@b.de');
     });
 
     test('updateComposeDraft all field branches', () => {

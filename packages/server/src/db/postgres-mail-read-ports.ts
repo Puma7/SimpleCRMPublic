@@ -8,6 +8,7 @@ import {
   evaluateSenderFilterFromLists,
   isCorruptRawHeaders,
   normalizeAddressJson,
+  addressJson,
   normalizeEmailAddress,
   parseSenderList,
   parseScheduledSendDraftStateFromValues,
@@ -777,6 +778,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               snippet,
               ...(input.values.bodyHtml === undefined ? {} : { body_html: input.values.bodyHtml }),
               ...(input.values.toJson === undefined ? {} : { to_json: input.values.toJson }),
+              ...(input.values.fromJson === undefined ? {} : { from_json: input.values.fromJson }),
               ...(input.values.ccJson === undefined ? {} : { cc_json: input.values.ccJson }),
               ...(input.values.bccJson === undefined ? {} : { bcc_json: input.values.bccJson }),
               ...(input.values.draftAttachmentPaths === undefined ? {} : {
@@ -3440,7 +3442,14 @@ export async function createPostgresComposeDraftInTransaction(
       in_reply_to: null,
       references_header: null,
       subject: input.values.subject ?? '(Entwurf)',
-      from_json: null,
+      from_json: addressJson({
+        value: [{
+          address: String(account.email_address).trim(),
+          ...(String(account.display_name ?? '').trim()
+            ? { name: String(account.display_name).trim() }
+            : {}),
+        }],
+      }),
       to_json: input.values.toJson ?? null,
       cc_json: null,
       bcc_json: null,

@@ -3,6 +3,7 @@ import path from 'path';
 import {
   extractEmailAddressesFromRecipientField,
   recipientJsonFromField,
+  senderJsonFromMailbox,
   validateRecipientField,
 } from '../../shared/email-recipient-parse';
 import {
@@ -412,6 +413,10 @@ export async function sendComposeDraft(input: {
     const toJson = recipientJsonFromField(input.to);
     const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
     const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
+    const accForFrom = getEmailAccountById(input.accountId);
+    const fromJson = accForFrom
+      ? senderJsonFromMailbox(accForFrom.email_address, accForFrom.display_name)
+      : null;
 
     updateComposeDraft(input.draftMessageId, {
       subject: input.subject,
@@ -420,6 +425,7 @@ export async function sendComposeDraft(input: {
       toJson,
       ccJson,
       bccJson,
+      fromJson,
       draftAttachmentPaths: input.attachmentPaths,
     });
 

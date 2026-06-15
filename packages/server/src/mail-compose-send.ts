@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import type { Kysely, RawBuilder } from 'kysely';
 import {
+  addressJson,
   buildComposeRfc822,
   type ComposeRfc822Attachment,
   buildOutboundThreadingHeaders,
@@ -182,6 +183,7 @@ export type ComposeSenderStore = Readonly<{
     subject: string;
     bodyText: string;
     bodyHtml: string | null;
+    fromJson: unknown | null;
     toJson: unknown | null;
     ccJson: unknown | null;
     bccJson: unknown | null;
@@ -995,6 +997,7 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
               body_text: input.bodyText,
               body_html: input.bodyHtml,
               snippet: snippetFromText(input.bodyText),
+              from_json: input.fromJson,
               to_json: input.toJson,
               cc_json: input.ccJson,
               bcc_json: input.bccJson,
@@ -1059,6 +1062,32 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .execute();
+
+          const draftRow = await trx
+            .selectFrom('email_messages as m')
+            .innerJoin('email_accounts as a', 'a.id', 'm.account_id')
+            .select(['m.from_json', 'a.email_address', 'a.display_name'])
+            .where('m.workspace_id', '=', input.workspaceId)
+            .where('m.id', '=', input.messageId)
+            .executeTakeFirst();
+          if (draftRow && !String(draftRow.from_json ?? '').trim()) {
+            const fromJson = addressJson({
+              value: [{
+                address: String(draftRow.email_address).trim(),
+                ...(String(draftRow.display_name ?? '').trim()
+                  ? { name: String(draftRow.display_name).trim() }
+                  : {}),
+              }],
+            });
+            if (fromJson) {
+              await trx
+                .updateTable('email_messages')
+                .set({ from_json: fromJson, updated_at: options.now?.() ?? new Date() })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', input.messageId)
+                .execute();
+            }
+          }
           // SMTP succeeded — drop the outbound-review approval marker so it
           // doesn't linger past the send (and so an edit-then-resend on the
           // same id space would re-run review).
@@ -1181,6 +1210,14 @@ async function prepareDraftForSend(input: {
     subject: finalSubject,
     bodyText: input.bodyText,
     bodyHtml: input.bodyHtml,
+    fromJson: addressJson({
+      value: [{
+        address: input.account.emailAddress.trim(),
+        ...(input.account.displayName.trim()
+          ? { name: input.account.displayName.trim() }
+          : {}),
+      }],
+    }),
     toJson: input.toJson,
     ccJson: input.ccJson,
     bccJson: input.bccJson,

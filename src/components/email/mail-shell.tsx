@@ -400,6 +400,7 @@ function MailShellInner() {
           className="min-w-0"
         >
           <MessageViewer
+            accounts={accounts}
             teamMembers={teamMembers}
             categories={categories}
             messageTags={messageTags}

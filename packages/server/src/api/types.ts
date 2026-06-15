@@ -1943,6 +1943,7 @@ export type EmailComposeDraftUpdateInput = {
   subject?: string;
   bodyText?: string;
   bodyHtml?: string | null;
+  fromJson?: unknown | null;
   toJson?: unknown | null;
   ccJson?: unknown | null;
   bccJson?: unknown | null;

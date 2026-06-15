@@ -63,3 +63,16 @@ export function recipientJsonFromField(raw: string): string | null {
     value: addrs.map((address) => ({ address })),
   })
 }
+
+/** Single mailbox JSON for outbound From (compose / sent). */
+export function senderJsonFromMailbox(
+  email: string,
+  displayName?: string | null,
+): string {
+  const address = email.trim()
+  if (!address) return JSON.stringify({ value: [] })
+  const name = (displayName ?? '').trim()
+  return JSON.stringify({
+    value: [{ address, ...(name ? { name } : {}) }],
+  })
+}
