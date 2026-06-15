@@ -11181,6 +11181,63 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('scheduled-send job waits for outbound review without consuming retry budget', async () => {
+    const storeCalls: unknown[] = [];
+    const claimedSendAt = new Date('2026-06-03T11:45:00.000Z');
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send() {
+          return {
+            ok: false as const,
+            error: 'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.',
+          };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 202,
+            accountId: 7,
+            subject: 'Pending review',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'pending@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            claimedSendAt,
+          }];
+        },
+        async setDraftScheduledAt(input) {
+          storeCalls.push(['setDraftScheduledAt', input]);
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, null]));
+        },
+        async setSyncInfo(input) {
+          storeCalls.push(['setSyncInfo', input]);
+        },
+        async deleteSyncInfo(input) {
+          storeCalls.push(['deleteSyncInfo', input]);
+        },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(storeCalls).toEqual([
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:202'],
+      }],
+    ]);
+  });
+
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
     const now = new Date('2026-06-03T12:00:00.000Z');
     expect(buildLockCleanupPlan({
@@ -18811,6 +18868,11 @@ describe('server edition foundation', () => {
         values: { subject: 'Nope' },
       }],
     ]);
+  });
+
+  test('server outbound validation persists manual approval marker on success', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-compose-send.ts'), 'utf8');
+    expect(source).toMatch(/persistManualOutboundApproval/);
   });
 
   test('server outbound validation route delegates to server review port', async () => {

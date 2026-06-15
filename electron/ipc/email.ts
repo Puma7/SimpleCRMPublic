@@ -655,6 +655,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           },
           { dryRun: true },
         );
+        if (result.allowed) {
+          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval');
+          applyManualComposeOutboundApproval(payload.messageId, {
+            subject: payload.subject,
+            bodyText: payload.bodyText,
+            bodyHtml: payload.bodyHtml ?? null,
+            to: payload.to,
+            cc: payload.cc ?? null,
+            bcc: payload.bcc ?? null,
+          });
+        }
         return { success: true as const, allowed: result.allowed, reason: result.reason };
       },
       { logger },

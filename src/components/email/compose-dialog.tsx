@@ -1626,16 +1626,20 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                 onClick={() => {
                   if (!draftId || !scheduledSendAt) return
                   void (async () => {
-                    await saveDraft({ silent: true })
-                    const iso = new Date(scheduledSendAt).toISOString()
-                    await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
-                      messageId: draftId,
-                      sendAt: iso,
-                    })
-                    toast.success("Versand geplant — siehe „Späterer Versand“.")
-                    setMailView("scheduled_send")
-                    const contextId = getComposeContextMessageId(composeIntent, replyToId)
-                    void finishComposeClose(contextId)
+                    try {
+                      await saveDraft({ silent: true })
+                      const iso = new Date(scheduledSendAt).toISOString()
+                      await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
+                        messageId: draftId,
+                        sendAt: iso,
+                      })
+                      toast.success("Versand geplant — siehe „Späterer Versand“.")
+                      setMailView("scheduled_send")
+                      const contextId = getComposeContextMessageId(composeIntent, replyToId)
+                      void finishComposeClose(contextId)
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Versand konnte nicht geplant werden.")
+                    }
                   })()
                 }}
               >

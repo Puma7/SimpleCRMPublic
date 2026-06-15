@@ -8,7 +8,9 @@ import {
   buildComposeRfc822,
   type ComposeRfc822Attachment,
   buildOutboundThreadingHeaders,
+  addressesFromRecipientJson,
   buildOutboundWarningBanner,
+  encodeOutboundApprovalMarker,
   ensureTicketInSubject,
   extractDraftBodyForOutboundBlock,
   extractTicketFromSubject,
@@ -45,7 +47,7 @@ import type {
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
-import { listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -81,6 +83,199 @@ const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
 const OUTBOUND_REVIEW_REASON =
   'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
 const MAX_OUTBOUND_CONTEXT_TEXT = 20_000;
+
+export function isOutboundReviewPendingError(error: string): boolean {
+  const normalized = error.trim().toLowerCase();
+  return normalized.includes('ausgangspruefung') && normalized.includes('serverseitig');
+}
+
+function addressesFromStoredRecipientJson(value: unknown): string {
+  if (!value) return '';
+  try {
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
+  } catch {
+    return '';
+  }
+}
+
+function draftAttachmentPathsFromJson(value: unknown): readonly string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+    if (!Array.isArray(parsed)) return [];
+    const paths: string[] = [];
+    for (const item of parsed) {
+      const path = typeof item === 'string'
+        ? item.trim()
+        : item && typeof item === 'object'
+          ? String((item as { path?: unknown }).path ?? '').trim()
+          : '';
+      if (path && !paths.includes(path)) paths.push(path);
+    }
+    return paths;
+  } catch {
+    return [];
+  }
+}
+
+async function allocateOutboundApprovalTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+  now: Date,
+): Promise<string> {
+  if (accountId == null) return generateTicketCode();
+  const numericAccountId = Number(accountId);
+  if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) return generateTicketCode();
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', numericAccountId)
+    .executeTakeFirst();
+  if (!account) return generateTicketCode();
+  const defaultPrefix = `ACC${numericAccountId}`.slice(0, 12);
+  await trx
+    .insertInto('email_account_mail_settings')
+    .values({
+      workspace_id: workspaceId,
+      account_source_sqlite_id: Number(account.source_sqlite_id ?? numericAccountId),
+      account_id: numericAccountId,
+      ticket_prefix: defaultPrefix,
+      ticket_next_number: 1,
+      ticket_number_padding: 6,
+      thread_namespace: `account-${numericAccountId}`,
+      source_row: { source: 'server.compose.outbound_approval' },
+      imported_in_run_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+  const settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!settings) return generateTicketCode({ prefix: defaultPrefix });
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Math.min(12, Math.max(1, Math.floor(Number(settings.ticket_number_padding) || 6)));
+  const ticketCode = generateTicketCode({
+    prefix: settings.ticket_prefix || defaultPrefix,
+    sequence: String(Math.max(1, currentNumber || 1)).padStart(padding, '0'),
+  });
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: Math.max(1, currentNumber || 1) + 1, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .execute();
+  return ticketCode;
+}
+
+/** Persist a manual outbound approval after dry-run validation or schedule-time checks. */
+export async function persistManualOutboundApproval(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    draftId: number;
+    subject: string;
+    bodyText: string;
+    bodyHtml: string | null;
+    to: string;
+    cc?: string | null;
+    bcc?: string | null;
+    attachmentPaths?: readonly string[] | null;
+    now?: Date;
+  },
+): Promise<void> {
+  const now = input.now ?? new Date();
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select([
+      'subject',
+      'body_text',
+      'body_html',
+      'to_json',
+      'cc_json',
+      'bcc_json',
+      'draft_attachment_paths_json',
+      'ticket_code',
+      'account_id',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftId)
+    .executeTakeFirst();
+
+  const cleaned = extractDraftBodyForOutboundBlock(
+    {
+      body_text: draftRow?.body_text ?? null,
+      body_html: draftRow?.body_html ?? null,
+    },
+    {
+      bodyText: input.bodyText,
+      bodyHtml: input.bodyHtml,
+    },
+  );
+  const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, input.workspaceId);
+  const storedSubject = input.subject.trim() || draftRow?.subject?.trim() || '';
+  const existingTicket = draftRow?.ticket_code?.trim()
+    || extractWorkspaceTicketFromSubject(storedSubject, allowedPrefixes);
+  const ticketCode = existingTicket || await allocateOutboundApprovalTicketCode(
+    trx,
+    input.workspaceId,
+    draftRow?.account_id ?? null,
+    now,
+  );
+  const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+  const fingerprint = outboundDraftFingerprint({
+    subject: finalSubject,
+    bodyText: cleaned.plain,
+    bodyHtml: cleaned.html,
+    to: input.to,
+    cc: input.cc ?? addressesFromStoredRecipientJson(draftRow?.cc_json),
+    bcc: input.bcc ?? addressesFromStoredRecipientJson(draftRow?.bcc_json),
+    attachmentPaths: input.attachmentPaths ?? draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+  });
+  const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+
+  await trx
+    .updateTable('email_messages')
+    .set({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      body_text: cleaned.plain,
+      body_html: cleaned.html || null,
+      subject: finalSubject,
+      ticket_code: ticketCode,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftId)
+    .execute();
+
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: outboundReviewApprovedKey(input.draftId),
+      value: markerValue,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: markerValue,
+      last_updated: now,
+      updated_at: now,
+    }))
+    .execute();
+}
+
 const MAX_SERVER_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_SERVER_COMPOSE_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 
@@ -628,6 +823,27 @@ export function createPostgresEmailOutboundValidationPort(options: {
 
       if (firstBlockReason) {
         return { allowed: false, reason: firstBlockReason };
+      }
+
+      if (workflows.length > 0) {
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            await persistManualOutboundApproval(trx, {
+              workspaceId: input.workspaceId,
+              draftId: input.values.messageId,
+              subject: input.values.subject,
+              bodyText: input.values.bodyText,
+              bodyHtml: input.values.bodyHtml ?? null,
+              to: input.values.to,
+              cc: input.values.cc ?? null,
+              bcc: input.values.bcc ?? null,
+              now: options.now?.(),
+            });
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
       }
       return { allowed: true, reason: null };
     },

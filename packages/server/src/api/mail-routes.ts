@@ -9,6 +9,7 @@ import type {
   EmailAccountMutationInput,
   EmailAccountMutationPortResult,
   EmailAccountRecord,
+  EmailComposeDraftMutationResult,
   EmailComposeSendInput,
   EmailDiagnosticsReport,
   EmailMessageListResult,
@@ -1060,7 +1061,7 @@ async function handleScheduledSendDraftSchedule(
     messageId,
     sendAt: parsed.sendAt,
   });
-  if (!result.ok) return composeDraftMutationError(result.reason);
+  if (!result.ok) return composeDraftMutationError(result.reason, result.message);
   if (ports.jobQueue) {
     if (parsed.sendAt) {
       const sendAt = new Date(parsed.sendAt);
@@ -1161,7 +1162,13 @@ async function handleScheduledSendDraftRetry(
   return data(200, { success: true });
 }
 
-function composeDraftMutationError(reason: 'not_found' | 'not_local_draft' | 'account_not_found'): ApiResponse<ApiErrorBody> {
+function composeDraftMutationError(
+  reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked',
+  message?: string,
+): ApiResponse<ApiErrorBody> {
+  if (reason === 'outbound_blocked') {
+    return error(409, 'email_outbound_blocked', message ?? 'Ausgangspruefung wuerde den Versand blockieren');
+  }
   if (reason === 'account_not_found') return error(404, 'email_account_not_found', 'Email account nicht gefunden');
   if (reason === 'not_local_draft') {
     return error(409, 'email_message_not_local_draft', 'Nur lokale Entwuerfe koennen hier bearbeitet werden');
