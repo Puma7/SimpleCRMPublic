@@ -13,6 +13,11 @@ import { withWorkspaceTransaction } from './db/workspace-context';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
 
+function isComposeSendAlreadyInProgressError(error: string): boolean {
+  const normalized = error.trim().toLowerCase();
+  return normalized.includes('versand') && normalized.includes('bereits');
+}
+
 type ScheduledDraft = Readonly<{
   id: number;
   accountId: number | null;
@@ -130,6 +135,10 @@ async function processScheduledDraft(input: {
       sendAt: null,
     });
     await clearScheduledDraftMeta(input.store, input.workspaceId, draft.id);
+    return;
+  }
+
+  if (isComposeSendAlreadyInProgressError(result.error)) {
     return;
   }
 

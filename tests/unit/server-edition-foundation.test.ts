@@ -11023,6 +11023,57 @@ describe('server edition foundation', () => {
     expect(source).toMatch(/\.where\('folder_kind', '=', 'draft'\)\s*\.where\('outbound_hold', '=', false\)\s*\.where\('scheduled_send_at', '<=', input\.dueBefore\)/);
   });
 
+  test('thread list predicates align scheduled_send filters with message list', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-metadata-read-ports.ts'), 'utf8');
+    expect(source).toMatch(/view === 'scheduled_send'[\s\S]*m\.scheduled_send_at IS NOT NULL/);
+    expect(source).toMatch(/view === 'drafts'[\s\S]*m\.scheduled_send_at IS NULL/);
+    expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true AND m\.scheduled_send_at IS NULL/);
+  });
+
+  test('scheduled-send job ignores compose send already in progress errors', async () => {
+    const storeCalls: unknown[] = [];
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send() {
+          return { ok: false as const, error: 'Versand laeuft bereits fuer diesen Entwurf.' };
+        },
+      },
+      store: {
+        async listDueDrafts() {
+          return [{
+            id: 201,
+            accountId: 7,
+            subject: 'Busy',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'busy@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+          }];
+        },
+        async setDraftScheduledAt(input) {
+          storeCalls.push(['setDraftScheduledAt', input]);
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, null]));
+        },
+        async setSyncInfo(input) {
+          storeCalls.push(['setSyncInfo', input]);
+        },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(storeCalls).toEqual([]);
+  });
+
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
     const now = new Date('2026-06-03T12:00:00.000Z');
     expect(buildLockCleanupPlan({

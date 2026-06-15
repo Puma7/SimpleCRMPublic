@@ -99,6 +99,8 @@ import {
   type JobHandlerRegistry,
   type PostgresJobQueueWorkerRuntime,
   type ProductionJobHandlersOptions,
+  type WorkflowExecutionDryRunResult,
+  type WorkflowExecutionJobPort,
 } from './jobs';
 import {
   createServerLogStore,
@@ -331,11 +333,31 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     }
     await app.listen({ host, port });
   } catch (error) {
+    scheduledSendTicker?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }
 
   return app;
+}
+
+function resolveWorkflowDryRun(
+  workflowExecution: WorkflowExecutionJobPort,
+): (input: Parameters<NonNullable<WorkflowExecutionJobPort['dryRun']>>[0]) => Promise<WorkflowExecutionDryRunResult> {
+  return (input) => {
+    if (!workflowExecution.dryRun) {
+      return Promise.resolve({
+        success: false,
+        dryRun: true,
+        status: 'error',
+        blocked: false,
+        blockReason: null,
+        log: ['error:dry_run_unavailable'],
+        error: 'Dry-run nicht verfuegbar',
+      });
+    }
+    return workflowExecution.dryRun(input);
+  };
 }
 
 export function createPostgresServerApiPorts(options: PostgresServerApiPortsOptions): ServerApiPorts {
@@ -360,6 +382,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     workflowImapActions,
     secrets: options.secrets,
   });
+  const workflowDryRun = resolveWorkflowDryRun(workflowExecution);
   const auth = createPostgresAuthPort({
     db: options.db,
     accessTokenSigner: options.accessTokenSigner,
@@ -439,7 +462,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     }),
     emailOutboundValidation: createPostgresEmailOutboundValidationPort({
       db: options.db,
-      workflowDryRun: (input) => workflowExecution.dryRun!(input),
+      workflowDryRun,
     }),
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
@@ -492,7 +515,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     tasks: createPostgresTaskReadPort({ db: options.db }),
     workflowDelayedJobs: createPostgresWorkflowDelayedJobReadPort({ db: options.db }),
     workflowExecution: {
-      dryRun: (input) => workflowExecution.dryRun!(input),
+      dryRun: workflowDryRun,
     },
     workflowForwardDedup: createPostgresWorkflowForwardDedupReadPort({ db: options.db }),
     workflowKnowledgeBases: createPostgresWorkflowKnowledgeBaseReadPort({ db: options.db }),
