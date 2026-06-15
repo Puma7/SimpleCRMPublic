@@ -3,6 +3,7 @@ import path from 'path';
 import {
   extractEmailAddressesFromRecipientField,
   recipientJsonFromField,
+  senderJsonFromMailbox,
   validateRecipientField,
 } from '../../shared/email-recipient-parse';
 import {
@@ -378,6 +379,9 @@ export async function sendComposeDraft(input: {
 
   const inlineTempPaths: string[] = [];
   try {
+    const acc = getEmailAccountById(input.accountId);
+    if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
+
     let bodyText = input.bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
     if (input.pgpEncrypt) {
@@ -412,6 +416,7 @@ export async function sendComposeDraft(input: {
     const toJson = recipientJsonFromField(input.to);
     const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
     const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
+    const fromJson = senderJsonFromMailbox(acc.email_address, acc.display_name);
 
     updateComposeDraft(input.draftMessageId, {
       subject: input.subject,
@@ -420,6 +425,7 @@ export async function sendComposeDraft(input: {
       toJson,
       ccJson,
       bccJson,
+      fromJson,
       draftAttachmentPaths: input.attachmentPaths,
     });
 
@@ -480,9 +486,6 @@ export async function sendComposeDraft(input: {
     }
 
     const finalSubject = ensureTicketInSubject(input.subject.trim() || '(Ohne Betreff)', ticketCode);
-
-    const acc = getEmailAccountById(input.accountId);
-    if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
     const threadHeaders = buildOutboundThreadingHeaders(
       parentForThreading

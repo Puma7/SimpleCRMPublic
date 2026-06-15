@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import DOMPurify from "dompurify"
 import {
   blockRemoteImagesInHtml,
@@ -64,11 +64,14 @@ import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   firstAddress,
   formatFrom,
+  formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
   type ConversationLockRecord,
+  type EmailAccount,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -93,6 +96,7 @@ import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 
 type Props = {
+  accounts: EmailAccount[]
   teamMembers: TeamMember[]
   messageTags: string[]
   internalNotes: InternalNote[]
@@ -105,11 +109,13 @@ type Props = {
     advanceFromRemovedId?: number
   }) => void | Promise<void>
   advanceSelectionAfterMessageRemoved: (removedId: number) => void | Promise<void>
+  patchMessageInList?: (messageId: number, partial: Partial<EmailMessage>) => void
   categories: CategoryRow[]
   reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage, initialReplyHtml?: string) => void
   onReplyAll: (m: EmailMessage, initialReplyHtml?: string) => void
   onForward: (m: EmailMessage) => void
+  onOpenMessage?: (m: EmailMessage) => void | Promise<void>
   /** Beta layout: Metadaten in eigener Spalte. */
   metadataPlacement?: "inline" | "external"
   remoteContentPolicyRefreshKey?: number
@@ -209,6 +215,7 @@ function recipientSummary(raw: string | null | undefined): string {
 
 export function MessageViewer(props: Props) {
   const {
+    accounts,
     teamMembers,
     messageTags,
     internalNotes,
@@ -219,9 +226,11 @@ export function MessageViewer(props: Props) {
     refreshCurrentMessage,
     refreshList,
     advanceSelectionAfterMessageRemoved,
+    patchMessageInList,
     onReply,
     onReplyAll,
     onForward,
+    onOpenMessage,
     metadataPlacement = "inline",
     remoteContentPolicyRefreshKey = 0,
   } = props
@@ -261,6 +270,34 @@ export function MessageViewer(props: Props) {
   const selectedLockOwner = selectedLock ? lockOwnerLabel(selectedLock) : ""
   const lockedByOther = Boolean(selectedLock && user?.id && selectedLock.userId !== user.id)
   const canTakeoverLock = lockedByOther && (user?.role === "owner" || user?.role === "admin")
+  const hydratedBodyForIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!selectedMessage?.id) {
+      hydratedBodyForIdRef.current = null
+      return
+    }
+    if (!needsFullMessageBody(selectedMessage)) {
+      hydratedBodyForIdRef.current = selectedMessage.id
+      return
+    }
+    if (hydratedBodyForIdRef.current === selectedMessage.id) return
+    hydratedBodyForIdRef.current = selectedMessage.id
+    const messageId = selectedMessage.id
+    void (async () => {
+      try {
+        const full = await invokeRenderer(
+          IPCChannels.Email.GetMessage,
+          messageId,
+        ) as EmailMessage | null
+        if (full && !needsFullMessageBody(full)) {
+          setSelectedMessage((prev) => (prev?.id === messageId ? full : prev))
+        }
+      } catch {
+        /* keep snippet fallback */
+      }
+    })()
+  }, [selectedMessage, setSelectedMessage])
 
   useEffect(() => {
     setHtmlView(false)
@@ -529,8 +566,7 @@ export function MessageViewer(props: Props) {
       seen: !seen,
     })
     toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
-    await refreshCurrentMessage()
-    await refreshList({ preserveSelection: true })
+    patchMessageInList?.(selectedMessage.id, { seen_local: seen ? 0 : 1 })
   }
 
   const handleToggleDone = async () => {
@@ -540,12 +576,12 @@ export function MessageViewer(props: Props) {
       done: !done,
     })
     toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
-    const hideFromInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
-    if (hideFromInbox) {
+    const hideFromOpenInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
+    const hideFromSpamReview = !done && mailView === "spam_review"
+    if (hideFromOpenInbox || hideFromSpamReview) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
-      await refreshCurrentMessage()
-      await refreshList({ preserveSelection: true })
+      patchMessageInList?.(selectedMessage.id, { done_local: done ? 0 : 1 })
     }
   }
 
@@ -575,8 +611,9 @@ export function MessageViewer(props: Props) {
     if (targetView !== mailView) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
-      await refreshCurrentMessage()
-      await refreshList({ preserveSelection: true })
+      patchMessageInList?.(selectedMessage.id, {
+        spam_status: status,
+      } as Partial<EmailMessage>)
     }
   }
 
@@ -610,7 +647,7 @@ export function MessageViewer(props: Props) {
         ? blockRemoteImagesInHtml(sanitizedHtml)
         : `<pre>${escapeHtml(decryptedPlain ?? bodyText)}</pre>`
     const metaRows = [
-      ["Von", formatFrom(selectedMessage.from_json)],
+      ["Von", formatMessageFrom(selectedMessage, accounts)],
       ["An", recipientSummary(selectedMessage.to_json)],
       ["CC", recipientSummary(selectedMessage.cc_json)],
       ["BCC", recipientSummary(selectedMessage.bcc_json)],
@@ -1121,6 +1158,7 @@ export function MessageViewer(props: Props) {
 
                 <MessageAddressesBlock
                   message={selectedMessage}
+                  accounts={accounts}
                   onShowCorrespondentHistory={() => {
                     if (metadataPlacement === "inline" && !metadataPanelOpen) {
                       setMetadataPanelOpen(true)
@@ -1505,6 +1543,7 @@ export function MessageViewer(props: Props) {
               reloadNotes={reloadNotes}
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
+              onOpenMessage={onOpenMessage}
             />
           ) : null}
         </div>

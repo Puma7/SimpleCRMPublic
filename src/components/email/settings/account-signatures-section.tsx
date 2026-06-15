@@ -131,8 +131,13 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
       <div>
         <h3 className="text-base font-semibold">Signatur pro Konto</h3>
         <p className="text-sm text-muted-foreground">
-          Wird beim Verfassen aus dem jeweiligen Konto eingefügt. Fehlt eine Konto-Signatur, gilt
-          die Team-Standardsignatur unter Einstellungen → Team.
+          Wird beim Verfassen aus dem jeweiligen Konto eingefügt (auch bei Antworten). Fehlt eine
+          Konto-Signatur, gilt die Team-Standardsignatur unter Einstellungen → Team. Platzhalter:{" "}
+          <code className="text-[10px]">{"{{account.display_name}}"}</code>,{" "}
+          <code className="text-[10px]">{"{{user.name}}"}</code>,{" "}
+          <code className="text-[10px]">{"{{customer.name}}"}</code>,{" "}
+          <code className="text-[10px]">{"{{customer.firstName}}"}</code>,{" "}
+          <code className="text-[10px]">{"{{customer.email}}"}</code>
         </p>
       </div>
       {embeddedAccountId == null ? (

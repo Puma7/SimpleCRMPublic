@@ -4,6 +4,7 @@ import {
   mergeComposeHtml,
   plainTextToReplyHtml,
   splitComposeHtml,
+  splitComposeZones,
 } from '../../shared/compose-body';
 
 describe('compose-body', () => {
@@ -23,10 +24,10 @@ describe('compose-body', () => {
       quotedPlain: 'Original',
       signatureHtml: '<p>Grüße</p>',
     });
-    const { editableHtml, quotedHtml } = splitComposeHtml(html);
-    expect(editableHtml).toContain('Hallo');
-    expect(editableHtml).toContain('Grüße');
-    expect(quotedHtml).toContain('Original');
+    const zones = splitComposeZones(html);
+    expect(zones.bodyHtml).toContain('Hallo');
+    expect(zones.signatureHtml).toContain('Grüße');
+    expect(zones.quotedHtml).toContain('Original');
   });
 
   it('converts plain text paragraphs to html', () => {

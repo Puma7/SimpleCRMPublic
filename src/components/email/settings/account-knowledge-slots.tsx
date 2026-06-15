@@ -27,6 +27,7 @@ type KbRow = {
   name: string
   description: string | null
   account_id?: number | null
+  override_key?: string | null
   knowledge_context?: string | null
 }
 
@@ -35,6 +36,18 @@ type Props = {
 }
 
 const ASSIGN_PLACEHOLDER = "__assign__"
+
+function accountIdsMatch(
+  rowAccountId: number | null | undefined,
+  accountId: number,
+): boolean {
+  if (rowAccountId == null || rowAccountId === 0) return false
+  return Number(rowAccountId) === Number(accountId)
+}
+
+function slotOverrideKey(context: KnowledgeContext): string {
+  return `kb.${context}`
+}
 
 export function AccountKnowledgeSlots({ accountId }: Props) {
   const [rows, setRows] = useState<KbRow[]>([])
@@ -67,17 +80,33 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
   }, [load])
 
   const slotKb = (context: KnowledgeContext): KbRow | undefined =>
-    rows.find((kb) => kb.knowledge_context === context && kb.account_id === accountId)
+    rows.find(
+      (kb) =>
+        kb.knowledge_context === context
+        && accountIdsMatch(kb.account_id, accountId),
+    )
+    ?? rows.find(
+      (kb) =>
+        kb.override_key === slotOverrideKey(context)
+        && accountIdsMatch(kb.account_id, accountId),
+    )
 
   const globalFallback = (context: KnowledgeContext): KbRow | undefined =>
-    rows.find((kb) => kb.knowledge_context === context && (kb.account_id == null || kb.account_id === 0))
+    rows.find(
+      (kb) =>
+        kb.knowledge_context === context
+        && (kb.account_id == null || kb.account_id === 0),
+    )
 
   const assignableKbs = useMemo(() => {
     return allKbs.filter((kb) => kb.account_id == null || kb.account_id === 0)
   }, [allKbs])
 
   const createSlot = async (context: KnowledgeContext) => {
-    if (slotKb(context)) return
+    if (slotKb(context)) {
+      toast.info(`${KNOWLEDGE_CONTEXT_LABELS[context]} ist für dieses Konto bereits konfiguriert.`)
+      return
+    }
     setCreating(context)
     try {
       const r = (await invokeRenderer(IPCChannels.Email.CreateKnowledgeBase, {
@@ -89,11 +118,15 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
         toast.error(r.error ?? "Anlegen fehlgeschlagen.")
         return
       }
+      if (r?.id == null || !Number.isFinite(r.id)) {
+        toast.error("Anlegen fehlgeschlagen — keine ID vom Server erhalten.")
+        return
+      }
       toast.success(`${KNOWLEDGE_CONTEXT_LABELS[context]} angelegt.`)
       await load()
     } catch (e) {
       console.error(e)
-      toast.error("Wissensbasis konnte nicht angelegt werden.")
+      toast.error(e instanceof Error ? e.message : "Wissensbasis konnte nicht angelegt werden.")
     } finally {
       setCreating(null)
     }
@@ -101,7 +134,14 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
 
   const assignExisting = async (context: KnowledgeContext, kbId: number) => {
     const source = allKbs.find((kb) => kb.id === kbId)
-    if (!source || slotKb(context)) return
+    if (!source) {
+      toast.error("Ausgewählte Wissensbasis nicht gefunden.")
+      return
+    }
+    if (slotKb(context)) {
+      toast.info(`${KNOWLEDGE_CONTEXT_LABELS[context]} ist für dieses Konto bereits konfiguriert.`)
+      return
+    }
     setAssigning(context)
     try {
       await assignKnowledgeBaseToAccountSlot(source, accountId, context)
@@ -109,7 +149,7 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
       await load()
     } catch (e) {
       console.error(e)
-      toast.error("Zuweisung fehlgeschlagen.")
+      toast.error(e instanceof Error ? e.message : "Zuweisung fehlgeschlagen.")
     } finally {
       setAssigning(null)
     }

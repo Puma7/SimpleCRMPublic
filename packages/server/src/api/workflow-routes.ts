@@ -1671,17 +1671,33 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   }
 
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['promptId', 'text', 'contextText', 'customerId']);
+  const allowedFields = new Set(['promptId', 'text', 'contextText', 'inboundContextText', 'userContext', 'customerId', 'insertMode']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
 
-  const values: { promptId?: number; text?: string; contextText?: string; customerId?: number | null } = {};
+  const values: {
+    promptId?: number;
+    text?: string;
+    contextText?: string;
+    inboundContextText?: string;
+    userContext?: string;
+    customerId?: number | null;
+    insertMode?: boolean;
+  } = {};
   const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
   if (promptId.ok) values.promptId = promptId.value;
   else errors.push({ field: 'promptId', message: promptId.message });
 
-  const text = normalizeRequiredBodyText(body.text, 'text', 20000);
+  if (Object.prototype.hasOwnProperty.call(body, 'insertMode')) {
+    if (typeof body.insertMode === 'boolean') values.insertMode = body.insertMode;
+    else errors.push({ field: 'insertMode', message: 'insertMode muss ein Boolean sein' });
+  }
+
+  const insertMode = values.insertMode === true;
+  const text = insertMode
+    ? normalizeOptionalBodyText(body.text, 'text', 20000)
+    : normalizeRequiredBodyText(body.text, 'text', 20000);
   if (text.ok) values.text = text.value;
   else errors.push({ field: 'text', message: text.message });
 
@@ -1691,26 +1707,43 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     else errors.push({ field: 'contextText', message: contextText.message });
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'inboundContextText')) {
+    const inboundContextText = normalizeRequiredBodyText(body.inboundContextText, 'inboundContextText', 40000);
+    if (inboundContextText.ok) values.inboundContextText = inboundContextText.value;
+    else errors.push({ field: 'inboundContextText', message: inboundContextText.message });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'userContext')) {
+    const userContext = normalizeRequiredBodyText(body.userContext, 'userContext', 4000);
+    if (userContext.ok) values.userContext = userContext.value;
+    else errors.push({ field: 'userContext', message: userContext.message });
+  }
+
   if (Object.prototype.hasOwnProperty.call(body, 'customerId')) {
     const customerId = normalizeNullablePositiveBodyInt(body.customerId, 'customerId');
     if (customerId.ok) values.customerId = customerId.value;
     else errors.push({ field: 'customerId', message: customerId.message });
   }
 
-  if (errors.length > 0 || values.promptId === undefined || values.text === undefined) {
+  if (errors.length > 0 || values.promptId === undefined || (!insertMode && values.text === undefined)) {
     return {
       ok: false,
       response: error(400, 'validation_error', 'AI text transform payload ist ungueltig', { fields: errors }),
     };
   }
 
+  const resolvedText = values.text ?? '';
+
   return {
     ok: true,
     values: {
       promptId: values.promptId,
-      text: values.text,
+      text: resolvedText,
       ...(values.contextText === undefined ? {} : { contextText: values.contextText }),
+      ...(values.inboundContextText === undefined ? {} : { inboundContextText: values.inboundContextText }),
+      ...(values.userContext === undefined ? {} : { userContext: values.userContext }),
       ...(values.customerId === undefined ? {} : { customerId: values.customerId }),
+      ...(values.insertMode === undefined ? {} : { insertMode: values.insertMode }),
     },
   };
 }
@@ -1751,6 +1784,18 @@ function normalizeTextFilter(value: string | undefined, maxLength: number): stri
   const normalized = value.trim();
   if (!normalized) return undefined;
   return normalized.length > maxLength ? null : normalized;
+}
+
+function normalizeOptionalBodyText(
+  rawValue: unknown,
+  field: string,
+  maxLength: number,
+): { ok: true; value: string } | { ok: false; message: string } {
+  if (rawValue === undefined || rawValue === null) return { ok: true, value: '' };
+  if (typeof rawValue !== 'string') return { ok: false, message: `${field} muss ein String sein` };
+  const value = rawValue.trim();
+  if (value.length > maxLength) return { ok: false, message: `${field} darf maximal ${maxLength} Zeichen haben` };
+  return { ok: true, value };
 }
 
 function normalizeRequiredBodyText(

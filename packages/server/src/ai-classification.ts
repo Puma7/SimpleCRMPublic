@@ -334,13 +334,53 @@ export function createPostgresAiTransformTextPort(
   };
 }
 
+function buildAiTransformSystemPromptForServer(input: {
+  sourceText: string;
+  contextText?: string;
+  inboundContextText?: string;
+  userContext?: string;
+  insertMode?: boolean;
+}): string {
+  const contextText = input.contextText?.trim() ?? '';
+  const selectionMode = !input.insertMode
+    && contextText.length > 0
+    && contextText !== input.sourceText.trim();
+  const inbound = input.inboundContextText?.trim();
+  const userCtx = input.userContext?.trim();
+
+  let prompt = selectionMode
+    ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer hat in seiner Antwort eine Stelle markiert. '
+      + 'Nutze den GESAMTEN Antwort-Entwurf nur als Kontext, bearbeite und antworte aber AUSSCHLIESSLICH mit dem '
+      + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
+      + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamter Antwort-Entwurf, nicht erneut ausgeben):\n'
+      + contextText
+    : input.insertMode
+      ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer moechte NEUEN Text in seine Antwort EINFUEGEN '
+        + '(nicht den bestehenden ersetzen). Antworte NUR mit dem neuen Textabschnitt — ohne Einleitung, ohne '
+        + 'Wiederholung des bestehenden Entwurfs, ohne Anrede oder Signatur (die sind bereits vorhanden).\n\n'
+        + (contextText
+          ? 'BESTEHENDER ANTWORT-ENTWURF (nur Kontext, nicht erneut ausgeben):\n' + contextText
+          : '')
+      : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+
+  if (inbound) {
+    prompt +=
+      '\n\nEINGEHENDE NACHRICHT DES KUNDEN (nur Kontext, nicht erneut ausgeben):\n' + inbound;
+  }
+  if (userCtx) {
+    prompt += '\n\n<bearbeiter_hinweis>\n' + userCtx + '\n</bearbeiter_hinweis>';
+  }
+  return prompt;
+}
+
 export function createPostgresAiTextTransformApiPort(
   options: PostgresAiClassificationPortOptions,
 ): AiTextTransformApiPort {
   return {
     async transformText(input) {
       const sourceText = input.text.trim();
-      if (!sourceText) return { success: false, error: 'Text fehlt' };
+      if (!sourceText && !input.insertMode) return { success: false, error: 'Text fehlt' };
+      const effectiveSource = sourceText || '(neuer Absatz)';
 
       try {
         const context = await withWorkspaceTransaction(
@@ -375,19 +415,14 @@ export function createPostgresAiTextTransformApiPort(
         const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
         if (!apiKey) return { success: false, error: 'Kein KI-API-Schluessel konfiguriert' };
 
-        // Selection-aware mode: when a context is supplied, `sourceText` is the
-        // user-highlighted excerpt and `contextText` is the full surrounding
-        // email. Tell the model to use the context but rewrite + return ONLY
-        // the excerpt, so the caller can splice it back in.
         const contextText = input.contextText?.trim() ?? '';
-        const selectionMode = contextText.length > 0 && contextText !== sourceText;
-        const systemPrompt = selectionMode
-          ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer hat in seiner Antwort eine Stelle markiert. '
-            + 'Nutze den GESAMTEN E-Mail-Text nur als Kontext, bearbeite und antworte aber AUSSCHLIESSLICH mit dem '
-            + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
-            + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamte E-Mail, nicht erneut ausgeben):\n'
-            + contextText
-          : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+        const systemPrompt = buildAiTransformSystemPromptForServer({
+          sourceText: effectiveSource,
+          contextText: contextText || undefined,
+          inboundContextText: input.inboundContextText,
+          userContext: input.userContext,
+          insertMode: input.insertMode,
+        });
         const output = await runTrackedChatCompletion(
           options,
           {
@@ -404,8 +439,8 @@ export function createPostgresAiTextTransformApiPort(
             user: interpolateWorkflowTemplate(
               context.prompt.user_template,
               {
-                text: sourceText,
-                combined_text: sourceText,
+                text: effectiveSource,
+                combined_text: effectiveSource,
                 'customer.name': context.customer?.name ?? '',
                 'customer.firstName': context.customer?.first_name ?? '',
                 'customer.email': context.customer?.email ?? '',

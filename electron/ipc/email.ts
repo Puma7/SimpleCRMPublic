@@ -3,6 +3,7 @@ import { BrowserWindow, IpcMainInvokeEvent, dialog, shell, type SaveDialogReturn
 import fs from 'fs';
 import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
+import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
 import {
   accountOverrideScopeFromPayload,
   type AccountOverrideScopePayload,
@@ -160,6 +161,7 @@ import {
 import {
   ensureReplySuggestion,
   generateAndStoreReplySuggestion,
+  generateReplyDraftOnly,
   getReplySuggestion,
 } from '../email/email-reply-ai';
 import {
@@ -1873,7 +1875,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.AiTransformText,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { promptId: number; text: string; customerId?: number | null },
+        payload: {
+          promptId: number;
+          text: string;
+          contextText?: string;
+          inboundContextText?: string;
+          userContext?: string;
+          customerId?: number | null;
+          insertMode?: boolean;
+        },
       ) => {
         const prompts = listAiPrompts();
         const p = prompts.find((x) => x.id === payload.promptId);
@@ -1892,7 +1902,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         try {
           const profileId = resolvePromptProfileId(p);
           const out = await runChatCompletion(
-            'Du bist ein Assistent für geschäftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.',
+            buildAiTransformSystemPrompt({
+              sourceText: payload.text,
+              contextText: payload.contextText,
+              inboundContextText: payload.inboundContextText,
+              userContext: payload.userContext,
+              insertMode: payload.insertMode,
+            }),
             user,
             profileId,
           );
@@ -1958,11 +1974,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.GenerateReplyDraft,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; promptId?: number; customerId?: number | null },
-      ) => generateAndStoreReplySuggestion(payload.messageId, {
-        promptId: payload.promptId,
-        customerId: payload.customerId,
-      }),
+        payload: {
+          messageId: number;
+          promptId?: number;
+          customerId?: number | null;
+          userContext?: string;
+          persistSuggestion?: boolean;
+        },
+      ) => {
+        const opts = {
+          promptId: payload.promptId,
+          customerId: payload.customerId,
+          userContext: payload.userContext,
+        };
+        if (payload.persistSuggestion === false) {
+          return generateReplyDraftOnly(payload.messageId, opts);
+        }
+        return generateAndStoreReplySuggestion(payload.messageId, opts);
+      },
       { logger },
     ),
   );

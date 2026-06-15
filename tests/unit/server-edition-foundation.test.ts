@@ -4268,19 +4268,6 @@ describe('server edition foundation', () => {
     expect(enqueued).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
-        type: 'mail.spam.score',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          messageId: 31,
-          actorUserId: USER_A_ID,
-          applyStatus: true,
-          runSecurityCheck: true,
-          enqueueInboundWorkflows: true,
-        },
-        maxAttempts: 3,
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
         type: 'ai.reply_suggestion',
         payload: {
           workspaceId: WORKSPACE_A_ID,
@@ -4319,7 +4306,7 @@ describe('server edition foundation', () => {
     });
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+      .map((item) => (item as any).payload.messageId)).toEqual([43, 44]);
     expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
@@ -28226,6 +28213,25 @@ describe('server edition foundation', () => {
       { field: 'promptId', message: 'promptId muss eine positive Ganzzahl sein' },
       { field: 'text', message: 'text darf nicht leer sein' },
     ]));
+
+    const insertMode = await api.handle({
+      method: 'POST',
+      path: '/api/v1/ai/transform-text',
+      body: {
+        promptId: '22',
+        text: '',
+        insertMode: true,
+        inboundContextText: 'Kundenanfrage',
+      },
+      principal,
+    });
+    expect(insertMode.status).toBe(200);
+    expect(calls.at(-1)).toEqual(expect.objectContaining({
+      promptId: 22,
+      text: '',
+      insertMode: true,
+      inboundContextText: 'Kundenanfrage',
+    }));
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',

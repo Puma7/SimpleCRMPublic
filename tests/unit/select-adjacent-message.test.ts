@@ -27,8 +27,8 @@ describe('pickAdjacentMessageId', () => {
     expect(pickAdjacentMessageId([], 1)).toBeNull();
   });
 
-  test('falls back to first when removed id not in list', () => {
-    expect(pickAdjacentMessageId(msgs, 99)).toBe(1);
+  test('returns null when removed id not in list', () => {
+    expect(pickAdjacentMessageId(msgs, 99)).toBeNull();
   });
 });
 

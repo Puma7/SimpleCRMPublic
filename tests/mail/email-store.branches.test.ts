@@ -287,6 +287,7 @@ describe('email-store branches', () => {
     test('spam review and inbox views use spam_status filters', () => {
       listMessagesForAccountView(1, 'spam_review');
       expect(mock.getLastSql()).toContain("COALESCE(m.spam_status, 'clean') = 'review'");
+      expect(mock.getLastSql()).toContain('COALESCE(m.done_local, 0) = 0');
 
       listMessagesForAccountView(1, 'inbox');
       expect(mock.getLastSql()).toContain("COALESCE(m.spam_status, 'clean') = 'clean'");
@@ -517,6 +518,7 @@ describe('email-store branches', () => {
       });
       const id = createComposeDraft({ accountId: 1 });
       expect(getEmailMessageById(id)?.folder_kind).toBe('draft');
+      expect(getEmailMessageById(id)?.from_json).toContain('a@b.de');
     });
 
     test('updateComposeDraft all field branches', () => {

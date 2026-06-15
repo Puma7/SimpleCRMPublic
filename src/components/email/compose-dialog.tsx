@@ -13,6 +13,7 @@ import {
   validateRecipientField,
 } from "@shared/email-recipient-parse"
 import { CircleHelp, Loader2, Paperclip, X } from "lucide-react"
+import { cn } from "@/lib/utils"
 import {
   Dialog,
   DialogContent,
@@ -34,6 +35,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import {
   getRendererTransport,
   invokeRenderer,
@@ -57,10 +59,24 @@ import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-re
 import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
 import {
   buildReplyComposeHtml,
+  composeAiContextText,
   mergeComposeHtml,
+  mergeComposeZones,
+  mergeEditorAndSignature,
   plainTextToReplyHtml,
   splitComposeHtml,
+  splitComposeZones,
+  splitEditorAndSignature,
 } from "@shared/compose-body"
+import {
+  aiDraftLikelyIncludesGreeting,
+  buildReplyGreeting,
+  replyGreetingPlainToHtml,
+} from "@shared/email-reply-greeting"
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from "@shared/signature-template"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   applyCannedTemplate,
@@ -72,9 +88,23 @@ import {
   stripHtmlToText,
   type AiPrompt,
   type CannedResponse,
+  type TeamMember,
   type CustomerOpt,
   type EmailMessage,
 } from "./types"
+
+function getInboundContextText(sourceMsg: EmailMessage | null): string {
+  if (!sourceMsg) return ""
+  const raw = (sourceMsg.body_text ?? sourceMsg.snippet ?? stripHtmlToText(sourceMsg.body_html ?? "")).trim()
+  return raw.slice(0, 12_000)
+}
+
+function getComposeSourceMessage(intent: ComposeIntent): EmailMessage | null {
+  if (intent.mode === "reply" || intent.mode === "reply-all" || intent.mode === "forward") {
+    return intent.message
+  }
+  return null
+}
 
 function customerOptFromDbRow(row: Record<string, unknown>): CustomerOpt {
   const name =
@@ -95,6 +125,7 @@ import { useComposeDialogSize } from "./use-compose-dialog-size"
 
 type Props = {
   accounts: EmailAccount[]
+  teamMembers: TeamMember[]
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
   onSent: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
@@ -133,7 +164,19 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props) {
+type FileWithPath = File & { path?: string }
+
+function hasFileDrag(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false
+  return Array.from(dataTransfer.types).includes("Files")
+}
+
+function localPathFromDroppedFile(file: File): string | null {
+  const path = (file as FileWithPath).path?.trim()
+  return path || null
+}
+
+export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, onSent }: Props) {
   const {
     composeIntent,
     setComposeIntent,
@@ -156,7 +199,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [cc, setCc] = useState("")
   const [bcc, setBcc] = useState("")
   const [subject, setSubject] = useState("")
-  const [bodyHtml, setBodyHtml] = useState("")
+  const [editorHtml, setEditorHtml] = useState("")
+  const [signatureHtml, setSignatureHtml] = useState("")
   const [sending, setSending] = useState(false)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
@@ -165,6 +209,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [attachmentDropActive, setAttachmentDropActive] = useState(false)
   /** Resolved SMTP account for the open draft (never "all"). */
   const [composeAccountId, setComposeAccountId] = useState<number | null>(null)
 
@@ -184,6 +229,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
+  const [rewriteContextOpen, setRewriteContextOpen] = useState(false)
+  const [rewriteContextText, setRewriteContextText] = useState("")
+  const [rewriteContextBusy, setRewriteContextBusy] = useState(false)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
   const [scheduledSendFailed, setScheduledSendFailed] = useState<{
     lastError: string
@@ -312,7 +360,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   `<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`,
                 )
               : ""
-          setBodyHtml(html)
+          const split = splitEditorAndSignature(html)
+          setEditorHtml(split.editorHtml)
+          setSignatureHtml(split.signatureHtml)
           setAttachmentPaths(parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json))
           return
         }
@@ -360,10 +410,35 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           IPCChannels.Email.GetComposeSignature,
           { accountId: accountIdAtOpen },
         ) as { html: string | null }
-        const sigHtml =
-          composeIntent.mode === "new" && sigRes.html
-            ? sanitizeComposeHtml(sigRes.html)
+        let customerForSig: CustomerOpt | null = null
+        let customerSalutation: string | null = null
+        if (sourceMsg?.customer_id) {
+          try {
+            const row = await invokeRenderer(
+              IPCChannels.Db.GetCustomer,
+              sourceMsg.customer_id,
+            ) as Record<string, unknown> | null
+            if (row) {
+              customerForSig = customerOptFromDbRow(row)
+              customerSalutation = typeof row.salutation === "string" ? row.salutation : null
+            }
+          } catch {
+            customerForSig = null
+          }
+        }
+        const accountRow = accounts.find((a) => a.id === accountIdAtOpen)
+        const sigRaw =
+          sigRes.html && composeIntent.mode !== "forward"
+            ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
+                accountDisplayName: accountRow?.display_name ?? "",
+                accountEmail: accountRow?.email_address ?? "",
+                teamMemberDisplayName: teamMembers[0]?.display_name ?? null,
+                customerName: customerForSig?.name ?? "",
+                customerFirstName: customerForSig?.firstName ?? "",
+                customerEmail: customerForSig?.email ?? "",
+              }))
             : ""
+        const sigHtml = sigRaw ? sanitizeComposeHtml(sigRaw) : ""
         const res = await invokeRenderer(IPCChannels.Email.CreateComposeDraft, {
           accountId: accountIdAtOpen,
           subject: subj,
@@ -397,24 +472,50 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           setCc(ccAddr)
           setBcc("")
           setSubject(subj)
-          const initialReplyHtml =
+          const hasAiInitial =
             (composeIntent.mode === "reply" || composeIntent.mode === "reply-all") &&
-            composeIntent.initialReplyHtml
-              ? composeIntent.initialReplyHtml
-              : composeIntent.mode === "reply" ||
-                  composeIntent.mode === "reply-all" ||
-                  composeIntent.mode === "forward"
-                ? "<p><br></p>"
-                : ""
+            !!composeIntent.initialReplyHtml?.trim()
+          let greetingHtml = ""
+          if (
+            (composeIntent.mode === "reply" || composeIntent.mode === "reply-all") &&
+            sourceMsg &&
+            !hasAiInitial
+          ) {
+            greetingHtml = replyGreetingPlainToHtml(
+              buildReplyGreeting({
+                customer: customerForSig
+                  ? {
+                      salutation: customerSalutation,
+                      name: customerForSig.name,
+                      firstName: customerForSig.firstName,
+                    }
+                  : null,
+                fromJson: sourceMsg.from_json,
+              }),
+            )
+          }
+          const initialReplyHtml = hasAiInitial
+            ? composeIntent.initialReplyHtml!
+            : composeIntent.mode === "reply" ||
+                composeIntent.mode === "reply-all" ||
+                composeIntent.mode === "forward"
+              ? "<p><br></p>"
+              : ""
           const composed = buildReplyComposeHtml({
+            greetingHtml: hasAiInitial && aiDraftLikelyIncludesGreeting(composeIntent.initialReplyHtml!)
+              ? ""
+              : greetingHtml,
             replyHtml: initialReplyHtml
-              ? sanitizeComposeHtml(initialReplyHtml)
+              ? sanitizeComposeHtml(
+                  hasAiInitial ? composeIntent.initialReplyHtml! : initialReplyHtml,
+                )
               : "",
             quotedPlain: quoted,
-            signatureHtml:
-              sigHtml && composeIntent.mode !== "forward" ? sigHtml : undefined,
+            signatureHtml: sigHtml || undefined,
           })
-          setBodyHtml(composed || sigHtml || "")
+          const split = splitEditorAndSignature(composed || sigHtml || "")
+          setEditorHtml(split.editorHtml)
+          setSignatureHtml(split.signatureHtml || sigHtml || "")
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -427,9 +528,99 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts, draftBootstrapGen])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen])
 
-  const getEditorHtml = useCallback(() => editorRef.current?.getHtml() ?? bodyHtml, [bodyHtml])
+  const getFullComposeHtml = useCallback(() => {
+    const editable = editorRef.current?.getHtml() ?? editorHtml
+    return mergeEditorAndSignature(editable, signatureHtml)
+  }, [editorHtml, signatureHtml])
+
+  const getEditorHtml = getFullComposeHtml
+
+  const resolveComposeCustomerId = useCallback(() => {
+    const src = getComposeSourceMessage(composeIntent)
+    return src?.customer_id ?? selectedMessage?.customer_id ?? null
+  }, [composeIntent, selectedMessage?.customer_id])
+
+  const runAiComposeTransform = useCallback(
+    async (opts: { promptId: number; userContext?: string; rewriteBody?: boolean }) => {
+      const rawHtml = getFullComposeHtml()
+      const zones = splitComposeZones(rawHtml)
+      const bodyText = stripHtmlToText(zones.bodyHtml)
+      const aiContext = composeAiContextText(zones)
+      const selectionText = editorRef.current?.getSelectionText() ?? null
+      const useSelection = !opts.rewriteBody && !!selectionText?.trim()
+      const insertMode = !opts.rewriteBody && !useSelection
+      const sourceMsg = getComposeSourceMessage(composeIntent)
+      const inboundContext = getInboundContextText(sourceMsg) || undefined
+
+      let src: string
+      if (opts.rewriteBody) {
+        if (!bodyText.trim()) {
+          toast.error(
+            "Bitte zuerst Ihren Antworttext eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
+          )
+          return false
+        }
+        src = bodyText
+      } else if (useSelection) {
+        src = selectionText!
+      } else {
+        const hasContext = Boolean(
+          bodyText.trim() || aiContext.trim() || inboundContext?.trim() || opts.userContext?.trim(),
+        )
+        if (!hasContext) {
+          toast.error(
+            "Bitte zuerst Ihren Antworttext eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
+          )
+          return false
+        }
+        src = bodyText.trim() || "(neuer Absatz)"
+      }
+
+      const r = await invokeRenderer(IPCChannels.Email.AiTransformText, {
+        promptId: opts.promptId,
+        text: src,
+        contextText: aiContext || undefined,
+        inboundContextText: inboundContext,
+        userContext: opts.userContext?.trim() || undefined,
+        customerId: resolveComposeCustomerId(),
+        insertMode: insertMode || undefined,
+      }) as { success: boolean; text?: string; error?: string }
+      if (r.success && r.text?.trim()) {
+        if (useSelection && editorRef.current?.replaceSelectionText(r.text.trim())) {
+          toast.success("KI hat den markierten Text ersetzt")
+        } else if (opts.rewriteBody) {
+          const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
+          const nextEditor = mergeComposeZones({
+            ...splitComposeZones(editorRef.current?.getHtml() ?? editorHtml),
+            bodyHtml: transformed,
+          })
+          setEditorHtml(nextEditor)
+          toast.success("KI hat den Haupttext neu geschrieben (Anrede, Signatur und Zitat unverändert)")
+        } else if (editorRef.current?.hasKnownCursor() && editorRef.current.insertTextAtCursor(r.text.trim())) {
+          toast.success("KI-Text an der Cursor-Position eingefügt")
+        } else {
+          const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
+          const currentZones = splitComposeZones(editorRef.current?.getHtml() ?? editorHtml)
+          const gap = currentZones.bodyHtml.trim() ? "<p><br></p>" : ""
+          const nextEditor = mergeComposeZones({
+            ...currentZones,
+            bodyHtml: `${transformed}${gap}${currentZones.bodyHtml}`,
+          })
+          setEditorHtml(nextEditor)
+          toast.success("KI-Text am Anfang eingefügt (bestehender Text bleibt erhalten)")
+        }
+        return true
+      }
+      toast.error(
+        r.error ??
+          "KI-Antwort leer. Prüfen Sie Einstellungen → E-Mail → KI (API-Schlüssel und Prompts).",
+      )
+      return false
+    },
+    [composeIntent, getFullComposeHtml, editorHtml, resolveComposeCustomerId],
+  )
 
   const closeDialog = () => {
     setComposeIntent({ mode: "closed" })
@@ -440,8 +631,10 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     setCc("")
     setBcc("")
     setSubject("")
-    setBodyHtml("")
+    setEditorHtml("")
+    setSignatureHtml("")
     setAttachmentPaths([])
+    setAttachmentDropActive(false)
     closingRef.current = false
   }
 
@@ -519,8 +712,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     async (opts?: { silent?: boolean }) => {
       if (draftId == null) return false
       try {
-        const rawHtml = getEditorHtml()
-        if (rawHtml !== bodyHtml) setBodyHtml(rawHtml)
+        const rawHtml = getFullComposeHtml()
         const safeHtml = sanitizeComposeHtml(rawHtml)
         const plain = stripHtmlToText(safeHtml)
         await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
@@ -551,54 +743,106 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
       to,
       cc,
       bcc,
-      bodyHtml,
+      editorHtml,
+      signatureHtml,
       attachmentPaths,
-      getEditorHtml,
+      getFullComposeHtml,
       isReplyCompose,
       keepReplyOpenInInbox,
       replyToId,
     ],
   )
 
-  const handleServerAttachmentFiles = async (files: FileList | null) => {
-    if (!serverClientMode || draftId == null || !files?.length) return
-    setUploadingAttachment(true)
-    try {
-      const uploadedPaths: string[] = []
-      for (const file of Array.from(files)) {
-        if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
-          toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
-          continue
+  const handleServerAttachmentFiles = useCallback(
+    async (files: FileList | readonly File[] | null) => {
+      if (!serverClientMode || draftId == null || !files?.length) return
+      setUploadingAttachment(true)
+      try {
+        const uploadedPaths: string[] = []
+        for (const file of Array.from(files)) {
+          if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
+            toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
+            continue
+          }
+          const contentBase64 = await fileToBase64(file)
+          const uploaded = await uploadServerComposeAttachment({
+            draftMessageId: draftId,
+            filename: file.name || "attachment",
+            contentBase64,
+            contentType: file.type || undefined,
+          })
+          uploadedPaths.push(uploaded.path)
         }
-        const contentBase64 = await fileToBase64(file)
-        const uploaded = await uploadServerComposeAttachment({
-          draftMessageId: draftId,
-          filename: file.name || "attachment",
-          contentBase64,
-          contentType: file.type || undefined,
+        if (uploadedPaths.length === 0) return
+        const nextPaths = [...new Set([...attachmentPaths, ...uploadedPaths])]
+        setAttachmentPaths(nextPaths)
+        await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+          messageId: draftId,
+          draftAttachmentPaths: nextPaths,
         })
-        uploadedPaths.push(uploaded.path)
+        toast.success(
+          uploadedPaths.length === 1
+            ? "Anhang hochgeladen"
+            : `${uploadedPaths.length} Anhänge hochgeladen`,
+        )
+      } catch (e) {
+        logError("compose-dialog: upload server attachment", e)
+        toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")
+      } finally {
+        setUploadingAttachment(false)
+        if (serverAttachmentInputRef.current) serverAttachmentInputRef.current.value = ""
       }
-      if (uploadedPaths.length === 0) return
-      const nextPaths = [...new Set([...attachmentPaths, ...uploadedPaths])]
-      setAttachmentPaths(nextPaths)
-      await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
-        messageId: draftId,
-        draftAttachmentPaths: nextPaths,
-      })
-      toast.success(
-        uploadedPaths.length === 1
-          ? "Anhang hochgeladen"
-          : `${uploadedPaths.length} Anhänge hochgeladen`,
-      )
-    } catch (e) {
-      logError("compose-dialog: upload server attachment", e)
-      toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")
-    } finally {
-      setUploadingAttachment(false)
-      if (serverAttachmentInputRef.current) serverAttachmentInputRef.current.value = ""
-    }
-  }
+    },
+    [attachmentPaths, draftId, serverClientMode],
+  )
+
+  const handleDroppedAttachmentFiles = useCallback(
+    async (files: FileList | readonly File[] | null) => {
+      if (!files?.length) return
+      if (draftId == null) {
+        toast.error("Entwurf wird noch vorbereitet — bitte kurz warten.")
+        return
+      }
+      if (serverClientMode) {
+        await handleServerAttachmentFiles(files)
+        return
+      }
+      if (!localAttachmentPickerAvailable) return
+
+      const paths: string[] = []
+      for (const file of Array.from(files)) {
+        const path = localPathFromDroppedFile(file)
+        if (path) paths.push(path)
+      }
+      if (paths.length === 0) {
+        toast.error("Anhänge per Drag & Drop sind nur für lokale Dateien verfügbar.")
+        return
+      }
+      try {
+        const nextPaths = [...new Set([...attachmentPaths, ...paths])]
+        setAttachmentPaths(nextPaths)
+        await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+          messageId: draftId,
+          draftAttachmentPaths: nextPaths,
+        })
+        toast.success(
+          paths.length === 1
+            ? "Anhang hinzugefügt"
+            : `${paths.length} Anhänge hinzugefügt`,
+        )
+      } catch (e) {
+        logError("compose-dialog: drop local attachment", e)
+        toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hinzugefügt werden.")
+      }
+    },
+    [
+      attachmentPaths,
+      draftId,
+      handleServerAttachmentFiles,
+      localAttachmentPickerAvailable,
+      serverClientMode,
+    ],
+  )
 
   useEffect(() => {
     if (!isOpen || draftId == null || initialisedDraftKeyRef.current == null) return
@@ -609,7 +853,7 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     }
-  }, [isOpen, draftId, to, cc, bcc, subject, bodyHtml, attachmentPaths, saveDraft])
+  }, [isOpen, draftId, to, cc, bcc, subject, editorHtml, signatureHtml, attachmentPaths, saveDraft])
 
   const handleCheckOutbound = async () => {
     if (draftId == null) return
@@ -807,7 +1051,40 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           maxHeight: dialogHeightCss,
         }}
       >
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div
+          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          onDragEnter={(event) => {
+            if (!hasFileDrag(event.dataTransfer)) return
+            event.preventDefault()
+            setAttachmentDropActive(true)
+          }}
+          onDragOver={(event) => {
+            if (!hasFileDrag(event.dataTransfer)) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = "copy"
+            setAttachmentDropActive(true)
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node)) return
+            setAttachmentDropActive(false)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            setAttachmentDropActive(false)
+            if (!hasFileDrag(event.dataTransfer)) return
+            void handleDroppedAttachmentFiles(event.dataTransfer.files)
+          }}
+        >
+        {attachmentDropActive ? (
+          <div
+            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-primary/70 bg-primary/10 backdrop-blur-[1px]"
+            aria-hidden
+          >
+            <div className="rounded-md bg-background/90 px-4 py-2 text-sm font-medium text-foreground shadow-sm">
+              Dateien hier ablegen, um Anhänge hinzuzufügen
+            </div>
+          </div>
+        ) : null}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -980,9 +1257,12 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   const frag = sanitizeComposeHtml(
                     `<p>${block.replace(/\n/g, "<br/>")}</p>`,
                   )
-                  setBodyHtml((prev) => {
-                    const { editableHtml, quotedHtml } = splitComposeHtml(prev)
-                    return mergeComposeHtml(`${editableHtml}${frag}`, quotedHtml)
+                  setEditorHtml((prev) => {
+                    const zones = splitComposeZones(prev)
+                    return mergeComposeZones({
+                      ...zones,
+                      bodyHtml: `${zones.bodyHtml}${frag}`,
+                    })
                   })
                 })()
               }}
@@ -1015,13 +1295,14 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[280px] text-xs">
-                    Formuliert Ihren Antworttext (oberhalb des Zitats) mit einem Prompt aus
-                    Einstellungen → E-Mail → KI-Prompts. Tipp: Markieren Sie nur eine Stelle, dann
-                    wird ausschließlich diese umgeschrieben — die KI kennt den restlichen Text als
-                    Kontext. Ohne Markierung wird der ganze Antworttext bearbeitet.
+                    Formuliert Text mit einem Prompt aus Einstellungen → E-Mail → KI-Prompts.
+                    Ohne Markierung wird neuer Text eingefügt (an der Cursor-Position oder am
+                    Anfang des Haupttexts) — bestehender Text bleibt erhalten. Markieren Sie eine
+                    Stelle, um nur diese umzuschreiben. Anrede, Signatur und Zitat bleiben geschützt.
                   </TooltipContent>
                 </Tooltip>
               </div>
+            <div className="flex flex-wrap items-center gap-2">
             <Select
               key={aiPromptSelectKey}
               disabled={draftId == null || draftBootstrapping || aiPrompts.length === 0}
@@ -1029,50 +1310,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 void (async () => {
                   const pid = parseInt(id, 10)
                   if (!Number.isFinite(pid)) return
-                  const rawHtml = getEditorHtml()
-                  const { editableHtml, quotedHtml } = splitComposeHtml(rawHtml)
-                  const fullText = stripHtmlToText(editableHtml)
-                  // Selection-aware: if the user highlighted part of their reply,
-                  // rewrite ONLY that part (using the full reply as context) and
-                  // replace just the selection. Otherwise transform the whole
-                  // editable text as before.
-                  const selectionText = editorRef.current?.getSelectionText() ?? null
-                  const useSelection = !!selectionText && selectionText.trim().length > 0
-                  const src = useSelection ? selectionText! : fullText
-                  if (!src.trim()) {
-                    toast.error(
-                      "Bitte zuerst Ihren Antworttext oberhalb des Zitats eingeben (oder eine Stelle markieren), dann einen KI-Prompt wählen.",
-                    )
-                    setAiPromptSelectKey((k) => k + 1)
-                    return
-                  }
                   try {
-                    const r = await invokeRenderer(IPCChannels.Email.AiTransformText, {
-                      promptId: pid,
-                      text: src,
-                      ...(useSelection ? { contextText: fullText } : {}),
-                      customerId: selectedMessage?.customer_id ?? null,
-                    }) as {
-                      success: boolean
-                      text?: string
-                      error?: string
-                    }
-                    if (r.success && r.text?.trim()) {
-                      if (useSelection && editorRef.current?.replaceSelectionText(r.text.trim())) {
-                        toast.success("KI hat den markierten Text ersetzt")
-                      } else {
-                        const transformed = sanitizeComposeHtml(
-                          plainTextToReplyHtml(r.text),
-                        )
-                        setBodyHtml(mergeComposeHtml(transformed, quotedHtml))
-                        toast.success("KI-Text eingefügt (Zitat unverändert)")
-                      }
-                    } else {
-                      toast.error(
-                        r.error ??
-                          "KI-Antwort leer. Prüfen Sie Einstellungen → E-Mail → KI (API-Schlüssel und Prompts).",
-                      )
-                    }
+                    await runAiComposeTransform({ promptId: pid })
                   } catch (e) {
                     toast.error(e instanceof Error ? e.message : "KI-Fehler")
                   } finally {
@@ -1098,6 +1337,20 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                   ))}
               </SelectContent>
             </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              disabled={draftId == null || draftBootstrapping || aiPrompts.filter((p) => p.target !== "reply").length === 0}
+              onClick={() => {
+                setRewriteContextText("")
+                setRewriteContextOpen(true)
+              }}
+            >
+              Neu schreiben mit Kontext…
+            </Button>
+            </div>
             </div>
             </div>
           </div>
@@ -1166,14 +1419,21 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           </div>
 
           <div
-            className="compose-quill compose-editor-fill min-h-0 flex-1 rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
+            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
             title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
           >
             <ComposeQuillEditor
               ref={editorRef}
-              value={bodyHtml}
-              onChange={setBodyHtml}
+              value={editorHtml}
+              onChange={setEditorHtml}
+              className="min-h-0 flex-1"
             />
+            {signatureHtml ? (
+              <div
+                className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground [&_a]:text-primary"
+                dangerouslySetInnerHTML={{ __html: signatureHtml }}
+              />
+            ) : null}
           </div>
         </div>
 
@@ -1245,6 +1505,11 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 )}
                 Anhang hinzufügen
               </Button>
+              {(serverClientMode || localAttachmentPickerAvailable) ? (
+                <span className="text-[11px] text-muted-foreground">
+                  oder per Drag &amp; Drop
+                </span>
+              ) : null}
               <div className="flex flex-wrap items-center gap-4 text-xs">
                 <label className="flex items-center gap-2">
                   <Checkbox checked={pgpEncrypt} onCheckedChange={(v) => setPgpEncrypt(v === true)} />
@@ -1396,6 +1661,60 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
           </Button>
           <AlertDialogAction type="button" onClick={() => handleCloseSaveDraft()}>
             Als Entwurf speichern
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    <AlertDialog open={rewriteContextOpen} onOpenChange={setRewriteContextOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Haupttext neu schreiben</AlertDialogTitle>
+          <AlertDialogDescription>
+            Geben Sie Hinweise für die KI ein (z. B. „Stornierung noch möglich“). Anrede, Signatur
+            und Zitat bleiben unverändert. Die eingehende Kundenmail wird automatisch als Kontext
+            mitgegeben.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <Textarea
+          value={rewriteContextText}
+          onChange={(e) => setRewriteContextText(e.target.value)}
+          placeholder="Zusätzlicher Kontext für die KI…"
+          className="min-h-[100px] text-sm"
+        />
+        <AlertDialogFooter>
+          <AlertDialogCancel type="button" disabled={rewriteContextBusy}>
+            Abbrechen
+          </AlertDialogCancel>
+          <AlertDialogAction
+            type="button"
+            disabled={rewriteContextBusy || !rewriteContextText.trim()}
+            onClick={(e) => {
+              e.preventDefault()
+              const defaultPrompt = aiPrompts.find((p) => p.target !== "reply")
+              if (!defaultPrompt) {
+                toast.error("Bitte zuerst einen KI-Prompt unter Einstellungen anlegen.")
+                return
+              }
+              setRewriteContextBusy(true)
+              void (async () => {
+                try {
+                  const ok = await runAiComposeTransform({
+                    promptId: defaultPrompt.id,
+                    userContext: rewriteContextText,
+                    rewriteBody: true,
+                  })
+                  if (ok) setRewriteContextOpen(false)
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : "KI-Fehler")
+                } finally {
+                  setRewriteContextBusy(false)
+                }
+              })()
+            }}
+          >
+            {rewriteContextBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Neu schreiben
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -8017,6 +8017,12 @@ describe('renderer transport', () => {
           items: [{ displayName: 'Team Lead', signatureHtml: '<p>Team SIG</p>' }],
           nextCursor: null,
         },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
       }));
     const transport = createHttpRendererTransport({
       baseUrl: 'https://crm.example.com',
@@ -8034,6 +8040,11 @@ describe('renderer transport', () => {
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
       'https://crm.example.com/api/v1/email/team-members?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/email/accounts',
       expect.objectContaining({ method: 'GET' }),
     );
   });

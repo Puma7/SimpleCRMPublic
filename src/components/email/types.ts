@@ -188,6 +188,11 @@ export function stripHtmlToText(html: string): string {
     .trim()
 }
 
+/** List/conversation rows often ship without body fields — only snippet. */
+export function needsFullMessageBody(message: Pick<EmailMessage, "body_text" | "body_html">): boolean {
+  return !message.body_text?.trim() && !message.body_html?.trim()
+}
+
 export function firstAddress(fromJson: string | null): string {
   if (!fromJson) return ""
   try {
@@ -211,6 +216,27 @@ export function formatFrom(fromJson: string | null): string {
   } catch {
     return fromJson
   }
+}
+
+/** From line with account fallback for outbound drafts/sent missing from_json. */
+export function formatMessageFrom(
+  message: Pick<EmailMessage, "from_json" | "folder_kind" | "account_id">,
+  accounts?: readonly EmailAccount[],
+): string {
+  if (message.from_json?.trim()) return formatFrom(message.from_json)
+  if (message.folder_kind === "sent" || message.folder_kind === "draft") {
+    const acc = accounts?.find((a) => a.id === message.account_id)
+    if (acc?.email_address) {
+      const json = JSON.stringify({
+        value: [{
+          address: acc.email_address,
+          ...(acc.display_name?.trim() ? { name: acc.display_name.trim() } : {}),
+        }],
+      })
+      return formatFrom(json)
+    }
+  }
+  return formatFrom(message.from_json)
 }
 
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {

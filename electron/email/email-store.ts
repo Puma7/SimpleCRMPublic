@@ -27,6 +27,11 @@ import { accountAccessSql, type MailScopeSession } from './mail-scope-access';
 export { doneFilterSql };
 export type { MailScopeSession };
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
+import { senderJsonFromMailbox } from '../../shared/email-recipient-parse';
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from '../../shared/signature-template';
 
 export type EmailAccountRow = {
   id: number;
@@ -447,6 +452,22 @@ function getTeamFallbackSignatureHtml(): string | null {
   return null;
 }
 
+function interpolateComposeSignatureHtml(
+  html: string,
+  account: EmailAccountRow,
+  teamMembers: EmailTeamMemberRow[],
+): string {
+  const teamMember = teamMembers[0];
+  return interpolateSignatureTemplate(
+    html,
+    buildSignatureTemplateContext({
+      accountDisplayName: account.display_name,
+      accountEmail: account.email_address,
+      teamMemberDisplayName: teamMember?.display_name ?? null,
+    }),
+  );
+}
+
 /** Compose footer for a specific mail account (per-account → team → account display name). */
 export function getComposeSignatureHtml(accountId: number): string | null {
   const acc = getEmailAccountById(accountId);
@@ -456,12 +477,17 @@ export function getComposeSignatureHtml(accountId: number): string | null {
       `SELECT signature_html FROM ${EMAIL_ACCOUNT_SIGNATURES_TABLE} WHERE account_id = ?`,
     )
     .get(accountId) as { signature_html: string | null } | undefined;
+  let rawHtml: string | null = null;
   if (row?.signature_html?.trim()) {
-    return row.signature_html.trim();
+    rawHtml = row.signature_html.trim();
+  } else {
+    const teamFallback = getTeamFallbackSignatureHtml();
+    if (teamFallback) rawHtml = teamFallback;
+    else rawHtml = `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
   }
-  const teamFallback = getTeamFallbackSignatureHtml();
-  if (teamFallback) return teamFallback;
-  return `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
+  if (!rawHtml.includes('{{')) return rawHtml;
+  const teamMembers = listEmailTeamMembers();
+  return interpolateComposeSignatureHtml(rawHtml, acc, teamMembers);
 }
 
 /** @deprecated Use getComposeSignatureHtml(accountId) */
@@ -697,7 +723,7 @@ export function listMessagesForAccountView(
   } else if (view === 'drafts') {
     sql += ` AND m.folder_kind = 'draft'`;
   } else if (view === 'spam_review') {
-    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
+    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
   } else if (view === 'spam') {
     sql += ` AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
   } else {
@@ -771,7 +797,7 @@ export function listMessagesForAllAccountsView(
   } else if (view === 'drafts') {
     sql += ` AND m.folder_kind = 'draft'`;
   } else if (view === 'spam_review') {
-    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
+    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
   } else if (view === 'spam') {
     sql += ` AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
   } else {
@@ -913,7 +939,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' THEN 1 ELSE 0 END) AS spam_review,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS spam_review,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND (is_spam = 1 OR COALESCE(spam_status, 'clean') = 'spam') THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
@@ -970,7 +996,7 @@ export function getMailFolderCountsForAllAccounts(
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' THEN 1 ELSE 0 END) AS spam_review,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS spam_review,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND (is_spam = 1 OR COALESCE(spam_status, 'clean') = 'spam') THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
@@ -1140,9 +1166,10 @@ export function createImapUpsertContext(folderId: number, uids: number[]): Messa
 }
 
 function seenLocalOnConflictExpr(reconcileFromServer: boolean): string {
+  const reviewGuard = `WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.spam_status, 'clean') = 'review' THEN ${EMAIL_MESSAGES_TABLE}.seen_local`;
   return reconcileFromServer
-    ? `seen_local = CASE WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.seen_sync_pending, 0) = 1 THEN ${EMAIL_MESSAGES_TABLE}.seen_local ELSE excluded.seen_local END`
-    : `seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`;
+    ? `seen_local = CASE ${reviewGuard} WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.seen_sync_pending, 0) = 1 THEN ${EMAIL_MESSAGES_TABLE}.seen_local ELSE excluded.seen_local END`
+    : `seen_local = CASE ${reviewGuard} ELSE MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local) END`;
 }
 
 /** Promote locally sent draft (negative uid) when the server copy arrives via IMAP Sent sync. */
@@ -1754,6 +1781,10 @@ export function createComposeDraft(input: {
   draftAttachmentPaths?: string[];
 }): number {
   const folder = ensureInboxFolderForAccount(input.accountId);
+  const acc = getEmailAccountById(input.accountId);
+  const fromJson = acc?.email_address
+    ? senderJsonFromMailbox(acc.email_address, acc.display_name)
+    : null;
   const minRow = getDb()
     .prepare(
       `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
@@ -1769,7 +1800,7 @@ export function createComposeDraft(input: {
     inReplyTo: null,
     referencesHeader: null,
     subject: input.subject ?? '(Entwurf)',
-    fromJson: null,
+    fromJson,
     toJson: input.toJson ?? null,
     ccJson: null,
     dateReceived: new Date().toISOString(),
@@ -1966,11 +1997,26 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
 }
 
 export function markDraftAsSent(draftMessageId: number): void {
-  getDb()
+  const row = getEmailMessageById(draftMessageId);
+  const acc = row ? getEmailAccountById(row.account_id) : null;
+  const fromJson =
+    row?.from_json?.trim() ||
+    (acc ? senderJsonFromMailbox(acc.email_address, acc.display_name) : null);
+  const result = getDb()
     .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0, scheduled_send_at = NULL, sent_imap_sync_failed = 0 WHERE id = ?`,
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET folder_kind = 'sent',
+           outbound_hold = 0,
+           archived = 0,
+           scheduled_send_at = NULL,
+           sent_imap_sync_failed = 0,
+           from_json = COALESCE(NULLIF(TRIM(from_json), ''), ?)
+       WHERE id = ?`,
     )
-    .run(draftMessageId);
+    .run(fromJson, draftMessageId);
+  if (result.changes === 0) {
+    console.error('markDraftAsSent: no row updated for messageId', draftMessageId);
+  }
 }
 
 export function updateComposeDraft(
@@ -1982,6 +2028,7 @@ export function updateComposeDraft(
     toJson?: string | null;
     ccJson?: string | null;
     bccJson?: string | null;
+    fromJson?: string | null;
     draftAttachmentPaths?: string[];
     replyParentMessageId?: number | null;
   },
@@ -1999,6 +2046,7 @@ export function updateComposeDraft(
   const vals: unknown[] = [subj, body, snippet];
   if (input.bodyHtml !== undefined) { sets.push('body_html = ?'); vals.push(html); }
   if (input.toJson !== undefined) { sets.push('to_json = ?'); vals.push(input.toJson); }
+  if (input.fromJson !== undefined) { sets.push('from_json = ?'); vals.push(input.fromJson); }
   if (input.ccJson !== undefined) { sets.push('cc_json = ?'); vals.push(input.ccJson); }
   if (input.bccJson !== undefined) { sets.push('bcc_json = ?'); vals.push(input.bccJson); }
   if (input.draftAttachmentPaths !== undefined) {

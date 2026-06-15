@@ -84,11 +84,23 @@ function MailShellInner() {
     assignMessagesCategory: assignMessagesCategoryBase,
     snoozeMessageUntilTomorrow: snoozeMessageUntilTomorrowBase,
     advanceSelectionAfterMessageRemoved: advanceSelectionAfterMessageRemovedBase,
+    patchMessageInList: patchMessageInListBase,
+    applyBulkListMutation,
     loadMore,
     hasMore,
     loadingMore,
+    scrollToMessageId,
+    clearScrollToMessage,
   } = useEmailMessages()
   const { acquireConversationLock } = useConversationLocks(messages)
+
+  const patchMessageInList = useCallback(
+    (messageId: number, partial: Parameters<typeof patchMessageInListBase>[1]) => {
+      patchMessageInListBase(messageId, partial)
+      invalidateMailMetrics()
+    },
+    [patchMessageInListBase, invalidateMailMetrics],
+  )
 
   const advanceSelectionAfterMessageRemoved = useCallback(
     async (removedId: number) => {
@@ -124,6 +136,14 @@ function MailShellInner() {
       }
     },
     [refreshList, advanceSelectionAfterMessageRemoved],
+  )
+
+  const handleBulkListChanged = useCallback(
+    (opts: Parameters<typeof applyBulkListMutation>[0]) => {
+      applyBulkListMutation(opts)
+      invalidateMailMetrics()
+    },
+    [applyBulkListMutation, invalidateMailMetrics],
   )
 
   const moveMessageToView = useCallback(
@@ -387,9 +407,12 @@ function MailShellInner() {
             onOpen={openMessage}
             onMoveMessageToView={moveMessageToView}
             onListChanged={handleListChanged}
+            onBulkListChanged={handleBulkListChanged}
             loadMore={loadMore}
             hasMore={hasMore}
             loadingMore={loadingMore}
+            scrollToMessageId={scrollToMessageId}
+            onScrolledToMessage={clearScrollToMessage}
           />
         </ResizablePanel>
         <ResizableHandle />
@@ -400,6 +423,7 @@ function MailShellInner() {
           className="min-w-0"
         >
           <MessageViewer
+            accounts={accounts}
             teamMembers={teamMembers}
             categories={categories}
             messageTags={messageTags}
@@ -410,9 +434,11 @@ function MailShellInner() {
             refreshCurrentMessage={refreshCurrentMessage}
             refreshList={refreshList}
             advanceSelectionAfterMessageRemoved={advanceSelectionAfterMessageRemoved}
+            patchMessageInList={patchMessageInList}
             onReply={(m, initialReplyHtml) => void startLockedCompose("reply", m, initialReplyHtml)}
             onReplyAll={(m, initialReplyHtml) => void startLockedCompose("reply-all", m, initialReplyHtml)}
             onForward={(m) => void startLockedCompose("forward", m)}
+            onOpenMessage={openMessage}
             metadataPlacement="external"
             remoteContentPolicyRefreshKey={remoteContentPolicyRefreshKey}
           />
@@ -435,6 +461,7 @@ function MailShellInner() {
               reloadNotes={reloadNotes}
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
+              onOpenMessage={openMessage}
             />
           ) : (
             <div className="flex h-full w-full min-w-0 flex-col items-center justify-center border-l bg-muted/10 p-4 text-center text-xs text-muted-foreground">
@@ -446,9 +473,10 @@ function MailShellInner() {
 
       <ComposeDialog
         accounts={accounts}
+        teamMembers={teamMembers}
         cannedList={cannedList}
         aiPrompts={aiPrompts}
-        onSent={refreshList}
+        onSent={() => refreshList({ preserveSelection: true })}
       />
     </div>
   )

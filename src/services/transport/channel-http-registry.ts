@@ -4,6 +4,10 @@ import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
 import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from "@shared/signature-template"
 import { RendererTransportError } from "./renderer-transport"
 import {
   accountOverrideScopeFromPayload,
@@ -1838,6 +1842,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         customerId: input.customerId === undefined || input.customerId === null
           ? input.customerId ?? undefined
           : positiveId(input.customerId, "customer id"),
+        userContext: input.userContext === undefined || input.userContext === null
+          ? undefined
+          : stringPayloadField(input.userContext, "email reply draft user context"),
+        persistSuggestion: input.persistSuggestion === undefined
+          ? undefined
+          : optionalBoolean(input.persistSuggestion, "reply draft persist suggestion flag"),
       }),
       transform: (body) => dataBody<{ success: boolean; text?: string; error?: string }>(body),
     }
@@ -2675,21 +2685,24 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
       transform: async (body, context) => {
         const signature = listItems<EmailAccountSignatureRecord>(body)[0]
+        let rawHtml: string | null = null
+        let teamMembers: EmailTeamMemberRecord[] = []
         if (signature?.signatureHtml?.trim()) {
-          return { html: signature.signatureHtml.trim() }
-        }
-        const teamBody = await context.fetchJson({
-          method: "GET",
-          path: "/api/v1/email/team-members",
-          query: { limit: DEFAULT_LIST_LIMIT },
-        })
-        const members = listItems<EmailTeamMemberRecord>(teamBody)
-        const withTeamSig = members.find((member) => member.signatureHtml?.trim())
-        if (withTeamSig?.signatureHtml) {
-          return { html: withTeamSig.signatureHtml.trim() }
-        }
-        if (members.length > 0 && members[0]?.displayName?.trim()) {
-          return { html: `<p>Mit freundlichen Grüßen<br/>${members[0]!.displayName}</p>` }
+          rawHtml = signature.signatureHtml.trim()
+          if (!rawHtml.includes('{{')) return { html: rawHtml }
+        } else {
+          const teamBody = await context.fetchJson({
+            method: "GET",
+            path: "/api/v1/email/team-members",
+            query: { limit: DEFAULT_LIST_LIMIT },
+          })
+          teamMembers = listItems<EmailTeamMemberRecord>(teamBody)
+          const withTeamSig = teamMembers.find((member) => member.signatureHtml?.trim())
+          if (withTeamSig?.signatureHtml) {
+            rawHtml = withTeamSig.signatureHtml.trim()
+          } else if (teamMembers.length > 0 && teamMembers[0]?.displayName?.trim()) {
+            rawHtml = `<p>Mit freundlichen Grüßen<br/>${teamMembers[0]!.displayName}</p>`
+          }
         }
         const accountsBody = await context.fetchJson({
           method: "GET",
@@ -2698,10 +2711,28 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         const account = listItems<EmailAccountRecord>(accountsBody)
           .map(mapEmailAccountRecord)
           .find((row) => row.id === accountId)
-        if (account?.display_name?.trim()) {
-          return { html: `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>` }
+        if (!rawHtml && account?.display_name?.trim()) {
+          rawHtml = `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>`
         }
-        return { html: null }
+        if (!rawHtml) return { html: null }
+        if (!rawHtml.includes('{{')) return { html: rawHtml }
+        if (teamMembers.length === 0) {
+          const teamBody = await context.fetchJson({
+            method: "GET",
+            path: "/api/v1/email/team-members",
+            query: { limit: DEFAULT_LIST_LIMIT },
+          })
+          teamMembers = listItems<EmailTeamMemberRecord>(teamBody)
+        }
+        const interpolated = interpolateSignatureTemplate(
+          rawHtml,
+          buildSignatureTemplateContext({
+            accountDisplayName: account?.display_name ?? null,
+            accountEmail: account?.email_address ?? null,
+            teamMemberDisplayName: teamMembers[0]?.displayName ?? null,
+          }),
+        )
+        return { html: interpolated }
       },
     }
   }],
@@ -3721,13 +3752,22 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       path: "/api/v1/ai/transform-text",
       body: pruneUndefined({
         promptId: positiveId(input.promptId, "email ai prompt id"),
-        text: stringPayloadField(input.text, "email ai transform text"),
+        text: input.insertMode === true
+          ? (typeof input.text === "string" ? input.text.trim() : "")
+          : stringPayloadField(input.text, "email ai transform text"),
         contextText: input.contextText === undefined || input.contextText === null
           ? undefined
           : stringPayloadField(input.contextText, "email ai transform context"),
+        inboundContextText: input.inboundContextText === undefined || input.inboundContextText === null
+          ? undefined
+          : stringPayloadField(input.inboundContextText, "email ai transform inbound context"),
+        userContext: input.userContext === undefined || input.userContext === null
+          ? undefined
+          : stringPayloadField(input.userContext, "email ai transform user context"),
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),
+        insertMode: input.insertMode === true ? true : undefined,
       }),
       transform: (body) => dataBody<{ success: boolean; text?: string; error?: string }>(body),
     }
@@ -5693,12 +5733,16 @@ function mapWorkflowRunStepRecord(record: WorkflowRunStepRecord) {
 }
 
 function mapWorkflowKnowledgeBaseRecord(record: WorkflowKnowledgeBaseRecord) {
+  const accountSourceSqliteId = record.accountSourceSqliteId ?? null
+  const accountId = accountSourceSqliteId != null && accountSourceSqliteId > 0
+    ? accountSourceSqliteId
+    : record.accountId ?? null
   return {
     id: record.id,
     name: record.name ?? "",
     description: record.description ?? null,
-    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
-    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    account_id: accountId,
+    ...(accountSourceSqliteId == null ? {} : { account_source_sqlite_id: accountSourceSqliteId }),
     override_key: record.overrideKey ?? null,
     knowledge_context: record.knowledgeContext ?? null,
   }

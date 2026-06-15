@@ -1731,6 +1731,9 @@ export type AiReplySuggestionApiPort = {
     promptId?: number;
     profileId?: number;
     customerId?: number | null;
+    userContext?: string;
+    /** When false, returns draft text without updating stored suggestion. Default true. */
+    persistSuggestion?: boolean;
   }): Promise<EmailReplyDraftGenerationResult>;
 };
 
@@ -1943,6 +1946,7 @@ export type EmailComposeDraftUpdateInput = {
   subject?: string;
   bodyText?: string;
   bodyHtml?: string | null;
+  fromJson?: unknown | null;
   toJson?: unknown | null;
   ccJson?: unknown | null;
   bccJson?: unknown | null;
@@ -3158,7 +3162,11 @@ export type AiTextTransformInput = {
    *  surrounding email used as context. The AI returns only the rewritten
    *  selection. */
   contextText?: string;
+  inboundContextText?: string;
+  userContext?: string;
   customerId?: number | null;
+  /** Generate new text to insert without replacing the existing draft. */
+  insertMode?: boolean;
 };
 
 export type AiTextTransformResult =

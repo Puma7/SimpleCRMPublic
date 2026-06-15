@@ -14,6 +14,10 @@ export type ComposeQuillEditorHandle = {
   /** Replaces the current selection with plain text (newlines preserved).
    *  Returns false if there is no active selection to replace. */
   replaceSelectionText: (text: string) => boolean
+  /** Inserts plain text at the last known cursor (or current selection start). */
+  insertTextAtCursor: (text: string) => boolean
+  /** Whether a cursor position or selection is known in the editor. */
+  hasKnownCursor: () => boolean
 }
 
 type Props = {
@@ -47,10 +51,18 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       onChangeRef.current = onChange
     }, [onChange])
 
-    // Remember the last real selection: clicking the AI prompt dropdown steals
+    // Remember the last cursor/selection: clicking the AI prompt dropdown steals
     // focus from the editor, which collapses Quill's selection. We capture it on
     // selection-change and reuse it when the transform runs.
-    const lastSelectionRef = useRef<{ index: number; length: number } | null>(null)
+    const lastRangeRef = useRef<{ index: number; length: number } | null>(null)
+
+    const syncHtmlFromQuill = () => {
+      const quill = quillRef.current
+      if (!quill) return
+      onChangeRef.current(
+        quill.root.innerHTML === "<p><br></p>" ? "" : quill.root.innerHTML,
+      )
+    }
 
     useImperativeHandle(ref, () => ({
       getHtml: () => {
@@ -62,7 +74,7 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       getSelectionText: () => {
         const quill = quillRef.current
         if (!quill) return null
-        const range = quill.getSelection() ?? lastSelectionRef.current
+        const range = quill.getSelection() ?? lastRangeRef.current
         if (!range || range.length <= 0) return null
         const text = quill.getText(range.index, range.length)
         return text.trim() ? text : null
@@ -70,17 +82,35 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       replaceSelectionText: (text: string) => {
         const quill = quillRef.current
         if (!quill) return false
-        const range = quill.getSelection() ?? lastSelectionRef.current
+        const range = quill.getSelection() ?? lastRangeRef.current
         if (!range || range.length <= 0) return false
         quill.deleteText(range.index, range.length, "user")
         quill.insertText(range.index, text, "user")
         // Keep the inserted text selected so the user sees what changed.
         quill.setSelection(range.index, text.length, "user")
-        lastSelectionRef.current = { index: range.index, length: text.length }
-        onChangeRef.current(
-          quill.root.innerHTML === "<p><br></p>" ? "" : quill.root.innerHTML,
-        )
+        lastRangeRef.current = { index: range.index, length: text.length }
+        syncHtmlFromQuill()
         return true
+      },
+      insertTextAtCursor: (text: string) => {
+        const quill = quillRef.current
+        if (!quill || !text) return false
+        const range = quill.getSelection() ?? lastRangeRef.current
+        if (!range) return false
+        const insertAt = range.index
+        const prefix = insertAt > 0 ? "\n\n" : ""
+        const suffix = insertAt < quill.getLength() - 1 ? "\n\n" : ""
+        quill.insertText(insertAt, `${prefix}${text}${suffix}`, "user")
+        const nextIndex = insertAt + prefix.length + text.length + suffix.length
+        quill.setSelection(nextIndex, 0, "user")
+        lastRangeRef.current = { index: nextIndex, length: 0 }
+        syncHtmlFromQuill()
+        return true
+      },
+      hasKnownCursor: () => {
+        const quill = quillRef.current
+        if (!quill) return false
+        return (quill.getSelection() ?? lastRangeRef.current) != null
       },
     }))
 
@@ -134,17 +164,16 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       })
 
       quill.on("selection-change", (range, _oldRange, source) => {
-        // Cache the last non-empty selection before focus moves to a toolbar
-        // control (e.g. the AI prompt dropdown) and Quill reports null.
-        if (range && range.length > 0) {
-          lastSelectionRef.current = range
+        // Cache cursor/selection before focus moves to a toolbar control
+        // (e.g. the AI prompt dropdown) and Quill reports null.
+        if (range) {
+          lastRangeRef.current = range
           return
         }
-        // The user actively moved the cursor or deselected (source === 'user'):
-        // drop the cached range so a later AI transform doesn't reuse a stale
-        // selection. Programmatic/silent changes (focus stolen by the prompt
-        // dropdown) leave the cache intact, which is the entire point.
-        if (source === "user") lastSelectionRef.current = null
+        // The user actively deselected (source === 'user'): drop the cache.
+        // Programmatic/silent changes (focus stolen by the prompt dropdown)
+        // leave the cache intact.
+        if (source === "user") lastRangeRef.current = null
       })
 
       return () => {
