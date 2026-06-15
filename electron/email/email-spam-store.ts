@@ -14,6 +14,7 @@ import type {
   SpamListType,
   SpamPatternType,
   SpamScoreBreakdown,
+  SpamStatus,
   SpamTrainingLabel,
 } from './email-spam-types';
 

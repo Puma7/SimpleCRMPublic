@@ -22,7 +22,7 @@ import {
   uidValidityMismatch,
   type MailboxListEntry,
 } from '@simplecrm/core';
-import { mergeSeenLocalOnMailSync } from '../../shared/mail-sync-seen';
+import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
 import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 
 import type { EmailOAuthProvider } from './api';

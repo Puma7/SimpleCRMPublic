@@ -28,7 +28,7 @@ export function createPostgresMailSyncPostProcessor(
   const limit = normalizeLimit(options.limit);
   return {
     async afterSync(input) {
-      const postSyncMessageIds = await resolvePostSyncMessageIds(options, input, limit);
+      const postSyncMessageIds = await resolvePostSyncMessageIds(options, { ...input, limit });
       const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
 
       for (const messageId of spamScoringMessageIds) {

@@ -1,4 +1,4 @@
-import { mergeSeenLocalOnMailSync } from '../../shared/mail-sync-seen';
+import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
 
 describe('mergeSeenLocalOnMailSync', () => {
   test('keeps local seen state for spam-review queue mail instead of importing IMAP seen', () => {
