@@ -64,11 +64,13 @@ import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import {
   firstAddress,
   formatFrom,
+  formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
   stripHtmlToText,
   type CategoryRow,
   type ConversationLockRecord,
+  type EmailAccount,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -93,6 +95,7 @@ import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 
 type Props = {
+  accounts: EmailAccount[]
   teamMembers: TeamMember[]
   messageTags: string[]
   internalNotes: InternalNote[]
@@ -210,6 +213,7 @@ function recipientSummary(raw: string | null | undefined): string {
 
 export function MessageViewer(props: Props) {
   const {
+    accounts,
     teamMembers,
     messageTags,
     internalNotes,
@@ -611,7 +615,7 @@ export function MessageViewer(props: Props) {
         ? blockRemoteImagesInHtml(sanitizedHtml)
         : `<pre>${escapeHtml(decryptedPlain ?? bodyText)}</pre>`
     const metaRows = [
-      ["Von", formatFrom(selectedMessage.from_json)],
+      ["Von", formatMessageFrom(selectedMessage, accounts)],
       ["An", recipientSummary(selectedMessage.to_json)],
       ["CC", recipientSummary(selectedMessage.cc_json)],
       ["BCC", recipientSummary(selectedMessage.bcc_json)],
@@ -1122,6 +1126,7 @@ export function MessageViewer(props: Props) {
 
                 <MessageAddressesBlock
                   message={selectedMessage}
+                  accounts={accounts}
                   onShowCorrespondentHistory={() => {
                     if (metadataPlacement === "inline" && !metadataPanelOpen) {
                       setMetadataPanelOpen(true)

@@ -27,6 +27,7 @@ import { accountAccessSql, type MailScopeSession } from './mail-scope-access';
 export { doneFilterSql };
 export type { MailScopeSession };
 import { draftAttachmentPathsToJson } from '../../shared/compose-draft-attachments';
+import { senderJsonFromMailbox } from '../../shared/email-recipient-parse';
 import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
@@ -1778,6 +1779,10 @@ export function createComposeDraft(input: {
   draftAttachmentPaths?: string[];
 }): number {
   const folder = ensureInboxFolderForAccount(input.accountId);
+  const acc = getEmailAccountById(input.accountId);
+  const fromJson = acc
+    ? senderJsonFromMailbox(acc.email_address, acc.display_name)
+    : null;
   const minRow = getDb()
     .prepare(
       `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
@@ -1793,7 +1798,7 @@ export function createComposeDraft(input: {
     inReplyTo: null,
     referencesHeader: null,
     subject: input.subject ?? '(Entwurf)',
-    fromJson: null,
+    fromJson,
     toJson: input.toJson ?? null,
     ccJson: null,
     dateReceived: new Date().toISOString(),
@@ -1990,11 +1995,23 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
 }
 
 export function markDraftAsSent(draftMessageId: number): void {
+  const row = getEmailMessageById(draftMessageId);
+  const acc = row ? getEmailAccountById(row.account_id) : null;
+  const fromJson =
+    row?.from_json?.trim() ||
+    (acc ? senderJsonFromMailbox(acc.email_address, acc.display_name) : null);
   getDb()
     .prepare(
-      `UPDATE ${EMAIL_MESSAGES_TABLE} SET folder_kind = 'sent', outbound_hold = 0, archived = 0, scheduled_send_at = NULL, sent_imap_sync_failed = 0 WHERE id = ?`,
+      `UPDATE ${EMAIL_MESSAGES_TABLE}
+       SET folder_kind = 'sent',
+           outbound_hold = 0,
+           archived = 0,
+           scheduled_send_at = NULL,
+           sent_imap_sync_failed = 0,
+           from_json = COALESCE(NULLIF(TRIM(from_json), ''), ?)
+       WHERE id = ?`,
     )
-    .run(draftMessageId);
+    .run(fromJson, draftMessageId);
 }
 
 export function updateComposeDraft(
@@ -2006,6 +2023,7 @@ export function updateComposeDraft(
     toJson?: string | null;
     ccJson?: string | null;
     bccJson?: string | null;
+    fromJson?: string | null;
     draftAttachmentPaths?: string[];
     replyParentMessageId?: number | null;
   },
@@ -2023,6 +2041,7 @@ export function updateComposeDraft(
   const vals: unknown[] = [subj, body, snippet];
   if (input.bodyHtml !== undefined) { sets.push('body_html = ?'); vals.push(html); }
   if (input.toJson !== undefined) { sets.push('to_json = ?'); vals.push(input.toJson); }
+  if (input.fromJson !== undefined) { sets.push('from_json = ?'); vals.push(input.fromJson); }
   if (input.ccJson !== undefined) { sets.push('cc_json = ?'); vals.push(input.ccJson); }
   if (input.bccJson !== undefined) { sets.push('bcc_json = ?'); vals.push(input.bccJson); }
   if (input.draftAttachmentPaths !== undefined) {

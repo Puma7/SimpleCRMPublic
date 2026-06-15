@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
 import {
   formatFrom,
+  formatMessageFrom,
   type EmailAccount,
   type EmailMessage,
   type MailView,
@@ -604,7 +605,7 @@ export function MessageList({
               </li>
             ) : null}
             {visibleMessages.map((m) => {
-              const isDraft = m.uid < 0
+              const isDraft = m.folder_kind === "draft"
               const blocked = !!m.outbound_hold
               const unread = !m.seen_local && m.uid >= 0
               const open = mailView === "inbox" && !m.done_local && m.uid >= 0
@@ -739,7 +740,7 @@ export function MessageList({
                               ? blocked
                                 ? "Entwurf — Ausgang blockiert"
                                 : "Entwurf"
-                              : formatFrom(m.from_json)}
+                              : formatMessageFrom(m, accounts)}
                           </span>
                           <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
                             {m.has_attachments ? (

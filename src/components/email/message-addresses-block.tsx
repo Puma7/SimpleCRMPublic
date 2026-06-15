@@ -4,10 +4,13 @@ import { analyzeSenderTrust } from "@shared/email-sender-trust"
 import { recipientFieldFromJson } from "@shared/email-recipient-parse"
 import { correspondentEmailForMessage } from "@shared/email-correspondent"
 import { cn } from "@/lib/utils"
-import { formatFrom, type EmailMessage } from "./types"
+import { formatFrom, formatMessageFrom, type EmailMessage } from "./types"
+
+import type { EmailAccount } from "./types"
 
 type Props = {
   message: EmailMessage
+  accounts?: readonly EmailAccount[]
   onShowCorrespondentHistory?: () => void
 }
 
@@ -37,10 +40,23 @@ function senderPartsFromJson(fromJson: string | null): { name: string; address: 
   }
 }
 
-export function MessageAddressesBlock({ message, onShowCorrespondentHistory }: Props) {
-  const trust = analyzeSenderTrust(message.from_json)
-  const fromLabel = formatFrom(message.from_json)
-  const sender = senderPartsFromJson(message.from_json)
+export function MessageAddressesBlock({ message, accounts, onShowCorrespondentHistory }: Props) {
+  const effectiveFromJson =
+    message.from_json?.trim() ||
+    (() => {
+      if (message.folder_kind !== "sent" && message.folder_kind !== "draft") return null
+      const acc = accounts?.find((a) => a.id === message.account_id)
+      if (!acc?.email_address) return null
+      return JSON.stringify({
+        value: [{
+          address: acc.email_address,
+          ...(acc.display_name?.trim() ? { name: acc.display_name.trim() } : {}),
+        }],
+      })
+    })()
+  const trust = analyzeSenderTrust(effectiveFromJson)
+  const fromLabel = formatMessageFrom(message, accounts)
+  const sender = senderPartsFromJson(effectiveFromJson)
   const senderDisplayName = sender.name || (!sender.address ? fromLabel : "")
   const senderAddress = sender.address || fromLabel
   const correspondent = correspondentEmailForMessage(message)
