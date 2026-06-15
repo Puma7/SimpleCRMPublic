@@ -404,6 +404,7 @@ export function MessageList({
           "restore",
           "unarchive",
           "mark-done",
+          "mark-open",
         ]
         const advanceTargetId = pickBulkAdvanceTargetId(visibleMessages, selectedIds)
         setSelectedIds(new Set())

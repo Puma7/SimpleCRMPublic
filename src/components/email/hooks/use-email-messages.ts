@@ -266,6 +266,8 @@ export function useEmailMessages() {
             setSelectedMessage((prev) =>
               prev?.id === keepId ? { ...prev, ...still } : still,
             )
+          } else {
+            await selectMessageById(null, true)
           }
         } else if (!append && keepId == null && !silent) {
           setSelectedMessage(null)

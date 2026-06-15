@@ -1650,9 +1650,20 @@ async function evaluateSpamDecisionForMessage(
     if (applyStatus && existing.decision) {
       const nextStatus = existing.decision.status;
       const currentStatus = current.spam_status ?? 'clean';
+      const decisionAtMs = Date.parse(
+        existing.decision.updatedAt ?? existing.decision.createdAt ?? '',
+      );
+      const messageDecidedAtMs = current.spam_decided_at
+        ? new Date(current.spam_decided_at).getTime()
+        : Number.NaN;
+      const scoreStoredAwaitingApply =
+        Number.isFinite(decisionAtMs) &&
+        Number.isFinite(messageDecidedAtMs) &&
+        messageDecidedAtMs <= decisionAtMs + 5000;
       const pendingApply =
         (nextStatus === 'review' || nextStatus === 'spam') &&
-        currentStatus !== nextStatus;
+        currentStatus !== nextStatus &&
+        scoreStoredAwaitingApply;
       if (
         pendingApply &&
         shouldAutoApplySpamStatus(
@@ -1899,6 +1910,7 @@ async function selectConversationMessages(
         lower(coalesce(from_json::text, '')) LIKE ${pattern} ESCAPE '\\'
         OR lower(coalesce(to_json::text, '')) LIKE ${pattern} ESCAPE '\\'
         OR lower(coalesce(cc_json::text, '')) LIKE ${pattern} ESCAPE '\\'
+        OR lower(coalesce(bcc_json::text, '')) LIKE ${pattern} ESCAPE '\\'
       )`)
       .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')
       .orderBy('id', 'desc')

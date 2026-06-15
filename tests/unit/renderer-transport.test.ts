@@ -3472,18 +3472,6 @@ describe('renderer transport', () => {
           nextCursor: null,
         },
       }))
-      .mockResolvedValueOnce(jsonResponse({
-        data: {
-          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
-          nextCursor: null,
-        },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        data: {
-          items: [{ displayName: 'Agent', signatureHtml: null }],
-          nextCursor: null,
-        },
-      }))
       .mockResolvedValueOnce(jsonResponse({ data: { success: true, id: 44 } }))
       .mockResolvedValueOnce(jsonResponse({ data: { success: true } }))
       .mockResolvedValueOnce(jsonResponse({
@@ -3531,7 +3519,7 @@ describe('renderer transport', () => {
       to: 'Person <person+tag@example.com>',
     })).resolves.toEqual({ success: true, id: 44 });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      4,
+      2,
       'https://crm.example.com/api/v1/email/compose-drafts',
       expect.objectContaining({
         method: 'POST',
@@ -3557,7 +3545,7 @@ describe('renderer transport', () => {
       markReplyParentDone: true,
     })).resolves.toEqual({ success: true });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      5,
+      3,
       'https://crm.example.com/api/v1/email/messages/44/compose-draft',
       expect.objectContaining({
         method: 'PATCH',
@@ -3596,7 +3584,7 @@ describe('renderer transport', () => {
       warning: 'E-Mail wurde per SMTP versendet und in SimpleCRM als gesendet markiert. Server-Kopie per IMAP APPEND ist fuer diesen Sender nicht konfiguriert.',
     });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      6,
+      4,
       'https://crm.example.com/api/v1/email/compose/send',
       expect.objectContaining({
         method: 'POST',
@@ -3625,7 +3613,7 @@ describe('renderer transport', () => {
       sendAt: '2026-06-04T15:00:00.000Z',
     })).resolves.toEqual({ success: true });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      7,
+      5,
       'https://crm.example.com/api/v1/email/messages/44/scheduled-send',
       expect.objectContaining({
         method: 'PATCH',
@@ -3640,7 +3628,7 @@ describe('renderer transport', () => {
       lastError: 'SMTP rejected message',
     });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      8,
+      6,
       'https://crm.example.com/api/v1/email/messages/44/scheduled-send-state',
       expect.objectContaining({ method: 'GET' }),
     );
@@ -3651,21 +3639,21 @@ describe('renderer transport', () => {
       needsResendFinalize: true,
     });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      9,
+      7,
       'https://crm.example.com/api/v1/email/messages/44/compose-draft-recovery-state',
       expect.objectContaining({ method: 'GET' }),
     );
 
     await expect(transport.invoke(IPCChannels.Email.ClearScheduledSendDraftFailure, 44)).resolves.toEqual({ success: true });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      10,
+      8,
       'https://crm.example.com/api/v1/email/messages/44/scheduled-send-failure',
       expect.objectContaining({ method: 'DELETE' }),
     );
 
     await expect(transport.invoke(IPCChannels.Email.RetryScheduledSendDraft, 44)).resolves.toEqual({ success: true });
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      11,
+      9,
       'https://crm.example.com/api/v1/email/messages/44/scheduled-send/retry',
       expect.objectContaining({ method: 'PATCH' }),
     );

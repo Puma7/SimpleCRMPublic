@@ -2689,6 +2689,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         let teamMembers: EmailTeamMemberRecord[] = []
         if (signature?.signatureHtml?.trim()) {
           rawHtml = signature.signatureHtml.trim()
+          if (!rawHtml.includes('{{')) return { html: rawHtml }
         } else {
           const teamBody = await context.fetchJson({
             method: "GET",
@@ -3751,7 +3752,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       path: "/api/v1/ai/transform-text",
       body: pruneUndefined({
         promptId: positiveId(input.promptId, "email ai prompt id"),
-        text: stringPayloadField(input.text, "email ai transform text"),
+        text: input.insertMode === true
+          ? (typeof input.text === "string" ? input.text.trim() : "")
+          : stringPayloadField(input.text, "email ai transform text"),
         contextText: input.contextText === undefined || input.contextText === null
           ? undefined
           : stringPayloadField(input.contextText, "email ai transform context"),
