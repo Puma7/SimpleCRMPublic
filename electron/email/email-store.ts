@@ -1781,7 +1781,7 @@ export function createComposeDraft(input: {
 }): number {
   const folder = ensureInboxFolderForAccount(input.accountId);
   const acc = getEmailAccountById(input.accountId);
-  const fromJson = acc
+  const fromJson = acc?.email_address
     ? senderJsonFromMailbox(acc.email_address, acc.display_name)
     : null;
   const minRow = getDb()

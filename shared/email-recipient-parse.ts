@@ -66,10 +66,10 @@ export function recipientJsonFromField(raw: string): string | null {
 
 /** Single mailbox JSON for outbound From (compose / sent). */
 export function senderJsonFromMailbox(
-  email: string,
+  email: string | null | undefined,
   displayName?: string | null,
 ): string {
-  const address = email.trim()
+  const address = (email ?? '').trim()
   if (!address) return JSON.stringify({ value: [] })
   const name = (displayName ?? '').trim()
   return JSON.stringify({
