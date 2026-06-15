@@ -643,7 +643,7 @@ function threadMessageViewPredicate(
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'draft'`;
   }
   if (view === 'spam_review') {
-    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND coalesce(m.spam_status, 'clean') = 'review'`;
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND coalesce(m.spam_status, 'clean') = 'review' AND coalesce(m.done_local, false) = false`;
   }
   if (view === 'spam') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND (m.is_spam = true OR coalesce(m.spam_status, 'clean') = 'spam')`;

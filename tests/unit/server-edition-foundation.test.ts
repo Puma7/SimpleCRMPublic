@@ -28214,6 +28214,25 @@ describe('server edition foundation', () => {
       { field: 'text', message: 'text darf nicht leer sein' },
     ]));
 
+    const insertMode = await api.handle({
+      method: 'POST',
+      path: '/api/v1/ai/transform-text',
+      body: {
+        promptId: '22',
+        text: '',
+        insertMode: true,
+        inboundContextText: 'Kundenanfrage',
+      },
+      principal,
+    });
+    expect(insertMode.status).toBe(200);
+    expect(calls.at(-1)).toEqual(expect.objectContaining({
+      promptId: 22,
+      text: '',
+      insertMode: true,
+      inboundContextText: 'Kundenanfrage',
+    }));
+
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',
       path: '/api/v1/ai/transform-text',

@@ -1521,15 +1521,13 @@ async function runPostgresMailSecurityCheck(
       .execute();
   }
 
-  const spam = shouldRunInitialSpamScoring({ spamDecidedAt: currentForSpam.spam_decided_at })
-    ? await evaluateSpamDecisionForMessage(
-      trx,
-      workspaceId,
-      currentForSpam,
-      values.applyStatus,
-      now,
-    )
-    : await loadExistingSpamDecisionForMessage(trx, workspaceId, Number(currentForSpam.id));
+  const spam = await evaluateSpamDecisionForMessage(
+    trx,
+    workspaceId,
+    currentForSpam,
+    values.applyStatus,
+    now,
+  );
   const automation = values.applyStatus
     ? await applyPostgresPreWorkflowMailSecurity(trx, workspaceId, currentForSpam, settings, now)
     : { skippedWorkflows: false, tags: [] };
@@ -1648,7 +1646,42 @@ async function evaluateSpamDecisionForMessage(
   now: Date,
 ): Promise<EmailMessageSpamDecisionResult> {
   if (!shouldRunInitialSpamScoring({ spamDecidedAt: current.spam_decided_at })) {
-    return loadExistingSpamDecisionForMessage(trx, workspaceId, Number(current.id));
+    const existing = await loadExistingSpamDecisionForMessage(trx, workspaceId, Number(current.id));
+    if (applyStatus && existing.decision) {
+      const nextStatus = existing.decision.status;
+      const currentStatus = current.spam_status ?? 'clean';
+      const pendingApply =
+        (nextStatus === 'review' || nextStatus === 'spam') &&
+        currentStatus !== nextStatus;
+      if (
+        pendingApply &&
+        shouldAutoApplySpamStatus(
+          {
+            doneLocal: current.done_local,
+            spamStatus: current.spam_status,
+            isSpam: current.is_spam,
+            spamDecidedAt: null,
+          },
+          nextStatus,
+        )
+      ) {
+        const updated = await trx
+          .updateTable('email_messages')
+          .set({
+            ...spamStatusPatch(nextStatus, current.folder_kind ?? 'inbox'),
+            updated_at: now,
+          })
+          .where('workspace_id', '=', workspaceId)
+          .where('id', '=', Number(current.id))
+          .returning(emailMessageSummaryColumns)
+          .executeTakeFirstOrThrow();
+        return {
+          message: mapEmailMessageRow(updated, false),
+          decision: existing.decision,
+        };
+      }
+    }
+    return existing;
   }
 
   const preview = buildFeaturePreview(emailMessageSpamDecisionInputFromRow(current));
@@ -2611,7 +2644,10 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
     return query.where('folder_kind', '=', 'draft');
   }
   if (view === 'spam_review') {
-    return query.where(nonDraftMail).where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'review'`);
+    return query
+      .where(nonDraftMail)
+      .where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'review'`)
+      .where(kyselySql<boolean>`coalesce(done_local, false) = false`);
   }
   if (view === 'spam') {
     return query.where(nonDraftMail).where(kyselySql<boolean>`(is_spam = true OR coalesce(spam_status, 'clean') = 'spam')`);

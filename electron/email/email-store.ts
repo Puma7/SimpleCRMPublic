@@ -485,6 +485,7 @@ export function getComposeSignatureHtml(accountId: number): string | null {
     if (teamFallback) rawHtml = teamFallback;
     else rawHtml = `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
   }
+  if (!rawHtml.includes('{{')) return rawHtml;
   const teamMembers = listEmailTeamMembers();
   return interpolateComposeSignatureHtml(rawHtml, acc, teamMembers);
 }
@@ -722,7 +723,7 @@ export function listMessagesForAccountView(
   } else if (view === 'drafts') {
     sql += ` AND m.folder_kind = 'draft'`;
   } else if (view === 'spam_review') {
-    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
+    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
   } else if (view === 'spam') {
     sql += ` AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
   } else {
@@ -796,7 +797,7 @@ export function listMessagesForAllAccountsView(
   } else if (view === 'drafts') {
     sql += ` AND m.folder_kind = 'draft'`;
   } else if (view === 'spam_review') {
-    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
+    sql += ` AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
   } else if (view === 'spam') {
     sql += ` AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
   } else {

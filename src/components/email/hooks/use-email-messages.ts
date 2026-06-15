@@ -238,7 +238,12 @@ export function useEmailMessages() {
             for (const m of list) {
               if (!prev.some((p) => p.id === m.id)) merged.push(m)
             }
-            return merged
+            const listIdOrder = new Map(list.map((m, i) => [m.id, i]))
+            const inServer = merged
+              .filter((m) => listIdOrder.has(m.id))
+              .sort((a, b) => listIdOrder.get(a.id)! - listIdOrder.get(b.id)!)
+            const notInServer = merged.filter((m) => !listIdOrder.has(m.id))
+            return [...inServer, ...notInServer]
           })
           offsetRef.current = Math.max(offsetRef.current, list.length)
         } else {
@@ -247,9 +252,10 @@ export function useEmailMessages() {
         }
         if (!append && opts?.selectMessageId !== undefined) {
           let targetId = opts.selectMessageId
-          if (targetId != null && !messagesRef.current.some((m) => m.id === targetId)) {
+          const selectionSource = silent && keepId != null ? messagesRef.current : list
+          if (targetId != null && !selectionSource.some((m) => m.id === targetId)) {
             const removed = opts.advanceFromRemovedId ?? targetId
-            targetId = pickAdjacentMessageId(messagesRef.current, removed)
+            targetId = pickAdjacentMessageId(selectionSource, removed)
           }
           await selectMessageById(targetId, true)
         } else if (keepId != null && !append) {

@@ -2714,6 +2714,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           rawHtml = `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>`
         }
         if (!rawHtml) return { html: null }
+        if (!rawHtml.includes('{{')) return { html: rawHtml }
         if (teamMembers.length === 0) {
           const teamBody = await context.fetchJson({
             method: "GET",

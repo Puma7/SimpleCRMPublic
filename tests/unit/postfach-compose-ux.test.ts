@@ -111,6 +111,7 @@ describe('ai-transform-prompt', () => {
       userContext: 'Storno möglich',
     });
     expect(prompt).toContain('Kundenmail');
+    expect(prompt).toContain('<bearbeiter_hinweis>');
     expect(prompt).toContain('Storno möglich');
   });
 
@@ -133,6 +134,17 @@ describe('signature-template', () => {
       { accountDisplayName: 'Shop', customerName: 'Müller GmbH' },
     );
     expect(out).toBe('Grüße Shop / Müller GmbH');
+  });
+
+  it('preserves customer placeholders until customer context is provided', () => {
+    const out = interpolateSignatureTemplate(
+      'Grüße {{account.display_name}} / {{customer.name}}',
+      buildSignatureTemplateContext({
+        accountDisplayName: 'Shop',
+        accountEmail: 'shop@example.com',
+      }),
+    );
+    expect(out).toBe('Grüße Shop / {{customer.name}}');
   });
 
   it('buildSignatureTemplateContext resolves user from team or account', () => {

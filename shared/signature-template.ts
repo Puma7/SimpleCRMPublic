@@ -33,14 +33,20 @@ export function interpolateSignatureTemplate(
   html: string,
   ctx: SignatureTemplateContext,
 ): string {
+  let out = html
+    .replace(/\{\{account\.display_name\}\}/g, ctx.accountDisplayName ?? '')
+    .replace(/\{\{user\.name\}\}/g, ctx.userName ?? '')
+    .replace(/\{\{user\.email\}\}/g, ctx.userEmail ?? '')
+  const hasCustomer =
+    (ctx.customerName ?? '').trim() ||
+    (ctx.customerFirstName ?? '').trim() ||
+    (ctx.customerEmail ?? '').trim()
+  if (!hasCustomer) return out
   const firstName =
     (ctx.customerFirstName ?? '').trim() ||
     (ctx.customerName ?? '').trim().split(/\s+/)[0] ||
     ''
-  return html
-    .replace(/\{\{account\.display_name\}\}/g, ctx.accountDisplayName ?? '')
-    .replace(/\{\{user\.name\}\}/g, ctx.userName ?? '')
-    .replace(/\{\{user\.email\}\}/g, ctx.userEmail ?? '')
+  return out
     .replace(/\{\{customer\.name\}\}/g, ctx.customerName ?? '')
     .replace(/\{\{customer\.firstName\}\}/g, firstName)
     .replace(/\{\{customer\.email\}\}/g, ctx.customerEmail ?? '')

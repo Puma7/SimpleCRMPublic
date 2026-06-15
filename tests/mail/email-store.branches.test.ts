@@ -287,6 +287,7 @@ describe('email-store branches', () => {
     test('spam review and inbox views use spam_status filters', () => {
       listMessagesForAccountView(1, 'spam_review');
       expect(mock.getLastSql()).toContain("COALESCE(m.spam_status, 'clean') = 'review'");
+      expect(mock.getLastSql()).toContain('COALESCE(m.done_local, 0) = 0');
 
       listMessagesForAccountView(1, 'inbox');
       expect(mock.getLastSql()).toContain("COALESCE(m.spam_status, 'clean') = 'clean'");

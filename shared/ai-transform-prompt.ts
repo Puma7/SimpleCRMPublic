@@ -34,7 +34,7 @@ export function buildAiTransformSystemPrompt(input: {
       '\n\nEINGEHENDE NACHRICHT DES KUNDEN (nur Kontext, nicht erneut ausgeben):\n' + inbound;
   }
   if (userCtx) {
-    prompt += '\n\nHINWEIS DES BEARBEITERS:\n' + userCtx;
+    prompt += '\n\n<bearbeiter_hinweis>\n' + userCtx + '\n</bearbeiter_hinweis>';
   }
   return prompt;
 }
