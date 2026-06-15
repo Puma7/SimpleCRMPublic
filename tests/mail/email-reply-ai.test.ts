@@ -32,6 +32,7 @@ import {
   canSuggestReplyForMessage,
   ensureReplySuggestion,
   generateAndStoreReplySuggestion,
+  generateReplyDraftOnly,
   generateReplyDraftText,
   getReplySuggestion,
   recoverStaleReplySuggestions,
@@ -207,6 +208,14 @@ describe('email-reply-ai', () => {
     mockRunChat.mockRejectedValue(new Error('fail'));
     const bad = await generateAndStoreReplySuggestion(42);
     expect(bad.success).toBe(false);
+  });
+
+  test('generateReplyDraftOnly returns text without persisting suggestion', async () => {
+    mockGetMessage.mockReturnValue(inboxRow());
+    mockDbRun.mockClear();
+    const ok = await generateReplyDraftOnly(42, { userContext: 'Storno ok' });
+    expect(ok.success).toBe(true);
+    expect(mockDbRun).not.toHaveBeenCalled();
   });
 
   test('ensureReplySuggestion queues background job', async () => {

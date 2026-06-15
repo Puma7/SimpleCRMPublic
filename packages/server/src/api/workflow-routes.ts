@@ -1671,12 +1671,19 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   }
 
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['promptId', 'text', 'contextText', 'customerId']);
+  const allowedFields = new Set(['promptId', 'text', 'contextText', 'inboundContextText', 'userContext', 'customerId']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
 
-  const values: { promptId?: number; text?: string; contextText?: string; customerId?: number | null } = {};
+  const values: {
+    promptId?: number;
+    text?: string;
+    contextText?: string;
+    inboundContextText?: string;
+    userContext?: string;
+    customerId?: number | null;
+  } = {};
   const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
   if (promptId.ok) values.promptId = promptId.value;
   else errors.push({ field: 'promptId', message: promptId.message });
@@ -1689,6 +1696,18 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     const contextText = normalizeRequiredBodyText(body.contextText, 'contextText', 40000);
     if (contextText.ok) values.contextText = contextText.value;
     else errors.push({ field: 'contextText', message: contextText.message });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'inboundContextText')) {
+    const inboundContextText = normalizeRequiredBodyText(body.inboundContextText, 'inboundContextText', 40000);
+    if (inboundContextText.ok) values.inboundContextText = inboundContextText.value;
+    else errors.push({ field: 'inboundContextText', message: inboundContextText.message });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'userContext')) {
+    const userContext = normalizeRequiredBodyText(body.userContext, 'userContext', 4000);
+    if (userContext.ok) values.userContext = userContext.value;
+    else errors.push({ field: 'userContext', message: userContext.message });
   }
 
   if (Object.prototype.hasOwnProperty.call(body, 'customerId')) {

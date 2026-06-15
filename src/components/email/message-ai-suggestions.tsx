@@ -4,10 +4,19 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
 import { plainTextToReplyHtml } from "@shared/compose-body"
-import { Loader2, Sparkles } from "lucide-react"
+import { Loader2, MessageSquarePlus, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Textarea } from "@/components/ui/textarea"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { invokeRenderer } from "@/services/transport"
 import type { EmailMessage } from "./types"
@@ -48,11 +57,16 @@ export function MessageAiSuggestions({
     error: null,
   })
   const [generating, setGenerating] = useState(false)
+  const [contextOpen, setContextOpen] = useState(false)
+  const [userContext, setUserContext] = useState("")
+  const [contextGenerating, setContextGenerating] = useState(false)
 
   useEffect(() => {
     activeMessageIdRef.current = message.id
     setSuggestion({ status: "none", text: null, error: null })
     setGenerating(false)
+    setContextOpen(false)
+    setUserContext("")
   }, [message.id])
 
   const loadSuggestion = useCallback(async () => {
@@ -95,6 +109,27 @@ export function MessageAiSuggestions({
     onDraftReply?.({ initialReplyHtml })
   }
 
+  const generateDraft = async (opts?: { userContext?: string }) => {
+    const requestId = message.id
+    const r = await invokeRenderer(IPCChannels.Email.GenerateReplyDraft, {
+      messageId: requestId,
+      customerId: message.customer_id ?? null,
+      ...(opts?.userContext?.trim() ? { userContext: opts.userContext.trim() } : {}),
+      ...(opts?.userContext?.trim() ? { persistSuggestion: false } : {}),
+    }) as {
+      success: boolean
+      text?: string
+      error?: string
+    }
+    if (activeMessageIdRef.current !== requestId) return
+    if (r.success && r.text?.trim()) {
+      openReplyWithText(r.text)
+    } else {
+      toast.error(r.error ?? "KI-Antwort konnte nicht erzeugt werden.")
+      onDraftReply?.()
+    }
+  }
+
   const handleDraftReply = () => {
     if (suggestion.status === "ready" && suggestion.text?.trim()) {
       openReplyWithText(suggestion.text)
@@ -104,28 +139,30 @@ export function MessageAiSuggestions({
     setGenerating(true)
     void (async () => {
       try {
-        const r = await invokeRenderer(IPCChannels.Email.GenerateReplyDraft, {
-          messageId: requestId,
-          customerId: message.customer_id ?? null,
-        }) as {
-          success: boolean
-          text?: string
-          error?: string
-        }
-        if (activeMessageIdRef.current !== requestId) return
-        if (r.success && r.text?.trim()) {
-          openReplyWithText(r.text)
-          await loadSuggestion()
-        } else {
-          toast.error(r.error ?? "KI-Antwort konnte nicht erzeugt werden.")
-          onDraftReply?.()
-        }
+        await generateDraft()
       } catch (e) {
         if (activeMessageIdRef.current !== requestId) return
         toast.error(e instanceof Error ? e.message : "KI-Fehler")
         onDraftReply?.()
       } finally {
         if (activeMessageIdRef.current === requestId) setGenerating(false)
+      }
+    })()
+  }
+
+  const handleDraftWithContext = () => {
+    const requestId = message.id
+    setContextGenerating(true)
+    void (async () => {
+      try {
+        await generateDraft({ userContext })
+        setContextOpen(false)
+      } catch (e) {
+        if (activeMessageIdRef.current !== requestId) return
+        toast.error(e instanceof Error ? e.message : "KI-Fehler")
+        onDraftReply?.()
+      } finally {
+        if (activeMessageIdRef.current === requestId) setContextGenerating(false)
       }
     })()
   }
@@ -167,7 +204,7 @@ export function MessageAiSuggestions({
           size="sm"
           variant="secondary"
           className="h-8 shrink-0 gap-1.5 px-2.5 text-xs crm-glow-button"
-          disabled={generating}
+          disabled={generating || contextGenerating}
           onClick={handleDraftReply}
         >
           {generating || suggestion.status === "pending" ? (
@@ -176,6 +213,17 @@ export function MessageAiSuggestions({
             <Sparkles className="h-3.5 w-3.5" />
           )}
           Antwort entwerfen
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 shrink-0 gap-1.5 px-2.5 text-xs"
+          disabled={generating || contextGenerating}
+          onClick={() => setContextOpen(true)}
+        >
+          <MessageSquarePlus className="h-3.5 w-3.5" />
+          Mit Kontext…
         </Button>
         {suggestion.status === "ready" && preview ? (
           <Button
@@ -208,6 +256,42 @@ export function MessageAiSuggestions({
       {suggestion.status === "failed" && suggestion.error ? (
         <p className="text-[10px] text-destructive">{suggestion.error}</p>
       ) : null}
+
+      <Dialog open={contextOpen} onOpenChange={setContextOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Antwort entwerfen mit Kontext</DialogTitle>
+            <DialogDescription>
+              Beschreiben Sie, was die KI berücksichtigen soll (z. B. ob eine Stornierung noch
+              möglich ist). Die Originalnachricht wird automatisch mitgegeben.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={userContext}
+            onChange={(e) => setUserContext(e.target.value)}
+            placeholder="Zusätzlicher Kontext für die KI…"
+            className="min-h-[120px] text-sm"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={contextGenerating}
+              onClick={() => setContextOpen(false)}
+            >
+              Abbrechen
+            </Button>
+            <Button
+              type="button"
+              disabled={contextGenerating || !userContext.trim()}
+              onClick={() => void handleDraftWithContext()}
+            >
+              {contextGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Entwurf erstellen
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

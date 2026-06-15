@@ -137,6 +137,7 @@ type GenerationContext = Readonly<{
   prompt: AiPromptRow | null;
   profile: AiProfileRow | null;
   customer: Pick<CustomerRow, 'name' | 'first_name' | 'email'> | null;
+  userContext?: string;
 }>;
 
 const DEFAULT_REPLY_SETTINGS: ReplySettings = {
@@ -204,41 +205,49 @@ export function createPostgresAiReplySuggestionPort(
     },
 
     async generate(input): Promise<EmailReplyDraftGenerationResult> {
+      const persist = input.persistSuggestion !== false;
       const context = await loadGenerationContext(options, {
         workspaceId: input.workspaceId,
         messageId: input.messageId,
         promptId: input.promptId,
         profileId: input.profileId,
         customerId: input.customerId,
+        userContext: input.userContext,
         honorAuto: false,
         trigger: 'open',
       });
       if (!context) return { success: false, error: 'Nachricht nicht gefunden' };
       if (!canSuggestReplyForMessage(context.message)) {
         const result = { success: false as const, error: 'Fuer diese Nachricht ist keine KI-Antwort vorgesehen' };
-        await setReplySuggestion(options, input.workspaceId, input.messageId, {
-          status: 'failed',
-          text: null,
-          error: result.error,
-        });
+        if (persist) {
+          await setReplySuggestion(options, input.workspaceId, input.messageId, {
+            status: 'failed',
+            text: null,
+            error: result.error,
+          });
+        }
         return result;
       }
 
       const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
       if (!apiKey) {
         const result = { success: false as const, error: 'Kein KI-API-Schluessel konfiguriert' };
-        await setReplySuggestion(options, input.workspaceId, input.messageId, {
-          status: 'skipped',
-          text: null,
-          error: 'Kein API-Schluessel',
-        });
+        if (persist) {
+          await setReplySuggestion(options, input.workspaceId, input.messageId, {
+            status: 'skipped',
+            text: null,
+            error: 'Kein API-Schluessel',
+          });
+        }
         return result;
       }
 
       const result = await generateReplyDraftText(options, context, apiKey);
-      await setReplySuggestion(options, input.workspaceId, input.messageId, result.success
-        ? { status: 'ready', text: result.text, error: null }
-        : { status: 'failed', text: null, error: result.error });
+      if (persist) {
+        await setReplySuggestion(options, input.workspaceId, input.messageId, result.success
+          ? { status: 'ready', text: result.text, error: null }
+          : { status: 'failed', text: null, error: result.error });
+      }
       return result;
     },
   };
@@ -252,6 +261,7 @@ async function loadGenerationContext(
     promptId?: number;
     profileId?: number;
     customerId?: number | null;
+    userContext?: string;
     honorAuto: boolean;
     trigger: EmailReplySuggestionTrigger;
   }>,
@@ -283,7 +293,13 @@ async function loadGenerationContext(
           .executeTakeFirst() ?? null
         : null;
 
-      return { message, prompt, profile, customer };
+      return {
+        message,
+        prompt,
+        profile,
+        customer,
+        userContext: input.userContext,
+      };
     },
     { applySession: options.applyWorkspaceSession },
   );
@@ -470,6 +486,11 @@ async function generateReplyDraftText(
     context.message,
     context.customer,
   );
+
+  const userContext = context.userContext?.trim();
+  if (userContext) {
+    user = `${user}\n\nZusätzlicher Kontext vom Bearbeiter:\n${userContext}`;
+  }
 
   const query = messageBodyForReply(context.message).slice(0, 2000);
   if (query.length >= 8) {

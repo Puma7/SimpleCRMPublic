@@ -9,7 +9,7 @@ export function pickAdjacentMessageId(
   if (messages.length === 0) return null
   const idx = messages.findIndex((m) => m.id === removedId)
   if (idx === -1) {
-    return messages[0]?.id ?? null
+    return null
   }
   if (preference === "next_then_prev") {
     const next = messages[idx + 1] ?? messages[idx - 1]
