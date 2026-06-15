@@ -1,5 +1,6 @@
 import {
   buildSpamDecision as buildCoreSpamDecision,
+  shouldAutoApplySpamStatus,
   shouldRunInitialSpamScoring,
 } from '../../packages/core/src/email';
 import type { EmailMessageRow } from './email-store';
@@ -53,7 +54,18 @@ export function evaluateAndSaveSpamDecision(
   }
   const decision = buildSpamDecision(row);
   if (decision.status === 'review' || decision.status === 'spam') {
-    applyAutomatedSpamStatusFromDecision(messageId, decision.status);
+    if (
+      shouldAutoApplySpamStatus(
+        {
+          doneLocal: row.done_local,
+          spamStatus: row.spam_status,
+          spamDecidedAt: row.spam_decided_at,
+        },
+        decision.status,
+      )
+    ) {
+      applyAutomatedSpamStatusFromDecision(messageId, decision.status);
+    }
   }
   saveSpamDecision(messageId, row, decision);
   return decision;

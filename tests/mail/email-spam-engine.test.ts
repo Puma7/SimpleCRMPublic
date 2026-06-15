@@ -188,6 +188,32 @@ describe('email spam decision engine', () => {
     expect(mockSaveSpamDecision).toHaveBeenCalledWith(99, row, decision);
   });
 
+  test('skips automated folder move when message is already marked done', () => {
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        if (key === 'sender:domain:spammy.test' || key === 'content:suspicious_terms') {
+          stats.set(key, { feature_key: key, spam_count: 10, ham_count: 0 });
+        }
+      }
+      return stats;
+    });
+    const row = message({
+      id: 103,
+      done_local: 1,
+      from_json: JSON.stringify({ value: [{ address: 'offer@spammy.test' }] }),
+      subject: 'Urgent crypto',
+      body_text: 'Bitte sofort https://spammy.test klicken',
+    });
+    mockGetEmailMessageById.mockReturnValue(row);
+
+    const decision = evaluateAndSaveSpamDecision(103);
+
+    expect(decision?.status).toBe('review');
+    expect(mockApplyAutomatedSpamStatus).not.toHaveBeenCalled();
+    expect(mockSaveSpamDecision).toHaveBeenCalledWith(103, row, decision);
+  });
+
   test('applies folder status when a new message scores as review', () => {
     mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
       const stats = new Map();
