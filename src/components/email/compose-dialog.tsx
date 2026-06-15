@@ -13,6 +13,7 @@ import {
   validateRecipientField,
 } from "@shared/email-recipient-parse"
 import { CircleHelp, Loader2, Paperclip, X } from "lucide-react"
+import { cn } from "@/lib/utils"
 import {
   Dialog,
   DialogContent,
@@ -163,6 +164,18 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
+type FileWithPath = File & { path?: string }
+
+function hasFileDrag(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false
+  return Array.from(dataTransfer.types).includes("Files")
+}
+
+function localPathFromDroppedFile(file: File): string | null {
+  const path = (file as FileWithPath).path?.trim()
+  return path || null
+}
+
 export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, onSent }: Props) {
   const {
     composeIntent,
@@ -196,6 +209,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [attachmentDropActive, setAttachmentDropActive] = useState(false)
   /** Resolved SMTP account for the open draft (never "all"). */
   const [composeAccountId, setComposeAccountId] = useState<number | null>(null)
 
@@ -595,6 +609,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     setEditorHtml("")
     setSignatureHtml("")
     setAttachmentPaths([])
+    setAttachmentDropActive(false)
     closingRef.current = false
   }
 
@@ -713,45 +728,91 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     ],
   )
 
-  const handleServerAttachmentFiles = async (files: FileList | null) => {
-    if (!serverClientMode || draftId == null || !files?.length) return
-    setUploadingAttachment(true)
-    try {
-      const uploadedPaths: string[] = []
-      for (const file of Array.from(files)) {
-        if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
-          toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
-          continue
+  const handleServerAttachmentFiles = useCallback(
+    async (files: FileList | readonly File[] | null) => {
+      if (!serverClientMode || draftId == null || !files?.length) return
+      setUploadingAttachment(true)
+      try {
+        const uploadedPaths: string[] = []
+        for (const file of Array.from(files)) {
+          if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
+            toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
+            continue
+          }
+          const contentBase64 = await fileToBase64(file)
+          const uploaded = await uploadServerComposeAttachment({
+            draftMessageId: draftId,
+            filename: file.name || "attachment",
+            contentBase64,
+            contentType: file.type || undefined,
+          })
+          uploadedPaths.push(uploaded.path)
         }
-        const contentBase64 = await fileToBase64(file)
-        const uploaded = await uploadServerComposeAttachment({
-          draftMessageId: draftId,
-          filename: file.name || "attachment",
-          contentBase64,
-          contentType: file.type || undefined,
+        if (uploadedPaths.length === 0) return
+        const nextPaths = [...new Set([...attachmentPaths, ...uploadedPaths])]
+        setAttachmentPaths(nextPaths)
+        await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+          messageId: draftId,
+          draftAttachmentPaths: nextPaths,
         })
-        uploadedPaths.push(uploaded.path)
+        toast.success(
+          uploadedPaths.length === 1
+            ? "Anhang hochgeladen"
+            : `${uploadedPaths.length} Anhänge hochgeladen`,
+        )
+      } catch (e) {
+        logError("compose-dialog: upload server attachment", e)
+        toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")
+      } finally {
+        setUploadingAttachment(false)
+        if (serverAttachmentInputRef.current) serverAttachmentInputRef.current.value = ""
       }
-      if (uploadedPaths.length === 0) return
-      const nextPaths = [...new Set([...attachmentPaths, ...uploadedPaths])]
+    },
+    [attachmentPaths, draftId, serverClientMode],
+  )
+
+  const handleDroppedAttachmentFiles = useCallback(
+    async (files: FileList | readonly File[] | null) => {
+      if (!files?.length) return
+      if (draftId == null) {
+        toast.error("Entwurf wird noch vorbereitet — bitte kurz warten.")
+        return
+      }
+      if (serverClientMode) {
+        await handleServerAttachmentFiles(files)
+        return
+      }
+      if (!localAttachmentPickerAvailable) return
+
+      const paths: string[] = []
+      for (const file of Array.from(files)) {
+        const path = localPathFromDroppedFile(file)
+        if (path) paths.push(path)
+      }
+      if (paths.length === 0) {
+        toast.error("Anhänge per Drag & Drop sind nur für lokale Dateien verfügbar.")
+        return
+      }
+      const nextPaths = [...new Set([...attachmentPaths, ...paths])]
       setAttachmentPaths(nextPaths)
       await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
         messageId: draftId,
         draftAttachmentPaths: nextPaths,
       })
       toast.success(
-        uploadedPaths.length === 1
-          ? "Anhang hochgeladen"
-          : `${uploadedPaths.length} Anhänge hochgeladen`,
+        paths.length === 1
+          ? "Anhang hinzugefügt"
+          : `${paths.length} Anhänge hinzugefügt`,
       )
-    } catch (e) {
-      logError("compose-dialog: upload server attachment", e)
-      toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")
-    } finally {
-      setUploadingAttachment(false)
-      if (serverAttachmentInputRef.current) serverAttachmentInputRef.current.value = ""
-    }
-  }
+    },
+    [
+      attachmentPaths,
+      draftId,
+      handleServerAttachmentFiles,
+      localAttachmentPickerAvailable,
+      serverClientMode,
+    ],
+  )
 
   useEffect(() => {
     if (!isOpen || draftId == null || initialisedDraftKeyRef.current == null) return
@@ -960,7 +1021,40 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           maxHeight: dialogHeightCss,
         }}
       >
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div
+          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          onDragEnter={(event) => {
+            if (!hasFileDrag(event.dataTransfer)) return
+            event.preventDefault()
+            setAttachmentDropActive(true)
+          }}
+          onDragOver={(event) => {
+            if (!hasFileDrag(event.dataTransfer)) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = "copy"
+            setAttachmentDropActive(true)
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node)) return
+            setAttachmentDropActive(false)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            setAttachmentDropActive(false)
+            if (!hasFileDrag(event.dataTransfer)) return
+            void handleDroppedAttachmentFiles(event.dataTransfer.files)
+          }}
+        >
+        {attachmentDropActive ? (
+          <div
+            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-primary/70 bg-primary/10 backdrop-blur-[1px]"
+            aria-hidden
+          >
+            <div className="rounded-md bg-background/90 px-4 py-2 text-sm font-medium text-foreground shadow-sm">
+              Dateien hier ablegen, um Anhänge hinzuzufügen
+            </div>
+          </div>
+        ) : null}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -1381,6 +1475,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                 )}
                 Anhang hinzufügen
               </Button>
+              {(serverClientMode || localAttachmentPickerAvailable) ? (
+                <span className="text-[11px] text-muted-foreground">
+                  oder per Drag &amp; Drop
+                </span>
+              ) : null}
               <div className="flex flex-wrap items-center gap-4 text-xs">
                 <label className="flex items-center gap-2">
                   <Checkbox checked={pgpEncrypt} onCheckedChange={(v) => setPgpEncrypt(v === true)} />
