@@ -913,7 +913,7 @@ export function getMailFolderCountsForAccount(accountId: number): MailFolderCoun
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' THEN 1 ELSE 0 END) AS spam_review,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS spam_review,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND (is_spam = 1 OR COALESCE(spam_status, 'clean') = 'spam') THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
@@ -970,7 +970,7 @@ export function getMailFolderCountsForAllAccounts(
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'sent' AND is_spam = 0 AND COALESCE(sent_imap_sync_failed, 0) = 1 THEN 1 ELSE 0 END) AS sent_failed,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND folder_kind = 'draft' THEN 1 ELSE 0 END) AS drafts,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND archived = 1 AND ${nonDraftMail} AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS archived,
-        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' THEN 1 ELSE 0 END) AS spam_review,
+        SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND COALESCE(spam_status, 'clean') = 'review' AND COALESCE(done_local, 0) = 0 THEN 1 ELSE 0 END) AS spam_review,
         SUM(CASE WHEN soft_deleted = 0 AND ${notSnoozed} AND ${nonDraftMail} AND (is_spam = 1 OR COALESCE(spam_status, 'clean') = 'spam') THEN 1 ELSE 0 END) AS spam,
         SUM(CASE WHEN soft_deleted = 0 AND ${SNOOZE_ACTIVE_SQL_BARE} THEN 1 ELSE 0 END) AS snoozed
       FROM ${EMAIL_MESSAGES_TABLE}
@@ -1140,9 +1140,10 @@ export function createImapUpsertContext(folderId: number, uids: number[]): Messa
 }
 
 function seenLocalOnConflictExpr(reconcileFromServer: boolean): string {
+  const reviewGuard = `WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.spam_status, 'clean') = 'review' THEN ${EMAIL_MESSAGES_TABLE}.seen_local`;
   return reconcileFromServer
-    ? `seen_local = CASE WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.seen_sync_pending, 0) = 1 THEN ${EMAIL_MESSAGES_TABLE}.seen_local ELSE excluded.seen_local END`
-    : `seen_local = MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local)`;
+    ? `seen_local = CASE ${reviewGuard} WHEN COALESCE(${EMAIL_MESSAGES_TABLE}.seen_sync_pending, 0) = 1 THEN ${EMAIL_MESSAGES_TABLE}.seen_local ELSE excluded.seen_local END`
+    : `seen_local = CASE ${reviewGuard} ELSE MAX(${EMAIL_MESSAGES_TABLE}.seen_local, excluded.seen_local) END`;
 }
 
 /** Promote locally sent draft (negative uid) when the server copy arrives via IMAP Sent sync. */

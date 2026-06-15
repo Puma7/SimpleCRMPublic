@@ -2,6 +2,7 @@ const mockGetEmailMessageById = jest.fn();
 const mockEvaluateSpamListMatch = jest.fn();
 const mockLoadSpamFeatureStats = jest.fn(() => new Map());
 const mockSaveSpamDecision = jest.fn();
+const mockApplyAutomatedSpamStatus = jest.fn();
 
 let mockSettings = {
   mailauthEnabled: true,
@@ -37,6 +38,7 @@ jest.mock('../../electron/email/email-spam-store', () => ({
   evaluateSpamListMatch: (...args: unknown[]) => mockEvaluateSpamListMatch(...args),
   loadSpamFeatureStats: (...args: unknown[]) => mockLoadSpamFeatureStats(...args),
   saveSpamDecision: (...args: unknown[]) => mockSaveSpamDecision(...args),
+  applyAutomatedSpamStatusFromDecision: (...args: unknown[]) => mockApplyAutomatedSpamStatus(...args),
 }));
 
 import { buildSpamDecision, evaluateAndSaveSpamDecision } from '../../electron/email/email-spam-engine';
@@ -70,6 +72,7 @@ function message(overrides: Record<string, unknown> = {}): never {
 describe('email spam decision engine', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockApplyAutomatedSpamStatus.mockReset();
     mockSettings = {
       ...mockSettings,
       spamEngineEnabled: true,
@@ -183,6 +186,31 @@ describe('email spam decision engine', () => {
 
     expect(decision).not.toBeNull();
     expect(mockSaveSpamDecision).toHaveBeenCalledWith(99, row, decision);
+  });
+
+  test('applies folder status when a new message scores as review', () => {
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        if (key === 'sender:domain:spammy.test' || key === 'content:suspicious_terms') {
+          stats.set(key, { feature_key: key, spam_count: 10, ham_count: 0 });
+        }
+      }
+      return stats;
+    });
+    const row = message({
+      id: 102,
+      from_json: JSON.stringify({ value: [{ address: 'offer@spammy.test' }] }),
+      subject: 'Urgent crypto',
+      body_text: 'Bitte sofort https://spammy.test klicken',
+    });
+    mockGetEmailMessageById.mockReturnValue(row);
+
+    const decision = evaluateAndSaveSpamDecision(102);
+
+    expect(decision?.status).toBe('review');
+    expect(mockApplyAutomatedSpamStatus).toHaveBeenCalledWith(102, 'review');
+    expect(mockSaveSpamDecision).toHaveBeenCalledWith(102, row, decision);
   });
 
   test('does not rescore messages that already have spam_decided_at', () => {

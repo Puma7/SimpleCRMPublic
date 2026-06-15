@@ -8,6 +8,7 @@ import { buildFeaturePreview } from './email-spam-features';
 import {
   evaluateSpamListMatch,
   loadSpamFeatureStats,
+  applyAutomatedSpamStatusFromDecision,
   saveSpamDecision,
 } from './email-spam-store';
 import { getMailSecuritySettings } from './mail-security-settings';
@@ -51,6 +52,9 @@ export function evaluateAndSaveSpamDecision(
     return storedSpamDecisionFromRow(row);
   }
   const decision = buildSpamDecision(row);
+  if (decision.status === 'review' || decision.status === 'spam') {
+    applyAutomatedSpamStatusFromDecision(messageId, decision.status);
+  }
   saveSpamDecision(messageId, row, decision);
   return decision;
 }

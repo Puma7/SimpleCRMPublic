@@ -2529,6 +2529,7 @@ async function selectMailFolderCounts(
         and (snoozed_until is null or snoozed_until <= now())
         and (uid >= 0 or pop3_uidl is not null)
         and coalesce(spam_status, 'clean') = 'review'
+        and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('spam_review'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
