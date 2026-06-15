@@ -38,6 +38,8 @@ type Props = {
   reloadNotes: () => void | Promise<void>
   reloadTags: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
+  /** Load full message (body, headers) when picking from correspondent history. */
+  onOpenMessage?: (message: EmailMessage) => void | Promise<void>
   /** Fills resizable column (Postfach); default fixed w-72 for inline viewer split. */
   fillWidth?: boolean
 }
@@ -123,6 +125,7 @@ export function MessageMetadataPanel({
   reloadNotes,
   reloadTags,
   refreshCurrentMessage,
+  onOpenMessage,
   fillWidth = false,
 }: Props) {
   const {
@@ -144,6 +147,7 @@ export function MessageMetadataPanel({
   const [conversation, setConversation] = useState<EmailMessage[]>([])
   const [security, setSecurity] = useState<MessageSecurityState | null>(null)
   const [securityLoading, setSecurityLoading] = useState(false)
+  const [openingConversationId, setOpeningConversationId] = useState<number | null>(null)
 
   const reloadMessageCategoryIds = useCallback(async (messageId: number) => {
     try {
@@ -234,6 +238,29 @@ export function MessageMetadataPanel({
     correspondentEmail,
     selectedAccountId,
   ])
+
+  const openConversationMessage = useCallback(
+    async (message: EmailMessage) => {
+      if (message.id === selectedMessage?.id) return
+      setOpeningConversationId(message.id)
+      try {
+        if (onOpenMessage) {
+          await onOpenMessage(message)
+          return
+        }
+        const full = (await invokeRenderer(
+          IPCChannels.Email.GetMessage,
+          message.id,
+        )) as EmailMessage | null
+        setSelectedMessage(full ?? message)
+      } catch {
+        setSelectedMessage(message)
+      } finally {
+        setOpeningConversationId((current) => (current === message.id ? null : current))
+      }
+    },
+    [onOpenMessage, selectedMessage?.id, setSelectedMessage],
+  )
 
   if (!selectedMessage) return null
 
@@ -400,18 +427,19 @@ export function MessageMetadataPanel({
                 <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded border bg-background p-1 text-xs">
                   {conversation.map((m) => {
                     const active = m.id === selectedMessage.id
+                    const opening = openingConversationId === m.id
                     return (
                       <li key={m.id}>
                         <button
                           type="button"
-                          disabled={active}
+                          disabled={active || opening}
                           className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
                             active
                               ? "bg-primary/10 text-primary"
                               : "hover:bg-muted"
                           }`}
                           onClick={() => {
-                            if (!active) setSelectedMessage(m)
+                            if (!active) void openConversationMessage(m)
                           }}
                         >
                           <p className="font-medium line-clamp-1">

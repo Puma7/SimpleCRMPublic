@@ -438,6 +438,7 @@ function MailShellInner() {
             onReply={(m, initialReplyHtml) => void startLockedCompose("reply", m, initialReplyHtml)}
             onReplyAll={(m, initialReplyHtml) => void startLockedCompose("reply-all", m, initialReplyHtml)}
             onForward={(m) => void startLockedCompose("forward", m)}
+            onOpenMessage={openMessage}
             metadataPlacement="external"
             remoteContentPolicyRefreshKey={remoteContentPolicyRefreshKey}
           />
@@ -460,6 +461,7 @@ function MailShellInner() {
               reloadNotes={reloadNotes}
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
+              onOpenMessage={openMessage}
             />
           ) : (
             <div className="flex h-full w-full min-w-0 flex-col items-center justify-center border-l bg-muted/10 p-4 text-center text-xs text-muted-foreground">

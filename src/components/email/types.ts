@@ -188,6 +188,11 @@ export function stripHtmlToText(html: string): string {
     .trim()
 }
 
+/** List/conversation rows often ship without body fields — only snippet. */
+export function needsFullMessageBody(message: Pick<EmailMessage, "body_text" | "body_html">): boolean {
+  return !message.body_text?.trim() && !message.body_html?.trim()
+}
+
 export function firstAddress(fromJson: string | null): string {
   if (!fromJson) return ""
   try {

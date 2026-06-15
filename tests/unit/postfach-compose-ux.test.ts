@@ -1,3 +1,4 @@
+import { needsFullMessageBody } from '../../src/components/email/types';
 import {
   COMPOSE_BODY_MARKER,
   COMPOSE_QUOTE_MARKER,
@@ -145,5 +146,14 @@ describe('signature-template', () => {
     expect(interpolateSignatureTemplate('{{user.name}} <{{user.email}}>', ctx)).toBe(
       'Anna Agent <nord@example.com>',
     );
+  });
+});
+
+describe('needsFullMessageBody', () => {
+  it('detects summary rows without body fields', () => {
+    expect(needsFullMessageBody({ body_text: null, body_html: null })).toBe(true);
+    expect(needsFullMessageBody({ body_text: '  ', body_html: null })).toBe(true);
+    expect(needsFullMessageBody({ body_text: null, body_html: '<p>x</p>' })).toBe(false);
+    expect(needsFullMessageBody({ body_text: 'hello', body_html: null })).toBe(false);
   });
 });

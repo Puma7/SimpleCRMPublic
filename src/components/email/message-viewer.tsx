@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import DOMPurify from "dompurify"
 import {
   blockRemoteImagesInHtml,
@@ -67,6 +67,7 @@ import {
   formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
   type ConversationLockRecord,
@@ -114,6 +115,7 @@ type Props = {
   onReply: (m: EmailMessage, initialReplyHtml?: string) => void
   onReplyAll: (m: EmailMessage, initialReplyHtml?: string) => void
   onForward: (m: EmailMessage) => void
+  onOpenMessage?: (m: EmailMessage) => void | Promise<void>
   /** Beta layout: Metadaten in eigener Spalte. */
   metadataPlacement?: "inline" | "external"
   remoteContentPolicyRefreshKey?: number
@@ -228,6 +230,7 @@ export function MessageViewer(props: Props) {
     onReply,
     onReplyAll,
     onForward,
+    onOpenMessage,
     metadataPlacement = "inline",
     remoteContentPolicyRefreshKey = 0,
   } = props
@@ -267,6 +270,34 @@ export function MessageViewer(props: Props) {
   const selectedLockOwner = selectedLock ? lockOwnerLabel(selectedLock) : ""
   const lockedByOther = Boolean(selectedLock && user?.id && selectedLock.userId !== user.id)
   const canTakeoverLock = lockedByOther && (user?.role === "owner" || user?.role === "admin")
+  const hydratedBodyForIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!selectedMessage?.id) {
+      hydratedBodyForIdRef.current = null
+      return
+    }
+    if (!needsFullMessageBody(selectedMessage)) {
+      hydratedBodyForIdRef.current = selectedMessage.id
+      return
+    }
+    if (hydratedBodyForIdRef.current === selectedMessage.id) return
+    hydratedBodyForIdRef.current = selectedMessage.id
+    const messageId = selectedMessage.id
+    void (async () => {
+      try {
+        const full = await invokeRenderer(
+          IPCChannels.Email.GetMessage,
+          messageId,
+        ) as EmailMessage | null
+        if (full && !needsFullMessageBody(full)) {
+          setSelectedMessage((prev) => (prev?.id === messageId ? full : prev))
+        }
+      } catch {
+        /* keep snippet fallback */
+      }
+    })()
+  }, [selectedMessage, setSelectedMessage])
 
   useEffect(() => {
     setHtmlView(false)
@@ -1511,6 +1542,7 @@ export function MessageViewer(props: Props) {
               reloadNotes={reloadNotes}
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
+              onOpenMessage={onOpenMessage}
             />
           ) : null}
         </div>
