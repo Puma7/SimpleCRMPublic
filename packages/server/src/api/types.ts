@@ -4226,6 +4226,10 @@ export type AutomationApiKeyApiPort = {
 
 export type ServerJobQueueApiPort = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<unknown>;
+  clearScheduledSendJob?(input: {
+    workspaceId: string;
+    draftId: number;
+  }): Promise<void>;
   releaseAccountSyncLocks?(input: {
     workspaceId: string;
     accountId: number;

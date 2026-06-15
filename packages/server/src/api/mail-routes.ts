@@ -1061,18 +1061,25 @@ async function handleScheduledSendDraftSchedule(
     sendAt: parsed.sendAt,
   });
   if (!result.ok) return composeDraftMutationError(result.reason);
-  if (parsed.sendAt && ports.jobQueue) {
-    const sendAt = new Date(parsed.sendAt);
-    if (!Number.isNaN(sendAt.getTime())) {
-      await ports.jobQueue.enqueue({
-        workspaceId: principal.workspaceId,
-        type: 'mail.send.scheduled',
-        payload: {
+  if (ports.jobQueue) {
+    if (parsed.sendAt) {
+      const sendAt = new Date(parsed.sendAt);
+      if (!Number.isNaN(sendAt.getTime())) {
+        await ports.jobQueue.enqueue({
           workspaceId: principal.workspaceId,
-          draftId: messageId,
-          dueBefore: sendAt.toISOString(),
-        },
-        runAfter: sendAt,
+          type: 'mail.send.scheduled',
+          payload: {
+            workspaceId: principal.workspaceId,
+            draftId: messageId,
+            dueBefore: sendAt.toISOString(),
+          },
+          runAfter: sendAt,
+        });
+      }
+    } else if (ports.jobQueue.clearScheduledSendJob) {
+      await ports.jobQueue.clearScheduledSendJob({
+        workspaceId: principal.workspaceId,
+        draftId: messageId,
       });
     }
   }

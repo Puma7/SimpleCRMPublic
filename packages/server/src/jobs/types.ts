@@ -36,6 +36,10 @@ export type FailJobInput = Readonly<{
 
 export type JobQueuePort = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<QueuedJob>;
+  clearScheduledSendJob?(input: {
+    workspaceId: string;
+    draftId: number;
+  }): Promise<void>;
   claimNext(input: ClaimJobInput): Promise<QueuedJob | null>;
   complete(job: QueuedJob): Promise<boolean>;
   fail(input: FailJobInput): Promise<QueuedJob | null>;

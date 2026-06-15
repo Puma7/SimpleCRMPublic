@@ -1884,6 +1884,8 @@ describe('server edition foundation', () => {
       .toBe('mail.spam.score:workspace-a:11');
     expect(graphileJobKeyForJob('mail.vacation.auto_reply', { messageId: 11 }, 'workspace-a'))
       .toBe('mail.vacation.auto_reply:workspace-a:11');
+    expect(graphileJobKeyForJob('mail.send.scheduled', { draftId: 42 }, 'workspace-a'))
+      .toBe('mail.send.scheduled:workspace-a:42');
     expect(graphileJobKeyForJob('ai.reply_suggestion', { messageId: 11 }, 'workspace-a'))
       .toBe('ai.reply_suggestion:workspace-a:11');
     expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))
@@ -1925,6 +1927,18 @@ describe('server edition foundation', () => {
       jobKey: 'mail.sync.imap:workspace-a:42',
       jobKeyMode: 'replace',
     });
+    expect(graphileSpecFromJob({
+      type: 'mail.send.scheduled',
+      workspaceId: 'workspace-a',
+      payload: { workspaceId: 'workspace-a', draftId: 42, dueBefore: '2026-06-03T14:00:00.000Z' },
+      runAfter: new Date('2026-06-03T14:00:00.000Z'),
+    })).toEqual({
+      queueName: undefined,
+      runAt: new Date('2026-06-03T14:00:00.000Z'),
+      maxAttempts: 5,
+      jobKey: 'mail.send.scheduled:workspace-a:42',
+      jobKeyMode: 'replace',
+    });
     expect(() => buildGraphileWorkerPlan({
       connectionString: ' ',
       concurrency: { mailAccountCount: 1 },
@@ -1938,6 +1952,7 @@ describe('server edition foundation', () => {
 
   test('graphile queue port enqueues validated server jobs through worker utils', async () => {
     const added: Array<{ identifier: string; payload: Record<string, unknown>; spec: unknown }> = [];
+    const removed: string[] = [];
     let migrated = 0;
     let released = 0;
     const queue = await createGraphileQueuePort({
@@ -1946,6 +1961,13 @@ describe('server edition foundation', () => {
       createUtils: async () => ({
         async addJob(identifier, payload, spec) {
           added.push({ identifier, payload, spec });
+        },
+        async withPgClient(callback) {
+          await callback({
+            async query(sql, values) {
+              if (sql.includes('remove_job') && values?.[0]) removed.push(String(values[0]));
+            },
+          });
         },
         async migrate() {
           migrated += 1;
@@ -1962,6 +1984,13 @@ describe('server edition foundation', () => {
       payload: { workspaceId: 'workspace-a', accountId: 7 },
       maxAttempts: 4,
     });
+    await queue.enqueue({
+      type: 'mail.send.scheduled',
+      workspaceId: 'workspace-a',
+      payload: { workspaceId: 'workspace-a', draftId: 42, dueBefore: '2026-06-03T14:00:00.000Z' },
+      runAfter: new Date('2026-06-03T14:00:00.000Z'),
+    });
+    await queue.clearScheduledSendJob?.({ workspaceId: 'workspace-a', draftId: 42 });
     await expect(queue.enqueue({
       type: 'mail.sync',
       workspaceId: 'workspace-a',
@@ -1972,17 +2001,35 @@ describe('server edition foundation', () => {
 
     expect(migrated).toBe(2);
     expect(released).toBe(1);
-    expect(added).toEqual([{
-      identifier: 'mail.sync.imap',
-      payload: { workspaceId: 'workspace-a', accountId: 7 },
-      spec: {
-        queueName: 'account-7',
-        runAt: undefined,
-        maxAttempts: 4,
-        jobKey: 'mail.sync.imap:workspace-a:7',
-        jobKeyMode: 'replace',
+    expect(removed).toEqual(['mail.send.scheduled:workspace-a:42']);
+    expect(added).toEqual([
+      {
+        identifier: 'mail.sync.imap',
+        payload: { workspaceId: 'workspace-a', accountId: 7 },
+        spec: {
+          queueName: 'account-7',
+          runAt: undefined,
+          maxAttempts: 4,
+          jobKey: 'mail.sync.imap:workspace-a:7',
+          jobKeyMode: 'replace',
+        },
       },
-    }]);
+      {
+        identifier: 'mail.send.scheduled',
+        payload: {
+          workspaceId: 'workspace-a',
+          draftId: 42,
+          dueBefore: '2026-06-03T14:00:00.000Z',
+        },
+        spec: {
+          queueName: undefined,
+          runAt: new Date('2026-06-03T14:00:00.000Z'),
+          maxAttempts: 5,
+          jobKey: 'mail.send.scheduled:workspace-a:42',
+          jobKeyMode: 'replace',
+        },
+      },
+    ]);
   });
 
   test('graphile task list bridges server handlers and fails missing handlers', async () => {
@@ -11033,6 +11080,12 @@ describe('server edition foundation', () => {
   test('scheduled-send ticker isolates workspace failures', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
     expect(source).toMatch(/scheduled send ticker workspace/);
+  });
+
+  test('postgres job queue replaces pending scheduled-send jobs per draft', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-job-queue-port.ts'), 'utf8');
+    expect(source).toMatch(/deletePendingScheduledSendJobs/);
+    expect(source).toMatch(/type === 'mail\.send\.scheduled'/);
   });
 
   test('desktop ai review skips real provider calls during normal dry-run', () => {
