@@ -1732,11 +1732,13 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     };
   }
 
+  const resolvedText = values.text ?? '';
+
   return {
     ok: true,
     values: {
       promptId: values.promptId,
-      text: values.text,
+      text: resolvedText,
       ...(values.contextText === undefined ? {} : { contextText: values.contextText }),
       ...(values.inboundContextText === undefined ? {} : { inboundContextText: values.inboundContextText }),
       ...(values.userContext === undefined ? {} : { userContext: values.userContext }),
