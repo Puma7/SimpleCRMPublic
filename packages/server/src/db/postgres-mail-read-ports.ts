@@ -17,6 +17,8 @@ import {
   scheduledSendStatusKey,
   scheduledSendSyncInfoKeys,
   shouldAutoApplySpamStatus,
+  shouldRunInitialSpamScoring,
+  SPAM_ENGINE_MODEL_VERSION,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
@@ -197,6 +199,11 @@ const emailMessageSpamStatusMutationColumns = [
   'rspamd_action',
   'raw_headers',
   'raw_rfc822_b64',
+  'spam_score',
+  'spam_score_label',
+  'spam_decision_source',
+  'spam_score_breakdown_json',
+  'spam_decided_at',
 ] as const;
 
 const emailMessageSecurityCheckColumns = [
@@ -1512,13 +1519,15 @@ async function runPostgresMailSecurityCheck(
       .execute();
   }
 
-  const spam = await evaluateSpamDecisionForMessage(
-    trx,
-    workspaceId,
-    currentForSpam,
-    values.applyStatus,
-    now,
-  );
+  const spam = shouldRunInitialSpamScoring({ spamDecidedAt: currentForSpam.spam_decided_at })
+    ? await evaluateSpamDecisionForMessage(
+      trx,
+      workspaceId,
+      currentForSpam,
+      values.applyStatus,
+      now,
+    )
+    : await loadExistingSpamDecisionForMessage(trx, workspaceId, Number(currentForSpam.id));
   const automation = values.applyStatus
     ? await applyPostgresPreWorkflowMailSecurity(trx, workspaceId, currentForSpam, settings, now)
     : { skippedWorkflows: false, tags: [] };
@@ -1536,6 +1545,99 @@ async function runPostgresMailSecurityCheck(
   };
 }
 
+async function loadExistingSpamDecisionForMessage(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+): Promise<EmailMessageSpamDecisionResult> {
+  const message = await trx
+    .selectFrom('email_messages')
+    .select(emailMessageSummaryColumns)
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirstOrThrow();
+  const decisionRow = await trx
+    .selectFrom('email_spam_decisions')
+    .select([
+      'id',
+      'source_sqlite_id',
+      'message_source_sqlite_id',
+      'account_source_sqlite_id',
+      'message_id',
+      'account_id',
+      'score',
+      'status',
+      'source',
+      'breakdown_json',
+      'model_version',
+      'created_at',
+      'updated_at',
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('message_id', '=', messageId)
+    .orderBy('created_at', 'desc')
+    .orderBy('id', 'desc')
+    .limit(1)
+    .executeTakeFirst();
+  if (decisionRow) {
+    return {
+      message: mapEmailMessageRow(message, false),
+      decision: {
+        id: Number(decisionRow.id),
+        sourceSqliteId: decisionRow.source_sqlite_id === null ? null : Number(decisionRow.source_sqlite_id),
+        messageSourceSqliteId: decisionRow.message_source_sqlite_id === null
+          ? null
+          : Number(decisionRow.message_source_sqlite_id),
+        accountSourceSqliteId: Number(decisionRow.account_source_sqlite_id),
+        messageId: decisionRow.message_id === null ? null : Number(decisionRow.message_id),
+        accountId: decisionRow.account_id === null ? null : Number(decisionRow.account_id),
+        score: decisionRow.score,
+        status: decisionRow.status as 'clean' | 'review' | 'spam',
+        source: decisionRow.source,
+        breakdown: decisionRow.breakdown_json,
+        modelVersion: decisionRow.model_version,
+        createdAt: timestampToIsoOrNull(decisionRow.created_at),
+        updatedAt: timestampToIso(decisionRow.updated_at),
+      },
+    };
+  }
+
+  const stored = await trx
+    .selectFrom('email_messages')
+    .select([
+      'spam_score',
+      'spam_score_label',
+      'spam_decision_source',
+      'spam_score_breakdown_json',
+      'spam_decided_at',
+      'account_source_sqlite_id',
+      'source_sqlite_id',
+      'account_id',
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirstOrThrow();
+
+  return {
+    message: mapEmailMessageRow(message, false),
+    decision: {
+      id: 0,
+      sourceSqliteId: null,
+      messageSourceSqliteId: Number(stored.source_sqlite_id),
+      accountSourceSqliteId: Number(stored.account_source_sqlite_id),
+      messageId,
+      accountId: stored.account_id === null ? null : Number(stored.account_id),
+      score: stored.spam_score ?? 0,
+      status: (stored.spam_score_label ?? 'clean') as 'clean' | 'review' | 'spam',
+      source: stored.spam_decision_source ?? 'stored',
+      breakdown: stored.spam_score_breakdown_json,
+      modelVersion: SPAM_ENGINE_MODEL_VERSION,
+      createdAt: timestampToIsoOrNull(stored.spam_decided_at),
+      updatedAt: timestampToIsoOrNull(stored.spam_decided_at) ?? new Date().toISOString(),
+    },
+  };
+}
+
 async function evaluateSpamDecisionForMessage(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -1543,6 +1645,10 @@ async function evaluateSpamDecisionForMessage(
   applyStatus: boolean,
   now: Date,
 ): Promise<EmailMessageSpamDecisionResult> {
+  if (!shouldRunInitialSpamScoring({ spamDecidedAt: current.spam_decided_at })) {
+    return loadExistingSpamDecisionForMessage(trx, workspaceId, Number(current.id));
+  }
+
   const preview = buildFeaturePreview(emailMessageSpamDecisionInputFromRow(current));
   const settings = await loadSpamEngineSettings(trx, workspaceId);
   const listMatch = await selectSpamListMatchForMessage(
@@ -1565,6 +1671,7 @@ async function evaluateSpamDecisionForMessage(
         doneLocal: current.done_local,
         spamStatus: current.spam_status,
         isSpam: current.is_spam,
+        spamDecidedAt: current.spam_decided_at,
       },
       decision.status,
     );

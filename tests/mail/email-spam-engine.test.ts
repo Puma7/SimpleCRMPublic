@@ -43,6 +43,7 @@ import { buildSpamDecision, evaluateAndSaveSpamDecision } from '../../electron/e
 import {
   isSpamLearningFeatureKey,
   shouldAutoApplySpamStatus,
+  shouldRunInitialSpamScoring,
 } from '../../packages/core/src/email/spam-engine';
 
 function message(overrides: Record<string, unknown> = {}): never {
@@ -184,6 +185,28 @@ describe('email spam decision engine', () => {
     expect(mockSaveSpamDecision).toHaveBeenCalledWith(99, row, decision);
   });
 
+  test('does not rescore messages that already have spam_decided_at', () => {
+    const stored = {
+      score: 12,
+      status: 'clean',
+      source: 'local',
+      reasons: [],
+      featureKeys: [],
+      modelVersion: 1,
+    };
+    const row = message({
+      id: 101,
+      spam_decided_at: '2026-06-01 12:00:00',
+      spam_score_breakdown_json: JSON.stringify(stored),
+    });
+    mockGetEmailMessageById.mockReturnValue(row);
+
+    const decision = evaluateAndSaveSpamDecision(101);
+
+    expect(decision).toMatchObject(stored);
+    expect(mockSaveSpamDecision).not.toHaveBeenCalled();
+  });
+
   test('ignores auth pass features in local learning stats', () => {
     mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
       const stats = new Map();
@@ -220,5 +243,16 @@ describe('email spam decision engine', () => {
     expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'spam')).toBe(false);
     expect(shouldAutoApplySpamStatus({ doneLocal: 0, spamStatus: 'clean' }, 'review')).toBe(true);
     expect(shouldAutoApplySpamStatus({ doneLocal: 1, spamStatus: 'clean' }, 'clean')).toBe(true);
+    expect(shouldAutoApplySpamStatus({
+      doneLocal: 0,
+      spamStatus: 'clean',
+      spamDecidedAt: '2026-06-01T12:00:00.000Z',
+    }, 'review')).toBe(false);
+  });
+
+  test('shouldRunInitialSpamScoring allows only the first inbound scoring pass', () => {
+    expect(shouldRunInitialSpamScoring({ spamDecidedAt: null })).toBe(true);
+    expect(shouldRunInitialSpamScoring({ spamDecidedAt: '2026-06-01T12:00:00.000Z' })).toBe(false);
+    expect(shouldRunInitialSpamScoring({ spamDecidedAt: new Date('2026-06-01T12:00:00.000Z') })).toBe(false);
   });
 });

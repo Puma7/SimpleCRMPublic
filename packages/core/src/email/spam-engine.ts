@@ -67,6 +67,7 @@ export type SpamStatusApplyMessageInput = {
   doneLocal?: boolean | number | string | null;
   spamStatus?: string | null;
   isSpam?: boolean | number | null;
+  spamDecidedAt?: string | Date | null;
 };
 
 /** Passing auth checks correlate with ham; they must not feed local learning stats. */
@@ -74,12 +75,24 @@ export function isSpamLearningFeatureKey(featureKey: string): boolean {
   return !(featureKey.startsWith('auth:') && featureKey.endsWith(':pass'));
 }
 
-/** Keep handled inbox mail in place when automated rescoring would move it to review/spam. */
+function hasSpamDecision(message: SpamStatusApplyMessageInput): boolean {
+  const decidedAt = message.spamDecidedAt;
+  if (decidedAt instanceof Date) return !Number.isNaN(decidedAt.getTime());
+  return typeof decidedAt === 'string' && decidedAt.trim().length > 0;
+}
+
+/** Spam scoring runs once on inbound arrival; never re-score existing mail. */
+export function shouldRunInitialSpamScoring(message: SpamStatusApplyMessageInput): boolean {
+  return !hasSpamDecision(message);
+}
+
+/** Keep handled or already-scored inbox mail in place when automation would move it. */
 export function shouldAutoApplySpamStatus(
   message: SpamStatusApplyMessageInput,
   nextStatus: SpamStatus,
 ): boolean {
   if (nextStatus === 'clean') return true;
+  if (hasSpamDecision(message)) return false;
   const done =
     message.doneLocal === true ||
     message.doneLocal === 1 ||
