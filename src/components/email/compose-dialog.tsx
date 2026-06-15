@@ -918,10 +918,12 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       }
       if (r.allowed) {
         toast.success(
-          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand erlaubt.`,
+          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand würde erlaubt.`,
         )
       } else {
-        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.")
+        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.", {
+          duration: 8000,
+        })
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")

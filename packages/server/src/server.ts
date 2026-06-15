@@ -350,6 +350,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     db: options.db,
     mssql: createPostgresMssqlSettingsPort({ db: options.db, secrets: options.secrets }),
     workflowImapActions,
+    secrets: options.secrets,
   });
   const auth = createPostgresAuthPort({
     db: options.db,
@@ -428,7 +429,10 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       sentCopyAppend: sentCopyAppender.append,
       pgpMessages,
     }),
-    emailOutboundValidation: createPostgresEmailOutboundValidationPort({ db: options.db }),
+    emailOutboundValidation: createPostgresEmailOutboundValidationPort({
+      db: options.db,
+      workflowDryRun: (input) => workflowExecution.dryRun!(input),
+    }),
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
     emailFolders: createPostgresEmailFolderReadPort({ db: options.db }),
@@ -669,6 +673,7 @@ function buildServerJobHandlers(input: {
             db,
             mssql: createPostgresMssqlSettingsPort({ db, secrets }),
             workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
+            secrets,
           }),
           workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
             db,
