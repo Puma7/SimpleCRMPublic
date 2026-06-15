@@ -1281,7 +1281,7 @@ async function executePreviewOutboundAiReview(
 
   const preview = await ports.aiReviewPreview({
     workspaceId: context.workspaceId,
-    direction: context.direction,
+    direction: context.direction === 'inbound' ? 'inbound' : 'outbound',
     ...(promptId.value === undefined ? {} : { promptId: promptId.value }),
     ...(profileId.value === undefined ? {} : { profileId: profileId.value }),
     blockKeyword: blockKeyword.value,

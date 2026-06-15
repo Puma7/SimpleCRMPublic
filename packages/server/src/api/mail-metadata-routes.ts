@@ -3739,6 +3739,7 @@ function parseOptionalThreadView(value: string | undefined):
   | 'sent'
   | 'archived'
   | 'drafts'
+  | 'scheduled_send'
   | 'spam_review'
   | 'spam'
   | 'trash'

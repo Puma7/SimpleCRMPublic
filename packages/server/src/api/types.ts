@@ -2500,7 +2500,7 @@ export type EmailThreadSplitMessagePortResult =
 
 export type EmailThreadApiPort = EmailStringRecordApiPort<EmailThreadRecord, {
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
