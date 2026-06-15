@@ -11030,6 +11030,18 @@ describe('server edition foundation', () => {
     expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true AND m\.scheduled_send_at IS NULL/);
   });
 
+  test('scheduled-send ticker isolates workspace failures', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
+    expect(source).toMatch(/scheduled send ticker workspace/);
+  });
+
+  test('desktop ai review skips real provider calls during normal dry-run', () => {
+    const aiNodes = readFileSync(resolve(__dirname, '../../electron/workflow/nodes/ai-nodes.ts'), 'utf8');
+    const engine = readFileSync(resolve(__dirname, '../../electron/email/email-workflow-engine.ts'), 'utf8');
+    expect(aiNodes).toMatch(/ctx\.dryRun && !ctx\.previewOutbound/);
+    expect(engine).toMatch(/previewOutbound: dryRun/);
+  });
+
   test('scheduled-send job ignores compose send already in progress errors', async () => {
     const storeCalls: unknown[] = [];
     const port = createScheduledSendJobPort({

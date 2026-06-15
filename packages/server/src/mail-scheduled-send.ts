@@ -418,11 +418,16 @@ export function startScheduledSendTicker(input: {
         .groupBy('workspace_id')
         .execute();
       for (const row of rows) {
-        await port.processDue({
-          workspaceId: String(row.workspace_id),
-          dueBefore,
-          limit: 30,
-        });
+        try {
+          await port.processDue({
+            workspaceId: String(row.workspace_id),
+            dueBefore,
+            limit: 30,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[mail] scheduled send ticker workspace ${String(row.workspace_id)}: ${message}`);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

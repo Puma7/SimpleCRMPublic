@@ -84,6 +84,7 @@ export function createWorkflowContext(input: {
   message?: EmailMessageRow | null;
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
+  previewOutbound?: boolean;
   eventStrings?: WorkflowStringContext;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -137,6 +138,7 @@ export function createWorkflowContext(input: {
     workflowId: input.workflowId,
     runId: input.runId,
     dryRun: input.dryRun ?? false,
+    previewOutbound: input.previewOutbound === true,
     variables: vars,
     strings,
     ai: {},

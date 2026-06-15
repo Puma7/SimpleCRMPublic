@@ -308,6 +308,7 @@ type GraphRunInput = {
   message?: import('../email/email-store').EmailMessageRow | null;
   outbound?: import('../email/email-workflow-engine').OutboundDraftPayload | null;
   dryRun?: boolean;
+  previewOutbound?: boolean;
   eventStrings?: Record<string, string>;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -322,6 +323,7 @@ function buildCtx(input: GraphRunInput): WorkflowContext {
     message: input.message ?? null,
     outbound: input.outbound ?? null,
     dryRun: input.dryRun,
+    previewOutbound: input.previewOutbound,
     eventStrings: input.eventStrings,
     eventVariables: input.eventVariables,
     initialVariables: input.initialVariables,

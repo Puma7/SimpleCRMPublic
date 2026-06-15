@@ -432,6 +432,8 @@ export function useEmailMessages() {
       let added = 0
       let already = 0
       let noop = 0
+      let failed = 0
+      let lastError: unknown = null
       try {
         for (let offset = 0; offset < ids.length; offset += BULK_CATEGORY_ASSIGN_CONCURRENCY) {
           const batch = ids.slice(offset, offset + BULK_CATEGORY_ASSIGN_CONCURRENCY)
@@ -444,7 +446,11 @@ export function useEmailMessages() {
             ),
           )
           for (const outcome of outcomes) {
-            if (outcome.status === "rejected") throw outcome.reason
+            if (outcome.status === "rejected") {
+              failed += 1
+              lastError = outcome.reason
+              continue
+            }
             const result = outcome.value as { added?: boolean; alreadyAssigned?: boolean }
             if (result?.added) added += 1
             else if (result?.alreadyAssigned) already += 1
@@ -453,18 +459,26 @@ export function useEmailMessages() {
         }
         if (added === 0 && already === 0) {
           toast.error(
-            noop > 0
-              ? "Kategorisieren fehlgeschlagen — unerwartete Serverantwort"
-              : "Keine Nachricht konnte kategorisiert werden",
+            failed > 0
+              ? (lastError instanceof Error ? lastError.message : "Kategorisieren fehlgeschlagen")
+              : noop > 0
+                ? "Kategorisieren fehlgeschlagen — unerwartete Serverantwort"
+                : "Keine Nachricht konnte kategorisiert werden",
           )
           return false
         }
         if (added === 0 && already > 0) {
           toast.info(already === 1 ? "Bereits in dieser Kategorie" : `Alle ${already} Mails bereits in dieser Kategorie`)
         } else if (added > 0 && already > 0) {
-          toast.success(`${added} hinzugefügt, ${already} bereits drin`)
+          const suffix = failed > 0 ? `, ${failed} fehlgeschlagen` : ""
+          toast.success(`${added} hinzugefügt, ${already} bereits drin${suffix}`)
         } else {
-          toast.success(added === 1 ? "Kategorie hinzugefügt" : `${added} Nachrichten kategorisiert`)
+          const suffix = failed > 0 ? `, ${failed} fehlgeschlagen` : ""
+          toast.success(
+            added === 1
+              ? `Kategorie hinzugefügt${suffix}`
+              : `${added} Nachrichten kategorisiert${suffix}`,
+          )
         }
         if (added > 0 || already > 0) bumpCategoryAssignmentRevision()
         await refreshList({ preserveSelection: true })

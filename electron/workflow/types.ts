@@ -13,6 +13,8 @@ export type WorkflowContext = {
   workflowId: number;
   runId: number;
   dryRun: boolean;
+  /** True for compose outbound validation — runs real AI without persisting holds/tags. */
+  previewOutbound?: boolean;
   variables: Record<string, string | number | boolean | null>;
   strings: WorkflowStringContext;
   ai: { lastResponse?: string };

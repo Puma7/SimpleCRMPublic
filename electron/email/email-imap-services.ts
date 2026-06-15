@@ -17,6 +17,21 @@ let idleClients: Map<number, ImapFlow> = new Map();
 let globalCron: ScheduledTask | null = null;
 let scheduledSendInterval: ReturnType<typeof setInterval> | null = null;
 let scheduledSendTickInFlight = false;
+
+function runScheduledSendTick(logger: Pick<typeof console, 'warn' | 'debug'>): void {
+  if (scheduledSendTickInFlight) return;
+  scheduledSendTickInFlight = true;
+  void (async () => {
+    try {
+      const { processDueScheduledSends } = await import('./email-scheduled-send');
+      await processDueScheduledSends(logger);
+    } catch (e) {
+      logger.warn('[email] scheduled send', e);
+    } finally {
+      scheduledSendTickInFlight = false;
+    }
+  })();
+}
 const workflowCrons: Map<number, ScheduledTask> = new Map();
 const workflowCronInFlight = new Set<number>();
 
@@ -162,12 +177,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
         } catch (e) {
           logger.warn('[workflow] delayed jobs', e);
         }
-        try {
-          const { processDueScheduledSends } = await import('./email-scheduled-send');
-          await processDueScheduledSends(logger);
-        } catch (e) {
-          logger.warn('[email] scheduled send', e);
-        }
+        runScheduledSendTick(logger);
         try {
           await scanDueTasksAndFireWorkflows();
         } catch (e) {
@@ -208,18 +218,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   scheduleWorkflowCrons(logger);
 
   scheduledSendInterval = setInterval(() => {
-    if (scheduledSendTickInFlight) return;
-    scheduledSendTickInFlight = true;
-    void (async () => {
-      try {
-        const { processDueScheduledSends } = await import('./email-scheduled-send');
-        await processDueScheduledSends(logger);
-      } catch (e) {
-        logger.warn('[email] scheduled send', e);
-      } finally {
-        scheduledSendTickInFlight = false;
-      }
-    })();
+    runScheduledSendTick(logger);
   }, 30_000);
 
   const accounts = listEmailAccounts();

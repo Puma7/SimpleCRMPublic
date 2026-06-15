@@ -4400,6 +4400,28 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps scheduled_send view lists to server query parameters', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { items: [], nextCursor: null },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await transport.invoke(IPCChannels.Email.ListMessagesByView, {
+      accountId: 101,
+      view: 'scheduled_send',
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages?accountId=101&view=scheduled_send&limit=50&offset=0',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps legacy email folder message lists to server folderPath queries', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

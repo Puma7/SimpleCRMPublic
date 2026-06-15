@@ -487,6 +487,7 @@ export async function evaluateOutboundWorkflows(
         message: row,
         outbound: payload,
         dryRun,
+        previewOutbound: dryRun,
       });
       if (r.blocked) {
         const reason =

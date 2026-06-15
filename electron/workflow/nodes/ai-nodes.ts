@@ -66,6 +66,9 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'action',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
     execute: async (ctx, config) => {
+      if (ctx.dryRun && !ctx.previewOutbound) {
+        return { status: 'ok', message: 'dry-run ai review skipped' };
+      }
       const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
@@ -116,6 +119,9 @@ export function registerAiNodes(register: Reg): void {
       'Prüft ausgehende E-Mails (Ton, Rechtschreibung, Anhang, Betrugs-Antworten) vor dem Versand.',
     defaultConfig: { promptId: 0, checkReplyContext: true },
     execute: async (ctx, config) => {
+      if (ctx.dryRun && !ctx.previewOutbound) {
+        return { status: 'ok', message: 'dry-run outbound review skipped' };
+      }
       if (ctx.direction !== 'outbound') {
         return { status: 'skipped', message: 'Nur für ausgehende E-Mails' };
       }
