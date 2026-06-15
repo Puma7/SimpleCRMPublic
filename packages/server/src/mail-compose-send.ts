@@ -443,6 +443,7 @@ export type PostgresComposeSenderOptions = Readonly<{
   smtpSend?: (input: ServerSmtpSendInput) => Promise<void>;
   sentCopyAppend?: (input: ServerImapSentCopyAppendInput) => Promise<ServerImapSentCopyAppendResult>;
   outboundReview?: ComposeOutboundReviewPort;
+  workflowDryRun?: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   pgpMessages?: Pick<PgpMessageCryptoApiPort, 'prepareOutboundBody' | 'prepareOutboundAttachments'>;
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
@@ -719,6 +720,7 @@ export function createPostgresEmailComposeSenderPort(
     outboundReview: options.outboundReview ?? createPostgresComposeOutboundReviewPort({
       db: options.db,
       now: options.now,
+      workflowDryRun: options.workflowDryRun,
     }),
     pgpMessages: options.pgpMessages,
     oauthFetchImpl: options.oauthFetchImpl,
@@ -772,27 +774,6 @@ export function createPostgresEmailOutboundValidationPort(options: {
         return { allowed: true, reason: null };
       }
 
-      const eventStrings = outboundValidationEventStrings(input.values);
-      const outboundContext = {
-        outbound: {
-          messageId: input.values.messageId,
-          subject: input.values.subject,
-          bodyText: truncateContextText(input.values.bodyText),
-          bodyHtml: input.values.bodyHtml === null || input.values.bodyHtml === undefined
-            ? null
-            : truncateContextText(input.values.bodyHtml),
-          to: input.values.to,
-          cc: input.values.cc ?? '',
-          bcc: input.values.bcc ?? '',
-          inReplyToMessageId: input.values.inReplyToMessageId ?? null,
-          attachmentCount: input.values.attachmentCount ?? 0,
-          attachmentPaths: [],
-        },
-        previewOutbound: true,
-        eventStrings,
-        source: 'server_compose_outbound_validate',
-      };
-
       let firstBlockReason: string | null = null;
       for (const workflow of workflows) {
         const result = await options.workflowDryRun({
@@ -801,7 +782,7 @@ export function createPostgresEmailOutboundValidationPort(options: {
           messageId: input.values.messageId,
           triggerName: 'outbound',
           actorUserId: input.actorUserId,
-          context: outboundContext,
+          context: buildOutboundValidationContext(input.values),
         });
         if (!result.success) {
           return {
@@ -852,6 +833,7 @@ export function createPostgresEmailOutboundValidationPort(options: {
 
 export function createPostgresComposeOutboundReviewPort(options: {
   db: Kysely<ServerDatabase>;
+  workflowDryRun?: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }): ComposeOutboundReviewPort {
@@ -948,6 +930,40 @@ export function createPostgresComposeOutboundReviewPort(options: {
             .where('folder_kind', '=', 'draft')
             .executeTakeFirst();
           if (!draft) return { allowed: false, error: 'Entwurf nicht gefunden' };
+
+          if (options.workflowDryRun) {
+            const dryRun = await evaluateComposeOutboundDryRun({
+              workflowDryRun: options.workflowDryRun,
+              workspaceId: input.workspaceId,
+              actorUserId: input.actorUserId,
+              draftMessageId: input.draftMessageId,
+              subject: input.subject,
+              bodyText: input.bodyText,
+              bodyHtml: input.bodyHtml,
+              to: input.to,
+              cc: input.cc,
+              bcc: input.bcc,
+              inReplyToMessageId: input.inReplyToMessageId,
+              attachmentCount: input.attachmentCount,
+              attachmentPaths: input.attachmentPaths,
+              workflows,
+            });
+            if (dryRun.allowed) {
+              await persistManualOutboundApproval(trx, {
+                workspaceId: input.workspaceId,
+                draftId: input.draftMessageId,
+                subject: input.subject,
+                bodyText: input.bodyText,
+                bodyHtml: input.bodyHtml,
+                to: input.to,
+                cc: input.cc ?? null,
+                bcc: input.bcc ?? null,
+                attachmentPaths: input.attachmentPaths ?? null,
+                now,
+              });
+              return { allowed: true };
+            }
+          }
 
           const { plain, html } = extractDraftBodyForOutboundBlock(
             {
@@ -1457,6 +1473,9 @@ async function prepareDraftForSend(input: {
       threadId = parentForThreading.threadId;
     }
   }
+  if (!ticketCode && input.draft.ticketCode?.trim()) {
+    ticketCode = input.draft.ticketCode.trim();
+  }
   if (!ticketCode) {
     const allowedPrefixes = await input.store.listKnownTicketPrefixes?.({
       workspaceId: input.workspaceId,
@@ -1786,6 +1805,105 @@ function readComposeAttachmentsForPgp(
     }
   }
   return { ok: true, attachments: out };
+}
+
+function buildOutboundValidationContext(values: EmailOutboundValidationInput): Record<string, unknown> {
+  return {
+    outbound: {
+      messageId: values.messageId,
+      subject: values.subject,
+      bodyText: truncateContextText(values.bodyText),
+      bodyHtml: values.bodyHtml === null || values.bodyHtml === undefined
+        ? null
+        : truncateContextText(values.bodyHtml),
+      to: values.to,
+      cc: values.cc ?? '',
+      bcc: values.bcc ?? '',
+      inReplyToMessageId: values.inReplyToMessageId ?? null,
+      attachmentCount: values.attachmentCount ?? 0,
+      attachmentPaths: [],
+    },
+    previewOutbound: true,
+    eventStrings: outboundValidationEventStrings(values),
+    source: 'server_compose_outbound_validate',
+  };
+}
+
+async function evaluateComposeOutboundDryRun(input: {
+  workflowDryRun: (plan: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
+  workspaceId: string;
+  actorUserId: string;
+  draftMessageId: number;
+  subject: string;
+  bodyText: string;
+  bodyHtml: string | null | undefined;
+  to: string;
+  cc?: string | null;
+  bcc?: string | null;
+  inReplyToMessageId?: number | null;
+  attachmentCount: number;
+  attachmentPaths?: readonly string[] | null;
+  workflows: readonly { id: number | string | bigint; name: string }[];
+}): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  let firstBlockReason: string | null = null;
+  for (const workflow of input.workflows) {
+    const result = await input.workflowDryRun({
+      workspaceId: input.workspaceId,
+      workflowId: Number(workflow.id),
+      messageId: input.draftMessageId,
+      triggerName: 'outbound',
+      actorUserId: input.actorUserId,
+      context: {
+        outbound: {
+          messageId: input.draftMessageId,
+          subject: input.subject,
+          bodyText: truncateContextText(input.bodyText),
+          bodyHtml: input.bodyHtml === null || input.bodyHtml === undefined
+            ? null
+            : truncateContextText(input.bodyHtml),
+          to: input.to,
+          cc: input.cc ?? '',
+          bcc: input.bcc ?? '',
+          inReplyToMessageId: input.inReplyToMessageId ?? null,
+          attachmentCount: input.attachmentCount,
+          attachmentPaths: input.attachmentPaths?.slice(0, 25) ?? [],
+        },
+        previewOutbound: true,
+        eventStrings: outboundValidationEventStrings({
+          messageId: input.draftMessageId,
+          subject: input.subject,
+          bodyText: input.bodyText,
+          bodyHtml: input.bodyHtml ?? undefined,
+          to: input.to,
+          cc: input.cc ?? undefined,
+          bcc: input.bcc ?? undefined,
+          inReplyToMessageId: input.inReplyToMessageId ?? undefined,
+          attachmentCount: input.attachmentCount,
+        }),
+        source: 'server_compose_outbound_review',
+      },
+    });
+    if (!result.success) {
+      return {
+        allowed: false,
+        reason: result.error ?? 'Ausgangspruefung fehlgeschlagen',
+      };
+    }
+    if (result.blocked) {
+      const reason = result.blockReason?.trim()
+        || `Workflow „${workflow.name}" wuerde den Versand blockieren`;
+      if (!firstBlockReason) firstBlockReason = reason;
+    } else if (result.status === 'error') {
+      return {
+        allowed: false,
+        reason: result.error ?? 'Ausgehender Workflow fehlgeschlagen',
+      };
+    }
+  }
+  if (firstBlockReason) {
+    return { allowed: false, reason: firstBlockReason };
+  }
+  return { allowed: true };
 }
 
 function outboundWorkflowJobPayload(

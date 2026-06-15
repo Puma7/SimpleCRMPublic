@@ -463,6 +463,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       secrets: options.secrets,
       sentCopyAppend: sentCopyAppender.append,
       pgpMessages,
+      workflowDryRun,
     }),
     emailOutboundValidation,
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),

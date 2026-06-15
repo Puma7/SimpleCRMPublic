@@ -18873,6 +18873,7 @@ describe('server edition foundation', () => {
   test('server outbound validation persists manual approval marker on success', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-compose-send.ts'), 'utf8');
     expect(source).toMatch(/persistManualOutboundApproval/);
+    expect(source).toMatch(/evaluateComposeOutboundDryRun/);
   });
 
   test('server outbound validation route delegates to server review port', async () => {
