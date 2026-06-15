@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { Loader2, Plus } from "lucide-react"
+import { Loader2, Pencil, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -20,7 +21,11 @@ import {
   type KnowledgeContext,
 } from "@shared/knowledge-context"
 import { invokeRenderer } from "@/services/transport"
-import { assignKnowledgeBaseToAccountSlot } from "./account-override-mutations"
+import {
+  assignKnowledgeBaseToAccountSlot,
+  resetKnowledgeBaseAccountOverride,
+} from "./account-override-mutations"
+import { KnowledgeMarkdownEditor } from "./knowledge-markdown-editor"
 
 type KbRow = {
   id: number
@@ -49,12 +54,97 @@ function slotOverrideKey(context: KnowledgeContext): string {
   return `kb.${context}`
 }
 
+function SlotDocumentEditor({
+  knowledgeBaseId,
+  onSaved,
+}: {
+  knowledgeBaseId: number
+  onSaved: () => void
+}) {
+  const [markdown, setMarkdown] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    void (async () => {
+      try {
+        const r = (await invokeRenderer(
+          IPCChannels.Email.GetKnowledgeBaseDocument,
+          knowledgeBaseId,
+        )) as { success: true; content: string } | { success: false }
+        if (!cancelled) {
+          setMarkdown(r.success ? r.content : "")
+        }
+      } catch {
+        if (!cancelled) setMarkdown("")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [knowledgeBaseId])
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Inhalt wird geladen…
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-md border bg-muted/20 p-2">
+      <KnowledgeMarkdownEditor value={markdown} onChange={setMarkdown} />
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        disabled={saving}
+        onClick={() => {
+          setSaving(true)
+          void (async () => {
+            try {
+              const r = (await invokeRenderer(IPCChannels.Email.SaveKnowledgeBaseDocument, {
+                knowledgeBaseId,
+                content: markdown,
+              })) as { success: boolean; error?: string }
+              if (!r.success) {
+                toast.error(r.error ?? "Speichern fehlgeschlagen.")
+                return
+              }
+              toast.success("Wissensbasis-Inhalt gespeichert.")
+              onSaved()
+            } catch (e) {
+              toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen.")
+            } finally {
+              setSaving(false)
+            }
+          })()
+        }}
+      >
+        {saving ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+        Inhalt speichern
+      </Button>
+    </div>
+  )
+}
+
 export function AccountKnowledgeSlots({ accountId }: Props) {
   const [rows, setRows] = useState<KbRow[]>([])
   const [allKbs, setAllKbs] = useState<KbRow[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState<KnowledgeContext | null>(null)
   const [assigning, setAssigning] = useState<KnowledgeContext | null>(null)
+  const [newNames, setNewNames] = useState<Partial<Record<KnowledgeContext, string>>>({})
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editNames, setEditNames] = useState<Record<number, string>>({})
+  const [expandedDocId, setExpandedDocId] = useState<number | null>(null)
+  const [removing, setRemoving] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -107,10 +197,15 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
       toast.info(`${KNOWLEDGE_CONTEXT_LABELS[context]} ist für dieses Konto bereits konfiguriert.`)
       return
     }
+    const name = (newNames[context] ?? KNOWLEDGE_CONTEXT_LABELS[context]).trim()
+    if (!name) {
+      toast.error("Bitte einen Namen für die Wissensbasis eingeben.")
+      return
+    }
     setCreating(context)
     try {
       const r = (await invokeRenderer(IPCChannels.Email.CreateKnowledgeBase, {
-        name: KNOWLEDGE_CONTEXT_LABELS[context],
+        name,
         accountId,
         knowledgeContext: context,
       })) as { success: boolean; id?: number; error?: string }
@@ -122,7 +217,8 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
         toast.error("Anlegen fehlgeschlagen — keine ID vom Server erhalten.")
         return
       }
-      toast.success(`${KNOWLEDGE_CONTEXT_LABELS[context]} angelegt.`)
+      toast.success(`${name} angelegt.`)
+      setExpandedDocId(r.id)
       await load()
     } catch (e) {
       console.error(e)
@@ -144,14 +240,56 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
     }
     setAssigning(context)
     try {
-      await assignKnowledgeBaseToAccountSlot(source, accountId, context)
+      const id = await assignKnowledgeBaseToAccountSlot(source, accountId, context)
       toast.success(`${KNOWLEDGE_CONTEXT_LABELS[context]} zugewiesen.`)
+      setExpandedDocId(id)
       await load()
     } catch (e) {
       console.error(e)
       toast.error(e instanceof Error ? e.message : "Zuweisung fehlgeschlagen.")
     } finally {
       setAssigning(null)
+    }
+  }
+
+  const saveKbName = async (kb: KbRow) => {
+    const name = (editNames[kb.id] ?? kb.name).trim()
+    if (!name) {
+      toast.error("Name darf nicht leer sein.")
+      return
+    }
+    setEditingId(kb.id)
+    try {
+      await invokeRenderer(IPCChannels.Email.UpdateKnowledgeBase, {
+        id: kb.id,
+        name,
+        description: kb.description,
+        accountId: kb.account_id ?? accountId,
+        knowledgeContext: kb.knowledge_context,
+        overrideKey: kb.override_key,
+      })
+      toast.success("Name aktualisiert.")
+      setEditingId(null)
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen.")
+    } finally {
+      setEditingId(null)
+    }
+  }
+
+  const removeSlot = async (kb: KbRow) => {
+    if (!window.confirm(`Wissensbasis „${kb.name}" für dieses Konto wirklich entfernen?`)) return
+    setRemoving(kb.id)
+    try {
+      await resetKnowledgeBaseAccountOverride(kb.id)
+      if (expandedDocId === kb.id) setExpandedDocId(null)
+      toast.success("Wissensbasis-Zuweisung entfernt.")
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Entfernen fehlgeschlagen.")
+    } finally {
+      setRemoving(null)
     }
   }
 
@@ -170,7 +308,7 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
         <h4 className="text-sm font-semibold">Wissensbasis pro Kontext</h4>
         <p className="mt-1 text-xs text-muted-foreground">
           Pro Postfach können eingehende, ausgehende und allgemeine Firmeninfos getrennt hinterlegt
-          werden. Workflow-KI lädt automatisch <strong>Allgemein</strong> plus den passenden Kontext.
+          werden. Inhalt direkt hier bearbeiten oder eine bestehende Wissensbasis zuweisen.
         </p>
       </div>
       <div className="space-y-3">
@@ -181,86 +319,140 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
           return (
             <div
               key={context}
-              className="flex flex-col gap-2 rounded-md border bg-background/80 p-3 sm:flex-row sm:items-center sm:justify-between"
+              className="rounded-md border bg-background/80 p-3"
             >
-              <div className="min-w-0 space-y-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Label className="text-sm">{KNOWLEDGE_CONTEXT_LABELS[context]}</Label>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label className="text-sm">{KNOWLEDGE_CONTEXT_LABELS[context]}</Label>
+                    {assigned ? (
+                      <Badge variant="outline">Konto</Badge>
+                    ) : fallback ? (
+                      <Badge variant="secondary">Global-Fallback</Badge>
+                    ) : (
+                      <Badge variant="destructive">Nicht konfiguriert</Badge>
+                    )}
+                  </div>
                   {assigned ? (
-                    <Badge variant="outline">Konto</Badge>
-                  ) : fallback ? (
-                    <Badge variant="secondary">Global-Fallback</Badge>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        className="h-8 max-w-xs text-xs"
+                        value={editNames[assigned.id] ?? assigned.name}
+                        onChange={(e) =>
+                          setEditNames((prev) => ({ ...prev, [assigned.id]: e.target.value }))
+                        }
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={editingId === assigned.id}
+                        onClick={() => void saveKbName(assigned)}
+                      >
+                        {editingId === assigned.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          "Name speichern"
+                        )}
+                      </Button>
+                    </div>
                   ) : (
-                    <Badge variant="destructive">Nicht konfiguriert</Badge>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {active ? active.name : "Noch keine Wissensbasis für diesen Kontext."}
+                    </p>
                   )}
                 </div>
-                <p className="truncate text-xs text-muted-foreground">
-                  {active ? active.name : "Noch keine Wissensbasis für diesen Kontext."}
-                </p>
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                {!assigned ? (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      disabled={creating === context || assigning === context}
-                      onClick={() => void createSlot(context)}
-                    >
-                      {creating === context ? (
-                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Plus className="mr-1 h-3.5 w-3.5" />
-                      )}
-                      Neu anlegen
-                    </Button>
-                    {assignableKbs.length > 0 ? (
-                      <Select
-                        value={ASSIGN_PLACEHOLDER}
-                        disabled={assigning === context}
-                        onValueChange={(v) => {
-                          if (v === ASSIGN_PLACEHOLDER) return
-                          void assignExisting(context, Number(v))
-                        }}
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  {!assigned ? (
+                    <>
+                      <Input
+                        className="h-8 w-[160px] text-xs"
+                        placeholder={`Name (${KNOWLEDGE_CONTEXT_LABELS[context]})`}
+                        value={newNames[context] ?? ""}
+                        onChange={(e) =>
+                          setNewNames((prev) => ({ ...prev, [context]: e.target.value }))
+                        }
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={creating === context || assigning === context}
+                        onClick={() => void createSlot(context)}
                       >
-                        <SelectTrigger className="h-8 w-[200px] text-xs">
-                          <SelectValue placeholder="Bestehende zuweisen…" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={ASSIGN_PLACEHOLDER} disabled>
-                            Bestehende zuweisen…
-                          </SelectItem>
-                          {assignableKbs.map((kb) => (
-                            <SelectItem key={kb.id} value={String(kb.id)}>
-                              {kb.name}
-                              {kb.knowledge_context
-                                ? ` (${KNOWLEDGE_CONTEXT_LABELS[kb.knowledge_context as KnowledgeContext] ?? kb.knowledge_context})`
-                                : ""}
+                        {creating === context ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Plus className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        Neu anlegen
+                      </Button>
+                      {assignableKbs.length > 0 ? (
+                        <Select
+                          value={ASSIGN_PLACEHOLDER}
+                          disabled={assigning === context}
+                          onValueChange={(v) => {
+                            if (v === ASSIGN_PLACEHOLDER) return
+                            void assignExisting(context, Number(v))
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-[200px] text-xs">
+                            <SelectValue placeholder="Bestehende zuweisen…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={ASSIGN_PLACEHOLDER} disabled>
+                              Bestehende zuweisen…
                             </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : null}
-                  </>
-                ) : (
-                  <Select value={String(assigned.id)} disabled>
-                    <SelectTrigger className="h-8 w-[180px] text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={String(assigned.id)}>{assigned.name}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
+                            {assignableKbs.map((kb) => (
+                              <SelectItem key={kb.id} value={String(kb.id)}>
+                                {kb.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        onClick={() =>
+                          setExpandedDocId((id) => (id === assigned.id ? null : assigned.id))
+                        }
+                      >
+                        <Pencil className="mr-1 h-3.5 w-3.5" />
+                        {expandedDocId === assigned.id ? "Editor schließen" : "Inhalt bearbeiten"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        className="h-8 text-xs"
+                        disabled={removing === assigned.id}
+                        onClick={() => void removeSlot(assigned)}
+                      >
+                        {removing === assigned.id ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        Entfernen
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
+              {assigned && expandedDocId === assigned.id ? (
+                <SlotDocumentEditor knowledgeBaseId={assigned.id} onSaved={() => void load()} />
+              ) : null}
             </div>
           )
         })}
       </div>
-      <p className="text-[11px] text-muted-foreground">
-        Inhalt bearbeiten unter <strong>Einstellungen → Wissensbasis</strong> (Filter nach Konto).
-      </p>
     </div>
   )
 }

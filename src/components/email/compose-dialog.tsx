@@ -201,6 +201,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [subject, setSubject] = useState("")
   const [editorHtml, setEditorHtml] = useState("")
   const [signatureHtml, setSignatureHtml] = useState("")
+  const [quotedHtml, setQuotedHtml] = useState("")
   const [sending, setSending] = useState(false)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
@@ -363,6 +364,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           const split = splitEditorAndSignature(html)
           setEditorHtml(split.editorHtml)
           setSignatureHtml(split.signatureHtml)
+          setQuotedHtml(split.quotedHtml)
           setAttachmentPaths(parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json))
           return
         }
@@ -516,6 +518,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           const split = splitEditorAndSignature(composed || sigHtml || "")
           setEditorHtml(split.editorHtml)
           setSignatureHtml(split.signatureHtml || sigHtml || "")
+          setQuotedHtml(split.quotedHtml)
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -532,8 +535,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const getFullComposeHtml = useCallback(() => {
     const editable = editorRef.current?.getHtml() ?? editorHtml
-    return mergeEditorAndSignature(editable, signatureHtml)
-  }, [editorHtml, signatureHtml])
+    return mergeEditorAndSignature(editable, signatureHtml, quotedHtml)
+  }, [editorHtml, signatureHtml, quotedHtml])
 
   const getEditorHtml = getFullComposeHtml
 
@@ -544,10 +547,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const runAiComposeTransform = useCallback(
     async (opts: { promptId: number; userContext?: string; rewriteBody?: boolean }) => {
-      const rawHtml = getFullComposeHtml()
-      const zones = splitComposeZones(rawHtml)
-      const bodyText = stripHtmlToText(zones.bodyHtml)
-      const aiContext = composeAiContextText(zones)
+      const editableHtml = editorRef.current?.getHtml() ?? editorHtml
+      const editorZones = splitComposeZones(editableHtml)
+      const bodyText = stripHtmlToText(editorZones.bodyHtml)
+      const aiContext = composeAiContextText(editorZones)
       const selectionText = editorRef.current?.getSelectionText() ?? null
       const useSelection = !opts.rewriteBody && !!selectionText?.trim()
       const insertMode = !opts.rewriteBody && !useSelection
@@ -593,7 +596,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         } else if (opts.rewriteBody) {
           const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
           const nextEditor = mergeComposeZones({
-            ...splitComposeZones(editorRef.current?.getHtml() ?? editorHtml),
+            greetingHtml: editorZones.greetingHtml,
             bodyHtml: transformed,
           })
           setEditorHtml(nextEditor)
@@ -602,11 +605,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           toast.success("KI-Text an der Cursor-Position eingefügt")
         } else {
           const transformed = sanitizeComposeHtml(plainTextToReplyHtml(r.text))
-          const currentZones = splitComposeZones(editorRef.current?.getHtml() ?? editorHtml)
-          const gap = currentZones.bodyHtml.trim() ? "<p><br></p>" : ""
+          const gap = editorZones.bodyHtml.trim() ? "<p><br></p>" : ""
           const nextEditor = mergeComposeZones({
-            ...currentZones,
-            bodyHtml: `${transformed}${gap}${currentZones.bodyHtml}`,
+            greetingHtml: editorZones.greetingHtml,
+            bodyHtml: `${transformed}${gap}${editorZones.bodyHtml}`,
           })
           setEditorHtml(nextEditor)
           toast.success("KI-Text am Anfang eingefügt (bestehender Text bleibt erhalten)")
@@ -619,7 +621,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       )
       return false
     },
-    [composeIntent, getFullComposeHtml, editorHtml, resolveComposeCustomerId],
+    [composeIntent, editorHtml, resolveComposeCustomerId],
   )
 
   const closeDialog = () => {
@@ -633,6 +635,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     setSubject("")
     setEditorHtml("")
     setSignatureHtml("")
+    setQuotedHtml("")
     setAttachmentPaths([])
     setAttachmentDropActive(false)
     closingRef.current = false
@@ -915,10 +918,12 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       }
       if (r.allowed) {
         toast.success(
-          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand erlaubt.`,
+          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand würde erlaubt.`,
         )
       } else {
-        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.")
+        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.", {
+          duration: 8000,
+        })
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")
@@ -1432,6 +1437,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               <div
                 className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground [&_a]:text-primary"
                 dangerouslySetInnerHTML={{ __html: signatureHtml }}
+              />
+            ) : null}
+            {quotedHtml ? (
+              <div
+                className="compose-quote-readonly shrink-0 max-h-48 overflow-y-auto border-t border-dashed border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground select-none [&_a]:text-primary"
+                dangerouslySetInnerHTML={{ __html: quotedHtml }}
+                aria-label="Ursprüngliche Nachricht (nur Lesen)"
               />
             ) : null}
           </div>

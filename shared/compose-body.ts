@@ -68,27 +68,34 @@ export function mergeComposeHtml(editableHtml: string, quotedHtml: string): stri
   return `${top}${COMPOSE_QUOTE_MARKER}${bottom}`;
 }
 
-/** Splits stored compose HTML into Quill-editable content and a protected signature block. */
+/** Splits stored compose HTML into Quill-editable content, signature, and quoted thread. */
 export function splitEditorAndSignature(html: string): {
   editorHtml: string;
   signatureHtml: string;
+  quotedHtml: string;
 } {
   const zones = splitComposeZones(html);
   return {
     editorHtml: mergeComposeZones({
       greetingHtml: zones.greetingHtml,
       bodyHtml: zones.bodyHtml,
-      quotedHtml: zones.quotedHtml,
     }),
     signatureHtml: zones.signatureHtml,
+    quotedHtml: zones.quotedHtml,
   };
 }
 
-export function mergeEditorAndSignature(editorHtml: string, signatureHtml: string): string {
+export function mergeEditorAndSignature(
+  editorHtml: string,
+  signatureHtml: string,
+  quotedHtml = '',
+): string {
   const zones = splitComposeZones(editorHtml);
   return mergeComposeZones({
-    ...zones,
+    greetingHtml: zones.greetingHtml,
+    bodyHtml: zones.bodyHtml,
     signatureHtml: (signatureHtml ?? '').trim(),
+    quotedHtml: (quotedHtml ?? '').trim(),
   });
 }
 

@@ -32,6 +32,11 @@ import type {
   WorkflowExecutionJobPlan,
   WorkflowExecutionJobPort,
 } from './jobs';
+import {
+  createAiReviewPreviewRunner,
+  type AiReviewPreviewRunner,
+} from './ai-classification';
+import type { PostgresSecretPort } from './db/postgres-secret-port';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
 import type {
@@ -158,6 +163,7 @@ type ServerWorkflowContext = {
   message: MessageRow | null;
   strings: WorkflowStringContext;
   variables: WorkflowVariableContext;
+  previewOutbound?: boolean;
 };
 
 type PreparedWorkflowRun =
@@ -220,6 +226,7 @@ type ServerWorkflowRuntimePorts = Readonly<{
   mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
   workflowImapActions?: ServerWorkflowImapActionPort;
   deferredImapEffects?: DeferredWorkflowImapEffect[];
+  aiReviewPreview?: AiReviewPreviewRunner;
 }>;
 
 type ServerInboundBranchGate = {
@@ -232,11 +239,27 @@ export type PostgresWorkflowExecutionJobPortOptions = Readonly<{
   applyWorkspaceSession?: WorkspaceSessionApplier;
   mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
   workflowImapActions?: ServerWorkflowImapActionPort;
+  secrets?: PostgresSecretPort;
+  aiReviewPreview?: AiReviewPreviewRunner;
 }>;
 
 export function createPostgresWorkflowExecutionJobPort(
   options: PostgresWorkflowExecutionJobPortOptions,
 ): WorkflowExecutionJobPort {
+  const aiReviewPreview = options.aiReviewPreview
+    ?? (options.secrets
+      ? createAiReviewPreviewRunner({
+        db: options.db,
+        secrets: options.secrets,
+        applyWorkspaceSession: options.applyWorkspaceSession,
+        now: options.now,
+      })
+      : undefined);
+  const runtimePorts: ServerWorkflowRuntimePorts = {
+    mssql: options.mssql,
+    workflowImapActions: options.workflowImapActions,
+    aiReviewPreview,
+  };
   return {
     async execute(input) {
       const deferredImapEffects: DeferredWorkflowImapEffect[] = [];
@@ -432,8 +455,7 @@ export function createPostgresWorkflowExecutionJobPort(
             startNodeId: resumeNodeId,
             now,
             ports: {
-              mssql: options.mssql,
-              workflowImapActions: options.workflowImapActions,
+              ...runtimePorts,
               deferredImapEffects,
             },
           });
@@ -512,9 +534,7 @@ export function createPostgresWorkflowExecutionJobPort(
             startNodeId: prepared.resumeNodeId,
             now,
             dryRun: true,
-            ports: {
-              mssql: options.mssql,
-            },
+            ports: runtimePorts,
           });
           return {
             success: true,
@@ -1236,6 +1256,61 @@ function boundedWorkflowLoopItems(value: unknown): number {
   return Math.max(1, Math.min(MAX_WORKFLOW_LOOP_ITEMS, Math.trunc(parsed)));
 }
 
+async function executePreviewOutboundAiReview(
+  ports: ServerWorkflowRuntimePorts,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  type: 'ai.outbound_review' | 'ai.review' | 'ai_review',
+): Promise<NodeResult> {
+  if (!ports.aiReviewPreview) {
+    const message = 'KI-Vorschau nicht verfuegbar';
+    return {
+      status: 'error',
+      port: 'error',
+      blocked: true,
+      blockReason: message,
+      message,
+    };
+  }
+  const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
+  if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+  const blockKeyword = workflowAiBlockKeyword(config.blockKeyword);
+  if (!blockKeyword.ok) return { status: 'error', port: 'error', message: blockKeyword.message };
+
+  const preview = await ports.aiReviewPreview({
+    workspaceId: context.workspaceId,
+    direction: context.direction,
+    ...(promptId.value === undefined ? {} : { promptId: promptId.value }),
+    ...(profileId.value === undefined ? {} : { profileId: profileId.value }),
+    blockKeyword: blockKeyword.value,
+    ...(type === 'ai.outbound_review'
+      ? {
+        parseMode: 'outbound_structured' as const,
+        systemPrompt: typeof config.systemPrompt === 'string' && config.systemPrompt.trim()
+          ? config.systemPrompt.trim()
+          : workflowOutboundReviewSystemPrompt(),
+        fallbackUserTemplate: typeof config.fallbackUserTemplate === 'string' && config.fallbackUserTemplate.trim()
+          ? config.fallbackUserTemplate.trim()
+          : workflowOutboundReviewUserTemplate(),
+      }
+      : { parseMode: 'block_keyword' as const }),
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+  });
+
+  if (!preview.ok) {
+    return {
+      status: 'ok',
+      blocked: true,
+      blockReason: preview.reason,
+      message: preview.reason,
+    };
+  }
+  return { status: 'ok', port: 'default', message: 'preview_ai:ok' };
+}
+
 async function executeServerNode(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -1339,6 +1414,17 @@ async function executeServerNode(
       .filter(Boolean);
     return { status: 'ok', port: cases.includes(value) ? value : 'default' };
   }
+  if (dryRun && context.previewOutbound) {
+    if (type === 'ai.outbound_review') {
+      if (context.direction !== 'outbound') {
+        return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
+      }
+      return executePreviewOutboundAiReview(ports, context, config, type);
+    }
+    if (type === 'ai.review' || type === 'ai_review') {
+      return executePreviewOutboundAiReview(ports, context, config, type);
+    }
+  }
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);
     if (dryRunResult) return dryRunResult;
@@ -1395,9 +1481,17 @@ async function executeServerNode(
     };
   }
   if (type === 'email.release_outbound') {
+    if (dryRun) {
+      return dryRunSideEffectResult('email.release_outbound', log, {
+        message: 'dry_run:email.release_outbound',
+      });
+    }
     return await releaseWorkflowOutboundHold(trx, context, config, now);
   }
   if (type === 'email.send_draft') {
+    if (dryRun) {
+      return dryRunSideEffectResult('email.send_draft', log, { message: 'dry_run:email.send_draft' });
+    }
     return await sendWorkflowDraft(trx, context, config, now);
   }
   if (type === 'email.tag' || type === 'tag') {
@@ -5438,6 +5532,7 @@ function buildWorkflowContext(input: {
     message: input.message,
     strings,
     variables,
+    previewOutbound: input.jobContext.previewOutbound === true,
   };
 }
 

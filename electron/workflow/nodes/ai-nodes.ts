@@ -70,7 +70,6 @@ export function registerAiNodes(register: Reg): void {
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
       const blockKw = String(config.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
-      if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.review' };
       try {
         const out = await runChatCompletion(
           'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Prüfauftrag problematisch ist.',
@@ -86,7 +85,7 @@ export function registerAiNodes(register: Reg): void {
           if (!ctx.dryRun && id != null) setOutboundHold(id, true, reason);
           return { status: 'ok', blocked: true, blockReason: reason };
         }
-        if (blocked && ctx.messageId != null) addMessageTag(ctx.messageId, 'ki-review-block');
+        if (blocked && ctx.messageId != null && !ctx.dryRun) addMessageTag(ctx.messageId, 'ki-review-block');
         return { status: 'ok' };
       } catch (e) {
         if (ctx.direction === 'outbound') {
@@ -181,8 +180,6 @@ export function registerAiNodes(register: Reg): void {
         'REASON: Kurze deutsche Begründung für den Nutzer',
         'CODE: optionaler_code (z.B. MISSING_ATTACHMENT, PHISHING_REPLY, TONE, SPELLING, WRONG_NAME)',
       ].join('\n');
-
-      if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.outbound_review' };
 
       try {
         const out = await runChatCompletion(

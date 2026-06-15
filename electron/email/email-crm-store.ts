@@ -819,7 +819,7 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
     case 'archived':
       return `m.soft_deleted = 0 AND ${nonDraftMail} AND m.archived = 1 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
     case 'spam_review':
-      return `m.soft_deleted = 0 AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review' AND COALESCE(m.done_local, 0) = 0`;
+      return `m.soft_deleted = 0 AND ${nonDraftMail} AND COALESCE(m.spam_status, 'clean') = 'review'`;
     case 'spam':
       return `m.soft_deleted = 0 AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
     case 'sent':
