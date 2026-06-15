@@ -33,6 +33,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
   const [rows, setRows] = useState<AccountSignature[]>([])
   const [selectedId, setSelectedId] = useState<string>("")
   const [html, setHtml] = useState("")
+  const [resolvedPreview, setResolvedPreview] = useState<string | null>(null)
   const [status, setStatus] = useState<SignatureStatus>("unknown")
   const [saving, setSaving] = useState(false)
 
@@ -43,15 +44,18 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
     const trimmed = draftHtml.trim()
     if (trimmed) {
       setStatus("saved")
-      return
     }
     try {
       const r = (await invokeRenderer(IPCChannels.Email.GetComposeSignature, {
         accountId,
       })) as { html: string | null }
-      setStatus(r.html?.trim() ? "empty_fallback" : "unknown")
+      setResolvedPreview(r.html?.trim() || null)
+      if (!trimmed) {
+        setStatus(r.html?.trim() ? "empty_fallback" : "unknown")
+      }
     } catch {
-      setStatus("unknown")
+      if (!trimmed) setStatus("unknown")
+      setResolvedPreview(null)
     }
   }, [])
 
@@ -166,6 +170,15 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
         <Label className="text-xs">Signatur (HTML)</Label>
         <Textarea rows={6} value={html} onChange={(e) => setHtml(e.target.value)} />
       </div>
+      {resolvedPreview ? (
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">Vorschau beim Verfassen</Label>
+          <div
+            className="rounded-md border bg-muted/30 px-3 py-2 text-sm [&_a]:text-primary"
+            dangerouslySetInnerHTML={{ __html: resolvedPreview }}
+          />
+        </div>
+      ) : null}
       <Button
         type="button"
         size="sm"

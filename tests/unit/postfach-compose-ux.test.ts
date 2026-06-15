@@ -69,7 +69,9 @@ describe('compose-body zones', () => {
     expect(split.signatureHtml).toContain('Sig');
     expect(split.editorHtml).toContain('Body');
     expect(split.editorHtml).not.toContain('Sig');
-    const merged = mergeEditorAndSignature(split.editorHtml, split.signatureHtml);
+    expect(split.editorHtml).not.toContain('Original');
+    expect(split.quotedHtml).toContain('Original');
+    const merged = mergeEditorAndSignature(split.editorHtml, split.signatureHtml, split.quotedHtml);
     expect(merged).toContain(COMPOSE_SIGNATURE_MARKER);
     expect(merged).toContain('Sig');
   });
