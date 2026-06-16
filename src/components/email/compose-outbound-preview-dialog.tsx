@@ -18,6 +18,7 @@ type Props = {
   bcc?: string
   subject: string
   bodyHtml: string
+  attachmentPaths?: readonly string[]
 }
 
 function sanitizePreviewHtml(html: string): string {
@@ -33,8 +34,12 @@ export function ComposeOutboundPreviewDialog({
   bcc,
   subject,
   bodyHtml,
+  attachmentPaths = [],
 }: Props) {
   const sanitized = sanitizePreviewHtml(bodyHtml)
+  const attachments = attachmentPaths
+    .map((p) => p.split(/[/\\]/).pop() ?? p)
+    .filter(Boolean)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -67,6 +72,12 @@ export function ComposeOutboundPreviewDialog({
                 ) : null}
                 <dt className="font-medium">Betreff</dt>
                 <dd className="break-all font-medium text-neutral-900">{subject || "(Ohne Betreff)"}</dd>
+                {attachments.length > 0 ? (
+                  <>
+                    <dt className="font-medium">Anhänge</dt>
+                    <dd className="break-all">{attachments.join(", ")}</dd>
+                  </>
+                ) : null}
               </div>
             </dl>
             {sanitized ? (

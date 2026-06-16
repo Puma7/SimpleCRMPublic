@@ -150,6 +150,38 @@ function getComposeContextMessageId(
   return replyToId
 }
 
+function buildComposeDraftInitKey(
+  intent: ComposeIntent,
+  accountId: number,
+  bootstrapGen: number,
+): string {
+  return `${intent.mode}:${accountId}:${intent.mode === "draft" ? intent.messageId : ""}:g${bootstrapGen}`
+}
+
+function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
+  replyToId: number | null
+  editorHtml: string
+  signatureHtml: string
+  quotedHtml: string
+  attachmentPaths: string[]
+} {
+  const html = existing.body_html
+    ? sanitizeComposeHtml(existing.body_html)
+    : existing.body_text
+      ? sanitizeComposeHtml(`<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`)
+      : ""
+  const split = splitEditorAndSignature(html)
+  return {
+    replyToId:
+      (existing as EmailMessage & { reply_parent_message_id?: number | null })
+        .reply_parent_message_id ?? null,
+    editorHtml: split.editorHtml,
+    signatureHtml: split.signatureHtml,
+    quotedHtml: split.quotedHtml,
+    attachmentPaths: parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json),
+  }
+}
+
 function sanitizeComposeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
 }
@@ -191,6 +223,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     setSettingsAccountId,
     setSettingsAccountsSubTab,
     accountsRevision,
+    composeSession,
+    setComposeSession,
+    clearComposeSession,
   } = useMailWorkspace()
   const navigate = useNavigate()
 
@@ -330,7 +365,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       composeIntent.mode === "new" && composeAccountId != null
         ? composeAccountId
         : resolvedAccountId
-    const draftInitKey = `${composeIntent.mode}:${accountIdAtOpen ?? ""}:${composeIntent.mode === "draft" ? composeIntent.messageId : ""}:g${draftBootstrapGen}`
+    const draftInitKey = buildComposeDraftInitKey(
+      composeIntent,
+      accountIdAtOpen,
+      draftBootstrapGen,
+    )
     if (initialisedDraftKeyRef.current === draftInitKey) return
     if (accountIdAtOpen == null) {
       toast.error(
@@ -356,27 +395,50 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           }
           initialisedDraftKeyRef.current = draftInitKey
           setComposeAccountId(existing.account_id)
-          setReplyToId(
-            (existing as EmailMessage & { reply_parent_message_id?: number | null })
-              .reply_parent_message_id ?? null,
-          )
+          const hydrated = hydrateComposeFieldsFromDraftMessage(existing)
+          setReplyToId(hydrated.replyToId)
           setTo(recipientFieldFromJson(existing.to_json))
           setCc(recipientFieldFromJson(existing.cc_json))
           setBcc(recipientFieldFromJson(existing.bcc_json))
           setSubject(existing.subject ?? "")
-          const html = existing.body_html
-            ? sanitizeComposeHtml(existing.body_html)
-            : existing.body_text
-              ? sanitizeComposeHtml(
-                  `<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`,
-                )
-              : ""
-          const split = splitEditorAndSignature(html)
-          setEditorHtml(split.editorHtml)
-          setSignatureHtml(split.signatureHtml)
-          setQuotedHtml(split.quotedHtml)
-          setAttachmentPaths(parseDraftAttachmentPathsJson(existing.draft_attachment_paths_json))
+          setEditorHtml(hydrated.editorHtml)
+          setSignatureHtml(hydrated.signatureHtml)
+          setQuotedHtml(hydrated.quotedHtml)
+          setAttachmentPaths(hydrated.attachmentPaths)
+          setComposeSession({
+            initKey: draftInitKey,
+            draftId: composeIntent.messageId,
+            replyToId: hydrated.replyToId,
+          })
           return
+        }
+
+        if (
+          composeSession?.initKey === draftInitKey &&
+          composeSession.draftId > 0
+        ) {
+          const resumed = await invokeRenderer(
+            IPCChannels.Email.GetMessage,
+            composeSession.draftId,
+          ) as EmailMessage | null
+          if (cancelled) return
+          if (resumed && Number(resumed.uid) < 0) {
+            initialisedDraftKeyRef.current = draftInitKey
+            setDraftId(composeSession.draftId)
+            setComposeAccountId(resumed.account_id)
+            const hydrated = hydrateComposeFieldsFromDraftMessage(resumed)
+            setReplyToId(hydrated.replyToId)
+            setTo(recipientFieldFromJson(resumed.to_json))
+            setCc(recipientFieldFromJson(resumed.cc_json))
+            setBcc(recipientFieldFromJson(resumed.bcc_json))
+            setSubject(resumed.subject ?? "")
+            setEditorHtml(hydrated.editorHtml)
+            setSignatureHtml(hydrated.signatureHtml)
+            setQuotedHtml(hydrated.quotedHtml)
+            setAttachmentPaths(hydrated.attachmentPaths)
+            return
+          }
+          clearComposeSession()
         }
 
         const sourceMsg: EmailMessage | null =
@@ -529,6 +591,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           setEditorHtml(split.editorHtml)
           setSignatureHtml(split.signatureHtml || sigHtml || "")
           setQuotedHtml(split.quotedHtml)
+          setComposeSession({
+            initKey: draftInitKey,
+            draftId: res.id,
+            replyToId: replyParentId,
+          })
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -541,7 +608,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen, composeSession, clearComposeSession, setComposeSession])
 
   const getFullComposeHtml = useCallback(() => {
     const editable = editorRef.current?.getHtml() ?? editorHtml
@@ -591,6 +658,18 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     if (accountsRevision === 0) return
     void reloadComposeSignature()
   }, [accountsRevision, reloadComposeSignature])
+
+  useEffect(() => {
+    if (!isOpen || draftBootstrapping || composeIntent.mode === "forward") return
+    if (signatureHtml.trim()) return
+    void reloadComposeSignature()
+  }, [
+    isOpen,
+    draftBootstrapping,
+    composeIntent.mode,
+    signatureHtml,
+    reloadComposeSignature,
+  ])
 
   const composeFromDisplay = (() => {
     const account = accounts.find((a) => a.id === composeAccountId)
@@ -686,6 +765,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   )
 
   const closeDialog = () => {
+    clearComposeSession()
     setComposeIntent({ mode: "closed" })
     setComposeAccountId(null)
     setDraftId(null)
@@ -923,6 +1003,18 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     if (composeAccountId == null) return
     void (async () => {
       await saveDraft({ silent: true })
+      if (draftId != null) {
+        const initKey = buildComposeDraftInitKey(
+          composeIntent,
+          composeAccountId,
+          draftBootstrapGen,
+        )
+        setComposeSession({
+          initKey,
+          draftId,
+          replyToId,
+        })
+      }
       setSettingsAccountId(composeAccountId)
       setSettingsAccountsSubTab("signature")
       setSettingsTab("accounts")
@@ -1534,7 +1626,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               onChange={setEditorHtml}
               className="min-h-0 flex-1"
             />
-            {signatureHtml ? (
+            {composeIntent.mode !== "forward" ? (
               <div className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40">
                 <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1">
                   <span className="text-[11px] font-medium text-muted-foreground">Signatur</span>
@@ -1548,10 +1640,17 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                     Bearbeiten
                   </Button>
                 </div>
-                <div
-                  className="max-h-24 overflow-y-auto px-3 py-2 text-xs text-muted-foreground [&_a]:text-primary"
-                  dangerouslySetInnerHTML={{ __html: signatureHtml }}
-                />
+                {signatureHtml ? (
+                  <div
+                    className="max-h-24 overflow-y-auto px-3 py-2 text-xs text-muted-foreground [&_a]:text-primary"
+                    dangerouslySetInnerHTML={{ __html: signatureHtml }}
+                  />
+                ) : (
+                  <p className="px-3 py-2 text-xs italic text-muted-foreground">
+                    Keine Konto-Signatur hinterlegt — beim Versand wird ggf. die Team-Signatur
+                    verwendet.
+                  </p>
+                )}
               </div>
             ) : null}
             {quotedHtml ? (
@@ -1869,6 +1968,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       bcc={bcc}
       subject={subject}
       bodyHtml={sanitizeComposeHtml(getFullComposeHtml())}
+      attachmentPaths={attachmentPaths}
     />
 
     <WorkflowRunDetailDialog

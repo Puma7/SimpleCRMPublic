@@ -60,6 +60,13 @@ export type SettingsAccountsSubTab =
   | "ki"
   | "erweitert"
 
+/** Survives compose-dialog unmount (e.g. navigation to Einstellungen). */
+export type ComposeSessionSnapshot = {
+  initKey: string
+  draftId: number
+  replyToId: number | null
+}
+
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
   selectedAccountScope: MailAccountScope | null
@@ -90,6 +97,9 @@ type MailWorkspaceState = {
   setListDisplayMode: Dispatch<SetStateAction<MessageListDisplayMode>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
+  composeSession: ComposeSessionSnapshot | null
+  setComposeSession: Dispatch<SetStateAction<ComposeSessionSnapshot | null>>
+  clearComposeSession: () => void
   settingsTab: SettingsTab
   setSettingsTab: Dispatch<SetStateAction<SettingsTab>>
   /**
@@ -247,6 +257,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [listSortMode, setListSortMode] = useState<MessageListSortMode>("date_desc")
   const [listDisplayMode, setListDisplayMode] = useState<MessageListDisplayMode>("flat")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
+  const [composeSession, setComposeSession] = useState<ComposeSessionSnapshot | null>(null)
+  const clearComposeSession = useCallback(() => {
+    setComposeSession(null)
+  }, [])
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
       LS_KEYS.settingsTab,
@@ -348,6 +362,9 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setListDisplayMode,
       composeIntent,
       setComposeIntent,
+      composeSession,
+      setComposeSession,
+      clearComposeSession,
       settingsTab,
       setSettingsTab,
       settingsAccountId,
@@ -377,6 +394,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       listSortMode,
       listDisplayMode,
       composeIntent,
+      composeSession,
+      clearComposeSession,
       settingsTab,
       settingsAccountId,
       settingsAccountsSubTab,
