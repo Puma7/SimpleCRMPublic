@@ -15,7 +15,6 @@ type Props = {
   from: string
   to: string
   cc?: string
-  bcc?: string
   subject: string
   bodyHtml: string
   attachmentPaths?: readonly string[]
@@ -31,7 +30,6 @@ export function ComposeOutboundPreviewDialog({
   from,
   to,
   cc,
-  bcc,
   subject,
   bodyHtml,
   attachmentPaths = [],
@@ -62,12 +60,6 @@ export function ComposeOutboundPreviewDialog({
                   <>
                     <dt className="font-medium">Cc</dt>
                     <dd className="break-all">{cc}</dd>
-                  </>
-                ) : null}
-                {bcc?.trim() ? (
-                  <>
-                    <dt className="font-medium">Bcc</dt>
-                    <dd className="break-all">{bcc}</dd>
                   </>
                 ) : null}
                 <dt className="font-medium">Betreff</dt>

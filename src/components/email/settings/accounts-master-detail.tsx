@@ -95,7 +95,8 @@ export function AccountsMasterDetailSettings() {
     setSelectedId(match.id)
     setEditAccount(match)
     setCreating(false)
-  }, [settingsAccountId, accounts])
+    setSettingsAccountId(null)
+  }, [settingsAccountId, accounts, setSettingsAccountId])
 
   useEffect(() => {
     if (!settingsAccountsSubTab) return

@@ -219,6 +219,7 @@ describe('accounts settings deep-link', () => {
       /settingsAccountId != null[\s\S]*list\.find\(\(a\) => a\.id === settingsAccountId\)/,
     );
     expect(source).toMatch(/if \(settingsAccountId == null\) \{\s*setSettingsAccountId\(preferred\.id\)/);
+    expect(source).toMatch(/setCreating\(false\)\s*setSettingsAccountId\(null\)/);
   });
 });
 

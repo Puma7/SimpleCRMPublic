@@ -565,7 +565,6 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         }) as { success: boolean; id?: number; error?: string }
         if (cancelled) return
         if (res.success && res.id != null) {
-          initialisedDraftKeyRef.current = draftInitKey
           setDraftId(res.id)
           const replyParentId =
             composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
@@ -635,6 +634,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           setEditorHtml(split.editorHtml)
           setSignatureHtml(split.signatureHtml || sigHtml || "")
           setQuotedHtml(split.quotedHtml)
+          initialisedDraftKeyRef.current = draftInitKey
           setComposeSession(
             buildComposeSessionSnapshot(
               composeIntent,
@@ -2020,9 +2020,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       from={composeFromDisplay}
       to={to}
       cc={cc}
-      bcc={bcc}
       subject={subject}
-      bodyHtml={sanitizeComposeHtml(getFullComposeHtml())}
+      bodyHtml={previewOpen ? sanitizeComposeHtml(getFullComposeHtml()) : ""}
       attachmentPaths={attachmentPaths}
     />
 
