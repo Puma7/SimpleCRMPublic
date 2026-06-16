@@ -163,6 +163,19 @@ describe('signature-template', () => {
   });
 });
 
+describe('compose dialog autosave', () => {
+  it('debounces draft saves by 2000ms after content changes', () => {
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const { resolve } = require('path') as typeof import('path');
+    const source = readFileSync(
+      resolve(__dirname, '../../src/components/email/compose-dialog.tsx'),
+      'utf8',
+    );
+    expect(source).toMatch(/autosaveTimerRef\.current = setTimeout\(\(\) => \{\s*void saveDraft\(\{ silent: true \}\)/);
+    expect(source).toMatch(/,\s*2000\)/);
+  });
+});
+
 describe('needsFullMessageBody', () => {
   it('detects summary rows without body fields', () => {
     expect(needsFullMessageBody({ body_text: null, body_html: null })).toBe(true);

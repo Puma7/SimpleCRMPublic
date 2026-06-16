@@ -52,6 +52,14 @@ export type SettingsTab =
   | "snooze"
   | "misc"
 
+export type SettingsAccountsSubTab =
+  | "imap"
+  | "smtp"
+  | "oauth"
+  | "signature"
+  | "ki"
+  | "erweitert"
+
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
   selectedAccountScope: MailAccountScope | null
@@ -91,6 +99,9 @@ type MailWorkspaceState = {
    */
   settingsAccountId: number | null
   setSettingsAccountId: Dispatch<SetStateAction<number | null>>
+  /** One-shot deep link from compose → Konten → Signatur (consumed by accounts settings). */
+  settingsAccountsSubTab: SettingsAccountsSubTab | null
+  setSettingsAccountsSubTab: Dispatch<SetStateAction<SettingsAccountsSubTab | null>>
   metadataPanelOpen: boolean
   setMetadataPanelOpen: Dispatch<SetStateAction<boolean>>
   /**
@@ -253,6 +264,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       null,
     ),
   )
+  const [settingsAccountsSubTab, setSettingsAccountsSubTab] =
+    useState<SettingsAccountsSubTab | null>(null)
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
   const [mailMetricsRevision, setMailMetricsRevision] = useState(0)
@@ -339,6 +352,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSettingsTab,
       settingsAccountId,
       setSettingsAccountId,
+      settingsAccountsSubTab,
+      setSettingsAccountsSubTab,
       metadataPanelOpen,
       setMetadataPanelOpen,
       accountsRevision,
@@ -364,6 +379,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       composeIntent,
       settingsTab,
       settingsAccountId,
+      settingsAccountsSubTab,
       metadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,

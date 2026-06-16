@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
+import { SignatureQuillEditor } from "../signature-quill-editor"
 import {
   getRendererTransport,
   invokeRenderer,
@@ -14,8 +14,10 @@ import {
   subscribeServerEvents,
 } from "@/services/transport"
 import type { TeamMember } from "../types"
+import { useMailWorkspace } from "../workspace-context"
 
 export function TeamPanel() {
+  const { bumpAccountsRevision } = useMailWorkspace()
   const [team, setTeam] = useState<TeamMember[]>([])
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
@@ -103,11 +105,10 @@ export function TeamPanel() {
               </div>
               {editingId === t.id ? (
                 <div className="space-y-2 border-t pt-2">
-                  <Label className="text-xs">Signatur (HTML)</Label>
-                  <Textarea
-                    rows={4}
+                  <Label className="text-xs">Signatur</Label>
+                  <SignatureQuillEditor
                     value={editSignature}
-                    onChange={(e) => setEditSignature(e.target.value)}
+                    onChange={setEditSignature}
                   />
                   <Button
                     type="button"
@@ -119,6 +120,7 @@ export function TeamPanel() {
                         signatureHtml: editSignature,
                       }).then(() => {
                         setEditingId(null)
+                        bumpAccountsRevision()
                         toast.success("Signatur gespeichert")
                       })
                     }
@@ -148,12 +150,8 @@ export function TeamPanel() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label className="text-xs">Signatur (HTML)</Label>
-          <Textarea
-            rows={3}
-            value={newSignature}
-            onChange={(e) => setNewSignature(e.target.value)}
-          />
+          <Label className="text-xs">Signatur</Label>
+          <SignatureQuillEditor value={newSignature} onChange={setNewSignature} />
         </div>
         <Button
           type="button"
@@ -167,6 +165,7 @@ export function TeamPanel() {
             })
             setNewId("")
             setNewName("")
+            bumpAccountsRevision()
             toast.success("Mitglied gespeichert")
           }}
         >

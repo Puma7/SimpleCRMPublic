@@ -40,7 +40,14 @@ function accountInitials(a: EmailAccount): string {
 /** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI pro Postfach. */
 export function AccountsMasterDetailSettings() {
   const serverClientMode = getRendererTransport().kind === "http"
-  const { bumpAccountsRevision, setSettingsAccountId, accountsRevision } = useMailWorkspace()
+  const {
+    bumpAccountsRevision,
+    setSettingsAccountId,
+    settingsAccountId,
+    settingsAccountsSubTab,
+    setSettingsAccountsSubTab,
+    accountsRevision,
+  } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
@@ -74,6 +81,21 @@ export function AccountsMasterDetailSettings() {
   useEffect(() => {
     void load()
   }, [load, accountsRevision])
+
+  useEffect(() => {
+    if (settingsAccountId == null || accounts.length === 0) return
+    const match = accounts.find((a) => a.id === settingsAccountId)
+    if (!match) return
+    setSelectedId(match.id)
+    setEditAccount(match)
+    setCreating(false)
+  }, [settingsAccountId, accounts])
+
+  useEffect(() => {
+    if (!settingsAccountsSubTab) return
+    setTab(settingsAccountsSubTab)
+    setSettingsAccountsSubTab(null)
+  }, [settingsAccountsSubTab, setSettingsAccountsSubTab])
 
   const selectAccount = (a: EmailAccount) => {
     setSelectedId(a.id)

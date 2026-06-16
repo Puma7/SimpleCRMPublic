@@ -122,6 +122,9 @@ function customerOptFromDbRow(row: Record<string, unknown>): CustomerOpt {
 import { logError } from "./log"
 import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 import { useComposeDialogSize } from "./use-compose-dialog-size"
+import { ComposeOutboundPreviewDialog } from "./compose-outbound-preview-dialog"
+import { useNavigate } from "@tanstack/react-router"
+import { emailSettingsSearch } from "@/lib/email-settings-search"
 
 type Props = {
   accounts: EmailAccount[]
@@ -184,7 +187,12 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     selectedMessage,
     setMailView,
     setSelectedMessage,
+    setSettingsTab,
+    setSettingsAccountId,
+    setSettingsAccountsSubTab,
+    accountsRevision,
   } = useMailWorkspace()
+  const navigate = useNavigate()
 
   const isOpen = composeIntent.mode !== "closed"
   const serverClientMode = getRendererTransport().kind === "http"
@@ -245,9 +253,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [workflowRunDetailOpen, setWorkflowRunDetailOpen] = useState(false)
   /** When replying: keep original in inbox as open (do not set done on send). */
   const [keepReplyOpenInInbox, setKeepReplyOpenInInbox] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const {
     width: composeDialogWidth,
     dialogHeightCss,
+    dialogMaxHeightCss,
     startResize: startComposeWidthResize,
     startHeightResize: startComposeHeightResize,
   } = useComposeDialogSize()
@@ -539,6 +549,57 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   }, [editorHtml, signatureHtml, quotedHtml])
 
   const getEditorHtml = getFullComposeHtml
+
+  const reloadComposeSignature = useCallback(async () => {
+    if (!isOpen || composeAccountId == null || composeIntent.mode === "forward") return
+    try {
+      const sigRes = await invokeRenderer(
+        IPCChannels.Email.GetComposeSignature,
+        { accountId: composeAccountId },
+      ) as { html: string | null }
+      const sourceMsg = getComposeSourceMessage(composeIntent)
+      let customerForSig: CustomerOpt | null = null
+      if (sourceMsg?.customer_id) {
+        try {
+          const row = await invokeRenderer(
+            IPCChannels.Db.GetCustomer,
+            sourceMsg.customer_id,
+          ) as Record<string, unknown> | null
+          if (row) customerForSig = customerOptFromDbRow(row)
+        } catch {
+          customerForSig = null
+        }
+      }
+      const accountRow = accounts.find((a) => a.id === composeAccountId)
+      const sigRaw = sigRes.html
+        ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
+          accountDisplayName: accountRow?.display_name ?? "",
+          accountEmail: accountRow?.email_address ?? "",
+          teamMemberDisplayName: teamMembers[0]?.display_name ?? null,
+          customerName: customerForSig?.name ?? "",
+          customerFirstName: customerForSig?.firstName ?? "",
+          customerEmail: customerForSig?.email ?? "",
+        }))
+        : ""
+      setSignatureHtml(sigRaw ? sanitizeComposeHtml(sigRaw) : "")
+    } catch {
+      /* ignore */
+    }
+  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers])
+
+  useEffect(() => {
+    if (accountsRevision === 0) return
+    void reloadComposeSignature()
+  }, [accountsRevision, reloadComposeSignature])
+
+  const composeFromDisplay = (() => {
+    const account = accounts.find((a) => a.id === composeAccountId)
+    if (!account) return ""
+    const name = account.display_name?.trim()
+    const email = account.email_address?.trim()
+    if (name && email) return `${name} <${email}>`
+    return email || name || ""
+  })()
 
   const resolveComposeCustomerId = useCallback(() => {
     const src = getComposeSourceMessage(composeIntent)
@@ -858,6 +919,27 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     }
   }, [isOpen, draftId, to, cc, bcc, subject, editorHtml, signatureHtml, attachmentPaths, saveDraft])
 
+  const handleEditSignature = () => {
+    if (composeAccountId == null) return
+    void (async () => {
+      await saveDraft({ silent: true })
+      setSettingsAccountId(composeAccountId)
+      setSettingsAccountsSubTab("signature")
+      setSettingsTab("accounts")
+      await navigate({
+        to: "/email/settings",
+        search: emailSettingsSearch({ tab: "accounts" }),
+      })
+    })()
+  }
+
+  const handlePreview = () => {
+    void (async () => {
+      await saveDraft({ silent: true })
+      setPreviewOpen(true)
+    })()
+  }
+
   const runOutboundPrecheckIfNeeded = async (input: {
     bodyText: string
     bodyHtml?: string
@@ -1077,7 +1159,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           width: composeDialogWidth,
           maxWidth: "96vw",
           height: dialogHeightCss,
-          maxHeight: dialogHeightCss,
+          maxHeight: dialogMaxHeightCss,
         }}
       >
         <div
@@ -1143,8 +1225,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                     : "Neue Nachricht"}
           </DialogTitle>
           <DialogDescription>
-            Beim Öffnen wird automatisch ein Entwurf angelegt und alle paar Sekunden gespeichert.
-            Empfänger und Betreff oben, Ihren Text im großen Feld darunter.
+            Änderungen werden nach kurzer Pause automatisch als Entwurf gespeichert.
           </DialogDescription>
           {isReplyCompose && replyToId != null ? (
             <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-left text-sm">
@@ -1235,14 +1316,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               </div>
             </div>
           ) : null}
-          <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-3">
+          <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-2">
             <p className="text-xs font-medium text-foreground">Text-Hilfen</p>
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              Einfügen oder umformulieren oberhalb des Zitats — das Original bleibt darunter
-              unverändert.
-            </p>
-            <div className="flex flex-wrap items-end gap-4">
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-2">
+            <div className="space-y-1">
               <div className="flex items-center gap-1">
                 <Label htmlFor="compose-canned" className="text-xs text-muted-foreground">
                   Textbaustein
@@ -1308,7 +1385,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               </SelectContent>
             </Select>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <div className="flex items-center gap-1">
                 <Label htmlFor="compose-ai" className="text-xs text-muted-foreground">
                   KI auf Text
@@ -1458,10 +1535,24 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               className="min-h-0 flex-1"
             />
             {signatureHtml ? (
-              <div
-                className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground [&_a]:text-primary"
-                dangerouslySetInnerHTML={{ __html: signatureHtml }}
-              />
+              <div className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40">
+                <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">Signatur</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={handleEditSignature}
+                  >
+                    Bearbeiten
+                  </Button>
+                </div>
+                <div
+                  className="max-h-24 overflow-y-auto px-3 py-2 text-xs text-muted-foreground [&_a]:text-primary"
+                  dangerouslySetInnerHTML={{ __html: signatureHtml }}
+                />
+              </div>
             ) : null}
             {quotedHtml ? (
               <div
@@ -1630,6 +1721,14 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               <Button
                 type="button"
                 variant="outline"
+                disabled={draftId == null || draftBootstrapping}
+                onClick={handlePreview}
+              >
+                Vorschau
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
                 disabled={checkingOutbound || sending || draftId == null}
                 onClick={() => void handleCheckOutbound()}
               >
@@ -1760,6 +1859,17 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    <ComposeOutboundPreviewDialog
+      open={previewOpen}
+      onOpenChange={setPreviewOpen}
+      from={composeFromDisplay}
+      to={to}
+      cc={cc}
+      bcc={bcc}
+      subject={subject}
+      bodyHtml={sanitizeComposeHtml(getFullComposeHtml())}
+    />
 
     <WorkflowRunDetailDialog
       runId={workflowRunDetailId}

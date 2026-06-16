@@ -4,14 +4,20 @@ import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } 
 
 const WIDTH_STORAGE_KEY = "simplecrm-compose-dialog-width-v1"
 const HEIGHT_STORAGE_KEY = "simplecrm-compose-dialog-height-vh-v1"
-export const COMPOSE_DIALOG_DEFAULT_WIDTH = 1024
-export const COMPOSE_DIALOG_DEFAULT_HEIGHT_VH = 92
+export const COMPOSE_DIALOG_DEFAULT_WIDTH_VW = 96
+export const COMPOSE_DIALOG_DEFAULT_HEIGHT_VH = 88
 const MIN_WIDTH = 520
 const MIN_HEIGHT_VH = 55
 const MAX_HEIGHT_VH = 96
+const TOP_OFFSET_VH = 4
+
+function defaultWidthPx(): number {
+  if (typeof window === "undefined") return 1280
+  return Math.floor(window.innerWidth * (COMPOSE_DIALOG_DEFAULT_WIDTH_VW / 100))
+}
 
 function clampWidth(px: number): number {
-  if (typeof window === "undefined") return COMPOSE_DIALOG_DEFAULT_WIDTH
+  if (typeof window === "undefined") return defaultWidthPx()
   const max = Math.floor(window.innerWidth * 0.96)
   return Math.min(max, Math.max(MIN_WIDTH, Math.round(px)))
 }
@@ -21,7 +27,7 @@ function clampHeightVh(vh: number): number {
 }
 
 export function useComposeDialogSize() {
-  const [width, setWidth] = useState(COMPOSE_DIALOG_DEFAULT_WIDTH)
+  const [width, setWidth] = useState(defaultWidthPx)
   const [heightVh, setHeightVh] = useState(COMPOSE_DIALOG_DEFAULT_HEIGHT_VH)
 
   useEffect(() => {
@@ -30,6 +36,8 @@ export function useComposeDialogSize() {
       if (rawW) {
         const n = parseInt(rawW, 10)
         if (Number.isFinite(n)) setWidth(clampWidth(n))
+      } else {
+        setWidth(clampWidth(defaultWidthPx()))
       }
       const rawH = localStorage.getItem(HEIGHT_STORAGE_KEY)
       if (rawH) {
@@ -99,7 +107,8 @@ export function useComposeDialogSize() {
     [heightVh, persistHeightVh],
   )
 
-  const dialogHeightCss = `calc(${heightVh}vh - 8vh)`
+  const dialogHeightCss = `calc(${heightVh}vh - ${TOP_OFFSET_VH}vh)`
+  const dialogMaxHeightCss = `calc(${MAX_HEIGHT_VH}vh - ${TOP_OFFSET_VH}vh)`
 
-  return { width, dialogHeightCss, startResize, startHeightResize }
+  return { width, dialogHeightCss, dialogMaxHeightCss, startResize, startHeightResize }
 }
