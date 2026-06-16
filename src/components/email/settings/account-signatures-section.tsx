@@ -5,8 +5,8 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import { SignatureQuillEditor } from "../signature-quill-editor"
 import {
   Select,
   SelectContent,
@@ -20,6 +20,7 @@ import {
   isMailAccountDataRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { useMailWorkspace } from "../workspace-context"
 import type { AccountSignature } from "../types"
 
 type Props = {
@@ -30,6 +31,7 @@ type Props = {
 type SignatureStatus = "saved" | "empty_fallback" | "unknown"
 
 export function AccountSignaturesSection({ embeddedAccountId }: Props) {
+  const { bumpAccountsRevision } = useMailWorkspace()
   const [rows, setRows] = useState<AccountSignature[]>([])
   const [selectedId, setSelectedId] = useState<string>("")
   const [html, setHtml] = useState("")
@@ -167,8 +169,8 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
       ) : null}
       <div className="flex flex-wrap items-center gap-2">{statusBadge()}</div>
       <div className="space-y-1.5">
-        <Label className="text-xs">Signatur (HTML)</Label>
-        <Textarea rows={6} value={html} onChange={(e) => setHtml(e.target.value)} />
+        <Label className="text-xs">Signatur</Label>
+        <SignatureQuillEditor value={html} onChange={setHtml} />
       </div>
       {resolvedPreview ? (
         <div className="space-y-1.5">
@@ -196,6 +198,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
               accountId,
             })) as { html: string | null }
             toast.success("Konto-Signatur gespeichert")
+            bumpAccountsRevision()
             await load(effectiveId)
             if (html.trim() && !verify.html?.includes(html.trim().slice(0, 20))) {
               toast.message("Hinweis: Beim Verfassen kann die Team-Signatur greifen, wenn die Konto-Signatur leer bleibt.")

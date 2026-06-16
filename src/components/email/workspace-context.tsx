@@ -52,6 +52,18 @@ export type SettingsTab =
   | "snooze"
   | "misc"
 
+export type SettingsAccountsSubTab =
+  | "imap"
+  | "smtp"
+  | "oauth"
+  | "signature"
+  | "ki"
+  | "erweitert"
+
+import type { ComposeSessionSnapshot } from "@shared/compose-session"
+
+export type { ComposeSessionSnapshot } from "@shared/compose-session"
+
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
   selectedAccountScope: MailAccountScope | null
@@ -82,6 +94,9 @@ type MailWorkspaceState = {
   setListDisplayMode: Dispatch<SetStateAction<MessageListDisplayMode>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
+  composeSession: ComposeSessionSnapshot | null
+  setComposeSession: Dispatch<SetStateAction<ComposeSessionSnapshot | null>>
+  clearComposeSession: () => void
   settingsTab: SettingsTab
   setSettingsTab: Dispatch<SetStateAction<SettingsTab>>
   /**
@@ -91,6 +106,12 @@ type MailWorkspaceState = {
    */
   settingsAccountId: number | null
   setSettingsAccountId: Dispatch<SetStateAction<number | null>>
+  /** One-shot account selection from compose → Einstellungen (not persisted). */
+  settingsAccountDeepLinkId: number | null
+  setSettingsAccountDeepLinkId: Dispatch<SetStateAction<number | null>>
+  /** One-shot deep link from compose → Konten → Signatur (consumed by accounts settings). */
+  settingsAccountsSubTab: SettingsAccountsSubTab | null
+  setSettingsAccountsSubTab: Dispatch<SetStateAction<SettingsAccountsSubTab | null>>
   metadataPanelOpen: boolean
   setMetadataPanelOpen: Dispatch<SetStateAction<boolean>>
   /**
@@ -236,6 +257,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [listSortMode, setListSortMode] = useState<MessageListSortMode>("date_desc")
   const [listDisplayMode, setListDisplayMode] = useState<MessageListDisplayMode>("flat")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
+  const [composeSession, setComposeSession] = useState<ComposeSessionSnapshot | null>(null)
+  const clearComposeSession = useCallback(() => {
+    setComposeSession(null)
+  }, [])
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
       LS_KEYS.settingsTab,
@@ -253,6 +278,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       null,
     ),
   )
+  const [settingsAccountsSubTab, setSettingsAccountsSubTab] =
+    useState<SettingsAccountsSubTab | null>(null)
+  const [settingsAccountDeepLinkId, setSettingsAccountDeepLinkId] =
+    useState<number | null>(null)
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
   const [mailMetricsRevision, setMailMetricsRevision] = useState(0)
@@ -335,10 +364,17 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setListDisplayMode,
       composeIntent,
       setComposeIntent,
+      composeSession,
+      setComposeSession,
+      clearComposeSession,
       settingsTab,
       setSettingsTab,
       settingsAccountId,
       setSettingsAccountId,
+      settingsAccountDeepLinkId,
+      setSettingsAccountDeepLinkId,
+      settingsAccountsSubTab,
+      setSettingsAccountsSubTab,
       metadataPanelOpen,
       setMetadataPanelOpen,
       accountsRevision,
@@ -362,8 +398,12 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       listSortMode,
       listDisplayMode,
       composeIntent,
+      composeSession,
+      clearComposeSession,
       settingsTab,
       settingsAccountId,
+      settingsAccountDeepLinkId,
+      settingsAccountsSubTab,
       metadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,

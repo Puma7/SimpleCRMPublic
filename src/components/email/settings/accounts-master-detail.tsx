@@ -40,7 +40,16 @@ function accountInitials(a: EmailAccount): string {
 /** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI pro Postfach. */
 export function AccountsMasterDetailSettings() {
   const serverClientMode = getRendererTransport().kind === "http"
-  const { bumpAccountsRevision, setSettingsAccountId, accountsRevision } = useMailWorkspace()
+  const {
+    bumpAccountsRevision,
+    setSettingsAccountId,
+    settingsAccountId,
+    settingsAccountDeepLinkId,
+    setSettingsAccountDeepLinkId,
+    settingsAccountsSubTab,
+    setSettingsAccountsSubTab,
+    accountsRevision,
+  } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
@@ -52,9 +61,21 @@ export function AccountsMasterDetailSettings() {
       const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
       if (list.length > 0 && selectedId == null) {
-        setSelectedId(list[0]!.id)
-        setEditAccount(list[0]!)
-        setSettingsAccountId(list[0]!.id)
+        const preferred =
+          settingsAccountDeepLinkId != null
+            ? list.find((a) => a.id === settingsAccountDeepLinkId) ??
+              (settingsAccountId != null
+                ? list.find((a) => a.id === settingsAccountId)
+                : undefined) ??
+              list[0]!
+            : settingsAccountId != null
+              ? list.find((a) => a.id === settingsAccountId) ?? list[0]!
+              : list[0]!
+        setSelectedId(preferred.id)
+        setEditAccount(preferred)
+        if (settingsAccountId == null) {
+          setSettingsAccountId(preferred.id)
+        }
         return
       }
       // After a save the edit view stays open. The form keys off editAccount,
@@ -69,11 +90,27 @@ export function AccountsMasterDetailSettings() {
     } catch {
       toast.error("Konten konnten nicht geladen werden.")
     }
-  }, [selectedId, setSettingsAccountId])
+  }, [selectedId, setSettingsAccountId, settingsAccountId, settingsAccountDeepLinkId])
 
   useEffect(() => {
     void load()
   }, [load, accountsRevision])
+
+  useEffect(() => {
+    if (settingsAccountDeepLinkId == null || accounts.length === 0) return
+    const match = accounts.find((a) => a.id === settingsAccountDeepLinkId)
+    if (!match) return
+    setSelectedId(match.id)
+    setEditAccount(match)
+    setCreating(false)
+    setSettingsAccountDeepLinkId(null)
+  }, [settingsAccountDeepLinkId, accounts, setSettingsAccountDeepLinkId])
+
+  useEffect(() => {
+    if (!settingsAccountsSubTab) return
+    setTab(settingsAccountsSubTab)
+    setSettingsAccountsSubTab(null)
+  }, [settingsAccountsSubTab, setSettingsAccountsSubTab])
 
   const selectAccount = (a: EmailAccount) => {
     setSelectedId(a.id)
