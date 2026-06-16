@@ -20,6 +20,7 @@ import {
   shouldAutoApplySpamStatus,
   shouldRunInitialSpamScoring,
   SPAM_ENGINE_MODEL_VERSION,
+  addressesFromRecipientJson,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
@@ -54,6 +55,7 @@ import type {
   EmailMessageSpamStatusMutationInput,
   EmailComposeDraftCreateInput,
   EmailComposeDraftMutationResult,
+  EmailOutboundValidationApiPort,
   SpamDecisionRecord,
 } from '../api/types';
 import type {
@@ -83,6 +85,7 @@ export type PostgresMailReadPortOptions = Readonly<{
   applyWorkspaceSession?: WorkspaceSessionApplier;
   rspamdFetch?: typeof fetch;
   seenFlagSync?: Pick<ServerWorkflowImapActionPort, 'setSeen'>;
+  outboundValidation?: EmailOutboundValidationApiPort;
 }>;
 
 export type PostgresEmailAccountReadPortOptions = PostgresMailReadPortOptions & Readonly<{
@@ -809,6 +812,40 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       );
     },
     async scheduleDraftSend(input) {
+      if (input.sendAt && options.outboundValidation) {
+        const draftForValidation = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => selectLocalDraftForMutation(trx, input.workspaceId, input.messageId),
+          { applySession: options.applyWorkspaceSession },
+        );
+        if (!draftForValidation) return { ok: false as const, reason: 'not_found' as const };
+        if (!isSchedulableLocalDraft(draftForValidation)) {
+          return { ok: false as const, reason: 'not_local_draft' as const };
+        }
+        const validation = await options.outboundValidation.validate({
+          workspaceId: input.workspaceId,
+          actorUserId: 'system',
+          values: {
+            messageId: input.messageId,
+            subject: draftForValidation.subject?.trim() || '(Ohne Betreff)',
+            bodyText: draftForValidation.body_text ?? '',
+            bodyHtml: draftForValidation.body_html,
+            to: recipientFieldFromStoredJson(draftForValidation.to_json),
+            cc: recipientFieldFromStoredJson(draftForValidation.cc_json) || undefined,
+            bcc: recipientFieldFromStoredJson(draftForValidation.bcc_json) || undefined,
+            attachmentCount: countDraftAttachmentPaths(draftForValidation.draft_attachment_paths_json),
+          },
+        });
+        if (!validation.allowed) {
+          return {
+            ok: false as const,
+            reason: 'outbound_blocked' as const,
+            message: validation.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
+          };
+        }
+      }
+
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -3765,6 +3802,26 @@ function isLocalDraftUid(row: Pick<EmailMessageRow, 'uid'>): boolean {
 
 function isSchedulableLocalDraft(row: Pick<EmailMessageRow, 'uid' | 'folder_kind'>): boolean {
   return Number(row.uid) < 0 && row.folder_kind === 'draft';
+}
+
+function recipientFieldFromStoredJson(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  try {
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
+  } catch {
+    return '';
+  }
+}
+
+function countDraftAttachmentPaths(value: unknown): number {
+  if (!value) return 0;
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function draftAttachmentPathsToJsonValue(paths: readonly string[]): string | null {

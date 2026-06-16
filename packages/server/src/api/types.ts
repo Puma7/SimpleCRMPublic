@@ -1957,7 +1957,11 @@ export type EmailComposeDraftUpdateInput = {
 
 export type EmailComposeDraftMutationResult =
   | { ok: true; message: EmailMessageRecord }
-  | { ok: false; reason: 'not_found' | 'not_local_draft' | 'account_not_found' };
+  | {
+    ok: false;
+    reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked';
+    message?: string;
+  };
 
 export type EmailScheduledSendDraftState = {
   failureCount: number;

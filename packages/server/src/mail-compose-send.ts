@@ -8,7 +8,9 @@ import {
   buildComposeRfc822,
   type ComposeRfc822Attachment,
   buildOutboundThreadingHeaders,
+  addressesFromRecipientJson,
   buildOutboundWarningBanner,
+  encodeOutboundApprovalMarker,
   ensureTicketInSubject,
   extractDraftBodyForOutboundBlock,
   extractTicketFromSubject,
@@ -45,7 +47,7 @@ import type {
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
-import { listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -81,6 +83,204 @@ const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
 const OUTBOUND_REVIEW_REASON =
   'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
 const MAX_OUTBOUND_CONTEXT_TEXT = 20_000;
+
+export function isOutboundReviewPendingError(error: string): boolean {
+  const normalized = error.trim().toLowerCase();
+  return normalized.includes('ausgangspruefung') && normalized.includes('serverseitig');
+}
+
+function addressesFromStoredRecipientJson(value: unknown): string {
+  if (!value) return '';
+  try {
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
+  } catch {
+    return '';
+  }
+}
+
+function draftAttachmentPathsFromJson(value: unknown): readonly string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+    if (!Array.isArray(parsed)) return [];
+    const paths: string[] = [];
+    for (const item of parsed) {
+      const path = typeof item === 'string'
+        ? item.trim()
+        : item && typeof item === 'object'
+          ? String((item as { path?: unknown }).path ?? '').trim()
+          : '';
+      if (path && !paths.includes(path)) paths.push(path);
+    }
+    return paths;
+  } catch {
+    return [];
+  }
+}
+
+async function allocateOutboundApprovalTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+  now: Date,
+): Promise<string> {
+  if (accountId == null) return generateTicketCode();
+  const numericAccountId = Number(accountId);
+  if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) return generateTicketCode();
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id', 'display_name', 'email_address'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', numericAccountId)
+    .executeTakeFirst();
+  if (!account) return generateTicketCode();
+  const defaultSettings = buildDefaultServerAccountMailSettings({
+    id: numericAccountId,
+    displayName: account.display_name ?? '',
+    emailAddress: account.email_address ?? '',
+  });
+  const defaultPrefix = defaultSettings.ticketPrefix;
+  await trx
+    .insertInto('email_account_mail_settings')
+    .values({
+      workspace_id: workspaceId,
+      account_source_sqlite_id: Number(account.source_sqlite_id ?? numericAccountId),
+      account_id: numericAccountId,
+      ticket_prefix: defaultPrefix,
+      ticket_next_number: defaultSettings.ticketNextNumber,
+      ticket_number_padding: defaultSettings.ticketNumberPadding,
+      thread_namespace: defaultSettings.threadNamespace,
+      source_row: { source: 'server.compose.outbound_approval' },
+      imported_in_run_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+  const settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!settings) return generateTicketCode({ prefix: defaultPrefix });
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Math.min(12, Math.max(1, Math.floor(Number(settings.ticket_number_padding) || 6)));
+  const ticketCode = generateTicketCode({
+    prefix: settings.ticket_prefix || defaultPrefix,
+    sequence: String(Math.max(1, currentNumber || 1)).padStart(padding, '0'),
+  });
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: Math.max(1, currentNumber || 1) + 1, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .execute();
+  return ticketCode;
+}
+
+/** Persist a manual outbound approval after dry-run validation or schedule-time checks. */
+export async function persistManualOutboundApproval(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    draftId: number;
+    subject: string;
+    bodyText: string;
+    bodyHtml: string | null;
+    to: string;
+    cc?: string | null;
+    bcc?: string | null;
+    attachmentPaths?: readonly string[] | null;
+    now?: Date;
+  },
+): Promise<void> {
+  const now = input.now ?? new Date();
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select([
+      'subject',
+      'body_text',
+      'body_html',
+      'to_json',
+      'cc_json',
+      'bcc_json',
+      'draft_attachment_paths_json',
+      'ticket_code',
+      'account_id',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftId)
+    .executeTakeFirst();
+
+  const cleaned = extractDraftBodyForOutboundBlock(
+    {
+      body_text: draftRow?.body_text ?? null,
+      body_html: draftRow?.body_html ?? null,
+    },
+    {
+      bodyText: input.bodyText,
+      bodyHtml: input.bodyHtml,
+    },
+  );
+  const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, input.workspaceId);
+  const storedSubject = input.subject.trim() || draftRow?.subject?.trim() || '';
+  const existingTicket = draftRow?.ticket_code?.trim()
+    || extractWorkspaceTicketFromSubject(storedSubject, allowedPrefixes);
+  const ticketCode = existingTicket || await allocateOutboundApprovalTicketCode(
+    trx,
+    input.workspaceId,
+    draftRow?.account_id ?? null,
+    now,
+  );
+  const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+  const fingerprint = outboundDraftFingerprint({
+    subject: finalSubject,
+    bodyText: cleaned.plain,
+    bodyHtml: cleaned.html,
+    to: input.to,
+    cc: input.cc ?? addressesFromStoredRecipientJson(draftRow?.cc_json),
+    bcc: input.bcc ?? addressesFromStoredRecipientJson(draftRow?.bcc_json),
+    attachmentPaths: input.attachmentPaths ?? draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+  });
+  const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+
+  await trx
+    .updateTable('email_messages')
+    .set({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      body_text: cleaned.plain,
+      body_html: cleaned.html || null,
+      subject: finalSubject,
+      ticket_code: ticketCode,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftId)
+    .execute();
+
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: outboundReviewApprovedKey(input.draftId),
+      value: markerValue,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: markerValue,
+      last_updated: now,
+      updated_at: now,
+    }))
+    .execute();
+}
+
 const MAX_SERVER_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_SERVER_COMPOSE_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 
@@ -248,6 +448,7 @@ export type PostgresComposeSenderOptions = Readonly<{
   smtpSend?: (input: ServerSmtpSendInput) => Promise<void>;
   sentCopyAppend?: (input: ServerImapSentCopyAppendInput) => Promise<ServerImapSentCopyAppendResult>;
   outboundReview?: ComposeOutboundReviewPort;
+  workflowDryRun?: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   pgpMessages?: Pick<PgpMessageCryptoApiPort, 'prepareOutboundBody' | 'prepareOutboundAttachments'>;
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
@@ -524,6 +725,7 @@ export function createPostgresEmailComposeSenderPort(
     outboundReview: options.outboundReview ?? createPostgresComposeOutboundReviewPort({
       db: options.db,
       now: options.now,
+      workflowDryRun: options.workflowDryRun,
     }),
     pgpMessages: options.pgpMessages,
     oauthFetchImpl: options.oauthFetchImpl,
@@ -577,27 +779,6 @@ export function createPostgresEmailOutboundValidationPort(options: {
         return { allowed: true, reason: null };
       }
 
-      const eventStrings = outboundValidationEventStrings(input.values);
-      const outboundContext = {
-        outbound: {
-          messageId: input.values.messageId,
-          subject: input.values.subject,
-          bodyText: truncateContextText(input.values.bodyText),
-          bodyHtml: input.values.bodyHtml === null || input.values.bodyHtml === undefined
-            ? null
-            : truncateContextText(input.values.bodyHtml),
-          to: input.values.to,
-          cc: input.values.cc ?? '',
-          bcc: input.values.bcc ?? '',
-          inReplyToMessageId: input.values.inReplyToMessageId ?? null,
-          attachmentCount: input.values.attachmentCount ?? 0,
-          attachmentPaths: [],
-        },
-        previewOutbound: true,
-        eventStrings,
-        source: 'server_compose_outbound_validate',
-      };
-
       let firstBlockReason: string | null = null;
       for (const workflow of workflows) {
         const result = await options.workflowDryRun({
@@ -606,7 +787,7 @@ export function createPostgresEmailOutboundValidationPort(options: {
           messageId: input.values.messageId,
           triggerName: 'outbound',
           actorUserId: input.actorUserId,
-          context: outboundContext,
+          context: buildOutboundValidationContext(input.values),
         });
         if (!result.success) {
           return {
@@ -629,6 +810,27 @@ export function createPostgresEmailOutboundValidationPort(options: {
       if (firstBlockReason) {
         return { allowed: false, reason: firstBlockReason };
       }
+
+      if (workflows.length > 0) {
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            await persistManualOutboundApproval(trx, {
+              workspaceId: input.workspaceId,
+              draftId: input.values.messageId,
+              subject: input.values.subject,
+              bodyText: input.values.bodyText,
+              bodyHtml: input.values.bodyHtml ?? null,
+              to: input.values.to,
+              cc: input.values.cc ?? null,
+              bcc: input.values.bcc ?? null,
+              now: options.now?.(),
+            });
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
       return { allowed: true, reason: null };
     },
   };
@@ -636,6 +838,7 @@ export function createPostgresEmailOutboundValidationPort(options: {
 
 export function createPostgresComposeOutboundReviewPort(options: {
   db: Kysely<ServerDatabase>;
+  workflowDryRun?: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }): ComposeOutboundReviewPort {
@@ -732,6 +935,28 @@ export function createPostgresComposeOutboundReviewPort(options: {
             .where('folder_kind', '=', 'draft')
             .executeTakeFirst();
           if (!draft) return { allowed: false, error: 'Entwurf nicht gefunden' };
+
+          if (options.workflowDryRun) {
+            const dryRun = await evaluateComposeOutboundDryRun({
+              workflowDryRun: options.workflowDryRun,
+              workspaceId: input.workspaceId,
+              actorUserId: input.actorUserId,
+              draftMessageId: input.draftMessageId,
+              subject: input.subject,
+              bodyText: input.bodyText,
+              bodyHtml: input.bodyHtml,
+              to: input.to,
+              cc: input.cc,
+              bcc: input.bcc,
+              inReplyToMessageId: input.inReplyToMessageId,
+              attachmentCount: input.attachmentCount,
+              attachmentPaths: input.attachmentPaths,
+              workflows,
+            });
+            if (!dryRun.allowed) {
+              return { allowed: false, error: dryRun.reason };
+            }
+          }
 
           const { plain, html } = extractDraftBodyForOutboundBlock(
             {
@@ -1248,11 +1473,16 @@ async function prepareDraftForSend(input: {
     ticketCode = extractTicketFromSubject(
       values.subject,
       allowedPrefixes ? { allowedPrefixes } : undefined,
-    )
-      ?? (await input.store.allocateNextTicketCodeForAccount?.({
-        workspaceId: input.workspaceId,
-        account: input.account,
-      }))
+    );
+  }
+  if (!ticketCode && input.draft.ticketCode?.trim()) {
+    ticketCode = input.draft.ticketCode.trim();
+  }
+  if (!ticketCode) {
+    ticketCode = (await input.store.allocateNextTicketCodeForAccount?.({
+      workspaceId: input.workspaceId,
+      account: input.account,
+    }))
       ?? generateTicketCode({ prefix: `ACC${input.account.id}` });
   }
   if (!threadId) {
@@ -1570,6 +1800,105 @@ function readComposeAttachmentsForPgp(
     }
   }
   return { ok: true, attachments: out };
+}
+
+function buildOutboundValidationContext(values: EmailOutboundValidationInput): Record<string, unknown> {
+  return {
+    outbound: {
+      messageId: values.messageId,
+      subject: values.subject,
+      bodyText: truncateContextText(values.bodyText),
+      bodyHtml: values.bodyHtml === null || values.bodyHtml === undefined
+        ? null
+        : truncateContextText(values.bodyHtml),
+      to: values.to,
+      cc: values.cc ?? '',
+      bcc: values.bcc ?? '',
+      inReplyToMessageId: values.inReplyToMessageId ?? null,
+      attachmentCount: values.attachmentCount ?? 0,
+      attachmentPaths: [],
+    },
+    previewOutbound: true,
+    eventStrings: outboundValidationEventStrings(values),
+    source: 'server_compose_outbound_validate',
+  };
+}
+
+async function evaluateComposeOutboundDryRun(input: {
+  workflowDryRun: (plan: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
+  workspaceId: string;
+  actorUserId: string;
+  draftMessageId: number;
+  subject: string;
+  bodyText: string;
+  bodyHtml: string | null | undefined;
+  to: string;
+  cc?: string | null;
+  bcc?: string | null;
+  inReplyToMessageId?: number | null;
+  attachmentCount: number;
+  attachmentPaths?: readonly string[] | null;
+  workflows: readonly { id: number | string | bigint; name: string }[];
+}): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  let firstBlockReason: string | null = null;
+  for (const workflow of input.workflows) {
+    const result = await input.workflowDryRun({
+      workspaceId: input.workspaceId,
+      workflowId: Number(workflow.id),
+      messageId: input.draftMessageId,
+      triggerName: 'outbound',
+      actorUserId: input.actorUserId,
+      context: {
+        outbound: {
+          messageId: input.draftMessageId,
+          subject: input.subject,
+          bodyText: truncateContextText(input.bodyText),
+          bodyHtml: input.bodyHtml === null || input.bodyHtml === undefined
+            ? null
+            : truncateContextText(input.bodyHtml),
+          to: input.to,
+          cc: input.cc ?? '',
+          bcc: input.bcc ?? '',
+          inReplyToMessageId: input.inReplyToMessageId ?? null,
+          attachmentCount: input.attachmentCount,
+          attachmentPaths: input.attachmentPaths?.slice(0, 25) ?? [],
+        },
+        previewOutbound: true,
+        eventStrings: outboundValidationEventStrings({
+          messageId: input.draftMessageId,
+          subject: input.subject,
+          bodyText: input.bodyText,
+          bodyHtml: input.bodyHtml ?? undefined,
+          to: input.to,
+          cc: input.cc ?? undefined,
+          bcc: input.bcc ?? undefined,
+          inReplyToMessageId: input.inReplyToMessageId ?? undefined,
+          attachmentCount: input.attachmentCount,
+        }),
+        source: 'server_compose_outbound_review',
+      },
+    });
+    if (!result.success) {
+      return {
+        allowed: false,
+        reason: result.error ?? 'Ausgangspruefung fehlgeschlagen',
+      };
+    }
+    if (result.blocked) {
+      const reason = result.blockReason?.trim()
+        || `Workflow „${workflow.name}" wuerde den Versand blockieren`;
+      if (!firstBlockReason) firstBlockReason = reason;
+    } else if (result.status === 'error') {
+      return {
+        allowed: false,
+        reason: result.error ?? 'Ausgehender Workflow fehlgeschlagen',
+      };
+    }
+  }
+  if (firstBlockReason) {
+    return { allowed: false, reason: firstBlockReason };
+  }
+  return { allowed: true };
 }
 
 function outboundWorkflowJobPayload(

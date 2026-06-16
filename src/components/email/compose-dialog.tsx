@@ -858,6 +858,46 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     }
   }, [isOpen, draftId, to, cc, bcc, subject, editorHtml, signatureHtml, attachmentPaths, saveDraft])
 
+  const runOutboundPrecheckIfNeeded = async (input: {
+    bodyText: string
+    bodyHtml?: string
+  }): Promise<{ status: "ok" | "blocked" | "skipped"; workflowCount: number }> => {
+    if (draftId == null) return { status: "skipped", workflowCount: 0 }
+    type WfRow = { trigger: string; enabled: number }
+    const workflows = composeAccountId != null
+      ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: composeAccountId }) as WfRow[]
+      : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
+    const outboundActive = workflows.filter(
+      (w) => w.trigger === "outbound" && w.enabled === 1,
+    )
+    if (outboundActive.length === 0) return { status: "skipped", workflowCount: 0 }
+
+    const r = await invokeRenderer(
+      IPCChannels.Email.ValidateOutbound,
+      {
+        messageId: draftId,
+        subject,
+        bodyText: input.bodyText,
+        bodyHtml: input.bodyHtml,
+        to,
+        cc: cc || undefined,
+        bcc: bcc || undefined,
+        attachmentCount: attachmentPaths.length,
+      },
+    ) as { success: boolean; allowed?: boolean; reason?: string | null }
+    if (!r.success) {
+      toast.error("Ausgangsprüfung fehlgeschlagen")
+      return { status: "blocked", workflowCount: outboundActive.length }
+    }
+    if (!r.allowed) {
+      toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.", {
+        duration: 8000,
+      })
+      return { status: "blocked", workflowCount: outboundActive.length }
+    }
+    return { status: "ok", workflowCount: outboundActive.length }
+  }
+
   const handleCheckOutbound = async () => {
     if (draftId == null) return
     const toCheck = validateRecipientField(to, "An")
@@ -899,31 +939,15 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         return
       }
 
-      const r = await invokeRenderer(
-        IPCChannels.Email.ValidateOutbound,
-        {
-          messageId: draftId,
-          subject,
-          bodyText: plain,
-          bodyHtml: safeHtml || undefined,
-          to,
-          cc: cc || undefined,
-          bcc: bcc || undefined,
-          attachmentCount: attachmentPaths.length,
-        },
-      ) as { success: boolean; allowed?: boolean; reason?: string | null }
-      if (!r.success) {
-        toast.error("Ausgangsprüfung fehlgeschlagen")
-        return
-      }
-      if (r.allowed) {
+      const precheck = await runOutboundPrecheckIfNeeded({
+        bodyText: plain,
+        bodyHtml: safeHtml || undefined,
+      })
+      if (precheck.status === "blocked") return
+      if (precheck.status === "ok") {
         toast.success(
-          `Ausgangsprüfung: OK (${outboundActive.length} Workflow${outboundActive.length === 1 ? "" : "s"}) — Versand würde erlaubt.`,
+          `Ausgangsprüfung: OK (${precheck.workflowCount} Workflow${precheck.workflowCount === 1 ? "" : "s"}) — Versand würde erlaubt.`,
         )
-      } else {
-        toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.", {
-          duration: 8000,
-        })
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Prüfung fehlgeschlagen.")
@@ -1626,16 +1650,20 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                 onClick={() => {
                   if (!draftId || !scheduledSendAt) return
                   void (async () => {
-                    await saveDraft({ silent: true })
-                    const iso = new Date(scheduledSendAt).toISOString()
-                    await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
-                      messageId: draftId,
-                      sendAt: iso,
-                    })
-                    toast.success("Versand geplant — siehe „Späterer Versand“.")
-                    setMailView("scheduled_send")
-                    const contextId = getComposeContextMessageId(composeIntent, replyToId)
-                    void finishComposeClose(contextId)
+                    try {
+                      await saveDraft({ silent: true })
+                      const iso = new Date(scheduledSendAt).toISOString()
+                      await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
+                        messageId: draftId,
+                        sendAt: iso,
+                      })
+                      toast.success("Versand geplant — siehe „Späterer Versand“.")
+                      setMailView("scheduled_send")
+                      const contextId = getComposeContextMessageId(composeIntent, replyToId)
+                      void finishComposeClose(contextId)
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Versand konnte nicht geplant werden.")
+                    }
                   })()
                 }}
               >

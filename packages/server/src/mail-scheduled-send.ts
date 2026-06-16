@@ -11,6 +11,7 @@ import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { EmailComposeSenderApiPort } from './api';
 import type { ScheduledSendJobPlan, ScheduledSendJobPort } from './jobs';
 import type { ServerDatabase } from './db/schema';
+import { isOutboundReviewPendingError } from './mail-compose-send';
 import { withWorkspaceTransaction } from './db/workspace-context';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
@@ -147,6 +148,11 @@ async function processScheduledDraft(input: {
   }
 
   if (isComposeSendAlreadyInProgressError(result.error)) {
+    await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
+    return;
+  }
+
+  if (isOutboundReviewPendingError(result.error)) {
     await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
     return;
   }

@@ -655,6 +655,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           },
           { dryRun: true },
         );
+        if (result.allowed) {
+          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval');
+          applyManualComposeOutboundApproval(payload.messageId, {
+            subject: payload.subject,
+            bodyText: payload.bodyText,
+            bodyHtml: payload.bodyHtml ?? null,
+            to: payload.to,
+            cc: payload.cc ?? null,
+            bcc: payload.bcc ?? null,
+          });
+        }
         return { success: true as const, allowed: result.allowed, reason: result.reason };
       },
       { logger },
@@ -901,6 +912,45 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.ScheduleDraftSend,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; sendAt: string | null }) => {
+        if (payload.sendAt) {
+          const draft = getEmailMessageById(payload.messageId);
+          if (!draft) {
+            return { success: false as const, error: 'Entwurf nicht gefunden' };
+          }
+          const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
+          const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments');
+          const result = await evaluateOutboundWorkflows(
+            {
+              messageId: payload.messageId,
+              accountId: draft.account_id,
+              subject: draft.subject ?? '',
+              bodyText: draft.body_text ?? '',
+              bodyHtml: draft.body_html ?? undefined,
+              to: recipientFieldFromJson(draft.to_json),
+              cc: recipientFieldFromJson(draft.cc_json) || undefined,
+              bcc: recipientFieldFromJson(draft.bcc_json) || undefined,
+              attachmentCount: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json).length,
+              attachmentPaths: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json),
+            },
+            { dryRun: true },
+          );
+          if (!result.allowed) {
+            return {
+              success: false as const,
+              error: result.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
+            };
+          }
+          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval');
+          applyManualComposeOutboundApproval(payload.messageId, {
+            subject: draft.subject ?? '',
+            bodyText: draft.body_text ?? '',
+            bodyHtml: draft.body_html ?? null,
+            to: recipientFieldFromJson(draft.to_json),
+            cc: recipientFieldFromJson(draft.cc_json) || null,
+            bcc: recipientFieldFromJson(draft.bcc_json) || null,
+            attachmentPaths: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json),
+          });
+        }
         setDraftScheduledSendAt(payload.messageId, payload.sendAt);
         if (payload.sendAt) {
           const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
