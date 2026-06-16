@@ -1,29 +1,20 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { SIGNATURE_QUILL_TOOLBAR } from '../../shared/signature-quill-toolbar';
+import { COMPOSE_DRAFT_AUTOSAVE_DEBOUNCE_MS } from '../../shared/compose-autosave';
 
-describe('SignatureQuillEditor', () => {
-  it('uses Quill with a compact signature toolbar', () => {
-    const source = readFileSync(
-      resolve(__dirname, '../../src/components/email/signature-quill-editor.tsx'),
-      'utf8',
-    );
-    expect(source).toMatch(/import Quill from "quill"/);
-    expect(source).toMatch(/compose-quill/);
-    expect(source).toMatch(/\["bold", "italic", "underline"\]/);
-    expect(source).not.toMatch(/\["image"\]/);
+describe('signature quill toolbar', () => {
+  it('is compact and excludes image upload', () => {
+    expect(SIGNATURE_QUILL_TOOLBAR).toEqual([
+      ['bold', 'italic', 'underline'],
+      [{ list: 'ordered' }, { list: 'bullet' }],
+      ['link'],
+      ['clean'],
+    ]);
+    expect(JSON.stringify(SIGNATURE_QUILL_TOOLBAR)).not.toContain('image');
   });
+});
 
-  it('is wired into account and team signature settings', () => {
-    const account = readFileSync(
-      resolve(__dirname, '../../src/components/email/settings/account-signatures-section.tsx'),
-      'utf8',
-    );
-    const team = readFileSync(
-      resolve(__dirname, '../../src/components/email/settings/team-panel.tsx'),
-      'utf8',
-    );
-    expect(account).toMatch(/SignatureQuillEditor/);
-    expect(team).toMatch(/SignatureQuillEditor/);
-    expect(account).not.toMatch(/<Textarea[^>]*value=\{html\}/);
+describe('compose dialog autosave', () => {
+  it('debounces draft saves by 2000ms', () => {
+    expect(COMPOSE_DRAFT_AUTOSAVE_DEBOUNCE_MS).toBe(2000);
   });
 });

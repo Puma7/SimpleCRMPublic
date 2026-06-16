@@ -60,15 +60,9 @@ export type SettingsAccountsSubTab =
   | "ki"
   | "erweitert"
 
-/** Survives compose-dialog unmount (e.g. navigation to Einstellungen). */
-export type ComposeSessionSnapshot = {
-  initKey: string
-  draftId: number
-  replyToId: number | null
-  keepReplyOpenInInbox?: boolean
-  pgpEncrypt?: boolean
-  pgpSign?: boolean
-}
+import type { ComposeSessionSnapshot } from "@shared/compose-session"
+
+export type { ComposeSessionSnapshot } from "@shared/compose-session"
 
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
@@ -112,6 +106,9 @@ type MailWorkspaceState = {
    */
   settingsAccountId: number | null
   setSettingsAccountId: Dispatch<SetStateAction<number | null>>
+  /** One-shot account selection from compose → Einstellungen (not persisted). */
+  settingsAccountDeepLinkId: number | null
+  setSettingsAccountDeepLinkId: Dispatch<SetStateAction<number | null>>
   /** One-shot deep link from compose → Konten → Signatur (consumed by accounts settings). */
   settingsAccountsSubTab: SettingsAccountsSubTab | null
   setSettingsAccountsSubTab: Dispatch<SetStateAction<SettingsAccountsSubTab | null>>
@@ -283,6 +280,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   )
   const [settingsAccountsSubTab, setSettingsAccountsSubTab] =
     useState<SettingsAccountsSubTab | null>(null)
+  const [settingsAccountDeepLinkId, setSettingsAccountDeepLinkId] =
+    useState<number | null>(null)
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
   const [mailMetricsRevision, setMailMetricsRevision] = useState(0)
@@ -372,6 +371,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSettingsTab,
       settingsAccountId,
       setSettingsAccountId,
+      settingsAccountDeepLinkId,
+      setSettingsAccountDeepLinkId,
       settingsAccountsSubTab,
       setSettingsAccountsSubTab,
       metadataPanelOpen,
@@ -401,6 +402,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       clearComposeSession,
       settingsTab,
       settingsAccountId,
+      settingsAccountDeepLinkId,
       settingsAccountsSubTab,
       metadataPanelOpen,
       accountsRevision,

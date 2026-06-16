@@ -45,7 +45,8 @@ export function ComposeOutboundPreviewDialog({
         <DialogHeader className="shrink-0 border-b px-6 py-4">
           <DialogTitle>Ausgangs-Vorschau</DialogTitle>
           <DialogDescription>
-            So sieht die E-Mail beim Empfänger aus (HTML-Darstellung).
+            Vorschau des Nachrichtentexts und der für Empfänger sichtbaren Kopfzeilen
+            (Bcc ist beim Empfänger unsichtbar und wird hier nicht angezeigt).
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto bg-muted/30 p-6">

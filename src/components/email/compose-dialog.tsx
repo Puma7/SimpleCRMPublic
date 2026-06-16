@@ -120,7 +120,13 @@ function customerOptFromDbRow(row: Record<string, unknown>): CustomerOpt {
   }
 }
 import { logError } from "./log"
-import { useMailWorkspace, type ComposeIntent, type ComposeSessionSnapshot } from "./workspace-context"
+import {
+  buildComposeDraftInitKey,
+  buildComposeSessionKey,
+  buildComposeSessionSnapshot,
+} from "@shared/compose-session"
+import { COMPOSE_DRAFT_AUTOSAVE_DEBOUNCE_MS } from "@shared/compose-autosave"
+import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
 import { useComposeDialogSize } from "./use-compose-dialog-size"
 import { ComposeOutboundPreviewDialog } from "./compose-outbound-preview-dialog"
 import { useNavigate } from "@tanstack/react-router"
@@ -148,43 +154,6 @@ function getComposeContextMessageId(
     return intent.message.id
   }
   return replyToId
-}
-
-/** Stabiler Schlüssel für Session-Resume (ohne bootstrapGen — überlebt Remount). */
-function buildComposeSessionKey(
-  intent: ComposeIntent,
-  accountId: number,
-): string {
-  return `${intent.mode}:${accountId}:${intent.mode === "draft" ? intent.messageId : ""}`
-}
-
-function buildComposeDraftInitKey(
-  intent: ComposeIntent,
-  accountId: number,
-  bootstrapGen: number,
-): string {
-  return `${intent.mode}:${accountId}:${intent.mode === "draft" ? intent.messageId : ""}:g${bootstrapGen}`
-}
-
-function buildComposeSessionSnapshot(
-  intent: ComposeIntent,
-  accountId: number,
-  sessionDraftId: number,
-  sessionReplyToId: number | null,
-  flags: {
-    keepReplyOpenInInbox: boolean
-    pgpEncrypt: boolean
-    pgpSign: boolean
-  },
-): ComposeSessionSnapshot {
-  return {
-    initKey: buildComposeSessionKey(intent, accountId),
-    draftId: sessionDraftId,
-    replyToId: sessionReplyToId,
-    keepReplyOpenInInbox: flags.keepReplyOpenInInbox,
-    pgpEncrypt: flags.pgpEncrypt,
-    pgpSign: flags.pgpSign,
-  }
 }
 
 function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
@@ -249,7 +218,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     setMailView,
     setSelectedMessage,
     setSettingsTab,
-    setSettingsAccountId,
+    setSettingsAccountDeepLinkId,
     setSettingsAccountsSubTab,
     accountsRevision,
     composeSession,
@@ -291,6 +260,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   // but NOT when unrelated context values (e.g. selectedAccountId) change while
   // the dialog is open — that would clobber typed content.
   const initialisedDraftKeyRef = useRef<string | null>(null)
+  const composeSessionRef = useRef(composeSession)
+  composeSessionRef.current = composeSession
   // Guards against Radix firing onOpenChange(false) multiple times (e.g. rapid
   // ESC, or close-button double-click) which could otherwise kick off two
   // parallel saveDraft → closeDialog chains with stale closures.
@@ -449,17 +420,18 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         }
 
         if (
-          composeSession?.initKey === sessionKey &&
-          composeSession.draftId > 0
+          composeSessionRef.current?.initKey === sessionKey &&
+          composeSessionRef.current.draftId > 0
         ) {
+          const session = composeSessionRef.current
           const resumed = await invokeRenderer(
             IPCChannels.Email.GetMessage,
-            composeSession.draftId,
+            session.draftId,
           ) as EmailMessage | null
           if (cancelled) return
           if (resumed && Number(resumed.uid) < 0) {
             initialisedDraftKeyRef.current = draftInitKey
-            setDraftId(composeSession.draftId)
+            setDraftId(session.draftId)
             setComposeAccountId(resumed.account_id)
             const hydrated = hydrateComposeFieldsFromDraftMessage(resumed)
             setReplyToId(hydrated.replyToId)
@@ -471,14 +443,14 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             setSignatureHtml(hydrated.signatureHtml)
             setQuotedHtml(hydrated.quotedHtml)
             setAttachmentPaths(hydrated.attachmentPaths)
-            if (composeSession.keepReplyOpenInInbox != null) {
-              setKeepReplyOpenInInbox(composeSession.keepReplyOpenInInbox)
+            if (session.keepReplyOpenInInbox != null) {
+              setKeepReplyOpenInInbox(session.keepReplyOpenInInbox)
             }
-            if (composeSession.pgpEncrypt != null) {
-              setPgpEncrypt(composeSession.pgpEncrypt)
+            if (session.pgpEncrypt != null) {
+              setPgpEncrypt(session.pgpEncrypt)
             }
-            if (composeSession.pgpSign != null) {
-              setPgpSign(composeSession.pgpSign)
+            if (session.pgpSign != null) {
+              setPgpSign(session.pgpSign)
             }
             return
           }
@@ -660,7 +632,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen, composeSession, clearComposeSession, setComposeSession])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen, clearComposeSession, setComposeSession])
 
   const getFullComposeHtml = useCallback(() => {
     const editable = editorRef.current?.getHtml() ?? editorHtml
@@ -1045,7 +1017,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     autosaveTimerRef.current = setTimeout(() => {
       void saveDraft({ silent: true })
-    }, 2000)
+    }, COMPOSE_DRAFT_AUTOSAVE_DEBOUNCE_MS)
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
     }
@@ -1070,7 +1042,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           ),
         )
       }
-      setSettingsAccountId(composeAccountId)
+      setSettingsAccountDeepLinkId(composeAccountId)
       setSettingsAccountsSubTab("signature")
       setSettingsTab("accounts")
       await navigate({

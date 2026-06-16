@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react"
 import Quill from "quill"
 import "quill/dist/quill.snow.css"
 import "@/styles/compose-quill.css"
+import { SIGNATURE_QUILL_TOOLBAR } from "@shared/signature-quill-toolbar"
 import { cn } from "@/lib/utils"
 
 type Props = {
@@ -12,13 +13,6 @@ type Props = {
   className?: string
   placeholder?: string
 }
-
-const TOOLBAR = [
-  ["bold", "italic", "underline"],
-  [{ list: "ordered" }, { list: "bullet" }],
-  ["link"],
-  ["clean"],
-]
 
 /** Compact Quill editor for HTML email signatures (settings). */
 export function SignatureQuillEditor({
@@ -45,7 +39,7 @@ export function SignatureQuillEditor({
 
     const quill = new Quill(editorEl, {
       theme: "snow",
-      modules: { toolbar: TOOLBAR },
+      modules: { toolbar: SIGNATURE_QUILL_TOOLBAR },
       placeholder,
     })
     quillRef.current = quill

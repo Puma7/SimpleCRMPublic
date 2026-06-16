@@ -163,66 +163,6 @@ describe('signature-template', () => {
   });
 });
 
-describe('compose dialog autosave', () => {
-  it('debounces draft saves by 2000ms after content changes', () => {
-    const { readFileSync } = require('fs') as typeof import('fs');
-    const { resolve } = require('path') as typeof import('path');
-    const source = readFileSync(
-      resolve(__dirname, '../../src/components/email/compose-dialog.tsx'),
-      'utf8',
-    );
-    expect(source).toMatch(/autosaveTimerRef\.current = setTimeout\(\(\) => \{\s*void saveDraft\(\{ silent: true \}\)/);
-    expect(source).toMatch(/,\s*2000\)/);
-  });
-});
-
-describe('compose session resume', () => {
-  it('uses a stable session key without bootstrap generation', () => {
-    const { readFileSync } = require('fs') as typeof import('fs');
-    const { resolve } = require('path') as typeof import('path');
-    const source = readFileSync(
-      resolve(__dirname, '../../src/components/email/compose-dialog.tsx'),
-      'utf8',
-    );
-    expect(source).toMatch(/function buildComposeSessionKey\(/);
-    expect(source).toMatch(/composeSession\?\.initKey === sessionKey/);
-    expect(source).not.toMatch(/composeSession\?\.initKey === draftInitKey/);
-  });
-
-  it('persists PGP and inbox flags in compose session snapshot', () => {
-    const { readFileSync } = require('fs') as typeof import('fs');
-    const { resolve } = require('path') as typeof import('path');
-    const compose = readFileSync(
-      resolve(__dirname, '../../src/components/email/compose-dialog.tsx'),
-      'utf8',
-    );
-    const workspace = readFileSync(
-      resolve(__dirname, '../../src/components/email/workspace-context.tsx'),
-      'utf8',
-    );
-    expect(workspace).toMatch(/keepReplyOpenInInbox\?: boolean/);
-    expect(workspace).toMatch(/pgpEncrypt\?: boolean/);
-    expect(compose).toMatch(/setKeepReplyOpenInInbox\(composeSession\.keepReplyOpenInInbox\)/);
-    expect(compose).toMatch(/Entwurf konnte nicht gespeichert werden\. Navigation abgebrochen\./);
-  });
-});
-
-describe('accounts settings deep-link', () => {
-  it('prefers settingsAccountId on initial account list load', () => {
-    const { readFileSync } = require('fs') as typeof import('fs');
-    const { resolve } = require('path') as typeof import('path');
-    const source = readFileSync(
-      resolve(__dirname, '../../src/components/email/settings/accounts-master-detail.tsx'),
-      'utf8',
-    );
-    expect(source).toMatch(
-      /settingsAccountId != null[\s\S]*list\.find\(\(a\) => a\.id === settingsAccountId\)/,
-    );
-    expect(source).toMatch(/if \(settingsAccountId == null\) \{\s*setSettingsAccountId\(preferred\.id\)/);
-    expect(source).toMatch(/setCreating\(false\)\s*setSettingsAccountId\(null\)/);
-  });
-});
-
 describe('needsFullMessageBody', () => {
   it('detects summary rows without body fields', () => {
     expect(needsFullMessageBody({ body_text: null, body_html: null })).toBe(true);

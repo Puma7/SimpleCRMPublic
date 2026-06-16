@@ -44,6 +44,8 @@ export function AccountsMasterDetailSettings() {
     bumpAccountsRevision,
     setSettingsAccountId,
     settingsAccountId,
+    settingsAccountDeepLinkId,
+    setSettingsAccountDeepLinkId,
     settingsAccountsSubTab,
     setSettingsAccountsSubTab,
     accountsRevision,
@@ -60,9 +62,15 @@ export function AccountsMasterDetailSettings() {
       setAccounts(list)
       if (list.length > 0 && selectedId == null) {
         const preferred =
-          settingsAccountId != null
-            ? list.find((a) => a.id === settingsAccountId) ?? list[0]!
-            : list[0]!
+          settingsAccountDeepLinkId != null
+            ? list.find((a) => a.id === settingsAccountDeepLinkId) ??
+              (settingsAccountId != null
+                ? list.find((a) => a.id === settingsAccountId)
+                : undefined) ??
+              list[0]!
+            : settingsAccountId != null
+              ? list.find((a) => a.id === settingsAccountId) ?? list[0]!
+              : list[0]!
         setSelectedId(preferred.id)
         setEditAccount(preferred)
         if (settingsAccountId == null) {
@@ -82,21 +90,21 @@ export function AccountsMasterDetailSettings() {
     } catch {
       toast.error("Konten konnten nicht geladen werden.")
     }
-  }, [selectedId, setSettingsAccountId, settingsAccountId])
+  }, [selectedId, setSettingsAccountId, settingsAccountId, settingsAccountDeepLinkId])
 
   useEffect(() => {
     void load()
   }, [load, accountsRevision])
 
   useEffect(() => {
-    if (settingsAccountId == null || accounts.length === 0) return
-    const match = accounts.find((a) => a.id === settingsAccountId)
+    if (settingsAccountDeepLinkId == null || accounts.length === 0) return
+    const match = accounts.find((a) => a.id === settingsAccountDeepLinkId)
     if (!match) return
     setSelectedId(match.id)
     setEditAccount(match)
     setCreating(false)
-    setSettingsAccountId(null)
-  }, [settingsAccountId, accounts, setSettingsAccountId])
+    setSettingsAccountDeepLinkId(null)
+  }, [settingsAccountDeepLinkId, accounts, setSettingsAccountDeepLinkId])
 
   useEffect(() => {
     if (!settingsAccountsSubTab) return
