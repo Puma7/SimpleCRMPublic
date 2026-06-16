@@ -365,18 +365,18 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       composeIntent.mode === "new" && composeAccountId != null
         ? composeAccountId
         : resolvedAccountId
-    const draftInitKey = buildComposeDraftInitKey(
-      composeIntent,
-      accountIdAtOpen,
-      draftBootstrapGen,
-    )
-    if (initialisedDraftKeyRef.current === draftInitKey) return
     if (accountIdAtOpen == null) {
       toast.error(
         "Bitte wählen Sie ein E-Mail-Konto in der Seitenleiste (nicht „Alle Konten“, sofern mehrere Konten aktiv sind).",
       )
       return
     }
+    const draftInitKey = buildComposeDraftInitKey(
+      composeIntent,
+      accountIdAtOpen,
+      draftBootstrapGen,
+    )
+    if (initialisedDraftKeyRef.current === draftInitKey) return
     setComposeAccountId(accountIdAtOpen)
     let cancelled = false
     setDraftBootstrapping(true)
