@@ -59,9 +59,15 @@ export function AccountsMasterDetailSettings() {
       const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
       if (list.length > 0 && selectedId == null) {
-        setSelectedId(list[0]!.id)
-        setEditAccount(list[0]!)
-        setSettingsAccountId(list[0]!.id)
+        const preferred =
+          settingsAccountId != null
+            ? list.find((a) => a.id === settingsAccountId) ?? list[0]!
+            : list[0]!
+        setSelectedId(preferred.id)
+        setEditAccount(preferred)
+        if (settingsAccountId == null) {
+          setSettingsAccountId(preferred.id)
+        }
         return
       }
       // After a save the edit view stays open. The form keys off editAccount,
@@ -76,7 +82,7 @@ export function AccountsMasterDetailSettings() {
     } catch {
       toast.error("Konten konnten nicht geladen werden.")
     }
-  }, [selectedId, setSettingsAccountId])
+  }, [selectedId, setSettingsAccountId, settingsAccountId])
 
   useEffect(() => {
     void load()

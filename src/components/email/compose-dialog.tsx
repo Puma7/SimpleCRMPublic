@@ -120,7 +120,7 @@ function customerOptFromDbRow(row: Record<string, unknown>): CustomerOpt {
   }
 }
 import { logError } from "./log"
-import { useMailWorkspace, type ComposeIntent } from "./workspace-context"
+import { useMailWorkspace, type ComposeIntent, type ComposeSessionSnapshot } from "./workspace-context"
 import { useComposeDialogSize } from "./use-compose-dialog-size"
 import { ComposeOutboundPreviewDialog } from "./compose-outbound-preview-dialog"
 import { useNavigate } from "@tanstack/react-router"
@@ -150,12 +150,41 @@ function getComposeContextMessageId(
   return replyToId
 }
 
+/** Stabiler Schlüssel für Session-Resume (ohne bootstrapGen — überlebt Remount). */
+function buildComposeSessionKey(
+  intent: ComposeIntent,
+  accountId: number,
+): string {
+  return `${intent.mode}:${accountId}:${intent.mode === "draft" ? intent.messageId : ""}`
+}
+
 function buildComposeDraftInitKey(
   intent: ComposeIntent,
   accountId: number,
   bootstrapGen: number,
 ): string {
   return `${intent.mode}:${accountId}:${intent.mode === "draft" ? intent.messageId : ""}:g${bootstrapGen}`
+}
+
+function buildComposeSessionSnapshot(
+  intent: ComposeIntent,
+  accountId: number,
+  sessionDraftId: number,
+  sessionReplyToId: number | null,
+  flags: {
+    keepReplyOpenInInbox: boolean
+    pgpEncrypt: boolean
+    pgpSign: boolean
+  },
+): ComposeSessionSnapshot {
+  return {
+    initKey: buildComposeSessionKey(intent, accountId),
+    draftId: sessionDraftId,
+    replyToId: sessionReplyToId,
+    keepReplyOpenInInbox: flags.keepReplyOpenInInbox,
+    pgpEncrypt: flags.pgpEncrypt,
+    pgpSign: flags.pgpSign,
+  }
 }
 
 function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
@@ -346,9 +375,6 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       setKeepReplyOpenInInbox(false)
       return
     }
-    if (composeIntent.mode === "reply" || composeIntent.mode === "reply-all") {
-      setKeepReplyOpenInInbox(false)
-    }
     let messageAccountId: number | undefined
     if (
       composeIntent.mode === "reply" ||
@@ -376,6 +402,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       accountIdAtOpen,
       draftBootstrapGen,
     )
+    const sessionKey = buildComposeSessionKey(composeIntent, accountIdAtOpen)
     if (initialisedDraftKeyRef.current === draftInitKey) return
     setComposeAccountId(accountIdAtOpen)
     let cancelled = false
@@ -405,16 +432,24 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           setSignatureHtml(hydrated.signatureHtml)
           setQuotedHtml(hydrated.quotedHtml)
           setAttachmentPaths(hydrated.attachmentPaths)
-          setComposeSession({
-            initKey: draftInitKey,
-            draftId: composeIntent.messageId,
-            replyToId: hydrated.replyToId,
-          })
+          setComposeSession(
+            buildComposeSessionSnapshot(
+              composeIntent,
+              existing.account_id,
+              composeIntent.messageId,
+              hydrated.replyToId,
+              {
+                keepReplyOpenInInbox: false,
+                pgpEncrypt: false,
+                pgpSign: false,
+              },
+            ),
+          )
           return
         }
 
         if (
-          composeSession?.initKey === draftInitKey &&
+          composeSession?.initKey === sessionKey &&
           composeSession.draftId > 0
         ) {
           const resumed = await invokeRenderer(
@@ -436,6 +471,15 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             setSignatureHtml(hydrated.signatureHtml)
             setQuotedHtml(hydrated.quotedHtml)
             setAttachmentPaths(hydrated.attachmentPaths)
+            if (composeSession.keepReplyOpenInInbox != null) {
+              setKeepReplyOpenInInbox(composeSession.keepReplyOpenInInbox)
+            }
+            if (composeSession.pgpEncrypt != null) {
+              setPgpEncrypt(composeSession.pgpEncrypt)
+            }
+            if (composeSession.pgpSign != null) {
+              setPgpSign(composeSession.pgpSign)
+            }
             return
           }
           clearComposeSession()
@@ -591,11 +635,19 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           setEditorHtml(split.editorHtml)
           setSignatureHtml(split.signatureHtml || sigHtml || "")
           setQuotedHtml(split.quotedHtml)
-          setComposeSession({
-            initKey: draftInitKey,
-            draftId: res.id,
-            replyToId: replyParentId,
-          })
+          setComposeSession(
+            buildComposeSessionSnapshot(
+              composeIntent,
+              accountIdAtOpen,
+              res.id,
+              replyParentId,
+              {
+                keepReplyOpenInInbox: false,
+                pgpEncrypt: false,
+                pgpSign: false,
+              },
+            ),
+          )
         } else {
           toast.error(res.error ?? "Entwurf konnte nicht angelegt werden.")
         }
@@ -1002,18 +1054,21 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const handleEditSignature = () => {
     if (composeAccountId == null) return
     void (async () => {
-      await saveDraft({ silent: true })
+      const ok = await saveDraft({ silent: true })
+      if (!ok) {
+        toast.error("Entwurf konnte nicht gespeichert werden. Navigation abgebrochen.")
+        return
+      }
       if (draftId != null) {
-        const initKey = buildComposeDraftInitKey(
-          composeIntent,
-          composeAccountId,
-          draftBootstrapGen,
+        setComposeSession(
+          buildComposeSessionSnapshot(
+            composeIntent,
+            composeAccountId,
+            draftId,
+            replyToId,
+            { keepReplyOpenInInbox, pgpEncrypt, pgpSign },
+          ),
         )
-        setComposeSession({
-          initKey,
-          draftId,
-          replyToId,
-        })
       }
       setSettingsAccountId(composeAccountId)
       setSettingsAccountsSubTab("signature")

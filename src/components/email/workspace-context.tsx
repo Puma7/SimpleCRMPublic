@@ -65,6 +65,9 @@ export type ComposeSessionSnapshot = {
   initKey: string
   draftId: number
   replyToId: number | null
+  keepReplyOpenInInbox?: boolean
+  pgpEncrypt?: boolean
+  pgpSign?: boolean
 }
 
 type MailWorkspaceState = {
