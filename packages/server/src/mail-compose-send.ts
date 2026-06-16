@@ -130,12 +130,17 @@ async function allocateOutboundApprovalTicketCode(
   if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) return generateTicketCode();
   const account = await trx
     .selectFrom('email_accounts')
-    .select(['id', 'source_sqlite_id'])
+    .select(['id', 'source_sqlite_id', 'display_name', 'email_address'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', numericAccountId)
     .executeTakeFirst();
   if (!account) return generateTicketCode();
-  const defaultPrefix = `ACC${numericAccountId}`.slice(0, 12);
+  const defaultSettings = buildDefaultServerAccountMailSettings({
+    id: numericAccountId,
+    displayName: account.display_name ?? '',
+    emailAddress: account.email_address ?? '',
+  });
+  const defaultPrefix = defaultSettings.ticketPrefix;
   await trx
     .insertInto('email_account_mail_settings')
     .values({
@@ -143,9 +148,9 @@ async function allocateOutboundApprovalTicketCode(
       account_source_sqlite_id: Number(account.source_sqlite_id ?? numericAccountId),
       account_id: numericAccountId,
       ticket_prefix: defaultPrefix,
-      ticket_next_number: 1,
-      ticket_number_padding: 6,
-      thread_namespace: `account-${numericAccountId}`,
+      ticket_next_number: defaultSettings.ticketNextNumber,
+      ticket_number_padding: defaultSettings.ticketNumberPadding,
+      thread_namespace: defaultSettings.threadNamespace,
       source_row: { source: 'server.compose.outbound_approval' },
       imported_in_run_id: null,
       created_at: now,
@@ -948,20 +953,8 @@ export function createPostgresComposeOutboundReviewPort(options: {
               attachmentPaths: input.attachmentPaths,
               workflows,
             });
-            if (dryRun.allowed) {
-              await persistManualOutboundApproval(trx, {
-                workspaceId: input.workspaceId,
-                draftId: input.draftMessageId,
-                subject: input.subject,
-                bodyText: input.bodyText,
-                bodyHtml: input.bodyHtml,
-                to: input.to,
-                cc: input.cc ?? null,
-                bcc: input.bcc ?? null,
-                attachmentPaths: input.attachmentPaths ?? null,
-                now,
-              });
-              return { allowed: true };
+            if (!dryRun.allowed) {
+              return { allowed: false, error: dryRun.reason };
             }
           }
 
@@ -1473,9 +1466,6 @@ async function prepareDraftForSend(input: {
       threadId = parentForThreading.threadId;
     }
   }
-  if (!ticketCode && input.draft.ticketCode?.trim()) {
-    ticketCode = input.draft.ticketCode.trim();
-  }
   if (!ticketCode) {
     const allowedPrefixes = await input.store.listKnownTicketPrefixes?.({
       workspaceId: input.workspaceId,
@@ -1483,11 +1473,16 @@ async function prepareDraftForSend(input: {
     ticketCode = extractTicketFromSubject(
       values.subject,
       allowedPrefixes ? { allowedPrefixes } : undefined,
-    )
-      ?? (await input.store.allocateNextTicketCodeForAccount?.({
-        workspaceId: input.workspaceId,
-        account: input.account,
-      }))
+    );
+  }
+  if (!ticketCode && input.draft.ticketCode?.trim()) {
+    ticketCode = input.draft.ticketCode.trim();
+  }
+  if (!ticketCode) {
+    ticketCode = (await input.store.allocateNextTicketCodeForAccount?.({
+      workspaceId: input.workspaceId,
+      account: input.account,
+    }))
       ?? generateTicketCode({ prefix: `ACC${input.account.id}` });
   }
   if (!threadId) {

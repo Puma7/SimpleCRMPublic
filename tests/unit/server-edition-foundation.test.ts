@@ -11231,11 +11231,69 @@ describe('server edition foundation', () => {
     });
 
     expect(storeCalls).toEqual([
+      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 202, sendAt: claimedSendAt }],
       ['deleteSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         keys: ['scheduled_send_claimed_at:202'],
       }],
     ]);
+  });
+
+  test('reviewOutbound.review returns dry-run block without queuing async review', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 94,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 940,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+        name: 'Blocker',
+      }],
+      messages: [{
+        id: 84,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 840,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: false,
+        outbound_block_reason: null,
+        body_text: 'blocked',
+        body_html: null,
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      workflowDryRun: async () => ({
+        success: true,
+        dryRun: true as const,
+        blocked: true,
+        blockReason: 'Workflow wuerde blockieren',
+        status: 'blocked' as const,
+      }),
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 84,
+      subject: 'Blocked',
+      bodyText: 'blocked',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Workflow wuerde blockieren',
+    });
+    expect(rows.messages.find((m) => m.id === 84)?.outbound_hold).toBe(false);
+    expect(rows.runs).toHaveLength(0);
+    expect(rows.jobs).toHaveLength(0);
   });
 
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {

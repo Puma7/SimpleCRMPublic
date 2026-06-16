@@ -153,7 +153,7 @@ async function processScheduledDraft(input: {
   }
 
   if (isOutboundReviewPendingError(result.error)) {
-    await clearClaimedScheduledSendAt(input.store, input.workspaceId, draft.id);
+    await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
     return;
   }
 

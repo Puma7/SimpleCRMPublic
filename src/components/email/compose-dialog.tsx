@@ -983,11 +983,6 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       if (!saved) return
       const safeHtml = sanitizeComposeHtml(getEditorHtml())
       const plain = stripHtmlToText(safeHtml)
-      const precheck = await runOutboundPrecheckIfNeeded({
-        bodyText: plain,
-        bodyHtml: serverClientMode && pgpEncrypt ? undefined : safeHtml || undefined,
-      })
-      if (precheck.status === "blocked") return
       const r = await invokeRenderer(IPCChannels.Email.SendCompose, {
         accountId: composeAccountId,
         draftMessageId: draftId,

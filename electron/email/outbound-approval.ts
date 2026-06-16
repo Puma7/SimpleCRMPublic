@@ -85,7 +85,9 @@ export function applyManualComposeOutboundApproval(
   );
   const storedSubject = input.subject?.trim() || draftRow.subject?.trim() || '';
   const existingTicket =
-    draftRow.ticket_code?.trim() || extractKnownTicketFromSubject(draftRow.subject ?? null);
+    extractKnownTicketFromSubject(storedSubject)
+    || draftRow.ticket_code?.trim()
+    || extractKnownTicketFromSubject(draftRow.subject ?? null);
   const ticketCode = existingTicket || createTicketCodeForAccount(draftRow.account_id);
   const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 

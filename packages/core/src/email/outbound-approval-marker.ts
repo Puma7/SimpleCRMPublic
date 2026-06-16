@@ -35,9 +35,17 @@ function normalizeRecipientList(value: string | null | undefined): string[] {
   if (!value) return [];
   return value
     .split(/[,;]+/)
-    .map((part) => part.trim().toLowerCase())
+    .map((part) => extractRecipientEmail(part.trim()))
     .filter(Boolean)
     .sort();
+}
+
+function extractRecipientEmail(part: string): string {
+  if (!part) return '';
+  const angle = part.match(/^(.+)<([^>]+)>$/);
+  const candidate = (angle ? angle[2] : part).trim().toLowerCase();
+  if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(candidate)) return candidate;
+  return part.trim().toLowerCase();
 }
 
 /** Encodes timestamp + fingerprint into the approval-marker `sync_info.value`.
