@@ -13,16 +13,25 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
 
 /**
  * A node that actually gets the draft SENT (lifting the server outbound hold
- * for good). `email.release_outbound` only counts with `autoSend: true` — the
- * non-autoSend mode merely clears the hold without writing the approval marker
- * or scheduling the send, so the aborted compose send would just re-enter
- * review on the next attempt and be held again. `email.send_draft` always
- * sends.
+ * for good).
+ *  - `email.release_outbound` only counts with `autoSend: true` — the
+ *    non-autoSend mode clears the hold without scheduling the send, so the
+ *    aborted compose send just re-enters review on the next attempt.
+ *  - `email.send_draft` only counts when it explicitly targets a draft
+ *    (`config.draftId` or a `config.draftIdVariable`); with neither, it falls
+ *    back to `context draft.id`, which is not set for a compose-review draft,
+ *    and errors at runtime instead of sending.
  */
 function isReleaseNode(node: WorkflowGraphNode): boolean {
   const type = registryType(node);
-  if (type === 'email.send_draft') return true;
   if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
+  if (type === 'email.send_draft') {
+    const config = nodeConfig(node);
+    return (
+      typeof config.draftId === 'number' ||
+      (typeof config.draftIdVariable === 'string' && config.draftIdVariable.trim() !== '')
+    );
+  }
   return false;
 }
 
@@ -35,6 +44,15 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
   );
 }
 
+/**
+ * Nodes that branch on yes/no at runtime and therefore need BOTH ports wired.
+ * Kept in sync with executeServerNode: only the canvas `condition` node and the
+ * `logic.threshold` registry node return `port: match ? 'yes' : 'no'`.
+ */
+function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
+  return node.type === 'condition' || registryType(node) === 'logic.threshold';
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;
@@ -42,9 +60,13 @@ function triggerKind(doc: WorkflowGraphDocument): string | null {
   return typeof kind === 'string' ? kind : '';
 }
 
-// Mirror of graph-walk-utils.ts edgeIsYes / edgeIsNo (the runtime pickEdge is
-// the source of truth). MUST stay in sync so the validator never rejects a
-// graph the engine would happily route.
+function nodeTriggerKind(node: WorkflowGraphNode): string {
+  const kind = (node.data as Record<string, unknown> | undefined)?.kind;
+  return typeof kind === 'string' ? kind : '';
+}
+
+// Mirror of graph-walk-utils.ts edge label helpers (the runtime pickEdge is the
+// source of truth). MUST stay in sync so the validator routes like the engine.
 function labelIsYes(label: string): boolean {
   const l = label.toLowerCase();
   return l === '' || l === 'yes' || l === 'ja' || l === 'true' || l === 'success';
@@ -52,6 +74,10 @@ function labelIsYes(label: string): boolean {
 function labelIsNo(label: string): boolean {
   const l = label.toLowerCase();
   return l === 'no' || l === 'nein' || l === 'false' || l === 'error';
+}
+function labelIsDefault(label: string): boolean {
+  const l = label.toLowerCase();
+  return l === '' || l === 'default' || l === 'standard' || l === 'fallback';
 }
 
 export type OutboundGraphIssue =
@@ -62,44 +88,43 @@ export type FindOutboundGraphTrapsOptions = {
   /**
    * Force outbound validation regardless of the graph's trigger node. Pass the
    * workflow's EFFECTIVE trigger name (the stored `trigger_name`, which is what
-   * the server's outbound review selects on) so a graph whose trigger node was
-   * left as `inbound` but is registered as an outbound workflow is still
-   * checked.
+   * the server's outbound review selects on). The DFS then starts at the
+   * trigger node whose kind matches — like the runtime — so a multi-trigger
+   * graph is validated from the outbound entry point.
    */
   effectiveTrigger?: string;
 };
 
 /**
- * An outbound workflow (server edition) holds EVERY draft up front
- * (reviewOutbound sets outbound_hold=true the moment an enabled outbound
- * workflow exists) and the draft is only ever sent when a node explicitly
- * releases it. The engine is fail-closed, so any reachable path that
- * terminates — dead-ends, loops, dangling condition ports, or edges to missing
- * nodes — WITHOUT sending traps clean mail in the inbox forever.
+ * An outbound workflow (server edition) holds EVERY draft up front and the
+ * draft is only ever sent when a node explicitly releases it. The engine is
+ * fail-closed, so any reachable path that terminates — dead-ends, loops,
+ * dangling yes/no ports, or edges to missing nodes — WITHOUT sending traps
+ * clean mail. This walks every reachable path from the matching trigger and
+ * reports the ones that never reach a real send or an explicit hold. Empty =
+ * safe. Non-outbound workflows are never flagged.
  *
- * This walks every reachable path from the trigger and reports the ones that
- * do not reach a real send (release_outbound autoSend / send_draft) or an
- * explicit hold (an intended hold). Empty array = safe. Non-outbound workflows
- * are never flagged.
- *
- * NOTE: this models the SERVER runtime. The standalone Electron runtime is
- * run-then-block (it never holds up front), so it must NOT enforce this.
+ * Best-effort by design: it models the common node port semantics (condition /
+ * logic.threshold branch on yes/no; other nodes follow their `default` edge).
+ * Exotic multi-port graphs it can't model fail SAFE at runtime (the draft is
+ * held with a visible banner, not lost).
  */
 export function findOutboundGraphTraps(
   doc: WorkflowGraphDocument,
   opts?: FindOutboundGraphTrapsOptions,
 ): OutboundGraphIssue[] {
-  // Defensive: callers pass loosely-typed JSON. A malformed doc can't run, so
-  // treat it as "nothing to flag" rather than throwing.
   if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
-  const trigger = opts?.effectiveTrigger ?? triggerKind(doc);
-  if (trigger !== 'outbound') return [];
-  const triggerNode = doc.nodes.find((node) => node.type === 'trigger');
+  const effTrigger = opts?.effectiveTrigger ?? triggerKind(doc);
+  if (effTrigger !== 'outbound') return [];
+  // Mirror the runtime: pick the trigger whose kind matches, else the first.
+  const triggerNode =
+    doc.nodes.find((node) => node.type === 'trigger' && nodeTriggerKind(node) === effTrigger) ??
+    doc.nodes.find((node) => node.type === 'trigger');
   if (!triggerNode) return [];
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
-  // Sort like the runtime (graph-walk-utils.outgoing) so a condition with
-  // duplicate yes/no edges resolves to the SAME edge the engine would pick.
+  // Sort like graph-walk-utils.outgoing so duplicate edges resolve to the same
+  // one the engine would pick.
   const outgoing = (id: string) =>
     doc.edges
       .filter((edge) => edge.source === id)
@@ -121,23 +146,19 @@ export function findOutboundGraphTraps(
   const walk = (nodeId: string, pathVisited: Set<string>): void => {
     const node = byId.get(nodeId);
     if (!node) {
-      // Edge points at a deleted/missing node — the runtime breaks here and the
-      // draft stays held. That is a dead end, not a safe branch.
-      add({ code: 'dead_end', nodeId });
+      add({ code: 'dead_end', nodeId }); // edge to a missing/deleted node
       return;
     }
     if (pathVisited.has(nodeId)) {
-      // Loop back without ever releasing — the runtime finishes OK but the
-      // draft is still held. Flag it instead of silently accepting the cycle.
-      add({ code: 'dead_end', nodeId });
+      add({ code: 'dead_end', nodeId }); // loop that never releases
       return;
     }
-    if (isReleaseNode(node)) return; // this path sends the mail — safe
+    if (isReleaseNode(node)) return; // sends the mail — safe
     if (isHoldNode(node)) return; // explicit, intended hold — safe terminal
     const next = new Set(pathVisited).add(nodeId);
     const outs = outgoing(nodeId);
 
-    if (node.type === 'condition') {
+    if (isYesNoBranchNode(node)) {
       const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
       const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
       if (yesEdge) walk(yesEdge.target, next);
@@ -148,15 +169,23 @@ export function findOutboundGraphTraps(
     }
 
     if (outs.length === 0) {
-      add({ code: 'dead_end', nodeId }); // pass-through node with nowhere to go
+      add({ code: 'dead_end', nodeId }); // nothing to route to
+      return;
+    }
+    // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
+    // default edge exists, follow ONLY it — auxiliary edges (e.g. an "error"
+    // branch) are not taken, so they must not be treated as reachable traps.
+    // With no default edge, be conservative and walk all edges.
+    const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
+    if (defaultEdge) {
+      walk(defaultEdge.target, next);
       return;
     }
     for (const edge of outs) walk(edge.target, next);
   };
 
-  const triggerOuts = outgoing(triggerNode.id);
-  if (triggerOuts.length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
-  else for (const edge of triggerOuts) walk(edge.target, new Set([triggerNode.id]));
+  for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
+  if (outgoing(triggerNode.id).length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
 
   return issues;
 }
@@ -192,7 +221,7 @@ export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
 
   parts.push(
     'Verbinde jeden offenen/endenden Zweig mit einem Freigabe-Knoten ' +
-      '(email.release_outbound mit autoSend=true, oder email.send_draft).',
+      '(email.release_outbound mit autoSend=true, oder ein konfiguriertes email.send_draft).',
   );
   return parts.join(' ');
 }

@@ -100,7 +100,7 @@ describe('findOutboundGraphTraps', () => {
         { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
         { id: 'c1', type: 'condition', data: { field: 'combined_text', op: 'regex', value: 'IBAN' } },
         { id: 'r1', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
-        { id: 'r2', type: 'registry', data: { nodeType: 'email.send_draft', config: {} } },
+        { id: 'r2', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 7 } } },
       ],
       edges: [
         { id: 'e0', source: 't1', target: 'c1' },
@@ -109,6 +109,77 @@ describe('findOutboundGraphTraps', () => {
       ],
     };
     expect(findOutboundGraphTraps(graph)).toEqual([]);
+  });
+
+  it('requires both ports on a logic.threshold branch node', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'th', type: 'registry', data: { nodeType: 'logic.threshold', config: {} } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'th' },
+        { id: 'e1', source: 'th', target: 'rel', label: 'yes' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([
+      { code: 'dangling_condition_port', nodeId: 'th', missing: 'no' },
+    ]);
+  });
+
+  it('does not walk an auxiliary error edge when a default edge exists', () => {
+    // email.tag emits 'default'; the runtime takes the default edge to release
+    // and never the error branch, so the error dead-end must NOT be flagged.
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'tag', type: 'action', data: { actionType: 'tag', tag: 'x' } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+        { id: 'dead', type: 'action', data: { actionType: 'tag', tag: 'y' } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'tag' },
+        { id: 'e1', source: 'tag', target: 'rel' },
+        { id: 'e2', source: 'tag', target: 'dead', label: 'error' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([]);
+  });
+
+  it('does not count an unconfigured send_draft as a release', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'sd', type: 'registry', data: { nodeType: 'email.send_draft', config: {} } },
+      ],
+      edges: [{ id: 'e0', source: 't1', target: 'sd' }],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'sd' }]);
+  });
+
+  it('starts the walk at the trigger node matching the effective trigger', () => {
+    // Multi-trigger graph: a safe inbound entry + a dead-ending outbound entry.
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 'tin', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'tout', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+        { id: 'dead', type: 'action', data: { actionType: 'tag', tag: 'x' } },
+      ],
+      edges: [
+        { id: 'e0', source: 'tin', target: 'rel' },
+        { id: 'e1', source: 'tout', target: 'dead' },
+      ],
+    };
+    // Walks from the OUTBOUND trigger (tout), which dead-ends.
+    expect(findOutboundGraphTraps(graph, { effectiveTrigger: 'outbound' })).toEqual([
+      { code: 'dead_end', nodeId: 'dead' },
+    ]);
   });
 
   it('requires autoSend on email.release_outbound (non-autoSend re-enters review)', () => {

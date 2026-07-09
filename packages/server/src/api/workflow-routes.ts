@@ -783,19 +783,45 @@ async function handleDeleteAiPrompt(
 }
 
 /**
- * Reject an outbound workflow whose graph would silently trap clean mail
- * (dead-end path / dangling condition port / non-releasing terminal). Keys off
- * the EFFECTIVE trigger name (what the server's outbound review selects on), not
- * just the graph's trigger node, so a `triggerName: 'outbound'` workflow whose
- * graph trigger was left as inbound is still checked. Returns null when the
- * workflow is not outbound, has no graph, or is safe.
+ * Reject an outbound workflow that, once ENABLED, would silently trap clean
+ * mail. Outbound review selects workflows by the stored `trigger_name` and
+ * holds every draft before executing them, so a workflow is only safe if — as
+ * an enabled outbound workflow — it can actually release the draft:
+ *  - a `compiled` execution mode is unsupported by the server runtime (it
+ *    returns blocked before parsing the graph) → always traps;
+ *  - no graph at all → the run never reaches a release/send node → always traps;
+ *  - a graph whose reachable paths don't all release → traps (findOutboundGraphTraps).
+ *
+ * All inputs are the EFFECTIVE post-mutation values. A non-outbound or disabled
+ * workflow can't be selected by review, so it is never rejected.
  */
-function outboundGraphTrapError(graph: unknown, effectiveTrigger?: string): ApiResponse | null {
-  if (!graph || typeof graph !== 'object') return null;
-  const issues = findOutboundGraphTraps(
-    graph as WorkflowGraphDocument,
-    effectiveTrigger === undefined ? undefined : { effectiveTrigger },
-  );
+function outboundWorkflowGuardError(input: {
+  graph: unknown;
+  triggerName: string | undefined;
+  enabled: boolean | undefined;
+  executionMode: string | null | undefined;
+}): ApiResponse | null {
+  if (input.triggerName !== 'outbound') return null;
+  if (input.enabled === false) return null;
+  if ((input.executionMode ?? 'graph') === 'compiled') {
+    return error(
+      422,
+      'outbound_workflow_traps_mail',
+      'Aktiver Ausgangs-Workflow im „compiled"-Modus wird serverseitig nicht ausgeführt und hält ' +
+        'jede Mail dauerhaft. Bitte auf den Graph-Modus umstellen.',
+    );
+  }
+  if (!input.graph || typeof input.graph !== 'object') {
+    return error(
+      422,
+      'outbound_workflow_traps_mail',
+      'Aktiver Ausgangs-Workflow ohne Graph hält jede Mail dauerhaft. Bitte einen Graph mit ' +
+        'Freigabe-Knoten (email.release_outbound mit autoSend=true) hinterlegen.',
+    );
+  }
+  const issues = findOutboundGraphTraps(input.graph as WorkflowGraphDocument, {
+    effectiveTrigger: 'outbound',
+  });
   if (issues.length === 0) return null;
   return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
 }
@@ -816,7 +842,14 @@ async function handleCreateWorkflow(
   });
   if (!parsed.ok) return parsed.response;
 
-  const trap = outboundGraphTrapError(parsed.values.graph, parsed.values.triggerName);
+  // New workflows default to enabled=true (postgres-workflow-read-ports), so an
+  // outbound workflow is live immediately — validate its effective state.
+  const trap = outboundWorkflowGuardError({
+    graph: parsed.values.graph,
+    triggerName: parsed.values.triggerName,
+    enabled: parsed.values.enabled ?? true,
+    executionMode: parsed.values.executionMode,
+  });
   if (trap) return trap;
 
   const result = await ports.workflows.create({
@@ -848,23 +881,28 @@ async function handleUpdateWorkflow(
   });
   if (!parsed.ok) return parsed.response;
 
-  // Validate the graph + trigger that would be in effect after this patch. When
-  // the patch omits the graph but re-enables the workflow, fall back to the
-  // STORED graph so a previously-saved trapping outbound workflow can't be
-  // reactivated through the API without the 422. Likewise resolve the effective
-  // trigger from the stored row when the patch doesn't set it, so validation
-  // keys off what outbound review actually selects on.
-  let graphToValidate: unknown = parsed.values.graph;
-  let effectiveTrigger = parsed.values.triggerName;
-  const needsStoredGraph = graphToValidate === undefined && parsed.values.enabled === true;
-  const needsStoredTrigger = graphToValidate !== undefined && effectiveTrigger === undefined;
-  if ((needsStoredGraph || needsStoredTrigger) && ports.workflows.get) {
-    const existing = await ports.workflows.get({ workspaceId: principal.workspaceId, id });
-    if (graphToValidate === undefined) graphToValidate = existing?.graph ?? undefined;
-    if (effectiveTrigger === undefined) effectiveTrigger = existing?.triggerName;
+  // Validate the EFFECTIVE post-patch state. Any patch that touches trigger,
+  // enabled, graph, or execution mode can turn the workflow into (or keep it as)
+  // a live outbound workflow, so resolve the fields the patch omits from the
+  // stored row and guard the merged result. This catches re-enabling, switching
+  // the trigger to outbound, and compiled/no-graph outbound workflows.
+  const patchTouchesOutbound =
+    parsed.values.triggerName !== undefined ||
+    parsed.values.enabled !== undefined ||
+    parsed.values.graph !== undefined ||
+    parsed.values.executionMode !== undefined;
+  if (patchTouchesOutbound) {
+    const existing = ports.workflows.get
+      ? await ports.workflows.get({ workspaceId: principal.workspaceId, id })
+      : null;
+    const trap = outboundWorkflowGuardError({
+      graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+      triggerName: parsed.values.triggerName ?? existing?.triggerName,
+      enabled: parsed.values.enabled ?? existing?.enabled,
+      executionMode: parsed.values.executionMode ?? existing?.executionMode,
+    });
+    if (trap) return trap;
   }
-  const trap = outboundGraphTrapError(graphToValidate, effectiveTrigger);
-  if (trap) return trap;
 
   const result = await ports.workflows.update({
     workspaceId: principal.workspaceId,

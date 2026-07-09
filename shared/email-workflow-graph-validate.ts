@@ -17,8 +17,14 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
 
 function isReleaseNode(node: WorkflowGraphNode): boolean {
   const type = registryType(node);
-  if (type === 'email.send_draft') return true;
   if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
+  if (type === 'email.send_draft') {
+    const config = nodeConfig(node);
+    return (
+      typeof config.draftId === 'number' ||
+      (typeof config.draftIdVariable === 'string' && config.draftIdVariable.trim() !== '')
+    );
+  }
   return false;
 }
 
@@ -30,6 +36,10 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
   );
 }
 
+function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
+  return node.type === 'condition' || registryType(node) === 'logic.threshold';
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;
@@ -37,7 +47,11 @@ function triggerKind(doc: WorkflowGraphDocument): string | null {
   return typeof kind === 'string' ? kind : '';
 }
 
-// Mirror of graph-walk-utils.ts edgeIsYes / edgeIsNo (runtime source of truth).
+function nodeTriggerKind(node: WorkflowGraphNode): string {
+  const kind = (node.data as Record<string, unknown> | undefined)?.kind;
+  return typeof kind === 'string' ? kind : '';
+}
+
 function labelIsYes(label: string): boolean {
   const l = label.toLowerCase();
   return l === '' || l === 'yes' || l === 'ja' || l === 'true' || l === 'success';
@@ -45,6 +59,10 @@ function labelIsYes(label: string): boolean {
 function labelIsNo(label: string): boolean {
   const l = label.toLowerCase();
   return l === 'no' || l === 'nein' || l === 'false' || l === 'error';
+}
+function labelIsDefault(label: string): boolean {
+  const l = label.toLowerCase();
+  return l === '' || l === 'default' || l === 'standard' || l === 'fallback';
 }
 
 export type OutboundGraphIssue =
@@ -56,19 +74,21 @@ export type FindOutboundGraphTrapsOptions = {
 };
 
 /**
- * Models the SERVER outbound runtime (hold-then-release). Every reachable path
- * that terminates without sending (release_outbound autoSend / send_draft) or
- * an explicit hold traps clean mail. The standalone Electron runtime is
- * run-then-block and must NOT enforce this.
+ * Models the SERVER outbound runtime (hold-then-release). Best-effort: every
+ * reachable path that terminates without sending or an explicit hold traps
+ * clean mail; exotic multi-port graphs fail SAFE at runtime. The standalone
+ * Electron runtime is run-then-block and must NOT enforce this.
  */
 export function findOutboundGraphTraps(
   doc: WorkflowGraphDocument,
   opts?: FindOutboundGraphTrapsOptions,
 ): OutboundGraphIssue[] {
   if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
-  const trigger = opts?.effectiveTrigger ?? triggerKind(doc);
-  if (trigger !== 'outbound') return [];
-  const triggerNode = doc.nodes.find((node) => node.type === 'trigger');
+  const effTrigger = opts?.effectiveTrigger ?? triggerKind(doc);
+  if (effTrigger !== 'outbound') return [];
+  const triggerNode =
+    doc.nodes.find((node) => node.type === 'trigger' && nodeTriggerKind(node) === effTrigger) ??
+    doc.nodes.find((node) => node.type === 'trigger');
   if (!triggerNode) return [];
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
@@ -105,7 +125,7 @@ export function findOutboundGraphTraps(
     const next = new Set(pathVisited).add(nodeId);
     const outs = outgoing(nodeId);
 
-    if (node.type === 'condition') {
+    if (isYesNoBranchNode(node)) {
       const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
       const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
       if (yesEdge) walk(yesEdge.target, next);
@@ -119,12 +139,16 @@ export function findOutboundGraphTraps(
       add({ code: 'dead_end', nodeId });
       return;
     }
+    const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
+    if (defaultEdge) {
+      walk(defaultEdge.target, next);
+      return;
+    }
     for (const edge of outs) walk(edge.target, next);
   };
 
-  const triggerOuts = outgoing(triggerNode.id);
-  if (triggerOuts.length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
-  else for (const edge of triggerOuts) walk(edge.target, new Set([triggerNode.id]));
+  for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
+  if (outgoing(triggerNode.id).length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
 
   return issues;
 }
@@ -159,7 +183,7 @@ export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
 
   parts.push(
     'Verbinde jeden offenen/endenden Zweig mit einem Freigabe-Knoten ' +
-      '(email.release_outbound mit autoSend=true, oder email.send_draft).',
+      '(email.release_outbound mit autoSend=true, oder ein konfiguriertes email.send_draft).',
   );
   return parts.join(' ');
 }
