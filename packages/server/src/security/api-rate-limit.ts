@@ -39,6 +39,7 @@ function bucketForPath(path: string): RateLimitBucket {
       path === '/api/v1/email/compose/send'
       || path === '/api/v1/email/gdpr-export'
       || path.startsWith('/api/v1/email/accounts/test-')
+      || path.startsWith('/api/v1/email/settings/security/test-')
     ) {
       return 'api-global';
     }

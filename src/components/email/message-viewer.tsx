@@ -291,6 +291,10 @@ export function MessageViewer(props: Props) {
     if (hydratedBodyForIdRef.current === selectedMessage.id) return
     hydratedBodyForIdRef.current = selectedMessage.id
     const messageId = selectedMessage.id
+    // Guard against a stale in-flight fetch (user switched messages): only this
+    // effect run may touch bodyLoadState, so a late resolve can't clear the
+    // currently-selected message's error/retry state.
+    let cancelled = false
     setBodyLoadState("loading")
     void (async () => {
       try {
@@ -298,6 +302,7 @@ export function MessageViewer(props: Props) {
           IPCChannels.Email.GetMessage,
           messageId,
         ) as EmailMessage | null
+        if (cancelled) return
         if (full && !needsFullMessageBody(full)) {
           setSelectedMessage((prev) => (prev?.id === messageId ? full : prev))
           setBodyLoadState("idle")
@@ -307,6 +312,7 @@ export function MessageViewer(props: Props) {
           setBodyLoadState("error")
         }
       } catch {
+        if (cancelled) return
         // The fetch failed (e.g. a transient 429 from the rate limiter). Don't
         // silently fall back to the ~217-char snippet with no HTML button —
         // flag it so we render a retry affordance. The ref stays latched to
@@ -314,6 +320,9 @@ export function MessageViewer(props: Props) {
         setBodyLoadState("error")
       }
     })()
+    return () => {
+      cancelled = true
+    }
   }, [selectedMessage, setSelectedMessage, bodyRetryKey])
 
   const retryBody = useCallback(() => {

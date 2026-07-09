@@ -41,22 +41,31 @@ export type FastifyServerOptions = Readonly<{
   accessTokenSigner?: AccessTokenSigner;
   corsAllowedOrigins?: readonly string[];
   /**
-   * Which peers' `X-Forwarded-For` to trust so `request.ip` is the real client,
-   * not the proxy's container IP (without it every user behind the Caddy proxy
-   * collapses to one per-IP rate-limit bucket). Passed straight to Fastify.
+   * Which peers' `X-Forwarded-For` to trust so `request.ip` is the real client
+   * instead of the proxy's container IP (without it every user behind the Caddy
+   * proxy collapses to one per-IP rate-limit bucket). Passed straight to Fastify.
    *
-   * Defaults to trusting only private/loopback peers (`loopback, linklocal,
-   * uniquelocal`): the bundled Caddy sits on the Docker network (a private IP)
-   * so its XFF is honored, but a DIRECT public client is not trusted and cannot
-   * spoof XFF to escape the per-IP buckets. TRUST_PROXY=true opts into trusting
-   * every hop; TRUST_PROXY=false disables it entirely.
+   * Defaults to `false` (trust nobody) — the safe choice for a directly-exposed
+   * API, where trusting any peer's XFF would let a client spoof it to escape the
+   * per-IP buckets. The bundled Docker deployment sets `TRUST_PROXY=1` (trust
+   * exactly the one Caddy hop) via its env; other values accepted are `true`
+   * (trust all hops), a hop count, or a proxy-addr subnet/preset string.
    */
-  trustProxy?: boolean | string;
+  trustProxy?: boolean | number | string;
 }>;
 
-/** Trust only private/loopback proxy hops by default — safe for both the
- *  Caddy-fronted Docker deployment and a directly-exposed API. */
-const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
+/**
+ * Read `request.ip` without letting it throw. With trustProxy enabled it runs
+ * proxy-addr over the socket, which can throw on sockets that lack a remote
+ * address (e.g. the websocket inject test harness). Fall back to a stable key.
+ */
+function safeRequestIp(request: FastifyRequest): string {
+  try {
+    return request.ip || '0.0.0.0';
+  } catch {
+    return '0.0.0.0';
+  }
+}
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
@@ -76,7 +85,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: SERVER_JSON_BODY_LIMIT_BYTES,
-    trustProxy: options.trustProxy ?? DEFAULT_TRUST_PROXY,
+    trustProxy: options.trustProxy ?? false,
   });
   const api = createServerApi(options.ports);
   const corsAllowedOrigins = new Set(options.corsAllowedOrigins ?? []);
@@ -100,18 +109,8 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     }
     const path = request.url.split('?')[0] ?? request.url;
     if (path.startsWith('/api/v1/')) {
-      // With trustProxy enabled, `request.ip` runs proxy-addr over the socket,
-      // which can throw on sockets that lack a remote address (e.g. the
-      // websocket inject test harness). Never let that 500 the request — fall
-      // back to a stable bucket key.
-      let ip = '0.0.0.0';
-      try {
-        ip = request.ip || '0.0.0.0';
-      } catch {
-        ip = '0.0.0.0';
-      }
       const rate = checkApiRateLimit({
-        ip,
+        ip: safeRequestIp(request),
         path,
       });
       if (!rate.allowed) {
@@ -307,7 +306,7 @@ async function dispatchFastifyRequest(
     query: extractQuery(request.url),
     body: request.body,
     headers: normalizeHeaders(request.headers),
-    ip: request.ip,
+    ip: safeRequestIp(request),
     principal: await resolvePrincipal(request),
   } satisfies ApiRequest);
 

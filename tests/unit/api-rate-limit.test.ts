@@ -59,6 +59,7 @@ describe('checkApiRateLimit', () => {
       '/api/v1/email/compose/send',
       '/api/v1/email/gdpr-export',
       '/api/v1/email/accounts/test-smtp',
+      '/api/v1/email/settings/security/test-rspamd',
     ]) {
       resetApiRateLimits();
       for (let i = 0; i < 600; i += 1) {
