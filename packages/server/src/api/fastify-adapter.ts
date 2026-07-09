@@ -92,8 +92,18 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     }
     const path = request.url.split('?')[0] ?? request.url;
     if (path.startsWith('/api/v1/')) {
+      // With trustProxy enabled, `request.ip` runs proxy-addr over the socket,
+      // which can throw on sockets that lack a remote address (e.g. the
+      // websocket inject test harness). Never let that 500 the request — fall
+      // back to a stable bucket key.
+      let ip = '0.0.0.0';
+      try {
+        ip = request.ip || '0.0.0.0';
+      } catch {
+        ip = '0.0.0.0';
+      }
       const rate = checkApiRateLimit({
-        ip: request.ip ?? '0.0.0.0',
+        ip,
         path,
       });
       if (!rate.allowed) {
