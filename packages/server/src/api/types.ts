@@ -163,6 +163,17 @@ export type AuthApiPort = {
   createInitialOwner?(input: InitialOwnerInput): Promise<InitialOwnerCreateResult>;
   listUsers?(input: { workspaceId: string }): Promise<readonly AuthUserAdminRecord[]>;
   saveUser?(input: AuthUserSaveInput): Promise<AuthUserSaveResult>;
+  deleteUser?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: string;
+  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' }>;
+  changePassword?(input: {
+    workspaceId: string;
+    userId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<{ ok: true } | { ok: false; code: 'invalid_current' | 'not_found' }>;
   createInvitation?(input: AuthInvitationCreateInput): Promise<AuthInvitationCreateResult>;
   getInvitationByToken?(input: { token: string }): Promise<AuthInvitationLookupResult>;
   acceptInvitation?(input: AuthInvitationAcceptInput): Promise<AuthInvitationAcceptResult>;

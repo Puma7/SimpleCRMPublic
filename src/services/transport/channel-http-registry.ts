@@ -887,6 +887,26 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  [IPCChannels.Auth.DeleteUser, ([payload]) => {
+    const input = objectPayload(payload, "auth user delete payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/auth/users/${pathTextSegment(input.id, "auth user id", 120)}`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Auth.ChangePassword, ([payload]) => {
+    const input = objectPayload(payload, "auth change password payload")
+    return {
+      method: "POST",
+      path: "/api/v1/auth/change-password",
+      body: {
+        currentPassword: stringPayloadField(input.currentPassword, "current password"),
+        newPassword: stringPayloadField(input.newPassword, "new password"),
+      },
+      transform: () => ({ success: true }),
+    }
+  }],
   [IPCChannels.Auth.CreateInvite, ([payload]) => ({
     method: "POST",
     path: "/api/v1/auth/invitations",

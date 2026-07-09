@@ -34,6 +34,7 @@ import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
+import { ChangePasswordCard } from "@/components/settings/change-password-card"
 import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
@@ -92,7 +93,17 @@ const TAB_DEFS: TabDef[] = [
     render: () => <PromptsPanel />,
   },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
-  { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
+  {
+    id: "appUsers",
+    label: "App-Benutzer",
+    icon: Users,
+    render: () => (
+      <div className="space-y-6">
+        <ChangePasswordCard />
+        <UsersPanel />
+      </div>
+    ),
+  },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },

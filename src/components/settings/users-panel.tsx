@@ -140,6 +140,34 @@ export function UsersPanel() {
     setPwValue("")
   }
 
+  const deleteUser = useCallback(
+    async (u: UserRow) => {
+      if (typeof window !== "undefined") {
+        const ok = window.confirm(
+          `Benutzer „${u.display_name} (${u.username})“ endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.`,
+        )
+        if (!ok) return
+      }
+      setError(null)
+      setRowBusy(u.id)
+      try {
+        const result = (await invokeRenderer(IPCChannels.Auth.DeleteUser, { id: u.id })) as
+          | { success: boolean; error?: string }
+          | undefined
+        if (result && result.success === false) {
+          setError(result.error || "Benutzer konnte nicht gelöscht werden.")
+          return
+        }
+        await load()
+      } catch (e) {
+        setError(describeUserSaveError(e))
+      } finally {
+        setRowBusy(null)
+      }
+    },
+    [load],
+  )
+
   return (
     <Card>
       <CardHeader>
@@ -183,6 +211,16 @@ export function UsersPanel() {
                   }}
                 >
                   Passwort neu setzen
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-destructive hover:text-destructive"
+                  disabled={rowBusy === u.id}
+                  onClick={() => void deleteUser(u)}
+                >
+                  Löschen
                 </Button>
               </div>
               {pwEditId === u.id ? (

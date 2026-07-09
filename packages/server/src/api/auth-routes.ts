@@ -48,6 +48,10 @@ export async function handleAuthRoute(
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     return handleGetInvitation(req, ports, decodeURIComponent(invitationMatch[1] ?? ''));
   }
+  if (req.path === '/api/v1/auth/change-password') {
+    if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    return handleChangePassword(req, ports);
+  }
   if (req.path === '/api/v1/auth/users') {
     if (req.method === 'GET') return handleListUsers(req, ports);
     if (req.method === 'POST') return handleSaveUser(req, ports);
@@ -55,8 +59,10 @@ export async function handleAuthRoute(
   }
   const userMatch = req.path.match(/^\/api\/v1\/auth\/users\/([^/]+)$/);
   if (userMatch) {
-    if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    return handleSaveUser(req, ports, decodeURIComponent(userMatch[1] ?? ''));
+    const userId = decodeURIComponent(userMatch[1] ?? '');
+    if (req.method === 'PATCH') return handleSaveUser(req, ports, userId);
+    if (req.method === 'DELETE') return handleDeleteUser(req, ports, userId);
+    return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   }
   if (req.path === '/api/v1/auth/audit-log') {
     return handleAuditLog(req, ports);
@@ -262,6 +268,78 @@ async function handleSaveUser(
   });
 
   return data(parsed.values.id ? 200 : 201, publicAdminUser(result.user));
+}
+
+async function handleDeleteUser(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  id: string,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!ports.auth.deleteUser) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
+  if (id === principal.userId) return error(409, 'cannot_delete_self', 'Sie koennen sich nicht selbst loeschen');
+
+  const result = await ports.auth.deleteUser({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    id,
+  });
+  if (!result.ok) {
+    if (result.code === 'not_found') return error(404, 'auth_user_not_found', 'Benutzer nicht gefunden');
+    return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
+  }
+
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'auth.user_deleted',
+    entityType: 'user',
+    entityId: id,
+    metadata: {},
+  });
+  return data(200, { deleted: true, id });
+}
+
+async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.auth.changePassword) {
+    return error(503, 'auth_change_password_unavailable', 'Passwortaenderung ist nicht konfiguriert');
+  }
+
+  const currentPassword = getStringField(req.body, 'currentPassword');
+  const newPassword = getStringField(req.body, 'newPassword');
+  if (!currentPassword || !newPassword) {
+    return error(400, 'validation_error', 'currentPassword und newPassword sind erforderlich');
+  }
+  if (newPassword.length < 10) {
+    return error(400, 'validation_error', 'Das neue Passwort muss mindestens 10 Zeichen haben');
+  }
+
+  const result = await ports.auth.changePassword({
+    workspaceId: principal.workspaceId,
+    userId: principal.userId,
+    currentPassword,
+    newPassword,
+  });
+  if (!result.ok) {
+    if (result.code === 'invalid_current') {
+      return error(403, 'invalid_current_password', 'Aktuelles Passwort ist falsch');
+    }
+    return error(400, 'validation_error', 'Passwort konnte nicht geaendert werden');
+  }
+
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'auth.password_changed',
+    entityType: 'user',
+    entityId: principal.userId,
+    metadata: {},
+  });
+  return data(200, { success: true });
 }
 
 async function handleCreateInvitation(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

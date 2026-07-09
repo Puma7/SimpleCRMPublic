@@ -10,6 +10,8 @@ import {
 } from '../auth/session-store';
 import { LOCAL_OWNER_USER_ID, LOCAL_WORKSPACE_ID } from '../mail-roadmap-migrations';
 import {
+  changeLocalAuthPassword,
+  deleteLocalAuthUser,
   enableAuthMiddleware as enableLocalAuthMiddleware,
   findLocalLoginUser,
   isAuthMiddlewareEnabled,
@@ -193,6 +195,38 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         return saveLocalAuthUser(payload);
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Auth.DeleteUser,
+      async (event, payload: { id: string }) => {
+        const session = getSessionFromEvent(event);
+        if (session && session.userId === payload.id) {
+          return { success: false as const, error: 'Sie können sich nicht selbst löschen' };
+        }
+        return deleteLocalAuthUser(payload);
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Auth.ChangePassword,
+      async (event, payload: { currentPassword: string; newPassword: string }) => {
+        const session = getSessionFromEvent(event);
+        if (!session) {
+          return { success: false as const, error: 'Nicht angemeldet' };
+        }
+        return changeLocalAuthPassword({
+          userId: session.userId,
+          currentPassword: payload.currentPassword,
+          newPassword: payload.newPassword,
+        });
+      },
+      { logger, requireAuth: true, requireRealSession: true },
     ),
   );
 
