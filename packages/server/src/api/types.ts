@@ -3010,12 +3010,16 @@ export type AiPromptApiPort = {
 export type AiTextTransformInput = {
   workspaceId: string;
   actorUserId?: string;
-  promptId: number;
+  /** Required in prompt mode; omitted in translate mode (targetLanguage set). */
+  promptId?: number;
   text: string;
   /** When set, `text` is a selection to rewrite and `contextText` is the full
    *  surrounding email used as context. The AI returns only the rewritten
    *  selection. */
   contextText?: string;
+  /** When set, translate `text` into this language (default AI profile), rather
+   *  than running a stored prompt. */
+  targetLanguage?: string;
   customerId?: number | null;
 };
 

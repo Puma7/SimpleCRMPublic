@@ -3383,11 +3383,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       method: "POST",
       path: "/api/v1/ai/transform-text",
       body: pruneUndefined({
-        promptId: positiveId(input.promptId, "email ai prompt id"),
+        promptId: input.promptId === undefined || input.promptId === null
+          ? undefined
+          : positiveId(input.promptId, "email ai prompt id"),
         text: stringPayloadField(input.text, "email ai transform text"),
         contextText: input.contextText === undefined || input.contextText === null
           ? undefined
           : stringPayloadField(input.contextText, "email ai transform context"),
+        targetLanguage: input.targetLanguage === undefined || input.targetLanguage === null
+          ? undefined
+          : stringPayloadField(input.targetLanguage, "email ai target language"),
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),

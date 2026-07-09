@@ -58,7 +58,16 @@ type AiPromptReorderParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type AiTextTransformParseResult =
-  | { ok: true; values: { promptId: number; text: string; contextText?: string; customerId?: number | null } }
+  | {
+    ok: true;
+    values: {
+      promptId?: number;
+      text: string;
+      contextText?: string;
+      targetLanguage?: string;
+      customerId?: number | null;
+    };
+  }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowMutationParseResult =
@@ -1716,15 +1725,25 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   }
 
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['promptId', 'text', 'contextText', 'customerId']);
+  const allowedFields = new Set(['promptId', 'text', 'contextText', 'targetLanguage', 'customerId']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
 
-  const values: { promptId?: number; text?: string; contextText?: string; customerId?: number | null } = {};
-  const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
-  if (promptId.ok) values.promptId = promptId.value;
-  else errors.push({ field: 'promptId', message: promptId.message });
+  const values: {
+    promptId?: number;
+    text?: string;
+    contextText?: string;
+    targetLanguage?: string;
+    customerId?: number | null;
+  } = {};
+
+  // promptId is required in prompt mode but omitted in translate mode.
+  if (Object.prototype.hasOwnProperty.call(body, 'promptId')) {
+    const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
+    if (promptId.ok) values.promptId = promptId.value;
+    else errors.push({ field: 'promptId', message: promptId.message });
+  }
 
   const text = normalizeRequiredBodyText(body.text, 'text', 20000);
   if (text.ok) values.text = text.value;
@@ -1736,13 +1755,24 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     else errors.push({ field: 'contextText', message: contextText.message });
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'targetLanguage')) {
+    const targetLanguage = normalizeRequiredBodyText(body.targetLanguage, 'targetLanguage', 60);
+    if (targetLanguage.ok) values.targetLanguage = targetLanguage.value;
+    else errors.push({ field: 'targetLanguage', message: targetLanguage.message });
+  }
+
   if (Object.prototype.hasOwnProperty.call(body, 'customerId')) {
     const customerId = normalizeNullablePositiveBodyInt(body.customerId, 'customerId');
     if (customerId.ok) values.customerId = customerId.value;
     else errors.push({ field: 'customerId', message: customerId.message });
   }
 
-  if (errors.length > 0 || values.promptId === undefined || values.text === undefined) {
+  // Need either a prompt (prompt mode) or a target language (translate mode).
+  if (values.promptId === undefined && values.targetLanguage === undefined) {
+    errors.push({ field: 'promptId', message: 'promptId oder targetLanguage ist erforderlich' });
+  }
+
+  if (errors.length > 0 || values.text === undefined) {
     return {
       ok: false,
       response: error(400, 'validation_error', 'AI text transform payload ist ungueltig', { fields: errors }),
@@ -1752,9 +1782,10 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   return {
     ok: true,
     values: {
-      promptId: values.promptId,
+      ...(values.promptId === undefined ? {} : { promptId: values.promptId }),
       text: values.text,
       ...(values.contextText === undefined ? {} : { contextText: values.contextText }),
+      ...(values.targetLanguage === undefined ? {} : { targetLanguage: values.targetLanguage }),
       ...(values.customerId === undefined ? {} : { customerId: values.customerId }),
     },
   };

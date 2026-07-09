@@ -55,6 +55,7 @@ import {
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-reply-addresses"
 import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
+import { DEFAULT_TARGET_LANGUAGES } from "@shared/translation-languages"
 import {
   buildReplyComposeHtml,
   mergeComposeHtml,
@@ -184,6 +185,8 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
   const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
   const [aiPromptSelectKey, setAiPromptSelectKey] = useState(0)
+  const [translateSelectKey, setTranslateSelectKey] = useState(0)
+  const [translating, setTranslating] = useState(false)
   const [scheduledSendAt, setScheduledSendAt] = useState("")
   const [scheduledSendFailed, setScheduledSendFailed] = useState<{
     lastError: string
@@ -1094,6 +1097,63 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                       {p.label}
                     </SelectItem>
                   ))}
+              </SelectContent>
+            </Select>
+            <Select
+              key={translateSelectKey}
+              disabled={draftId == null || draftBootstrapping || translating}
+              onValueChange={(lang) => {
+                void (async () => {
+                  const editableHtml = splitComposeHtml(getEditorHtml()).editableHtml
+                  const fullText = stripHtmlToText(editableHtml)
+                  const selectionText = editorRef.current?.getSelectionText() ?? null
+                  const useSelection = !!selectionText && selectionText.trim().length > 0
+                  const src = useSelection ? selectionText! : fullText
+                  if (!src.trim()) {
+                    toast.error("Bitte zuerst Text eingeben (oder eine Stelle markieren), dann eine Zielsprache wählen.")
+                    setTranslateSelectKey((k) => k + 1)
+                    return
+                  }
+                  setTranslating(true)
+                  try {
+                    const r = await invokeRenderer(IPCChannels.Email.AiTransformText, {
+                      text: src,
+                      targetLanguage: lang,
+                      ...(useSelection ? { contextText: fullText } : {}),
+                    }) as { success: boolean; text?: string; error?: string }
+                    if (r.success && r.text?.trim()) {
+                      if (useSelection && editorRef.current?.replaceSelectionText(r.text.trim())) {
+                        toast.success(`Markierten Text nach ${lang} übersetzt`)
+                      } else {
+                        setBodyHtml(
+                          mergeComposeHtml(
+                            sanitizeComposeHtml(plainTextToReplyHtml(r.text)),
+                            splitComposeHtml(getEditorHtml()).quotedHtml,
+                          ),
+                        )
+                        toast.success(`Text nach ${lang} übersetzt`)
+                      }
+                    } else {
+                      toast.error(r.error ?? "Übersetzung fehlgeschlagen. Prüfen Sie Einstellungen → E-Mail → KI (API-Schlüssel).")
+                    }
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Übersetzung fehlgeschlagen")
+                  } finally {
+                    setTranslating(false)
+                    setTranslateSelectKey((k) => k + 1)
+                  }
+                })()
+              }}
+            >
+              <SelectTrigger className="h-8 w-[190px] text-xs">
+                <SelectValue placeholder={translating ? "Übersetze…" : "Übersetzen →"} />
+              </SelectTrigger>
+              <SelectContent>
+                {DEFAULT_TARGET_LANGUAGES.map((l) => (
+                  <SelectItem key={l.code} value={l.label}>
+                    {l.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             </div>

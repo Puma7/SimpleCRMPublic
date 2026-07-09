@@ -161,6 +161,7 @@ import {
   deleteAiProfile,
   ensureDefaultAiProfiles,
   getAiProfileById,
+  getDefaultAiProfile,
   listAiProfiles,
   profileHasApiKey,
   resolvePromptProfileId,
@@ -1729,8 +1730,39 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.AiTransformText,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { promptId: number; text: string; customerId?: number | null },
+        payload: {
+          promptId?: number;
+          text: string;
+          contextText?: string;
+          targetLanguage?: string;
+          customerId?: number | null;
+        },
       ) => {
+        const source = payload.text?.trim() ?? '';
+        if (!source) return { success: false as const, error: 'Text fehlt' };
+
+        // Translate mode: no stored prompt, translate `text` into targetLanguage
+        // using the default AI profile. `contextText` (the surrounding message)
+        // is given to the model only as context.
+        const targetLanguage = payload.targetLanguage?.trim();
+        if (targetLanguage) {
+          const profileId = getDefaultAiProfile()?.id ?? null;
+          const ctx = payload.contextText?.trim() ?? '';
+          const useContext = ctx.length > 0 && ctx !== source;
+          const system =
+            `Du bist ein professioneller Übersetzer. Übersetze den folgenden Text nach ${targetLanguage}. ` +
+            'Gib AUSSCHLIESSLICH die Übersetzung zurück — keine Anführungszeichen, keine Erklärungen, keine Anrede.' +
+            (useContext ? `\n\nKONTEXT (nur zum Verständnis, NICHT übersetzen oder ausgeben):\n${ctx}` : '');
+          try {
+            const out = await runChatCompletion(system, source, profileId);
+            if (!out.trim()) return { success: false as const, error: 'KI-Antwort leer' };
+            return { success: true as const, text: out.trim() };
+          } catch (e) {
+            return { success: false as const, error: e instanceof Error ? e.message : String(e) };
+          }
+        }
+
+        if (payload.promptId == null) return { success: false as const, error: 'Prompt fehlt' };
         const prompts = listAiPrompts();
         const p = prompts.find((x) => x.id === payload.promptId);
         if (!p) return { success: false as const, error: 'Prompt nicht gefunden' };
