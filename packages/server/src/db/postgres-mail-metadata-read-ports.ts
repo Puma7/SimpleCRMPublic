@@ -2828,6 +2828,12 @@ export async function resolveReferenceThreadForSync(
   },
 ): Promise<{ threadId: string | null; ticketCode: string | null }> {
   const related = collectRelatedIds(args.messageId, args.inReplyTo, args.referencesHeader);
+  // Ancestor ids only (In-Reply-To ∪ References, WITHOUT our own Message-ID).
+  // Used to match stored `message_id`: a message references its ANCESTORS, never
+  // itself. Matching stored message_id against our own id would treat a duplicate
+  // folder copy of THIS same standalone email (e.g. INBOX + Archive/All Mail) as
+  // a conversation sibling and thread the copies together.
+  const ancestorIds = collectRelatedIds(null, args.inReplyTo, args.referencesHeader);
   // Recognize the same custom per-account ticket prefixes the rest of the app
   // uses, not just the legacy `SCR` default. Fast path: try the default first;
   // only when the subject carries a bracketed ticket token the default missed do
@@ -2854,23 +2860,32 @@ export async function resolveReferenceThreadForSync(
     // that produced `related` (a blanket bracket strip would diverge on ids
     // like `<<x@y>>`). `sql.join` binds each id as its own parameter (an
     // IN-list) — avoids `any(array)` colliding with the pool's jsonb-array plugin.
-    const relatedList = () => kyselySql.join(related);
     const normMsgId = kyselySql.raw(normalizedMessageIdSql('message_id'));
     const normIrt = kyselySql.raw(normalizedMessageIdSql('in_reply_to'));
+    // The `IS NOT NULL` guards let Postgres use the partial functional indexes
+    // from migration 0025 (`WHERE message_id IS NOT NULL` / `... in_reply_to ...`)
+    // instead of a full scan. Stored message_id is matched ONLY against ancestor
+    // ids (so self-duplicates don't match); stored in_reply_to is matched against
+    // our own id + ancestors (so a reply TO us, or a sibling reply to a shared
+    // ancestor, is found even when synced out of order).
+    const branches: RawBuilder<boolean>[] = [];
+    if (ancestorIds.length > 0) {
+      branches.push(
+        kyselySql<boolean>`(message_id IS NOT NULL AND ${normMsgId} in (${kyselySql.join(ancestorIds)}))`,
+      );
+    }
+    branches.push(
+      kyselySql<boolean>`(in_reply_to IS NOT NULL AND ${normIrt} in (${kyselySql.join(related)}))`,
+    );
+    const whereClause = branches.length === 1
+      ? branches[0]!
+      : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` OR `)})`;
     siblings = (await trx
       .selectFrom('email_messages')
       .select(['id', 'thread_id'])
       .where('workspace_id', '=', args.workspaceId)
       .where('account_id', '=', args.accountId)
-      .where(
-        // The `IS NOT NULL` guards let Postgres use the partial functional
-        // indexes from migration 0025 (which are `WHERE message_id IS NOT NULL`
-        // / `WHERE in_reply_to IS NOT NULL`) instead of a full scan.
-        kyselySql<boolean>`(
-          (message_id IS NOT NULL AND ${normMsgId} in (${relatedList()}))
-          OR (in_reply_to IS NOT NULL AND ${normIrt} in (${relatedList()}))
-        )`,
-      )
+      .where(whereClause)
       // Prioritize siblings that already carry a `thread_id` before the cap so a
       // huge (>500 message) conversation can't drop its single threaded row and
       // mint a duplicate thread. `thread_id IS NULL` sorts `false` (non-null)

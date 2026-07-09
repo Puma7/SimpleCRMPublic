@@ -1542,11 +1542,11 @@ async function updateExistingPostgresMailSyncMessage(
 ): Promise<void> {
   const current = await trx
     .selectFrom('email_messages')
-    .select(['seen_local', 'is_spam', 'spam_status', 'thread_id', 'has_attachments'])
+    .select(['seen_local', 'is_spam', 'spam_status', 'thread_id', 'has_attachments', 'date_received'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', id)
     .executeTakeFirst() as
-      | Pick<EmailMessageRow, 'seen_local' | 'is_spam' | 'spam_status' | 'thread_id' | 'has_attachments'>
+      | Pick<EmailMessageRow, 'seen_local' | 'is_spam' | 'spam_status' | 'thread_id' | 'has_attachments' | 'date_received'>
       | undefined;
   const now = new Date();
   const nextSeenLocal = mergeSeenLocalOnMailSync({
@@ -1555,6 +1555,9 @@ async function updateExistingPostgresMailSyncMessage(
     spamStatus: current?.spam_status,
     reconcileSeenFromServer,
   });
+  const nextDateReceived = input.dateReceived ? new Date(input.dateReceived) : null;
+  const currentDateMs = current?.date_received ? new Date(current.date_received).getTime() : null;
+  const dateChanged = currentDateMs !== (nextDateReceived ? nextDateReceived.getTime() : null);
   await trx
     .updateTable('email_messages')
     .set({
@@ -1566,7 +1569,7 @@ async function updateExistingPostgresMailSyncMessage(
       to_json: input.toJson,
       cc_json: input.ccJson,
       bcc_json: input.bccJson ?? undefined,
-      date_received: input.dateReceived ? new Date(input.dateReceived) : null,
+      date_received: nextDateReceived,
       snippet: input.snippet,
       body_text: input.bodyText,
       body_html: input.bodyHtml,
@@ -1591,15 +1594,17 @@ async function updateExistingPostgresMailSyncMessage(
 
   // The insert path refreshes the thread aggregate, but existing-row resyncs can
   // flip an aggregate input too — reconcileSeenFromServer changes seen_local
-  // (→ has_unread) and attachments can appear — without recomputing it, leaving
-  // thread lists with stale has_unread after a read/unread happens elsewhere.
-  // Recompute only when an aggregate input actually changed on a threaded row.
+  // (→ has_unread), attachments can appear, and a corrected Date header rewrites
+  // date_received (→ last_message_at / root-message fields) — without recomputing
+  // it, thread lists keep stale unread/last-date values. Recompute only when an
+  // aggregate input actually changed on a threaded row.
   const threadId = current?.thread_id?.trim();
   if (
     threadId
     && (
       nextSeenLocal !== Boolean(current?.seen_local)
       || input.hasAttachments !== Boolean(current?.has_attachments)
+      || dateChanged
     )
   ) {
     await refreshThreadAggregateAfterSync(trx, input.workspaceId, threadId, now);
