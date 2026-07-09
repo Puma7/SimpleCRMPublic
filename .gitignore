@@ -91,4 +91,12 @@ src/.DS_Store
 
 coverage/
 .playwright-cli/
-.claude/
+# Ignore local Claude Code state (settings.local.json, session data) but keep
+# shared, versioned assets like skills and slash commands in the repo. The `**`
+# negations re-include markdown under these dirs, which the global `*.md` rule
+# above would otherwise ignore.
+.claude/*
+!.claude/skills/
+!.claude/skills/**
+!.claude/commands/
+!.claude/commands/**
