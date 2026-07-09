@@ -55,7 +55,7 @@ import {
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-reply-addresses"
 import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
-import { DEFAULT_TARGET_LANGUAGES } from "@shared/translation-languages"
+import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   buildReplyComposeHtml,
   mergeComposeHtml,
@@ -1149,9 +1149,9 @@ export function ComposeDialog({ accounts, cannedList, aiPrompts, onSent }: Props
                 <SelectValue placeholder={translating ? "Übersetze…" : "Übersetzen →"} />
               </SelectTrigger>
               <SelectContent>
-                {DEFAULT_TARGET_LANGUAGES.map((l) => (
-                  <SelectItem key={l.code} value={l.label}>
-                    {l.label}
+                {getTranslationSettings().targetLanguages.map((label) => (
+                  <SelectItem key={label} value={label}>
+                    {label}
                   </SelectItem>
                 ))}
               </SelectContent>

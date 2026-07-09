@@ -26,6 +26,7 @@ import {
   subscribeServerEvents,
 } from "@/services/transport"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
+import { TranslationSettingsSection } from "./translation-settings-section"
 
 type AiProfile = {
   id: number
@@ -209,6 +210,10 @@ export function AiPanel() {
       </div>
 
       <ReplySuggestionSettingsSection />
+
+      <Separator />
+
+      <TranslationSettingsSection />
 
       <Separator />
 

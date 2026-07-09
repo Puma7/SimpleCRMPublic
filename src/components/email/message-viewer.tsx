@@ -62,7 +62,7 @@ import {
 import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
 import { MessageAddressesBlock } from "./message-addresses-block"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
-import { DEFAULT_LOCAL_LANGUAGE } from "@shared/translation-languages"
+import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   firstAddress,
   hasLocalIpc,
@@ -694,7 +694,7 @@ export function MessageViewer(props: Props) {
                   size="sm"
                   variant="ghost"
                   disabled={translateLoading}
-                  title={`Markierten Text (oder die ganze Nachricht) nach ${DEFAULT_LOCAL_LANGUAGE} übersetzen`}
+                  title={`Markierten Text (oder die ganze Nachricht) nach ${getTranslationSettings().localLanguage} übersetzen`}
                   onClick={() => {
                     void (async () => {
                       const sel =
@@ -712,7 +712,7 @@ export function MessageViewer(props: Props) {
                       try {
                         const r = (await invokeRenderer(IPCChannels.Email.AiTransformText, {
                           text: source.slice(0, 12000),
-                          targetLanguage: DEFAULT_LOCAL_LANGUAGE,
+                          targetLanguage: getTranslationSettings().localLanguage,
                         })) as { success: boolean; text?: string; error?: string }
                         if (r.success && r.text?.trim()) {
                           setTranslateResult(r.text.trim())
@@ -1518,7 +1518,7 @@ export function MessageViewer(props: Props) {
       <Dialog open={translateOpen} onOpenChange={setTranslateOpen}>
         <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden">
           <DialogHeader className="shrink-0">
-            <DialogTitle>Übersetzung ({DEFAULT_LOCAL_LANGUAGE})</DialogTitle>
+            <DialogTitle>Übersetzung ({getTranslationSettings().localLanguage})</DialogTitle>
             <DialogDescription>
               KI-Übersetzung des markierten Texts (oder der ganzen Nachricht). Nur zur Ansicht.
             </DialogDescription>
