@@ -10,6 +10,10 @@ import {
   definitionToJson,
 } from "@shared/email-workflow-graph-compile"
 import {
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
+} from "@shared/email-workflow-graph-validate"
+import {
   exportWorkflowBundle,
   parseWorkflowImport,
 } from "@shared/workflow-export-import"
@@ -317,6 +321,21 @@ export function WorkflowShell() {
           "Aktionen hängen direkt am Trigger ohne Bedingung — sie würden auf jede Mail angewendet. Bitte Trigger → Bedingung → (Ja) → Aktion verbinden.",
           { duration: 8000 },
         )
+      }
+      // Server-client only: there the outbound review holds EVERY draft up front
+      // and only sends it when a path reaches a release node, so a graph that
+      // dead-ends (or loops) without releasing traps clean mail forever — block
+      // the save before it hits the server's 422 and surface the exact reason.
+      // Standalone Electron uses run-then-block semantics (the draft sends unless
+      // a hold node stops it), so a release-less path is NOT a trap there; don't
+      // reject workflows the standalone runtime would send correctly.
+      if (serverClientMode && trig === "outbound" && editEnabled) {
+        const traps = findOutboundGraphTraps(graphDoc, { effectiveTrigger: "outbound" })
+        if (traps.length > 0) {
+          throw new Error(
+            `Ausgangs-Workflow blockiert Mails dauerhaft. ${formatOutboundGraphTraps(traps)}`,
+          )
+        }
       }
       if (selectedId != null) {
         await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {

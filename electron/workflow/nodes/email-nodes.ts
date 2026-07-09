@@ -101,6 +101,24 @@ export function registerEmailNodes(register: Reg): void {
     },
   });
 
+  // Counterpart to hold_outbound, mainly for shared server templates. Standalone
+  // Electron is run-then-block (the draft is never held up front), so "release"
+  // just clears any hold and lets the compose-send proceed — returning ok
+  // (not blocked) allows the send. Without this the node would be unknown and
+  // the run would error → block the clean draft.
+  register({
+    type: 'email.release_outbound',
+    label: 'Versand freigeben',
+    category: 'email',
+    canvasType: 'action',
+    defaultConfig: { autoSend: true },
+    execute: async (ctx) => {
+      const id = ctx.messageId ?? ctx.outbound?.messageId;
+      if (id != null && !ctx.dryRun) setOutboundHold(id, false, null);
+      return { status: 'ok' };
+    },
+  });
+
   register({
     type: 'email.set_category',
     label: 'Kategorie setzen',

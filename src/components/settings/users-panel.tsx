@@ -25,6 +25,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 import { MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import { useAuth } from "@/components/auth/auth-context"
 
 type UserRow = {
   id: string
@@ -47,7 +48,11 @@ export function UsersPanel() {
   const [inviteDelivery, setInviteDelivery] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [rowBusy, setRowBusy] = useState<string | null>(null)
+  const [pwEditId, setPwEditId] = useState<string | null>(null)
+  const [pwValue, setPwValue] = useState("")
   const serverClientMode = getRendererTransport().kind === "http"
+  const { user: currentUser } = useAuth()
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -120,6 +125,73 @@ export function UsersPanel() {
     }
   }
 
+  // Update an existing user via the same saveUser path used for creation. The
+  // server requires the full identity fields on update, so we pass the current
+  // row plus the changed field(s).
+  const applyUserUpdate = useCallback(
+    async (u: UserRow, changes: { isActive?: boolean; passphrase?: string }) => {
+      setError(null)
+      setRowBusy(u.id)
+      try {
+        await invokeRenderer(IPCChannels.Auth.SaveUser, {
+          id: u.id,
+          username: u.username,
+          displayName: u.display_name,
+          role: u.role,
+          // SaveUser treats an omitted isActive as active, so carry the row's
+          // current state by default — otherwise a password reset silently
+          // reactivates a disabled user. An explicit toggle in `changes` wins.
+          isActive: Boolean(u.is_active),
+          ...changes,
+        })
+        await load()
+      } catch (e) {
+        setError(describeUserSaveError(e))
+      } finally {
+        setRowBusy(null)
+      }
+    },
+    [load],
+  )
+
+  const submitNewPassword = async (u: UserRow) => {
+    if (pwValue.length < MIN_PASSWORD_LENGTH) {
+      setError(`Das Passwort muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben.`)
+      return
+    }
+    await applyUserUpdate(u, { passphrase: pwValue })
+    setPwEditId(null)
+    setPwValue("")
+  }
+
+  const deleteUser = useCallback(
+    async (u: UserRow) => {
+      if (typeof window !== "undefined") {
+        const ok = window.confirm(
+          `Benutzer „${u.display_name} (${u.username})“ endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.`,
+        )
+        if (!ok) return
+      }
+      setError(null)
+      setRowBusy(u.id)
+      try {
+        const result = (await invokeRenderer(IPCChannels.Auth.DeleteUser, { id: u.id })) as
+          | { success: boolean; error?: string }
+          | undefined
+        if (result && result.success === false) {
+          setError(result.error || "Benutzer konnte nicht gelöscht werden.")
+          return
+        }
+        await load()
+      } catch (e) {
+        setError(describeUserSaveError(e))
+      } finally {
+        setRowBusy(null)
+      }
+    },
+    [load],
+  )
+
   return (
     <Card>
       <CardHeader>
@@ -131,13 +203,95 @@ export function UsersPanel() {
       <CardContent className="space-y-4">
         <ul className="space-y-2 text-sm">
           {users.map((u) => (
-            <li key={u.id} className="space-y-2 border-b py-2">
-              <div className="flex justify-between gap-2">
+            <li key={u.id} className="flex flex-col gap-1 border-b py-1.5">
+              <div className="flex items-center justify-between gap-2">
                 <span>
                   {u.display_name} ({u.username}) — {u.role}
                 </span>
-                <span className="text-muted-foreground">{u.is_active ? "aktiv" : "inaktiv"}</span>
+                <span className={cn("text-xs", u.is_active ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+                  {u.is_active ? "aktiv" : "inaktiv"}
+                </span>
               </div>
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  // Block self-deactivation: disabling your own account fails the
+                  // next authenticated request (server) or blocks the next login
+                  // (standalone) and can lock the operator out.
+                  disabled={rowBusy === u.id || (currentUser?.id === u.id && Boolean(u.is_active))}
+                  title={
+                    currentUser?.id === u.id && u.is_active
+                      ? "Sie können Ihr eigenes Konto nicht deaktivieren"
+                      : undefined
+                  }
+                  onClick={() => void applyUserUpdate(u, { isActive: !u.is_active })}
+                >
+                  {u.is_active ? "Deaktivieren" : "Reaktivieren"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  disabled={rowBusy === u.id}
+                  onClick={() => {
+                    setPwEditId(pwEditId === u.id ? null : u.id)
+                    setPwValue("")
+                  }}
+                >
+                  Passwort neu setzen
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-destructive hover:text-destructive"
+                  disabled={rowBusy === u.id || currentUser?.id === u.id}
+                  title={currentUser?.id === u.id ? "Sie können Ihr eigenes Konto nicht löschen" : undefined}
+                  onClick={() => void deleteUser(u)}
+                >
+                  Löschen
+                </Button>
+              </div>
+              {pwEditId === u.id ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    className="h-8 max-w-[16rem]"
+                    placeholder={`Neues Passwort (min. ${MIN_PASSWORD_LENGTH})`}
+                    value={pwValue}
+                    onChange={(e) => setPwValue(e.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8"
+                    disabled={rowBusy === u.id || pwValue.length < MIN_PASSWORD_LENGTH}
+                    onClick={() => void submitNewPassword(u)}
+                  >
+                    Setzen
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-8"
+                    onClick={() => {
+                      setPwEditId(null)
+                      setPwValue("")
+                    }}
+                  >
+                    Abbrechen
+                  </Button>
+                  <span className="w-full text-[11px] text-muted-foreground">
+                    Das neue Passwort dem Benutzer sicher mitteilen — es wird nicht per E-Mail versendet.
+                  </span>
+                </div>
+              ) : null}
               {serverClientMode ? (
                 <UserSecurityActions user={u} disabled={busy} onChanged={() => void load()} />
               ) : null}

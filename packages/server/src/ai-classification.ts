@@ -403,6 +403,49 @@ export function createPostgresAiTextTransformApiPort(
       if (!sourceText && !input.insertMode) return { success: false, error: 'Text fehlt' };
       const effectiveSource = sourceText || '(neuer Absatz)';
 
+      // Translate mode: no stored prompt — translate `sourceText` into
+      // targetLanguage using the workspace's DEFAULT AI profile. contextText,
+      // if present, is given only as context. Isolated from the prompt path
+      // below so existing prompt-based transforms are unaffected.
+      const targetLanguage = input.targetLanguage?.trim();
+      if (targetLanguage) {
+        try {
+          const profile = await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+            async (trx) => selectAiProfile(trx, input.workspaceId, undefined, null),
+            { applySession: options.applyWorkspaceSession },
+          );
+          if (!profile) return { success: false, error: 'AI-Profil nicht gefunden' };
+          const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, profile);
+          if (!apiKey) return { success: false, error: 'Kein KI-API-Schluessel konfiguriert' };
+          const contextText = input.contextText?.trim() ?? '';
+          const useContext = contextText.length > 0 && contextText !== sourceText;
+          const system =
+            `Du bist ein professioneller Uebersetzer. Uebersetze den folgenden Text nach ${targetLanguage}. `
+            + 'Gib AUSSCHLIESSLICH die Uebersetzung zurueck — keine Anfuehrungszeichen, keine Erklaerungen, keine Anrede.'
+            + (useContext ? `\n\nKONTEXT (nur zum Verstaendnis, NICHT uebersetzen oder ausgeben):\n${contextText}` : '');
+          const output = await runTrackedChatCompletion(
+            options,
+            {
+              workspaceId: input.workspaceId,
+              aiProfileId: Number(profile.id),
+              model: profile.model,
+              nodeType: 'ai.translate_api',
+              actorUserId: input.actorUserId ?? null,
+            },
+            { profile, apiKey, system, user: sourceText },
+          );
+          if (!output.trim()) return { success: false, error: 'KI-Antwort leer' };
+          return { success: true, text: output.trim() };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+
+      if (input.promptId == null) return { success: false, error: 'Prompt fehlt' };
+      const promptId = input.promptId;
+
       try {
         const context = await withWorkspaceTransaction(
           options.db,
@@ -412,7 +455,7 @@ export function createPostgresAiTextTransformApiPort(
             role: 'user',
           },
           async (trx) => {
-            const prompt = await selectAiPrompt(trx, input.workspaceId, input.promptId);
+            const prompt = await selectAiPrompt(trx, input.workspaceId, promptId);
             if (!prompt) return null;
             const profile = await selectAiProfile(
               trx,

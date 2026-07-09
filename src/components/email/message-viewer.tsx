@@ -16,6 +16,7 @@ import {
   Eye,
   Forward,
   Clock,
+  Languages,
   Lock,
   Printer,
   Mail,
@@ -61,6 +62,7 @@ import {
 import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
 import { MessageAddressesBlock } from "./message-addresses-block"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
+import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   firstAddress,
   formatFrom,
@@ -254,6 +256,9 @@ export function MessageViewer(props: Props) {
   const [rawHeadersOpen, setRawHeadersOpen] = useState(false)
   const [rawHeadersText, setRawHeadersText] = useState<string | null>(null)
   const [rawHeadersLoading, setRawHeadersLoading] = useState(false)
+  const [translateOpen, setTranslateOpen] = useState(false)
+  const [translateResult, setTranslateResult] = useState<string | null>(null)
+  const [translateLoading, setTranslateLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
@@ -804,6 +809,53 @@ export function MessageViewer(props: Props) {
                 >
                   <Forward className="h-4 w-4" />
                   Weiterleiten
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={translateLoading}
+                  title={`Markierten Text (oder die ganze Nachricht) nach ${getTranslationSettings().localLanguage} übersetzen`}
+                  onClick={() => {
+                    void (async () => {
+                      const sel =
+                        typeof window !== "undefined"
+                          ? window.getSelection()?.toString().trim() ?? ""
+                          : ""
+                      const source = sel || (selectedMessage.body_text ?? "").trim()
+                      if (!source) {
+                        toast.error("Kein Text zum Übersetzen.")
+                        return
+                      }
+                      setTranslateResult(null)
+                      setTranslateLoading(true)
+                      setTranslateOpen(true)
+                      try {
+                        const r = (await invokeRenderer(IPCChannels.Email.AiTransformText, {
+                          text: source.slice(0, 12000),
+                          targetLanguage: getTranslationSettings().localLanguage,
+                        })) as { success: boolean; text?: string; error?: string }
+                        if (r.success && r.text?.trim()) {
+                          setTranslateResult(r.text.trim())
+                        } else {
+                          setTranslateOpen(false)
+                          toast.error(
+                            r.error ??
+                              "Übersetzung fehlgeschlagen. Prüfen Sie Einstellungen → E-Mail → KI (API-Schlüssel).",
+                          )
+                        }
+                      } catch (e) {
+                        setTranslateOpen(false)
+                        toast.error(e instanceof Error ? e.message : "Übersetzung fehlgeschlagen")
+                      } finally {
+                        setTranslateLoading(false)
+                      }
+                    })()
+                  }}
+                  className="gap-2 bg-teal-500/12 text-teal-900 hover:bg-teal-500/20 dark:text-teal-100"
+                >
+                  <Languages className="h-4 w-4" />
+                  Übersetzen
                 </Button>
                 <ApplyWorkflowMenu
                   message={selectedMessage}
@@ -1582,6 +1634,42 @@ export function MessageViewer(props: Props) {
               <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">
                 {rawHeadersText ?? "—"}
               </pre>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={translateOpen} onOpenChange={setTranslateOpen}>
+        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Übersetzung ({getTranslationSettings().localLanguage})</DialogTitle>
+            <DialogDescription>
+              KI-Übersetzung des markierten Texts (oder der ganzen Nachricht). Nur zur Ansicht.
+            </DialogDescription>
+          </DialogHeader>
+          {translateResult ? (
+            <div className="flex shrink-0 justify-end">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void navigator.clipboard.writeText(translateResult).then(
+                    () => toast.success("In Zwischenablage kopiert."),
+                    () => toast.error("Kopieren fehlgeschlagen."),
+                  )
+                }
+              >
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                Kopieren
+              </Button>
+            </div>
+          ) : null}
+          <div className="min-h-[6rem] max-h-[60vh] overflow-y-auto rounded-md border bg-muted/30 p-3">
+            {translateLoading ? (
+              <p className="text-sm text-muted-foreground">Übersetze…</p>
+            ) : (
+              <p className="whitespace-pre-wrap text-sm leading-relaxed">{translateResult ?? "—"}</p>
             )}
           </div>
         </DialogContent>

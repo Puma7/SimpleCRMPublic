@@ -27,6 +27,7 @@ type DiagnosticsReport = {
     runsLast24h: number
     runsBlockedLast24h: number
     runsErrorLast24h: number
+    trappingOutbound?: { id: number; name: string; reason: string }[]
   }
   aiUsage: {
     events24h: number
@@ -355,6 +356,28 @@ export function DiagnosticsPanel() {
               <li>Blockiert: {report.workflows.runsBlockedLast24h}</li>
               <li>Fehler: {report.workflows.runsErrorLast24h}</li>
             </ul>
+            {report.workflows.trappingOutbound && report.workflows.trappingOutbound.length > 0 ? (
+              <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+                <p className="font-medium">
+                  ⚠️ {report.workflows.trappingOutbound.length} aktiver Ausgangs-Workflow blockiert Mails dauerhaft
+                </p>
+                <p className="mt-1 text-xs">
+                  Diese aktivierten Ausgangs-Workflows geben Mails nie frei — jede ausgehende Mail bleibt
+                  hängen. Bitte den Graphen um einen Freigabe-Knoten ergänzen oder den Workflow deaktivieren.
+                </p>
+                <ul className="mt-2 space-y-1 text-xs">
+                  {report.workflows.trappingOutbound.map((w) => (
+                    <li key={w.id}>
+                      <span className="font-medium">
+                        #{w.id} {w.name}
+                      </span>
+                      {" — "}
+                      {w.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </section>
 
           <section>

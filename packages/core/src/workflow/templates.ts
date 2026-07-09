@@ -73,7 +73,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   {
     id: 'outbound-sensitive',
     name: 'Ausgehend: Sensible Daten',
-    description: 'Blockiert IBAN/Passwort-Muster vor dem Versand.',
+    description:
+      'Hält Mails mit IBAN/Passwort-Muster zur Prüfung zurück (Banner im Posteingang); ' +
+      'alle übrigen Mails werden freigegeben und automatisch versendet.',
     trigger: 'outbound',
     graph: {
       version: 1,
@@ -89,10 +91,19 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           type: 'action',
           data: { actionType: 'hold_outbound', reason: 'Sensible Inhalte erkannt' },
         },
+        // "nein"-Zweig: kein sensibles Muster → Sperre lösen + autoSend. Ohne
+        // diesen Knoten bliebe jede saubere Mail durch die serverseitige
+        // Ausgangsprüfung dauerhaft gehalten (fail-closed).
+        {
+          id: 'release',
+          type: 'registry',
+          data: { nodeType: 'email.release_outbound', config: { autoSend: true } },
+        },
       ],
       edges: [
         { id: 'e0', source: 't1', target: 'c1' },
         { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
+        { id: 'e2', source: 'c1', target: 'release', label: 'nein' },
       ],
     },
   },

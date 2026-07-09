@@ -1007,9 +1007,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.AiTransformText, {
     payload: z.object({
-      promptId: positiveInt,
+      // Optional in translate mode: when `targetLanguage` is set the call
+      // translates `text` (using the default AI profile) instead of running a
+      // stored prompt, so no promptId is required.
+      promptId: positiveInt.optional(),
       text: z.string(),
       contextText: z.string().max(40000).optional(),
+      targetLanguage: z.string().min(1).max(60).optional(),
       inboundContextText: z.string().max(40000).optional(),
       userContext: z.string().max(4000).optional(),
       customerId: z.number().int().positive().nullable().optional(),

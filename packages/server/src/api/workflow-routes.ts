@@ -1,6 +1,8 @@
 import {
   compileGraphToDefinition,
   definitionToJson,
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
   type WorkflowGraphDocument,
   type WorkflowNodeCatalogEntry,
   type WorkflowTemplate,
@@ -57,7 +59,16 @@ type AiPromptReorderParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type AiTextTransformParseResult =
-  | { ok: true; values: { promptId: number; text: string; contextText?: string; customerId?: number | null } }
+  | {
+    ok: true;
+    values: {
+      promptId?: number;
+      text: string;
+      contextText?: string;
+      targetLanguage?: string;
+      customerId?: number | null;
+    };
+  }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowMutationParseResult =
@@ -205,10 +216,16 @@ async function handleWorkflowGraphCompileRoute(req: ApiRequest): Promise<ApiResp
         || (node.type === 'action' && !isPlainObject(node.data))
         || (node.type === 'action' && !Object.prototype.hasOwnProperty.call(node.data, 'actionType')),
     );
+    // Non-fatal: surface outbound "mail trap" problems so the editor can warn
+    // live, even though the hard reject happens at create/update time.
+    const outboundTraps = findOutboundGraphTraps(graph);
     return data(200, {
       success: true,
       definitionJson: definitionToJson(definition),
       registryOnly,
+      ...(outboundTraps.length > 0
+        ? { outboundTrapWarning: formatOutboundGraphTraps(outboundTraps) }
+        : {}),
     });
   } catch (compileError) {
     return data(200, {
@@ -786,6 +803,50 @@ async function handleDeleteAiPrompt(
   return data(200, { deleted: true, aiPrompt: sanitizeAiPrompt(prompt) });
 }
 
+/**
+ * Reject an outbound workflow that, once ENABLED, would silently trap clean
+ * mail. Outbound review selects workflows by the stored `trigger_name` and
+ * holds every draft before executing them, so a workflow is only safe if — as
+ * an enabled outbound workflow — it can actually release the draft:
+ *  - a `compiled` execution mode is unsupported by the server runtime (it
+ *    returns blocked before parsing the graph) → always traps;
+ *  - no graph at all → the run never reaches a release/send node → always traps;
+ *  - a graph whose reachable paths don't all release → traps (findOutboundGraphTraps).
+ *
+ * All inputs are the EFFECTIVE post-mutation values. A non-outbound or disabled
+ * workflow can't be selected by review, so it is never rejected.
+ */
+function outboundWorkflowGuardError(input: {
+  graph: unknown;
+  triggerName: string | undefined;
+  enabled: boolean | undefined;
+  executionMode: string | null | undefined;
+}): ApiResponse | null {
+  if (input.triggerName !== 'outbound') return null;
+  if (input.enabled === false) return null;
+  if ((input.executionMode ?? 'graph') === 'compiled') {
+    return error(
+      422,
+      'outbound_workflow_traps_mail',
+      'Aktiver Ausgangs-Workflow im „compiled"-Modus wird serverseitig nicht ausgeführt und hält ' +
+        'jede Mail dauerhaft. Bitte auf den Graph-Modus umstellen.',
+    );
+  }
+  if (!input.graph || typeof input.graph !== 'object') {
+    return error(
+      422,
+      'outbound_workflow_traps_mail',
+      'Aktiver Ausgangs-Workflow ohne Graph hält jede Mail dauerhaft. Bitte einen Graph mit ' +
+        'Freigabe-Knoten (email.release_outbound mit autoSend=true) hinterlegen.',
+    );
+  }
+  const issues = findOutboundGraphTraps(input.graph as WorkflowGraphDocument, {
+    effectiveTrigger: 'outbound',
+  });
+  if (issues.length === 0) return null;
+  return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
+}
+
 async function handleCreateWorkflow(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -801,6 +862,16 @@ async function handleCreateWorkflow(
     requireDefinition: true,
   });
   if (!parsed.ok) return parsed.response;
+
+  // New workflows default to enabled=true (postgres-workflow-read-ports), so an
+  // outbound workflow is live immediately — validate its effective state.
+  const trap = outboundWorkflowGuardError({
+    graph: parsed.values.graph,
+    triggerName: parsed.values.triggerName,
+    enabled: parsed.values.enabled ?? true,
+    executionMode: parsed.values.executionMode,
+  });
+  if (trap) return trap;
 
   const result = await ports.workflows.create({
     workspaceId: principal.workspaceId,
@@ -830,6 +901,29 @@ async function handleUpdateWorkflow(
     requireDefinition: false,
   });
   if (!parsed.ok) return parsed.response;
+
+  // Validate the EFFECTIVE post-patch state. Any patch that touches trigger,
+  // enabled, graph, or execution mode can turn the workflow into (or keep it as)
+  // a live outbound workflow, so resolve the fields the patch omits from the
+  // stored row and guard the merged result. This catches re-enabling, switching
+  // the trigger to outbound, and compiled/no-graph outbound workflows.
+  const patchTouchesOutbound =
+    parsed.values.triggerName !== undefined ||
+    parsed.values.enabled !== undefined ||
+    parsed.values.graph !== undefined ||
+    parsed.values.executionMode !== undefined;
+  if (patchTouchesOutbound) {
+    const existing = ports.workflows.get
+      ? await ports.workflows.get({ workspaceId: principal.workspaceId, id })
+      : null;
+    const trap = outboundWorkflowGuardError({
+      graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+      triggerName: parsed.values.triggerName ?? existing?.triggerName,
+      enabled: parsed.values.enabled ?? existing?.enabled,
+      executionMode: parsed.values.executionMode ?? existing?.executionMode,
+    });
+    if (trap) return trap;
+  }
 
   const result = await ports.workflows.update({
     workspaceId: principal.workspaceId,
@@ -1671,7 +1765,7 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   }
 
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['promptId', 'text', 'contextText', 'inboundContextText', 'userContext', 'customerId', 'insertMode']);
+  const allowedFields = new Set(['promptId', 'text', 'contextText', 'targetLanguage', 'inboundContextText', 'userContext', 'customerId', 'insertMode']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
@@ -1680,14 +1774,19 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     promptId?: number;
     text?: string;
     contextText?: string;
+    targetLanguage?: string;
     inboundContextText?: string;
     userContext?: string;
     customerId?: number | null;
     insertMode?: boolean;
   } = {};
-  const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
-  if (promptId.ok) values.promptId = promptId.value;
-  else errors.push({ field: 'promptId', message: promptId.message });
+
+  // promptId is required in prompt mode but omitted in translate mode.
+  if (Object.prototype.hasOwnProperty.call(body, 'promptId')) {
+    const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
+    if (promptId.ok) values.promptId = promptId.value;
+    else errors.push({ field: 'promptId', message: promptId.message });
+  }
 
   if (Object.prototype.hasOwnProperty.call(body, 'insertMode')) {
     if (typeof body.insertMode === 'boolean') values.insertMode = body.insertMode;
@@ -1705,6 +1804,12 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     const contextText = normalizeRequiredBodyText(body.contextText, 'contextText', 40000);
     if (contextText.ok) values.contextText = contextText.value;
     else errors.push({ field: 'contextText', message: contextText.message });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'targetLanguage')) {
+    const targetLanguage = normalizeRequiredBodyText(body.targetLanguage, 'targetLanguage', 60);
+    if (targetLanguage.ok) values.targetLanguage = targetLanguage.value;
+    else errors.push({ field: 'targetLanguage', message: targetLanguage.message });
   }
 
   if (Object.prototype.hasOwnProperty.call(body, 'inboundContextText')) {
@@ -1725,7 +1830,12 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     else errors.push({ field: 'customerId', message: customerId.message });
   }
 
-  if (errors.length > 0 || values.promptId === undefined || (!insertMode && values.text === undefined)) {
+  // Need either a prompt (prompt mode) or a target language (translate mode).
+  if (values.promptId === undefined && values.targetLanguage === undefined) {
+    errors.push({ field: 'promptId', message: 'promptId oder targetLanguage ist erforderlich' });
+  }
+
+  if (errors.length > 0 || (!insertMode && values.text === undefined)) {
     return {
       ok: false,
       response: error(400, 'validation_error', 'AI text transform payload ist ungueltig', { fields: errors }),
@@ -1737,9 +1847,10 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   return {
     ok: true,
     values: {
-      promptId: values.promptId,
+      ...(values.promptId === undefined ? {} : { promptId: values.promptId }),
       text: resolvedText,
       ...(values.contextText === undefined ? {} : { contextText: values.contextText }),
+      ...(values.targetLanguage === undefined ? {} : { targetLanguage: values.targetLanguage }),
       ...(values.inboundContextText === undefined ? {} : { inboundContextText: values.inboundContextText }),
       ...(values.userContext === undefined ? {} : { userContext: values.userContext }),
       ...(values.customerId === undefined ? {} : { customerId: values.customerId }),

@@ -9,7 +9,7 @@ import {
   verifyAuditLogChain,
   type AuditLogRow,
 } from './audit-log';
-import { hashPassword } from './password-hash';
+import { hashPassword, verifyPassword } from './password-hash';
 import { getPasswordTooShortMessage, isPasswordLengthValid } from '../../shared/auth-password-policy';
 import {
   clearOneTimeSetupToken,
@@ -263,6 +263,57 @@ export function saveLocalAuthUser(payload: SaveLocalAuthUserInput): AuthMutation
   ).run(id, payload.username, payload.displayName, payload.role, hashPassword(payload.passphrase), now);
   logAuthAction(db, { action: 'user.create', resourceId: id });
   return { success: true, id };
+}
+
+export function deleteLocalAuthUser(payload: { id: string }): AuthMutationResult {
+  const db = requireLocalAuthDb();
+  const target = db
+    .prepare(`SELECT id, role FROM ${USERS_TABLE} WHERE id = ?`)
+    .get(payload.id) as { id: string; role: string } | undefined;
+  if (!target) {
+    return { success: false, error: 'Benutzer nicht gefunden' };
+  }
+  if (target.role === 'owner') {
+    const otherOwners = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM ${USERS_TABLE} WHERE role = 'owner' AND is_active = 1 AND id != ?`,
+        )
+        .get(payload.id) as { c: number }
+    ).c;
+    if (otherOwners === 0) {
+      return { success: false, error: 'Mindestens ein Eigentümer muss bestehen bleiben' };
+    }
+  }
+  db.prepare(`DELETE FROM ${USERS_TABLE} WHERE id = ?`).run(payload.id);
+  logAuthAction(db, { action: 'user.delete', resourceId: payload.id });
+  return { success: true, id: payload.id };
+}
+
+export function changeLocalAuthPassword(payload: {
+  userId: string;
+  currentPassword: string;
+  newPassword: string;
+}): AuthMutationResult {
+  const db = requireLocalAuthDb();
+  if (!isPasswordLengthValid(payload.newPassword)) {
+    return { success: false, error: getPasswordTooShortMessage() };
+  }
+  const user = db
+    .prepare(`SELECT id, password_hash FROM ${USERS_TABLE} WHERE id = ?`)
+    .get(payload.userId) as { id: string; password_hash: string } | undefined;
+  if (!user) {
+    return { success: false, error: 'Benutzer nicht gefunden' };
+  }
+  if (!verifyPassword(user.password_hash, payload.currentPassword)) {
+    return { success: false, error: 'Aktuelles Passwort ist falsch' };
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE ${USERS_TABLE} SET password_hash = ?, password_updated_at = ? WHERE id = ?`,
+  ).run(hashPassword(payload.newPassword), now, payload.userId);
+  logAuthAction(db, { userId: payload.userId, action: 'user.password.change', resourceId: payload.userId });
+  return { success: true, id: payload.userId };
 }
 
 export function listLocalAuthAuditLog(payload: { limit?: number; offset?: number }): AuditLogRow[] {

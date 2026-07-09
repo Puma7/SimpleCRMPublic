@@ -477,6 +477,7 @@ export function MessageList({
                       variant: "secondary",
                     },
                     { action: "archive", label: "Archivieren", variant: "secondary" },
+                    { action: "spam", label: "Spam", variant: "secondary" },
                     { action: "delete", label: "Papierkorb", variant: "outline" },
                   ]
                 : [
@@ -700,8 +701,17 @@ export function MessageList({
                             : [m.id]
                         setMailDragData(e.dataTransfer, dragIds)
                       }}
-                      onClick={() => {
+                      onClick={(e) => {
                         if (bulkBusy) return
+                        // Modifier-click selects (like a typical mail client):
+                        // Shift = range from the anchor, Ctrl/Cmd = toggle this
+                        // row. A plain click opens the message.
+                        if (canSelect && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+                          e.preventDefault()
+                          if (e.shiftKey) toggleCheckbox(m.id, true, true)
+                          else toggleCheckbox(m.id, !checked, false)
+                          return
+                        }
                         void onOpen(m)
                       }}
                       className="min-w-0 flex-1 px-2 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-60"

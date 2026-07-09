@@ -37,6 +37,7 @@ import { MiscPanel, SnoozePanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { AuthSecurityPanel } from "@/components/settings/auth-security-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
+import { ChangePasswordCard } from "@/components/settings/change-password-card"
 import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
@@ -102,7 +103,17 @@ const TAB_DEFS: TabDef[] = [
     render: () => <PromptsPanel />,
   },
   { id: "team", label: "Team", icon: Users, render: () => <TeamPanel /> },
-  { id: "appUsers", label: "App-Benutzer", icon: Users, render: () => <UsersPanel /> },
+  {
+    id: "appUsers",
+    label: "App-Benutzer",
+    icon: Users,
+    render: () => (
+      <div className="space-y-6">
+        <ChangePasswordCard />
+        <UsersPanel />
+      </div>
+    ),
+  },
   { id: "authSecurity", label: "Login-Sicherheit", icon: Shield, render: () => <AuthSecurityPanel />, serverOnly: true },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },

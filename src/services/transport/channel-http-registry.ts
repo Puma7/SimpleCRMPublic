@@ -449,6 +449,7 @@ type EmailDiagnosticsRecord = {
     runsLast24h?: number | null
     runsBlockedLast24h?: number | null
     runsErrorLast24h?: number | null
+    trappingOutbound?: Array<{ id?: number | null; name?: string | null; reason?: string | null }> | null
   } | null
   aiUsage?: {
     events24h?: number | null
@@ -932,6 +933,26 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           id: user.id,
         }
       },
+    }
+  }],
+  [IPCChannels.Auth.DeleteUser, ([payload]) => {
+    const input = objectPayload(payload, "auth user delete payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/auth/users/${pathTextSegment(input.id, "auth user id", 120)}`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Auth.ChangePassword, ([payload]) => {
+    const input = objectPayload(payload, "auth change password payload")
+    return {
+      method: "POST",
+      path: "/api/v1/auth/change-password",
+      body: {
+        currentPassword: stringPayloadField(input.currentPassword, "current password"),
+        newPassword: stringPayloadField(input.newPassword, "new password"),
+      },
+      transform: () => ({ success: true }),
     }
   }],
   [IPCChannels.Auth.CreateInvite, ([payload]) => ({
@@ -3752,13 +3773,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       method: "POST",
       path: "/api/v1/ai/transform-text",
       body: pruneUndefined({
-        promptId: positiveId(input.promptId, "email ai prompt id"),
+        promptId: input.promptId === undefined || input.promptId === null
+          ? undefined
+          : positiveId(input.promptId, "email ai prompt id"),
         text: input.insertMode === true
           ? (typeof input.text === "string" ? input.text.trim() : "")
           : stringPayloadField(input.text, "email ai transform text"),
         contextText: input.contextText === undefined || input.contextText === null
           ? undefined
           : stringPayloadField(input.contextText, "email ai transform context"),
+        targetLanguage: input.targetLanguage === undefined || input.targetLanguage === null
+          ? undefined
+          : stringPayloadField(input.targetLanguage, "email ai target language"),
         inboundContextText: input.inboundContextText === undefined || input.inboundContextText === null
           ? undefined
           : stringPayloadField(input.inboundContextText, "email ai transform inbound context"),
@@ -5167,6 +5193,13 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
       runsLast24h: countValue(workflows.runsLast24h),
       runsBlockedLast24h: countValue(workflows.runsBlockedLast24h),
       runsErrorLast24h: countValue(workflows.runsErrorLast24h),
+      trappingOutbound: Array.isArray(workflows.trappingOutbound)
+        ? workflows.trappingOutbound.map((w) => ({
+            id: countValue(w?.id),
+            name: typeof w?.name === "string" ? w.name : "",
+            reason: typeof w?.reason === "string" ? w.reason : "",
+          }))
+        : [],
     },
     aiUsage: {
       events24h: countValue(aiUsage.events24h),

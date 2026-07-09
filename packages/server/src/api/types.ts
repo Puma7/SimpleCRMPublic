@@ -246,6 +246,17 @@ export type AuthApiPort = {
   createInitialOwner?(input: InitialOwnerInput): Promise<InitialOwnerCreateResult>;
   listUsers?(input: { workspaceId: string }): Promise<readonly AuthUserAdminRecord[]>;
   saveUser?(input: AuthUserSaveInput): Promise<AuthUserSaveResult>;
+  deleteUser?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: string;
+  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' }>;
+  changePassword?(input: {
+    workspaceId: string;
+    userId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<{ ok: true } | { ok: false; code: 'invalid_current' | 'not_found' }>;
   createInvitation?(input: AuthInvitationCreateInput): Promise<AuthInvitationCreateResult>;
   getInvitationByToken?(input: { token: string }): Promise<AuthInvitationLookupResult>;
   acceptInvitation?(input: AuthInvitationAcceptInput): Promise<AuthInvitationAcceptResult>;
@@ -1788,6 +1799,15 @@ export type EmailDiagnosticsReport = {
     runsLast24h: number;
     runsBlockedLast24h: number;
     runsErrorLast24h: number;
+    /**
+     * Enabled outbound workflows whose stored graph can never release a held
+     * draft (dead-end / loop / dangling port / no-graph / compiled mode). These
+     * silently trap outbound mail; the guard only blocks NEW/edited ones, so
+     * this surfaces any that were already enabled before the guard shipped.
+     * Optional so existing report constructors (Electron port, tests, sanitize)
+     * stay valid; the postgres port always populates it.
+     */
+    trappingOutbound?: Array<{ id: number; name: string; reason: string }>;
   };
   aiUsage: {
     events24h: number;
@@ -3161,12 +3181,16 @@ export type AiPromptApiPort = {
 export type AiTextTransformInput = {
   workspaceId: string;
   actorUserId?: string;
-  promptId: number;
+  /** Required in prompt mode; omitted in translate mode (targetLanguage set). */
+  promptId?: number;
   text: string;
   /** When set, `text` is a selection to rewrite and `contextText` is the full
    *  surrounding email used as context. The AI returns only the rewritten
    *  selection. */
   contextText?: string;
+  /** When set, translate `text` into this language (default AI profile), rather
+   *  than running a stored prompt. */
+  targetLanguage?: string;
   inboundContextText?: string;
   userContext?: string;
   customerId?: number | null;

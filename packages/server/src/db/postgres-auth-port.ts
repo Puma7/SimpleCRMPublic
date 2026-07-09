@@ -218,6 +218,61 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       );
     },
 
+    async deleteUser(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'admin' },
+        async (trx) => {
+          const existing = await selectUserById(trx, input.workspaceId, input.id);
+          if (!existing) return { ok: false as const, code: 'not_found' as const };
+          if (existing.role === 'owner') {
+            const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
+            if (otherOwnerCount < 1) return { ok: false as const, code: 'last_owner_required' as const };
+          }
+          // refresh_tokens / user_account_access cascade on user delete; drop
+          // tokens explicitly so any active session is invalidated immediately.
+          await trx
+            .deleteFrom('refresh_tokens')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('user_id', '=', input.id)
+            .execute();
+          await trx
+            .deleteFrom('users')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .execute();
+          return { ok: true as const };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async changePassword(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.userId, role: 'user' },
+        async (trx) => {
+          const row = await trx
+            .selectFrom('users')
+            .select(['id', 'password_hash'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.userId)
+            .executeTakeFirst();
+          if (!row) return { ok: false as const, code: 'not_found' as const };
+          const valid = await verifyPasswordHash(input.currentPassword, row.password_hash);
+          if (!valid) return { ok: false as const, code: 'invalid_current' as const };
+          await trx
+            .updateTable('users')
+            .set({ password_hash: await hashPassword(input.newPassword), updated_at: now() })
+            .where('id', '=', input.userId)
+            .where('workspace_id', '=', input.workspaceId)
+            .execute();
+          return { ok: true as const };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
     async createInvitation(input) {
       const token = randomToken(INVITATION_TOKEN_BYTES);
       const tokenHash = hashInvitationToken(token);

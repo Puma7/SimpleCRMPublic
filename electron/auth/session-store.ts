@@ -81,6 +81,23 @@ export function revokeSession(webContentsId: number): void {
   sessionsByWebContents.delete(webContentsId);
 }
 
+/**
+ * Revoke every active session belonging to a user. `getSessionForWebContents`
+ * only checks idle/TTL, not the DB, so a deleted (or hard-deactivated) account
+ * would otherwise keep authenticated IPC access from an already-open window
+ * until the idle timeout. Returns the number of sessions dropped.
+ */
+export function revokeSessionsForUser(userId: string): number {
+  let revoked = 0;
+  for (const [webContentsId, session] of sessionsByWebContents) {
+    if (session.userId === userId) {
+      sessionsByWebContents.delete(webContentsId);
+      revoked += 1;
+    }
+  }
+  return revoked;
+}
+
 export function clearAllSessions(): void {
   sessionsByWebContents.clear();
 }

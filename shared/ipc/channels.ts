@@ -125,6 +125,8 @@ const AuthChannels = literal({
   GetSession: 'auth:get-session',
   ListUsers: 'auth:list-users',
   SaveUser: 'auth:save-user',
+  DeleteUser: 'auth:delete-user',
+  ChangePassword: 'auth:change-password',
   CreateInvite: 'auth:create-invite',
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
   SetInitialPassword: 'auth:set-initial-password',
