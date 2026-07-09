@@ -55,17 +55,19 @@ describe('checkApiRateLimit', () => {
   test('gives cheap inbox-triage mutations the generous bucket too', () => {
     // Marking many messages as spam in quick succession was the original trigger,
     // so the cheap triage mutations share the generous mail bucket.
-    for (const path of [
-      '/api/v1/email/messages/42/spam-decision',
-      '/api/v1/email/messages/42/seen',
-      '/api/v1/email/messages/42/archive',
-      '/api/v1/email/messages/42/move',
+    for (const { path, method } of [
+      { path: '/api/v1/email/messages/42/spam-status', method: 'PATCH' }, // viewer spam buttons
+      { path: '/api/v1/email/messages/bulk/spam-status', method: 'PATCH' }, // bulk spam triage
+      { path: '/api/v1/email/messages/42/spam-decision', method: 'POST' },
+      { path: '/api/v1/email/messages/42/seen', method: 'POST' },
+      { path: '/api/v1/email/messages/42/archive', method: 'POST' },
+      { path: '/api/v1/email/messages/42/move', method: 'POST' },
     ]) {
       resetApiRateLimits();
       for (let i = 0; i < 1200; i += 1) {
-        expect(checkApiRateLimit({ ip: '6.6.6.6', path, method: 'POST' })).toEqual({ allowed: true });
+        expect(checkApiRateLimit({ ip: '6.6.6.6', path, method })).toEqual({ allowed: true });
       }
-      expect(checkApiRateLimit({ ip: '6.6.6.6', path, method: 'POST' })).toEqual({
+      expect(checkApiRateLimit({ ip: '6.6.6.6', path, method })).toEqual({
         allowed: false,
         limit: 1200,
         bucket: 'email',
@@ -87,6 +89,7 @@ describe('checkApiRateLimit', () => {
       { path: '/api/v1/email/accounts/12/vacation-test', method: 'POST' }, // sends SMTP
       { path: '/api/v1/email/messages/42/security/check', method: 'POST' }, // rspamd/mailauth
       { path: '/api/v1/email/accounts/12/sync', method: 'POST' }, // external IMAP/POP3
+      { path: '/api/v1/email/attachments/7/content', method: 'GET' }, // heavy binary download
     ]) {
       resetApiRateLimits();
       for (let i = 0; i < 600; i += 1) {

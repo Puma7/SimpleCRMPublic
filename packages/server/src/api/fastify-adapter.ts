@@ -73,6 +73,10 @@ const SERVER_JSON_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
 const CORS_ALLOWED_METHODS = [...SUPPORTED_METHODS, 'OPTIONS'].join(', ');
 const CORS_ALLOWED_HEADERS = ['Accept', 'Authorization', 'Content-Type', 'Sec-WebSocket-Protocol'].join(', ');
 const CORS_MAX_AGE_SECONDS = '600';
+// Response headers a cross-origin renderer's Fetch may read. `Retry-After` on a
+// 429 is non-safelisted, so without exposing it `response.headers.get()` returns
+// null cross-origin and the transport's 429 backoff never triggers.
+const CORS_EXPOSED_HEADERS = 'Retry-After';
 
 type EventWebSocket = {
   readyState: number;
@@ -189,6 +193,7 @@ function applyCorsHeaders(
   reply.header('Access-Control-Allow-Origin', origin);
   reply.header('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
   reply.header('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
+  reply.header('Access-Control-Expose-Headers', CORS_EXPOSED_HEADERS);
   reply.header('Access-Control-Max-Age', CORS_MAX_AGE_SECONDS);
   return true;
 }

@@ -23,6 +23,15 @@ const EMAIL_EXPENSIVE_GET_PATHS = new Set<string>([
   '/api/v1/email/gdpr-export',
 ]);
 
+function isExpensiveEmailGet(path: string): boolean {
+  if (EMAIL_EXPENSIVE_GET_PATHS.has(path)) return true;
+  // Attachment content streams the whole attachment into a Buffer and returns it
+  // with Content-Length — bandwidth/memory heavy, so it stays on the global
+  // bucket instead of the chatty read allowance.
+  if (path.startsWith('/api/v1/email/attachments/') && path.endsWith('/content')) return true;
+  return false;
+}
+
 // Cheap, high-frequency inbox-triage mutations a human fires while working
 // through the inbox (mark spam/seen/done, archive, move, snooze, delete,
 // assign, apply actions, and consuming a remote-content prompt). These share
@@ -33,6 +42,7 @@ const EMAIL_EXPENSIVE_GET_PATHS = new Set<string>([
 // is capped by default rather than silently inheriting 1200/min.
 const EMAIL_TRIAGE_MUTATION_SUFFIXES = [
   '/spam-decision',
+  '/spam-status', // the viewer's spam/not-spam buttons — the original trigger
   '/seen',
   '/done',
   '/archive',
@@ -65,7 +75,7 @@ function bucketForPath(method: string, path: string): RateLimitBucket {
     // (body, metadata, thread, security, remote-content, read-receipt), so all
     // reads get the generous bucket, save the heavy exports above.
     if (upper === 'GET' || upper === 'HEAD') {
-      return EMAIL_EXPENSIVE_GET_PATHS.has(path) ? 'api-global' : 'email';
+      return isExpensiveEmailGet(path) ? 'api-global' : 'email';
     }
     // Cheap triage mutations are generous too; anything else that mutates stays
     // capped on the global bucket so outbound sends / tests / scans can't be
