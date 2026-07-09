@@ -2854,6 +2854,11 @@ export async function resolveReferenceThreadForSync(
             AND lower(btrim(replace(replace(coalesce(in_reply_to, ''), '<', ''), '>', ''))) in (${relatedList()}))
         )`,
       )
+      // Prioritize siblings that already carry a `thread_id` before the cap so a
+      // huge (>500 message) conversation can't drop its single threaded row and
+      // mint a duplicate thread. `thread_id IS NULL` sorts `false` (non-null)
+      // first under Postgres' default ASC ordering.
+      .orderBy(kyselySql`(thread_id is null)`)
       .limit(500)
       .execute()) as { id: number; thread_id: string | null }[];
   }
