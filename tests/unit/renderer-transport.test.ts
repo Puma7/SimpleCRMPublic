@@ -33,6 +33,8 @@ import {
   resetRendererTransportForTests,
   verifyServerPgpAttachment,
   uploadServerComposeAttachment,
+  buildServerAuthSession,
+  saveServerAuthSession,
 } from '@/services/transport';
 
 describe('renderer transport', () => {
@@ -121,6 +123,73 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/auth/audit-chain/verify',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  const seedSession = (accessToken: string, refreshToken: string) =>
+    saveServerAuthSession(
+      buildServerAuthSession({
+        user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
+        tokens: { accessToken, refreshToken, expiresInSeconds: 900 },
+      }),
+    );
+  const unauthorized = () =>
+    jsonResponse({ error: { code: 'unauthorized', message: 'Authentifizierung erforderlich' } }, 401);
+  const authHeader = (call: unknown[]) =>
+    (call[1] as { headers: Record<string, string> }).headers.Authorization;
+
+  test('refreshes the access token once and retries after a 401', async () => {
+    seedSession('old-token', 'r1');
+    const fetchImpl = jest.fn()
+      // 1) channel request carries the stale token -> 401
+      .mockResolvedValueOnce(unauthorized())
+      // 2) POST /auth/refresh -> fresh tokens (stored to localStorage/sessionStorage)
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
+          tokens: { accessToken: 'new-token', refreshToken: 'r2', expiresInSeconds: 900 },
+        },
+      }))
+      // 3) retry the channel request with the refreshed token -> ok
+      .mockResolvedValueOnce(jsonResponse({ data: { valid: true, checked: 1 } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await expect(transport.invoke(IPCChannels.Auth.VerifyAuditChain, undefined)).resolves.toEqual({
+      valid: true,
+      checked: 1,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(authHeader(fetchImpl.mock.calls[0])).toBe('Bearer old-token');
+    expect(String(fetchImpl.mock.calls[1][0])).toContain('/api/v1/auth/refresh');
+    expect(authHeader(fetchImpl.mock.calls[2])).toBe('Bearer new-token');
+  });
+
+  test('does not retry when the refresh itself fails', async () => {
+    seedSession('old-token', 'r1');
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(unauthorized())
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'invalid_refresh_token', message: 'abgelaufen' } }, 401));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await expect(transport.invoke(IPCChannels.Auth.VerifyAuditChain, undefined)).rejects.toMatchObject({
+      status: 401,
+    });
+    // channel + refresh only — no retry after a dead refresh token.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not auto-refresh when a custom getAccessToken is supplied', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(unauthorized());
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+      getAccessToken: () => 'custom-token',
+    });
+
+    await expect(transport.invoke(IPCChannels.Auth.VerifyAuditChain, undefined)).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test('maps auth user admin IPC calls to server HTTP routes', async () => {
