@@ -82,6 +82,7 @@ import type {
 } from '../api/types';
 import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import { listWorkspaceTicketPrefixes } from '../mail-ticket-prefixes';
+import { normalizedMessageIdSql } from './mail-thread-normalization-sql';
 import type {
   EmailAccountMailSettingsTable,
   EmailAccountSignaturesTable,
@@ -2846,12 +2847,16 @@ export async function resolveReferenceThreadForSync(
 
   let siblings: { id: number; thread_id: string | null }[] = [];
   if (related.length > 0) {
-    // Match siblings by NORMALIZED Message-ID / In-Reply-To (strip <>, trim,
-    // lowercase). The normalized expressions MUST equal the functional indexes
-    // in migration 0025 so the lookup stays index-backed. `sql.join` binds each
-    // id as its own parameter (an IN-list) — avoids `any(array)` colliding with
-    // the pool's jsonb-array plugin.
+    // Match siblings by NORMALIZED Message-ID / In-Reply-To (trim, strip a
+    // single outer <> pair, lowercase). The expression comes from the SAME
+    // normalizedMessageIdSql() helper as the migration 0025 functional indexes,
+    // so the lookup stays index-backed AND matches the JS normalizeMessageId()
+    // that produced `related` (a blanket bracket strip would diverge on ids
+    // like `<<x@y>>`). `sql.join` binds each id as its own parameter (an
+    // IN-list) — avoids `any(array)` colliding with the pool's jsonb-array plugin.
     const relatedList = () => kyselySql.join(related);
+    const normMsgId = kyselySql.raw(normalizedMessageIdSql('message_id'));
+    const normIrt = kyselySql.raw(normalizedMessageIdSql('in_reply_to'));
     siblings = (await trx
       .selectFrom('email_messages')
       .select(['id', 'thread_id'])
@@ -2862,10 +2867,8 @@ export async function resolveReferenceThreadForSync(
         // indexes from migration 0025 (which are `WHERE message_id IS NOT NULL`
         // / `WHERE in_reply_to IS NOT NULL`) instead of a full scan.
         kyselySql<boolean>`(
-          (message_id IS NOT NULL
-            AND lower(btrim(replace(replace(coalesce(message_id, ''), '<', ''), '>', ''))) in (${relatedList()}))
-          OR (in_reply_to IS NOT NULL
-            AND lower(btrim(replace(replace(coalesce(in_reply_to, ''), '<', ''), '>', ''))) in (${relatedList()}))
+          (message_id IS NOT NULL AND ${normMsgId} in (${relatedList()}))
+          OR (in_reply_to IS NOT NULL AND ${normIrt} in (${relatedList()}))
         )`,
       )
       // Prioritize siblings that already carry a `thread_id` before the cap so a
@@ -2946,6 +2949,11 @@ export async function refreshThreadAggregateAfterSync(
   now: Date,
 ): Promise<void> {
   const canonical = await resolveCanonicalThreadId(trx, workspaceId, threadId);
+  // Rebuild the JWZ parent/child edge graph too — the split/admin and desktop
+  // paths maintain email_thread_edges after any thread change, so without this
+  // /email/thread-edges and the parent/child graph stay empty/stale for freshly
+  // synced conversations until an unrelated operation later rebuilds them.
+  await rebuildThreadEdgesForCanonicalThread(trx, workspaceId, canonical);
   await upsertThreadAggregateForCanonicalThread(trx, workspaceId, canonical, now);
 }
 
