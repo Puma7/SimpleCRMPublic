@@ -2844,9 +2844,14 @@ export async function resolveReferenceThreadForSync(
       .where('workspace_id', '=', args.workspaceId)
       .where('account_id', '=', args.accountId)
       .where(
+        // The `IS NOT NULL` guards let Postgres use the partial functional
+        // indexes from migration 0025 (which are `WHERE message_id IS NOT NULL`
+        // / `WHERE in_reply_to IS NOT NULL`) instead of a full scan.
         kyselySql<boolean>`(
-          lower(btrim(replace(replace(coalesce(message_id, ''), '<', ''), '>', ''))) in (${relatedList()})
-          OR lower(btrim(replace(replace(coalesce(in_reply_to, ''), '<', ''), '>', ''))) in (${relatedList()})
+          (message_id IS NOT NULL
+            AND lower(btrim(replace(replace(coalesce(message_id, ''), '<', ''), '>', ''))) in (${relatedList()}))
+          OR (in_reply_to IS NOT NULL
+            AND lower(btrim(replace(replace(coalesce(in_reply_to, ''), '<', ''), '>', ''))) in (${relatedList()}))
         )`,
       )
       .limit(500)
@@ -2879,11 +2884,12 @@ export async function resolveReferenceThreadForSync(
       .execute();
   };
 
-  // (1) Inherit an existing conversation thread.
+  // (1) Inherit an existing conversation thread. Preserve a subject-carried
+  // ticket on the message (don't drop it just because we inherited by headers).
   if (canonicalThreads.length > 0) {
     const canonical = canonicalThreads.slice().sort()[0]!;
     await backfillNullSiblings(canonical);
-    return { threadId: canonical, ticketCode: null };
+    return { threadId: canonical, ticketCode: subjectTicket ?? null };
   }
 
   // (2) 2+ messages of a brand-new conversation, none threaded yet → mint one.
@@ -2905,6 +2911,23 @@ export async function resolveReferenceThreadForSync(
 
   // (4) Standalone / headerless mail → leave unthreaded, exactly as before.
   return { threadId: null, ticketCode: null };
+}
+
+/**
+ * Recompute a thread's aggregate row (message_count, last_message_at, unread,
+ * attachments, …) after sync threading assigned/backfilled thread_id. Call this
+ * AFTER the current message is inserted so the counts include it; otherwise the
+ * freshly-minted email_threads row keeps message_count = 0 / last_message_at =
+ * null and the thread APIs return stale values.
+ */
+export async function refreshThreadAggregateAfterSync(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  threadId: string,
+  now: Date,
+): Promise<void> {
+  const canonical = await resolveCanonicalThreadId(trx, workspaceId, threadId);
+  await upsertThreadAggregateForCanonicalThread(trx, workspaceId, canonical, now);
 }
 
 type ThreadAdminMessageRow = {

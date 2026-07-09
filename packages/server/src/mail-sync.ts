@@ -28,7 +28,10 @@ import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 import type { EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier } from './db';
 import { resolveAttachmentStoragePath } from './db';
-import { resolveReferenceThreadForSync } from './db/postgres-mail-metadata-read-ports';
+import {
+  refreshThreadAggregateAfterSync,
+  resolveReferenceThreadForSync,
+} from './db/postgres-mail-metadata-read-ports';
 import {
   MAX_SYNC_ATTACHMENT_BYTES,
   MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
@@ -1520,6 +1523,12 @@ async function upsertPostgresMailSyncMessage(
     .returning(['id'])
     .executeTakeFirstOrThrow();
   const id = Number(row.id);
+  // Refresh the thread aggregate now that this message (and any backfilled
+  // siblings) are stored, so message_count / last_message_at / unread reflect
+  // reality instead of the freshly-minted thread's zeros.
+  if (resolvedThread.threadId) {
+    await refreshThreadAggregateAfterSync(trx, input.workspaceId, resolvedThread.threadId, now);
+  }
   if (pop3Uidl) context?.pop3UidlToId?.set(pop3Uidl, id);
   else context?.imapUidToId?.set(uidForRow, id);
   return { id, isNew: true };
