@@ -16,6 +16,9 @@ import {
 const DEFAULT_BACKFILL_LIMIT = 5_000;
 const MAX_BACKFILL_LIMIT = 100_000;
 const SELECT_BATCH_SIZE = 500;
+// Subjects carrying a bracketed ticket token — the resolver's subject-ticket
+// branch can thread these even without RFC threading headers.
+const TICKET_SUBJECT_PATTERN = '\\[[A-Za-z0-9]{1,12}-[A-Za-z0-9]{1,20}\\]';
 
 type UnthreadedRow = Pick<
   Selectable<EmailMessagesTable>,
@@ -96,13 +99,21 @@ async function selectUnthreadedBatch(
     .select(['id', 'account_id', 'message_id', 'in_reply_to', 'references_header', 'subject'])
     .where('workspace_id', '=', workspaceId)
     .where('thread_id', 'is', null)
+    // thread_resolver_version marks rows the resolver has already attempted; skip
+    // them so a rerun advances past standalone/unthreadable rows instead of
+    // rescanning from the top every time.
+    .where('thread_resolver_version', '=', 0)
     .where('soft_deleted', '=', false)
+    // The account-scoped resolver can't thread an account-less row.
+    .where('account_id', 'is not', null)
     .where('id', '>', cursor)
-    // Only rows with at least one threading signal are worth resolving.
+    // Only rows with a threading signal are worth resolving: RFC headers, or a
+    // bracketed subject ticket the resolver's subject-ticket branch can attach.
     .where((eb) => eb.or([
       eb('message_id', 'is not', null),
       eb('in_reply_to', 'is not', null),
       eb('references_header', 'is not', null),
+      sql<boolean>`subject ~ ${TICKET_SUBJECT_PATTERN}`,
     ]))
     .orderBy('id', 'asc')
     .limit(SELECT_BATCH_SIZE)
@@ -143,7 +154,18 @@ async function threadOneRow(
     now,
     excludeMessageId: id,
   });
-  if (!resolved.threadId) return false;
+  if (!resolved.threadId) {
+    // Standalone / unthreadable for now — mark it attempted so reruns advance
+    // instead of rescanning it. A later live sync of a sibling still threads it
+    // via backfillNullSiblings, which sets thread_id regardless of this marker.
+    await trx
+      .updateTable('email_messages')
+      .set({ thread_resolver_version: 1, updated_at: now })
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', id)
+      .execute();
+    return false;
+  }
 
   await trx
     .updateTable('email_messages')
