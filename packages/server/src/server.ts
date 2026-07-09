@@ -8,6 +8,7 @@ import {
 } from './api';
 import {
   assertNoKnownWeakProductionSecrets,
+  parseBooleanEnv,
   parseCorsAllowedOrigins,
   parseAuthInvitationMailConfig,
   parsePort,
@@ -288,6 +289,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       ? { level: env.LOG_LEVEL?.trim() || 'info', stream: createPinoLogCaptureStream(serverLogStore) }
       : (options.logger ?? false),
     corsAllowedOrigins,
+    trustProxy: parseBooleanEnv(env.TRUST_PROXY, true, 'TRUST_PROXY'),
   });
 
   app.addHook('onClose', async () => {

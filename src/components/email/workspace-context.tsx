@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type ReactNode,
@@ -291,9 +292,25 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
     setAccountsRevision((v) => v + 1)
   }, [])
 
+  // Coalesce rapid successive mutations (e.g. marking many mails as spam one
+  // after another): each revision bump refetches folder counts + categories +
+  // category counts, so a trailing debounce collapses a burst into a single
+  // refresh instead of ~3 requests per action — a big part of what tripped the
+  // rate limiter.
+  const mailMetricsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bumpMailMetricsRevision = useCallback(() => {
-    setMailMetricsRevision((v) => v + 1)
+    if (mailMetricsTimerRef.current) clearTimeout(mailMetricsTimerRef.current)
+    mailMetricsTimerRef.current = setTimeout(() => {
+      mailMetricsTimerRef.current = null
+      setMailMetricsRevision((v) => v + 1)
+    }, 500)
   }, [])
+  useEffect(
+    () => () => {
+      if (mailMetricsTimerRef.current) clearTimeout(mailMetricsTimerRef.current)
+    },
+    [],
+  )
 
   const bumpCategoryAssignmentRevision = useCallback(() => {
     setCategoryAssignmentRevision((v) => v + 1)

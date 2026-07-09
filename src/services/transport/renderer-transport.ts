@@ -16,6 +16,23 @@ type ElectronInvokeApi = {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+/** How many times a 429 is transparently retried before the error surfaces. */
+const MAX_RATE_LIMIT_RETRIES = 2
+/** Upper bound on how long we wait between 429 retries (the server's
+ *  Retry-After can be a whole rate window; we prefer a quick retry). */
+const RATE_LIMIT_RETRY_CAP_MS = 2000
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function rateLimitBackoffMs(response: Response, attempt: number): number {
+  const headerSeconds = Number(response.headers?.get?.("Retry-After"))
+  const serverMs = Number.isFinite(headerSeconds) && headerSeconds > 0 ? headerSeconds * 1000 : 0
+  const base = Math.min(serverMs || (attempt + 1) * 400, RATE_LIMIT_RETRY_CAP_MS)
+  return base + Math.floor(Math.random() * 250)
+}
+
 export type RendererTransportKind = "ipc" | "http"
 
 export type RendererTransport = {
@@ -247,6 +264,7 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
     const fetchHttp = async (
       requestSpec: HttpRequestSpec,
       retriedAfterRefresh = false,
+      rateRetries = 0,
     ): Promise<{ body: unknown; response: Response }> => {
       const url = buildUrl(baseUrl, requestSpec.path, requestSpec.query)
       const headers: Record<string, string> = {
@@ -266,6 +284,18 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       }
 
       const response = await fetchImpl(url, init)
+
+      // A 429 is rejected by the rate limiter BEFORE the handler runs, so no
+      // side effect happened and any method is safe to replay. Back off briefly
+      // (honoring Retry-After, capped) and retry a couple times so a transient
+      // burst — e.g. the chatty mailbox fan-out or rapid spam-marking — self-
+      // heals instead of surfacing an error or degrading the viewer to its
+      // snippet. A sustained overload still surfaces after the retries.
+      if (response.status === 429 && rateRetries < MAX_RATE_LIMIT_RETRIES) {
+        await delay(rateLimitBackoffMs(response, rateRetries))
+        return fetchHttp(requestSpec, retriedAfterRefresh, rateRetries + 1)
+      }
+
       const body = response.ok && requestSpec.responseType === "blob"
         ? await response.blob()
         : await parseResponseBody(response)

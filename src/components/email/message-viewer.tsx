@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import DOMPurify from "dompurify"
 import {
   blockRemoteImagesInHtml,
@@ -264,6 +264,12 @@ export function MessageViewer(props: Props) {
   const [decryptedPlain, setDecryptedPlain] = useState<string | null>(null)
   const [pgpPassphrase, setPgpPassphrase] = useState("")
   const [threadAliasHint, setThreadAliasHint] = useState<string | null>(null)
+  // Tracks the lazy full-body hydration so a failed/empty fetch surfaces a retry
+  // affordance instead of silently showing the ~217-char snippet with no HTML
+  // button. "idle" = body present or n/a; "loading" = fetch in flight;
+  // "error" = fetch failed or returned no body.
+  const [bodyLoadState, setBodyLoadState] = useState<"idle" | "loading" | "error">("idle")
+  const [bodyRetryKey, setBodyRetryKey] = useState(0)
   const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
   const localIpcAvailable = !serverClientMode && hasLocalIpc()
   const selectedLock = selectedMessage ? conversationLocks[selectedMessage.id] : undefined
@@ -279,11 +285,13 @@ export function MessageViewer(props: Props) {
     }
     if (!needsFullMessageBody(selectedMessage)) {
       hydratedBodyForIdRef.current = selectedMessage.id
+      setBodyLoadState("idle")
       return
     }
     if (hydratedBodyForIdRef.current === selectedMessage.id) return
     hydratedBodyForIdRef.current = selectedMessage.id
     const messageId = selectedMessage.id
+    setBodyLoadState("loading")
     void (async () => {
       try {
         const full = await invokeRenderer(
@@ -292,12 +300,26 @@ export function MessageViewer(props: Props) {
         ) as EmailMessage | null
         if (full && !needsFullMessageBody(full)) {
           setSelectedMessage((prev) => (prev?.id === messageId ? full : prev))
+          setBodyLoadState("idle")
+        } else {
+          // Server returned no body — surface it so the user can retry rather
+          // than silently seeing only the snippet.
+          setBodyLoadState("error")
         }
       } catch {
-        /* keep snippet fallback */
+        // The fetch failed (e.g. a transient 429 from the rate limiter). Don't
+        // silently fall back to the ~217-char snippet with no HTML button —
+        // flag it so we render a retry affordance. The ref stays latched to
+        // avoid an auto-retry loop; retryBody() clears it for a manual retry.
+        setBodyLoadState("error")
       }
     })()
-  }, [selectedMessage, setSelectedMessage])
+  }, [selectedMessage, setSelectedMessage, bodyRetryKey])
+
+  const retryBody = useCallback(() => {
+    hydratedBodyForIdRef.current = null
+    setBodyRetryKey((k) => k + 1)
+  }, [])
 
   useEffect(() => {
     setHtmlView(false)
@@ -1353,10 +1375,28 @@ export function MessageViewer(props: Props) {
                       onClick={handleBodyLinkClick}
                     />
                   </div>
+                ) : bodyLoadState === "loading" && !decryptedPlain && needsFullMessageBody(selectedMessage) ? (
+                  <p className="text-sm text-muted-foreground">Nachricht wird geladen…</p>
                 ) : (
-                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                    {decryptedPlain ?? bodyText}
-                  </pre>
+                  <div className="space-y-2">
+                    {bodyLoadState === "error" && !decryptedPlain && needsFullMessageBody(selectedMessage) ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                        <span>Vollständige Nachricht konnte nicht geladen werden — nur Vorschau.</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={retryBody}
+                        >
+                          Erneut laden
+                        </Button>
+                      </div>
+                    ) : null}
+                    <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                      {decryptedPlain ?? bodyText}
+                    </pre>
+                  </div>
                 )}
 
                 {messageAttachments.length > 0 || omittedAttachments.length > 0 ? (

@@ -13,6 +13,7 @@ describe('checkApiRateLimit', () => {
       allowed: false,
       limit: 20,
       bucket: 'auth-strict',
+      retryAfterMs: expect.any(Number),
     });
   });
 
@@ -24,13 +25,30 @@ describe('checkApiRateLimit', () => {
   });
 
   test('applies api-global limit to regular API routes', () => {
-    for (let i = 0; i < 300; i += 1) {
+    for (let i = 0; i < 600; i += 1) {
       expect(checkApiRateLimit({ ip: '9.9.9.9', path: '/api/v1/tasks' })).toEqual({ allowed: true });
     }
     expect(checkApiRateLimit({ ip: '9.9.9.9', path: '/api/v1/tasks' })).toEqual({
       allowed: false,
-      limit: 300,
+      limit: 600,
       bucket: 'api-global',
+      retryAfterMs: expect.any(Number),
     });
+  });
+
+  test('gives mail routes their own generous bucket', () => {
+    // Email routes tolerate the chatty mailbox UI (300 would be too low), and
+    // are isolated from the api-global bucket.
+    for (let i = 0; i < 1200; i += 1) {
+      expect(checkApiRateLimit({ ip: '7.7.7.7', path: '/api/v1/email/messages/42' })).toEqual({ allowed: true });
+    }
+    expect(checkApiRateLimit({ ip: '7.7.7.7', path: '/api/v1/email/messages/42' })).toEqual({
+      allowed: false,
+      limit: 1200,
+      bucket: 'email',
+      retryAfterMs: expect.any(Number),
+    });
+    // A different bucket (api-global) for the same IP is unaffected.
+    expect(checkApiRateLimit({ ip: '7.7.7.7', path: '/api/v1/tasks' })).toEqual({ allowed: true });
   });
 });

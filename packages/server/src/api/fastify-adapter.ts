@@ -40,6 +40,14 @@ export type FastifyServerOptions = Readonly<{
   resolvePrincipal?: FastifyPrincipalResolver;
   accessTokenSigner?: AccessTokenSigner;
   corsAllowedOrigins?: readonly string[];
+  /**
+   * Trust the reverse proxy's `X-Forwarded-For` so `request.ip` is the real
+   * client, not the proxy's container IP. Defaults to true because the shipped
+   * Docker deployment always fronts the API with Caddy — without it every user
+   * collapses to the proxy IP and shares one per-IP rate-limit bucket. Set
+   * TRUST_PROXY=false only when the API is exposed directly (no proxy).
+   */
+  trustProxy?: boolean;
 }>;
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
@@ -60,6 +68,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: SERVER_JSON_BODY_LIMIT_BYTES,
+    trustProxy: options.trustProxy ?? true,
   });
   const api = createServerApi(options.ports);
   const corsAllowedOrigins = new Set(options.corsAllowedOrigins ?? []);
@@ -88,11 +97,15 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
         path,
       });
       if (!rate.allowed) {
+        // Retry-After (whole seconds, min 1) lets the client back off exactly
+        // until the window resets instead of guessing.
+        const retryAfterSec = Math.max(1, Math.ceil(rate.retryAfterMs / 1000));
+        reply.header('Retry-After', String(retryAfterSec));
         reply.code(429).send({
           error: {
             code: 'rate_limited',
             message: 'Zu viele Anfragen',
-            details: { limit: rate.limit, bucket: rate.bucket },
+            details: { limit: rate.limit, bucket: rate.bucket, retryAfterMs: rate.retryAfterMs },
           },
         });
         return;
