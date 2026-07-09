@@ -93,6 +93,7 @@ import {
   SERVER_JOB_TYPES,
   accessTokenSignerFromBase64,
   accountSyncAdvisoryLockCommand,
+  accountSyncAdvisoryLockKey,
   acquireConversationLockCommand,
   archiveFileName,
   assertServerJobType,
@@ -1767,6 +1768,7 @@ describe('server edition foundation', () => {
     expect(normalizeAiJobConcurrency(undefined)).toBe(5);
     expect(normalizeAiJobConcurrency(12)).toBe(12);
     expect(() => normalizeAiJobConcurrency(0)).toThrow('AI job concurrency');
+    expect(accountSyncAdvisoryLockKey(42)).toBe('account-42');
     expect(accountSyncAdvisoryLockCommand(42)).toEqual({
       sql: 'SELECT pg_advisory_xact_lock(hashtext($1));',
       params: ['account-42'],

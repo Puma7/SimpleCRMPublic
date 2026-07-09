@@ -23,6 +23,7 @@ import {
   type MailboxListEntry,
 } from '@simplecrm/core';
 import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
+import { sql } from 'kysely';
 import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 
 import type { EmailOAuthProvider } from './api';
@@ -58,6 +59,7 @@ import type { EmailAccountsTable, EmailFoldersTable, EmailMessagesTable, ServerD
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type { MailSyncJobPlan, MailSyncJobPort, MailSyncJobResult } from './jobs';
+import { accountSyncAdvisoryLockKey } from './jobs/policy';
 
 const FIRST_SYNC_MAX_MESSAGES = 2000;
 const POP3_UID_CEILING = -1_000_000;
@@ -1403,6 +1405,16 @@ async function upsertPostgresMailSyncMessage(
   input: ServerMailSyncMessageInput,
   context: ServerMailSyncUpsertContext | undefined,
 ): Promise<{ id: number; isNew: boolean }> {
+  // Serialize concurrent syncs of the SAME account (a Graphile-queued sync and a
+  // workflow-triggered legacy-queue sync can run at once — the two queues are not
+  // coordinated). Without this, two new messages of one conversation can each see
+  // no existing sibling in resolveReferenceThreadForSync and mint a separate
+  // thread, silently splitting the very conversations this sync path threads. The
+  // xact lock auto-releases on commit/rollback; the second txn then reads the
+  // first's committed thread and inherits it.
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${accountSyncAdvisoryLockKey(input.account.id)}))`
+    .execute(trx);
+
   const pop3Uidl = input.pop3Uidl?.trim() || null;
   if (pop3Uidl) {
     const cachedId = context?.pop3UidlToId?.get(pop3Uidl);
