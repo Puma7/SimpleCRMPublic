@@ -131,6 +131,21 @@ export function MessageList({
     }
     return out
   }, [messages, listDisplayMode])
+  // All loaded rows grouped by threadKey, so a collapsed thread can be expanded
+  // from the messages already on the page — even ones grouped only by
+  // imap_thread_id / ticket_code (no internal thread_id yet). This makes the
+  // "Threads (Vorschau)" mode usable immediately, before the server thread
+  // resolver has backfilled thread_id.
+  const threadGroups = useMemo(() => {
+    const map = new Map<string, EmailMessage[]>()
+    for (const m of messages) {
+      const key = threadKey(m)
+      const arr = map.get(key)
+      if (arr) arr.push(m)
+      else map.set(key, [m])
+    }
+    return map
+  }, [messages])
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
@@ -615,9 +630,15 @@ export function MessageList({
               const checked = selectedIds.has(m.id)
               const tKey = threadKey(m)
               const threadIdForExpand = m.thread_id?.trim() ?? ""
-              const isThreadRoot = listDisplayMode === "thread" && threadIdForExpand.length > 0
+              const localSiblings = threadGroups.get(tKey) ?? []
+              const hasLocalSiblings = localSiblings.length > 1
+              const isThreadRoot =
+                listDisplayMode === "thread" && (threadIdForExpand.length > 0 || hasLocalSiblings)
               const expanded = expandedThreads.has(tKey)
-              const children = threadChildren[tKey] ?? []
+              // Prefer server-fetched thread messages; fall back to the siblings
+              // already loaded on this page (covers imap_thread_id / ticket_code
+              // groups with no thread_id). The child render filters out `m`.
+              const children = threadChildren[tKey] ?? (expanded ? localSiblings : [])
               const lock = conversationLocks[m.id]
               const lockOwner = lock?.displayName?.trim() || lock?.email?.trim() || lock?.userId
               return (
@@ -628,7 +649,7 @@ export function MessageList({
                       active && "bg-muted",
                     )}
                   >
-                    {isThreadRoot && threadIdForExpand ? (
+                    {isThreadRoot ? (
                       <Button
                         type="button"
                         variant="ghost"

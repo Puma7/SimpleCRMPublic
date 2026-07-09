@@ -28,6 +28,7 @@ import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 import type { EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier } from './db';
 import { resolveAttachmentStoragePath } from './db';
+import { resolveReferenceThreadForSync } from './db/postgres-mail-metadata-read-ports';
 import {
   MAX_SYNC_ATTACHMENT_BYTES,
   MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
@@ -1446,6 +1447,18 @@ async function upsertPostgresMailSyncMessage(
   }
 
   const now = new Date();
+  // Reference-thread the message (Message-ID / In-Reply-To / References) so it
+  // joins its conversation. Runs in this sync transaction and backfills
+  // thread-less siblings; standalone/headerless mail stays unthreaded.
+  const resolvedThread = await resolveReferenceThreadForSync(trx, {
+    workspaceId: input.workspaceId,
+    accountId: input.account.id,
+    messageId: input.messageId,
+    inReplyTo: input.inReplyTo,
+    referencesHeader: input.referencesHeader,
+    subject: input.subject,
+    now,
+  });
   const row = await trx
     .insertInto('email_messages')
     .values({
@@ -1475,8 +1488,8 @@ async function upsertPostgresMailSyncMessage(
       soft_deleted: false,
       outbound_hold: false,
       outbound_block_reason: null,
-      thread_id: null,
-      ticket_code: null,
+      thread_id: resolvedThread.threadId,
+      ticket_code: resolvedThread.ticketCode,
       customer_source_sqlite_id: null,
       customer_id: null,
       folder_kind: input.folderKind,
@@ -1498,7 +1511,7 @@ async function upsertPostgresMailSyncMessage(
       raw_rfc822_b64: input.rawRfc822B64,
       remote_content_policy: 'blocked',
       read_receipt_requested: false,
-      thread_resolver_version: 0,
+      thread_resolver_version: resolvedThread.threadId ? 1 : 0,
       source_row: serverMailSyncSourceRow(),
       imported_in_run_id: null,
       created_at: now,

@@ -1,4 +1,9 @@
-import { generateTicketCode } from '@simplecrm/core';
+import {
+  collectRelatedIds,
+  extractTicketFromSubject,
+  generateTicketCode,
+  normalizeMessageId,
+} from '@simplecrm/core';
 import { randomBytes } from 'crypto';
 
 import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
@@ -2792,6 +2797,114 @@ async function resolveCanonicalThreadId(
     current = row.canonical_thread_id;
   }
   return current;
+}
+
+/**
+ * Reference-thread a freshly-synced message: find its conversation siblings in
+ * the same account by normalized Message-ID / In-Reply-To / References, and
+ *  - inherit an existing thread_id (backfilling any thread-less siblings), or
+ *  - mint a new thread once a 2nd message of the conversation is seen, or
+ *  - honor a ticket carried in the subject, or
+ *  - leave thread_id = null for standalone / headerless (POP3) mail (as before).
+ *
+ * Runs inside the caller's sync transaction (so a query error aborts that one
+ * message's sync — it retries). When siblings span more than one existing
+ * thread we pick the lexicographically-smallest and deliberately DO NOT merge
+ * the others: an under-merge from imperfect headers is safe; a mis-merge is not.
+ * The heavy alias-based merge stays in the explicit user "merge threads" action.
+ */
+export async function resolveReferenceThreadForSync(
+  trx: WorkspaceTransaction,
+  args: {
+    workspaceId: string;
+    accountId: number;
+    messageId: string | null;
+    inReplyTo: string | null;
+    referencesHeader: string | null;
+    subject: string | null;
+    now: Date;
+  },
+): Promise<{ threadId: string | null; ticketCode: string | null }> {
+  const related = collectRelatedIds(args.messageId, args.inReplyTo, args.referencesHeader);
+  const subjectTicket = extractTicketFromSubject(args.subject);
+
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+
+  let siblings: { id: number; thread_id: string | null }[] = [];
+  if (related.length > 0) {
+    // Match siblings by NORMALIZED Message-ID / In-Reply-To (strip <>, trim,
+    // lowercase). The normalized expressions MUST equal the functional indexes
+    // in migration 0025 so the lookup stays index-backed. `sql.join` binds each
+    // id as its own parameter (an IN-list) — avoids `any(array)` colliding with
+    // the pool's jsonb-array plugin.
+    const relatedList = () => kyselySql.join(related);
+    siblings = (await trx
+      .selectFrom('email_messages')
+      .select(['id', 'thread_id'])
+      .where('workspace_id', '=', args.workspaceId)
+      .where('account_id', '=', args.accountId)
+      .where(
+        kyselySql<boolean>`(
+          lower(btrim(replace(replace(coalesce(message_id, ''), '<', ''), '>', ''))) in (${relatedList()})
+          OR lower(btrim(replace(replace(coalesce(in_reply_to, ''), '<', ''), '>', ''))) in (${relatedList()})
+        )`,
+      )
+      .limit(500)
+      .execute()) as { id: number; thread_id: string | null }[];
+  }
+
+  const canonicalThreads: string[] = [];
+  const seenCanonical = new Set<string>();
+  const nullSiblingIds: number[] = [];
+  for (const sibling of siblings) {
+    const tid = sibling.thread_id?.trim();
+    if (!tid) {
+      nullSiblingIds.push(sibling.id);
+      continue;
+    }
+    const canonical = await resolveCanonicalThreadId(trx, args.workspaceId, tid);
+    if (!seenCanonical.has(canonical)) {
+      seenCanonical.add(canonical);
+      canonicalThreads.push(canonical);
+    }
+  }
+
+  const backfillNullSiblings = async (threadId: string): Promise<void> => {
+    if (nullSiblingIds.length === 0) return;
+    await trx
+      .updateTable('email_messages')
+      .set({ thread_id: threadId, updated_at: args.now })
+      .where('workspace_id', '=', args.workspaceId)
+      .where('id', 'in', nullSiblingIds)
+      .execute();
+  };
+
+  // (1) Inherit an existing conversation thread.
+  if (canonicalThreads.length > 0) {
+    const canonical = canonicalThreads.slice().sort()[0]!;
+    await backfillNullSiblings(canonical);
+    return { threadId: canonical, ticketCode: null };
+  }
+
+  // (2) 2+ messages of a brand-new conversation, none threaded yet → mint one.
+  // The email_threads row needs a ticket_code, but we only denormalize a
+  // ticket onto the MESSAGE when it is meaningful (carried in the subject);
+  // an arbitrary generated code is not copied, so siblings stay consistent.
+  if (nullSiblingIds.length > 0) {
+    const ticket = subjectTicket ?? generateTicketCode();
+    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, ticket, args.now);
+    await backfillNullSiblings(canonical);
+    return { threadId: canonical, ticketCode: subjectTicket ?? null };
+  }
+
+  // (3) Subject carries a known ticket → attach to (or open) that thread.
+  if (subjectTicket) {
+    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, subjectTicket, args.now);
+    return { threadId: canonical, ticketCode: subjectTicket };
+  }
+
+  // (4) Standalone / headerless mail → leave unthreaded, exactly as before.
+  return { threadId: null, ticketCode: null };
 }
 
 type ThreadAdminMessageRow = {
