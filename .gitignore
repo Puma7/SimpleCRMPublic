@@ -92,11 +92,24 @@ src/.DS_Store
 coverage/
 .playwright-cli/
 # Ignore local Claude Code state (settings.local.json, session data) but keep
-# shared, versioned assets like skills and slash commands in the repo. The `**`
-# negations re-include markdown under these dirs, which the global `*.md` rule
-# above would otherwise ignore.
+# shared, versioned skill/command assets. Restrict the re-include to MARKDOWN so
+# a future skill's local secrets, deps, or logs stay ignored by the repo-wide
+# rules above — a broad `**` would force-track e.g. .env / node_modules / *.log
+# under these dirs.
 .claude/*
 !.claude/skills/
-!.claude/skills/**
+!.claude/skills/**/*.md
 !.claude/commands/
-!.claude/commands/**
+!.claude/commands/**/*.md
+# Belt-and-suspenders: never force-track local logs, deps, or secrets even
+# inside the re-included skill/command dirs.
+.claude/**/*.log
+.claude/**/node_modules/
+.claude/**/.env
+.claude/**/.env.*
+# The /improve skill writes implementation plans here as markdown; surface them
+# to git instead of letting the global *.md rule hide (and silently lose) them.
+!plans/
+!plans/**/*.md
+!advisor-plans/
+!advisor-plans/**/*.md
