@@ -73,8 +73,17 @@ type Props = {
 }
 
 function threadKey(m: EmailMessage): string {
-  const t = m.thread_id?.trim() || m.imap_thread_id?.trim() || m.ticket_code?.trim()
-  if (t) return `t:${t}`
+  // thread_id (globally-unique th-<hex>) and ticket_code intentionally span
+  // accounts — one customer ticket can arrive across several mailboxes and
+  // should stay one Vorgang. imap_thread_id, however, is an IMAP THREAD number
+  // that restarts at 1 PER mailbox, so it MUST be scoped by account_id; without
+  // that, two unrelated accounts that both happen to have imap_thread_id "3"
+  // collapse into one expandable thread in the "all accounts" view — a
+  // mitarbeiter would see a foreign account's mail under another customer's thread.
+  const canonical = m.thread_id?.trim() || m.ticket_code?.trim()
+  if (canonical) return `t:${canonical}`
+  const imapKey = m.imap_thread_id?.trim()
+  if (imapKey) return `t:${m.account_id}:${imapKey}`
   return `m:${m.id}`
 }
 

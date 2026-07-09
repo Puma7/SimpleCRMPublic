@@ -2883,12 +2883,25 @@ export async function resolveReferenceThreadForSync(
   const canonicalThreads: string[] = [];
   const seenCanonical = new Set<string>();
   const nullSiblingIds: number[] = [];
+  // Collect the DISTINCT raw thread_ids first, then resolve each to its canonical
+  // exactly once. A busy conversation (e.g. a support ticket with hundreds of
+  // replies all sharing one thread_id) otherwise fires one resolveCanonicalThreadId
+  // round-trip per sibling — an N+1 that hits the most active tickets hardest.
+  // Resolved sequentially: a single transaction connection can't run them in parallel.
+  const distinctRawThreadIds: string[] = [];
+  const seenRaw = new Set<string>();
   for (const sibling of siblings) {
     const tid = sibling.thread_id?.trim();
     if (!tid) {
       nullSiblingIds.push(sibling.id);
       continue;
     }
+    if (!seenRaw.has(tid)) {
+      seenRaw.add(tid);
+      distinctRawThreadIds.push(tid);
+    }
+  }
+  for (const tid of distinctRawThreadIds) {
     const canonical = await resolveCanonicalThreadId(trx, args.workspaceId, tid);
     if (!seenCanonical.has(canonical)) {
       seenCanonical.add(canonical);
@@ -3039,9 +3052,13 @@ async function rebuildThreadEdgesForCanonicalThread(
     .where('child_message_id', 'in', messageIds)
     .execute();
 
+  // Key by the SAME normalizeMessageId() (trim, strip a single outer <> pair,
+  // lowercase) the sync resolver uses, not a bracket-preserving lowercase — so a
+  // parent stored as `<x@y>` still matches a child `In-Reply-To: x@y` / `<<x@y>>`
+  // and the edge actually forms for synced conversations.
   const byMessageId = new Map<string, ThreadAdminMessageRow>();
   for (const message of messages) {
-    const normalized = message.messageId?.trim().toLowerCase();
+    const normalized = normalizeMessageId(message.messageId);
     if (normalized) byMessageId.set(normalized, message);
   }
 
@@ -3080,17 +3097,21 @@ function findThreadParent(
   child: ThreadAdminMessageRow,
   byMessageId: Map<string, ThreadAdminMessageRow>,
 ): ThreadAdminMessageRow | null {
+  // Normalize refs with the same helper used to key byMessageId so bracket-only
+  // differences between a child's In-Reply-To/References and a parent's
+  // Message-ID don't prevent the edge from forming.
   const refs: string[] = [];
-  if (child.inReplyTo?.trim()) refs.push(child.inReplyTo.trim());
+  const parentRef = normalizeMessageId(child.inReplyTo);
+  if (parentRef) refs.push(parentRef);
   if (child.referencesHeader?.trim()) {
     for (const part of child.referencesHeader.split(/\s+/)) {
-      const ref = part.trim();
+      const ref = normalizeMessageId(part);
       if (ref) refs.push(ref);
       if (refs.length >= 64) break;
     }
   }
   for (const ref of refs) {
-    const parent = byMessageId.get(ref.toLowerCase());
+    const parent = byMessageId.get(ref);
     if (parent && parent.id !== child.id) return parent;
   }
   return null;
