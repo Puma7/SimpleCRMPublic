@@ -842,7 +842,16 @@ async function handleUpdateWorkflow(
   });
   if (!parsed.ok) return parsed.response;
 
-  const trap = outboundGraphTrapError(parsed.values.graph);
+  // Validate the graph that would be in effect after this patch. When the patch
+  // omits the graph but re-enables the workflow, fall back to the STORED graph
+  // so a previously-saved trapping outbound workflow can't be reactivated
+  // through the API without the 422.
+  let graphToValidate: unknown = parsed.values.graph;
+  if (graphToValidate === undefined && parsed.values.enabled === true && ports.workflows.get) {
+    const existing = await ports.workflows.get({ workspaceId: principal.workspaceId, id });
+    graphToValidate = existing?.graph ?? undefined;
+  }
+  const trap = outboundGraphTrapError(graphToValidate);
   if (trap) return trap;
 
   const result = await ports.workflows.update({

@@ -15,6 +15,14 @@ function isReleaseNode(node: WorkflowGraphNode): boolean {
   return RELEASE_NODE_TYPES.has(registryType(node));
 }
 
+function isHoldNode(node: WorkflowGraphNode): boolean {
+  const data = node.data as Record<string, unknown> | undefined;
+  return (
+    (node.type === 'action' && data?.actionType === 'hold_outbound') ||
+    registryType(node) === 'email.hold_outbound'
+  );
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;
@@ -22,48 +30,78 @@ function triggerKind(doc: WorkflowGraphDocument): string | null {
   return typeof kind === 'string' ? kind : '';
 }
 
+// Mirror of graph-walk-utils.ts edgeIsYes / edgeIsNo (runtime source of truth).
 function labelIsYes(label: string): boolean {
   const l = label.toLowerCase();
-  return l === '' || l === 'yes' || l === 'ja' || l === 'true';
+  return l === '' || l === 'yes' || l === 'ja' || l === 'true' || l === 'success';
 }
 function labelIsNo(label: string): boolean {
   const l = label.toLowerCase();
-  return l === 'no' || l === 'nein' || l === 'false';
+  return l === 'no' || l === 'nein' || l === 'false' || l === 'error';
 }
 
 export type OutboundGraphIssue =
   | { code: 'dangling_condition_port'; nodeId: string; missing: 'yes' | 'no' }
-  | { code: 'no_release_node' };
+  | { code: 'dead_end'; nodeId: string };
 
 /**
  * An outbound workflow holds EVERY draft up front and only sends it when a node
  * explicitly releases it (email.release_outbound / email.send_draft). The
- * engine is fail-closed, so a graph that can reach an end without releasing
- * traps clean mail forever. Returns the concrete problems; empty = safe.
+ * engine is fail-closed, so every reachable path that terminates without
+ * releasing (and without an explicit hold_outbound) traps clean mail forever.
+ * Returns the concrete problems; empty = safe.
  */
 export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGraphIssue[] {
   if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
   if (triggerKind(doc) !== 'outbound') return [];
+  const trigger = doc.nodes.find((node) => node.type === 'trigger');
+  if (!trigger) return [];
+
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const outgoing = (id: string) => doc.edges.filter((edge) => edge.source === id);
+
   const issues: OutboundGraphIssue[] = [];
-
-  for (const node of doc.nodes) {
-    if (node.type !== 'condition') continue;
-    const labels = doc.edges
-      .filter((edge) => edge.source === node.id)
-      .map((edge) => edge.label ?? '');
-    if (!labels.some(labelIsYes)) {
-      issues.push({ code: 'dangling_condition_port', nodeId: node.id, missing: 'yes' });
+  const seen = new Set<string>();
+  const add = (issue: OutboundGraphIssue) => {
+    const key =
+      issue.code === 'dangling_condition_port'
+        ? `d:${issue.nodeId}:${issue.missing}`
+        : `e:${issue.nodeId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      issues.push(issue);
     }
-    if (!labels.some(labelIsNo)) {
-      issues.push({ code: 'dangling_condition_port', nodeId: node.id, missing: 'no' });
-    }
-  }
+  };
 
-  const hasReleaseNode = doc.nodes.some(isReleaseNode);
-  const hasNonTriggerNode = doc.nodes.some((node) => node.type !== 'trigger');
-  if (!hasReleaseNode && hasNonTriggerNode) {
-    issues.push({ code: 'no_release_node' });
-  }
+  const walk = (nodeId: string, pathVisited: Set<string>): void => {
+    const node = byId.get(nodeId);
+    if (!node) return;
+    if (pathVisited.has(nodeId)) return;
+    if (isReleaseNode(node)) return;
+    if (isHoldNode(node)) return;
+    const next = new Set(pathVisited).add(nodeId);
+    const outs = outgoing(nodeId);
+
+    if (node.type === 'condition') {
+      const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
+      const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
+      if (yesEdge) walk(yesEdge.target, next);
+      else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
+      if (noEdge) walk(noEdge.target, next);
+      else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
+      return;
+    }
+
+    if (outs.length === 0) {
+      add({ code: 'dead_end', nodeId });
+      return;
+    }
+    for (const edge of outs) walk(edge.target, next);
+  };
+
+  const triggerOuts = outgoing(trigger.id);
+  if (triggerOuts.length === 0) add({ code: 'dead_end', nodeId: trigger.id });
+  else for (const edge of triggerOuts) walk(edge.target, new Set([trigger.id]));
 
   return issues;
 }
@@ -71,12 +109,7 @@ export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGrap
 export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
   if (issues.length === 0) return '';
   const parts: string[] = [];
-  if (issues.some((issue) => issue.code === 'no_release_node')) {
-    parts.push(
-      'Der Ausgangs-Workflow enthält keinen Freigabe-Knoten (email.release_outbound / email.send_draft). ' +
-        'Ohne Freigabe bleibt jede geprüfte Mail dauerhaft im Posteingang gehalten und wird nie versendet.',
-    );
-  }
+
   const dangling = issues.filter(
     (issue): issue is Extract<OutboundGraphIssue, { code: 'dangling_condition_port' }> =>
       issue.code === 'dangling_condition_port',
@@ -86,10 +119,25 @@ export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
       .map((issue) => `Bedingung „${issue.nodeId}" ohne „${issue.missing === 'no' ? 'nein' : 'ja'}"-Zweig`)
       .join('; ');
     parts.push(
-      `Mindestens eine Bedingung hat einen offenen Port, der Mails hängen lässt (${detail}). ` +
-        'Verbinde den offenen Zweig mit einem Freigabe-Knoten (email.release_outbound, autoSend=true).',
+      `Mindestens eine Bedingung hat einen offenen Port, der Mails hängen lässt (${detail}).`,
     );
   }
+
+  const deadEnds = issues.filter(
+    (issue): issue is Extract<OutboundGraphIssue, { code: 'dead_end' }> => issue.code === 'dead_end',
+  );
+  if (deadEnds.length > 0) {
+    const ids = deadEnds.map((issue) => `„${issue.nodeId}"`).join(', ');
+    parts.push(
+      `Mindestens ein Pfad endet ohne Freigabe (${ids}) und lässt die Mail dauerhaft im ` +
+        'Posteingang hängen.',
+    );
+  }
+
+  parts.push(
+    'Verbinde jeden offenen/endenden Zweig mit einem Freigabe-Knoten ' +
+      '(email.release_outbound mit autoSend=true, oder email.send_draft).',
+  );
   return parts.join(' ');
 }
 

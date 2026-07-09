@@ -235,15 +235,16 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
   // opts out, so we never fight a custom provider's lifecycle.
   const canAutoRefresh = options.getAccessToken === undefined
 
-  const runInvocation = async (channel: InvokeChannel, args: any[]): Promise<any> => {
+  const invoke = async (channel: InvokeChannel, ...args: any[]): Promise<any> => {
     if (!fetchImpl) {
       throw new RendererTransportError("Fetch API is not available", {
         code: "fetch_unavailable",
       })
     }
+    const boundFetch = fetchImpl
 
-    const fetchHttp = async (requestSpec: HttpRequestSpec): Promise<{ body: unknown; response: Response }> => {
-      // Read the token per request (not once per invocation) so a retry after a
+    const sendOnce = async (requestSpec: HttpRequestSpec): Promise<Response> => {
+      // Read the token per attempt (not once per invocation) so a retry after a
       // refresh actually carries the new bearer token.
       const token = await getAccessToken(options.getAccessToken)
       const url = buildUrl(baseUrl, requestSpec.path, requestSpec.query)
@@ -262,7 +263,26 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
         init.body = JSON.stringify(requestSpec.body)
       }
 
-      const response = await fetchImpl(url, init)
+      return boundFetch(url, init)
+    }
+
+    const fetchHttp = async (requestSpec: HttpRequestSpec): Promise<{ body: unknown; response: Response }> => {
+      // Self-heal a stale/expired access token on THIS request only: on a 401,
+      // refresh the session once (single-flight) and replay just this request.
+      // Retrying per-request — instead of the whole invocation — means a
+      // multi-request transform never re-issues an earlier sub-request that
+      // already mutated state. A 401 is rejected before any server-side write,
+      // so replaying the single failed request is safe.
+      let response = await sendOnce(requestSpec)
+      if (
+        !response.ok &&
+        response.status === 401 &&
+        canAutoRefresh &&
+        (await refreshServerSessionOnce(baseUrl, boundFetch))
+      ) {
+        response = await sendOnce(requestSpec)
+      }
+
       const body = response.ok && requestSpec.responseType === "blob"
         ? await response.blob()
         : await parseResponseBody(response)
@@ -283,36 +303,11 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
     return spec.transform ? await spec.transform(body, { fetchJson, response }) : unwrapData(body)
   }
 
-  const invoke = async (channel: InvokeChannel, ...args: any[]): Promise<any> => {
-    try {
-      return await runInvocation(channel, args)
-    } catch (error) {
-      // Self-heal a stale/expired access token: on a 401, refresh the session
-      // once and retry the whole invocation exactly once. A 401 is rejected
-      // before any server-side mutation, so replaying it is safe. Without this
-      // the user just sees "Authentifizierung erforderlich" whenever the
-      // proactive refresh missed (tab suspended, clock skew, long idle).
-      if (
-        canAutoRefresh &&
-        fetchImpl &&
-        isUnauthorizedError(error) &&
-        (await refreshServerSessionOnce(baseUrl, fetchImpl))
-      ) {
-        return await runInvocation(channel, args)
-      }
-      throw error
-    }
-  }
-
   return {
     kind: "http",
     serverBaseUrl: baseUrl,
     invoke,
   }
-}
-
-function isUnauthorizedError(error: unknown): boolean {
-  return error instanceof RendererTransportError && error.status === 401
 }
 
 // Single-flight token refresh: a burst of concurrent 401s (e.g. the inbox

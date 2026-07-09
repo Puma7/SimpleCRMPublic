@@ -14,6 +14,15 @@ function isReleaseNode(node: WorkflowGraphNode): boolean {
   return RELEASE_NODE_TYPES.has(registryType(node));
 }
 
+/** An explicit hold is an INTENDED terminal (user chose to hold for review). */
+function isHoldNode(node: WorkflowGraphNode): boolean {
+  const data = node.data as Record<string, unknown> | undefined;
+  return (
+    (node.type === 'action' && data?.actionType === 'hold_outbound') ||
+    registryType(node) === 'email.hold_outbound'
+  );
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;
@@ -21,62 +30,90 @@ function triggerKind(doc: WorkflowGraphDocument): string | null {
   return typeof kind === 'string' ? kind : '';
 }
 
-/** Same label→port mapping the runtime uses (graph-walk-utils edgeIsYes/No). */
+// Mirror of graph-walk-utils.ts edgeIsYes / edgeIsNo (the runtime pickEdge is
+// the source of truth). MUST stay in sync so the validator never rejects a
+// graph the engine would happily route.
 function labelIsYes(label: string): boolean {
   const l = label.toLowerCase();
-  return l === '' || l === 'yes' || l === 'ja' || l === 'true';
+  return l === '' || l === 'yes' || l === 'ja' || l === 'true' || l === 'success';
 }
 function labelIsNo(label: string): boolean {
   const l = label.toLowerCase();
-  return l === 'no' || l === 'nein' || l === 'false';
+  return l === 'no' || l === 'nein' || l === 'false' || l === 'error';
 }
 
 export type OutboundGraphIssue =
   | { code: 'dangling_condition_port'; nodeId: string; missing: 'yes' | 'no' }
-  | { code: 'no_release_node' };
+  | { code: 'dead_end'; nodeId: string };
 
 /**
  * An outbound workflow holds EVERY draft up front (server-side reviewOutbound
  * sets outbound_hold=true the moment an enabled outbound workflow exists) and
  * the draft is only ever sent when a node explicitly releases it
  * (email.release_outbound / email.send_draft). The engine is fail-closed:
- * pickEdge does NOT fall back on the "no" port, so a graph that can reach an
- * end without releasing traps clean mail in the inbox forever.
+ * pickEdge does NOT fall back on the "no" port, so a graph that can reach a
+ * terminal without releasing traps clean mail in the inbox forever.
  *
- * This returns the concrete structural problems that would trap mail; an empty
- * array means the outbound graph always has a way to release. Non-outbound
- * graphs are never flagged.
+ * This walks every reachable path from the trigger and reports the ones that
+ * terminate WITHOUT releasing and WITHOUT an explicit hold_outbound (which is
+ * an intended hold). A single release node somewhere is NOT enough — every
+ * non-blocking path must reach one. Empty array = safe. Non-outbound graphs
+ * are never flagged.
  */
 export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGraphIssue[] {
-  // Defensive: callers pass loosely-typed JSON. A malformed doc can't trap mail
-  // (it won't run), so treat it as "nothing to flag" rather than throwing.
+  // Defensive: callers pass loosely-typed JSON. A malformed doc can't run, so
+  // treat it as "nothing to flag" rather than throwing.
   if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
   if (triggerKind(doc) !== 'outbound') return [];
+  const trigger = doc.nodes.find((node) => node.type === 'trigger');
+  if (!trigger) return [];
+
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const outgoing = (id: string) => doc.edges.filter((edge) => edge.source === id);
+
   const issues: OutboundGraphIssue[] = [];
-
-  // 1) Every condition must wire BOTH ports. A dangling "no" (as in the shipped
-  //    "Sensible Daten" template) silently strands every non-matching mail,
-  //    because the walk stops where the missing edge would be.
-  for (const node of doc.nodes) {
-    if (node.type !== 'condition') continue;
-    const labels = doc.edges
-      .filter((edge) => edge.source === node.id)
-      .map((edge) => edge.label ?? '');
-    if (!labels.some(labelIsYes)) {
-      issues.push({ code: 'dangling_condition_port', nodeId: node.id, missing: 'yes' });
+  const seen = new Set<string>();
+  const add = (issue: OutboundGraphIssue) => {
+    const key =
+      issue.code === 'dangling_condition_port'
+        ? `d:${issue.nodeId}:${issue.missing}`
+        : `e:${issue.nodeId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      issues.push(issue);
     }
-    if (!labels.some(labelIsNo)) {
-      issues.push({ code: 'dangling_condition_port', nodeId: node.id, missing: 'no' });
-    }
-  }
+  };
 
-  // 2) The graph must contain at least one release/send node, otherwise nothing
-  //    can ever lift the hold that reviewOutbound places on the draft.
-  const hasReleaseNode = doc.nodes.some(isReleaseNode);
-  const hasNonTriggerNode = doc.nodes.some((node) => node.type !== 'trigger');
-  if (!hasReleaseNode && hasNonTriggerNode) {
-    issues.push({ code: 'no_release_node' });
-  }
+  const walk = (nodeId: string, pathVisited: Set<string>): void => {
+    const node = byId.get(nodeId);
+    if (!node) return; // edge points at a missing node (malformed) — ignore
+    if (pathVisited.has(nodeId)) return; // cycle — stop, don't re-flag
+    if (isReleaseNode(node)) return; // this path releases the mail — safe
+    if (isHoldNode(node)) return; // explicit, intended hold — safe terminal
+    const next = new Set(pathVisited).add(nodeId);
+    const outs = outgoing(nodeId);
+
+    if (node.type === 'condition') {
+      // Both ports are statically reachable; each must reach a release/hold.
+      const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
+      const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
+      if (yesEdge) walk(yesEdge.target, next);
+      else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
+      if (noEdge) walk(noEdge.target, next);
+      else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
+      return;
+    }
+
+    if (outs.length === 0) {
+      add({ code: 'dead_end', nodeId }); // pass-through node with nowhere to go
+      return;
+    }
+    for (const edge of outs) walk(edge.target, next);
+  };
+
+  const triggerOuts = outgoing(trigger.id);
+  if (triggerOuts.length === 0) add({ code: 'dead_end', nodeId: trigger.id });
+  else for (const edge of triggerOuts) walk(edge.target, new Set([trigger.id]));
 
   return issues;
 }
@@ -85,12 +122,7 @@ export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGrap
 export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
   if (issues.length === 0) return '';
   const parts: string[] = [];
-  if (issues.some((issue) => issue.code === 'no_release_node')) {
-    parts.push(
-      'Der Ausgangs-Workflow enthält keinen Freigabe-Knoten (email.release_outbound / email.send_draft). ' +
-        'Ohne Freigabe bleibt jede geprüfte Mail dauerhaft im Posteingang gehalten und wird nie versendet.',
-    );
-  }
+
   const dangling = issues.filter(
     (issue): issue is Extract<OutboundGraphIssue, { code: 'dangling_condition_port' }> =>
       issue.code === 'dangling_condition_port',
@@ -100,10 +132,25 @@ export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
       .map((issue) => `Bedingung „${issue.nodeId}" ohne „${issue.missing === 'no' ? 'nein' : 'ja'}"-Zweig`)
       .join('; ');
     parts.push(
-      `Mindestens eine Bedingung hat einen offenen Port, der Mails hängen lässt (${detail}). ` +
-        'Verbinde den offenen Zweig mit einem Freigabe-Knoten (email.release_outbound, autoSend=true).',
+      `Mindestens eine Bedingung hat einen offenen Port, der Mails hängen lässt (${detail}).`,
     );
   }
+
+  const deadEnds = issues.filter(
+    (issue): issue is Extract<OutboundGraphIssue, { code: 'dead_end' }> => issue.code === 'dead_end',
+  );
+  if (deadEnds.length > 0) {
+    const ids = deadEnds.map((issue) => `„${issue.nodeId}"`).join(', ');
+    parts.push(
+      `Mindestens ein Pfad endet ohne Freigabe (${ids}) und lässt die Mail dauerhaft im ` +
+        'Posteingang hängen.',
+    );
+  }
+
+  parts.push(
+    'Verbinde jeden offenen/endenden Zweig mit einem Freigabe-Knoten ' +
+      '(email.release_outbound mit autoSend=true, oder email.send_draft).',
+  );
   return parts.join(' ');
 }
 

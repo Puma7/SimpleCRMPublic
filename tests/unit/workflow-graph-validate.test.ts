@@ -47,10 +47,11 @@ const outboundSensitiveBroken: WorkflowGraphDocument = {
 
 describe('findOutboundGraphTraps', () => {
   it('flags a dangling "no" branch on an outbound condition (the shipped bug)', () => {
-    const issues = findOutboundGraphTraps(outboundSensitiveBroken);
-    expect(issues).toContainEqual({ code: 'dangling_condition_port', nodeId: 'c1', missing: 'no' });
-    // No release node either → also flagged.
-    expect(issues).toContainEqual({ code: 'no_release_node' });
+    // ja -> hold_outbound is an intended hold; the missing "nein" branch is the
+    // only real problem, so it is the only issue reported.
+    expect(findOutboundGraphTraps(outboundSensitiveBroken)).toEqual([
+      { code: 'dangling_condition_port', nodeId: 'c1', missing: 'no' },
+    ]);
     expect(outboundGraphReleasesMail(outboundSensitiveBroken)).toBe(false);
   });
 
@@ -59,7 +60,7 @@ describe('findOutboundGraphTraps', () => {
     expect(outboundGraphReleasesMail(outboundSensitiveFixed)).toBe(true);
   });
 
-  it('flags an outbound graph with no release/send node at all', () => {
+  it('flags an outbound path that ends without releasing', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,
       nodes: [
@@ -68,7 +69,46 @@ describe('findOutboundGraphTraps', () => {
       ],
       edges: [{ id: 'e0', source: 't1', target: 'a1' }],
     };
-    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'no_release_node' }]);
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'a1' }]);
+  });
+
+  it('flags a condition whose "no" branch dead-ends even though a release node exists (P1)', () => {
+    // ja -> release (safe), nein -> tag (dead-end). A single release node is NOT
+    // enough — the "nein" path never releases, so those clean drafts get stuck.
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'c1', type: 'condition', data: { field: 'combined_text', op: 'regex', value: 'IBAN' } },
+        { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+        { id: 'tag', type: 'action', data: { actionType: 'tag', tag: 'sensibel' } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'release', label: 'ja' },
+        { id: 'e2', source: 'c1', target: 'tag', label: 'nein' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'tag' }]);
+  });
+
+  it('accepts runtime edge-label aliases (success/error) like the engine', () => {
+    // graph-walk-utils treats success->yes and error->no; the validator must too.
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'c1', type: 'condition', data: { field: 'combined_text', op: 'regex', value: 'IBAN' } },
+        { id: 'r1', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+        { id: 'r2', type: 'registry', data: { nodeType: 'email.send_draft', config: {} } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'r1', label: 'success' },
+        { id: 'e2', source: 'c1', target: 'r2', label: 'error' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([]);
   });
 
   it('never flags a non-outbound graph, even with a dangling port', () => {

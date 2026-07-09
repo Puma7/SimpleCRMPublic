@@ -192,6 +192,40 @@ describe('renderer transport', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('retries only the failed sub-request, not an earlier mutation in the same transform', async () => {
+    seedSession('old-token', 'r1');
+    // AddMessageCategory does GET (list) then POST (create). The POST 401s;
+    // the refresh must replay ONLY the POST, never re-issue the GET.
+    const fetchImpl = jest.fn()
+      // 1) GET categories -> empty, so it proceeds to POST
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      // 2) POST category -> 401 (token expired mid-transform)
+      .mockResolvedValueOnce(unauthorized())
+      // 3) refresh
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
+          tokens: { accessToken: 'new-token', refreshToken: 'r2', expiresInSeconds: 900 },
+        },
+      }))
+      // 4) POST retry -> created
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 23, messageId: 11, categoryId: 99 } }, 201));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 99,
+    })).resolves.toEqual({ added: true, record: { id: 23, messageId: 11, categoryId: 99 } });
+
+    const calls = fetchImpl.mock.calls;
+    const method = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method ?? 'GET';
+    const gets = calls.filter((c) => method(c) === 'GET' && /\/messages\/11\/categories/.test(String(c[0])));
+    const posts = calls.filter((c) => method(c) === 'POST' && /\/messages\/11\/categories/.test(String(c[0])));
+    expect(gets).toHaveLength(1); // the earlier sub-request is NOT replayed
+    expect(posts).toHaveLength(2); // only the failed POST is retried
+    expect(String(posts[1][0])).toContain('/messages/11/categories');
+  });
+
   test('maps auth user admin IPC calls to server HTTP routes', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
