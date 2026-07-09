@@ -784,12 +784,18 @@ async function handleDeleteAiPrompt(
 
 /**
  * Reject an outbound workflow whose graph would silently trap clean mail
- * (dangling condition port / no release node). Returns null when the graph is
- * absent, non-outbound, or safe. See findOutboundGraphTraps for the rationale.
+ * (dead-end path / dangling condition port / non-releasing terminal). Keys off
+ * the EFFECTIVE trigger name (what the server's outbound review selects on), not
+ * just the graph's trigger node, so a `triggerName: 'outbound'` workflow whose
+ * graph trigger was left as inbound is still checked. Returns null when the
+ * workflow is not outbound, has no graph, or is safe.
  */
-function outboundGraphTrapError(graph: unknown): ApiResponse | null {
+function outboundGraphTrapError(graph: unknown, effectiveTrigger?: string): ApiResponse | null {
   if (!graph || typeof graph !== 'object') return null;
-  const issues = findOutboundGraphTraps(graph as WorkflowGraphDocument);
+  const issues = findOutboundGraphTraps(
+    graph as WorkflowGraphDocument,
+    effectiveTrigger === undefined ? undefined : { effectiveTrigger },
+  );
   if (issues.length === 0) return null;
   return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
 }
@@ -810,7 +816,7 @@ async function handleCreateWorkflow(
   });
   if (!parsed.ok) return parsed.response;
 
-  const trap = outboundGraphTrapError(parsed.values.graph);
+  const trap = outboundGraphTrapError(parsed.values.graph, parsed.values.triggerName);
   if (trap) return trap;
 
   const result = await ports.workflows.create({
@@ -842,16 +848,22 @@ async function handleUpdateWorkflow(
   });
   if (!parsed.ok) return parsed.response;
 
-  // Validate the graph that would be in effect after this patch. When the patch
-  // omits the graph but re-enables the workflow, fall back to the STORED graph
-  // so a previously-saved trapping outbound workflow can't be reactivated
-  // through the API without the 422.
+  // Validate the graph + trigger that would be in effect after this patch. When
+  // the patch omits the graph but re-enables the workflow, fall back to the
+  // STORED graph so a previously-saved trapping outbound workflow can't be
+  // reactivated through the API without the 422. Likewise resolve the effective
+  // trigger from the stored row when the patch doesn't set it, so validation
+  // keys off what outbound review actually selects on.
   let graphToValidate: unknown = parsed.values.graph;
-  if (graphToValidate === undefined && parsed.values.enabled === true && ports.workflows.get) {
+  let effectiveTrigger = parsed.values.triggerName;
+  const needsStoredGraph = graphToValidate === undefined && parsed.values.enabled === true;
+  const needsStoredTrigger = graphToValidate !== undefined && effectiveTrigger === undefined;
+  if ((needsStoredGraph || needsStoredTrigger) && ports.workflows.get) {
     const existing = await ports.workflows.get({ workspaceId: principal.workspaceId, id });
-    graphToValidate = existing?.graph ?? undefined;
+    if (graphToValidate === undefined) graphToValidate = existing?.graph ?? undefined;
+    if (effectiveTrigger === undefined) effectiveTrigger = existing?.triggerName;
   }
-  const trap = outboundGraphTrapError(graphToValidate);
+  const trap = outboundGraphTrapError(graphToValidate, effectiveTrigger);
   if (trap) return trap;
 
   const result = await ports.workflows.update({

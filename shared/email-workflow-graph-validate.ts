@@ -4,15 +4,22 @@ import type { WorkflowGraphDocument, WorkflowGraphNode } from './email-workflow-
 // renderer transport (which uses the shared graph types, not @simplecrm/core).
 // Keep both copies in sync.
 
-const RELEASE_NODE_TYPES = new Set(['email.release_outbound', 'email.send_draft']);
-
 function registryType(node: WorkflowGraphNode): string {
   const data = node.data as Record<string, unknown> | undefined;
   return typeof data?.nodeType === 'string' ? data.nodeType : '';
 }
 
+function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
+  const data = node.data as Record<string, unknown> | undefined;
+  const config = data?.config;
+  return config && typeof config === 'object' ? (config as Record<string, unknown>) : {};
+}
+
 function isReleaseNode(node: WorkflowGraphNode): boolean {
-  return RELEASE_NODE_TYPES.has(registryType(node));
+  const type = registryType(node);
+  if (type === 'email.send_draft') return true;
+  if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
+  return false;
 }
 
 function isHoldNode(node: WorkflowGraphNode): boolean {
@@ -44,21 +51,31 @@ export type OutboundGraphIssue =
   | { code: 'dangling_condition_port'; nodeId: string; missing: 'yes' | 'no' }
   | { code: 'dead_end'; nodeId: string };
 
+export type FindOutboundGraphTrapsOptions = {
+  effectiveTrigger?: string;
+};
+
 /**
- * An outbound workflow holds EVERY draft up front and only sends it when a node
- * explicitly releases it (email.release_outbound / email.send_draft). The
- * engine is fail-closed, so every reachable path that terminates without
- * releasing (and without an explicit hold_outbound) traps clean mail forever.
- * Returns the concrete problems; empty = safe.
+ * Models the SERVER outbound runtime (hold-then-release). Every reachable path
+ * that terminates without sending (release_outbound autoSend / send_draft) or
+ * an explicit hold traps clean mail. The standalone Electron runtime is
+ * run-then-block and must NOT enforce this.
  */
-export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGraphIssue[] {
+export function findOutboundGraphTraps(
+  doc: WorkflowGraphDocument,
+  opts?: FindOutboundGraphTrapsOptions,
+): OutboundGraphIssue[] {
   if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
-  if (triggerKind(doc) !== 'outbound') return [];
-  const trigger = doc.nodes.find((node) => node.type === 'trigger');
-  if (!trigger) return [];
+  const trigger = opts?.effectiveTrigger ?? triggerKind(doc);
+  if (trigger !== 'outbound') return [];
+  const triggerNode = doc.nodes.find((node) => node.type === 'trigger');
+  if (!triggerNode) return [];
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
-  const outgoing = (id: string) => doc.edges.filter((edge) => edge.source === id);
+  const outgoing = (id: string) =>
+    doc.edges
+      .filter((edge) => edge.source === id)
+      .sort((a, b) => a.id.localeCompare(b.id));
 
   const issues: OutboundGraphIssue[] = [];
   const seen = new Set<string>();
@@ -75,8 +92,14 @@ export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGrap
 
   const walk = (nodeId: string, pathVisited: Set<string>): void => {
     const node = byId.get(nodeId);
-    if (!node) return;
-    if (pathVisited.has(nodeId)) return;
+    if (!node) {
+      add({ code: 'dead_end', nodeId });
+      return;
+    }
+    if (pathVisited.has(nodeId)) {
+      add({ code: 'dead_end', nodeId });
+      return;
+    }
     if (isReleaseNode(node)) return;
     if (isHoldNode(node)) return;
     const next = new Set(pathVisited).add(nodeId);
@@ -99,9 +122,9 @@ export function findOutboundGraphTraps(doc: WorkflowGraphDocument): OutboundGrap
     for (const edge of outs) walk(edge.target, next);
   };
 
-  const triggerOuts = outgoing(trigger.id);
-  if (triggerOuts.length === 0) add({ code: 'dead_end', nodeId: trigger.id });
-  else for (const edge of triggerOuts) walk(edge.target, new Set([trigger.id]));
+  const triggerOuts = outgoing(triggerNode.id);
+  if (triggerOuts.length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
+  else for (const edge of triggerOuts) walk(edge.target, new Set([triggerNode.id]));
 
   return issues;
 }
@@ -141,6 +164,9 @@ export function formatOutboundGraphTraps(issues: OutboundGraphIssue[]): string {
   return parts.join(' ');
 }
 
-export function outboundGraphReleasesMail(doc: WorkflowGraphDocument): boolean {
-  return findOutboundGraphTraps(doc).length === 0;
+export function outboundGraphReleasesMail(
+  doc: WorkflowGraphDocument,
+  opts?: FindOutboundGraphTrapsOptions,
+): boolean {
+  return findOutboundGraphTraps(doc, opts).length === 0;
 }

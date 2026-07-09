@@ -111,6 +111,65 @@ describe('findOutboundGraphTraps', () => {
     expect(findOutboundGraphTraps(graph)).toEqual([]);
   });
 
+  it('requires autoSend on email.release_outbound (non-autoSend re-enters review)', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'c1', type: 'condition', data: { field: 'combined_text', op: 'regex', value: 'IBAN' } },
+        { id: 'hold', type: 'action', data: { actionType: 'hold_outbound', reason: 'x' } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: false } } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e1', source: 'c1', target: 'hold', label: 'ja' },
+        { id: 'e2', source: 'c1', target: 'rel', label: 'nein' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'rel' }]);
+  });
+
+  it('flags a cycle that never releases', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'tag', type: 'action', data: { actionType: 'tag', tag: 'x' } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'tag' },
+        { id: 'e1', source: 'tag', target: 'tag' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'tag' }]);
+  });
+
+  it('flags an edge that points at a missing node', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [{ id: 't1', type: 'trigger', data: { kind: 'outbound' } }],
+      edges: [{ id: 'e0', source: 't1', target: 'ghost' }],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'ghost' }]);
+  });
+
+  it('validates against the effective trigger even if the graph trigger node differs', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'tag', type: 'action', data: { actionType: 'tag', tag: 'x' } },
+      ],
+      edges: [{ id: 'e0', source: 't1', target: 'tag' }],
+    };
+    // Graph trigger says inbound → default gate skips it.
+    expect(findOutboundGraphTraps(graph)).toEqual([]);
+    // But the workflow is stored as trigger_name=outbound → validate and flag.
+    expect(findOutboundGraphTraps(graph, { effectiveTrigger: 'outbound' })).toEqual([
+      { code: 'dead_end', nodeId: 'tag' },
+    ]);
+  });
+
   it('never flags a non-outbound graph, even with a dangling port', () => {
     const inbound: WorkflowGraphDocument = {
       ...outboundSensitiveBroken,
