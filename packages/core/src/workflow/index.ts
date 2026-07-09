@@ -2,6 +2,7 @@ export * from './ai-score';
 export * from './export-import';
 export * from './graph-compile';
 export * from './graph-presets';
+export * from './graph-validate';
 export * from './graph-types';
 export * from './graph-walk-utils';
 export * from './node-catalog';

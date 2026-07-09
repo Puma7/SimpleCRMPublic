@@ -229,7 +229,12 @@ import {
 } from '../../shared/email-recipient-parse';
 import { getEmailReportingSnapshot } from '../email/email-reported-stats';
 import { exportEmailGdprPackage } from '../email/email-gdpr-export';
-import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
+import {
+  definitionToJson,
+  compileGraphToDefinition,
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
+} from '../email/email-workflow-graph-compile';
 import type { WorkflowGraphDocument } from '../../shared/email-workflow-graph';
 import {
   listAllWorkflows,
@@ -246,6 +251,24 @@ interface EmailHandlersOptions {
 }
 
 type Disposer = () => void;
+
+/**
+ * Reject an outbound workflow whose graph would silently trap clean mail
+ * (dangling condition port / no release node). No-op for absent/non-outbound
+ * graphs. Mirrors the server-side guard in workflow-routes.ts.
+ */
+function assertOutboundGraphReleasesMail(graphJson: string | null | undefined): void {
+  if (typeof graphJson !== 'string' || !graphJson.trim()) return;
+  let graph: WorkflowGraphDocument | null = null;
+  try {
+    graph = JSON.parse(graphJson) as WorkflowGraphDocument;
+  } catch {
+    return;
+  }
+  if (!graph) return;
+  const traps = findOutboundGraphTraps(graph);
+  if (traps.length > 0) throw new Error(formatOutboundGraphTraps(traps));
+}
 
 export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   const { logger, isDevelopment } = options;
@@ -553,6 +576,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           enabled?: boolean;
         },
       ) => {
+        assertOutboundGraphReleasesMail(payload.graphJson);
         const id = createWorkflow(payload);
         restartEmailWorkflowCrons(logger);
         return { success: true as const, id };
@@ -578,6 +602,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           enabled?: boolean;
         },
       ) => {
+        assertOutboundGraphReleasesMail(payload.graphJson);
         updateWorkflow(payload.id, {
           name: payload.name,
           trigger: payload.trigger,

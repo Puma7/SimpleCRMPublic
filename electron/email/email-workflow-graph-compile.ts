@@ -3,6 +3,12 @@ export {
   definitionToJson,
 } from '../../shared/email-workflow-graph-compile';
 
+export {
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
+  outboundGraphReleasesMail,
+} from '../../shared/email-workflow-graph-validate';
+
 export type {
   WorkflowCondition,
   WorkflowConditionGroup,

@@ -1,6 +1,8 @@
 import {
   compileGraphToDefinition,
   definitionToJson,
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
   type WorkflowGraphDocument,
   type WorkflowNodeCatalogEntry,
   type WorkflowTemplate,
@@ -204,10 +206,16 @@ async function handleWorkflowGraphCompileRoute(req: ApiRequest): Promise<ApiResp
         || (node.type === 'action' && !isPlainObject(node.data))
         || (node.type === 'action' && !Object.prototype.hasOwnProperty.call(node.data, 'actionType')),
     );
+    // Non-fatal: surface outbound "mail trap" problems so the editor can warn
+    // live, even though the hard reject happens at create/update time.
+    const outboundTraps = findOutboundGraphTraps(graph);
     return data(200, {
       success: true,
       definitionJson: definitionToJson(definition),
       registryOnly,
+      ...(outboundTraps.length > 0
+        ? { outboundTrapWarning: formatOutboundGraphTraps(outboundTraps) }
+        : {}),
     });
   } catch (compileError) {
     return data(200, {
@@ -774,6 +782,18 @@ async function handleDeleteAiPrompt(
   return data(200, { deleted: true, aiPrompt: sanitizeAiPrompt(prompt) });
 }
 
+/**
+ * Reject an outbound workflow whose graph would silently trap clean mail
+ * (dangling condition port / no release node). Returns null when the graph is
+ * absent, non-outbound, or safe. See findOutboundGraphTraps for the rationale.
+ */
+function outboundGraphTrapError(graph: unknown): ApiResponse | null {
+  if (!graph || typeof graph !== 'object') return null;
+  const issues = findOutboundGraphTraps(graph as WorkflowGraphDocument);
+  if (issues.length === 0) return null;
+  return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
+}
+
 async function handleCreateWorkflow(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -789,6 +809,9 @@ async function handleCreateWorkflow(
     requireDefinition: true,
   });
   if (!parsed.ok) return parsed.response;
+
+  const trap = outboundGraphTrapError(parsed.values.graph);
+  if (trap) return trap;
 
   const result = await ports.workflows.create({
     workspaceId: principal.workspaceId,
@@ -818,6 +841,9 @@ async function handleUpdateWorkflow(
     requireDefinition: false,
   });
   if (!parsed.ok) return parsed.response;
+
+  const trap = outboundGraphTrapError(parsed.values.graph);
+  if (trap) return trap;
 
   const result = await ports.workflows.update({
     workspaceId: principal.workspaceId,
