@@ -293,8 +293,10 @@ export function MessageViewer(props: Props) {
     const messageId = selectedMessage.id
     // Guard against a stale in-flight fetch (user switched messages): only this
     // effect run may touch bodyLoadState, so a late resolve can't clear the
-    // currently-selected message's error/retry state.
+    // currently-selected message's error/retry state. `settled` records whether
+    // this run reached a terminal state (idle/error) that updated React state.
     let cancelled = false
+    let settled = false
     setBodyLoadState("loading")
     void (async () => {
       try {
@@ -303,6 +305,7 @@ export function MessageViewer(props: Props) {
           messageId,
         ) as EmailMessage | null
         if (cancelled) return
+        settled = true
         if (full && !needsFullMessageBody(full)) {
           setSelectedMessage((prev) => (prev?.id === messageId ? full : prev))
           setBodyLoadState("idle")
@@ -313,6 +316,7 @@ export function MessageViewer(props: Props) {
         }
       } catch {
         if (cancelled) return
+        settled = true
         // The fetch failed (e.g. a transient 429 from the rate limiter). Don't
         // silently fall back to the ~217-char snippet with no HTML button —
         // flag it so we render a retry affordance. The ref stays latched to
@@ -322,6 +326,13 @@ export function MessageViewer(props: Props) {
     })()
     return () => {
       cancelled = true
+      // If this run's fetch is aborted before it settled — e.g. a
+      // preserve-selection list refresh replaces `selectedMessage` with a new
+      // object for the SAME id while the body is still loading — unlatch the ref
+      // so the effect rerun starts a fresh hydration. Otherwise the rerun would
+      // short-circuit on `ref === id` and leave the viewer stuck on
+      // "Nachricht wird geladen…" with no retry affordance.
+      if (!settled) hydratedBodyForIdRef.current = null
     }
   }, [selectedMessage, setSelectedMessage, bodyRetryKey])
 

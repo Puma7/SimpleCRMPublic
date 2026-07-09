@@ -17,7 +17,35 @@ const LIMITS: Record<RateLimitBucket, number> = {
 
 const WINDOW_MS = 60_000;
 
-function bucketForPath(path: string): RateLimitBucket {
+// Reads that must NOT ride the generous mail bucket even though they use GET: a
+// full-mailbox GDPR export is heavy and low-frequency, so it stays capped.
+const EMAIL_EXPENSIVE_GET_PATHS = new Set<string>([
+  '/api/v1/email/gdpr-export',
+]);
+
+// Cheap, high-frequency inbox-triage mutations a human fires while working
+// through the inbox (mark spam/seen/done, archive, move, snooze, delete,
+// assign, apply actions, and consuming a remote-content prompt). These share
+// the generous read bucket — marking many messages as spam in quick succession
+// was the original "zu viele Anfragen" trigger. EVERY other mail mutation —
+// sending, syncing, external connection/security tests, AI generation — is left
+// on the global bucket by falling through, so a future side-effecting endpoint
+// is capped by default rather than silently inheriting 1200/min.
+const EMAIL_TRIAGE_MUTATION_SUFFIXES = [
+  '/spam-decision',
+  '/seen',
+  '/done',
+  '/archive',
+  '/move',
+  '/snooze',
+  '/soft-delete',
+  '/restore',
+  '/assignment',
+  '/actions',
+  '/remote-content-policy/consume',
+];
+
+function bucketForPath(method: string, path: string): RateLimitBucket {
   if (
     path === '/api/v1/auth/login'
     || path === '/api/v1/auth/refresh'
@@ -32,18 +60,20 @@ function bucketForPath(path: string): RateLimitBucket {
     return 'auth-public';
   }
   if (path.startsWith('/api/v1/email/')) {
-    // Expensive mail actions — sending, external connection tests, GDPR export —
-    // must NOT inherit the generous chatty-read allowance; keep them capped on
-    // the global bucket so they can't be driven at 1200/min.
-    if (
-      path === '/api/v1/email/compose/send'
-      || path === '/api/v1/email/gdpr-export'
-      || path.startsWith('/api/v1/email/accounts/test-')
-      || path.startsWith('/api/v1/email/settings/security/test-')
-    ) {
-      return 'api-global';
+    const upper = method.toUpperCase();
+    // The mail UI is chatty on reads: opening one message fans out ~10+ GETs
+    // (body, metadata, thread, security, remote-content, read-receipt), so all
+    // reads get the generous bucket, save the heavy exports above.
+    if (upper === 'GET' || upper === 'HEAD') {
+      return EMAIL_EXPENSIVE_GET_PATHS.has(path) ? 'api-global' : 'email';
     }
-    return 'email';
+    // Cheap triage mutations are generous too; anything else that mutates stays
+    // capped on the global bucket so outbound sends / tests / scans can't be
+    // driven at the chatty mailbox-read rate.
+    if (EMAIL_TRIAGE_MUTATION_SUFFIXES.some((suffix) => path.endsWith(suffix))) {
+      return 'email';
+    }
+    return 'api-global';
   }
   return 'api-global';
 }
@@ -55,8 +85,9 @@ export type ApiRateLimitResult =
 export function checkApiRateLimit(input: {
   ip: string;
   path: string;
+  method: string;
 }): ApiRateLimitResult {
-  const bucket = bucketForPath(input.path);
+  const bucket = bucketForPath(input.method, input.path);
   const limit = LIMITS[bucket];
   const key = `${bucket}:${input.ip || 'unknown'}`;
   const now = Date.now();

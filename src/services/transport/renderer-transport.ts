@@ -27,17 +27,24 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * How long to back off before replaying a 429, or `null` = don't retry. When
- * the server's `Retry-After` says the window won't reset for longer than the
- * cap, retrying would just hammer a still-closed bucket (amplifying the storm),
- * so we surface the 429 instead. Only transient bursts (no/short Retry-After)
- * are retried.
+ * How long to back off before replaying a 429, or `null` = don't retry.
+ *
+ * Only the global pre-handler limiter sets `Retry-After`, and its 429s are safe
+ * to replay: the request is rejected before the handler runs (no side effect)
+ * and the fixed window reopens on a timer. Route-level limiters (e.g. the public
+ * returns-portal limiter) return a 429 WITHOUT the header; replaying those just
+ * hammers a bucket that won't reopen inside our short window, so we require the
+ * header's presence before retrying. When it says the window won't reset within
+ * the cap, we also surface the 429 rather than amplify a sustained overload.
  */
-function rateLimitBackoffMs(response: Response, attempt: number): number | null {
-  const headerSeconds = Number(response.headers?.get?.("Retry-After"))
-  const serverMs = Number.isFinite(headerSeconds) && headerSeconds > 0 ? headerSeconds * 1000 : 0
+function rateLimitBackoffMs(response: Response, _attempt: number): number | null {
+  const rawHeader = response.headers?.get?.("Retry-After")
+  if (rawHeader == null || rawHeader === "") return null
+  const headerSeconds = Number(rawHeader)
+  if (!Number.isFinite(headerSeconds) || headerSeconds <= 0) return null
+  const serverMs = headerSeconds * 1000
   if (serverMs > RATE_LIMIT_RETRY_CAP_MS) return null
-  const base = Math.min(serverMs || (attempt + 1) * 400, RATE_LIMIT_RETRY_CAP_MS)
+  const base = Math.min(serverMs, RATE_LIMIT_RETRY_CAP_MS)
   return base + Math.floor(Math.random() * 250)
 }
 

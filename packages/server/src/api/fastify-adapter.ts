@@ -112,8 +112,14 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
       const rate = checkApiRateLimit({
         ip: safeRequestIp(request),
         path,
+        method: request.method,
       });
       if (!rate.allowed) {
+        // Attach CORS headers BEFORE returning: on a cross-origin server-client
+        // install the browser hides a header-less 429 as a CORS failure, so the
+        // HTTP transport would never see the 429 / Retry-After and its backoff
+        // path would be bypassed exactly when the limiter trips.
+        applyCorsHeaders(request, reply, corsAllowedOrigins);
         // Retry-After (whole seconds, min 1) lets the client back off exactly
         // until the window resets instead of guessing.
         const retryAfterSec = Math.max(1, Math.ceil(rate.retryAfterMs / 1000));
