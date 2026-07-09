@@ -149,6 +149,27 @@ describe('findOutboundGraphTraps', () => {
     expect(findOutboundGraphTraps(graph)).toEqual([]);
   });
 
+  it('flags a non-branch node whose only edge is labeled (no default edge)', () => {
+    // email.tag emits port 'default'. With only a 'success'-labeled edge and no
+    // default/unlabeled edge, pickEdge(..., 'default') returns undefined so the
+    // runtime stops at `tag` and the draft never releases — a dead end, even
+    // though a release node sits just beyond the labeled edge.
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'tag', type: 'action', data: { actionType: 'tag', tag: 'x' } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'tag' },
+        { id: 'e1', source: 'tag', target: 'rel', label: 'success' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'tag' }]);
+    expect(findOutboundGraphTrapsShared(graph as never)).toEqual([{ code: 'dead_end', nodeId: 'tag' }]);
+  });
+
   it('does not count an unconfigured send_draft as a release', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,

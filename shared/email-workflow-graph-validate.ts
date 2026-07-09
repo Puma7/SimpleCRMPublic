@@ -144,7 +144,10 @@ export function findOutboundGraphTraps(
       walk(defaultEdge.target, next);
       return;
     }
-    for (const edge of outs) walk(edge.target, next);
+    // Every outgoing edge is labeled and none is a default/unlabeled edge, so
+    // pickEdge(..., 'default') returns undefined: the runtime stops here and the
+    // draft is never released — a dead end.
+    add({ code: 'dead_end', nodeId });
   };
 
   for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));

@@ -175,13 +175,15 @@ export function findOutboundGraphTraps(
     // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
     // default edge exists, follow ONLY it — auxiliary edges (e.g. an "error"
     // branch) are not taken, so they must not be treated as reachable traps.
-    // With no default edge, be conservative and walk all edges.
     const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
     if (defaultEdge) {
       walk(defaultEdge.target, next);
       return;
     }
-    for (const edge of outs) walk(edge.target, next);
+    // Every outgoing edge is labeled (e.g. success/error) and none is a
+    // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
+    // the runtime stops here and the draft is never released — a dead end.
+    add({ code: 'dead_end', nodeId });
   };
 
   for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));

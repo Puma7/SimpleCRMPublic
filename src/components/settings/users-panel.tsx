@@ -25,6 +25,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 import { MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import { useAuth } from "@/components/auth/auth-context"
 
 type UserRow = {
   id: string
@@ -51,6 +52,7 @@ export function UsersPanel() {
   const [pwEditId, setPwEditId] = useState<string | null>(null)
   const [pwValue, setPwValue] = useState("")
   const serverClientMode = getRendererTransport().kind === "http"
+  const { user: currentUser } = useAuth()
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -136,6 +138,10 @@ export function UsersPanel() {
           username: u.username,
           displayName: u.display_name,
           role: u.role,
+          // SaveUser treats an omitted isActive as active, so carry the row's
+          // current state by default — otherwise a password reset silently
+          // reactivates a disabled user. An explicit toggle in `changes` wins.
+          isActive: Boolean(u.is_active),
           ...changes,
         })
         await load()
@@ -212,7 +218,15 @@ export function UsersPanel() {
                   size="sm"
                   variant="ghost"
                   className="h-7 text-xs"
-                  disabled={rowBusy === u.id}
+                  // Block self-deactivation: disabling your own account fails the
+                  // next authenticated request (server) or blocks the next login
+                  // (standalone) and can lock the operator out.
+                  disabled={rowBusy === u.id || (currentUser?.id === u.id && Boolean(u.is_active))}
+                  title={
+                    currentUser?.id === u.id && u.is_active
+                      ? "Sie können Ihr eigenes Konto nicht deaktivieren"
+                      : undefined
+                  }
                   onClick={() => void applyUserUpdate(u, { isActive: !u.is_active })}
                 >
                   {u.is_active ? "Deaktivieren" : "Reaktivieren"}
@@ -235,7 +249,8 @@ export function UsersPanel() {
                   size="sm"
                   variant="ghost"
                   className="h-7 text-xs text-destructive hover:text-destructive"
-                  disabled={rowBusy === u.id}
+                  disabled={rowBusy === u.id || currentUser?.id === u.id}
+                  title={currentUser?.id === u.id ? "Sie können Ihr eigenes Konto nicht löschen" : undefined}
                   onClick={() => void deleteUser(u)}
                 >
                   Löschen

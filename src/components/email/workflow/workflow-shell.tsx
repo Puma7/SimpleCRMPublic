@@ -322,12 +322,14 @@ export function WorkflowShell() {
           { duration: 8000 },
         )
       }
-      // An enabled outbound workflow holds EVERY draft up front and only sends
-      // it when a path reaches a release node. A graph that dead-ends (or loops)
-      // without releasing traps clean mail forever. Block the save before it
-      // reaches the server's 422 so the desktop edition (no server guard) is
-      // protected too, and surface the exact reason.
-      if (trig === "outbound" && editEnabled) {
+      // Server-client only: there the outbound review holds EVERY draft up front
+      // and only sends it when a path reaches a release node, so a graph that
+      // dead-ends (or loops) without releasing traps clean mail forever — block
+      // the save before it hits the server's 422 and surface the exact reason.
+      // Standalone Electron uses run-then-block semantics (the draft sends unless
+      // a hold node stops it), so a release-less path is NOT a trap there; don't
+      // reject workflows the standalone runtime would send correctly.
+      if (serverClientMode && trig === "outbound" && editEnabled) {
         const traps = findOutboundGraphTraps(graphDoc, { effectiveTrigger: "outbound" })
         if (traps.length > 0) {
           throw new Error(

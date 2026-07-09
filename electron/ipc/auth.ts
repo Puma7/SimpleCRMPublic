@@ -4,6 +4,7 @@ import { verifyPassword } from '../auth/password-hash';
 import {
   createSession,
   revokeSession,
+  revokeSessionsForUser,
   getSessionFromEvent,
   touchSession,
   type SessionRole,
@@ -206,7 +207,11 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (session && session.userId === payload.id) {
           return { success: false as const, error: 'Sie können sich nicht selbst löschen' };
         }
-        return deleteLocalAuthUser(payload);
+        const result = deleteLocalAuthUser(payload);
+        // Drop any open sessions for the deleted user so an already-authenticated
+        // window loses IPC access immediately instead of at the idle timeout.
+        if (result.success) revokeSessionsForUser(payload.id);
+        return result;
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),

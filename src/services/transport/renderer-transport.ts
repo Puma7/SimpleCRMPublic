@@ -116,28 +116,11 @@ export async function uploadServerComposeAttachment(input: {
       code: "http_transport_required",
     })
   }
-  const fetchImpl = globalThis.fetch?.bind(globalThis)
-  if (!fetchImpl) {
-    throw new RendererTransportError("Fetch API is not available", {
-      code: "fetch_unavailable",
-    })
-  }
-  const token = await getAccessToken(undefined)
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  const response = await fetchImpl(
-    buildUrl(
-      transport.serverBaseUrl,
-      `/api/v1/email/messages/${input.draftMessageId}/compose-attachments`,
-      undefined,
-    ),
+  const { body } = await authorizedServerFetch(
+    transport.serverBaseUrl,
+    `/api/v1/email/messages/${input.draftMessageId}/compose-attachments`,
     {
       method: "POST",
-      headers,
       body: JSON.stringify({
         filename: input.filename,
         contentBase64: input.contentBase64,
@@ -145,8 +128,6 @@ export async function uploadServerComposeAttachment(input: {
       }),
     },
   )
-  const body = await parseResponseBody(response)
-  if (!response.ok) throw httpError(response, body)
   const result = unwrapData(body)
   if (!isRecord(result) || typeof result.path !== "string") {
     throw new RendererTransportError("Invalid compose attachment upload response", {
@@ -309,6 +290,48 @@ function getElectronApi(): ElectronInvokeApi | undefined {
   return typeof window === "undefined" ? undefined : window.electronAPI
 }
 
+// Authenticated one-shot server request that self-heals an expired access
+// token: on a 401, refresh the session once and replay with the fresh bearer
+// token. Shared by the sibling helpers (postServerJson, attachment upload) so
+// they get the same self-heal as the invoke() transport instead of throwing on
+// a stale token. Throws httpError on a non-ok response (after the retry).
+async function authorizedServerFetch(
+  baseUrl: string,
+  path: string,
+  init: { method: string; body?: string },
+): Promise<{ body: unknown; response: Response }> {
+  const fetchImpl = globalThis.fetch?.bind(globalThis)
+  if (!fetchImpl) {
+    throw new RendererTransportError("Fetch API is not available", {
+      code: "fetch_unavailable",
+    })
+  }
+  const url = buildUrl(baseUrl, path, undefined)
+  const send = async (token: string | null | undefined): Promise<Response> => {
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    }
+    if (token) headers.Authorization = `Bearer ${token}`
+    return fetchImpl(url, {
+      method: init.method,
+      headers,
+      ...(init.body === undefined ? {} : { body: init.body }),
+    })
+  }
+
+  let response = await send(await getAccessToken(undefined))
+  if (response.status === 401) {
+    const serverAuth = createServerAuthClient({ baseUrl, device: "simplecrm-renderer" })
+    const refreshed = await serverAuth.refresh()
+    if (refreshed) response = await send(refreshed.tokens.accessToken)
+  }
+
+  const body = await parseResponseBody(response)
+  if (!response.ok) throw httpError(response, body)
+  return { body, response }
+}
+
 async function postServerJson<T>(path: string, bodyValue: Record<string, unknown>): Promise<T> {
   const transport = getRendererTransport()
   if (transport.kind !== "http" || !transport.serverBaseUrl) {
@@ -316,30 +339,11 @@ async function postServerJson<T>(path: string, bodyValue: Record<string, unknown
       code: "http_transport_required",
     })
   }
-  const fetchImpl = globalThis.fetch?.bind(globalThis)
-  if (!fetchImpl) {
-    throw new RendererTransportError("Fetch API is not available", {
-      code: "fetch_unavailable",
-    })
-  }
-  const token = await getAccessToken(undefined)
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  const response = await fetchImpl(
-    buildUrl(transport.serverBaseUrl, path, undefined),
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(bodyValue),
-    },
-  )
-  const responseBody = await parseResponseBody(response)
-  if (!response.ok) throw httpError(response, responseBody)
-  return unwrapData(responseBody) as T
+  const { body } = await authorizedServerFetch(transport.serverBaseUrl, path, {
+    method: "POST",
+    body: JSON.stringify(bodyValue),
+  })
+  return unwrapData(body) as T
 }
 
 async function getAccessToken(
