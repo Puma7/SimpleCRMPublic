@@ -25,12 +25,12 @@ describe('checkApiRateLimit', () => {
   });
 
   test('applies api-global limit to regular API routes', () => {
-    for (let i = 0; i < 600; i += 1) {
+    for (let i = 0; i < 300; i += 1) {
       expect(checkApiRateLimit({ ip: '9.9.9.9', path: '/api/v1/tasks', method: 'GET' })).toEqual({ allowed: true });
     }
     expect(checkApiRateLimit({ ip: '9.9.9.9', path: '/api/v1/tasks', method: 'GET' })).toEqual({
       allowed: false,
-      limit: 600,
+      limit: 300,
       bucket: 'api-global',
       retryAfterMs: expect.any(Number),
     });
@@ -92,12 +92,12 @@ describe('checkApiRateLimit', () => {
       { path: '/api/v1/email/attachments/7/content', method: 'GET' }, // heavy binary download
     ]) {
       resetApiRateLimits();
-      for (let i = 0; i < 600; i += 1) {
+      for (let i = 0; i < 300; i += 1) {
         expect(checkApiRateLimit({ ip: '5.5.5.5', path, method })).toEqual({ allowed: true });
       }
       expect(checkApiRateLimit({ ip: '5.5.5.5', path, method })).toEqual({
         allowed: false,
-        limit: 600,
+        limit: 300,
         bucket: 'api-global',
         retryAfterMs: expect.any(Number),
       });

@@ -12,7 +12,11 @@ const LIMITS: Record<RateLimitBucket, number> = {
   // to the next one. A human working through the inbox quickly exceeds 300/min,
   // so mail routes get a generous per-client bucket of their own.
   'email': 1200,
-  'api-global': 600,
+  // Everything else (deals, invoices, tasks, webhooks, …). Kept at the original
+  // 300/min: now that the chatty mail traffic has its own bucket above, there is
+  // no reason to weaken the abuse/enumeration brake on the remaining
+  // (business-critical) routes.
+  'api-global': 300,
 };
 
 const WINDOW_MS = 60_000;

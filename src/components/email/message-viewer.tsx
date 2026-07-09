@@ -1395,10 +1395,15 @@ export function MessageViewer(props: Props) {
                       onClick={handleBodyLinkClick}
                     />
                   </div>
-                ) : bodyLoadState === "loading" && !decryptedPlain && needsFullMessageBody(selectedMessage) ? (
-                  <p className="text-sm text-muted-foreground">Nachricht wird geladen…</p>
                 ) : (
                   <div className="space-y-2">
+                    {bodyLoadState === "loading" && !decryptedPlain && needsFullMessageBody(selectedMessage) ? (
+                      // Keep the already-available preview snippet visible while the
+                      // full body loads (a few hundred ms on the happy path); show
+                      // the hint additionally, not instead of the text, so the
+                      // everyday case still renders a readable preview immediately.
+                      <p className="text-xs text-muted-foreground">Vollständige Nachricht wird geladen…</p>
+                    ) : null}
                     {bodyLoadState === "error" && !decryptedPlain && needsFullMessageBody(selectedMessage) ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
                         <span>Vollständige Nachricht konnte nicht geladen werden — nur Vorschau.</span>
