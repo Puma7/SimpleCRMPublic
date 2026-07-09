@@ -1554,11 +1554,16 @@ async function updateExistingPostgresMailSyncMessage(
 ): Promise<void> {
   const current = await trx
     .selectFrom('email_messages')
-    .select(['seen_local', 'is_spam', 'spam_status', 'thread_id', 'has_attachments', 'date_received'])
+    .select([
+      'seen_local', 'is_spam', 'spam_status', 'thread_id', 'has_attachments', 'date_received',
+      'message_id', 'in_reply_to', 'references_header',
+    ])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', id)
     .executeTakeFirst() as
-      | Pick<EmailMessageRow, 'seen_local' | 'is_spam' | 'spam_status' | 'thread_id' | 'has_attachments' | 'date_received'>
+      | Pick<EmailMessageRow,
+        | 'seen_local' | 'is_spam' | 'spam_status' | 'thread_id' | 'has_attachments' | 'date_received'
+        | 'message_id' | 'in_reply_to' | 'references_header'>
       | undefined;
   const now = new Date();
   const nextSeenLocal = mergeSeenLocalOnMailSync({
@@ -1570,6 +1575,12 @@ async function updateExistingPostgresMailSyncMessage(
   const nextDateReceived = input.dateReceived ? new Date(input.dateReceived) : null;
   const currentDateMs = current?.date_received ? new Date(current.date_received).getTime() : null;
   const dateChanged = currentDateMs !== (nextDateReceived ? nextDateReceived.getTime() : null);
+  // Threading inputs — only these should trigger an edge rebuild. Read-state /
+  // date changes refresh the aggregate but must leave the edge graph untouched.
+  const headersChanged =
+    (current?.message_id ?? null) !== (input.messageId ?? null)
+    || (current?.in_reply_to ?? null) !== (input.inReplyTo ?? null)
+    || (current?.references_header ?? null) !== (input.referencesHeader ?? null);
   await trx
     .updateTable('email_messages')
     .set({
@@ -1609,7 +1620,9 @@ async function updateExistingPostgresMailSyncMessage(
   // (→ has_unread), attachments can appear, and a corrected Date header rewrites
   // date_received (→ last_message_at / root-message fields) — without recomputing
   // it, thread lists keep stale unread/last-date values. Recompute only when an
-  // aggregate input actually changed on a threaded row.
+  // aggregate input actually changed on a threaded row. Rebuild the edge graph
+  // ONLY when the threading headers changed, so a pure read-state/date resync
+  // doesn't clobber parent/child edits made via the thread-edges API.
   const threadId = current?.thread_id?.trim();
   if (
     threadId
@@ -1617,9 +1630,10 @@ async function updateExistingPostgresMailSyncMessage(
       nextSeenLocal !== Boolean(current?.seen_local)
       || input.hasAttachments !== Boolean(current?.has_attachments)
       || dateChanged
+      || headersChanged
     )
   ) {
-    await refreshThreadAggregateAfterSync(trx, input.workspaceId, threadId, now);
+    await refreshThreadAggregateAfterSync(trx, input.workspaceId, threadId, now, { rebuildEdges: headersChanged });
   }
 }
 

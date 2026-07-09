@@ -3014,13 +3014,20 @@ export async function refreshThreadAggregateAfterSync(
   workspaceId: string,
   threadId: string,
   now: Date,
+  options?: { rebuildEdges?: boolean },
 ): Promise<void> {
   const canonical = await resolveCanonicalThreadId(trx, workspaceId, threadId);
-  // Rebuild the JWZ parent/child edge graph too — the split/admin and desktop
-  // paths maintain email_thread_edges after any thread change, so without this
-  // /email/thread-edges and the parent/child graph stay empty/stale for freshly
-  // synced conversations until an unrelated operation later rebuilds them.
-  await rebuildThreadEdgesForCanonicalThread(trx, workspaceId, canonical);
+  // Rebuild the JWZ parent/child edge graph when threading inputs change — the
+  // split/admin and desktop paths maintain email_thread_edges after any thread
+  // change, so without this /email/thread-edges stays empty/stale for freshly
+  // synced conversations. But a pure read-state / date resync of an already
+  // threaded message must NOT rebuild edges (rebuildEdges: false): that would
+  // delete+recreate rows and clobber parent/child edits made via the
+  // emailThreadEdges.create/delete API even though membership and reference
+  // headers are unchanged.
+  if (options?.rebuildEdges ?? true) {
+    await rebuildThreadEdgesForCanonicalThread(trx, workspaceId, canonical);
+  }
   await upsertThreadAggregateForCanonicalThread(trx, workspaceId, canonical, now);
 }
 
@@ -3154,19 +3161,26 @@ function findThreadParent(
   // Normalize refs with the same helper used to key byMessageId so bracket-only
   // differences between a child's In-Reply-To/References and a parent's
   // Message-ID don't prevent the edge from forming.
-  const refs: string[] = [];
+  // In-Reply-To names the immediate parent directly — prefer it.
   const parentRef = normalizeMessageId(child.inReplyTo);
-  if (parentRef) refs.push(parentRef);
-  if (child.referencesHeader?.trim()) {
-    for (const part of child.referencesHeader.split(/\s+/)) {
-      const ref = normalizeMessageId(part);
-      if (ref) refs.push(ref);
-      if (refs.length >= 64) break;
-    }
-  }
-  for (const ref of refs) {
-    const parent = byMessageId.get(ref);
+  if (parentRef) {
+    const parent = byMessageId.get(parentRef);
     if (parent && parent.id !== child.id) return parent;
+  }
+  // References run oldest-ancestor → newest-parent, so when there is no direct
+  // In-Reply-To match the immediate parent is the LAST reference present in the
+  // thread. Walk from the end (bounded to 64 checks) so a grandchild attaches to
+  // its parent, not the root — otherwise the edge graph flattens.
+  if (child.referencesHeader?.trim()) {
+    const parts = child.referencesHeader.split(/\s+/);
+    let checked = 0;
+    for (let i = parts.length - 1; i >= 0 && checked < 64; i -= 1) {
+      const ref = normalizeMessageId(parts[i]);
+      if (!ref) continue;
+      checked += 1;
+      const parent = byMessageId.get(ref);
+      if (parent && parent.id !== child.id) return parent;
+    }
   }
   return null;
 }
