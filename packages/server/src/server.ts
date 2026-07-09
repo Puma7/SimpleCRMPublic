@@ -289,7 +289,11 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       ? { level: env.LOG_LEVEL?.trim() || 'info', stream: createPinoLogCaptureStream(serverLogStore) }
       : (options.logger ?? false),
     corsAllowedOrigins,
-    trustProxy: parseBooleanEnv(env.TRUST_PROXY, true, 'TRUST_PROXY'),
+    // Only override when TRUST_PROXY is explicitly set (true = trust all hops,
+    // false = trust none). Unset → the adapter's safe private-hops default.
+    ...(env.TRUST_PROXY?.trim()
+      ? { trustProxy: parseBooleanEnv(env.TRUST_PROXY, true, 'TRUST_PROXY') }
+      : {}),
   });
 
   app.addHook('onClose', async () => {

@@ -41,14 +41,22 @@ export type FastifyServerOptions = Readonly<{
   accessTokenSigner?: AccessTokenSigner;
   corsAllowedOrigins?: readonly string[];
   /**
-   * Trust the reverse proxy's `X-Forwarded-For` so `request.ip` is the real
-   * client, not the proxy's container IP. Defaults to true because the shipped
-   * Docker deployment always fronts the API with Caddy — without it every user
-   * collapses to the proxy IP and shares one per-IP rate-limit bucket. Set
-   * TRUST_PROXY=false only when the API is exposed directly (no proxy).
+   * Which peers' `X-Forwarded-For` to trust so `request.ip` is the real client,
+   * not the proxy's container IP (without it every user behind the Caddy proxy
+   * collapses to one per-IP rate-limit bucket). Passed straight to Fastify.
+   *
+   * Defaults to trusting only private/loopback peers (`loopback, linklocal,
+   * uniquelocal`): the bundled Caddy sits on the Docker network (a private IP)
+   * so its XFF is honored, but a DIRECT public client is not trusted and cannot
+   * spoof XFF to escape the per-IP buckets. TRUST_PROXY=true opts into trusting
+   * every hop; TRUST_PROXY=false disables it entirely.
    */
-  trustProxy?: boolean;
+  trustProxy?: boolean | string;
 }>;
+
+/** Trust only private/loopback proxy hops by default — safe for both the
+ *  Caddy-fronted Docker deployment and a directly-exposed API. */
+const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
@@ -68,7 +76,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: SERVER_JSON_BODY_LIMIT_BYTES,
-    trustProxy: options.trustProxy ?? true,
+    trustProxy: options.trustProxy ?? DEFAULT_TRUST_PROXY,
   });
   const api = createServerApi(options.ports);
   const corsAllowedOrigins = new Set(options.corsAllowedOrigins ?? []);

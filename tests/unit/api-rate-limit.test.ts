@@ -51,4 +51,25 @@ describe('checkApiRateLimit', () => {
     // A different bucket (api-global) for the same IP is unaffected.
     expect(checkApiRateLimit({ ip: '7.7.7.7', path: '/api/v1/tasks' })).toEqual({ allowed: true });
   });
+
+  test('keeps expensive mail actions on the strict api-global bucket', () => {
+    // Sending, external connection tests, and GDPR export must NOT get the
+    // generous 1200/min mail allowance.
+    for (const path of [
+      '/api/v1/email/compose/send',
+      '/api/v1/email/gdpr-export',
+      '/api/v1/email/accounts/test-smtp',
+    ]) {
+      resetApiRateLimits();
+      for (let i = 0; i < 600; i += 1) {
+        expect(checkApiRateLimit({ ip: '5.5.5.5', path })).toEqual({ allowed: true });
+      }
+      expect(checkApiRateLimit({ ip: '5.5.5.5', path })).toEqual({
+        allowed: false,
+        limit: 600,
+        bucket: 'api-global',
+        retryAfterMs: expect.any(Number),
+      });
+    }
+  });
 });

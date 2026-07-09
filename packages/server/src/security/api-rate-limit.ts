@@ -32,6 +32,16 @@ function bucketForPath(path: string): RateLimitBucket {
     return 'auth-public';
   }
   if (path.startsWith('/api/v1/email/')) {
+    // Expensive mail actions — sending, external connection tests, GDPR export —
+    // must NOT inherit the generous chatty-read allowance; keep them capped on
+    // the global bucket so they can't be driven at 1200/min.
+    if (
+      path === '/api/v1/email/compose/send'
+      || path === '/api/v1/email/gdpr-export'
+      || path.startsWith('/api/v1/email/accounts/test-')
+    ) {
+      return 'api-global';
+    }
     return 'email';
   }
   return 'api-global';

@@ -18,17 +18,25 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 
 /** How many times a 429 is transparently retried before the error surfaces. */
 const MAX_RATE_LIMIT_RETRIES = 2
-/** Upper bound on how long we wait between 429 retries (the server's
- *  Retry-After can be a whole rate window; we prefer a quick retry). */
+/** Longest we're willing to wait for a 429 window to reset before we stop
+ *  retrying and surface the error instead. */
 const RATE_LIMIT_RETRY_CAP_MS = 2000
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function rateLimitBackoffMs(response: Response, attempt: number): number {
+/**
+ * How long to back off before replaying a 429, or `null` = don't retry. When
+ * the server's `Retry-After` says the window won't reset for longer than the
+ * cap, retrying would just hammer a still-closed bucket (amplifying the storm),
+ * so we surface the 429 instead. Only transient bursts (no/short Retry-After)
+ * are retried.
+ */
+function rateLimitBackoffMs(response: Response, attempt: number): number | null {
   const headerSeconds = Number(response.headers?.get?.("Retry-After"))
   const serverMs = Number.isFinite(headerSeconds) && headerSeconds > 0 ? headerSeconds * 1000 : 0
+  if (serverMs > RATE_LIMIT_RETRY_CAP_MS) return null
   const base = Math.min(serverMs || (attempt + 1) * 400, RATE_LIMIT_RETRY_CAP_MS)
   return base + Math.floor(Math.random() * 250)
 }
@@ -292,8 +300,11 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       // heals instead of surfacing an error or degrading the viewer to its
       // snippet. A sustained overload still surfaces after the retries.
       if (response.status === 429 && rateRetries < MAX_RATE_LIMIT_RETRIES) {
-        await delay(rateLimitBackoffMs(response, rateRetries))
-        return fetchHttp(requestSpec, retriedAfterRefresh, rateRetries + 1)
+        const backoff = rateLimitBackoffMs(response, rateRetries)
+        if (backoff !== null) {
+          await delay(backoff)
+          return fetchHttp(requestSpec, retriedAfterRefresh, rateRetries + 1)
+        }
       }
 
       const body = response.ok && requestSpec.responseType === "blob"
