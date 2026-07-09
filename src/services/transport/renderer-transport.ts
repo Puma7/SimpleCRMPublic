@@ -214,6 +214,10 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
   const serverAuth = createServerAuthClient({
     baseUrl,
     device: "simplecrm-renderer",
+    // Thread the caller-supplied fetch (tests, custom deployments) into the
+    // refresh client too, so the 401 self-heal uses the same transport as the
+    // request that failed rather than falling back to globalThis.fetch.
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
   // Only self-heal an expired access token when we own the token source
   // (default, storage-backed). A caller that supplies its own getAccessToken
