@@ -2656,6 +2656,15 @@ function sanitizeMailDiagnostics(report: EmailDiagnosticsReport): EmailDiagnosti
       runsLast24h: safeCount(report.workflows.runsLast24h),
       runsBlockedLast24h: safeCount(report.workflows.runsBlockedLast24h),
       runsErrorLast24h: safeCount(report.workflows.runsErrorLast24h),
+      ...(Array.isArray(report.workflows.trappingOutbound)
+        ? {
+            trappingOutbound: report.workflows.trappingOutbound.slice(0, 100).map((w) => ({
+              id: safeCount(w.id),
+              name: typeof w.name === 'string' ? w.name.slice(0, 200) : '',
+              reason: typeof w.reason === 'string' ? w.reason.slice(0, 500) : '',
+            })),
+          }
+        : {}),
     },
     aiUsage: {
       events24h: safeCount(report.aiUsage.events24h),

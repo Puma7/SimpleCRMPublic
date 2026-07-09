@@ -431,6 +431,7 @@ type EmailDiagnosticsRecord = {
     runsLast24h?: number | null
     runsBlockedLast24h?: number | null
     runsErrorLast24h?: number | null
+    trappingOutbound?: Array<{ id?: number | null; name?: string | null; reason?: string | null }> | null
   } | null
   aiUsage?: {
     events24h?: number | null
@@ -4659,6 +4660,13 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
       runsLast24h: countValue(workflows.runsLast24h),
       runsBlockedLast24h: countValue(workflows.runsBlockedLast24h),
       runsErrorLast24h: countValue(workflows.runsErrorLast24h),
+      trappingOutbound: Array.isArray(workflows.trappingOutbound)
+        ? workflows.trappingOutbound.map((w) => ({
+            id: countValue(w?.id),
+            name: typeof w?.name === "string" ? w.name : "",
+            reason: typeof w?.reason === "string" ? w.reason : "",
+          }))
+        : [],
     },
     aiUsage: {
       events24h: countValue(aiUsage.events24h),

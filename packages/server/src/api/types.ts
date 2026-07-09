@@ -1709,6 +1709,15 @@ export type EmailDiagnosticsReport = {
     runsLast24h: number;
     runsBlockedLast24h: number;
     runsErrorLast24h: number;
+    /**
+     * Enabled outbound workflows whose stored graph can never release a held
+     * draft (dead-end / loop / dangling port / no-graph / compiled mode). These
+     * silently trap outbound mail; the guard only blocks NEW/edited ones, so
+     * this surfaces any that were already enabled before the guard shipped.
+     * Optional so existing report constructors (Electron port, tests, sanitize)
+     * stay valid; the postgres port always populates it.
+     */
+    trappingOutbound?: Array<{ id: number; name: string; reason: string }>;
   };
   aiUsage: {
     events24h: number;

@@ -4,6 +4,12 @@ import { join } from 'node:path';
 
 import type { Kysely } from 'kysely';
 
+import {
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
+  type WorkflowGraphDocument,
+} from '@simplecrm/core';
+
 import type {
   EmailDiagnosticsApiPort,
   EmailDiagnosticsReport,
@@ -95,6 +101,7 @@ async function collectDiagnostics(
   const messageStats = await selectMessageStats(trx, workspaceId);
   const byFolderKind = await selectFolderKindCounts(trx, workspaceId);
   const workflowStats = await selectWorkflowStats(trx, workspaceId, now);
+  const trappingOutbound = await selectTrappingOutboundWorkflows(trx, workspaceId);
   const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const since30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const aiUsage24h = await selectAiUsageTotals(trx, workspaceId, since24h);
@@ -119,6 +126,7 @@ async function collectDiagnostics(
       runsLast24h: countValue(workflowStats?.runs_last_24h),
       runsBlockedLast24h: countValue(workflowStats?.runs_blocked_last_24h),
       runsErrorLast24h: countValue(workflowStats?.runs_error_last_24h),
+      trappingOutbound,
     },
     aiUsage: {
       events24h: countValue(aiUsage24h?.events),
@@ -210,6 +218,55 @@ async function selectWorkflowStats(
     .where('workspace_id', '=', workspaceId)
     .where('started_at', '>=', since)
     .executeTakeFirst();
+}
+
+type OutboundWorkflowRow = {
+  id: number | string | bigint;
+  name: string | null;
+  graph_json: unknown;
+  execution_mode: string | null;
+};
+
+/**
+ * Detect enabled outbound workflows that would trap mail. Read-only: mirrors
+ * the create/update guard (outboundWorkflowGuardError) so the same conditions
+ * that BLOCK a new workflow also SURFACE an already-enabled one. Compiled mode
+ * and a missing graph always trap; otherwise the graph is walked for dead
+ * ends / dangling ports / loops.
+ */
+async function selectTrappingOutboundWorkflows(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<Array<{ id: number; name: string; reason: string }>> {
+  const rows = (await trx
+    .selectFrom('email_workflows')
+    .select(['id', 'name', 'graph_json', 'execution_mode'])
+    .where('workspace_id', '=', workspaceId)
+    .where('trigger_name', '=', 'outbound')
+    .where('enabled', '=', true)
+    .orderBy('id', 'asc')
+    .execute()) as OutboundWorkflowRow[];
+
+  const trapping: Array<{ id: number; name: string; reason: string }> = [];
+  for (const row of rows) {
+    const id = Number(row.id);
+    const name = row.name ?? `#${id}`;
+    if ((row.execution_mode ?? 'graph') === 'compiled') {
+      trapping.push({ id, name, reason: 'compiled-Modus wird serverseitig nicht ausgeführt — jede Mail bleibt blockiert.' });
+      continue;
+    }
+    if (!row.graph_json || typeof row.graph_json !== 'object') {
+      trapping.push({ id, name, reason: 'Kein Graph hinterlegt — jede Mail bleibt blockiert.' });
+      continue;
+    }
+    const issues = findOutboundGraphTraps(row.graph_json as WorkflowGraphDocument, {
+      effectiveTrigger: 'outbound',
+    });
+    if (issues.length > 0) {
+      trapping.push({ id, name, reason: formatOutboundGraphTraps(issues) });
+    }
+  }
+  return trapping;
 }
 
 type AiUsageStatsRow = {
