@@ -81,6 +81,7 @@ import type {
   EmailThreadSplitMessagePortResult,
 } from '../api/types';
 import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
+import { listWorkspaceTicketPrefixes } from '../mail-ticket-prefixes';
 import type {
   EmailAccountMailSettingsTable,
   EmailAccountSignaturesTable,
@@ -2826,7 +2827,20 @@ export async function resolveReferenceThreadForSync(
   },
 ): Promise<{ threadId: string | null; ticketCode: string | null }> {
   const related = collectRelatedIds(args.messageId, args.inReplyTo, args.referencesHeader);
-  const subjectTicket = extractTicketFromSubject(args.subject);
+  // Recognize the same custom per-account ticket prefixes the rest of the app
+  // uses, not just the legacy `SCR` default. Fast path: try the default first;
+  // only when the subject carries a bracketed ticket token the default missed do
+  // we load the workspace's configured prefixes (2 extra queries) and retry, so
+  // ordinary mail without a ticket bracket stays query-free on the hot sync path.
+  let subjectTicket = extractTicketFromSubject(args.subject);
+  if (
+    !subjectTicket
+    && args.subject
+    && /\[[A-Za-z0-9]{1,12}-[A-Za-z0-9]{1,20}\]/.test(args.subject)
+  ) {
+    const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, args.workspaceId);
+    subjectTicket = extractTicketFromSubject(args.subject, { allowedPrefixes });
+  }
 
   const { sql: kyselySql } = require('kysely') as typeof import('kysely');
 
