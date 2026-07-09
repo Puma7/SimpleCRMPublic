@@ -38,6 +38,10 @@ function isExpensiveEmailGet(path: string): boolean {
   // with Content-Length — bandwidth/memory heavy, so it stays on the global
   // bucket instead of the chatty read allowance.
   if (path.startsWith('/api/v1/email/attachments/') && path.endsWith('/content')) return true;
+  // Raw headers / .eml export decodes or reconstructs the full RFC822 message
+  // (raw_rfc822_b64) — an on-demand heavy read, not part of the message-open
+  // fan-out — so it is capped too.
+  if (path.startsWith('/api/v1/email/messages/') && path.endsWith('/raw-headers')) return true;
   return false;
 }
 

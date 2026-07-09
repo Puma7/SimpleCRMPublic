@@ -92,6 +92,7 @@ describe('checkApiRateLimit', () => {
       { path: '/api/v1/email/messages/42/security/check', method: 'POST' }, // rspamd/mailauth
       { path: '/api/v1/email/accounts/12/sync', method: 'POST' }, // external IMAP/POP3
       { path: '/api/v1/email/attachments/7/content', method: 'GET' }, // heavy binary download
+      { path: '/api/v1/email/messages/42/raw-headers', method: 'GET' }, // full .eml reconstruction
     ]) {
       resetApiRateLimits();
       for (let i = 0; i < 300; i += 1) {
