@@ -1591,7 +1591,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       if (useSelection && editorRef.current?.replaceSelectionText(r.text.trim())) {
                         toast.success(`Markierten Text nach ${lang} übersetzt`)
                       } else {
-                        setBodyHtml(
+                        setEditorHtml(
                           mergeComposeHtml(
                             sanitizeComposeHtml(plainTextToReplyHtml(r.text)),
                             splitComposeHtml(getEditorHtml()).quotedHtml,
