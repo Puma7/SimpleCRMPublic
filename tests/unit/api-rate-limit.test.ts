@@ -84,6 +84,8 @@ describe('checkApiRateLimit', () => {
     for (const { path, method } of [
       { path: '/api/v1/email/compose/send', method: 'POST' },
       { path: '/api/v1/email/gdpr-export', method: 'GET' }, // expensive GET exception
+      { path: '/api/v1/email/diagnostics', method: 'GET' }, // walks attachments dir
+      { path: '/api/v1/email/reporting', method: 'GET' }, // aggregate reports
       { path: '/api/v1/email/accounts/test-smtp', method: 'POST' },
       { path: '/api/v1/email/settings/security/test-rspamd', method: 'POST' },
       { path: '/api/v1/email/accounts/12/vacation-test', method: 'POST' }, // sends SMTP

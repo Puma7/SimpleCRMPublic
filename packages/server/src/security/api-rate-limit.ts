@@ -21,10 +21,15 @@ const LIMITS: Record<RateLimitBucket, number> = {
 
 const WINDOW_MS = 60_000;
 
-// Reads that must NOT ride the generous mail bucket even though they use GET: a
-// full-mailbox GDPR export is heavy and low-frequency, so it stays capped.
+// Reads that must NOT ride the generous mail bucket even though they use GET —
+// heavy, low-frequency admin/dashboard endpoints, not part of the chatty
+// message-opening flow: a full-mailbox GDPR export; diagnostics (walks the whole
+// attachments dir with readdir/stat plus aggregate queries); reporting (multiple
+// aggregate queries over email_messages / email_workflow_runs).
 const EMAIL_EXPENSIVE_GET_PATHS = new Set<string>([
   '/api/v1/email/gdpr-export',
+  '/api/v1/email/diagnostics',
+  '/api/v1/email/reporting',
 ]);
 
 function isExpensiveEmailGet(path: string): boolean {
