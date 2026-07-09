@@ -1765,6 +1765,24 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }),
     }
   }],
+  [IPCChannels.Email.BackfillThreads, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "email thread backfill payload")
+    return {
+      method: "POST",
+      path: "/api/v1/email/threads/backfill",
+      body: pruneUndefined({
+        limit: optionalPositiveQueryId(input.limit, "email thread backfill limit"),
+      }),
+      transform: (body) => {
+        const result = dataBody<{ success?: boolean; scanned?: number; threaded?: number }>(body)
+        return {
+          success: Boolean(result.success),
+          scanned: Number(result.scanned ?? 0),
+          threaded: Number(result.threaded ?? 0),
+        }
+      },
+    }
+  }],
   [IPCChannels.Email.BackfillCustomerLinks, ([payload]) => {
     const input = objectPayload(payload ?? {}, "email customer-link backfill payload")
     return {

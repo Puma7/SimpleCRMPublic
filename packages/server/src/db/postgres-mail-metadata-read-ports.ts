@@ -2844,6 +2844,14 @@ export async function resolveReferenceThreadForSync(
     referencesHeader: string | null;
     subject: string | null;
     now: Date;
+    /**
+     * Exclude one message id from the sibling lookup. Used by the historical
+     * backfill, where the row being threaded is ALREADY in the table — without
+     * excluding it the resolver would see the row as its own sibling and, e.g.,
+     * mint a thread for a lone reply whose parent isn't synced, diverging from
+     * the new-message path (which runs before the row exists).
+     */
+    excludeMessageId?: number;
   },
 ): Promise<{ threadId: string | null; ticketCode: string | null }> {
   const related = collectRelatedIds(args.messageId, args.inReplyTo, args.referencesHeader);
@@ -2899,12 +2907,16 @@ export async function resolveReferenceThreadForSync(
     const whereClause = branches.length === 1
       ? branches[0]!
       : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` OR `)})`;
-    siblings = (await trx
+    let siblingQuery = trx
       .selectFrom('email_messages')
       .select(['id', 'thread_id'])
       .where('workspace_id', '=', args.workspaceId)
       .where('account_id', '=', args.accountId)
-      .where(whereClause)
+      .where(whereClause);
+    if (args.excludeMessageId != null) {
+      siblingQuery = siblingQuery.where('id', '!=', args.excludeMessageId);
+    }
+    siblings = (await siblingQuery
       // Prioritize siblings that already carry a `thread_id` before the cap so a
       // huge (>500 message) conversation can't drop its single threaded row and
       // mint a duplicate thread. `thread_id IS NULL` sorts `false` (non-null)

@@ -44,6 +44,34 @@ export function MiscPanel() {
           Kunden-Links nachziehen
         </Button>
       </div>
+
+      <div className="space-y-3 rounded-lg border p-4">
+        <h3 className="text-sm font-semibold">Threads nachziehen</h3>
+        <p className="text-xs text-muted-foreground">
+          Verthreadet bereits synchronisierte Alt-Mails nachträglich über
+          Message-ID / In-Reply-To / References (einmaliger Batch). Neu
+          synchronisierte Mails werden bereits automatisch verthreadet.
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            void invokeRenderer(
+              IPCChannels.Email.BackfillThreads,
+              { limit: 5000 },
+            ).then((r) => {
+              const result = r as { scanned: number; threaded: number }
+              toast.success(`${result.threaded} von ${result.scanned} Mails verthreadet`)
+            }).catch((e) => {
+              logError("misc-panel: thread-backfill", e)
+              toast.error("Thread-Backfill fehlgeschlagen.")
+            })
+          }}
+        >
+          Threads nachziehen
+        </Button>
+      </div>
     </div>
   )
 }

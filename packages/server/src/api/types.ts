@@ -3278,6 +3278,16 @@ export type WorkflowInboundBackfillApiPort = {
   }): Promise<WorkflowInboundBackfillResult>;
 };
 
+export type MailThreadBackfillResult = {
+  success: boolean;
+  scanned: number;
+  threaded: number;
+};
+
+export type MailThreadBackfillApiPort = {
+  backfill(input: { workspaceId: string; limit?: number }): Promise<MailThreadBackfillResult>;
+};
+
 export type WorkflowRuntimeListResult<TRecord> = {
   items: readonly TRecord[];
   nextCursor: number | null;
@@ -4588,6 +4598,7 @@ export type ServerApiPorts = {
   workflowKnowledgeChunks?: WorkflowKnowledgeChunkApiPort;
   workflowMessageApplied?: WorkflowMessageAppliedApiPort;
   workflowInboundBackfill?: WorkflowInboundBackfillApiPort;
+  mailThreadBackfill?: MailThreadBackfillApiPort;
   workflowRuns?: WorkflowRunApiPort;
   workflowRunSteps?: WorkflowRunStepApiPort;
   workflowNodeCatalog?: WorkflowNodeCatalogApiPort;
