@@ -10,6 +10,10 @@ import {
   definitionToJson,
 } from "@shared/email-workflow-graph-compile"
 import {
+  findOutboundGraphTraps,
+  formatOutboundGraphTraps,
+} from "@shared/email-workflow-graph-validate"
+import {
   exportWorkflowBundle,
   parseWorkflowImport,
 } from "@shared/workflow-export-import"
@@ -308,6 +312,19 @@ export function WorkflowShell() {
           "Aktionen hängen direkt am Trigger ohne Bedingung — sie würden auf jede Mail angewendet. Bitte Trigger → Bedingung → (Ja) → Aktion verbinden.",
           { duration: 8000 },
         )
+      }
+      // An enabled outbound workflow holds EVERY draft up front and only sends
+      // it when a path reaches a release node. A graph that dead-ends (or loops)
+      // without releasing traps clean mail forever. Block the save before it
+      // reaches the server's 422 so the desktop edition (no server guard) is
+      // protected too, and surface the exact reason.
+      if (trig === "outbound" && editEnabled) {
+        const traps = findOutboundGraphTraps(graphDoc, { effectiveTrigger: "outbound" })
+        if (traps.length > 0) {
+          throw new Error(
+            `Ausgangs-Workflow blockiert Mails dauerhaft. ${formatOutboundGraphTraps(traps)}`,
+          )
+        }
       }
       if (selectedId != null) {
         await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {

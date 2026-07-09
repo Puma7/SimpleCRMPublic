@@ -224,6 +224,21 @@ describe('findOutboundGraphTraps', () => {
     expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'ghost' }]);
   });
 
+  it('flags a trigger-only outbound graph as a dead end (no edges at all)', () => {
+    // The most minimal trap: a lone outbound trigger with nothing wired. The
+    // client save guard only checks nodes.length > 0, so this graph IS savable;
+    // the validator must still flag it so the server 422 / client guard fire.
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [{ id: 't1', type: 'trigger', data: { kind: 'outbound' } }],
+      edges: [],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 't1' }]);
+    expect(outboundGraphReleasesMail(graph)).toBe(false);
+    // Parity: the shared (electron/renderer) copy must agree.
+    expect(findOutboundGraphTrapsShared(graph as never)).toEqual([{ code: 'dead_end', nodeId: 't1' }]);
+  });
+
   it('validates against the effective trigger even if the graph trigger node differs', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,
