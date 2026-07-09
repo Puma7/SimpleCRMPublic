@@ -105,6 +105,16 @@ coverage/
 .claude/commands/**
 !.claude/commands/**/
 !.claude/commands/**/*.md
+# Re-ignore vendored/generated subtrees under the tracked assets. A skill or
+# command may grow deps or reports (node_modules, coverage, dist); without these
+# a parent-dir ignore, the `*.md` negations above would force-track third-party
+# READMEs and generated reports. An excluded parent dir wins over the file rule.
+.claude/skills/**/node_modules/
+.claude/skills/**/coverage/
+.claude/skills/**/dist/
+.claude/commands/**/node_modules/
+.claude/commands/**/coverage/
+.claude/commands/**/dist/
 # The /improve skill writes implementation plans here as markdown; surface them
 # to git instead of letting the global *.md rule hide (and silently lose) them.
 !plans/
