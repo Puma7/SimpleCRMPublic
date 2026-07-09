@@ -100,7 +100,7 @@ DO UPDATE SET
   updated_at = now()`,
   email_ai_prompts: `INSERT INTO email_ai_prompts (
   workspace_id, source_sqlite_id, label, user_template, target, profile_source_sqlite_id,
-  profile_id, sort_order, source_row, imported_in_run_id, created_at, updated_at
+  profile_id, account_source_sqlite_id, account_id, override_key, sort_order, source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
   $1, (r.source_row->>'id')::bigint,
@@ -109,12 +109,18 @@ SELECT
   COALESCE(NULLIF(r.source_row->>'target', ''), 'full_body'),
   NULLIF(r.source_row->>'profile_id', '')::bigint,
   p.id,
+  NULLIF(r.source_row->>'account_id', '')::bigint,
+  a.id,
+  NULLIF(r.source_row->>'override_key', ''),
   COALESCE(NULLIF(r.source_row->>'sort_order', '')::integer, 0),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
 ${rowsFrom}
 LEFT JOIN email_ai_profiles p
   ON p.workspace_id = $1
  AND p.source_sqlite_id = NULLIF(r.source_row->>'profile_id', '')::bigint
+LEFT JOIN email_accounts a
+  ON a.workspace_id = $1
+ AND a.source_sqlite_id = NULLIF(r.source_row->>'account_id', '')::bigint
 ${rowsWhere}
   AND r.source_row ? 'id'
 ON CONFLICT (workspace_id, source_sqlite_id)
@@ -124,6 +130,9 @@ DO UPDATE SET
   target = EXCLUDED.target,
   profile_source_sqlite_id = EXCLUDED.profile_source_sqlite_id,
   profile_id = EXCLUDED.profile_id,
+  account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
+  account_id = EXCLUDED.account_id,
+  override_key = EXCLUDED.override_key,
   sort_order = EXCLUDED.sort_order,
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
@@ -132,6 +141,7 @@ DO UPDATE SET
   email_workflows: `INSERT INTO email_workflows (
   workspace_id, source_sqlite_id, name, trigger_name, enabled, priority, definition_json,
   graph_json, cron_expr, schedule_account_source_sqlite_id, schedule_account_id,
+  account_source_sqlite_id, account_id, override_key,
   execution_mode, engine_version, legacy_created_by_user_id, created_by_user_id, source_row, imported_in_run_id,
   created_at, updated_at
 )
@@ -145,16 +155,22 @@ SELECT
   ${jsonbField('graph_json')},
   NULLIF(r.source_row->>'cron_expr', ''),
   NULLIF(r.source_row->>'schedule_account_id', '')::bigint,
-  a.id,
+  schedule_account.id,
+  NULLIF(r.source_row->>'account_id', '')::bigint,
+  scope_account.id,
+  NULLIF(r.source_row->>'override_key', ''),
   COALESCE(NULLIF(r.source_row->>'execution_mode', ''), 'graph'),
   COALESCE(NULLIF(r.source_row->>'engine_version', '')::integer, 1),
   NULLIF(r.source_row->>'created_by_user_id', ''),
   NULL,
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
 ${rowsFrom}
-LEFT JOIN email_accounts a
-  ON a.workspace_id = $1
- AND a.source_sqlite_id = NULLIF(r.source_row->>'schedule_account_id', '')::bigint
+LEFT JOIN email_accounts schedule_account
+  ON schedule_account.workspace_id = $1
+ AND schedule_account.source_sqlite_id = NULLIF(r.source_row->>'schedule_account_id', '')::bigint
+LEFT JOIN email_accounts scope_account
+  ON scope_account.workspace_id = $1
+ AND scope_account.source_sqlite_id = NULLIF(r.source_row->>'account_id', '')::bigint
 ${rowsWhere}
   AND r.source_row ? 'id'
 ON CONFLICT (workspace_id, source_sqlite_id)
@@ -168,6 +184,9 @@ DO UPDATE SET
   cron_expr = EXCLUDED.cron_expr,
   schedule_account_source_sqlite_id = EXCLUDED.schedule_account_source_sqlite_id,
   schedule_account_id = EXCLUDED.schedule_account_id,
+  account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
+  account_id = EXCLUDED.account_id,
+  override_key = EXCLUDED.override_key,
   execution_mode = EXCLUDED.execution_mode,
   engine_version = EXCLUDED.engine_version,
   legacy_created_by_user_id = EXCLUDED.legacy_created_by_user_id,
@@ -221,18 +240,32 @@ DO UPDATE SET
   email_message_workflow_applied: messageWorkflowJoinSql('email_message_workflow_applied', 'applied_at'),
   email_workflow_forward_dedup: workflowForwardDedupSql(),
   workflow_knowledge_bases: `INSERT INTO workflow_knowledge_bases (
-  workspace_id, source_sqlite_id, name, description, source_row, imported_in_run_id, created_at, updated_at
+  workspace_id, source_sqlite_id, name, description, account_source_sqlite_id, account_id, override_key,
+  knowledge_context, source_row, imported_in_run_id, created_at, updated_at
 )
 SELECT
   $1, (r.source_row->>'id')::bigint,
   COALESCE(NULLIF(r.source_row->>'name', ''), 'Knowledge base ' || (r.source_row->>'id')),
   NULLIF(r.source_row->>'description', ''),
+  NULLIF(r.source_row->>'account_id', '')::bigint,
+  a.id,
+  NULLIF(r.source_row->>'override_key', ''),
+  NULLIF(r.source_row->>'knowledge_context', ''),
   r.source_row, $3, NULLIF(r.source_row->>'created_at', '')::timestamptz, now()
-${idRowsFilter}
+${rowsFrom}
+LEFT JOIN email_accounts a
+  ON a.workspace_id = $1
+ AND a.source_sqlite_id = NULLIF(r.source_row->>'account_id', '')::bigint
+${rowsWhere}
+  AND r.source_row ? 'id'
 ON CONFLICT (workspace_id, source_sqlite_id)
 DO UPDATE SET
   name = EXCLUDED.name,
   description = EXCLUDED.description,
+  account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
+  account_id = EXCLUDED.account_id,
+  override_key = EXCLUDED.override_key,
+  knowledge_context = EXCLUDED.knowledge_context,
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   created_at = EXCLUDED.created_at,

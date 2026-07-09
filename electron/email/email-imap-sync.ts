@@ -23,7 +23,7 @@ import {
 } from './email-uidvalidity';
 import { resolveImapAuth } from './email-imap-auth';
 import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
-import { reconcileSeenFlagsForFolder } from './email-seen-reconcile';
+import { pushPendingSeenSyncsForFolder, reconcileSeenFlagsForFolder } from './email-seen-reconcile';
 import {
   assertSyncNotAborted,
   EmailSyncAbortedError,
@@ -101,9 +101,18 @@ async function syncFolderImapInternal(
         const backedUp = backupFolderLocalMetaBeforeUidValidityReset(folderRow.id);
         getDb()
           .prepare(
-            `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE folder_id = ? AND (uid >= 0 OR pop3_uidl IS NOT NULL)`,
+            `WITH negative_uid_offset(v) AS (
+             SELECT COALESCE(MAX(ABS(uid)), 0)
+             FROM ${EMAIL_MESSAGES_TABLE}
+             WHERE folder_id = ? AND uid < 0
+           )
+           UPDATE ${EMAIL_MESSAGES_TABLE}
+           SET uid = -(ABS(id) + (SELECT v FROM negative_uid_offset)),
+               soft_deleted = 0,
+               post_process_done = 1
+           WHERE folder_id = ? AND uid >= 0`,
           )
-          .run(folderRow.id);
+          .run(folderRow.id, folderRow.id);
         recordUidValidityResetNotice({
           accountId,
           folderPath,
@@ -114,7 +123,7 @@ async function syncFolderImapInternal(
         });
         console.warn(
           `[imap-sync] UIDVALIDITY changed account ${accountId} ${folderPath}: ` +
-            `${toDrop?.c ?? 0} messages re-indexed (${backedUp.length} metadata backups)`,
+            `${toDrop?.c ?? 0} local messages preserved for re-index (${backedUp.length} metadata backups)`,
         );
         lastUid = 0;
       }
@@ -268,6 +277,14 @@ async function syncFolderImapInternal(
       }
 
       try {
+        if ((account.imap_sync_seen_on_open ?? 1) !== 0) {
+          const seenPushed = await pushPendingSeenSyncsForFolder(client, folderRow.id, signal);
+          if (seenPushed > 0) {
+            console.log(
+              `[imap-sync] pushed pending seen flag(s) for ${seenPushed} message(s) in ${folderPath}`,
+            );
+          }
+        }
         const seenReconciled = await reconcileSeenFlagsForFolder(
           client,
           folderRow.id,

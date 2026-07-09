@@ -126,6 +126,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             'display_name',
             'role',
             'disabled_at',
+            'login_pin_enabled',
+            'mfa_enabled',
+            'mfa_method',
             'created_at',
             'updated_at',
           ])
@@ -450,46 +453,52 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
     },
 
     async recordFailedLogin(input) {
-      const penalty = calculateLoginPenalty(1);
-      const lockUntil = penalty.kind === 'temporary'
-        ? new Date(now().getTime() + penalty.lockSeconds * 1000)
-        : null;
-      const row = await options.db
-        .insertInto('auth_login_failures')
-        .values({
-          workspace_id: null,
-          user_id: input.userId ?? null,
-          email_normalized: input.email.toLowerCase(),
-          ip_address: input.ip,
-          failed_at: now(),
-          failed_attempts: 1,
-          penalty_kind: penalty.kind,
-          lock_until: lockUntil,
-          user_agent: null,
-        })
-        .onConflict((oc) => oc.columns(['email_normalized', 'ip_address']).doUpdateSet((eb) => ({
-          failed_attempts: eb('auth_login_failures.failed_attempts', '+', 1),
-          failed_at: now(),
-          user_id: input.userId ?? null,
-        })))
-        .returning(['failed_attempts'])
-        .executeTakeFirst();
+      return withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => {
+          const penalty = calculateLoginPenalty(1);
+          const lockUntil = penalty.kind === 'temporary'
+            ? new Date(now().getTime() + penalty.lockSeconds * 1000)
+            : null;
+          const row = await trx
+            .insertInto('auth_login_failures')
+            .values({
+              workspace_id: null,
+              user_id: input.userId ?? null,
+              email_normalized: input.email.toLowerCase(),
+              ip_address: input.ip,
+              failed_at: now(),
+              failed_attempts: 1,
+              penalty_kind: penalty.kind,
+              lock_until: lockUntil,
+              user_agent: null,
+            })
+            .onConflict((oc) => oc.columns(['email_normalized', 'ip_address']).doUpdateSet((eb) => ({
+              failed_attempts: eb('auth_login_failures.failed_attempts', '+', 1),
+              failed_at: now(),
+              user_id: input.userId ?? null,
+            })))
+            .returning(['failed_attempts'])
+            .executeTakeFirst();
 
-      const failedAttempts = row?.failed_attempts ?? 1;
-      const updatedPenalty = calculateLoginPenalty(failedAttempts);
-      await options.db
-        .updateTable('auth_login_failures')
-        .set({
-          penalty_kind: updatedPenalty.kind,
-          lock_until: updatedPenalty.kind === 'temporary'
-            ? new Date(now().getTime() + updatedPenalty.lockSeconds * 1000)
-            : null,
-        })
-        .where('email_normalized', '=', input.email.toLowerCase())
-        .where('ip_address', '=', input.ip)
-        .execute();
+          const failedAttempts = row?.failed_attempts ?? 1;
+          const updatedPenalty = calculateLoginPenalty(failedAttempts);
+          await trx
+            .updateTable('auth_login_failures')
+            .set({
+              penalty_kind: updatedPenalty.kind,
+              lock_until: updatedPenalty.kind === 'temporary'
+                ? new Date(now().getTime() + updatedPenalty.lockSeconds * 1000)
+                : null,
+            })
+            .where('email_normalized', '=', input.email.toLowerCase())
+            .where('ip_address', '=', input.ip)
+            .execute();
 
-      return failedAttempts;
+          return failedAttempts;
+        },
+      );
     },
 
     async recordSuccessfulLogin(input) {
@@ -705,10 +714,20 @@ async function resolveAccessTokenPrincipal(
   };
 }
 
-function mapUser(row: Pick<
-  UserRow,
-  'id' | 'workspace_id' | 'email' | 'display_name' | 'role' | 'password_hash' | 'disabled_at'
->): AuthUserRecord {
+function mapUser(row: {
+  id: string;
+  workspace_id: string;
+  email: string;
+  display_name: string;
+  role: UserRow['role'];
+  password_hash: string;
+  disabled_at: UserRow['disabled_at'];
+  login_pin_hash?: string | null;
+  login_pin_enabled?: boolean;
+  mfa_enabled?: boolean;
+  mfa_method?: UserRow['mfa_method'];
+  mfa_totp_secret_id?: string | null;
+}): AuthUserRecord {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -717,19 +736,35 @@ function mapUser(row: Pick<
     role: row.role,
     passwordHash: row.password_hash,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
+    loginPinHash: row.login_pin_hash ?? null,
+    loginPinEnabled: Boolean(row.login_pin_enabled),
+    mfaEnabled: Boolean(row.mfa_enabled),
+    mfaMethod: row.mfa_method ?? null,
+    mfaTotpSecretId: row.mfa_totp_secret_id ?? null,
   };
 }
 
-function mapAdminUser(row: Pick<
-  UserRow,
-  'id' | 'email' | 'display_name' | 'role' | 'disabled_at' | 'created_at' | 'updated_at'
->) {
+function mapAdminUser(row: {
+  id: string;
+  email: string;
+  display_name: string;
+  role: UserRow['role'];
+  disabled_at: UserRow['disabled_at'];
+  login_pin_enabled?: boolean;
+  mfa_enabled?: boolean;
+  mfa_method?: UserRow['mfa_method'];
+  created_at?: UserRow['created_at'];
+  updated_at?: UserRow['updated_at'];
+}) {
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
     role: row.role,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
+    loginPinEnabled: Boolean(row.login_pin_enabled),
+    mfaEnabled: Boolean(row.mfa_enabled),
+    mfaMethod: row.mfa_method ?? null,
     createdAt: row.created_at ? toDate(row.created_at).toISOString() : null,
     updatedAt: row.updated_at ? toDate(row.updated_at).toISOString() : null,
   };

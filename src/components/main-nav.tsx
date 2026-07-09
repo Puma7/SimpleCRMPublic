@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Mail,
   Search,
+  PackageOpen,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserSwitcher } from "@/components/auth/user-switcher"
@@ -27,6 +28,7 @@ const navLinks = [
   { to: "/products", labelKey: "nav.products", icon: Package },
   { to: "/calendar", labelKey: "nav.calendar", icon: CalendarDays },
   { to: "/email", labelKey: "nav.email", icon: Mail },
+  { to: "/returns", labelKey: "nav.returns", icon: PackageOpen },
 ] as const
 
 export function MainNav({

@@ -7,11 +7,20 @@ import {
   WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
 } from '../database-schema';
 import { runEmbedding } from '../email/email-openai';
+import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
+import {
+  type KnowledgeContext,
+  isKnowledgeContext,
+  knowledgeContextsForDirection,
+} from '../../shared/knowledge-context';
 
 export type KnowledgeBaseRow = {
   id: number;
   name: string;
   description: string | null;
+  account_id: number | null;
+  override_key: string | null;
+  knowledge_context: string | null;
   created_at: string;
 };
 
@@ -56,10 +65,11 @@ async function storeEmbedding(chunkId: number, text: string): Promise<void> {
     .run(JSON.stringify(vec), chunkId);
 }
 
-export function listKnowledgeBases(): KnowledgeBaseRow[] {
-  return getDb()
+export function listKnowledgeBases(scope?: AccountOverrideScope): KnowledgeBaseRow[] {
+  const rows = getDb()
     .prepare(`SELECT * FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} ORDER BY name ASC`)
     .all() as KnowledgeBaseRow[];
+  return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
 }
 
 function knowledgeMarkdownPath(knowledgeBaseId: number): string {
@@ -160,17 +170,78 @@ function syncChunksFromDocument(
   void storeEmbedding(id, capped.slice(0, 8000));
 }
 
-export function createKnowledgeBase(name: string, description?: string | null): number {
+export function createKnowledgeBase(
+  name: string,
+  description?: string | null,
+  opts: {
+    accountId?: number | null;
+    overrideKey?: string | null;
+    knowledgeContext?: KnowledgeContext | string | null;
+  } = {},
+): number {
+  const ctx = isKnowledgeContext(opts.knowledgeContext) ? opts.knowledgeContext : null;
+  const overrideKey = opts.overrideKey ?? (ctx ? `kb.${ctx}` : null);
   const r = getDb()
     .prepare(
-      `INSERT INTO ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (name, description, created_at) VALUES (?, ?, ?)`,
+      `INSERT INTO ${WORKFLOW_KNOWLEDGE_BASES_TABLE} (name, description, account_id, override_key, knowledge_context, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(name.trim(), description ?? null, new Date().toISOString());
+    .run(
+      name.trim(),
+      description ?? null,
+      opts.accountId ?? null,
+      overrideKey,
+      ctx,
+      new Date().toISOString(),
+    );
   const id = Number(r.lastInsertRowid);
   const template = defaultMarkdownTemplate(name);
   fs.writeFileSync(knowledgeMarkdownPath(id), template, 'utf8');
   syncChunksFromDocument(id, template, name);
   return id;
+}
+
+export function updateKnowledgeBase(
+  id: number,
+  opts: {
+    name?: string;
+    description?: string | null;
+    accountId?: number | null;
+    overrideKey?: string | null;
+    knowledgeContext?: KnowledgeContext | string | null;
+  },
+): void {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (opts.name !== undefined) {
+    sets.push('name = ?');
+    vals.push(opts.name.trim());
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'description')) {
+    sets.push('description = ?');
+    vals.push(opts.description ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'accountId')) {
+    sets.push('account_id = ?');
+    vals.push(opts.accountId ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'overrideKey')) {
+    sets.push('override_key = ?');
+    vals.push(opts.overrideKey ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, 'knowledgeContext')) {
+    const ctx = isKnowledgeContext(opts.knowledgeContext) ? opts.knowledgeContext : null;
+    sets.push('knowledge_context = ?');
+    vals.push(ctx);
+    if (!Object.prototype.hasOwnProperty.call(opts, 'overrideKey') && ctx) {
+      sets.push('override_key = ?');
+      vals.push(`kb.${ctx}`);
+    }
+  }
+  if (sets.length === 0) return;
+  vals.push(id);
+  getDb()
+    .prepare(`UPDATE ${WORKFLOW_KNOWLEDGE_BASES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...vals);
 }
 
 export function deleteKnowledgeBase(id: number): void {
@@ -240,6 +311,63 @@ function keywordSearch(
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, limit).map((x) => x.row);
+}
+
+export function findKnowledgeBaseForAccountContext(
+  accountId: number | null,
+  context: KnowledgeContext,
+): KnowledgeBaseRow | undefined {
+  if (accountId != null) {
+    const accountRow = getDb()
+      .prepare(
+        `SELECT * FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE}
+         WHERE knowledge_context = ? AND account_id = ?
+         LIMIT 1`,
+      )
+      .get(context, accountId) as KnowledgeBaseRow | undefined;
+    if (accountRow) return accountRow;
+  }
+  return getDb()
+    .prepare(
+      `SELECT * FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE}
+       WHERE knowledge_context = ? AND account_id IS NULL
+       LIMIT 1`,
+    )
+    .get(context) as KnowledgeBaseRow | undefined;
+}
+
+export function listKnowledgeBaseIdsForWorkflow(
+  accountId: number | null | undefined,
+  direction: string | undefined,
+): number[] {
+  const contexts = knowledgeContextsForDirection(
+    direction as 'inbound' | 'outbound' | 'draft_created' | undefined,
+  );
+  const ids = new Set<number>();
+  for (const ctx of contexts) {
+    const row = findKnowledgeBaseForAccountContext(accountId ?? null, ctx);
+    if (row) ids.add(row.id);
+  }
+  return [...ids];
+}
+
+export async function searchKnowledgeForWorkflow(
+  accountId: number | null | undefined,
+  direction: string | undefined,
+  query: string,
+  limit = 5,
+  explicitKbId?: number | null,
+): Promise<KnowledgeChunkRow[]> {
+  const kbIds = new Set<number>();
+  if (explicitKbId != null && explicitKbId > 0) kbIds.add(explicitKbId);
+  for (const id of listKnowledgeBaseIdsForWorkflow(accountId, direction)) kbIds.add(id);
+  const merged: KnowledgeChunkRow[] = [];
+  const perKb = Math.max(1, Math.ceil(limit / Math.max(1, kbIds.size)));
+  for (const kbId of kbIds) {
+    const chunks = await searchKnowledgeChunks(kbId, query, perKb);
+    merged.push(...chunks);
+  }
+  return merged.slice(0, limit);
 }
 
 /** Keyword + optional embedding RAG */

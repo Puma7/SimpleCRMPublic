@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
 import {
   formatFrom,
+  formatMessageFrom,
   type EmailAccount,
   type EmailMessage,
   type MailView,
@@ -47,6 +48,7 @@ import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
 import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 import { invokeRenderer } from "@/services/transport"
+import type { BulkListAction } from "./hooks/use-email-messages"
 
 type Props = {
   messages: EmailMessage[]
@@ -58,9 +60,16 @@ type Props = {
     advanceFromMessageId?: number
     selectMessageId?: number | null
   }) => void | Promise<void>
+  onBulkListChanged?: (opts: {
+    action: BulkListAction
+    messageIds: number[]
+    selectMessageId?: number | null
+  }) => void | Promise<void>
   loadMore?: () => void
   hasMore?: boolean
   loadingMore?: boolean
+  scrollToMessageId?: number | null
+  onScrolledToMessage?: () => void
 }
 
 function threadKey(m: EmailMessage): string {
@@ -88,9 +97,12 @@ export function MessageList({
   loading,
   onOpen,
   onListChanged,
+  onBulkListChanged,
   loadMore,
   hasMore,
   loadingMore,
+  scrollToMessageId,
+  onScrolledToMessage,
 }: Props) {
   const {
     searchQuery,
@@ -129,6 +141,15 @@ export function MessageList({
   const [pendingSelectAllCount, setPendingSelectAllCount] = useState(0)
   const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set())
   const [threadChildren, setThreadChildren] = useState<Record<string, EmailMessage[]>>({})
+
+  useEffect(() => {
+    if (scrollToMessageId == null) return
+    const el = document.querySelector(`[data-message-id="${scrollToMessageId}"]`)
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: "nearest" })
+      onScrolledToMessage?.()
+    }
+  }, [scrollToMessageId, messages, onScrolledToMessage])
   const searchInputRef = useRef<HTMLInputElement>(null)
   const lastSelectionAnchorRef = useRef<number | null>(null)
   const pendingFolderSelectIdsRef = useRef<number[]>([])
@@ -156,7 +177,7 @@ export function MessageList({
   }, [selectedIds.size, bulkBusy])
 
   const isMessageSelectable = (m: EmailMessage) =>
-    mailView === "drafts"
+    mailView === "drafts" || mailView === "scheduled_send"
       ? m.uid < 0 && m.folder_kind === "draft"
       : m.uid >= 0 || Boolean(m.pop3_uidl)
 
@@ -383,10 +404,21 @@ export function MessageList({
           "restore",
           "unarchive",
           "mark-done",
+          "mark-open",
         ]
         const advanceTargetId = pickBulkAdvanceTargetId(visibleMessages, selectedIds)
         setSelectedIds(new Set())
-        if (advanceActions.includes(action)) {
+        if (onBulkListChanged) {
+          if (advanceActions.includes(action)) {
+            onBulkListChanged({
+              action,
+              messageIds: ids,
+              selectMessageId: advanceTargetId,
+            })
+          } else {
+            onBulkListChanged({ action, messageIds: ids })
+          }
+        } else if (advanceActions.includes(action)) {
           await onListChanged?.({ selectMessageId: advanceTargetId })
         } else {
           await onListChanged?.()
@@ -401,6 +433,7 @@ export function MessageList({
       selectedIds,
       bulkAccountId,
       onListChanged,
+      onBulkListChanged,
       visibleMessages,
       mailView,
       messageDoneFilter,
@@ -408,7 +441,7 @@ export function MessageList({
   )
 
   const bulkButtons: { action: BulkAction; label: string; variant?: "secondary" | "outline" | "ghost" }[] =
-    mailView === "drafts"
+    mailView === "drafts" || mailView === "scheduled_send"
       ? [{ action: "delete-drafts", label: "Entwürfe löschen", variant: "outline" }]
       : mailView === "spam_review"
         ? [
@@ -574,7 +607,7 @@ export function MessageList({
               </li>
             ) : null}
             {visibleMessages.map((m) => {
-              const isDraft = m.uid < 0
+              const isDraft = m.folder_kind === "draft"
               const blocked = !!m.outbound_hold
               const unread = !m.seen_local && m.uid >= 0
               const open = mailView === "inbox" && !m.done_local && m.uid >= 0
@@ -652,6 +685,7 @@ export function MessageList({
                     )}
                     <button
                       type="button"
+                      data-message-id={m.id}
                       draggable={m.uid >= 0 && !bulkBusy}
                       disabled={bulkBusy}
                       onDragStart={(e) => {
@@ -717,7 +751,7 @@ export function MessageList({
                               ? blocked
                                 ? "Entwurf — Ausgang blockiert"
                                 : "Entwurf"
-                              : formatFrom(m.from_json)}
+                              : formatMessageFrom(m, accounts)}
                           </span>
                           <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
                             {m.has_attachments ? (

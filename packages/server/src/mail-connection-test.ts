@@ -3,6 +3,12 @@ import tls from 'node:tls';
 
 import type { Kysely } from 'kysely';
 
+import {
+  buildComposeRfc822,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
+} from '@simplecrm/core';
+
 import type {
   EmailOAuthProvider,
   MailConnectionTestApiPort,
@@ -122,12 +128,16 @@ async function resolvePop3Input(
   if (input.accountId != null && !account) {
     return { success: false, error: 'Konto nicht gefunden' };
   }
+  const host = input.host?.trim() || account?.pop3Host?.trim() || '';
+  if (!host) {
+    return { success: false, error: 'POP3-Host fehlt' };
+  }
   const password = await resolvePassword(input, account, options);
   if (!password) return { success: false, error: 'Kein Passwort' };
   return {
     resolved: true,
     value: {
-      host: input.host || account?.pop3Host || account?.imapHost || '',
+      host,
       port: input.port || account?.pop3Port || 995,
       tls: input.tls,
       user: input.user || account?.imapUsername || '',
@@ -147,10 +157,14 @@ async function resolveSmtpInput(
   const auth = await resolveSmtpAuth(input, account, options);
   if (!auth.ok) return { success: false, error: auth.error };
   const user = input.user || auth.user;
+  const host = input.host?.trim() || resolveConfiguredSmtpHost(account?.smtpHost) || '';
+  if (!host) {
+    return { success: false, error: SMTP_HOST_MISSING_ERROR };
+  }
   return {
     resolved: true,
     value: {
-      host: input.host || account?.smtpHost || account?.imapHost || '',
+      host,
       port: input.port || account?.smtpPort || 587,
       tls: input.tls,
       user,
@@ -395,6 +409,10 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? validateCommandValue(input.password, 'Passwort');
   if (unsafe) return unsafe;
+  const envelopeFrom = extractSmtpEnvelopeAddress(input.user);
+  if (!envelopeFrom) {
+    return { success: false, error: 'SMTP-Benutzername muss eine gueltige E-Mail-Adresse sein' };
+  }
   const socket = await input.socketFactory(input);
   const client = new LineProtocolClient(socket, input.timeoutMs);
   try {
@@ -414,6 +432,24 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
 
     const authResponse = await smtpAuthenticate(client, response, input);
     if (authResponse.code !== 235) return { success: false, error: authResponse.text };
+
+    response = await smtpCommand(client, `MAIL FROM:<${envelopeFrom}>`);
+    if (response.code !== 250) return { success: false, error: response.text };
+
+    response = await smtpCommand(client, `RCPT TO:<${envelopeFrom}>`);
+    if (response.code !== 250 && response.code !== 251) return { success: false, error: response.text };
+
+    response = await smtpCommand(client, 'DATA');
+    if (response.code !== 354) return { success: false, error: response.text };
+
+    const probe = buildSmtpConnectionTestRfc822({
+      from: envelopeFrom,
+      to: envelopeFrom,
+    });
+    client.writeData(dotStuff(probe));
+    response = await readSmtpResponse(client);
+    if (response.code !== 250) return { success: false, error: response.text };
+
     await smtpCommand(client, 'QUIT').catch(() => undefined);
     return { success: true };
   } catch (error) {
@@ -421,6 +457,34 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
   } finally {
     client.close();
   }
+}
+
+function extractSmtpEnvelopeAddress(user: string): string | null {
+  const trimmed = user.trim();
+  if (!trimmed || /[\r\n<>]/.test(trimmed)) return null;
+  const angle = /<([^>]+)>/.exec(trimmed);
+  const email = (angle?.[1] ?? trimmed).trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
+function buildSmtpConnectionTestRfc822(input: { from: string; to: string }): string {
+  return buildComposeRfc822({
+    from: input.from,
+    to: input.to,
+    subject: 'SimpleCRM SMTP-Verbindungstest',
+    text: 'Dies ist ein automatischer Verbindungstest von SimpleCRM.',
+    extraHeaders: ['Auto-Submitted: auto-generated'],
+    date: new Date(),
+  }).toString('utf8');
+}
+
+function dotStuff(value: string): string {
+  const normalized = value.replace(/\r?\n/g, '\r\n').replace(/\r\n?$/g, '');
+  const stuffed = normalized
+    .split('\r\n')
+    .map((line) => (line.startsWith('.') ? `.${line}` : line))
+    .join('\r\n');
+  return `${stuffed}\r\n.\r\n`;
 }
 
 type SmtpResponse = Readonly<{
@@ -623,6 +687,10 @@ class LineProtocolClient {
 
   writeLine(command: string): void {
     this.socket.write(`${command}\r\n`);
+  }
+
+  writeData(data: string): void {
+    this.socket.write(data);
   }
 
   async commandUntilTagged(command: string, tag: string): Promise<{ ok: boolean; line: string }> {

@@ -17,6 +17,7 @@ import {
   isAutomationApiKeyRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { AutomationMiscSettingsSection } from "./automation-misc-settings-section"
 import { hasLocalIpc, invokeIpc } from "../types"
 
 type ServerAutomationApiKey = {
@@ -423,9 +424,10 @@ export function AutomationPanel() {
 
         <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
           <div className="space-y-1">
-            <Label htmlFor="imap-delete-opt-in">IMAP-Löschung auf dem Server</Label>
+            <Label htmlFor="imap-delete-opt-in">IMAP-Löschung (globaler Fallback)</Label>
             <p className="text-xs text-muted-foreground">
-              Erlaubt den Workflow-Knoten „Auf Server löschen“. Ohne Opt-in schlägt die Aktion fehl.
+              Standard-Opt-in, wenn das Konto unter Konten → SMTP keinen eigenen Schalter gesetzt hat.
+              Pro Postfach: <strong>Konten → SMTP</strong>.
             </p>
           </div>
           <Switch
@@ -455,6 +457,8 @@ export function AutomationPanel() {
           Workflow-Optionen speichern
         </Button>
       </section>
+
+      <AutomationMiscSettingsSection />
     </div>
   )
 }

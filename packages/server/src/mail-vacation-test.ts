@@ -15,6 +15,7 @@ import {
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type { MailVacationAutoReplyJobPort } from './jobs';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { resolveConfiguredSmtpHost, SMTP_HOST_MISSING_ERROR } from '@simplecrm/core';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -143,8 +144,11 @@ export function createPostgresEmailVacationTestPort(
       });
 
       try {
+        const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
+        if (!smtpHost) return { success: false, error: SMTP_HOST_MISSING_ERROR };
+
         await smtpSend({
-          host: account.smtpHost?.trim() || account.imapHost,
+          host: smtpHost,
           port: account.smtpPort ?? 587,
           tls: account.smtpTls,
           user: auth.user,
@@ -290,9 +294,23 @@ export function createPostgresEmailVacationAutoReplyPort(
         date: plannedAt,
       });
 
+      const smtpHost = resolveConfiguredSmtpHost(context.account.smtpHost);
+      if (!smtpHost) {
+        await recordVacationAutoReplyFailure({
+          db: options.db,
+          workspaceId: input.workspaceId,
+          context,
+          sender: planned.sender,
+          error: SMTP_HOST_MISSING_ERROR,
+          now: plannedAt,
+          applyWorkspaceSession: options.applyWorkspaceSession,
+        });
+        return;
+      }
+
       try {
         await smtpSend({
-          host: context.account.smtpHost?.trim() || context.account.imapHost,
+          host: smtpHost,
           port: context.account.smtpPort ?? 587,
           tls: context.account.smtpTls,
           user: auth.user,

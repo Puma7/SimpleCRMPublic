@@ -11,10 +11,7 @@ type ParsedAttachmentPart = {
   content?: Buffer;
 };
 import { buildCustomerEmailMap, tryLinkMessageToCustomer } from './email-crm-store';
-import {
-  listWorkflowsByTrigger,
-  loadAppliedWorkflowIdsForMessage,
-} from './email-workflow-store';
+import { loadAppliedWorkflowIdsForMessage } from './email-workflow-store';
 
 export type SyncNewMessageItem = {
   localMsgId: number;
@@ -64,7 +61,6 @@ export async function processNewMessagesAfterSync(
   const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
 
   const customerByEmail = buildCustomerEmailMap();
-  const inboundWorkflows = runInboundWorkflows ? listWorkflowsByTrigger('inbound') : [];
 
   for (const item of merged) {
     try {
@@ -99,7 +95,6 @@ export async function processNewMessagesAfterSync(
         const appliedWorkflowIds = loadAppliedWorkflowIdsForMessage(item.localMsgId);
         await runInboundWorkflowsForMessage(item.localMsgId, {
           row,
-          inboundWorkflows,
           appliedWorkflowIds,
         });
         markMessagePostProcessDone(item.localMsgId);

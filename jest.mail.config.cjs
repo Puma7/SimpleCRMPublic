@@ -39,7 +39,8 @@ module.exports = {
   transform: {
     '^.+\\.tsx?$': [
       'ts-jest',
-      { tsconfig: '<rootDir>/tsconfig.electron.json', isolatedModules: true },
+      // isolatedModules is set in tsconfig.electron.json.
+      { tsconfig: '<rootDir>/tsconfig.electron.json' },
     ],
   },
   collectCoverage: true,

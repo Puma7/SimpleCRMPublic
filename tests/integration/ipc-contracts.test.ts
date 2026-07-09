@@ -1,4 +1,11 @@
-import { IPCChannels, AllowedInvokeChannels, DeprecatedInvokeChannels } from '../../shared/ipc/channels';
+import fs from 'fs';
+import path from 'path';
+import {
+  IPCChannels,
+  AllowedInvokeChannels,
+  DeprecatedInvokeChannels,
+  DesktopServerOnlyInvokeChannels,
+} from '../../shared/ipc/channels';
 import { getPayloadSchema, getResultSchema, isDeprecatedChannel } from '../../shared/ipc/schemas';
 
 describe('IPC contracts', () => {
@@ -109,6 +116,30 @@ describe('IPC contracts', () => {
     expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.SetSettings);
     expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.GenerateApiKey);
     expect(AllowedInvokeChannels).toContain(IPCChannels.Automation.RevokeApiKey);
+  });
+
+  test('server-only Returns and UserGroups channels are not exposed via desktop preload IPC', () => {
+    const serverOnly = new Set<string>(DesktopServerOnlyInvokeChannels);
+    for (const channel of [
+      ...Object.values(IPCChannels.Returns),
+      ...Object.values(IPCChannels.UserGroups),
+    ]) {
+      expect(serverOnly.has(channel)).toBe(true);
+      expect(AllowedInvokeChannels).not.toContain(channel as never);
+    }
+  });
+
+  test('desktop workflow execute-now IPC requires owner or admin role', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'electron/ipc/workflow.ts'), 'utf8');
+    expect(source).toMatch(/IPCChannels\.Email\.ExecuteWorkflowNow[\s\S]*requireRole:\s*\['owner',\s*'admin'\]/);
+  });
+
+  test('desktop workflow test-on-message IPC cannot opt into live execution', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'electron/ipc/workflow.ts'), 'utf8');
+    const handler = source.match(/IPCChannels\.Email\.TestWorkflowOnMessage[\s\S]*?\n\s*\),\n\s*\);/)?.[0] ?? '';
+    expect(handler).toContain('testWorkflowOnMessage');
+    expect(handler).not.toContain('payload.dryRun !== false');
+    expect(handler).toMatch(/testWorkflowOnMessage\(payload\.workflowId,\s*payload\.messageId,\s*true\)/);
   });
 
   test('FollowUp channels are in AllowedInvokeChannels', () => {

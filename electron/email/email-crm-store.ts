@@ -3,6 +3,7 @@ import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import { getDb } from '../sqlite-service';
+import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
 import { accountAccessSql } from './mail-scope-access';
 import {
   CUSTOMERS_TABLE,
@@ -121,6 +122,78 @@ export function setMessageCategory(messageId: number, categoryId: number): void 
   d.prepare(
     `INSERT INTO ${EMAIL_MESSAGE_CATEGORIES_TABLE} (message_id, category_id) VALUES (?, ?)`,
   ).run(messageId, categoryId);
+}
+
+// ----- M:N category assignments (drag-drop multi-category) ----------------
+// The legacy setMessageCategory above stays as the "replace single value"
+// path used by the metadata-panel single-select + the email.set_category
+// workflow node. The helpers below are the additive M:N counterparts.
+
+export function listMessageCategoryAssignments(messageId: number): number[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT category_id FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? ORDER BY category_id`,
+    )
+    .all(messageId) as { category_id: number }[];
+  return rows.map((r) => r.category_id);
+}
+
+/** Idempotent: returns `{ added: false, alreadyAssigned: true }` if the assignment exists. */
+export function addMessageCategoryAssignment(
+  messageId: number,
+  categoryId: number,
+): { added: true } | { added: false; alreadyAssigned: true } {
+  const existing = getDb()
+    .prepare(
+      `SELECT 1 FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+    )
+    .get(messageId, categoryId) as { 1: number } | undefined;
+  if (existing) return { added: false, alreadyAssigned: true };
+  getDb()
+    .prepare(
+      `INSERT INTO ${EMAIL_MESSAGE_CATEGORIES_TABLE} (message_id, category_id) VALUES (?, ?)`,
+    )
+    .run(messageId, categoryId);
+  return { added: true };
+}
+
+/** Returns `{ removed: true }` if a row was deleted, otherwise `{ removed: false }`. */
+export function removeMessageCategoryAssignment(
+  messageId: number,
+  categoryId: number,
+): { removed: boolean } {
+  const result = getDb()
+    .prepare(
+      `DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+    )
+    .run(messageId, categoryId);
+  return { removed: Number(result.changes) > 0 };
+}
+
+/** Diff-replace: keeps current rows that are in `categoryIds`, deletes the rest, inserts missing ones. */
+export function setMessageCategoriesExact(messageId: number, categoryIds: readonly number[]): void {
+  const d = getDb();
+  const target = new Set(categoryIds);
+  const tx = d.transaction(() => {
+    const current = d
+      .prepare(`SELECT category_id FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ?`)
+      .all(messageId) as { category_id: number }[];
+    const currentIds = new Set(current.map((r) => r.category_id));
+    for (const id of currentIds) {
+      if (target.has(id)) continue;
+      d.prepare(
+        `DELETE FROM ${EMAIL_MESSAGE_CATEGORIES_TABLE} WHERE message_id = ? AND category_id = ?`,
+      ).run(messageId, id);
+    }
+    const insertStmt = d.prepare(
+      `INSERT INTO ${EMAIL_MESSAGE_CATEGORIES_TABLE} (message_id, category_id) VALUES (?, ?)`,
+    );
+    for (const id of target) {
+      if (currentIds.has(id)) continue;
+      insertStmt.run(messageId, id);
+    }
+  });
+  tx();
 }
 
 export function clearMessageCategory(messageId: number): void {
@@ -333,22 +406,28 @@ export function reorderCategories(
   apply();
 }
 
-export type CannedRow = { id: number; title: string; body: string; sort_order: number };
-export function listCannedResponses(): CannedRow[] {
-  return getDb()
+export type CannedRow = { id: number; title: string; body: string; account_id: number | null; override_key: string | null; sort_order: number };
+export function listCannedResponses(scope?: AccountOverrideScope): CannedRow[] {
+  const rows = getDb()
     .prepare(`SELECT * FROM ${EMAIL_CANNED_RESPONSES_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as CannedRow[];
+  return resolveScopedAccountOverrides(rows, scope ?? 'all');
 }
 
-export function createCannedResponse(title: string, body: string): number {
+export function createCannedResponse(title: string, body: string, opts: { accountId?: number | null; overrideKey?: string | null } = {}): number {
   const r = getDb()
-    .prepare(`INSERT INTO ${EMAIL_CANNED_RESPONSES_TABLE} (title, body, sort_order) VALUES (?, ?, ?)`)
-    .run(title.trim(), body, 0);
+    .prepare(`INSERT INTO ${EMAIL_CANNED_RESPONSES_TABLE} (title, body, account_id, override_key, sort_order) VALUES (?, ?, ?, ?, ?)`)
+    .run(title.trim(), body, opts.accountId ?? null, opts.overrideKey ?? null, 0);
   return Number(r.lastInsertRowid);
 }
 
-export function updateCannedResponse(id: number, title: string, body: string): void {
-  getDb().prepare(`UPDATE ${EMAIL_CANNED_RESPONSES_TABLE} SET title = ?, body = ? WHERE id = ?`).run(title, body, id);
+export function updateCannedResponse(id: number, title: string, body: string, opts: { accountId?: number | null; overrideKey?: string | null } = {}): void {
+  const sets = ['title = ?', 'body = ?'];
+  const vals: unknown[] = [title, body];
+  if (Object.prototype.hasOwnProperty.call(opts, 'accountId')) { sets.push('account_id = ?'); vals.push(opts.accountId ?? null); }
+  if (Object.prototype.hasOwnProperty.call(opts, 'overrideKey')) { sets.push('override_key = ?'); vals.push(opts.overrideKey ?? null); }
+  vals.push(id);
+  getDb().prepare(`UPDATE ${EMAIL_CANNED_RESPONSES_TABLE} SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 }
 
 export function deleteCannedResponse(id: number): void {
@@ -361,9 +440,18 @@ export type AiPromptRow = {
   user_template: string;
   target: string;
   profile_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   sort_order: number;
 };
-export function listAiPrompts(): AiPromptRow[] {
+export function listAiPrompts(scope?: AccountOverrideScope): AiPromptRow[] {
+  const rows = getDb()
+    .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} ORDER BY sort_order ASC, id ASC`)
+    .all() as AiPromptRow[];
+  return resolveScopedAccountOverrides(rows, scope ?? 'all');
+}
+
+function listAllAiPromptRows(): AiPromptRow[] {
   return getDb()
     .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as AiPromptRow[];
@@ -374,6 +462,8 @@ export function createAiPrompt(input: {
   userTemplate: string;
   target?: string;
   profileId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
 }): number {
   const maxRow = getDb()
     .prepare(`SELECT COALESCE(MAX(sort_order), -1) AS m FROM ${EMAIL_AI_PROMPTS_TABLE}`)
@@ -383,21 +473,27 @@ export function createAiPrompt(input: {
     input.profileId != null && input.profileId > 0 ? input.profileId : null;
   const r = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, profile_id, sort_order) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO ${EMAIL_AI_PROMPTS_TABLE} (label, user_template, target, profile_id, account_id, override_key, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.label.trim(),
       input.userTemplate,
       input.target ?? 'full_body',
       profileId,
+      input.accountId ?? null,
+      input.overrideKey ?? null,
       sortOrder,
     );
   return Number(r.lastInsertRowid);
 }
 
-/** Swap sort_order with neighbour (Composer dropdown order). */
+/** Swap sort_order with neighbour inside the prompt's visible account scope. */
 export function moveAiPrompt(id: number, direction: 'up' | 'down'): boolean {
-  const rows = listAiPrompts();
+  const allRows = listAllAiPromptRows();
+  const current = allRows.find((r) => r.id === id);
+  if (!current) return false;
+  const scope: AccountOverrideScope = current.account_id == null ? 'all' : current.account_id;
+  const rows = listAiPrompts(scope);
   const idx = rows.findIndex((r) => r.id === id);
   if (idx < 0) return false;
   const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
@@ -426,6 +522,8 @@ export function updateAiPrompt(
     target: string;
     profileId: number | null;
     sortOrder: number;
+    accountId: number | null;
+    overrideKey: string | null;
   }>,
 ): void {
   const sets: string[] = [];
@@ -438,6 +536,8 @@ export function updateAiPrompt(
     vals.push(input.profileId != null && input.profileId > 0 ? input.profileId : null);
   }
   if (input.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(input.sortOrder); }
+  if (input.accountId !== undefined) { sets.push('account_id = ?'); vals.push(input.accountId ?? null); }
+  if (input.overrideKey !== undefined) { sets.push('override_key = ?'); vals.push(input.overrideKey ?? null); }
   if (sets.length === 0) return;
   vals.push(id);
   getDb()
@@ -712,7 +812,7 @@ function ftsMatchExpression(raw: string): string | null {
 
 function viewFilterClause(view: import('./email-store').AccountMailView): string {
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
-  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1)`;
+  const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = ''))`;
   switch (view) {
     case 'trash':
       return 'm.soft_deleted = 1';
@@ -725,7 +825,9 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
     case 'sent':
       return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
     case 'drafts':
-      return `m.soft_deleted = 0 AND m.folder_kind = 'draft'`;
+      return `m.soft_deleted = 0 AND m.folder_kind = 'draft' AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = '')`;
+    case 'scheduled_send':
+      return `m.soft_deleted = 0 AND m.folder_kind = 'draft' AND m.scheduled_send_at IS NOT NULL AND m.scheduled_send_at != ''`;
     case 'snoozed':
       return `m.soft_deleted = 0 AND (m.snoozed_until IS NOT NULL AND datetime(m.snoozed_until) > datetime('now'))`;
     case 'inbox':

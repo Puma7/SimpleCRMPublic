@@ -23,6 +23,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import type { AiReplySuggestionJobPort } from './jobs/production-handlers';
+import { buildKnowledgePromptAppend } from './knowledge-workflow-search';
 
 const REPLY_BODY_MAX = 12_000;
 const PENDING_STALE_MS = 15 * 60 * 1000;
@@ -111,6 +112,9 @@ const aiPromptColumns = [
   'target',
   'profile_source_sqlite_id',
   'profile_id',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'sort_order',
   'source_sqlite_id',
   'source_row',
@@ -133,6 +137,7 @@ type GenerationContext = Readonly<{
   prompt: AiPromptRow | null;
   profile: AiProfileRow | null;
   customer: Pick<CustomerRow, 'name' | 'first_name' | 'email'> | null;
+  userContext?: string;
 }>;
 
 const DEFAULT_REPLY_SETTINGS: ReplySettings = {
@@ -200,41 +205,49 @@ export function createPostgresAiReplySuggestionPort(
     },
 
     async generate(input): Promise<EmailReplyDraftGenerationResult> {
+      const persist = input.persistSuggestion !== false;
       const context = await loadGenerationContext(options, {
         workspaceId: input.workspaceId,
         messageId: input.messageId,
         promptId: input.promptId,
         profileId: input.profileId,
         customerId: input.customerId,
+        userContext: input.userContext,
         honorAuto: false,
         trigger: 'open',
       });
       if (!context) return { success: false, error: 'Nachricht nicht gefunden' };
       if (!canSuggestReplyForMessage(context.message)) {
         const result = { success: false as const, error: 'Fuer diese Nachricht ist keine KI-Antwort vorgesehen' };
-        await setReplySuggestion(options, input.workspaceId, input.messageId, {
-          status: 'failed',
-          text: null,
-          error: result.error,
-        });
+        if (persist) {
+          await setReplySuggestion(options, input.workspaceId, input.messageId, {
+            status: 'failed',
+            text: null,
+            error: result.error,
+          });
+        }
         return result;
       }
 
       const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
       if (!apiKey) {
         const result = { success: false as const, error: 'Kein KI-API-Schluessel konfiguriert' };
-        await setReplySuggestion(options, input.workspaceId, input.messageId, {
-          status: 'skipped',
-          text: null,
-          error: 'Kein API-Schluessel',
-        });
+        if (persist) {
+          await setReplySuggestion(options, input.workspaceId, input.messageId, {
+            status: 'skipped',
+            text: null,
+            error: 'Kein API-Schluessel',
+          });
+        }
         return result;
       }
 
       const result = await generateReplyDraftText(options, context, apiKey);
-      await setReplySuggestion(options, input.workspaceId, input.messageId, result.success
-        ? { status: 'ready', text: result.text, error: null }
-        : { status: 'failed', text: null, error: result.error });
+      if (persist) {
+        await setReplySuggestion(options, input.workspaceId, input.messageId, result.success
+          ? { status: 'ready', text: result.text, error: null }
+          : { status: 'failed', text: null, error: result.error });
+      }
       return result;
     },
   };
@@ -248,6 +261,7 @@ async function loadGenerationContext(
     promptId?: number;
     profileId?: number;
     customerId?: number | null;
+    userContext?: string;
     honorAuto: boolean;
     trigger: EmailReplySuggestionTrigger;
   }>,
@@ -267,7 +281,7 @@ async function loadGenerationContext(
         }
       }
 
-      const prompt = await selectReplyPrompt(trx, input.workspaceId, input.promptId);
+      const prompt = await selectReplyPrompt(trx, input.workspaceId, input.promptId, message.account_id);
       const profile = await selectReplyProfile(trx, input.workspaceId, input.profileId, prompt?.profile_id ?? null);
       const customerId = input.customerId === undefined ? message.customer_id : input.customerId;
       const customer = customerId
@@ -279,7 +293,13 @@ async function loadGenerationContext(
           .executeTakeFirst() ?? null
         : null;
 
-      return { message, prompt, profile, customer };
+      return {
+        message,
+        prompt,
+        profile,
+        customer,
+        userContext: input.userContext,
+      };
     },
     { applySession: options.applyWorkspaceSession },
   );
@@ -302,33 +322,61 @@ async function selectReplyPrompt(
   trx: WorkspaceTransaction,
   workspaceId: string,
   promptId: number | undefined,
+  accountId: number | null,
 ): Promise<AiPromptRow | null> {
   if (promptId !== undefined) {
-    return await trx
+    let explicit = trx
       .selectFrom('email_ai_prompts')
       .select(aiPromptColumns)
       .where('workspace_id', '=', workspaceId)
-      .where('id', '=', promptId)
-      .executeTakeFirst() ?? null;
+      .where('id', '=', promptId);
+    explicit = accountId == null
+      ? explicit.where('account_id', 'is', null)
+      : explicit.where((eb) => eb.or([
+        eb('account_id', 'is', null),
+        eb('account_id', '=', accountId),
+      ]));
+    return await explicit.executeTakeFirst() ?? null;
   }
 
-  const reply = await trx
-    .selectFrom('email_ai_prompts')
-    .select(aiPromptColumns)
-    .where('workspace_id', '=', workspaceId)
+  const replyRows = await scopedPromptQuery(trx, workspaceId, accountId)
     .where('target', '=', 'reply')
     .orderBy('sort_order', 'asc')
     .orderBy('id', 'asc')
-    .executeTakeFirst();
+    .execute();
+  const reply = firstScopedPrompt(replyRows, accountId);
   if (reply) return reply;
 
-  return await trx
-    .selectFrom('email_ai_prompts')
-    .select(aiPromptColumns)
-    .where('workspace_id', '=', workspaceId)
+  const fallbackRows = await scopedPromptQuery(trx, workspaceId, accountId)
     .orderBy('sort_order', 'asc')
     .orderBy('id', 'asc')
-    .executeTakeFirst() ?? null;
+    .execute();
+  return firstScopedPrompt(fallbackRows, accountId);
+}
+
+function scopedPromptQuery(trx: WorkspaceTransaction, workspaceId: string, accountId: number | null) {
+  const base = trx
+    .selectFrom('email_ai_prompts')
+    .select(aiPromptColumns)
+    .where('workspace_id', '=', workspaceId);
+  return accountId == null
+    ? base.where('account_id', 'is', null)
+    : base.where((eb) => eb.or([
+      eb('account_id', 'is', null),
+      eb('account_id', '=', accountId),
+    ]));
+}
+
+function firstScopedPrompt(rows: readonly AiPromptRow[], accountId: number | null): AiPromptRow | null {
+  if (accountId == null) return rows[0] ?? null;
+  const byKey = new Map<string, AiPromptRow>();
+  for (const row of rows) {
+    if (row.account_id == null) byKey.set(row.override_key?.trim() || `id:${row.id}`, row);
+  }
+  for (const row of rows) {
+    if (row.account_id === accountId) byKey.set(row.override_key?.trim() || `id:${row.id}`, row);
+  }
+  return [...byKey.values()].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || Number(a.id) - Number(b.id))[0] ?? null;
 }
 
 async function selectReplyProfile(
@@ -433,11 +481,37 @@ async function generateReplyDraftText(
   context: GenerationContext,
   apiKey: string,
 ): Promise<EmailReplyDraftGenerationResult> {
-  const user = interpolateReplyTemplate(
+  let user = interpolateReplyTemplate(
     context.prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE,
     context.message,
     context.customer,
   );
+
+  const userContext = context.userContext?.trim();
+  if (userContext) {
+    user = `${user}\n\nZusätzlicher Kontext vom Bearbeiter:\n${userContext}`;
+  }
+
+  const query = messageBodyForReply(context.message).slice(0, 2000);
+  if (query.length >= 8) {
+    try {
+      const kbBlock = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: context.message.workspace_id, role: 'system' },
+        async (trx) => buildKnowledgePromptAppend(
+          trx,
+          context.message.workspace_id,
+          context.message.account_id === null ? null : Number(context.message.account_id),
+          'inbound',
+          query,
+        ),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (kbBlock) user = `${user}${kbBlock}`;
+    } catch {
+      // KB lookup must not block reply generation.
+    }
+  }
 
   try {
     const started = Date.now();

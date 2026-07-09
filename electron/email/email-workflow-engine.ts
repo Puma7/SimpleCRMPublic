@@ -11,8 +11,8 @@ import {
 import { assignCategoryPathToMessage, tryLinkMessageToCustomer } from './email-crm-store';
 import {
   listWorkflowsByTrigger,
-  wasWorkflowAppliedToMessage,
-  markWorkflowAppliedToMessage,
+  tryClaimInboundWorkflowForMessage,
+  releaseInboundWorkflowClaim,
   insertWorkflowRun,
 } from './email-workflow-store';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
@@ -28,6 +28,7 @@ import { getLatestWorkflowRunForMessage } from '../workflow/run-steps';
 
 export type OutboundDraftPayload = {
   messageId: number;
+  accountId?: number | null;
   subject: string;
   bodyText: string;
   bodyHtml?: string;
@@ -47,6 +48,7 @@ export function outboundPayloadFromMessage(
   const cc = extractAddressList(row.cc_json);
   return {
     messageId: row.id,
+    accountId: row.account_id,
     subject: row.subject ?? '',
     bodyText: row.body_text ?? '',
     bodyHtml: row.body_html ?? undefined,
@@ -102,6 +104,17 @@ function buildOutboundContext(payload: OutboundDraftPayload) {
   };
 }
 
+function shouldSyncSeenStateToServer(row: EmailMessageRow): boolean {
+  const accountId = row.account_id;
+  if (accountId == null) return false;
+  const account = getEmailAccountById(accountId);
+  return (
+    account != null &&
+    (account.protocol || 'imap') === 'imap' &&
+    (account.imap_sync_seen_on_open ?? 1) !== 0
+  );
+}
+
 async function executeInboundStep(
   step: WorkflowThenStep,
   messageId: number,
@@ -115,7 +128,7 @@ async function executeInboundStep(
       log.push(`tag:${step.tag}`);
       return true;
     case 'mark_seen':
-      setMessageSeenLocal(messageId, true);
+      setMessageSeenLocal(messageId, true, shouldSyncSeenStateToServer(row));
       log.push('mark_seen');
       return true;
     case 'archive':
@@ -151,6 +164,8 @@ async function executeInboundStep(
         subject: subj,
         bodyText: body,
         originalFromLine: buildInboundContext(row).from_address,
+        includeAttachments: step.includeAttachments === true,
+        runOutboundReview: step.runOutboundReview === true,
       });
       if (sent.ok) {
         log.push(`forward_copy:${step.to}`);
@@ -170,13 +185,15 @@ async function executeInboundStep(
     }
     case 'ai_review': {
       const ctx = buildInboundContext(row);
-      const blocked = await runAiReviewStep(step, ctx.combined_text, log);
+      const blocked = await runAiReviewStep(step, ctx.combined_text, log, row.account_id);
       if (blocked) {
         addMessageTag(messageId, 'ki-review-block');
         log.push('ai_review:inbound_tag');
       }
       return true;
     }
+    case 'registry':
+      throw new Error(`Compiled workflow cannot execute registry node ${step.nodeType}; use graph execution mode`);
     case 'stop':
       log.push('stop');
       return false;
@@ -189,9 +206,16 @@ async function runAiReviewStep(
   step: Extract<WorkflowThenStep, { type: 'ai_review' }>,
   text: string,
   log: string[],
+  accountId?: number | null,
 ): Promise<boolean> {
-  const prompts = listAiPrompts();
-  const p = prompts.find((x) => x.id === step.promptId);
+  const globalPrompts = listAiPrompts('all');
+  const configuredPrompt = globalPrompts.find((x) => x.id === step.promptId);
+  const prompts = listAiPrompts(accountId);
+  const p = prompts.find((x) => x.id === step.promptId)
+    ?? (configuredPrompt?.override_key
+      ? prompts.find((x) => x.override_key === configuredPrompt.override_key)
+      : undefined);
+
   if (!p) {
     log.push('ai_review:prompt_not_found');
     return false;
@@ -225,7 +249,7 @@ async function executeOutboundStep(
   }
   if (step.type === 'ai_review') {
     const ctx = buildOutboundContext(payload);
-    const blocked = await runAiReviewStep(step, ctx.combined_text, log);
+    const blocked = await runAiReviewStep(step, ctx.combined_text, log, payload.accountId);
     if (blocked) {
       setOutboundHold(messageId, true, 'KI-Prüfung: Versand blockiert');
       return 'blocked';
@@ -235,6 +259,9 @@ async function executeOutboundStep(
   if (step.type === 'stop') {
     log.push('stop');
     return 'stop';
+  }
+  if (step.type === 'registry') {
+    throw new Error(`Compiled workflow cannot execute registry node ${step.nodeType}; use graph execution mode`);
   }
   log.push(`skip:${(step as WorkflowThenStep).type}`);
   return 'continue';
@@ -318,11 +345,12 @@ export async function runInboundWorkflowsForMessage(
   const freshRow = getEmailMessageById(messageId) ?? row;
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound');
+  const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound', freshRow.account_id);
   const applied = opts?.appliedWorkflowIds;
+  let inboundWorkflowDeferred = false;
   for (const wf of workflows) {
-    if (applied ? applied.has(wf.id) : wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
-    let markApplied = false;
+    if (applied?.has(wf.id)) continue;
+    if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
       const r = await executeWorkflowForTrigger({
         workflow: wf,
@@ -330,8 +358,12 @@ export async function runInboundWorkflowsForMessage(
         direction: 'inbound',
         message: freshRow,
       });
-      if (r.status === 'ok') markApplied = true;
+      if (r.deferred) inboundWorkflowDeferred = true;
+      if (r.status !== 'ok') {
+        releaseInboundWorkflowClaim(messageId, wf.id);
+      }
     } catch (e) {
+      releaseInboundWorkflowClaim(messageId, wf.id);
       insertWorkflowRun({
         workflowId: wf.id,
         messageId,
@@ -340,7 +372,6 @@ export async function runInboundWorkflowsForMessage(
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
     const afterWorkflowRow = getEmailMessageById(messageId);
     if (
       !afterWorkflowRow ||
@@ -351,6 +382,8 @@ export async function runInboundWorkflowsForMessage(
       return;
     }
   }
+
+  if (inboundWorkflowDeferred) return;
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
   if (
@@ -375,10 +408,9 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   if (!row || row.uid >= 0) return;
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = listWorkflowsByTrigger('draft_created');
+  const workflows = listWorkflowsByTrigger('draft_created', row.account_id);
   for (const wf of workflows) {
-    if (wasWorkflowAppliedToMessage(messageId, wf.id)) continue;
-    let markApplied = false;
+    if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
       const r = await executeWorkflowForTrigger({
         workflow: wf,
@@ -386,8 +418,11 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
         direction: 'draft_created',
         message: row,
       });
-      if (r.status === 'ok') markApplied = true;
+      if (r.status !== 'ok') {
+        releaseInboundWorkflowClaim(messageId, wf.id);
+      }
     } catch (e) {
+      releaseInboundWorkflowClaim(messageId, wf.id);
       insertWorkflowRun({
         workflowId: wf.id,
         messageId,
@@ -396,7 +431,6 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
     }
-    if (markApplied) markWorkflowAppliedToMessage(messageId, wf.id);
   }
 }
 
@@ -418,12 +452,31 @@ export async function evaluateOutboundWorkflows(
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 
+  const { tryOutboundApprovalBypass } = await import('./outbound-approval');
+  const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
+  const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments');
+  if (
+    !dryRun &&
+    tryOutboundApprovalBypass(payload.messageId, {
+      subject: payload.subject,
+      bodyText: payload.bodyText,
+      bodyHtml: payload.bodyHtml ?? null,
+      to: payload.to,
+      cc: payload.cc ?? null,
+      bcc: payload.bcc ?? null,
+      attachmentPaths: payload.attachmentPaths ?? parseDraftAttachmentPathsJson(row.draft_attachment_paths_json),
+    })
+  ) {
+    if (draftSideEffects) setOutboundHold(payload.messageId, false, null);
+    return { allowed: true, reason: null, workflowRunId: null };
+  }
+
   if (!dryRun && draftSideEffects) {
     setOutboundHold(payload.messageId, false, null);
   }
 
   const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const workflows = listWorkflowsByTrigger('outbound');
+  const workflows = listWorkflowsByTrigger('outbound', row.account_id);
   let parseOrEngineError: string | null = null;
   for (const wf of workflows) {
     try {
@@ -434,6 +487,7 @@ export async function evaluateOutboundWorkflows(
         message: row,
         outbound: payload,
         dryRun,
+        previewOutbound: dryRun,
       });
       if (r.blocked) {
         const reason =

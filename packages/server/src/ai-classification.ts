@@ -1,5 +1,5 @@
 import type { Kysely, Selectable } from 'kysely';
-import { addressesFromRecipientJson } from '@simplecrm/core';
+import { addressesFromRecipientJson, parseOutboundReviewResponse } from '@simplecrm/core';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type {
@@ -103,6 +103,27 @@ export type AiReviewJobPort = Readonly<{
   review(input: AiReviewJobPlan): Promise<void>;
 }>;
 
+export type AiReviewPreviewInput = Readonly<{
+  workspaceId: string;
+  direction: 'inbound' | 'outbound';
+  promptId?: number;
+  profileId?: number;
+  blockKeyword?: string;
+  systemPrompt?: string;
+  fallbackUserTemplate?: string;
+  eventStrings?: Record<string, string>;
+  eventVariables?: Record<string, string | number | boolean | null>;
+  parseMode: 'outbound_structured' | 'block_keyword';
+}>;
+
+export type AiReviewPreviewResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+export type AiReviewPreviewRunner = (
+  input: AiReviewPreviewInput,
+) => Promise<AiReviewPreviewResult>;
+
 export type AiAgentJobPlan = Readonly<{
   workspaceId: string;
   messageId?: number;
@@ -176,6 +197,9 @@ const aiPromptColumns = [
   'target',
   'profile_source_sqlite_id',
   'profile_id',
+  'account_source_sqlite_id',
+  'account_id',
+  'override_key',
   'sort_order',
   'source_sqlite_id',
   'source_row',
@@ -331,13 +355,53 @@ export function createPostgresAiTransformTextPort(
   };
 }
 
+function buildAiTransformSystemPromptForServer(input: {
+  sourceText: string;
+  contextText?: string;
+  inboundContextText?: string;
+  userContext?: string;
+  insertMode?: boolean;
+}): string {
+  const contextText = input.contextText?.trim() ?? '';
+  const selectionMode = !input.insertMode
+    && contextText.length > 0
+    && contextText !== input.sourceText.trim();
+  const inbound = input.inboundContextText?.trim();
+  const userCtx = input.userContext?.trim();
+
+  let prompt = selectionMode
+    ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer hat in seiner Antwort eine Stelle markiert. '
+      + 'Nutze den GESAMTEN Antwort-Entwurf nur als Kontext, bearbeite und antworte aber AUSSCHLIESSLICH mit dem '
+      + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
+      + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamter Antwort-Entwurf, nicht erneut ausgeben):\n'
+      + contextText
+    : input.insertMode
+      ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer moechte NEUEN Text in seine Antwort EINFUEGEN '
+        + '(nicht den bestehenden ersetzen). Antworte NUR mit dem neuen Textabschnitt — ohne Einleitung, ohne '
+        + 'Wiederholung des bestehenden Entwurfs, ohne Anrede oder Signatur (die sind bereits vorhanden).\n\n'
+        + (contextText
+          ? 'BESTEHENDER ANTWORT-ENTWURF (nur Kontext, nicht erneut ausgeben):\n' + contextText
+          : '')
+      : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+
+  if (inbound) {
+    prompt +=
+      '\n\nEINGEHENDE NACHRICHT DES KUNDEN (nur Kontext, nicht erneut ausgeben):\n' + inbound;
+  }
+  if (userCtx) {
+    prompt += '\n\n<bearbeiter_hinweis>\n' + userCtx + '\n</bearbeiter_hinweis>';
+  }
+  return prompt;
+}
+
 export function createPostgresAiTextTransformApiPort(
   options: PostgresAiClassificationPortOptions,
 ): AiTextTransformApiPort {
   return {
     async transformText(input) {
       const sourceText = input.text.trim();
-      if (!sourceText) return { success: false, error: 'Text fehlt' };
+      if (!sourceText && !input.insertMode) return { success: false, error: 'Text fehlt' };
+      const effectiveSource = sourceText || '(neuer Absatz)';
 
       // Translate mode: no stored prompt — translate `sourceText` into
       // targetLanguage using the workspace's DEFAULT AI profile. contextText,
@@ -415,19 +479,14 @@ export function createPostgresAiTextTransformApiPort(
         const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
         if (!apiKey) return { success: false, error: 'Kein KI-API-Schluessel konfiguriert' };
 
-        // Selection-aware mode: when a context is supplied, `sourceText` is the
-        // user-highlighted excerpt and `contextText` is the full surrounding
-        // email. Tell the model to use the context but rewrite + return ONLY
-        // the excerpt, so the caller can splice it back in.
         const contextText = input.contextText?.trim() ?? '';
-        const selectionMode = contextText.length > 0 && contextText !== sourceText;
-        const systemPrompt = selectionMode
-          ? 'Du bist ein Assistent fuer geschaeftliche E-Mails. Der Nutzer hat in seiner Antwort eine Stelle markiert. '
-            + 'Nutze den GESAMTEN E-Mail-Text nur als Kontext, bearbeite und antworte aber AUSSCHLIESSLICH mit dem '
-            + 'umgeschriebenen markierten Abschnitt — kein zusaetzlicher Text, keine Einleitung, keine Anrede oder '
-            + 'Grussformel, sofern sie nicht markiert war.\n\nKONTEXT (gesamte E-Mail, nicht erneut ausgeben):\n'
-            + contextText
-          : 'Du bist ein Assistent fuer geschaeftliche E-Mails. Antworte nur mit dem bearbeiteten Text, ohne Einleitung.';
+        const systemPrompt = buildAiTransformSystemPromptForServer({
+          sourceText: effectiveSource,
+          contextText: contextText || undefined,
+          inboundContextText: input.inboundContextText,
+          userContext: input.userContext,
+          insertMode: input.insertMode,
+        });
         const output = await runTrackedChatCompletion(
           options,
           {
@@ -444,8 +503,8 @@ export function createPostgresAiTextTransformApiPort(
             user: interpolateWorkflowTemplate(
               context.prompt.user_template,
               {
-                text: sourceText,
-                combined_text: sourceText,
+                text: effectiveSource,
+                combined_text: effectiveSource,
                 'customer.name': context.customer?.name ?? '',
                 'customer.firstName': context.customer?.first_name ?? '',
                 'customer.email': context.customer?.email ?? '',
@@ -460,6 +519,85 @@ export function createPostgresAiTextTransformApiPort(
         return { success: false, error: error instanceof Error ? error.message : String(error) };
       }
     },
+  };
+}
+
+export function createAiReviewPreviewRunner(
+  options: PostgresAiClassificationPortOptions,
+): AiReviewPreviewRunner {
+  return async (input) => {
+    try {
+      const context = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const prompt = input.promptId === undefined && input.fallbackUserTemplate
+            ? null
+            : await selectAiPrompt(trx, input.workspaceId, input.promptId);
+          if (!prompt && !input.fallbackUserTemplate) return null;
+          const profile = await selectAiProfile(
+            trx,
+            input.workspaceId,
+            input.profileId,
+            prompt?.profile_id === null || prompt?.profile_id === undefined
+              ? null
+              : Number(prompt.profile_id),
+          );
+          return { prompt, profile };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!context) return { ok: false, reason: 'Prompt nicht gefunden' };
+      if (!context.profile) return { ok: false, reason: 'AI-Profil nicht gefunden' };
+
+      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+      if (!apiKey) return { ok: false, reason: 'Kein KI-API-Schluessel konfiguriert' };
+
+      const strings = stringPayload(input.eventStrings);
+      const variables = variablePayload(input.eventVariables);
+      const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
+        .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      const output = await runTrackedChatCompletion(
+        options,
+        {
+          workspaceId: input.workspaceId,
+          aiProfileId: Number(context.profile.id),
+          model: context.profile.model,
+          nodeType: 'ai.review.preview',
+          messageId: null,
+          actorUserId: null,
+        },
+        {
+          profile: context.profile,
+          apiKey,
+          system: input.systemPrompt
+            ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
+          user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+        },
+      );
+
+      if (input.parseMode === 'outbound_structured') {
+        const parsed = parseOutboundReviewResponse(output);
+        if (!parsed.ok) {
+          return {
+            ok: false,
+            reason: parsed.reason ?? 'Ausgehende KI-Pruefung: Versand wuerde blockiert',
+          };
+        }
+        return { ok: true };
+      }
+
+      const blockKeyword = (input.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
+      if (output.toUpperCase().includes(blockKeyword.toUpperCase())) {
+        return { ok: false, reason: 'KI-Pruefung: Versand wuerde blockiert' };
+      }
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : 'KI-Vorschau fehlgeschlagen',
+      };
+    }
   };
 }
 

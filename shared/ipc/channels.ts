@@ -75,6 +75,18 @@ const DiagnosticsChannels = literal({
   SelfTestServerLogs: 'diagnostics:self-test-server-logs',
 });
 
+const MaintenanceChannels = literal({
+  GetStatus: 'maintenance:get-status',
+  RunDoctor: 'maintenance:run-doctor',
+  CheckMigrations: 'maintenance:check-migrations',
+  RunRepair: 'maintenance:run-repair',
+  PreviewHardReset: 'maintenance:preview-hard-reset',
+  ExecuteHardReset: 'maintenance:execute-hard-reset',
+  CheckForUpdates: 'maintenance:check-for-updates',
+  InstallUpdate: 'maintenance:install-update',
+  GetUpdateStatus: 'maintenance:get-update-status',
+});
+
 const UserGroupChannels = literal({
   List: 'user-groups:list',
   Create: 'user-groups:create',
@@ -144,6 +156,22 @@ const AutomationChannels = literal({
   SetSettings: 'automation:set-settings',
   GenerateApiKey: 'automation:generate-api-key',
   RevokeApiKey: 'automation:revoke-api-key',
+});
+
+const ReturnsChannels = literal({
+  List: 'returns:list',
+  Get: 'returns:get',
+  Create: 'returns:create',
+  Update: 'returns:update',
+  ListReasons: 'returns:list-reasons',
+  LookupJtlOrder: 'returns:lookup-jtl-order',
+  Analytics: 'returns:analytics',
+  GetPortalSettings: 'returns:get-portal-settings',
+  RotatePortalToken: 'returns:rotate-portal-token',
+  SetPortalEnabled: 'returns:set-portal-enabled',
+  RevokePortalToken: 'returns:revoke-portal-token',
+  PortalCreate: 'returns:portal-create',
+  PortalLookup: 'returns:portal-lookup',
 });
 
 const FollowUpChannels = literal({
@@ -221,6 +249,8 @@ const EmailChannels = literal({
   SetEmailMiscSettings: 'email:set-misc-settings',
   GetSnoozeSettings: 'email:get-snooze-settings',
   SetSnoozeSettings: 'email:set-snooze-settings',
+  GetAccountMailSettings: 'email:get-account-mail-settings',
+  SetAccountMailSettings: 'email:set-account-mail-settings',
   ListUidValidityNotices: 'email:list-uidvalidity-notices',
   DismissUidValidityNotice: 'email:dismiss-uidvalidity-notice',
   ListImapAuthNotices: 'email:list-imap-auth-notices',
@@ -240,6 +270,10 @@ const EmailChannels = literal({
   ReorderCategories: 'email:reorder-categories',
   SetMessageCategory: 'email:set-message-category',
   GetMessageCategory: 'email:get-message-category',
+  ListMessageCategories: 'email:list-message-categories',
+  AddMessageCategory: 'email:add-message-category',
+  RemoveMessageCategory: 'email:remove-message-category',
+  SetMessageCategories: 'email:set-message-categories',
   CategoryCounts: 'email:category-counts',
   MoveMessageToView: 'email:move-message-to-view',
   MailFolderCounts: 'email:mail-folder-counts',
@@ -309,6 +343,7 @@ const EmailChannels = literal({
   TestWorkflowOnMessage: 'workflow:test-on-message',
   ExecuteWorkflowNow: 'workflow:execute-now',
   ListWorkflowRuns: 'workflow:list-runs',
+  GetWorkflowRunLog: 'workflow:get-run-log',
   ListWorkflowRunSteps: 'workflow:list-run-steps',
   ListWorkflowTemplates: 'workflow:list-templates',
   ImportWorkflowBundle: 'workflow:import-bundle',
@@ -319,6 +354,7 @@ const EmailChannels = literal({
   SetWorkflowAutomationSettings: 'workflow:set-automation-settings',
   ListKnowledgeBases: 'workflow:list-knowledge-bases',
   CreateKnowledgeBase: 'workflow:create-knowledge-base',
+  UpdateKnowledgeBase: 'workflow:update-knowledge-base',
   DeleteKnowledgeBase: 'workflow:delete-knowledge-base',
   AddKnowledgeChunk: 'workflow:add-knowledge-chunk',
   GetKnowledgeBaseDocument: 'workflow:get-knowledge-base-document',
@@ -366,6 +402,7 @@ export const IPCChannels = {
   Tasks: TaskChannels,
   UserGroups: UserGroupChannels,
   Diagnostics: DiagnosticsChannels,
+  Maintenance: MaintenanceChannels,
   Sync: SyncChannels,
   Mssql: MssqlChannels,
   Jtl: JtlChannels,
@@ -376,7 +413,13 @@ export const IPCChannels = {
   Pgp: PgpChannels,
   Automation: AutomationChannels,
   FollowUp: FollowUpChannels,
+  Returns: ReturnsChannels,
 } as const;
+
+export const DesktopServerOnlyInvokeChannels = tuple(
+  ...Object.values(UserGroupChannels),
+  ...Object.values(ReturnsChannels),
+);
 
 // Flattened invoke list for preload allow-listing
 export const AllowedInvokeChannels = tuple(
@@ -398,6 +441,8 @@ export const AllowedInvokeChannels = tuple(
   ...Object.values(IPCChannels.Pgp),
   ...Object.values(IPCChannels.Automation),
   ...Object.values(IPCChannels.FollowUp),
+  ...Object.values(IPCChannels.Diagnostics),
+  ...Object.values(IPCChannels.Maintenance),
 );
 
 export type InvokeChannel = typeof AllowedInvokeChannels[number];

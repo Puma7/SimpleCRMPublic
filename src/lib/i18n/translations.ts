@@ -31,6 +31,7 @@ export const translations = {
   "nav.products": { de: "Produkte", en: "Products" },
   "nav.calendar": { de: "Kalender", en: "Calendar" },
   "nav.email": { de: "E-Mail", en: "Email" },
+  "nav.returns": { de: "Retouren", en: "Returns" },
   "nav.settings": { de: "Einstellungen", en: "Settings" },
 
   // User groups settings panel

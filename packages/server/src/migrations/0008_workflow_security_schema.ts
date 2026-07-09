@@ -54,6 +54,9 @@ export const workflowSecuritySchemaMigration: SqlMigration = {
   target text NOT NULL DEFAULT 'full_body',
   profile_source_sqlite_id bigint,
   profile_id bigint REFERENCES email_ai_profiles(id) ON DELETE SET NULL,
+  account_source_sqlite_id bigint,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE,
+  override_key text,
   sort_order integer NOT NULL DEFAULT 0,
   source_row jsonb NOT NULL DEFAULT '{}'::jsonb,
   imported_in_run_id uuid REFERENCES sqlite_import_runs(id) ON DELETE SET NULL,
@@ -61,6 +64,9 @@ export const workflowSecuritySchemaMigration: SqlMigration = {
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, source_sqlite_id)
 );`,
+    'CREATE INDEX IF NOT EXISTS email_ai_prompts_scope_idx ON email_ai_prompts (workspace_id, account_id, override_key, sort_order);',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_ai_prompts_account_override_key_idx ON email_ai_prompts (workspace_id, account_id, override_key) WHERE override_key IS NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS email_ai_prompts_global_override_key_idx ON email_ai_prompts (workspace_id, override_key) WHERE account_id IS NULL AND override_key IS NOT NULL;',
     `CREATE TABLE IF NOT EXISTS email_workflows (
   id bigserial PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -74,6 +80,9 @@ export const workflowSecuritySchemaMigration: SqlMigration = {
   cron_expr text,
   schedule_account_source_sqlite_id bigint,
   schedule_account_id bigint REFERENCES email_accounts(id) ON DELETE SET NULL,
+  account_source_sqlite_id bigint,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE,
+  override_key text,
   execution_mode text NOT NULL DEFAULT 'graph',
   engine_version integer NOT NULL DEFAULT 1,
   legacy_created_by_user_id text,
@@ -85,6 +94,7 @@ export const workflowSecuritySchemaMigration: SqlMigration = {
   UNIQUE (workspace_id, source_sqlite_id)
 );`,
     'CREATE INDEX IF NOT EXISTS email_workflows_trigger_idx ON email_workflows (workspace_id, trigger_name, enabled, priority);',
+    'CREATE INDEX IF NOT EXISTS email_workflows_scope_idx ON email_workflows (workspace_id, account_id, override_key, trigger_name, enabled, priority);',
     `CREATE TABLE IF NOT EXISTS email_workflow_versions (
   id bigserial PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -175,12 +185,16 @@ export const workflowSecuritySchemaMigration: SqlMigration = {
   source_sqlite_id bigint,
   name text NOT NULL,
   description text,
+  account_source_sqlite_id bigint,
+  account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE,
+  override_key text,
   source_row jsonb NOT NULL DEFAULT '{}'::jsonb,
   imported_in_run_id uuid REFERENCES sqlite_import_runs(id) ON DELETE SET NULL,
   created_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, source_sqlite_id)
 );`,
+    'CREATE INDEX IF NOT EXISTS workflow_knowledge_bases_scope_idx ON workflow_knowledge_bases (workspace_id, account_id, override_key);',
     `CREATE TABLE IF NOT EXISTS workflow_knowledge_chunks (
   id bigserial PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,

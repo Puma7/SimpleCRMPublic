@@ -1,12 +1,7 @@
-const mockEvaluate = jest.fn();
 const mockSend = jest.fn();
 const mockGetAccount = jest.fn();
 const mockDbGet = jest.fn();
 const mockDbRun = jest.fn();
-
-jest.mock('../../electron/email/email-workflow-engine', () => ({
-  evaluateOutboundWorkflows: (...args: unknown[]) => mockEvaluate(...args),
-}));
 
 jest.mock('../../electron/email/email-smtp', () => ({
   sendSmtpForAccount: (...args: unknown[]) => mockSend(...args),
@@ -32,11 +27,11 @@ describe('sendWorkflowForwardCopy', () => {
     jest.clearAllMocks();
     mockGetAccount.mockReturnValue({ email_address: 'me@test.de' });
     mockDbGet.mockReturnValue(undefined);
-    mockEvaluate.mockResolvedValue({ allowed: true, reason: null });
+    mockDbRun.mockReturnValue({ changes: 1 });
     mockSend.mockResolvedValue(undefined);
   });
 
-  test('runs outbound gate before SMTP', async () => {
+  test('sends SMTP without outbound workflow gate (workflow forward bypass)', async () => {
     const r = await sendWorkflowForwardCopy({
       accountId: 1,
       sourceMessageId: 9,
@@ -47,21 +42,18 @@ describe('sendWorkflowForwardCopy', () => {
       originalFromLine: 'from@x.de',
     });
     expect(r.ok).toBe(true);
-    expect(mockEvaluate).toHaveBeenCalledWith(
-      expect.objectContaining({ messageId: 9, to: 'dest@example.com' }),
-      { sideEffects: 'none' },
-    );
     expect(mockSend).toHaveBeenCalledWith(
       1,
       expect.objectContaining({
+        to: 'dest@example.com',
         headers: { 'Auto-Submitted': 'auto-forwarded' },
       }),
     );
     expect(mockDbRun).toHaveBeenCalled();
   });
 
-  test('skips SMTP when outbound blocked', async () => {
-    mockEvaluate.mockResolvedValue({ allowed: false, reason: 'blocked' });
+  test('dedup skips second send for same recipient set', async () => {
+    mockDbGet.mockReturnValue({ 1: 1 });
     const r = await sendWorkflowForwardCopy({
       accountId: 1,
       sourceMessageId: 9,
@@ -71,7 +63,7 @@ describe('sendWorkflowForwardCopy', () => {
       bodyText: 'body',
       originalFromLine: 'a@b.de',
     });
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

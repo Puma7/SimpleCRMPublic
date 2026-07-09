@@ -63,6 +63,44 @@ export type BuildSpamDecisionOptions = {
 
 export const SPAM_ENGINE_MODEL_VERSION = 1;
 
+export type SpamStatusApplyMessageInput = {
+  doneLocal?: boolean | number | string | null;
+  spamStatus?: string | null;
+  isSpam?: boolean | number | null;
+  spamDecidedAt?: string | Date | null;
+};
+
+/** Passing auth checks correlate with ham; they must not feed local learning stats. */
+export function isSpamLearningFeatureKey(featureKey: string): boolean {
+  return !(featureKey.startsWith('auth:') && featureKey.endsWith(':pass'));
+}
+
+function hasSpamDecision(message: SpamStatusApplyMessageInput): boolean {
+  const decidedAt = message.spamDecidedAt;
+  if (decidedAt instanceof Date) return !Number.isNaN(decidedAt.getTime());
+  return typeof decidedAt === 'string' && decidedAt.trim().length > 0;
+}
+
+/** Spam scoring runs once on inbound arrival; never re-score existing mail. */
+export function shouldRunInitialSpamScoring(message: SpamStatusApplyMessageInput): boolean {
+  return !hasSpamDecision(message);
+}
+
+/** Keep handled or already-scored inbox mail in place when automation would move it. */
+export function shouldAutoApplySpamStatus(
+  message: SpamStatusApplyMessageInput,
+  nextStatus: SpamStatus,
+): boolean {
+  const done =
+    message.doneLocal === true ||
+    message.doneLocal === 1 ||
+    message.doneLocal === '1';
+  if (done) return false;
+  if (nextStatus === 'clean') return true;
+  if (hasSpamDecision(message)) return false;
+  return true;
+}
+
 export const DEFAULT_SPAM_ENGINE_SETTINGS: SpamEngineSettings = {
   spamEngineEnabled: true,
   spamReviewThreshold: 45,
@@ -149,6 +187,7 @@ function learningReasons(
 ): SpamScoreReason[] {
   const out: SpamScoreReason[] = [];
   for (const key of featureKeys) {
+    if (!isSpamLearningFeatureKey(key)) continue;
     const s = featureStats.get(key);
     if (!s) continue;
     const spamCount = s.spamCount ?? s.spam_count ?? 0;

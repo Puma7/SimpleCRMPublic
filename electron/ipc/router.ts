@@ -17,11 +17,14 @@ import { registerAutomationHandlers } from './automation';
 import { registerAuthHandlers } from './auth';
 import { registerPgpHandlers } from './pgp';
 import { registerSetupHandlers } from './setup';
+import { registerDiagnosticsHandlers } from './diagnostics';
+import { registerMaintenanceHandlers } from './maintenance';
 
 interface IpcRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   isDevelopment: boolean;
   getMainWindow: () => BrowserWindow | null;
+  appVersion?: string;
 }
 
 type Disposer = () => void;
@@ -31,6 +34,8 @@ export function registerAllIpcHandlers(options: IpcRouterOptions) {
   const disposers: Disposer[] = [];
 
   disposers.push(registerWindowHandlers({ getMainWindow, logger }));
+  disposers.push(registerDiagnosticsHandlers({ logger }));
+  disposers.push(registerMaintenanceHandlers({ logger, appVersion: options.appVersion ?? '0.0.0' }));
   disposers.push(registerSetupHandlers({ logger }));
   disposers.push(registerDatabaseHandlers({ logger, isDevelopment }));
   disposers.push(registerDealHandlers({ logger, isDevelopment }));

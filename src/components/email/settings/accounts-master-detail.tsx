@@ -14,15 +14,20 @@ import { AccountForm } from "./account-form"
 import { SmtpPanel } from "./smtp-panel"
 import { OAuthAccountLinkPanel } from "./oauth-account-link-panel"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
+import { AccountSignaturesSection } from "./account-signatures-section"
+import { AccountKnowledgeSlots } from "./account-knowledge-slots"
+import { AccountAdvancedPanel } from "./account-advanced-panel"
 import { AccountsShippingHint } from "./accounts-shipping-hint"
 
-type AccountTab = "imap" | "smtp" | "oauth" | "ki"
+type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki" | "erweitert"
 
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
   { id: "smtp", label: "SMTP" },
   { id: "oauth", label: "OAuth" },
+  { id: "signature", label: "Signatur" },
   { id: "ki", label: "KI" },
+  { id: "erweitert", label: "Erweitert" },
 ]
 
 function accountInitials(a: EmailAccount): string {
@@ -35,7 +40,16 @@ function accountInitials(a: EmailAccount): string {
 /** Konten: Liste + Detail mit IMAP/SMTP/OAuth/KI pro Postfach. */
 export function AccountsMasterDetailSettings() {
   const serverClientMode = getRendererTransport().kind === "http"
-  const { bumpAccountsRevision, setSettingsAccountId, accountsRevision } = useMailWorkspace()
+  const {
+    bumpAccountsRevision,
+    setSettingsAccountId,
+    settingsAccountId,
+    settingsAccountDeepLinkId,
+    setSettingsAccountDeepLinkId,
+    settingsAccountsSubTab,
+    setSettingsAccountsSubTab,
+    accountsRevision,
+  } = useMailWorkspace()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
@@ -47,18 +61,56 @@ export function AccountsMasterDetailSettings() {
       const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
       if (list.length > 0 && selectedId == null) {
-        setSelectedId(list[0]!.id)
-        setEditAccount(list[0]!)
-        setSettingsAccountId(list[0]!.id)
+        const preferred =
+          settingsAccountDeepLinkId != null
+            ? list.find((a) => a.id === settingsAccountDeepLinkId) ??
+              (settingsAccountId != null
+                ? list.find((a) => a.id === settingsAccountId)
+                : undefined) ??
+              list[0]!
+            : settingsAccountId != null
+              ? list.find((a) => a.id === settingsAccountId) ?? list[0]!
+              : list[0]!
+        setSelectedId(preferred.id)
+        setEditAccount(preferred)
+        if (settingsAccountId == null) {
+          setSettingsAccountId(preferred.id)
+        }
+        return
+      }
+      // After a save the edit view stays open. The form keys off editAccount,
+      // so a stale reference would let a later remount (tab switch / select +
+      // back) revert the form to pre-save values — and a second save would
+      // then overwrite the DB with those stale fields. Re-bind editAccount to
+      // the freshly-loaded row whenever the selected id is still in the list.
+      if (selectedId != null) {
+        const refreshed = list.find((a) => a.id === selectedId)
+        if (refreshed) setEditAccount(refreshed)
       }
     } catch {
       toast.error("Konten konnten nicht geladen werden.")
     }
-  }, [selectedId, setSettingsAccountId])
+  }, [selectedId, setSettingsAccountId, settingsAccountId, settingsAccountDeepLinkId])
 
   useEffect(() => {
     void load()
   }, [load, accountsRevision])
+
+  useEffect(() => {
+    if (settingsAccountDeepLinkId == null || accounts.length === 0) return
+    const match = accounts.find((a) => a.id === settingsAccountDeepLinkId)
+    if (!match) return
+    setSelectedId(match.id)
+    setEditAccount(match)
+    setCreating(false)
+    setSettingsAccountDeepLinkId(null)
+  }, [settingsAccountDeepLinkId, accounts, setSettingsAccountDeepLinkId])
+
+  useEffect(() => {
+    if (!settingsAccountsSubTab) return
+    setTab(settingsAccountsSubTab)
+    setSettingsAccountsSubTab(null)
+  }, [settingsAccountsSubTab, setSettingsAccountsSubTab])
 
   const selectAccount = (a: EmailAccount) => {
     setSelectedId(a.id)
@@ -218,6 +270,7 @@ export function AccountsMasterDetailSettings() {
                       bumpAccountsRevision()
                       void load()
                     }}
+                    onSaved={(updated) => setEditAccount(updated)}
                     onCancelEdit={() => setEditAccount(null)}
                   />
                 ) : tab === "smtp" && selectedId != null ? (
@@ -227,10 +280,21 @@ export function AccountsMasterDetailSettings() {
                     accountId={selectedId}
                     emailAddress={selected?.email_address}
                   />
-                ) : tab === "ki" && selectedId != null ? (
+                ) : tab === "signature" && selectedId != null ? (
                   <div className="max-w-3xl">
-                    <ReplySuggestionSettingsSection accountId={selectedId} />
+                    <AccountSignaturesSection embeddedAccountId={selectedId} />
                   </div>
+                ) : tab === "ki" && selectedId != null ? (
+                  <div className="max-w-3xl space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      Kontospezifische KI-Antwortvorschläge. Globale Voreinstellungen (Profile,
+                      Modelle) unter Einstellungen → KI.
+                    </p>
+                    <ReplySuggestionSettingsSection accountId={selectedId} />
+                    <AccountKnowledgeSlots accountId={selectedId} />
+                  </div>
+                ) : tab === "erweitert" && selectedId != null ? (
+                  <AccountAdvancedPanel accountId={selectedId} />
                 ) : null}
               </div>
             </ScrollArea>

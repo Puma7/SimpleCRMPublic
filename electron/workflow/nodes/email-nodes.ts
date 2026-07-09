@@ -1,5 +1,6 @@
 import {
   addMessageTag,
+  clearMessageSeenSyncPending,
   setMessageArchived,
   setMessageSeenLocal,
   setMessageSpam,
@@ -9,6 +10,8 @@ import {
   getEmailAccountById,
 } from '../../email/email-store';
 import { evaluateSenderFilter } from '../sender-filter';
+import { AUTO_REPLY_NOREPLY_RE, loadAutoReplyEnabled } from '../auto-reply-settings';
+import { prepareDraftForWorkflowSend, releaseOutboundHoldForDraft } from '../draft-send-prep';
 import { assignCategoryPathToMessage } from '../../email/email-crm-store';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
 import type { SpamStatus } from '../../email/email-spam-types';
@@ -18,6 +21,17 @@ type Reg = (def: RegisteredWorkflowNode) => void;
 function requireMessage(ctx: WorkflowContext) {
   if (!ctx.message || ctx.messageId == null) throw new Error('Keine Nachricht im Kontext');
   return { row: ctx.message, messageId: ctx.messageId };
+}
+
+function shouldSyncSeenStateToServer(row: { account_id?: number | null }): boolean {
+  const accountId = row.account_id;
+  if (accountId == null) return false;
+  const account = getEmailAccountById(accountId);
+  return (
+    account != null &&
+    (account.protocol || 'imap') === 'imap' &&
+    (account.imap_sync_seen_on_open ?? 1) !== 0
+  );
 }
 
 export function registerEmailNodes(register: Reg): void {
@@ -44,12 +58,16 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx) => {
       const { row, messageId } = requireMessage(ctx);
       if (!ctx.dryRun) {
-        setMessageSeenLocal(messageId, true);
-        try {
-          const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
-          await syncSeenFlagToServer(row, true);
-        } catch {
-          /* best-effort */
+        const syncToServer = shouldSyncSeenStateToServer(row);
+        setMessageSeenLocal(messageId, true, syncToServer);
+        if (syncToServer) {
+          try {
+            const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
+            await syncSeenFlagToServer(row, true);
+            clearMessageSeenSyncPending(messageId);
+          } catch {
+            /* best-effort */
+          }
         }
       }
       return { status: 'ok' };
@@ -138,6 +156,8 @@ export function registerEmailNodes(register: Reg): void {
         subject: subj,
         bodyText: body,
         originalFromLine: ctx.strings.from_address,
+        includeAttachments: config.includeAttachments === true,
+        runOutboundReview: config.runOutboundReview === true,
       });
       if (!sent.ok) {
         return { status: 'error', message: sent.reason };
@@ -375,14 +395,150 @@ export function registerEmailNodes(register: Reg): void {
       const { deleteImapMessageOnServer, isImapDeleteOptInEnabled } = await import(
         '../../email/email-imap-move'
       );
-      if (!isImapDeleteOptInEnabled()) {
+      if (!isImapDeleteOptInEnabled(row.account_id)) {
         return {
           status: 'error',
-          message: 'Opt-in workflow_imap_delete_opt_in in sync_info erforderlich',
+          message: 'IMAP-Server-Löschung für dieses Konto nicht aktiviert',
         };
       }
       await deleteImapMessageOnServer(row);
       return { status: 'ok' };
+    },
+  });
+
+  register({
+    type: 'email.auto_reply',
+    label: 'Auto-Antwort (Gate)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Entscheidet, ob automatisch geantwortet werden darf (Schalter + Confidence + Anti-Loop). Sendet selbst nichts.',
+    defaultConfig: { confidenceVar: 'ai.class_confidence', minConfidence: 70 },
+    execute: async (ctx, config) => {
+      const confidenceVar =
+        String(config.confidenceVar ?? 'ai.class_confidence').trim() || 'ai.class_confidence';
+      const minConfidence = Math.max(0, Math.min(100, Number(config.minConfidence ?? 70) || 70));
+      const rawConfidence = ctx.variables[confidenceVar];
+      const confidence =
+        typeof rawConfidence === 'number'
+          ? rawConfidence
+          : Number.parseFloat(String(rawConfidence ?? ''));
+      const confidenceValue = Number.isFinite(confidence) ? confidence : 0;
+      const sender = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
+
+      const block = (reason: string) => ({
+        status: 'ok' as const,
+        port: 'blocked' as const,
+        message: `auto_reply:blocked:${reason}`,
+        variables: {
+          'auto_reply.decision': 'blocked',
+          'auto_reply.blocked_reason': reason,
+          'auto_reply.confidence': confidenceValue,
+        },
+      });
+
+      if (!ctx.message) return block('no_message');
+      if (ctx.dryRun) {
+        return confidenceValue >= minConfidence
+          ? {
+              status: 'ok',
+              port: 'approved',
+              variables: {
+                'auto_reply.decision': 'approved',
+                'auto_reply.confidence': confidenceValue,
+              },
+            }
+          : block('low_confidence');
+      }
+      if (!loadAutoReplyEnabled()) return block('disabled');
+      if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+      if (confidenceValue < minConfidence) return block('low_confidence');
+
+      return {
+        status: 'ok',
+        port: 'approved',
+        message: 'auto_reply:approved',
+        variables: {
+          'auto_reply.decision': 'approved',
+          'auto_reply.confidence': confidenceValue,
+        },
+      };
+    },
+  });
+
+  register({
+    type: 'email.release_outbound',
+    label: 'Versand freigeben',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Hebt die Ausgangssperre auf. Mit autoSend=true wird der Entwurf zur sofortigen Zustellung eingeplant.',
+    defaultConfig: { autoSend: true },
+    execute: async (ctx, config) => {
+      if (ctx.direction !== 'outbound') {
+        return { status: 'skipped', message: 'Nur für ausgehende Nachrichten' };
+      }
+      const id = ctx.messageId ?? ctx.outbound?.messageId;
+      if (id == null) return { status: 'error', message: 'Keine Nachricht im Kontext' };
+      const autoSend = config.autoSend === true;
+      const r = releaseOutboundHoldForDraft(id, autoSend, ctx.dryRun);
+      if (!r.ok) return { status: 'error', message: r.message };
+      return {
+        status: 'ok',
+        message: autoSend ? 'outbound_hold_released_auto_send' : 'outbound_hold_released',
+        variables: {
+          'email.outbound_hold': false,
+          'email.auto_send_scheduled': r.autoSendScheduled,
+        },
+      };
+    },
+  });
+
+  register({
+    type: 'email.send_draft',
+    label: 'Entwurf versenden (vollautomatisch)',
+    category: 'email',
+    canvasType: 'registry',
+    description:
+      'Plant den Versand eines zuvor angelegten Entwurfs (draft.id). runOutboundReview=false sendet ohne erneute Outbound-Prüfung.',
+    defaultConfig: { draftIdVariable: 'draft.id', runOutboundReview: false },
+    execute: async (ctx, config) => {
+      const draftIdVar = String(config.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
+      const rawId = config.draftId ?? ctx.variables[draftIdVar];
+      const draftId = Number(rawId);
+      if (!Number.isFinite(draftId) || draftId <= 0) {
+        return {
+          status: 'error',
+          message: `Keine gültige Entwurfs-ID unter ${draftIdVar} oder config.draftId`,
+        };
+      }
+
+      if (ctx.direction === 'inbound') {
+        if (!ctx.dryRun && !loadAutoReplyEnabled()) {
+          return { status: 'skipped', message: 'auto_reply_disabled' };
+        }
+        const sender = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
+        if (!ctx.dryRun && (!sender || AUTO_REPLY_NOREPLY_RE.test(sender))) {
+          return { status: 'skipped', message: 'noreply_sender_blocked' };
+        }
+      }
+
+      const runOutboundReview = config.runOutboundReview === true;
+      const prep = prepareDraftForWorkflowSend(draftId, {
+        runOutboundReview,
+        dryRun: ctx.dryRun,
+      });
+      if (!prep.ok) return { status: 'error', message: prep.message };
+
+      return {
+        status: 'ok',
+        message: runOutboundReview ? 'send_draft_queued_with_review' : 'send_draft_queued_auto',
+        variables: {
+          'send_draft.draft_id': draftId,
+          'send_draft.with_review': runOutboundReview,
+          'email.auto_send_scheduled': !ctx.dryRun,
+        },
+      };
     },
   });
 }

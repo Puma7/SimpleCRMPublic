@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Copy, Pencil, Trash2, X } from "lucide-react"
@@ -38,6 +38,8 @@ type Props = {
   reloadNotes: () => void | Promise<void>
   reloadTags: () => void | Promise<void>
   refreshCurrentMessage: () => void | Promise<void>
+  /** Load full message (body, headers) when picking from correspondent history. */
+  onOpenMessage?: (message: EmailMessage) => void | Promise<void>
   /** Fills resizable column (Postfach); default fixed w-72 for inline viewer split. */
   fillWidth?: boolean
 }
@@ -123,30 +125,64 @@ export function MessageMetadataPanel({
   reloadNotes,
   reloadTags,
   refreshCurrentMessage,
+  onOpenMessage,
   fillWidth = false,
 }: Props) {
-  const { selectedMessage, selectedAccountId, setSelectedMessage } = useMailWorkspace()
+  const {
+    selectedMessage,
+    selectedAccountId,
+    setSelectedMessage,
+    categoryAssignmentRevision,
+    bumpCategoryAssignmentRevision,
+  } = useMailWorkspace()
   const [newNote, setNewNote] = useState("")
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
   const [editingNoteBody, setEditingNoteBody] = useState("")
   const [newTag, setNewTag] = useState("")
-  const [messageCategoryId, setMessageCategoryId] = useState<number | null>(null)
+  // All categories a message is in (M:N). The legacy single-category select
+  // is replaced by chips + a multi-select dropdown so a message can sit in any
+  // number of categories at once.
+  const [messageCategoryIds, setMessageCategoryIds] = useState<number[]>([])
+  const [categoryBusy, setCategoryBusy] = useState(false)
   const [conversation, setConversation] = useState<EmailMessage[]>([])
   const [security, setSecurity] = useState<MessageSecurityState | null>(null)
   const [securityLoading, setSecurityLoading] = useState(false)
+  const [openingConversationId, setOpeningConversationId] = useState<number | null>(null)
 
+  const reloadMessageCategoryIds = useCallback(async (messageId: number) => {
+    try {
+      const rows = (await invokeRenderer(
+        IPCChannels.Email.ListMessageCategories,
+        messageId,
+      )) as Array<{ categoryId: number | null }>
+      setMessageCategoryIds(
+        rows
+          .map((r) => r.categoryId)
+          .filter((id): id is number => typeof id === "number"),
+      )
+    } catch {
+      setMessageCategoryIds([])
+    }
+  }, [])
+
+  // Re-fetch chips on message switch AND whenever a sibling component (sidebar
+  // drag-drop, bulk-drop in the list, useEmailMessages.assignMessageCategory)
+  // bumps `categoryAssignmentRevision` — otherwise chips would show stale data
+  // until the user clicks back on the row.
   useEffect(() => {
     if (!selectedMessage) {
-      setMessageCategoryId(null)
+      setMessageCategoryIds([])
       return
     }
-    void invokeRenderer(
-      IPCChannels.Email.GetMessageCategory,
-      selectedMessage.id,
-    )
-      .then((r) => setMessageCategoryId((r as { categoryId: number | null }).categoryId))
-      .catch(() => setMessageCategoryId(null))
-  }, [selectedMessage?.id])
+    void reloadMessageCategoryIds(selectedMessage.id)
+  }, [selectedMessage?.id, reloadMessageCategoryIds, categoryAssignmentRevision])
+
+  // Categories the user has NOT yet assigned to this message — i.e. the
+  // "+ Kategorie hinzufügen" select only shows what's actually addable.
+  const availableCategoriesForAdd = useMemo(() => {
+    const assigned = new Set(messageCategoryIds)
+    return categories.filter((c) => !assigned.has(c.id))
+  }, [categories, messageCategoryIds])
 
   useEffect(() => {
     if (!selectedMessage) {
@@ -203,6 +239,29 @@ export function MessageMetadataPanel({
     selectedAccountId,
   ])
 
+  const openConversationMessage = useCallback(
+    async (message: EmailMessage) => {
+      if (message.id === selectedMessage?.id) return
+      setOpeningConversationId(message.id)
+      try {
+        if (onOpenMessage) {
+          await onOpenMessage(message)
+          return
+        }
+        const full = (await invokeRenderer(
+          IPCChannels.Email.GetMessage,
+          message.id,
+        )) as EmailMessage | null
+        setSelectedMessage(full ?? message)
+      } catch {
+        setSelectedMessage(message)
+      } finally {
+        setOpeningConversationId((current) => (current === message.id ? null : current))
+      }
+    },
+    [onOpenMessage, selectedMessage?.id, setSelectedMessage],
+  )
+
   if (!selectedMessage) return null
 
   const assignedMember = teamMembers.find((t) => t.id === selectedMessage.assigned_to)
@@ -234,30 +293,289 @@ export function MessageMetadataPanel({
 
       <ScrollArea className="flex-1">
         <div className="space-y-5 p-4">
-          <div className="space-y-1.5">
-            <Label className="text-xs">Nachrichten-ID</Label>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded border bg-muted/50 px-2 py-1 font-mono text-xs">
-                {selectedMessage.id}
-              </code>
+          <div className="space-y-2">
+            <Label className="text-xs">Interne Notizen</Label>
+            {internalNotes.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Noch keine Notizen.</p>
+            ) : (
+              <ul className="space-y-1">
+                {internalNotes.map((n) => (
+                  <li
+                    key={n.id}
+                    className="rounded bg-background px-2 py-1.5 text-xs shadow-sm"
+                  >
+                    {editingNoteId === n.id ? (
+                      <div className="space-y-1">
+                        <Textarea
+                          value={editingNoteBody}
+                          onChange={(e) => setEditingNoteBody(e.target.value)}
+                          className="min-h-[60px] text-xs"
+                        />
+                        <div className="flex gap-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 flex-1"
+                            onClick={async () => {
+                              const r = await invokeRenderer(
+                                IPCChannels.Email.UpdateInternalNote,
+                                { noteId: n.id, body: editingNoteBody },
+                              ) as { success: boolean; error?: string }
+                              if (!r.success) {
+                                toast.error(r.error ?? "Speichern fehlgeschlagen")
+                                return
+                              }
+                              setEditingNoteId(null)
+                              await reloadNotes()
+                              toast.success("Notiz gespeichert")
+                            }}
+                          >
+                            Speichern
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7"
+                            onClick={() => setEditingNoteId(null)}
+                          >
+                            Abbrechen
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="whitespace-pre-wrap">{n.body}</p>
+                        <div className="mt-1 flex gap-1">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            aria-label="Notiz bearbeiten"
+                            onClick={() => {
+                              setEditingNoteId(n.id)
+                              setEditingNoteBody(n.body)
+                            }}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-destructive"
+                            aria-label="Notiz löschen"
+                            onClick={async () => {
+                              await invokeRenderer(IPCChannels.Email.DeleteInternalNote, n.id)
+                              await reloadNotes()
+                              toast.success("Notiz gelöscht")
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Textarea
+              value={newNote}
+              onChange={(e) => setNewNote(e.target.value)}
+              placeholder="Notiz hinzufügen…"
+              className="min-h-[70px] text-sm"
+            />
+            <Button
+              type="button"
+              size="sm"
+              className="w-full"
+              onClick={async () => {
+                if (!newNote.trim()) return
+                await invokeRenderer(IPCChannels.Email.AddInternalNote, {
+                  messageId: selectedMessage.id,
+                  body: newNote,
+                })
+                setNewNote("")
+                await reloadNotes()
+                toast.success("Notiz hinzugefügt")
+              }}
+            >
+              Speichern
+            </Button>
+          </div>
+          {correspondentEmail ||
+          conversation.length > 0 ||
+          selectedMessage.ticket_code?.trim() ||
+          (selectedMessage.customer_id != null && selectedMessage.customer_id > 0) ? (
+            <div
+              id={METADATA_CONVERSATION_SECTION_ID}
+              className="scroll-mt-4 space-y-1.5 rounded-md transition-shadow duration-300"
+            >
+              <Label className="text-xs">
+                {correspondentEmail
+                  ? `Alle Mails mit ${correspondentEmail}`
+                  : "Kommunikation (Ticket/Kunde)"}
+              </Label>
+              <p className="text-[10px] text-muted-foreground">
+                {correspondentEmail
+                  ? "Posteingang, Gesendet, Archiv — Klick auf Eintrag wechselt die Auswahl."
+                  : "Weitere Nachrichten zum Ticket oder verknüpften Kunden."}
+              </p>
+              {conversation.length > 0 ? (
+                <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded border bg-background p-1 text-xs">
+                  {conversation.map((m) => {
+                    const active = m.id === selectedMessage.id
+                    const opening = openingConversationId === m.id
+                    return (
+                      <li key={m.id}>
+                        <button
+                          type="button"
+                          disabled={active || opening}
+                          className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
+                            active
+                              ? "bg-primary/10 text-primary"
+                              : "hover:bg-muted"
+                          }`}
+                          onClick={() => {
+                            if (!active) void openConversationMessage(m)
+                          }}
+                        >
+                          <p className="font-medium line-clamp-1">
+                            {m.subject || "(Ohne Betreff)"}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {m.date_received
+                              ? new Date(m.date_received).toLocaleString("de-DE")
+                              : "—"}
+                            {m.ticket_code ? ` · ${m.ticket_code}` : ""}
+                          </p>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              ) : correspondentEmail ? (
+                <p className="text-xs text-muted-foreground">
+                  Keine weiteren Nachrichten mit {correspondentEmail} in diesem Konto.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Keine weiteren Nachrichten zu Ticket oder Kunde.
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-xs">Mail-Sicherheit</Label>
               <Button
                 type="button"
-                size="icon"
-                variant="outline"
-                className="h-8 w-8 shrink-0"
-                aria-label="ID kopieren"
+                size="sm"
+                variant="ghost"
+                className="h-7 text-[10px]"
+                disabled={securityLoading}
                 onClick={() => {
-                  void navigator.clipboard.writeText(String(selectedMessage.id))
-                  toast.success("Nachrichten-ID kopiert")
+                  if (!selectedMessage) return
+                  void (async () => {
+                    setSecurityLoading(true)
+                    try {
+                      const result = await invokeRenderer(
+                        IPCChannels.Email.RunMailSecurityCheck,
+                        selectedMessage.id,
+                      ) as { success?: boolean; queued?: boolean }
+                      const r = await invokeRenderer(
+                        IPCChannels.Email.GetMessageSecurity,
+                        selectedMessage.id,
+                      ) as MessageSecurityResponse
+                      if (r.success) setSecurity(messageSecurityStateFromResponse(r))
+                      toast.success(result.queued ? "Prüfung eingereiht" : "Prüfung abgeschlossen")
+                    } catch {
+                      toast.error("Sicherheitsprüfung fehlgeschlagen")
+                    } finally {
+                      setSecurityLoading(false)
+                    }
+                  })()
                 }}
               >
-                <Copy className="h-3.5 w-3.5" />
+                Erneut prüfen
               </Button>
             </div>
-            <p className="text-[10px] text-muted-foreground">
-              Workflow manuell starten: Toolbar „Workflow“ oder Workflows → Erweitert (Dry-Run mit
-              ID).
-            </p>
+            {securityLoading && !security ? (
+              <p className="text-[10px] text-muted-foreground">Lädt…</p>
+            ) : hasSecurityDetails ? (
+              <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
+                <dt className="text-muted-foreground">SPF</dt>
+                <dd className="font-mono">{security.authSpf ?? "—"}</dd>
+                <dt className="text-muted-foreground">DKIM</dt>
+                <dd className="font-mono">{security.authDkim ?? "—"}</dd>
+                <dt className="text-muted-foreground">DMARC</dt>
+                <dd className="font-mono">{security.authDmarc ?? "—"}</dd>
+                <dt className="text-muted-foreground">ARC</dt>
+                <dd className="font-mono">{security.authArc ?? "—"}</dd>
+                {security.rspamdScore != null ? (
+                  <>
+                    <dt className="text-muted-foreground">Rspamd</dt>
+                    <dd className="font-mono">
+                      {security.rspamdScore}
+                      {security.rspamdAction ? ` (${security.rspamdAction})` : ""}
+                    </dd>
+                  </>
+                ) : null}
+                {security.spamScore != null ? (
+                  <>
+                    <dt className="text-muted-foreground">Spam-Score</dt>
+                    <dd className="font-mono">
+                      {security.spamScore}/100
+                      {security.spamScoreLabel ? ` (${security.spamScoreLabel})` : ""}
+                    </dd>
+                    <dt className="text-muted-foreground">Quelle</dt>
+                    <dd className="font-mono">{security.spamDecisionSource ?? "lokal"}</dd>
+                  </>
+                ) : null}
+              </dl>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">
+                Noch nicht geprüft (läuft normalerweise beim Sync).
+              </p>
+            )}
+            {security?.authSpf === "temperror" ||
+            security?.authDkim === "temperror" ||
+            security?.authDmarc === "temperror" ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                <strong>temperror</strong> = Live-DNS-Prüfung fehlgeschlagen. Netzwerk/VPN/DNS prüfen
+                und „Erneut prüfen“ — oder Authentication-Results des Servers in den Roh-Headern
+                prüfen.
+              </p>
+            ) : null}
+            {security?.authError?.includes(
+              "Werte aus Authentication-Results des empfangenden Servers",
+            ) ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                SPF/DKIM/DMARC stammen aus dem Authentication-Results-Header Ihres Mailservers (keine
+                Live-DNS-Prüfung in SimpleCRM).
+              </p>
+            ) : null}
+            {security?.authArc === "fail" ? (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                <strong>ARC fail</strong> ist bei normaler Post ohne Weiterleitungskette häufig — oft
+                unkritisch.
+              </p>
+            ) : null}
+            {security?.spamScoreBreakdownJson ? (
+              <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
+                {spamReasonLabels(security.spamScoreBreakdownJson).map((reason) => (
+                  <p key={reason}>{reason}</p>
+                ))}
+              </div>
+            ) : null}
+            {security?.authError || security?.rspamdError ? (
+              <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                {[security.authError, security.rspamdError].filter(Boolean).join(" · ")}
+              </p>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">
@@ -300,37 +618,97 @@ export function MessageMetadataPanel({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-xs">Kategorie</Label>
-            <Select
-              value={messageCategoryId != null ? String(messageCategoryId) : "none"}
-              onValueChange={async (v) => {
-                const categoryId = v === "none" ? null : parseInt(v, 10)
-                await invokeRenderer(IPCChannels.Email.SetMessageCategory, {
-                  messageId: selectedMessage.id,
-                  categoryId: Number.isFinite(categoryId) ? categoryId : null,
-                })
-                setMessageCategoryId(categoryId)
-                toast.success(
-                  categoryId == null
-                    ? "Kategorie entfernt"
-                    : `Kategorie: ${categoryPathLabel(categories, categoryId)}`,
-                )
-              }}
-            >
-              <SelectTrigger className="h-9">
-                <SelectValue placeholder="Kategorie" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">— keine —</SelectItem>
-                {categories.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>
-                    {categoryPathLabel(categories, c.id)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label className="text-xs">Kategorien</Label>
+            <div className="flex flex-wrap gap-1.5" data-testid="message-category-chips">
+              {messageCategoryIds.length === 0 ? (
+                <span className="text-[11px] text-muted-foreground">— keine zugewiesen —</span>
+              ) : (
+                messageCategoryIds.map((id) => (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-[11px]"
+                  >
+                    {categoryPathLabel(categories, id)}
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      disabled={categoryBusy}
+                      aria-label="Kategorie entfernen"
+                      onClick={async () => {
+                        setCategoryBusy(true)
+                        try {
+                          const r = (await invokeRenderer(IPCChannels.Email.RemoveMessageCategory, {
+                            messageId: selectedMessage.id,
+                            categoryId: id,
+                          })) as { removed?: boolean }
+                          if (r?.removed) {
+                            await reloadMessageCategoryIds(selectedMessage.id)
+                            bumpCategoryAssignmentRevision()
+                            toast.success("Kategorie entfernt")
+                          } else {
+                            // Server didn't find the assignment — resync the UI
+                            // with reality so a stale chip can't sit there silently.
+                            await reloadMessageCategoryIds(selectedMessage.id)
+                            bumpCategoryAssignmentRevision()
+                            toast.info("Kategorie war bereits nicht mehr zugewiesen")
+                          }
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : "Entfernen fehlgeschlagen")
+                        } finally {
+                          setCategoryBusy(false)
+                        }
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Select
+                value="none"
+                onValueChange={async (v) => {
+                  if (v === "none") return
+                  const categoryId = parseInt(v, 10)
+                  if (!Number.isFinite(categoryId)) return
+                  setCategoryBusy(true)
+                  try {
+                    const r = (await invokeRenderer(IPCChannels.Email.AddMessageCategory, {
+                      messageId: selectedMessage.id,
+                      categoryId,
+                    })) as { added?: boolean; alreadyAssigned?: boolean }
+                    await reloadMessageCategoryIds(selectedMessage.id)
+                    bumpCategoryAssignmentRevision()
+                    if (r?.added) {
+                      toast.success(`Kategorie hinzugefügt: ${categoryPathLabel(categories, categoryId)}`)
+                    } else if (r?.alreadyAssigned) {
+                      toast.info(`Bereits in „${categoryPathLabel(categories, categoryId)}"`)
+                    }
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Hinzufügen fehlgeschlagen")
+                  } finally {
+                    setCategoryBusy(false)
+                  }
+                }}
+                disabled={categoryBusy}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="+ Kategorie hinzufügen" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— wählen —</SelectItem>
+                  {availableCategoriesForAdd.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {categoryPathLabel(categories, c.id)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <p className="text-[10px] text-muted-foreground">
-              Neue Kategorien: Seitenleiste → Kategorien → Verwalten.
+              Tipp: Mails per Drag-Drop in eine Kategorie (Sidebar) fügen die Kategorie hinzu —
+              ohne andere zu entfernen.
             </p>
           </div>
 
@@ -452,178 +830,6 @@ export function MessageMetadataPanel({
             </div>
           </div>
 
-          <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
-            <div className="flex items-center justify-between gap-2">
-              <Label className="text-xs">Mail-Sicherheit</Label>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 text-[10px]"
-                disabled={securityLoading}
-                onClick={() => {
-                  if (!selectedMessage) return
-                  void (async () => {
-                    setSecurityLoading(true)
-                    try {
-                      const result = await invokeRenderer(
-                        IPCChannels.Email.RunMailSecurityCheck,
-                        selectedMessage.id,
-                      ) as { success?: boolean; queued?: boolean }
-                      const r = await invokeRenderer(
-                        IPCChannels.Email.GetMessageSecurity,
-                        selectedMessage.id,
-                      ) as MessageSecurityResponse
-                      if (r.success) setSecurity(messageSecurityStateFromResponse(r))
-                      toast.success(result.queued ? "Prüfung eingereiht" : "Prüfung abgeschlossen")
-                    } catch {
-                      toast.error("Sicherheitsprüfung fehlgeschlagen")
-                    } finally {
-                      setSecurityLoading(false)
-                    }
-                  })()
-                }}
-              >
-                Erneut prüfen
-              </Button>
-            </div>
-            {securityLoading && !security ? (
-              <p className="text-[10px] text-muted-foreground">Lädt…</p>
-            ) : hasSecurityDetails ? (
-              <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
-                <dt className="text-muted-foreground">SPF</dt>
-                <dd className="font-mono">{security.authSpf ?? "—"}</dd>
-                <dt className="text-muted-foreground">DKIM</dt>
-                <dd className="font-mono">{security.authDkim ?? "—"}</dd>
-                <dt className="text-muted-foreground">DMARC</dt>
-                <dd className="font-mono">{security.authDmarc ?? "—"}</dd>
-                <dt className="text-muted-foreground">ARC</dt>
-                <dd className="font-mono">{security.authArc ?? "—"}</dd>
-                {security.rspamdScore != null ? (
-                  <>
-                    <dt className="text-muted-foreground">Rspamd</dt>
-                    <dd className="font-mono">
-                      {security.rspamdScore}
-                      {security.rspamdAction ? ` (${security.rspamdAction})` : ""}
-                    </dd>
-                  </>
-                ) : null}
-                {security.spamScore != null ? (
-                  <>
-                    <dt className="text-muted-foreground">Spam-Score</dt>
-                    <dd className="font-mono">
-                      {security.spamScore}/100
-                      {security.spamScoreLabel ? ` (${security.spamScoreLabel})` : ""}
-                    </dd>
-                    <dt className="text-muted-foreground">Quelle</dt>
-                    <dd className="font-mono">{security.spamDecisionSource ?? "lokal"}</dd>
-                  </>
-                ) : null}
-              </dl>
-            ) : (
-              <p className="text-[10px] text-muted-foreground">
-                Noch nicht geprüft (läuft normalerweise beim Sync).
-              </p>
-            )}
-            {security?.authSpf === "temperror" ||
-            security?.authDkim === "temperror" ||
-            security?.authDmarc === "temperror" ? (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                <strong>temperror</strong> = Live-DNS-Prüfung fehlgeschlagen. Netzwerk/VPN/DNS prüfen
-                und „Erneut prüfen“ — oder Authentication-Results des Servers in den Roh-Headern
-                prüfen.
-              </p>
-            ) : null}
-            {security?.authError?.includes(
-              "Werte aus Authentication-Results des empfangenden Servers",
-            ) ? (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                SPF/DKIM/DMARC stammen aus dem Authentication-Results-Header Ihres Mailservers (keine
-                Live-DNS-Prüfung in SimpleCRM).
-              </p>
-            ) : null}
-            {security?.authArc === "fail" ? (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                <strong>ARC fail</strong> ist bei normaler Post ohne Weiterleitungskette häufig — oft
-                unkritisch.
-              </p>
-            ) : null}
-            {security?.spamScoreBreakdownJson ? (
-              <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
-                {spamReasonLabels(security.spamScoreBreakdownJson).map((reason) => (
-                  <p key={reason}>{reason}</p>
-                ))}
-              </div>
-            ) : null}
-            {security?.authError || security?.rspamdError ? (
-              <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
-                {[security.authError, security.rspamdError].filter(Boolean).join(" · ")}
-              </p>
-            ) : null}
-          </div>
-
-          {correspondentEmail ||
-          conversation.length > 0 ||
-          selectedMessage.ticket_code?.trim() ||
-          (selectedMessage.customer_id != null && selectedMessage.customer_id > 0) ? (
-            <div
-              id={METADATA_CONVERSATION_SECTION_ID}
-              className="scroll-mt-4 space-y-1.5 rounded-md transition-shadow duration-300"
-            >
-              <Label className="text-xs">
-                {correspondentEmail
-                  ? `Alle Mails mit ${correspondentEmail}`
-                  : "Kommunikation (Ticket/Kunde)"}
-              </Label>
-              <p className="text-[10px] text-muted-foreground">
-                {correspondentEmail
-                  ? "Posteingang, Gesendet, Archiv — Klick auf Eintrag wechselt die Auswahl."
-                  : "Weitere Nachrichten zum Ticket oder verknüpften Kunden."}
-              </p>
-              {conversation.length > 0 ? (
-                <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded border bg-background p-1 text-xs">
-                  {conversation.map((m) => {
-                    const active = m.id === selectedMessage.id
-                    return (
-                      <li key={m.id}>
-                        <button
-                          type="button"
-                          disabled={active}
-                          className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
-                            active
-                              ? "bg-primary/10 text-primary"
-                              : "hover:bg-muted"
-                          }`}
-                          onClick={() => {
-                            if (!active) setSelectedMessage(m)
-                          }}
-                        >
-                          <p className="font-medium line-clamp-1">
-                            {m.subject || "(Ohne Betreff)"}
-                          </p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {m.date_received
-                              ? new Date(m.date_received).toLocaleString("de-DE")
-                              : "—"}
-                            {m.ticket_code ? ` · ${m.ticket_code}` : ""}
-                          </p>
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              ) : correspondentEmail ? (
-                <p className="text-xs text-muted-foreground">
-                  Keine weiteren Nachrichten mit {correspondentEmail} in diesem Konto.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Keine weiteren Nachrichten zu Ticket oder Kunde.
-                </p>
-              )}
-            </div>
-          ) : null}
-
           {selectedMessage.imap_thread_id ? (
             <div className="space-y-1">
               <Label className="text-xs">IMAP-Thread</Label>
@@ -633,118 +839,32 @@ export function MessageMetadataPanel({
             </div>
           ) : null}
 
-          <div className="space-y-2">
-            <Label className="text-xs">Interne Notizen</Label>
-            {internalNotes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Noch keine Notizen.</p>
-            ) : (
-              <ul className="space-y-1">
-                {internalNotes.map((n) => (
-                  <li
-                    key={n.id}
-                    className="rounded bg-background px-2 py-1.5 text-xs shadow-sm"
-                  >
-                    {editingNoteId === n.id ? (
-                      <div className="space-y-1">
-                        <Textarea
-                          value={editingNoteBody}
-                          onChange={(e) => setEditingNoteBody(e.target.value)}
-                          className="min-h-[60px] text-xs"
-                        />
-                        <div className="flex gap-1">
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="h-7 flex-1"
-                            onClick={async () => {
-                              const r = await invokeRenderer(
-                                IPCChannels.Email.UpdateInternalNote,
-                                { noteId: n.id, body: editingNoteBody },
-                              ) as { success: boolean; error?: string }
-                              if (!r.success) {
-                                toast.error(r.error ?? "Speichern fehlgeschlagen")
-                                return
-                              }
-                              setEditingNoteId(null)
-                              await reloadNotes()
-                              toast.success("Notiz gespeichert")
-                            }}
-                          >
-                            Speichern
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-7"
-                            onClick={() => setEditingNoteId(null)}
-                          >
-                            Abbrechen
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="whitespace-pre-wrap">{n.body}</p>
-                        <div className="mt-1 flex gap-1">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            aria-label="Notiz bearbeiten"
-                            onClick={() => {
-                              setEditingNoteId(n.id)
-                              setEditingNoteBody(n.body)
-                            }}
-                          >
-                            <Pencil className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6 text-destructive"
-                            aria-label="Notiz löschen"
-                            onClick={async () => {
-                              await invokeRenderer(IPCChannels.Email.DeleteInternalNote, n.id)
-                              await reloadNotes()
-                              toast.success("Notiz gelöscht")
-                            }}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <Textarea
-              value={newNote}
-              onChange={(e) => setNewNote(e.target.value)}
-              placeholder="Notiz hinzufügen…"
-              className="min-h-[70px] text-sm"
-            />
-            <Button
-              type="button"
-              size="sm"
-              className="w-full"
-              onClick={async () => {
-                if (!newNote.trim()) return
-                await invokeRenderer(IPCChannels.Email.AddInternalNote, {
-                  messageId: selectedMessage.id,
-                  body: newNote,
-                })
-                setNewNote("")
-                await reloadNotes()
-                toast.success("Notiz hinzugefügt")
-              }}
-            >
-              Speichern
-            </Button>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Nachrichten-ID</Label>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded border bg-muted/50 px-2 py-1 font-mono text-xs">
+                {selectedMessage.id}
+              </code>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="h-8 w-8 shrink-0"
+                aria-label="ID kopieren"
+                onClick={() => {
+                  void navigator.clipboard.writeText(String(selectedMessage.id))
+                  toast.success("Nachrichten-ID kopiert")
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Workflow manuell starten: Toolbar „Workflow“ oder Workflows → Erweitert (Dry-Run mit
+              ID).
+            </p>
           </div>
+
         </div>
       </ScrollArea>
     </aside>

@@ -7,7 +7,6 @@ import {
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
-  extractTicketFromSubject,
   generateTicketCode,
   normalizeMailboxName,
   normalizeEmailAddress,
@@ -33,12 +32,22 @@ import type {
   WorkflowExecutionJobPlan,
   WorkflowExecutionJobPort,
 } from './jobs';
+import {
+  createAiReviewPreviewRunner,
+  type AiReviewPreviewRunner,
+} from './ai-classification';
+import type { PostgresSecretPort } from './db/postgres-secret-port';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
 import type {
   EmailMessagesTable,
   EmailWorkflowRunsTable,
   EmailWorkflowsTable,
+  ReturnItemCondition,
+  ReturnItemsTable,
+  ReturnOutcome,
+  ReturnsTable,
+  ReturnStatus,
   ServerDatabase,
   WorkflowDelayedJobsTable,
 } from './db';
@@ -49,6 +58,7 @@ import {
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { outboundReviewApprovedKey } from './mail-compose-send';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -153,6 +163,7 @@ type ServerWorkflowContext = {
   message: MessageRow | null;
   strings: WorkflowStringContext;
   variables: WorkflowVariableContext;
+  previewOutbound?: boolean;
 };
 
 type PreparedWorkflowRun =
@@ -193,9 +204,29 @@ type GraphRunResult = {
   log: string[];
 };
 
+type DeferredWorkflowImapEffect =
+  | { kind: 'set_seen'; workspaceId: string; messageId: number }
+  | {
+    kind: 'move';
+    workspaceId: string;
+    messageId: number;
+    targetFolderPath: string;
+    context: ServerWorkflowContext;
+    now: Date;
+  }
+  | {
+    kind: 'delete';
+    workspaceId: string;
+    messageId: number;
+    context: ServerWorkflowContext;
+    now: Date;
+  };
+
 type ServerWorkflowRuntimePorts = Readonly<{
   mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
   workflowImapActions?: ServerWorkflowImapActionPort;
+  deferredImapEffects?: DeferredWorkflowImapEffect[];
+  aiReviewPreview?: AiReviewPreviewRunner;
 }>;
 
 type ServerInboundBranchGate = {
@@ -208,13 +239,30 @@ export type PostgresWorkflowExecutionJobPortOptions = Readonly<{
   applyWorkspaceSession?: WorkspaceSessionApplier;
   mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
   workflowImapActions?: ServerWorkflowImapActionPort;
+  secrets?: PostgresSecretPort;
+  aiReviewPreview?: AiReviewPreviewRunner;
 }>;
 
 export function createPostgresWorkflowExecutionJobPort(
   options: PostgresWorkflowExecutionJobPortOptions,
 ): WorkflowExecutionJobPort {
+  const aiReviewPreview = options.aiReviewPreview
+    ?? (options.secrets
+      ? createAiReviewPreviewRunner({
+        db: options.db,
+        secrets: options.secrets,
+        applyWorkspaceSession: options.applyWorkspaceSession,
+        now: options.now,
+      })
+      : undefined);
+  const runtimePorts: ServerWorkflowRuntimePorts = {
+    mssql: options.mssql,
+    workflowImapActions: options.workflowImapActions,
+    aiReviewPreview,
+  };
   return {
     async execute(input) {
+      const deferredImapEffects: DeferredWorkflowImapEffect[] = [];
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -407,8 +455,8 @@ export function createPostgresWorkflowExecutionJobPort(
             startNodeId: resumeNodeId,
             now,
             ports: {
-              mssql: options.mssql,
-              workflowImapActions: options.workflowImapActions,
+              ...runtimePorts,
+              deferredImapEffects,
             },
           });
           await finishRun(trx, input.workspaceId, run.id, {
@@ -431,6 +479,12 @@ export function createPostgresWorkflowExecutionJobPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
+      await flushDeferredWorkflowImapEffects({
+        effects: deferredImapEffects,
+        db: options.db,
+        workflowImapActions: options.workflowImapActions,
+        applyWorkspaceSession: options.applyWorkspaceSession,
+      });
     },
 
     async dryRun(input) {
@@ -480,9 +534,7 @@ export function createPostgresWorkflowExecutionJobPort(
             startNodeId: prepared.resumeNodeId,
             now,
             dryRun: true,
-            ports: {
-              mssql: options.mssql,
-            },
+            ports: runtimePorts,
           });
           return {
             success: true,
@@ -1204,6 +1256,61 @@ function boundedWorkflowLoopItems(value: unknown): number {
   return Math.max(1, Math.min(MAX_WORKFLOW_LOOP_ITEMS, Math.trunc(parsed)));
 }
 
+async function executePreviewOutboundAiReview(
+  ports: ServerWorkflowRuntimePorts,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  type: 'ai.outbound_review' | 'ai.review' | 'ai_review',
+): Promise<NodeResult> {
+  if (!ports.aiReviewPreview) {
+    const message = 'KI-Vorschau nicht verfuegbar';
+    return {
+      status: 'error',
+      port: 'error',
+      blocked: true,
+      blockReason: message,
+      message,
+    };
+  }
+  const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
+  if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+  const blockKeyword = workflowAiBlockKeyword(config.blockKeyword);
+  if (!blockKeyword.ok) return { status: 'error', port: 'error', message: blockKeyword.message };
+
+  const preview = await ports.aiReviewPreview({
+    workspaceId: context.workspaceId,
+    direction: context.direction === 'inbound' ? 'inbound' : 'outbound',
+    ...(promptId.value === undefined ? {} : { promptId: promptId.value }),
+    ...(profileId.value === undefined ? {} : { profileId: profileId.value }),
+    blockKeyword: blockKeyword.value,
+    ...(type === 'ai.outbound_review'
+      ? {
+        parseMode: 'outbound_structured' as const,
+        systemPrompt: typeof config.systemPrompt === 'string' && config.systemPrompt.trim()
+          ? config.systemPrompt.trim()
+          : workflowOutboundReviewSystemPrompt(),
+        fallbackUserTemplate: typeof config.fallbackUserTemplate === 'string' && config.fallbackUserTemplate.trim()
+          ? config.fallbackUserTemplate.trim()
+          : workflowOutboundReviewUserTemplate(),
+      }
+      : { parseMode: 'block_keyword' as const }),
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+  });
+
+  if (!preview.ok) {
+    return {
+      status: 'ok',
+      blocked: true,
+      blockReason: preview.reason,
+      message: preview.reason,
+    };
+  }
+  return { status: 'ok', port: 'default', message: 'preview_ai:ok' };
+}
+
 async function executeServerNode(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -1307,6 +1414,17 @@ async function executeServerNode(
       .filter(Boolean);
     return { status: 'ok', port: cases.includes(value) ? value : 'default' };
   }
+  if (dryRun && context.previewOutbound) {
+    if (type === 'ai.outbound_review') {
+      if (context.direction !== 'outbound') {
+        return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
+      }
+      return executePreviewOutboundAiReview(ports, context, config, type);
+    }
+    if (type === 'ai.review' || type === 'ai_review') {
+      return executePreviewOutboundAiReview(ports, context, config, type);
+    }
+  }
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);
     if (dryRunResult) return dryRunResult;
@@ -1363,9 +1481,17 @@ async function executeServerNode(
     };
   }
   if (type === 'email.release_outbound') {
+    if (dryRun) {
+      return dryRunSideEffectResult('email.release_outbound', log, {
+        message: 'dry_run:email.release_outbound',
+      });
+    }
     return await releaseWorkflowOutboundHold(trx, context, config, now);
   }
   if (type === 'email.send_draft') {
+    if (dryRun) {
+      return dryRunSideEffectResult('email.send_draft', log, { message: 'dry_run:email.send_draft' });
+    }
     return await sendWorkflowDraft(trx, context, config, now);
   }
   if (type === 'email.tag' || type === 'tag') {
@@ -1470,7 +1596,7 @@ async function executeServerNode(
     const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
     if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
     if (moveImap.value && spam.value) {
-      const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap');
+      const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
       if (!moveResult.ok) return moveResult.node;
     }
     const tag = String(config.tag ?? 'auto-spam').trim();
@@ -1529,6 +1655,15 @@ async function executeServerNode(
   if (type === 'jtl.prepare_action') {
     return executeWorkflowJtlPrepareAction(context, config);
   }
+  if (type === 'returns.evaluate') {
+    return await evaluateWorkflowReturn(trx, context, config);
+  }
+  if (type === 'returns.offer_exchange') {
+    return await applyWorkflowReturnOutcome(trx, context, config, 'exchange', now);
+  }
+  if (type === 'returns.offer_credit') {
+    return await applyWorkflowReturnOutcome(trx, context, config, 'credit', now);
+  }
   if (type === 'workflow.subflow') {
     return await enqueueWorkflowSubflow(trx, context, node, config, now);
   }
@@ -1548,17 +1683,25 @@ async function markWorkflowMessageSeen(
 
   const variables: WorkflowVariableContext = { 'email.seen': true };
   if (ports.workflowImapActions && context.messageId !== null) {
-    const remoteResult = await ports.workflowImapActions.setSeen({
-      workspaceId: context.workspaceId,
-      messageId: context.messageId,
-      seen: true,
-    });
-    if (remoteResult.ok) {
-      variables['imap.seen_synced'] = true;
-      variables['imap.source_folder'] = remoteResult.sourceFolderPath;
+    if (ports.deferredImapEffects) {
+      ports.deferredImapEffects.push({
+        kind: 'set_seen',
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+      });
     } else {
-      variables['imap.seen_synced'] = false;
-      log.push(`imap_seen_sync_failed:${remoteResult.error}`);
+      const remoteResult = await ports.workflowImapActions.setSeen({
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        seen: true,
+      });
+      if (remoteResult.ok) {
+        variables['imap.seen_synced'] = true;
+        variables['imap.source_folder'] = remoteResult.sourceFolderPath;
+      } else {
+        variables['imap.seen_synced'] = false;
+        log.push(`imap_seen_sync_failed:${remoteResult.error}`);
+      }
     }
   }
 
@@ -1692,6 +1835,12 @@ function dryRunMutatingNodeResult(
       });
     case 'workflow.subflow':
       return dryRunSideEffectResult(type, log, { variables: { 'subflow.status': 'dry_run' } });
+    // returns.evaluate is intentionally NOT listed: it is read-only and runs live
+    // even in dry-run so the previewed routing port reflects the real decision.
+    case 'returns.offer_exchange':
+      return dryRunSideEffectResult(type, log, { variables: { 'returns.outcome': 'exchange' } });
+    case 'returns.offer_credit':
+      return dryRunSideEffectResult(type, log, { variables: { 'returns.outcome': 'credit' } });
     default:
       return null;
   }
@@ -1746,17 +1895,21 @@ async function moveWorkflowMessageOnImap(
   ).trim();
   if (!targetFolderPath) return { status: 'skipped', port: 'default', message: 'Zielordner leer' };
 
-  const moveResult = await runWorkflowImapMoveAction(context, targetFolderPath, ports, log, 'email.move_imap');
+  const moveResult = await runWorkflowImapMoveAction(context, targetFolderPath, ports, log, 'email.move_imap', now);
   if (!moveResult.ok) return moveResult.node;
 
-  const localResult = await applyWorkflowImapMoveLocalState(trx, context, targetFolderPath, now);
-  if (localResult) return localResult;
+  if (!ports.deferredImapEffects) {
+    const localResult = await applyWorkflowImapMoveLocalState(trx, context, targetFolderPath, now);
+    if (localResult) return localResult;
+  }
 
   return {
     status: 'ok',
     port: 'default',
     variables: {
-      'imap.source_folder': moveResult.value.sourceFolderPath,
+      ...(moveResult.value.sourceFolderPath
+        ? { 'imap.source_folder': moveResult.value.sourceFolderPath }
+        : {}),
       'imap.moved_to': moveResult.value.targetFolderPath ?? targetFolderPath,
       'message.id': context.messageId,
     },
@@ -1776,6 +1929,24 @@ async function deleteWorkflowMessageOnImap(
   if (!ports.workflowImapActions) {
     return unsupportedWorkflowNodeResult('email.delete_server', log);
   }
+  if (ports.deferredImapEffects) {
+    ports.deferredImapEffects.push({
+      kind: 'delete',
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      context,
+      now,
+    });
+    return {
+      status: 'ok',
+      port: 'default',
+      variables: {
+        'imap.deleted': true,
+        'message.id': context.messageId,
+      },
+    };
+  }
+
   const deleted = await ports.workflowImapActions.delete({
     workspaceId: context.workspaceId,
     messageId: context.messageId,
@@ -1802,6 +1973,7 @@ async function runWorkflowImapMoveAction(
   ports: ServerWorkflowRuntimePorts,
   log: string[],
   unsupportedType: string,
+  now: Date,
 ): Promise<
   | { ok: true; value: ServerWorkflowImapActionResult & { ok: true } }
   | { ok: false; node: NodeResult }
@@ -1812,6 +1984,24 @@ async function runWorkflowImapMoveAction(
   if (!ports.workflowImapActions) {
     return { ok: false, node: unsupportedWorkflowNodeResult(unsupportedType, log) };
   }
+  if (ports.deferredImapEffects) {
+    ports.deferredImapEffects.push({
+      kind: 'move',
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      targetFolderPath,
+      context,
+      now,
+    });
+    return {
+      ok: true,
+      value: {
+        ok: true,
+        sourceFolderPath: '',
+        targetFolderPath,
+      },
+    };
+  }
   const result = await ports.workflowImapActions.move({
     workspaceId: context.workspaceId,
     messageId: context.messageId,
@@ -1819,6 +2009,58 @@ async function runWorkflowImapMoveAction(
   });
   if (!result.ok) return { ok: false, node: { status: 'error', port: 'error', message: result.error } };
   return { ok: true, value: result };
+}
+
+async function flushDeferredWorkflowImapEffects(input: {
+  effects: readonly DeferredWorkflowImapEffect[];
+  db: Kysely<ServerDatabase>;
+  workflowImapActions?: ServerWorkflowImapActionPort;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+}): Promise<void> {
+  if (!input.workflowImapActions || input.effects.length === 0) return;
+
+  for (const effect of input.effects) {
+    if (effect.kind === 'set_seen') {
+      await input.workflowImapActions.setSeen({
+        workspaceId: effect.workspaceId,
+        messageId: effect.messageId,
+        seen: true,
+      });
+      continue;
+    }
+
+    if (effect.kind === 'move') {
+      const moved = await input.workflowImapActions.move({
+        workspaceId: effect.workspaceId,
+        messageId: effect.messageId,
+        targetFolderPath: effect.targetFolderPath,
+      });
+      if (!moved.ok) continue;
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId: effect.workspaceId, role: 'system' },
+        async (trx) => {
+          await applyWorkflowImapMoveLocalState(trx, effect.context, effect.targetFolderPath, effect.now);
+        },
+        { applySession: input.applyWorkspaceSession },
+      );
+      continue;
+    }
+
+    const deleted = await input.workflowImapActions.delete({
+      workspaceId: effect.workspaceId,
+      messageId: effect.messageId,
+    });
+    if (!deleted.ok) continue;
+    await withWorkspaceTransaction(
+      input.db,
+      { workspaceId: effect.workspaceId, role: 'system' },
+      async (trx) => {
+        await softDeleteWorkflowMessage(trx, effect.context, effect.now);
+      },
+      { applySession: input.applyWorkspaceSession },
+    );
+  }
 }
 
 async function applyWorkflowImapMoveLocalState(
@@ -2750,6 +2992,273 @@ function executeWorkflowJtlPrepareAction(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Returns / RMA workflow nodes (Phase 3)
+//
+// These operate on the workspace's OWN returns table — JTL is never written.
+// A run resolves "its" return via (in order): config.returnId → the
+// `returns.id` variable set by a prior node → the return linked to the
+// triggering email (returns.email_message_id = context.messageId). When none
+// is found the nodes route to the `no_return` port instead of failing, so a
+// returns workflow placed on a generic inbox simply no-ops on unrelated mail.
+// ---------------------------------------------------------------------------
+
+type WorkflowReturnRow = Selectable<ReturnsTable>;
+type WorkflowReturnItemRow = Selectable<ReturnItemsTable>;
+
+const RETURN_OUTCOME_PORTS = new Set(['refund', 'exchange', 'credit', 'keep', 'needs_review']);
+const RETURN_STATUS_VALUES = new Set<ReturnStatus>([
+  'pending',
+  'approved',
+  'received',
+  'refunded',
+  'exchanged',
+  'credited',
+  'rejected',
+  'cancelled',
+]);
+
+function resolveWorkflowReturnId(
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): { ok: true; returnId: number | null } | { ok: false; message: string } {
+  const configured = optionalPositiveIntegerConfig(config.returnId, 'returnId');
+  if (!configured.ok) return { ok: false, message: configured.message };
+  if (configured.value !== undefined) return { ok: true, returnId: configured.value };
+  const fromVar = positiveIntegerVariable(context.variables['returns.id']);
+  return { ok: true, returnId: fromVar };
+}
+
+async function loadWorkflowReturn(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<
+  | { ok: true; row: WorkflowReturnRow; items: WorkflowReturnItemRow[] }
+  | { ok: true; row: null }
+  | { ok: false; message: string }
+> {
+  const resolved = resolveWorkflowReturnId(context, config);
+  if (!resolved.ok) return resolved;
+
+  let row: WorkflowReturnRow | undefined;
+  if (resolved.returnId !== null) {
+    row = await trx
+      .selectFrom('returns')
+      .selectAll()
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', resolved.returnId)
+      .executeTakeFirst();
+  } else if (context.messageId !== null) {
+    row = await trx
+      .selectFrom('returns')
+      .selectAll()
+      .where('workspace_id', '=', context.workspaceId)
+      .where('email_message_id', '=', context.messageId)
+      .orderBy('id', 'desc')
+      .executeTakeFirst();
+  }
+  if (!row) return { ok: true, row: null };
+
+  const items = await trx
+    .selectFrom('return_items')
+    .selectAll()
+    .where('workspace_id', '=', context.workspaceId)
+    .where('return_id', '=', Number(row.id))
+    .orderBy('id', 'asc')
+    .execute();
+  return { ok: true, row, items };
+}
+
+function returnCsvSet(value: unknown, fallback: readonly string[]): Set<string> {
+  if (typeof value !== 'string' || !value.trim()) return new Set(fallback);
+  return new Set(
+    value
+      .split(',')
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function normalizeReturnOutcomePort(value: unknown, fallback: string): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return RETURN_OUTCOME_PORTS.has(normalized) ? normalized : fallback;
+}
+
+function normalizeReturnStatusConfig(value: unknown): ReturnStatus | null {
+  if (value === undefined || value === null || value === '') return null;
+  const normalized = String(value).trim().toLowerCase();
+  return RETURN_STATUS_VALUES.has(normalized as ReturnStatus) ? (normalized as ReturnStatus) : null;
+}
+
+/**
+ * Pure decision rules for `returns.evaluate`, factored out so the policy can be
+ * unit-tested without a database. Precedence (fixed for safety):
+ *   1. needs_review — any item condition in `reviewConditions` (default: damaged)
+ *   2. exchange     — any item reason code in `exchangeReasonCodes`
+ *                     (default: size_wrong, wrong_item)
+ *   3. credit       — any item reason code in `creditReasonCodes` (default: none)
+ *   4. default      — `defaultOutcome` (default: refund)
+ * Conditions and reason codes are matched case-insensitively.
+ */
+export function decideWorkflowReturnOutcomePort(input: {
+  itemConditions: readonly string[];
+  itemReasonCodes: readonly string[];
+  config: Record<string, unknown>;
+}): string {
+  const reviewConditions = returnCsvSet(input.config.reviewConditions, ['damaged']);
+  const exchangeReasonCodes = returnCsvSet(input.config.exchangeReasonCodes, ['size_wrong', 'wrong_item']);
+  const creditReasonCodes = returnCsvSet(input.config.creditReasonCodes, []);
+  const defaultOutcome = normalizeReturnOutcomePort(input.config.defaultOutcome, 'refund');
+
+  const conditions = input.itemConditions.map((cond) => cond.toLowerCase());
+  const reasonCodes = input.itemReasonCodes.map((code) => code.toLowerCase());
+
+  if (conditions.some((cond) => reviewConditions.has(cond))) return 'needs_review';
+  if (reasonCodes.some((code) => exchangeReasonCodes.has(code))) return 'exchange';
+  if (reasonCodes.some((code) => creditReasonCodes.has(code))) return 'credit';
+  return defaultOutcome;
+}
+
+/**
+ * returns.evaluate — read-only decision node. Suggests an outcome from the
+ * return's items and routes to one of refund/exchange/credit/needs_review
+ * (or no_return when no return is found). Wire each port to the matching
+ * follow-up node. Rule precedence is fixed for safety:
+ *   1. needs_review  — any item condition in `reviewConditions` (default: damaged)
+ *   2. exchange      — any item reason code in `exchangeReasonCodes`
+ *                      (default: size_wrong, wrong_item)
+ *   3. credit        — any item reason code in `creditReasonCodes` (default: none)
+ *   4. default       — `defaultOutcome` (default: refund)
+ */
+export async function evaluateWorkflowReturn(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<NodeResult> {
+  const loaded = await loadWorkflowReturn(trx, context, config);
+  if (!loaded.ok) return { status: 'error', port: 'error', message: loaded.message };
+  if (loaded.row === null) {
+    return {
+      status: 'ok',
+      port: 'no_return',
+      message: 'Keine Retoure fuer diesen Lauf gefunden',
+      variables: { 'returns.found': false },
+    };
+  }
+  const { row, items } = loaded;
+
+  const reasonIds = [...new Set(items.map((it) => it.reason_id).filter((id): id is number => id !== null))];
+  const reasonCodeById = new Map<number, string>();
+  if (reasonIds.length > 0) {
+    const reasons = await trx
+      .selectFrom('return_reasons')
+      .select(['id', 'code'])
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', 'in', reasonIds)
+      .execute();
+    for (const reason of reasons) reasonCodeById.set(Number(reason.id), String(reason.code).toLowerCase());
+  }
+  const itemReasonCodes = new Set(
+    items
+      .map((it) => (it.reason_id !== null ? reasonCodeById.get(it.reason_id) : undefined))
+      .filter((code): code is string => Boolean(code)),
+  );
+  const itemConditions = new Set(
+    items
+      .map((it) => it.condition)
+      .filter((cond): cond is ReturnItemCondition => cond !== null)
+      .map((cond) => cond.toLowerCase()),
+  );
+
+  const port = decideWorkflowReturnOutcomePort({
+    itemConditions: [...itemConditions],
+    itemReasonCodes: [...itemReasonCodes],
+    config,
+  });
+
+  return {
+    status: 'ok',
+    port,
+    message: `returns_evaluated:${row.return_number}:${port}`,
+    variables: {
+      'returns.found': true,
+      'returns.id': Number(row.id),
+      'returns.number': String(row.return_number),
+      'returns.item_count': items.length,
+      'returns.status': String(row.status),
+      'returns.suggested_outcome': port,
+    },
+  };
+}
+
+/**
+ * returns.offer_exchange / returns.offer_credit — set the linked return's
+ * outcome (and optionally its status via config.status). Idempotent: a return
+ * already at the target outcome/status is left untouched. Writes only to the
+ * workspace's own returns table.
+ */
+export async function applyWorkflowReturnOutcome(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+  outcome: Extract<ReturnOutcome, 'exchange' | 'credit'>,
+  now: Date,
+): Promise<NodeResult> {
+  const loaded = await loadWorkflowReturn(trx, context, config);
+  if (!loaded.ok) return { status: 'error', port: 'error', message: loaded.message };
+  if (loaded.row === null) {
+    return {
+      status: 'skipped',
+      port: 'no_return',
+      message: 'Keine Retoure fuer diesen Lauf gefunden',
+      variables: { 'returns.found': false },
+    };
+  }
+  const { row } = loaded;
+  const returnId = Number(row.id);
+
+  if (config.status !== undefined && config.status !== '' && normalizeReturnStatusConfig(config.status) === null) {
+    return { status: 'error', port: 'error', message: 'status ungueltig' };
+  }
+  const status = normalizeReturnStatusConfig(config.status);
+
+  if (row.outcome === outcome && (status === null || row.status === status)) {
+    return {
+      status: 'ok',
+      port: 'default',
+      message: `returns_outcome_unchanged:${row.return_number}:${outcome}`,
+      variables: { 'returns.found': true, 'returns.id': returnId, 'returns.outcome': outcome },
+    };
+  }
+
+  const patch: { outcome: ReturnOutcome; updated_at: Date; status?: ReturnStatus } = {
+    outcome,
+    updated_at: now,
+  };
+  if (status !== null) patch.status = status;
+
+  await trx
+    .updateTable('returns')
+    .set(patch)
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', returnId)
+    .execute();
+
+  return {
+    status: 'ok',
+    port: 'default',
+    message: `returns_outcome:${row.return_number}:${outcome}`,
+    variables: {
+      'returns.found': true,
+      'returns.id': returnId,
+      'returns.number': String(row.return_number),
+      'returns.outcome': outcome,
+      ...(status !== null ? { 'returns.status': status } : {}),
+    },
+  };
+}
+
 function parseJtlContextMapping(value: unknown): Record<string, string> {
   const mapping: Record<string, string> = {};
   if (typeof value !== 'string' || !value.trim()) return mapping;
@@ -3529,6 +4038,64 @@ async function updateWorkflowMessage(
  * a re-entry loop from the scheduled-send cron) and (b) sets scheduled_send_at
  * = now so the scheduled-send job picks the draft up immediately.
  */
+
+async function allocateWorkflowTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+  now: Date,
+): Promise<string> {
+  if (accountId == null) return generateTicketCode();
+  const numericAccountId = Number(accountId);
+  if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) return generateTicketCode();
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', numericAccountId)
+    .executeTakeFirst();
+  if (!account) return generateTicketCode();
+  const defaultPrefix = `ACC${numericAccountId}`.slice(0, 12);
+  await trx
+    .insertInto('email_account_mail_settings')
+    .values({
+      workspace_id: workspaceId,
+      account_source_sqlite_id: Number(account.source_sqlite_id ?? numericAccountId),
+      account_id: numericAccountId,
+      ticket_prefix: defaultPrefix,
+      ticket_next_number: 1,
+      ticket_number_padding: 6,
+      thread_namespace: `account-${numericAccountId}`,
+      source_row: { source: 'server.workflow.ticket' },
+      imported_in_run_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+  const settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!settings) return generateTicketCode({ prefix: defaultPrefix });
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Math.min(12, Math.max(1, Math.floor(Number(settings.ticket_number_padding) || 6)));
+  const ticketCode = generateTicketCode({
+    prefix: settings.ticket_prefix || defaultPrefix,
+    sequence: String(Math.max(1, currentNumber || 1)).padStart(padding, '0'),
+  });
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: Math.max(1, currentNumber || 1) + 1, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .execute();
+  return ticketCode;
+}
+
 async function releaseWorkflowOutboundHold(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -3568,7 +4135,7 @@ async function releaseWorkflowOutboundHold(
   //     otherwise hash mismatches every retry and bypass is denied.
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', context.messageId)
     .executeTakeFirst();
@@ -3584,9 +4151,10 @@ async function releaseWorkflowOutboundHold(
   // add when scheduled-send finally calls composeSender.send. The marker must
   // be valid against that final subject so the retry bypasses the review.
   const storedSubject = draftRow?.subject?.trim() || '';
+  const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, context.workspaceId);
   const existingTicket = draftRow?.ticket_code?.trim()
-    || extractTicketFromSubject(draftRow?.subject ?? null);
-  const ticketCode = existingTicket || generateTicketCode();
+    || extractWorkspaceTicketFromSubject(draftRow?.subject ?? null, allowedPrefixes);
+  const ticketCode = existingTicket || await allocateWorkflowTicketCode(trx, context.workspaceId, draftRow?.account_id ?? null, now);
   const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 
   await trx
@@ -3726,7 +4294,7 @@ async function sendWorkflowDraft(
   }
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code'])
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', draftId)
     .executeTakeFirst();
@@ -3752,9 +4320,10 @@ async function sendWorkflowDraft(
       body_html: draftRow.body_html ?? null,
     });
     const storedSubject = draftRow.subject?.trim() || '';
+    const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, context.workspaceId);
     const existingTicket = draftRow.ticket_code?.trim()
-      || extractTicketFromSubject(draftRow.subject ?? null);
-    const ticketCode = existingTicket || generateTicketCode();
+      || extractWorkspaceTicketFromSubject(draftRow.subject ?? null, allowedPrefixes);
+    const ticketCode = existingTicket || await allocateWorkflowTicketCode(trx, context.workspaceId, draftRow.account_id ?? null, now);
     const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
 
     await trx
@@ -4963,6 +5532,7 @@ function buildWorkflowContext(input: {
     message: input.message,
     strings,
     variables,
+    previewOutbound: input.jobContext.previewOutbound === true,
   };
 }
 
@@ -5444,7 +6014,14 @@ function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {
 
 function messageIsSpamOrReview(message: MessageRow): boolean {
   const status = String(message.spam_status ?? '').toLowerCase();
-  return message.is_spam === true || status === 'spam' || status === 'review';
+  const label = String(message.spam_score_label ?? '').toLowerCase();
+  return (
+    message.is_spam === true
+    || status === 'spam'
+    || status === 'review'
+    || label === 'spam'
+    || label === 'review'
+  );
 }
 
 function outboundMessageIdFromContext(value: Record<string, unknown>): number | null {

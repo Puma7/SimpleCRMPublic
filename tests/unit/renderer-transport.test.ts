@@ -268,6 +268,9 @@ describe('renderer transport', () => {
       display_name: 'Agent',
       role: 'agent',
       is_active: 1,
+      login_pin_enabled: false,
+      mfa_enabled: false,
+      mfa_method: null,
       created_at: '2026-06-04T10:00:00.000Z',
       updated_at: '2026-06-04T10:00:00.000Z',
       last_login_at: null,
@@ -723,7 +726,7 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerId=42',
+      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerIds=42',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result.items[0].customFields).toEqual({ vip_status: 'Gold' });
@@ -2900,7 +2903,7 @@ describe('renderer transport', () => {
     ]);
   });
 
-  test('maps message attachment metadata list to server mail route', async () => {
+  test('maps message attachment metadata list including forwardable storage paths to server mail route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {
         items: [
@@ -2913,6 +2916,31 @@ describe('renderer transport', () => {
             contentType: 'application/pdf',
             sizeBytes: 12345,
             contentSha256: 'sha256-31',
+            storagePath: 'workspace-a/mail-sync/701/invoice.pdf',
+            updatedAt: '2026-06-03T10:00:00.000Z',
+          },
+          {
+            id: 802,
+            sourceSqliteId: 32,
+            messageSourceSqliteId: 11,
+            messageId: 701,
+            filename: 'packing-slip.pdf',
+            contentType: 'application/pdf',
+            sizeBytes: 23456,
+            contentSha256: 'sha256-32',
+            storagePath: 'workspace-a/mail-sync/701/packing-slip.pdf',
+            updatedAt: '2026-06-03T10:00:00.000Z',
+          },
+          {
+            id: 803,
+            sourceSqliteId: 33,
+            messageSourceSqliteId: 11,
+            messageId: 701,
+            filename: 'photo.jpg',
+            contentType: 'image/jpeg',
+            sizeBytes: 34567,
+            contentSha256: 'sha256-33',
+            storagePath: 'workspace-a/mail-sync/701/photo.jpg',
             updatedAt: '2026-06-03T10:00:00.000Z',
           },
         ],
@@ -2930,6 +2958,23 @@ describe('renderer transport', () => {
         filename_display: 'invoice.pdf',
         size_bytes: 12345,
         content_type: 'application/pdf',
+        storage_path: 'workspace-a/mail-sync/701/invoice.pdf',
+      },
+      {
+        id: 802,
+        source_sqlite_id: 32,
+        filename_display: 'packing-slip.pdf',
+        size_bytes: 23456,
+        content_type: 'application/pdf',
+        storage_path: 'workspace-a/mail-sync/701/packing-slip.pdf',
+      },
+      {
+        id: 803,
+        source_sqlite_id: 33,
+        filename_display: 'photo.jpg',
+        size_bytes: 34567,
+        content_type: 'image/jpeg',
+        storage_path: 'workspace-a/mail-sync/701/photo.jpg',
       },
     ]);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -3227,6 +3272,7 @@ describe('renderer transport', () => {
           inboxUnread: 2,
           sentFailed: 1,
           drafts: 4,
+          scheduledSend: 0,
           archived: 5,
           spamReview: 6,
           spam: 7,
@@ -3240,6 +3286,7 @@ describe('renderer transport', () => {
           inboxUnread: 0,
           sentFailed: 0,
           drafts: 1,
+          scheduledSend: 0,
           archived: 2,
           spamReview: 0,
           spam: 3,
@@ -3257,6 +3304,7 @@ describe('renderer transport', () => {
       inboxUnread: 2,
       sentFailed: 1,
       drafts: 4,
+      scheduledSend: 0,
       archived: 5,
       spamReview: 6,
       spam: 7,
@@ -3268,6 +3316,7 @@ describe('renderer transport', () => {
       inboxUnread: 0,
       sentFailed: 0,
       drafts: 1,
+      scheduledSend: 0,
       archived: 2,
       spamReview: 0,
       spam: 3,
@@ -4454,6 +4503,28 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps scheduled_send view lists to server query parameters', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { items: [], nextCursor: null },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await transport.invoke(IPCChannels.Email.ListMessagesByView, {
+      accountId: 101,
+      view: 'scheduled_send',
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages?accountId=101&view=scheduled_send&limit=50&offset=0',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps legacy email folder message lists to server folderPath queries', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
@@ -5319,6 +5390,44 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps scoped account list payloads to server account query', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.ListWorkflows, { accountId: 7 })).resolves.toEqual([]);
+    await expect(transport.invoke(IPCChannels.Email.ListKnowledgeBases, { accountId: 7 })).resolves.toEqual([]);
+    await expect(transport.invoke(IPCChannels.Email.ListCannedResponses, { accountId: 7 })).resolves.toEqual([]);
+    await expect(transport.invoke(IPCChannels.Email.ListAiPrompts, { accountId: 7 })).resolves.toEqual([]);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/workflows?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/workflow-knowledge-bases?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/email/canned-responses?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/ai/prompts?limit=100&accountId=7',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps workflow CRUD and version channels through source-id server routes', async () => {
     const workflow = {
       id: 201,
@@ -5875,6 +5984,9 @@ describe('renderer transport', () => {
       id: 90,
       name: 'Returns',
       description: null,
+      account_id: null,
+      override_key: null,
+      knowledge_context: null,
     }]);
     await expect(transport.invoke(
       IPCChannels.Email.CreateKnowledgeBase,
@@ -6658,6 +6770,191 @@ describe('renderer transport', () => {
     );
   });
 
+  test('email category multi-assignment: list / add (idempotent) / remove / set', async () => {
+    const fetchImpl = jest
+      .fn()
+      // ListMessageCategories
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      // AddMessageCategory: not yet assigned (62 NOT yet present) → list, then POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 21, messageId: 11, categoryId: 61 }], nextCursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { id: 22, messageId: 11, categoryId: 62 },
+      }, 201))
+      // AddMessageCategory: already assigned (62 already present) → list only, no POST
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      // RemoveMessageCategory: list to find the junction row id, then DELETE
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }))
+      // SetMessageCategories: diff (keep 61, remove 62, add 63) → list, POST 63, DELETE 22.
+      // POSTs go BEFORE DELETEs so a mid-batch failure can't strand the message
+      // with fewer categories than the user started with.
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 21, messageId: 11, categoryId: 61 },
+            { id: 22, messageId: 11, categoryId: 62 },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { id: 23, messageId: 11, categoryId: 63 },
+      }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { deleted: true, messageCategory: { id: 22 } },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    // 1. list
+    await expect(transport.invoke(IPCChannels.Email.ListMessageCategories, 11)).resolves.toEqual([
+      { id: 21, messageId: 11, categoryId: 61 },
+      { id: 22, messageId: 11, categoryId: 62 },
+    ]);
+
+    // 2. add new category
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: true, record: { id: 22, messageId: 11, categoryId: 62 } });
+
+    // 3. add already-assigned: idempotent, no POST issued
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // 4. remove
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: true });
+
+    // 5. set [61, 63] over current {61, 62} → DELETE 22, POST 63 (keep 21 alone)
+    await expect(transport.invoke(IPCChannels.Email.SetMessageCategories, {
+      messageId: 11,
+      categoryIds: [61, 63],
+    })).resolves.toEqual({ success: true });
+
+    // The 3rd Add call (already-assigned) must NOT have triggered a POST.
+    const postsToCategories = fetchImpl.mock.calls
+      .map((args: unknown[]) => args[1] as { method?: string } | undefined)
+      .filter((init) => init?.method === 'POST').length;
+    // Expected: 2 POSTs total (add-new + set-add 63). Set-diff keeps 61 unchanged.
+    expect(postsToCategories).toBe(2);
+
+    // The check-then-act helpers paginate with the server-respected cap of
+    // 100 — anything higher is rejected by normalizeLimit on the server. The
+    // full set is assembled across pages by collectPagedListItems, so the
+    // helpers see every assignment regardless of count.
+    const categoryListGetUrls = fetchImpl.mock.calls
+      .filter((args: unknown[]) => ((args[1] as { method?: string } | undefined)?.method ?? 'GET') === 'GET')
+      .map((args: unknown[]) => String(args[0]))
+      .filter((url) => /\/messages\/11\/categories(\?|$)/.test(url));
+    expect(categoryListGetUrls.length).toBeGreaterThan(0);
+    for (const url of categoryListGetUrls) {
+      expect(url).toMatch(/limit=100(\b|&)/);
+      expect(url).not.toMatch(/limit=1000/);
+    }
+  });
+
+  test('AddMessageCategory swallows a TOCTOU 409 from the server as alreadyAssigned', async () => {
+    // Race scenario: GET shows the category is not yet assigned, but between
+    // our GET and our POST a concurrent request (another tab, a workflow node,
+    // a quick second drag) creates the same assignment. The server then 409s
+    // our POST. The transform must map that to { alreadyAssigned: true } so
+    // the UI shows the same dezenter toast instead of a red error.
+    const fetchImpl = jest
+      .fn()
+      // 1) GET /messages/11/categories -> empty (the race hasn't happened yet locally)
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      // 2) POST /messages/11/categories -> 409 (the concurrent insert beat us)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_conflict', message: 'Email category ist dieser Message bereits zugeordnet' } },
+        409,
+      ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.AddMessageCategory, {
+      messageId: 11,
+      categoryId: 99,
+    })).resolves.toEqual({ added: false, alreadyAssigned: true });
+
+    // Both the GET and the POST were issued (proving the swallow happens at
+    // the right layer — not by pre-empting the POST).
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'POST']);
+  });
+
+  test('RemoveMessageCategory swallows a concurrent DELETE 404 as removed:false', async () => {
+    // Race: GET sees the assignment, but between GET and DELETE another client
+    // removes it. The server then 404s our DELETE. Without the swallow the
+    // metadata panel would show a red error and leave the (already-gone) chip
+    // sitting there; with it the channel reports removed:false and the UI
+    // resyncs via the existing reload-on-not-removed path.
+    const fetchImpl = jest
+      .fn()
+      // 1) GET /messages/11/categories -> assignment exists
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 22, messageId: 11, categoryId: 62 }], nextCursor: null },
+      }))
+      // 2) DELETE /message-categories/22 -> 404 (concurrent delete won the race)
+      .mockResolvedValueOnce(jsonResponse(
+        { error: { code: 'email_message_category_not_found', message: 'Email message category nicht gefunden' } },
+        404,
+      ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.RemoveMessageCategory, {
+      messageId: 11,
+      categoryId: 62,
+    })).resolves.toEqual({ removed: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const methods = fetchImpl.mock.calls.map(
+      (args: unknown[]) => (args[1] as { method?: string } | undefined)?.method,
+    );
+    expect(methods).toEqual(['GET', 'DELETE']);
+  });
+
   test('maps message customer-link and assignment channels to server message metadata routes', async () => {
     const fetchImpl = jest
       .fn()
@@ -6808,6 +7105,8 @@ describe('renderer transport', () => {
         id: 12,
         title: 'Shipping',
         body: 'Your package ships today.',
+        account_id: null,
+        override_key: null,
       },
     ]);
     await expect(transport.invoke(IPCChannels.Email.SaveCannedResponse, {
@@ -7837,6 +8136,46 @@ describe('renderer transport', () => {
       .filter((channel) => !intentionallyUnsupported.has(channel));
 
     expect(missing).toEqual([]);
+  });
+
+  test('GetComposeSignature falls back to team member signature when account has none', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ displayName: 'Team Lead', signatureHtml: '<p>Team SIG</p>' }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, { accountId: 7 })).resolves.toEqual({
+      html: '<p>Team SIG</p>',
+    });
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/email/account-signatures?accountId=7&limit=1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/email/team-members?limit=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/email/accounts',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   test('rejects unsupported IPC channels in HTTP mode before fetching', async () => {

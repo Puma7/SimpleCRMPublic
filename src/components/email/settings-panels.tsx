@@ -9,6 +9,7 @@ import {
   AtSign,
   BookOpen,
   BrainCircuit,
+  Clock,
   Download,
   KeyRound,
   Sparkles,
@@ -16,6 +17,7 @@ import {
   Users,
   Wrench,
   Workflow,
+  Shield,
   ShieldCheck,
   Stethoscope,
 } from "lucide-react"
@@ -31,14 +33,16 @@ import { ExportPanel } from "./settings/export-panel"
 import { KnowledgePanel } from "./settings/knowledge-panel"
 import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
-import { MiscPanel } from "./settings/misc-panel"
+import { MiscPanel, SnoozePanel } from "./settings/misc-panel"
 import { DiagnosticsPanel } from "./settings/diagnostics-panel"
+import { AuthSecurityPanel } from "@/components/settings/auth-security-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
 import { ChangePasswordCard } from "@/components/settings/change-password-card"
 import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
+import { AccountMailSettingsPanel } from "./settings/account-mail-settings-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -66,6 +70,12 @@ const TAB_DEFS: TabDef[] = [
     render: () => <OAuthAppsPanel />,
   },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
+  {
+    id: "accountMail",
+    label: "Konto-Details",
+    icon: AtSign,
+    render: () => <AccountMailSettingsPanel />,
+  },
   {
     id: "knowledge",
     label: "Wissensbasis",
@@ -104,12 +114,14 @@ const TAB_DEFS: TabDef[] = [
       </div>
     ),
   },
+  { id: "authSecurity", label: "Login-Sicherheit", icon: Shield, render: () => <AuthSecurityPanel />, serverOnly: true },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
   { id: "pgp", label: "PGP", icon: KeyRound, render: () => <PgpPanel /> },
   { id: "auditLog", label: "Audit-Log", icon: ShieldCheck, render: () => <AuditLogPanel /> },
   { id: "threadTools", label: "Threads", icon: Workflow, render: () => <ThreadToolsPanel /> },
+  { id: "snooze", label: "Snooze", icon: Clock, render: () => <SnoozePanel /> },
   { id: "diagnostics", label: "Diagnose", icon: Stethoscope, render: () => <DiagnosticsPanel /> },
   { id: "misc", label: "Sonstiges", icon: Wrench, render: () => <MiscPanel /> },
 ]
@@ -120,10 +132,10 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "oauthApps"] },
   {
     label: "KI & Automation",
-    tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
+    tabIds: ["ai", "accountMail", "knowledge", "mailSecurity", "automation", "prompts"],
   },
-  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "userGroups", "canned"] },
-  { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics"] },
+  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "canned"] },
+  { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics", "snooze"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
 

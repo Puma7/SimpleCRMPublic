@@ -33,7 +33,9 @@ import {
   createPostgresDealProductPort,
   createPostgresDealReadPort,
   createPostgresDatabase,
+  createPostgresJobQueuePort,
   createPostgresEmailAccountReadPort,
+  createPostgresEmailAccountMailSettingsPort,
   createPostgresEmailAccountSignatureReadPort,
   createPostgresEmailAttachmentContentPort,
   createPostgresEmailAttachmentReadPort,
@@ -82,6 +84,7 @@ import {
 } from './db';
 import {
   createGraphileQueuePort,
+  createJobWorkerLogger,
   createJsonlAuditRetentionArchivePort,
   createFetchWebhookDispatchPort,
   createMaintenanceJobHandlers,
@@ -90,10 +93,14 @@ import {
   createWebhookJobHandlers,
   mergeJobHandlerRegistries,
   startGraphileWorkerRuntime,
+  startPostgresJobQueueWorker,
   type GraphileQueuePort,
   type GraphileWorkerRuntime,
   type JobHandlerRegistry,
+  type PostgresJobQueueWorkerRuntime,
   type ProductionJobHandlersOptions,
+  type WorkflowExecutionDryRunResult,
+  type WorkflowExecutionJobPort,
 } from './jobs';
 import {
   createServerLogStore,
@@ -109,6 +116,7 @@ import {
   type AccessTokenSigner,
 } from './security';
 import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
+import { createLoginSecurityService } from './auth/login-security-service';
 import { createPostgresAiReplySuggestionPort } from './ai-reply-suggestion';
 import {
   createPostgresAiAgentPort,
@@ -130,7 +138,7 @@ import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import { createPostgresServerImapSentCopyAppenderPort } from './mail-imap-append';
 import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt-responder';
-import { createPostgresScheduledSendJobPort } from './mail-scheduled-send';
+import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
 import { createPostgresMailSyncJobPort } from './mail-sync';
 import { createPostgresMailSyncPostProcessor } from './mail-sync-post-process';
 import {
@@ -150,15 +158,22 @@ import { createPostgresWorkflowHttpRequestPort } from './workflow-http-request';
 import { createPostgresWorkflowImapActionPort } from './workflow-imap-actions';
 import { createStaticWorkflowNodeCatalogPort } from './workflow-node-catalog';
 import { createStaticWorkflowTemplatePort } from './workflow-templates';
+import { createServerMaintenancePort } from './maintenance/service';
 
 export type PostgresServerApiPortsOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   accessTokenSigner: AccessTokenSigner;
   attachmentsRoot?: string;
+  auditArchiveRoot?: string;
+  databaseUrl?: string;
+  backupDir?: string;
+  appVersion?: string;
   events?: ServerApiPorts['events'];
   jobQueue?: ServerApiPorts['jobQueue'];
   secrets?: PostgresSecretPort;
   authInvitationMail?: AuthInvitationMailConfig;
+  turnstileSiteKey?: string;
+  turnstileSecretKey?: string;
   rspamdFetch?: typeof fetch;
 }>;
 
@@ -202,6 +217,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const attachmentsRoot = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
+  const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim();
   const webhookAllowlist = env.JOB_WEBHOOK_ALLOWLIST?.trim();
   // Central server log: capture every warning/error (pino + console) into a
   // bounded, file-persisted store exposed via the diagnostics API.
@@ -214,15 +230,22 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let secrets: PostgresSecretPort | undefined;
   let apiJobQueue: GraphileQueuePort | undefined;
   let jobWorker: GraphileWorkerRuntime | undefined;
+  let postgresJobQueueWorker: PostgresJobQueueWorkerRuntime | undefined;
   let eventNotifications: PostgresServerEventNotificationChannel | undefined;
+  let scheduledSendTicker: ReturnType<typeof startScheduledSendTicker> | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
     accessTokenSigner,
     attachmentsRoot,
+    auditArchiveRoot: auditArchiveRoot,
+    backupDir: env.BACKUP_DIR?.trim(),
+    appVersion: env.VERSION?.trim() || '0.0.0',
     createDatabase: options.createDatabase,
     createEventNotifications: options.createEventNotifications,
     masterKey: env.SIMPLECRM_MASTER_KEY,
     authInvitationMail,
+    turnstileSiteKey: env.TURNSTILE_SITE_KEY?.trim(),
+    turnstileSecretKey: env.TURNSTILE_SECRET_KEY?.trim(),
     onDatabaseCreated(database) {
       db = database;
     },
@@ -248,12 +271,15 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         });
       }
     } catch (error) {
-      await closeServerResources(jobWorker, db, eventNotifications, apiJobQueue);
+      await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
       throw error;
     }
   }
 
   ports.serverLogs = serverLogStore;
+  if (initialSetupToken) {
+    ports.initialSetupToken = initialSetupToken;
+  }
 
   const app = createFastifyServer({
     ports,
@@ -265,93 +291,73 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   });
 
   app.addHook('onClose', async () => {
-    await closeServerResources(jobWorker, db, eventNotifications, apiJobQueue);
+    scheduledSendTicker?.stop();
+    await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
+  });
+
+  const jobHandlers = buildServerJobHandlers({
+    db,
+    secrets,
+    ports,
+    attachmentsRoot,
+    auditArchiveRoot,
+    webhookAllowlist,
+    jobServices: options.jobServices,
+    extraHandlers: options.jobHandlers,
   });
 
   try {
+    const jobWorkerConfig = parseServerJobWorkerConfig(env);
+    const workerEnabled = options.jobWorker?.enabled ?? jobWorkerConfig.enabled;
+    if (workerEnabled && db) {
+      postgresJobQueueWorker = startPostgresJobQueueWorker({
+        queue: createPostgresJobQueuePort({ db }),
+        handlers: jobHandlers,
+        log: createJobWorkerLogger(serverLogStore),
+      });
+    }
+
     jobWorker = await startConfiguredJobWorker({
       env,
       databaseUrl,
       options: options.jobWorker,
-      handlers: mergeJobHandlerRegistries(
-        mergeJobHandlerRegistries(
-          mergeJobHandlerRegistries(
-            mergeJobHandlerRegistries(
-              db ? createMaintenanceJobHandlers({
-                db,
-                ...(auditArchiveRoot ? {
-                  auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
-                } : {}),
-              }) : {},
-              createSpamScoringJobHandlers({ emailMessages: ports.emailMessages }),
-            ),
-            createWebhookJobHandlers({
-              ...(webhookAllowlist ? {
-                dispatcher: createFetchWebhookDispatchPort({ allowlist: webhookAllowlist }),
-              } : {}),
-            }),
-          ),
-          createProductionJobHandlers({
-            ...(db && ports.emailComposeSender ? {
-              scheduledSend: createPostgresScheduledSendJobPort({
-                db,
-                composeSender: ports.emailComposeSender,
-              }),
-            } : {}),
-            ...(db ? {
-              workflowExecution: createPostgresWorkflowExecutionJobPort({
-                db,
-                mssql: createPostgresMssqlSettingsPort({ db, secrets }),
-                workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
-              }),
-              workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
-                db,
-                secrets,
-                attachmentsRoot,
-                ...(ports.emailComposeSender ? { composeSender: ports.emailComposeSender } : {}),
-              }),
-              workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
-            } : {}),
-            ...(ports.aiReplySuggestions ? {
-              aiReplySuggestion: ports.aiReplySuggestions,
-            } : {}),
-            ...(db ? {
-              aiAgent: createPostgresAiAgentPort({ db, secrets }),
-              aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
-              aiClassification: createPostgresAiClassificationPort({ db, secrets }),
-              aiReview: createPostgresAiReviewPort({ db, secrets }),
-              aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
-            } : {}),
-            ...(db && ports.jobQueue ? {
-              mailSync: createPostgresMailSyncJobPort({
-                db,
-                secrets,
-                attachmentsRoot,
-              }),
-              mailSyncPostProcess: createPostgresMailSyncPostProcessor({
-                db,
-                jobQueue: ports.jobQueue,
-              }),
-              mailVacationAutoReply: createPostgresEmailVacationAutoReplyPort({
-                db,
-                secrets,
-              }),
-            } : {}),
-            ...(options.jobServices ?? {}),
-          }),
-        ),
-        options.jobHandlers ?? {},
-      ),
+      handlers: jobHandlers,
       createGraphileQueue: options.createGraphileQueue,
       createJobWorker: options.createJobWorker,
     });
+    if (db && ports.emailComposeSender) {
+      scheduledSendTicker = startScheduledSendTicker({
+        db,
+        composeSender: ports.emailComposeSender,
+      });
+    }
     await app.listen({ host, port });
   } catch (error) {
-    await closeServerResources(jobWorker, db, eventNotifications, apiJobQueue);
+    scheduledSendTicker?.stop();
+    await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }
 
   return app;
+}
+
+function resolveWorkflowDryRun(
+  workflowExecution: WorkflowExecutionJobPort,
+): (input: Parameters<NonNullable<WorkflowExecutionJobPort['dryRun']>>[0]) => Promise<WorkflowExecutionDryRunResult> {
+  return (input) => {
+    if (!workflowExecution.dryRun) {
+      return Promise.resolve({
+        success: false,
+        dryRun: true,
+        status: 'error',
+        blocked: false,
+        blockReason: null,
+        log: ['error:dry_run_unavailable'],
+        error: 'Dry-run nicht verfuegbar',
+      });
+    }
+    return workflowExecution.dryRun(input);
+  };
 }
 
 export function createPostgresServerApiPorts(options: PostgresServerApiPortsOptions): ServerApiPorts {
@@ -374,7 +380,46 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     db: options.db,
     mssql: createPostgresMssqlSettingsPort({ db: options.db, secrets: options.secrets }),
     workflowImapActions,
+    secrets: options.secrets,
   });
+  const workflowDryRun = resolveWorkflowDryRun(workflowExecution);
+  const emailOutboundValidation = createPostgresEmailOutboundValidationPort({
+    db: options.db,
+    workflowDryRun,
+  });
+  const auth = createPostgresAuthPort({
+    db: options.db,
+    accessTokenSigner: options.accessTokenSigner,
+  });
+  const syncInfo = createPostgresSyncInfoPort({ db: options.db });
+  const loginSecurity = options.secrets
+    ? createLoginSecurityService({
+      db: options.db,
+      syncInfo,
+      secrets: options.secrets,
+      auth,
+      accessTokenSigner: options.accessTokenSigner,
+      config: {
+        turnstileSiteKey: options.turnstileSiteKey,
+        turnstileSecretKey: options.turnstileSecretKey,
+      },
+      ...(options.authInvitationMail ? { authInvitationSmtp: options.authInvitationMail } : {}),
+    })
+    : undefined;
+  const maintenance = options.databaseUrl?.trim()
+    ? createServerMaintenancePort({
+      db: options.db,
+      databaseUrl: options.databaseUrl.trim(),
+      appVersion: options.appVersion ?? '0.0.0',
+      backupDir: options.backupDir,
+      attachmentsRoot: options.attachmentsRoot,
+      auditArchiveRoot: options.auditArchiveRoot,
+      getNeedsInitialSetup: async () => {
+        const state = await auth.getInitialSetupState?.();
+        return state?.needsInitialSetup ?? false;
+      },
+    })
+    : undefined;
   return {
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
     health: {
@@ -388,10 +433,9 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     aiTextTransform: createPostgresAiTextTransformApiPort({ db: options.db, secrets: options.secrets }),
     automationApiKeys: createPostgresAutomationApiKeyReadPort({ db: options.db, secrets: options.secrets }),
     calendarEvents: createPostgresCalendarEventReadPort({ db: options.db }),
-    auth: createPostgresAuthPort({
-      db: options.db,
-      accessTokenSigner: options.accessTokenSigner,
-    }),
+    auth,
+    ...(loginSecurity ? { loginSecurity } : {}),
+    ...(maintenance ? { maintenance } : {}),
     ...(options.authInvitationMail ? {
       authInvitationMailer: createAuthInvitationMailerPort(options.authInvitationMail),
     } : {}),
@@ -406,6 +450,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     deals: createPostgresDealReadPort({ db: options.db }),
     dealProducts: createPostgresDealProductPort({ db: options.db }),
     emailAccounts: createPostgresEmailAccountReadPort({ db: options.db, secrets: options.secrets }),
+    emailAccountMailSettings: createPostgresEmailAccountMailSettingsPort({ db: options.db }),
     emailAccountSignatures: createPostgresEmailAccountSignatureReadPort({ db: options.db }),
     emailAttachmentContent: createPostgresEmailAttachmentContentPort({ db: options.db, attachmentsRoot }),
     emailAttachments: createPostgresEmailAttachmentReadPort({ db: options.db }),
@@ -418,8 +463,9 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       secrets: options.secrets,
       sentCopyAppend: sentCopyAppender.append,
       pgpMessages,
+      workflowDryRun,
     }),
-    emailOutboundValidation: createPostgresEmailOutboundValidationPort({ db: options.db }),
+    emailOutboundValidation,
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
     emailFolders: createPostgresEmailFolderReadPort({ db: options.db }),
@@ -430,6 +476,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       db: options.db,
       rspamdFetch: options.rspamdFetch,
       seenFlagSync: workflowImapActions,
+      outboundValidation: emailOutboundValidation,
     }),
     emailMessageTags: createPostgresEmailMessageTagReadPort({ db: options.db }),
     mailConnectionTests: createServerMailConnectionTestPort({ db: options.db, secrets: options.secrets }),
@@ -467,11 +514,11 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     spamLearningEvents: createPostgresSpamLearningEventReadPort({ db: options.db }),
     spamListEntries: createPostgresSpamListEntryReadPort({ db: options.db }),
     savedViews: createPostgresSavedViewReadPort({ db: options.db }),
-    syncInfo: createPostgresSyncInfoPort({ db: options.db }),
+    syncInfo,
     tasks: createPostgresTaskReadPort({ db: options.db }),
     workflowDelayedJobs: createPostgresWorkflowDelayedJobReadPort({ db: options.db }),
     workflowExecution: {
-      dryRun: (input) => workflowExecution.dryRun!(input),
+      dryRun: workflowDryRun,
     },
     workflowForwardDedup: createPostgresWorkflowForwardDedupReadPort({ db: options.db }),
     workflowKnowledgeBases: createPostgresWorkflowKnowledgeBaseReadPort({ db: options.db }),
@@ -496,10 +543,15 @@ async function createDefaultServerPorts(input: {
   databaseUrl?: string;
   accessTokenSigner?: AccessTokenSigner;
   attachmentsRoot?: string;
+  auditArchiveRoot?: string;
+  backupDir?: string;
+  appVersion?: string;
   createDatabase?: (options: { databaseUrl: string }) => Promise<Kysely<ServerDatabase>>;
   createEventNotifications?: (options: { databaseUrl: string }) => Promise<PostgresServerEventNotificationChannel>;
   masterKey?: string;
   authInvitationMail?: AuthInvitationMailConfig;
+  turnstileSiteKey?: string;
+  turnstileSecretKey?: string;
   onDatabaseCreated(db: Kysely<ServerDatabase>): void;
   onSecretsCreated(secrets: PostgresSecretPort | undefined): void;
   onEventNotificationsCreated(notifications: PostgresServerEventNotificationChannel): void;
@@ -531,7 +583,13 @@ async function createDefaultServerPorts(input: {
     db,
     accessTokenSigner: input.accessTokenSigner,
     attachmentsRoot: input.attachmentsRoot,
+    auditArchiveRoot: input.auditArchiveRoot,
+    databaseUrl: input.databaseUrl,
+    backupDir: input.backupDir,
+    appVersion: input.appVersion,
     authInvitationMail: input.authInvitationMail,
+    turnstileSiteKey: input.turnstileSiteKey,
+    turnstileSecretKey: input.turnstileSecretKey,
     events: createPostgresServerEventPort({ db, notifications: eventNotifications }),
     secrets,
   });
@@ -581,6 +639,7 @@ async function startConfiguredJobWorker(input: {
 
 async function closeServerResources(
   jobWorker: GraphileWorkerRuntime | undefined,
+  postgresJobQueueWorker: PostgresJobQueueWorkerRuntime | undefined,
   db: Kysely<ServerDatabase> | undefined,
   eventNotifications: PostgresServerEventNotificationChannel | undefined,
   apiJobQueue?: GraphileQueuePort,
@@ -588,7 +647,11 @@ async function closeServerResources(
   try {
     try {
       try {
-        await jobWorker?.stop();
+        try {
+          await postgresJobQueueWorker?.stop();
+        } finally {
+          await jobWorker?.stop();
+        }
       } finally {
         await apiJobQueue?.release();
       }
@@ -598,6 +661,92 @@ async function closeServerResources(
   } finally {
     await db?.destroy();
   }
+}
+
+function buildServerJobHandlers(input: {
+  db: Kysely<ServerDatabase> | undefined;
+  secrets: PostgresSecretPort | undefined;
+  ports: ServerApiPorts;
+  attachmentsRoot: string;
+  auditArchiveRoot: string | undefined;
+  webhookAllowlist: string | undefined;
+  jobServices?: ProductionJobHandlersOptions;
+  extraHandlers?: JobHandlerRegistry;
+}): JobHandlerRegistry {
+  const { db, secrets, ports, attachmentsRoot, auditArchiveRoot, webhookAllowlist, jobServices, extraHandlers } = input;
+  return mergeJobHandlerRegistries(
+    mergeJobHandlerRegistries(
+      mergeJobHandlerRegistries(
+        mergeJobHandlerRegistries(
+          db ? createMaintenanceJobHandlers({
+            db,
+            ...(auditArchiveRoot ? {
+              auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
+            } : {}),
+          }) : {},
+          createSpamScoringJobHandlers({
+            emailMessages: ports.emailMessages,
+            ...(db && ports.jobQueue ? { db, jobQueue: ports.jobQueue } : {}),
+          }),
+        ),
+        createWebhookJobHandlers({
+          ...(webhookAllowlist ? {
+            dispatcher: createFetchWebhookDispatchPort({ allowlist: webhookAllowlist }),
+          } : {}),
+        }),
+      ),
+      createProductionJobHandlers({
+        ...(db && ports.emailComposeSender ? {
+          scheduledSend: createPostgresScheduledSendJobPort({
+            db,
+            composeSender: ports.emailComposeSender,
+          }),
+        } : {}),
+        ...(db ? {
+          workflowExecution: createPostgresWorkflowExecutionJobPort({
+            db,
+            mssql: createPostgresMssqlSettingsPort({ db, secrets }),
+            workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
+            secrets,
+          }),
+          workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
+            db,
+            secrets,
+            attachmentsRoot,
+            ...(ports.emailComposeSender ? { composeSender: ports.emailComposeSender } : {}),
+          }),
+          workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
+        } : {}),
+        ...(ports.aiReplySuggestions ? {
+          aiReplySuggestion: ports.aiReplySuggestions,
+        } : {}),
+        ...(db ? {
+          aiAgent: createPostgresAiAgentPort({ db, secrets }),
+          aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
+          aiClassification: createPostgresAiClassificationPort({ db, secrets }),
+          aiReview: createPostgresAiReviewPort({ db, secrets }),
+          aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
+        } : {}),
+        ...(db && ports.jobQueue ? {
+          mailSync: createPostgresMailSyncJobPort({
+            db,
+            secrets,
+            attachmentsRoot,
+          }),
+          mailSyncPostProcess: createPostgresMailSyncPostProcessor({
+            db,
+            jobQueue: ports.jobQueue,
+          }),
+          mailVacationAutoReply: createPostgresEmailVacationAutoReplyPort({
+            db,
+            secrets,
+          }),
+        } : {}),
+        ...(jobServices ?? {}),
+      }),
+    ),
+    extraHandlers ?? {},
+  );
 }
 
 if (require.main === module) {

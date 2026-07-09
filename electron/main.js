@@ -388,6 +388,7 @@ initializeApp()
         logger: log,
         isDevelopment,
         getMainWindow: () => mainWindow,
+        appVersion: app.getVersion(),
       });
 
       if (!isDevelopment) {

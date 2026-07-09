@@ -34,11 +34,13 @@ export type SettingsTab =
   | "accounts"
   | "oauthApps"
   | "ai"
+  | "accountMail"
   | "knowledge"
   | "mailSecurity"
   | "automation"
   | "team"
   | "appUsers"
+  | "authSecurity"
   | "userGroups"
   | "canned"
   | "prompts"
@@ -47,7 +49,20 @@ export type SettingsTab =
   | "pgp"
   | "auditLog"
   | "threadTools"
+  | "snooze"
   | "misc"
+
+export type SettingsAccountsSubTab =
+  | "imap"
+  | "smtp"
+  | "oauth"
+  | "signature"
+  | "ki"
+  | "erweitert"
+
+import type { ComposeSessionSnapshot } from "@shared/compose-session"
+
+export type { ComposeSessionSnapshot } from "@shared/compose-session"
 
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
@@ -79,6 +94,9 @@ type MailWorkspaceState = {
   setListDisplayMode: Dispatch<SetStateAction<MessageListDisplayMode>>
   composeIntent: ComposeIntent
   setComposeIntent: Dispatch<SetStateAction<ComposeIntent>>
+  composeSession: ComposeSessionSnapshot | null
+  setComposeSession: Dispatch<SetStateAction<ComposeSessionSnapshot | null>>
+  clearComposeSession: () => void
   settingsTab: SettingsTab
   setSettingsTab: Dispatch<SetStateAction<SettingsTab>>
   /**
@@ -88,6 +106,12 @@ type MailWorkspaceState = {
    */
   settingsAccountId: number | null
   setSettingsAccountId: Dispatch<SetStateAction<number | null>>
+  /** One-shot account selection from compose → Einstellungen (not persisted). */
+  settingsAccountDeepLinkId: number | null
+  setSettingsAccountDeepLinkId: Dispatch<SetStateAction<number | null>>
+  /** One-shot deep link from compose → Konten → Signatur (consumed by accounts settings). */
+  settingsAccountsSubTab: SettingsAccountsSubTab | null
+  setSettingsAccountsSubTab: Dispatch<SetStateAction<SettingsAccountsSubTab | null>>
   metadataPanelOpen: boolean
   setMetadataPanelOpen: Dispatch<SetStateAction<boolean>>
   /**
@@ -105,6 +129,15 @@ type MailWorkspaceState = {
    */
   mailMetricsRevision: number
   bumpMailMetricsRevision: () => void
+  /**
+   * Bumps after add/remove/set on `email_message_categories` from anywhere
+   * in the app (sidebar drag-drop, bulk drop, metadata panel select).
+   * The metadata panel chip list keys off this so it re-fetches its chips
+   * when a sibling component mutated the M:N assignment for the selected
+   * message — otherwise the chips would only refresh on message switch.
+   */
+  categoryAssignmentRevision: number
+  bumpCategoryAssignmentRevision: () => void
 }
 
 const MailWorkspaceContext = createContext<MailWorkspaceState | null>(null)
@@ -151,6 +184,7 @@ const VALID_MAIL_VIEWS: MailView[] = [
   "sent",
   "archived",
   "drafts",
+  "scheduled_send",
   "spam_review",
   "spam",
   "trash",
@@ -168,6 +202,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "accounts",
   "oauthApps",
   "ai",
+  "accountMail",
   "knowledge",
   "mailSecurity",
   "automation",
@@ -178,6 +213,8 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "prompts",
   "export",
   "diagnostics",
+  "threadTools",
+  "snooze",
   "misc",
 ]
 
@@ -192,7 +229,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
         const n = parseInt(raw, 10)
         return Number.isFinite(n) ? n : null
       },
-      null,
+      "all",
     ),
   )
   const [mailView, setMailView] = useState<MailView>(() =>
@@ -220,6 +257,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [listSortMode, setListSortMode] = useState<MessageListSortMode>("date_desc")
   const [listDisplayMode, setListDisplayMode] = useState<MessageListDisplayMode>("flat")
   const [composeIntent, setComposeIntent] = useState<ComposeIntent>({ mode: "closed" })
+  const [composeSession, setComposeSession] = useState<ComposeSessionSnapshot | null>(null)
+  const clearComposeSession = useCallback(() => {
+    setComposeSession(null)
+  }, [])
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
     readLS<SettingsTab>(
       LS_KEYS.settingsTab,
@@ -237,9 +278,14 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       null,
     ),
   )
+  const [settingsAccountsSubTab, setSettingsAccountsSubTab] =
+    useState<SettingsAccountsSubTab | null>(null)
+  const [settingsAccountDeepLinkId, setSettingsAccountDeepLinkId] =
+    useState<number | null>(null)
   const [metadataPanelOpen, setMetadataPanelOpen] = useState(true)
   const [accountsRevision, setAccountsRevision] = useState(0)
   const [mailMetricsRevision, setMailMetricsRevision] = useState(0)
+  const [categoryAssignmentRevision, setCategoryAssignmentRevision] = useState(0)
 
   const bumpAccountsRevision = useCallback(() => {
     setAccountsRevision((v) => v + 1)
@@ -247,6 +293,10 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
 
   const bumpMailMetricsRevision = useCallback(() => {
     setMailMetricsRevision((v) => v + 1)
+  }, [])
+
+  const bumpCategoryAssignmentRevision = useCallback(() => {
+    setCategoryAssignmentRevision((v) => v + 1)
   }, [])
 
   const upsertConversationLock = useCallback((lock: ConversationLockRecord) => {
@@ -314,16 +364,25 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setListDisplayMode,
       composeIntent,
       setComposeIntent,
+      composeSession,
+      setComposeSession,
+      clearComposeSession,
       settingsTab,
       setSettingsTab,
       settingsAccountId,
       setSettingsAccountId,
+      settingsAccountDeepLinkId,
+      setSettingsAccountDeepLinkId,
+      settingsAccountsSubTab,
+      setSettingsAccountsSubTab,
       metadataPanelOpen,
       setMetadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
       mailMetricsRevision,
       bumpMailMetricsRevision,
+      categoryAssignmentRevision,
+      bumpCategoryAssignmentRevision,
     }),
     [
       selectedAccountScope,
@@ -339,13 +398,19 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       listSortMode,
       listDisplayMode,
       composeIntent,
+      composeSession,
+      clearComposeSession,
       settingsTab,
       settingsAccountId,
+      settingsAccountDeepLinkId,
+      settingsAccountsSubTab,
       metadataPanelOpen,
       accountsRevision,
       bumpAccountsRevision,
       mailMetricsRevision,
       bumpMailMetricsRevision,
+      categoryAssignmentRevision,
+      bumpCategoryAssignmentRevision,
     ],
   )
 

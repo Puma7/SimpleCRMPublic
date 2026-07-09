@@ -4,9 +4,12 @@ import { normalizeEmailAddress } from './email-address-normalize';
  * Parse To/Cc fields: supports "a@b.de", "Name <a@b.de>", comma/semicolon lists.
  * Returns normalized address strings for comparison; empty entries dropped.
  */
-const ADDR_CORE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i
+const ADDR_CORE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/i
 
-export function extractEmailAddressesFromRecipientField(raw: string): string[] {
+export function extractEmailAddressesFromRecipientField(
+  raw: string,
+  opts?: { preservePlusAddressing?: boolean },
+): string[] {
   const out: string[] = []
   const chunks = raw.split(/[,;]+/)
   for (const chunk of chunks) {
@@ -15,7 +18,7 @@ export function extractEmailAddressesFromRecipientField(raw: string): string[] {
     const m = t.match(/^(.+)<([^>]+)>$/)
     const candidate = (m ? m[2] : t).trim()
     if (ADDR_CORE.test(candidate)) {
-      out.push(normalizeEmailAddress(candidate))
+      out.push(opts?.preservePlusAddressing ? candidate.trim().toLowerCase() : normalizeEmailAddress(candidate))
     }
   }
   return out
@@ -58,5 +61,18 @@ export function recipientJsonFromField(raw: string): string | null {
   if (addrs.length === 0) return null
   return JSON.stringify({
     value: addrs.map((address) => ({ address })),
+  })
+}
+
+/** Single mailbox JSON for outbound From (compose / sent). */
+export function senderJsonFromMailbox(
+  email: string | null | undefined,
+  displayName?: string | null,
+): string {
+  const address = (email ?? '').trim()
+  if (!address) return JSON.stringify({ value: [] })
+  const name = (displayName ?? '').trim()
+  return JSON.stringify({
+    value: [{ address, ...(name ? { name } : {}) }],
   })
 }

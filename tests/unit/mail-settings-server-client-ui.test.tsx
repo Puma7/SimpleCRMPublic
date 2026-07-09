@@ -1,11 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { AccountForm } from '@/components/email/settings/account-form';
 import { ExportPanel } from '@/components/email/settings/export-panel';
 import { KnowledgePanel } from '@/components/email/settings/knowledge-panel';
 import { MailSecurityPanel } from '@/components/email/settings/mail-security-panel';
-import { MiscPanel } from '@/components/email/settings/misc-panel';
+import { MiscPanel, SnoozePanel } from '@/components/email/settings/misc-panel';
+import { ArchiveRecoverySection } from '@/components/email/settings/archive-recovery-section';
 import {
   configureRendererTransport,
   createHttpRendererTransport,
@@ -62,6 +64,87 @@ describe('mail settings server-client UI', () => {
 
     expect(await screen.findByText(/SimpleCRM zeigt den Status intern/)).toBeInTheDocument();
     expect(screen.queryByText(/lokale Anzeige/)).not.toBeInTheDocument();
+  });
+
+  test('saving an existing account does NOT close the edit view (no onCancelEdit)', async () => {
+    // Regression: a successful update used to call onCancelEdit?.(), which the
+    // master-detail handled with setEditAccount(null) — the whole panel went
+    // blank until the user clicked the row again. After an update we want the
+    // form to stay on-screen with its values (plus a confirmation toast).
+    // Minimal Response-shape the transport expects (jsdom has no global Response).
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: { success: true } }),
+    } as Response);
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    }));
+    const onCreated = jest.fn();
+    const onCancelEdit = jest.fn();
+
+    render(
+      <AccountForm
+        onCreated={onCreated}
+        onCancelEdit={onCancelEdit}
+        editAccount={imapAccount()}
+      />,
+    );
+
+    // Change the display name + click "Aktualisieren".
+    const nameInput = await screen.findByLabelText(/Anzeigename/i);
+    fireEvent.change(nameInput, { target: { value: 'Neuer Name' } });
+
+    const saveBtn = screen.getByRole('button', { name: /Aktualisieren/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    // The critical assertion: the form must NOT request the parent to drop edit
+    // mode. (It used to call this and the master-detail blanked the panel.)
+    expect(onCancelEdit).not.toHaveBeenCalled();
+    // And the user's value is still on screen, not reset to whatever editAccount held.
+    expect((nameInput as HTMLInputElement).value).toBe('Neuer Name');
+  });
+
+  test('account form keeps user edits when parent refreshes editAccount with new reference', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: { success: true } }),
+    } as Response);
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    }));
+
+    function Harness() {
+      const [editAccount, setEditAccount] = useState(imapAccount());
+      return (
+        <AccountForm
+          editAccount={editAccount}
+          onCreated={() => {
+            setEditAccount({ ...imapAccount(), display_name: 'Server Name' });
+          }}
+        />
+      );
+    }
+
+    render(<Harness />);
+
+    const nameInput = await screen.findByLabelText(/Anzeigename/i);
+    fireEvent.change(nameInput, { target: { value: 'Neuer Name' } });
+
+    const saveBtn = screen.getByRole('button', { name: /Aktualisieren/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
+    expect((nameInput as HTMLInputElement).value).toBe('Neuer Name');
   });
 
   test('export panel does not fall back to local IPC when HTTP transport has no server URL', async () => {
@@ -228,17 +311,11 @@ describe('mail settings server-client UI', () => {
     }
   });
 
-  test('misc panel uses transport-neutral archive recovery wording', async () => {
+  test('snooze panel loads server snooze settings', async () => {
     const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/v1/email/accounts')) {
-        return jsonResponse({ data: { items: [emailAccountRecord()] } });
-      }
       if (url.includes('/api/v1/email/settings/snooze')) {
         return jsonResponse({ data: snoozeSettings() });
-      }
-      if (url.includes('/api/v1/email/settings/misc')) {
-        return jsonResponse({ data: { webhookSecret: 'server-secret', maxAttachmentMb: '42' } });
       }
       return jsonResponse({ data: null }, 404);
     });
@@ -247,15 +324,42 @@ describe('mail settings server-client UI', () => {
       fetchImpl: fetchImpl as typeof fetch,
     }));
 
-    render(<MiscPanel />);
+    render(<SnoozePanel />);
 
     expect(await screen.findByDisplayValue('19:30')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('server-secret')).toBeInTheDocument();
+  });
+
+  test('archive recovery section uses transport-neutral wording', async () => {
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/email/accounts')) {
+        return jsonResponse({ data: { items: [emailAccountRecord()] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<ArchiveRecoverySection />);
+
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /1\. Vorschau/ })).toBeEnabled();
     });
     expect(screen.getByText(/SimpleCRM-interne Nachrichten/)).toBeInTheDocument();
     expect(screen.queryByText(/lokale Nachrichten/)).not.toBeInTheDocument();
+  });
+
+  test('misc panel shows customer link backfill', async () => {
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: jest.fn(async () => jsonResponse({ data: { count: 0 } })) as typeof fetch,
+    }));
+
+    render(<MiscPanel />);
+
+    expect(screen.getByRole('button', { name: /Kunden-Links nachziehen/ })).toBeInTheDocument();
   });
 
   test('mail security panel uses SimpleCRM scoring labels in HTTP transport', async () => {
@@ -401,6 +505,25 @@ function pop3Account() {
     keytar_account_key: '',
     protocol: 'pop3',
     pop3_host: 'pop.example.com',
+    pop3_port: 995,
+    pop3_tls: 1,
+    created_at: '',
+    updated_at: '',
+  };
+}
+
+function imapAccount() {
+  return {
+    id: 1,
+    display_name: 'Kontakt',
+    email_address: 'kontakt@example.com',
+    imap_host: 'imap.example.com',
+    imap_port: 993,
+    imap_tls: 1,
+    imap_username: 'kontakt@example.com',
+    keytar_account_key: '',
+    protocol: 'imap',
+    pop3_host: null,
     pop3_port: 995,
     pop3_tls: 1,
     created_at: '',

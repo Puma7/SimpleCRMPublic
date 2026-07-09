@@ -15,6 +15,23 @@ import {
 
 let idleClients: Map<number, ImapFlow> = new Map();
 let globalCron: ScheduledTask | null = null;
+let scheduledSendInterval: ReturnType<typeof setInterval> | null = null;
+let scheduledSendTickInFlight = false;
+
+function runScheduledSendTick(logger: Pick<typeof console, 'warn' | 'debug'>): void {
+  if (scheduledSendTickInFlight) return;
+  scheduledSendTickInFlight = true;
+  void (async () => {
+    try {
+      const { processDueScheduledSends } = await import('./email-scheduled-send');
+      await processDueScheduledSends(logger);
+    } catch (e) {
+      logger.warn('[email] scheduled send', e);
+    } finally {
+      scheduledSendTickInFlight = false;
+    }
+  })();
+}
 const workflowCrons: Map<number, ScheduledTask> = new Map();
 const workflowCronInFlight = new Set<number>();
 
@@ -158,23 +175,18 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
         try {
           await processDueDelayedJobs(logger);
         } catch (e) {
-          logger.debug('[workflow] delayed jobs', e);
+          logger.warn('[workflow] delayed jobs', e);
         }
-        try {
-          const { processDueScheduledSends } = await import('./email-scheduled-send');
-          await processDueScheduledSends(logger);
-        } catch (e) {
-          logger.debug('[email] scheduled send', e);
-        }
+        runScheduledSendTick(logger);
         try {
           await scanDueTasksAndFireWorkflows();
         } catch (e) {
-          logger.debug('[workflow] task due scan', e);
+          logger.warn('[workflow] task due scan', e);
         }
         try {
           await scanUpcomingCalendarEventsAndFireWorkflows();
         } catch (e) {
-          logger.debug('[workflow] calendar scan', e);
+          logger.warn('[workflow] calendar scan', e);
         }
         const now = Date.now();
         const accounts = listEmailAccounts();
@@ -191,7 +203,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
               await syncAccountImap(acc.id);
             }
           } catch (e) {
-            logger.debug(`[email] sync ${acc.id}`, e);
+            logger.warn(`[email] sync account ${acc.id}`, e);
           } finally {
             syncInFlight.delete(acc.id);
           }
@@ -204,6 +216,10 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   );
 
   scheduleWorkflowCrons(logger);
+
+  scheduledSendInterval = setInterval(() => {
+    runScheduledSendTick(logger);
+  }, 30_000);
 
   const accounts = listEmailAccounts();
   for (const acc of accounts) {
@@ -220,6 +236,11 @@ export function isEmailBackgroundSyncBusy(): boolean {
 
 export function stopEmailBackgroundServices(): void {
   globalCronTickInFlight = false;
+  scheduledSendTickInFlight = false;
+  if (scheduledSendInterval) {
+    clearInterval(scheduledSendInterval);
+    scheduledSendInterval = null;
+  }
   if (globalCron) {
     globalCron.stop();
     globalCron = null;

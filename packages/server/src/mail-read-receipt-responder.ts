@@ -7,7 +7,9 @@ import {
   generateOutboundMessageId,
   normalizeMessageIdHeader,
   parseDispositionNotificationTo,
+  resolveConfiguredSmtpHost,
   senderEmailFromAddressJson,
+  SMTP_HOST_MISSING_ERROR,
 } from '@simplecrm/core';
 
 import type {
@@ -203,9 +205,12 @@ export function createEmailReadReceiptResponderPort(
       });
       if (!auth.ok) return { success: false, error: auth.error };
 
+      const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
+      if (!smtpHost) return { success: false, error: SMTP_HOST_MISSING_ERROR };
+
       try {
         const smtpInput: ServerSmtpSendInput = {
-          host: account.smtpHost?.trim() || account.imapHost,
+          host: smtpHost,
           port: account.smtpPort ?? 587,
           tls: account.smtpTls,
           user: auth.user,

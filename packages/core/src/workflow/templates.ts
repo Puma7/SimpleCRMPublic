@@ -512,10 +512,49 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     } as WorkflowGraphDocument,
   },
   {
+    id: 'inbound-rechnung-inbox-forward',
+    name: 'Eingehend: rechnung@-Postfach weiterleiten',
+    description:
+      'Leitet Mails weiter, die an rechnung@ (oder eine andere Empfänger-Adresse) eingehen, an Bank und Buchhaltung. Empfänger-Adresse und Ziele im Bedingungs- bzw. Weiterleiten-Knoten anpassen. Text-only auf Desktop; Anhänge nur Server-Edition.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'c_to',
+          type: 'condition',
+          data: {
+            field: 'to_address',
+            op: 'contains',
+            value: 'rechnung@',
+            caseInsensitive: true,
+          },
+        },
+        { id: 'a_tag', type: 'action', data: { actionType: 'tag', tag: 'rechnung-postfach' } },
+        {
+          id: 'fwd',
+          type: 'registry',
+          data: {
+            nodeType: 'email.forward_copy',
+            config: {
+              to: 'bank@example.com, buchhaltung@example.com',
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'c_to' },
+        { id: 'e1', source: 'c_to', target: 'a_tag', label: 'ja' },
+        { id: 'e2', source: 'a_tag', target: 'fwd' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'inbound-invoice-auto-forward',
     name: 'Eingehend: Rechnung weiterleiten (inkl. Anhänge)',
     description:
-      'Erkennt Rechnungsmails und leitet sie automatisch an Bank + Buchhaltung weiter — inklusive Anhänge. Empfängeradressen im Knoten anpassen. Achtung: läuft im Servermodus nur, wenn keine Outbound-Workflows aktiv sind.',
+      'Erkennt Rechnungsmails (Betreff/Inhalt) und leitet sie an Bank + Buchhaltung weiter. Empfänger im Knoten anpassen. Desktop: Text-Weiterleitung; Anhänge nur Server-Edition.',
     trigger: 'inbound',
     graph: {
       version: 1,

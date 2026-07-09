@@ -1,3 +1,4 @@
+import type { AuthMfaMethod } from "@shared/auth-login-security"
 import {
   buildServerAuthSession,
   clearServerAuthSession,
@@ -22,12 +23,86 @@ export type ServerAuthClientOptions = {
   now?: () => Date
 }
 
+export type ServerLoginConfig = {
+  captcha: {
+    enabled: boolean
+    provider: "turnstile" | null
+    siteKey: string | null
+  }
+  pinKeypad: {
+    enabled: boolean
+  }
+  mfa: {
+    enabled: boolean
+    methods: AuthMfaMethod[]
+  }
+  user: {
+    pinRequired: boolean
+    mfaRequired: boolean
+    mfaMethod: AuthMfaMethod | null
+  } | null
+}
+
+export type ServerLoginResult =
+  | { kind: "session"; session: ServerAuthSession }
+  | {
+      kind: "mfa_required"
+      mfaMethod: AuthMfaMethod
+      mfaChallengeToken: string
+    }
+
+export type ServerAuthSecuritySettings = {
+  captchaEnabled: boolean
+  pinKeypadEnabled: boolean
+  mfaEnabled: boolean
+  mfaTotpEnabled: boolean
+  mfaEmailEnabled: boolean
+}
+
 export type ServerAuthClient = {
   getSetupState(): Promise<ServerAuthSetupState>
+  getLoginConfig(email?: string): Promise<ServerLoginConfig>
+  verifyCaptcha(token: string): Promise<string>
   createInitialOwner(input: ServerInitialOwnerInput): Promise<ServerAuthSession>
   getInvitation(token: string): Promise<ServerAuthInvitation>
   acceptInvitation(token: string, input: ServerInvitationAcceptInput): Promise<ServerAuthSession>
   login(email: string, password: string): Promise<ServerAuthSession>
+  loginAdvanced(input: {
+    email: string
+    password: string
+    pin?: string
+    captchaChallenge?: string
+  }): Promise<ServerLoginResult>
+  verifyMfa(input: { mfaChallengeToken: string; code: string }): Promise<ServerAuthSession>
+  getSecuritySettings(accessToken: string): Promise<{
+    settings: ServerAuthSecuritySettings
+    captchaProviderConfigured: boolean
+    currentUser: {
+      loginPinEnabled: boolean
+      mfaEnabled: boolean
+    }
+  }>
+  patchSecuritySettings(
+    accessToken: string,
+    settings: ServerAuthSecuritySettings,
+  ): Promise<{
+    settings: ServerAuthSecuritySettings
+    currentUser: {
+      loginPinEnabled: boolean
+      mfaEnabled: boolean
+    }
+  }>
+  beginUserTotpSetup(
+    accessToken: string,
+    userId: string,
+  ): Promise<{ secret: string; otpauthUri: string }>
+  confirmUserTotpSetup(
+    accessToken: string,
+    userId: string,
+    input: { secret: string; code: string },
+  ): Promise<{ enabled: boolean; method: "totp" }>
+  enableUserEmailMfa(accessToken: string, userId: string): Promise<{ enabled: boolean; method: "email" }>
+  disableUserMfa(accessToken: string, userId: string): Promise<{ enabled: boolean }>
   refresh(): Promise<ServerAuthSession | null>
   logout(): Promise<{ revoked: boolean }>
   getSession(): ServerAuthSession | null
@@ -42,6 +117,7 @@ export type ServerInitialOwnerInput = {
   password: string
   displayName?: string
   workspaceName?: string
+  setupToken: string
 }
 
 export type ServerAuthInvitation = {
@@ -61,6 +137,12 @@ export type ServerInvitationAcceptInput = {
 type AuthResponseBody = {
   user: ServerAuthUser
   tokens: ServerTokenPair
+}
+
+type LoginResponseBody = AuthResponseBody | {
+  mfaRequired: true
+  mfaMethod: AuthMfaMethod
+  mfaChallengeToken: string
 }
 
 export class ServerAuthClientError extends Error {
@@ -88,6 +170,21 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
       })
     },
 
+    async getLoginConfig(email?: string): Promise<ServerLoginConfig> {
+      const query = email?.trim() ? `?email=${encodeURIComponent(email.trim().toLowerCase())}` : ""
+      return request<ServerLoginConfig>(fetchImpl, baseUrl, `/api/v1/auth/login-config${query}`, {
+        method: "GET",
+      })
+    },
+
+    async verifyCaptcha(token: string): Promise<string> {
+      const body = await request<{ challenge: string }>(fetchImpl, baseUrl, "/api/v1/auth/captcha-verify", {
+        method: "POST",
+        body: { token },
+      })
+      return body.challenge
+    },
+
     async createInitialOwner(input: ServerInitialOwnerInput): Promise<ServerAuthSession> {
       const body = await request<AuthResponseBody>(fetchImpl, baseUrl, "/api/v1/auth/initial-setup", {
         method: "POST",
@@ -96,6 +193,7 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
           password: input.password,
           displayName: input.displayName ?? input.email,
           workspaceName: input.workspaceName ?? "SimpleCRM",
+          initialSetupToken: input.setupToken,
           ...(options.device ? { device: options.device } : {}),
         },
       })
@@ -140,11 +238,49 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
     },
 
     async login(email: string, password: string): Promise<ServerAuthSession> {
-      const body = await request<AuthResponseBody>(fetchImpl, baseUrl, "/api/v1/auth/login", {
+      const result = await this.loginAdvanced({ email, password })
+      if (result.kind !== "session") {
+        throw new ServerAuthClientError("Zweiter Faktor erforderlich", { code: "mfa_required" })
+      }
+      return result.session
+    },
+
+    async loginAdvanced(input): Promise<ServerLoginResult> {
+      const body = await request<LoginResponseBody>(fetchImpl, baseUrl, "/api/v1/auth/login", {
         method: "POST",
         body: {
-          email,
-          password,
+          email: input.email,
+          password: input.password,
+          ...(input.pin ? { pin: input.pin } : {}),
+          ...(input.captchaChallenge ? { captchaChallenge: input.captchaChallenge } : {}),
+          ...(options.device ? { device: options.device } : {}),
+        },
+      })
+      if ("mfaRequired" in body && body.mfaRequired) {
+        return {
+          kind: "mfa_required",
+          mfaMethod: body.mfaMethod,
+          mfaChallengeToken: body.mfaChallengeToken,
+        }
+      }
+      if (!("user" in body) || !("tokens" in body)) {
+        throw new ServerAuthClientError("Ungueltige Login-Antwort", { code: "invalid_login_response" })
+      }
+      const session = buildServerAuthSession({
+        user: body.user,
+        tokens: body.tokens,
+        now: options.now?.(),
+      })
+      saveServerAuthSession(session, options.storage, options.accessTokenStorage)
+      return { kind: "session", session }
+    },
+
+    async verifyMfa(input): Promise<ServerAuthSession> {
+      const body = await request<AuthResponseBody>(fetchImpl, baseUrl, "/api/v1/auth/mfa/verify", {
+        method: "POST",
+        body: {
+          mfaChallengeToken: input.mfaChallengeToken,
+          code: input.code,
           ...(options.device ? { device: options.device } : {}),
         },
       })
@@ -155,6 +291,50 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
       })
       saveServerAuthSession(session, options.storage, options.accessTokenStorage)
       return session
+    },
+
+    async getSecuritySettings(accessToken) {
+      return request(fetchImpl, baseUrl, "/api/v1/auth/security-settings", {
+        method: "GET",
+        accessToken,
+      })
+    },
+
+    async patchSecuritySettings(accessToken, settings) {
+      return request(fetchImpl, baseUrl, "/api/v1/auth/security-settings", {
+        method: "PATCH",
+        accessToken,
+        body: settings,
+      })
+    },
+
+    async beginUserTotpSetup(accessToken, userId) {
+      return request(fetchImpl, baseUrl, `/api/v1/auth/users/${encodeURIComponent(userId)}/mfa/totp/setup`, {
+        method: "POST",
+        accessToken,
+      })
+    },
+
+    async confirmUserTotpSetup(accessToken, userId, input) {
+      return request(fetchImpl, baseUrl, `/api/v1/auth/users/${encodeURIComponent(userId)}/mfa/totp/confirm`, {
+        method: "POST",
+        accessToken,
+        body: input,
+      })
+    },
+
+    async enableUserEmailMfa(accessToken, userId) {
+      return request(fetchImpl, baseUrl, `/api/v1/auth/users/${encodeURIComponent(userId)}/mfa/email`, {
+        method: "POST",
+        accessToken,
+      })
+    },
+
+    async disableUserMfa(accessToken, userId) {
+      return request(fetchImpl, baseUrl, `/api/v1/auth/users/${encodeURIComponent(userId)}/mfa`, {
+        method: "DELETE",
+        accessToken,
+      })
     },
 
     async refresh(): Promise<ServerAuthSession | null> {
@@ -209,7 +389,7 @@ async function request<T>(
   baseUrl: string,
   path: string,
   options: {
-    method: "GET" | "POST"
+    method: "GET" | "POST" | "PATCH" | "DELETE"
     body?: unknown
     accessToken?: string | null
   },
@@ -221,7 +401,9 @@ async function request<T>(
   }
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "Content-Type": "application/json",
+  }
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json"
   }
   if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`
   const response = await fetchImpl(new URL(path, baseUrl).toString(), {

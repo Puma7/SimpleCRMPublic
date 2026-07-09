@@ -47,6 +47,9 @@ export async function processDueScheduledSends(
         sent += 1;
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
+        if (errMsg.includes('Versand') && errMsg.includes('bereits')) {
+          continue;
+        }
         const fails = recordScheduledSendAttemptFailure(draftId, errMsg);
         logger.warn(
           `[email] scheduled send ${draftId} (${fails}/${MAX_SCHEDULED_SEND_FAILURES}): ${errMsg}`,

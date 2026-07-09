@@ -71,7 +71,7 @@
 
 .compose-editor-fill .ql-container.ql-snow {
   display: flex;
-  min-height: 8rem;
+  min-height: 16rem;
   flex: 1 1 auto;
   flex-direction: column;
   overflow-y: auto;

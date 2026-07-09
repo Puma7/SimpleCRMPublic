@@ -7,11 +7,21 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc } from "@/components/email/types"
 import { createServerAuthClient, getRendererTransport } from "@/services/transport"
 
+/**
+ * Paths the auth gate must let through unauthenticated. The customer portal
+ * (Phase 5/6 of the returns suite) is the only such surface today; the portal
+ * token in the URL is the credential the server uses to resolve a workspace.
+ */
+function isPublicPath(pathname: string): boolean {
+  return pathname.startsWith("/portal/")
+}
+
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { loading, authenticated, authRequired } = useAuth()
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const [needsSetup, setNeedsSetup] = useState(false)
+  const isPublic = isPublicPath(pathname)
 
   useEffect(() => {
     const transport = getRendererTransport()
@@ -48,6 +58,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (loading) return
+    if (isPublic) return
     if (needsSetup && pathname !== "/login") {
       navigate({ to: "/login" })
       return
@@ -55,7 +66,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     if (authRequired && !authenticated && pathname !== "/login") {
       navigate({ to: "/login" })
     }
-  }, [loading, authRequired, authenticated, pathname, navigate, needsSetup])
+  }, [loading, authRequired, authenticated, pathname, navigate, needsSetup, isPublic])
+
+  // Public paths bypass the loading spinner so customers don't see a blank
+  // screen while we resolve a session they don't have.
+  if (isPublic) {
+    return <>{children}</>
+  }
 
   if (loading) {
     return (

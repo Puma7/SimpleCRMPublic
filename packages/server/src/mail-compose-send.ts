@@ -4,10 +4,13 @@ import path from 'node:path';
 
 import type { Kysely, RawBuilder } from 'kysely';
 import {
+  addressJson,
   buildComposeRfc822,
   type ComposeRfc822Attachment,
   buildOutboundThreadingHeaders,
+  addressesFromRecipientJson,
   buildOutboundWarningBanner,
+  encodeOutboundApprovalMarker,
   ensureTicketInSubject,
   extractDraftBodyForOutboundBlock,
   extractTicketFromSubject,
@@ -15,6 +18,8 @@ import {
   generateTicketCode,
   outboundDraftFingerprint,
   parseOutboundApprovalMarker,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
 } from '@simplecrm/core';
 
 import type {
@@ -23,8 +28,10 @@ import type {
   EmailComposeSendResult,
   EmailOAuthProvider,
   EmailOutboundValidationApiPort,
+  EmailOutboundValidationInput,
   PgpMessageCryptoApiPort,
 } from './api';
+import type { WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from './jobs';
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
 import {
@@ -34,11 +41,13 @@ import {
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
+import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
 import type {
   ServerImapSentCopyAppendInput,
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -56,6 +65,11 @@ const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
 
 const COMPOSE_SEND_LOCK_PREFIX = 'email_compose_sending:';
 const COMPOSE_SMTP_COMMITTED_PREFIX = 'email_compose_smtp_ok:';
+const COMPOSE_SMTP_OUTBOX_VALUE = 'outbox';
+const COMPOSE_SMTP_SENT_VALUE = 'sent';
+const COMPOSE_SMTP_COMMITTED_VALUE = '1';
+
+export type ComposeSmtpOutboxState = 'none' | 'outbox' | 'committed';
 const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
 /** Marker set by email.release_outbound (autoSend=true) after ai.outbound_review
  *  returned OK. reviewOutbound.review honours it as "already approved, just send",
@@ -69,6 +83,204 @@ const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
 const OUTBOUND_REVIEW_REASON =
   'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
 const MAX_OUTBOUND_CONTEXT_TEXT = 20_000;
+
+export function isOutboundReviewPendingError(error: string): boolean {
+  const normalized = error.trim().toLowerCase();
+  return normalized.includes('ausgangspruefung') && normalized.includes('serverseitig');
+}
+
+function addressesFromStoredRecipientJson(value: unknown): string {
+  if (!value) return '';
+  try {
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
+  } catch {
+    return '';
+  }
+}
+
+function draftAttachmentPathsFromJson(value: unknown): readonly string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+    if (!Array.isArray(parsed)) return [];
+    const paths: string[] = [];
+    for (const item of parsed) {
+      const path = typeof item === 'string'
+        ? item.trim()
+        : item && typeof item === 'object'
+          ? String((item as { path?: unknown }).path ?? '').trim()
+          : '';
+      if (path && !paths.includes(path)) paths.push(path);
+    }
+    return paths;
+  } catch {
+    return [];
+  }
+}
+
+async function allocateOutboundApprovalTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+  now: Date,
+): Promise<string> {
+  if (accountId == null) return generateTicketCode();
+  const numericAccountId = Number(accountId);
+  if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) return generateTicketCode();
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'source_sqlite_id', 'display_name', 'email_address'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', numericAccountId)
+    .executeTakeFirst();
+  if (!account) return generateTicketCode();
+  const defaultSettings = buildDefaultServerAccountMailSettings({
+    id: numericAccountId,
+    displayName: account.display_name ?? '',
+    emailAddress: account.email_address ?? '',
+  });
+  const defaultPrefix = defaultSettings.ticketPrefix;
+  await trx
+    .insertInto('email_account_mail_settings')
+    .values({
+      workspace_id: workspaceId,
+      account_source_sqlite_id: Number(account.source_sqlite_id ?? numericAccountId),
+      account_id: numericAccountId,
+      ticket_prefix: defaultPrefix,
+      ticket_next_number: defaultSettings.ticketNextNumber,
+      ticket_number_padding: defaultSettings.ticketNumberPadding,
+      thread_namespace: defaultSettings.threadNamespace,
+      source_row: { source: 'server.compose.outbound_approval' },
+      imported_in_run_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+  const settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!settings) return generateTicketCode({ prefix: defaultPrefix });
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Math.min(12, Math.max(1, Math.floor(Number(settings.ticket_number_padding) || 6)));
+  const ticketCode = generateTicketCode({
+    prefix: settings.ticket_prefix || defaultPrefix,
+    sequence: String(Math.max(1, currentNumber || 1)).padStart(padding, '0'),
+  });
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: Math.max(1, currentNumber || 1) + 1, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', numericAccountId)
+    .execute();
+  return ticketCode;
+}
+
+/** Persist a manual outbound approval after dry-run validation or schedule-time checks. */
+export async function persistManualOutboundApproval(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    draftId: number;
+    subject: string;
+    bodyText: string;
+    bodyHtml: string | null;
+    to: string;
+    cc?: string | null;
+    bcc?: string | null;
+    attachmentPaths?: readonly string[] | null;
+    now?: Date;
+  },
+): Promise<void> {
+  const now = input.now ?? new Date();
+  const draftRow = await trx
+    .selectFrom('email_messages')
+    .select([
+      'subject',
+      'body_text',
+      'body_html',
+      'to_json',
+      'cc_json',
+      'bcc_json',
+      'draft_attachment_paths_json',
+      'ticket_code',
+      'account_id',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftId)
+    .executeTakeFirst();
+
+  const cleaned = extractDraftBodyForOutboundBlock(
+    {
+      body_text: draftRow?.body_text ?? null,
+      body_html: draftRow?.body_html ?? null,
+    },
+    {
+      bodyText: input.bodyText,
+      bodyHtml: input.bodyHtml,
+    },
+  );
+  const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, input.workspaceId);
+  const storedSubject = input.subject.trim() || draftRow?.subject?.trim() || '';
+  const existingTicket = draftRow?.ticket_code?.trim()
+    || extractWorkspaceTicketFromSubject(storedSubject, allowedPrefixes);
+  const ticketCode = existingTicket || await allocateOutboundApprovalTicketCode(
+    trx,
+    input.workspaceId,
+    draftRow?.account_id ?? null,
+    now,
+  );
+  const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
+  const fingerprint = outboundDraftFingerprint({
+    subject: finalSubject,
+    bodyText: cleaned.plain,
+    bodyHtml: cleaned.html,
+    to: input.to,
+    cc: input.cc ?? addressesFromStoredRecipientJson(draftRow?.cc_json),
+    bcc: input.bcc ?? addressesFromStoredRecipientJson(draftRow?.bcc_json),
+    attachmentPaths: input.attachmentPaths ?? draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+  });
+  const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
+
+  await trx
+    .updateTable('email_messages')
+    .set({
+      outbound_hold: false,
+      outbound_block_reason: null,
+      body_text: cleaned.plain,
+      body_html: cleaned.html || null,
+      subject: finalSubject,
+      ticket_code: ticketCode,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftId)
+    .execute();
+
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: outboundReviewApprovedKey(input.draftId),
+      value: markerValue,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: markerValue,
+      last_updated: now,
+      updated_at: now,
+    }))
+    .execute();
+}
+
 const MAX_SERVER_COMPOSE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_SERVER_COMPOSE_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 
@@ -131,7 +343,15 @@ export type ComposeSenderStore = Readonly<{
   getOrCreateThreadForTicket(input: {
     workspaceId: string;
     ticketCode: string;
+    accountId?: number | null;
     subject: string;
+  }): Promise<string>;
+  listKnownTicketPrefixes?(input: {
+    workspaceId: string;
+  }): Promise<readonly string[]>;
+  allocateNextTicketCodeForAccount?(input: {
+    workspaceId: string;
+    account: ComposeSendAccount;
   }): Promise<string>;
   readSecret?(input: SecretIdentifier): Promise<Buffer | null>;
   writeSecret?(input: SecretIdentifier & { value: string | Buffer }): Promise<unknown>;
@@ -147,6 +367,10 @@ export type ComposeSenderStore = Readonly<{
     workspaceId: string;
     keys: readonly string[];
   }): Promise<void>;
+  claimSmtpOutbox(input: {
+    workspaceId: string;
+    messageId: number;
+  }): Promise<'claimed' | 'outbox' | 'committed'>;
   tryAcquireSendingLock(input: {
     workspaceId: string;
     messageId: number;
@@ -161,6 +385,7 @@ export type ComposeSenderStore = Readonly<{
     subject: string;
     bodyText: string;
     bodyHtml: string | null;
+    fromJson: unknown | null;
     toJson: unknown | null;
     ccJson: unknown | null;
     bccJson: unknown | null;
@@ -223,6 +448,7 @@ export type PostgresComposeSenderOptions = Readonly<{
   smtpSend?: (input: ServerSmtpSendInput) => Promise<void>;
   sentCopyAppend?: (input: ServerImapSentCopyAppendInput) => Promise<ServerImapSentCopyAppendResult>;
   outboundReview?: ComposeOutboundReviewPort;
+  workflowDryRun?: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   pgpMessages?: Pick<PgpMessageCryptoApiPort, 'prepareOutboundBody' | 'prepareOutboundAttachments'>;
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
@@ -340,7 +566,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           };
         }
 
-        const smtpCommitted = await isSmtpCommitted(options.store, input.workspaceId, values.draftMessageId);
         const prepared = await prepareDraftForSend({
           store: options.store,
           workspaceId: input.workspaceId,
@@ -369,32 +594,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           attachments,
           date: now(),
         }).toString('utf8');
-
-        if (smtpCommitted) {
-          const sentCopy = await appendSentCopyAfterSmtp({
-            append: sentCopyAppend,
-            workspaceId: input.workspaceId,
-            account,
-            draftMessageId: values.draftMessageId,
-            rfc822,
-          });
-          await finalizeSentDraft({
-            store: options.store,
-            workspaceId: input.workspaceId,
-            draftMessageId: values.draftMessageId,
-            inReplyToMessageId: values.inReplyToMessageId,
-            markReplyParentDone: values.markReplyParentDone,
-            recovered: true,
-            sentImapSyncFailed: sentCopy.sentImapSyncFailed,
-          });
-          return {
-            ok: true,
-            messageId: values.draftMessageId,
-            accountId: account.id,
-            recoveredSentAppend: true,
-            warning: sentCopy.warning,
-          };
-        }
 
         if (outboundReview) {
           const review = await outboundReview.review({
@@ -430,9 +629,42 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         });
         if (!auth.ok) return { ok: false, error: auth.error };
 
+        const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
+        if (!smtpHost) return { ok: false, error: SMTP_HOST_MISSING_ERROR };
+
+        const smtpOutboxClaim = await options.store.claimSmtpOutbox({
+          workspaceId: input.workspaceId,
+          messageId: values.draftMessageId,
+        });
+        if (smtpOutboxClaim === 'committed') {
+          const sentCopy = await appendSentCopyAfterSmtp({
+            append: sentCopyAppend,
+            workspaceId: input.workspaceId,
+            account,
+            draftMessageId: values.draftMessageId,
+            rfc822,
+          });
+          await finalizeSentDraft({
+            store: options.store,
+            workspaceId: input.workspaceId,
+            draftMessageId: values.draftMessageId,
+            inReplyToMessageId: values.inReplyToMessageId,
+            markReplyParentDone: values.markReplyParentDone,
+            recovered: true,
+            sentImapSyncFailed: sentCopy.sentImapSyncFailed,
+          });
+          return {
+            ok: true,
+            messageId: values.draftMessageId,
+            accountId: account.id,
+            recoveredSentAppend: true,
+            warning: sentCopy.warning,
+          };
+        }
+
         try {
           const smtpInput: ServerSmtpSendInput = {
-            host: account.smtpHost?.trim() || account.imapHost,
+            host: smtpHost,
             port: account.smtpPort ?? 587,
             tls: account.smtpTls,
             user: auth.user,
@@ -446,10 +678,11 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
           });
         } catch (error) {
+          await clearSmtpOutboxClaim(options.store, input.workspaceId, values.draftMessageId);
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
 
-        await markSmtpCommitted(options.store, input.workspaceId, values.draftMessageId);
+        await markSmtpSent(options.store, input.workspaceId, values.draftMessageId);
         const sentCopy = await appendSentCopyAfterSmtp({
           append: sentCopyAppend,
           workspaceId: input.workspaceId,
@@ -492,6 +725,7 @@ export function createPostgresEmailComposeSenderPort(
     outboundReview: options.outboundReview ?? createPostgresComposeOutboundReviewPort({
       db: options.db,
       now: options.now,
+      workflowDryRun: options.workflowDryRun,
     }),
     pgpMessages: options.pgpMessages,
     oauthFetchImpl: options.oauthFetchImpl,
@@ -502,38 +736,109 @@ export function createPostgresEmailComposeSenderPort(
 
 export function createPostgresEmailOutboundValidationPort(options: {
   db: Kysely<ServerDatabase>;
+  workflowDryRun: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   now?: () => Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): EmailOutboundValidationApiPort {
-  const outboundReview = createPostgresComposeOutboundReviewPort(options);
   return {
     async validate(input) {
-      const result = await outboundReview.review({
-        workspaceId: input.workspaceId,
-        actorUserId: input.actorUserId,
-        draftMessageId: input.values.messageId,
-        subject: input.values.subject,
-        bodyText: input.values.bodyText,
-        bodyHtml: input.values.bodyHtml ?? null,
-        to: input.values.to,
-        ...(input.values.cc === undefined ? {} : { cc: input.values.cc }),
-        ...(input.values.bcc === undefined ? {} : { bcc: input.values.bcc }),
-        ...(input.values.inReplyToMessageId === undefined
-          ? {}
-          : { inReplyToMessageId: input.values.inReplyToMessageId }),
-        attachmentCount: input.values.attachmentCount ?? 0,
-      });
-      if (result.allowed) return { allowed: true, reason: null };
-      return {
-        allowed: false,
-        reason: result.error,
-        ...(result.workflowRunId === undefined ? {} : { workflowRunId: result.workflowRunId }),
-      };
+      const draft = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('email_messages')
+          .select(['id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.values.messageId)
+          .where('uid', '<', 0)
+          .where('folder_kind', '=', 'draft')
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!draft) {
+        return { allowed: false, reason: 'Entwurf nicht gefunden' };
+      }
+
+      const workflows = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('email_workflows')
+          .select(['id', 'name'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('trigger_name', '=', 'outbound')
+          .where('enabled', '=', true)
+          .orderBy('priority', 'asc')
+          .orderBy('id', 'asc')
+          .limit(MAX_OUTBOUND_WORKFLOWS_PER_SEND)
+          .execute(),
+        { applySession: options.applyWorkspaceSession },
+      );
+
+      if (workflows.length === 0) {
+        return { allowed: true, reason: null };
+      }
+
+      let firstBlockReason: string | null = null;
+      for (const workflow of workflows) {
+        const result = await options.workflowDryRun({
+          workspaceId: input.workspaceId,
+          workflowId: Number(workflow.id),
+          messageId: input.values.messageId,
+          triggerName: 'outbound',
+          actorUserId: input.actorUserId,
+          context: buildOutboundValidationContext(input.values),
+        });
+        if (!result.success) {
+          return {
+            allowed: false,
+            reason: result.error ?? 'Ausgangspruefung fehlgeschlagen',
+          };
+        }
+        if (result.blocked) {
+          const reason = result.blockReason?.trim()
+            || `Workflow „${workflow.name}" wuerde den Versand blockieren`;
+          if (!firstBlockReason) firstBlockReason = reason;
+        } else if (result.status === 'error') {
+          return {
+            allowed: false,
+            reason: result.error ?? 'Ausgehender Workflow fehlgeschlagen',
+          };
+        }
+      }
+
+      if (firstBlockReason) {
+        return { allowed: false, reason: firstBlockReason };
+      }
+
+      if (workflows.length > 0) {
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            await persistManualOutboundApproval(trx, {
+              workspaceId: input.workspaceId,
+              draftId: input.values.messageId,
+              subject: input.values.subject,
+              bodyText: input.values.bodyText,
+              bodyHtml: input.values.bodyHtml ?? null,
+              to: input.values.to,
+              cc: input.values.cc ?? null,
+              bcc: input.values.bcc ?? null,
+              now: options.now?.(),
+            });
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
+      return { allowed: true, reason: null };
     },
   };
 }
 
 export function createPostgresComposeOutboundReviewPort(options: {
   db: Kysely<ServerDatabase>;
+  workflowDryRun?: (input: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }): ComposeOutboundReviewPort {
@@ -630,6 +935,28 @@ export function createPostgresComposeOutboundReviewPort(options: {
             .where('folder_kind', '=', 'draft')
             .executeTakeFirst();
           if (!draft) return { allowed: false, error: 'Entwurf nicht gefunden' };
+
+          if (options.workflowDryRun) {
+            const dryRun = await evaluateComposeOutboundDryRun({
+              workflowDryRun: options.workflowDryRun,
+              workspaceId: input.workspaceId,
+              actorUserId: input.actorUserId,
+              draftMessageId: input.draftMessageId,
+              subject: input.subject,
+              bodyText: input.bodyText,
+              bodyHtml: input.bodyHtml,
+              to: input.to,
+              cc: input.cc,
+              bcc: input.bcc,
+              inReplyToMessageId: input.inReplyToMessageId,
+              attachmentCount: input.attachmentCount,
+              attachmentPaths: input.attachmentPaths,
+              workflows,
+            });
+            if (!dryRun.allowed) {
+              return { allowed: false, error: dryRun.reason };
+            }
+          }
 
           const { plain, html } = extractDraftBodyForOutboundBlock(
             {
@@ -849,7 +1176,21 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => getOrCreateThreadForTicket(trx, input.workspaceId, input.ticketCode, input.subject, options.now?.()),
+        async (trx) => getOrCreateThreadForTicket(trx, input.workspaceId, input.ticketCode, input.subject, input.accountId ?? null, options.now?.()),
+      );
+    },
+    async listKnownTicketPrefixes(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => [...(await listWorkspaceTicketPrefixes(trx, input.workspaceId))],
+      );
+    },
+    async allocateNextTicketCodeForAccount(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => allocateNextTicketCodeForAccount(trx, input.workspaceId, input.account, options.now?.()),
       );
     },
     async readSecret(input) {
@@ -895,6 +1236,13 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('key', 'in', input.keys)
             .execute();
         },
+      );
+    },
+    async claimSmtpOutbox(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => claimSmtpOutboxInTransaction(trx, input.workspaceId, input.messageId, options.now?.()),
       );
     },
     async tryAcquireSendingLock(input) {
@@ -946,6 +1294,7 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
               body_text: input.bodyText,
               body_html: input.bodyHtml,
               snippet: snippetFromText(input.bodyText),
+              from_json: input.fromJson,
               to_json: input.toJson,
               cc_json: input.ccJson,
               bcc_json: input.bccJson,
@@ -1010,6 +1359,32 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .execute();
+
+          const draftRow = await trx
+            .selectFrom('email_messages as m')
+            .innerJoin('email_accounts as a', 'a.id', 'm.account_id')
+            .select(['m.from_json', 'a.email_address', 'a.display_name'])
+            .where('m.workspace_id', '=', input.workspaceId)
+            .where('m.id', '=', input.messageId)
+            .executeTakeFirst();
+          if (draftRow && !String(draftRow.from_json ?? '').trim()) {
+            const fromJson = addressJson({
+              value: [{
+                address: String(draftRow.email_address).trim(),
+                ...(String(draftRow.display_name ?? '').trim()
+                  ? { name: String(draftRow.display_name).trim() }
+                  : {}),
+              }],
+            });
+            if (fromJson) {
+              await trx
+                .updateTable('email_messages')
+                .set({ from_json: fromJson, updated_at: options.now?.() ?? new Date() })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', input.messageId)
+                .execute();
+            }
+          }
           // SMTP succeeded — drop the outbound-review approval marker so it
           // doesn't linger past the send (and so an edit-then-resend on the
           // same id space would re-run review).
@@ -1091,11 +1466,30 @@ async function prepareDraftForSend(input: {
       threadId = parentForThreading.threadId;
     }
   }
-  if (!ticketCode) ticketCode = extractTicketFromSubject(values.subject) ?? generateTicketCode();
+  if (!ticketCode) {
+    const allowedPrefixes = await input.store.listKnownTicketPrefixes?.({
+      workspaceId: input.workspaceId,
+    });
+    ticketCode = extractTicketFromSubject(
+      values.subject,
+      allowedPrefixes ? { allowedPrefixes } : undefined,
+    );
+  }
+  if (!ticketCode && input.draft.ticketCode?.trim()) {
+    ticketCode = input.draft.ticketCode.trim();
+  }
+  if (!ticketCode) {
+    ticketCode = (await input.store.allocateNextTicketCodeForAccount?.({
+      workspaceId: input.workspaceId,
+      account: input.account,
+    }))
+      ?? generateTicketCode({ prefix: `ACC${input.account.id}` });
+  }
   if (!threadId) {
     threadId = await input.store.getOrCreateThreadForTicket({
       workspaceId: input.workspaceId,
       ticketCode,
+      accountId: input.account.id,
       subject: values.subject,
     });
   }
@@ -1118,6 +1512,14 @@ async function prepareDraftForSend(input: {
     subject: finalSubject,
     bodyText: input.bodyText,
     bodyHtml: input.bodyHtml,
+    fromJson: addressJson({
+      value: [{
+        address: input.account.emailAddress.trim(),
+        ...(input.account.displayName.trim()
+          ? { name: input.account.displayName.trim() }
+          : {}),
+      }],
+    }),
     toJson: input.toJson,
     ccJson: input.ccJson,
     bccJson: input.bccJson,
@@ -1400,6 +1802,105 @@ function readComposeAttachmentsForPgp(
   return { ok: true, attachments: out };
 }
 
+function buildOutboundValidationContext(values: EmailOutboundValidationInput): Record<string, unknown> {
+  return {
+    outbound: {
+      messageId: values.messageId,
+      subject: values.subject,
+      bodyText: truncateContextText(values.bodyText),
+      bodyHtml: values.bodyHtml === null || values.bodyHtml === undefined
+        ? null
+        : truncateContextText(values.bodyHtml),
+      to: values.to,
+      cc: values.cc ?? '',
+      bcc: values.bcc ?? '',
+      inReplyToMessageId: values.inReplyToMessageId ?? null,
+      attachmentCount: values.attachmentCount ?? 0,
+      attachmentPaths: [],
+    },
+    previewOutbound: true,
+    eventStrings: outboundValidationEventStrings(values),
+    source: 'server_compose_outbound_validate',
+  };
+}
+
+async function evaluateComposeOutboundDryRun(input: {
+  workflowDryRun: (plan: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
+  workspaceId: string;
+  actorUserId: string;
+  draftMessageId: number;
+  subject: string;
+  bodyText: string;
+  bodyHtml: string | null | undefined;
+  to: string;
+  cc?: string | null;
+  bcc?: string | null;
+  inReplyToMessageId?: number | null;
+  attachmentCount: number;
+  attachmentPaths?: readonly string[] | null;
+  workflows: readonly { id: number | string | bigint; name: string }[];
+}): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  let firstBlockReason: string | null = null;
+  for (const workflow of input.workflows) {
+    const result = await input.workflowDryRun({
+      workspaceId: input.workspaceId,
+      workflowId: Number(workflow.id),
+      messageId: input.draftMessageId,
+      triggerName: 'outbound',
+      actorUserId: input.actorUserId,
+      context: {
+        outbound: {
+          messageId: input.draftMessageId,
+          subject: input.subject,
+          bodyText: truncateContextText(input.bodyText),
+          bodyHtml: input.bodyHtml === null || input.bodyHtml === undefined
+            ? null
+            : truncateContextText(input.bodyHtml),
+          to: input.to,
+          cc: input.cc ?? '',
+          bcc: input.bcc ?? '',
+          inReplyToMessageId: input.inReplyToMessageId ?? null,
+          attachmentCount: input.attachmentCount,
+          attachmentPaths: input.attachmentPaths?.slice(0, 25) ?? [],
+        },
+        previewOutbound: true,
+        eventStrings: outboundValidationEventStrings({
+          messageId: input.draftMessageId,
+          subject: input.subject,
+          bodyText: input.bodyText,
+          bodyHtml: input.bodyHtml ?? undefined,
+          to: input.to,
+          cc: input.cc ?? undefined,
+          bcc: input.bcc ?? undefined,
+          inReplyToMessageId: input.inReplyToMessageId ?? undefined,
+          attachmentCount: input.attachmentCount,
+        }),
+        source: 'server_compose_outbound_review',
+      },
+    });
+    if (!result.success) {
+      return {
+        allowed: false,
+        reason: result.error ?? 'Ausgangspruefung fehlgeschlagen',
+      };
+    }
+    if (result.blocked) {
+      const reason = result.blockReason?.trim()
+        || `Workflow „${workflow.name}" wuerde den Versand blockieren`;
+      if (!firstBlockReason) firstBlockReason = reason;
+    } else if (result.status === 'error') {
+      return {
+        allowed: false,
+        reason: result.error ?? 'Ausgehender Workflow fehlgeschlagen',
+      };
+    }
+  }
+  if (firstBlockReason) {
+    return { allowed: false, reason: firstBlockReason };
+  }
+  return { allowed: true };
+}
+
 function outboundWorkflowJobPayload(
   input: ComposeOutboundReviewInput,
   workflowId: number,
@@ -1434,6 +1935,34 @@ function truncateContextText(value: string): string {
   return value.length > MAX_OUTBOUND_CONTEXT_TEXT
     ? `${value.slice(0, MAX_OUTBOUND_CONTEXT_TEXT)}...`
     : value;
+}
+
+function outboundValidationEventStrings(
+  values: EmailOutboundValidationInput,
+): Record<string, string> {
+  const bodyText = values.bodyText ?? '';
+  const bodyHtml = values.bodyHtml ?? '';
+  const htmlPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const attachmentCount = values.attachmentCount ?? 0;
+  return {
+    subject: values.subject ?? '',
+    body_text: bodyText,
+    snippet: bodyText.slice(0, 500),
+    from_address: '',
+    to_address: values.to ?? '',
+    cc_address: values.cc ?? '',
+    combined_text: [
+      values.subject,
+      bodyText,
+      htmlPlain,
+      values.to,
+      values.cc,
+      values.bcc,
+    ].filter(Boolean).join('\n'),
+    has_attachments: attachmentCount > 0 ? 'true' : 'false',
+    attachment_names: '',
+    attachment_types: '',
+  };
 }
 
 function escapeHtml(value: string): string {
@@ -1580,26 +2109,64 @@ function emailAccountSecretIdentifier(
   };
 }
 
-async function isSmtpCommitted(
+async function claimSmtpOutboxInTransaction(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+  nowInput?: Date,
+): Promise<'claimed' | 'outbox' | 'committed'> {
+  const key = smtpCommittedKey(messageId);
+  const now = nowInput ?? new Date();
+  const inserted = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: workspaceId,
+      key,
+      value: COMPOSE_SMTP_OUTBOX_VALUE,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+    .returning('key')
+    .executeTakeFirst();
+  if (inserted) return 'claimed';
+
+  const row = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', key)
+    .executeTakeFirst();
+  if (
+    row?.value === COMPOSE_SMTP_COMMITTED_VALUE
+    || row?.value === COMPOSE_SMTP_SENT_VALUE
+  ) {
+    return 'committed';
+  }
+  return 'outbox';
+}
+
+async function clearSmtpOutboxClaim(
   store: ComposeSenderStore,
   workspaceId: string,
   messageId: number,
-): Promise<boolean> {
-  const values = await store.getSyncInfo({
-    workspaceId,
-    keys: [smtpCommittedKey(messageId)],
-  });
-  return values.get(smtpCommittedKey(messageId)) === '1';
+): Promise<void> {
+  const key = smtpCommittedKey(messageId);
+  const values = await store.getSyncInfo({ workspaceId, keys: [key] });
+  if (values.get(key) !== COMPOSE_SMTP_OUTBOX_VALUE) return;
+  await store.deleteSyncInfo({ workspaceId, keys: [key] });
 }
 
-async function markSmtpCommitted(
+async function markSmtpSent(
   store: ComposeSenderStore,
   workspaceId: string,
   messageId: number,
 ): Promise<void> {
   await store.setSyncInfo({
     workspaceId,
-    values: { [smtpCommittedKey(messageId)]: '1' },
+    values: { [smtpCommittedKey(messageId)]: COMPOSE_SMTP_SENT_VALUE },
   });
 }
 
@@ -1638,6 +2205,7 @@ async function getOrCreateThreadForTicket(
   workspaceId: string,
   ticketCode: string,
   subject: string,
+  accountId?: number | null,
   nowInput?: Date,
 ): Promise<string> {
   const existing = await trx
@@ -1645,33 +2213,119 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
+    .where('account_id', accountId == null ? 'is' : '=', accountId ?? null)
     .executeTakeFirst();
   if (existing?.id) return existing.id;
 
   const now = nowInput ?? new Date();
-  const threadId = `th-${randomBytes(8).toString('hex')}`;
-  const inserted = await trx
-    .insertInto('email_threads')
+  const threadId = `th-${randomBytes(12).toString('hex')}`;
+  const values = {
+    id: threadId,
+    workspace_id: workspaceId,
+    ticket_code: ticketCode,
+    account_id: accountId ?? null,
+    root_message_source_sqlite_id: null,
+    root_message_id: null,
+    last_message_at: null,
+    message_count: 0,
+    has_unread: false,
+    has_attachments: false,
+    subject_normalized: normalizeThreadSubject(subject),
+    source_row: serverApiSourceRow(),
+    imported_in_run_id: null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const inserted = accountId == null
+    ? await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'ticket_code'])
+        .where('account_id', 'is', null)
+        .doUpdateSet({ updated_at: now }))
+      .returning('id')
+      .executeTakeFirst()
+    : await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'account_id', 'ticket_code'])
+        .doUpdateSet({ updated_at: now }))
+      .returning('id')
+      .executeTakeFirst();
+
+  if (inserted?.id) return inserted.id;
+
+  const existingAfterConflict = await trx
+    .selectFrom('email_threads')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('ticket_code', '=', ticketCode)
+    .where('account_id', accountId == null ? 'is' : '=', accountId ?? null)
+    .executeTakeFirst();
+  return existingAfterConflict?.id ?? threadId;
+}
+
+function formatServerTicketSequence(value: number, padding: number): string {
+  const normalizedValue = Number.isSafeInteger(value) && value > 0 ? value : 1;
+  const normalizedPadding = Number.isSafeInteger(padding) && padding > 0 ? Math.min(padding, 12) : 6;
+  return String(normalizedValue).padStart(normalizedPadding, '0');
+}
+
+async function allocateNextTicketCodeForAccount(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  account: ComposeSendAccount,
+  nowInput?: Date,
+): Promise<string> {
+  const now = nowInput ?? new Date();
+  const defaultSettings = buildDefaultServerAccountMailSettings(account);
+  await trx
+    .insertInto('email_account_mail_settings')
     .values({
-      id: threadId,
       workspace_id: workspaceId,
-      ticket_code: ticketCode,
-      root_message_source_sqlite_id: null,
-      root_message_id: null,
-      last_message_at: null,
-      message_count: 0,
-      has_unread: false,
-      has_attachments: false,
-      subject_normalized: normalizeThreadSubject(subject),
+      account_source_sqlite_id: account.sourceSqliteId,
+      account_id: account.id,
+      ticket_prefix: defaultSettings.ticketPrefix,
+      ticket_next_number: defaultSettings.ticketNextNumber,
+      ticket_number_padding: defaultSettings.ticketNumberPadding,
+      thread_namespace: defaultSettings.threadNamespace,
       source_row: serverApiSourceRow(),
       imported_in_run_id: null,
       created_at: now,
       updated_at: now,
     })
-    .onConflict((oc) => oc.columns(['workspace_id', 'ticket_code']).doUpdateSet({ updated_at: now }))
-    .returning('id')
-    .executeTakeFirst();
-  return inserted?.id ?? threadId;
+    .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+    .execute();
+
+  const row = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', account.id)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
+  const prefix = row.ticket_prefix.trim() || `ACC${account.id}`;
+  const currentNumber = Number(row.ticket_next_number);
+  const padding = Number(row.ticket_number_padding);
+  const ticketCode = generateTicketCode({
+    prefix,
+    sequence: formatServerTicketSequence(currentNumber, padding),
+  });
+  const nextNumber = (Number.isSafeInteger(currentNumber) && currentNumber > 0 ? currentNumber : 1) + 1;
+
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({
+      ticket_next_number: nextNumber,
+      updated_at: now,
+    })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', account.id)
+    .execute();
+  return ticketCode;
 }
 
 async function upsertSyncInfo(

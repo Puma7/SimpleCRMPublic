@@ -50,7 +50,7 @@ export function registerIpcHandler<C extends InvokeChannel>(
     logger = console,
     onDeprecatedUse,
     requireAuth: requireAuthOption,
-    requireRealSession = false,
+    requireRealSession = true,
     requireRole,
     accountScope,
     accountAccess = 'ro',

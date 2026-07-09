@@ -230,6 +230,10 @@ export function createIpcRendererTransport(api: ElectronInvokeApi | undefined = 
 export function createHttpRendererTransport(options: HttpRendererTransportOptions): RendererTransport {
   const baseUrl = normalizeBaseUrl(options.baseUrl)
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
+  const serverAuth = createServerAuthClient({
+    baseUrl,
+    device: "simplecrm-renderer",
+  })
   // Only self-heal an expired access token when we own the token source
   // (default, storage-backed). A caller that supplies its own getAccessToken
   // opts out, so we never fight a custom provider's lifecycle.
@@ -241,17 +245,18 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
         code: "fetch_unavailable",
       })
     }
-    const boundFetch = fetchImpl
+    let token = await getAccessToken(options.getAccessToken)
 
-    const sendOnce = async (requestSpec: HttpRequestSpec): Promise<Response> => {
-      // Read the token per attempt (not once per invocation) so a retry after a
-      // refresh actually carries the new bearer token.
-      const token = await getAccessToken(options.getAccessToken)
+    const fetchHttp = async (
+      requestSpec: HttpRequestSpec,
+      retriedAfterRefresh = false,
+    ): Promise<{ body: unknown; response: Response }> => {
       const url = buildUrl(baseUrl, requestSpec.path, requestSpec.query)
       const headers: Record<string, string> = {
         Accept: requestSpec.responseType === "blob" ? "application/octet-stream, application/json" : "application/json",
       }
-      if (token) headers.Authorization = `Bearer ${token}`
+      const activeToken = await getAccessToken(options.getAccessToken) ?? token
+      if (activeToken) headers.Authorization = `Bearer ${activeToken}`
 
       const init: RequestInit = {
         method: requestSpec.method,
@@ -263,29 +268,19 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
         init.body = JSON.stringify(requestSpec.body)
       }
 
-      return boundFetch(url, init)
-    }
-
-    const fetchHttp = async (requestSpec: HttpRequestSpec): Promise<{ body: unknown; response: Response }> => {
-      // Self-heal a stale/expired access token on THIS request only: on a 401,
-      // refresh the session once (single-flight) and replay just this request.
-      // Retrying per-request — instead of the whole invocation — means a
-      // multi-request transform never re-issues an earlier sub-request that
-      // already mutated state. A 401 is rejected before any server-side write,
-      // so replaying the single failed request is safe.
-      let response = await sendOnce(requestSpec)
-      if (
-        !response.ok &&
-        response.status === 401 &&
-        canAutoRefresh &&
-        (await refreshServerSessionOnce(baseUrl, boundFetch))
-      ) {
-        response = await sendOnce(requestSpec)
-      }
-
+      const response = await fetchImpl(url, init)
       const body = response.ok && requestSpec.responseType === "blob"
         ? await response.blob()
         : await parseResponseBody(response)
+
+      if (response.status === 401 && !retriedAfterRefresh && canAutoRefresh) {
+        const refreshed = await serverAuth.refresh()
+        if (refreshed) {
+          token = refreshed.tokens.accessToken
+          return fetchHttp(requestSpec, true)
+        }
+      }
+
       if (!response.ok) {
         throw httpError(response, body)
       }
@@ -308,33 +303,6 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
     serverBaseUrl: baseUrl,
     invoke,
   }
-}
-
-// Single-flight token refresh: a burst of concurrent 401s (e.g. the inbox
-// firing several requests at once) shares ONE /auth/refresh round-trip instead
-// of stampeding the endpoint. Resolves true when a fresh session was stored.
-let serverSessionRefreshInFlight: Promise<boolean> | null = null
-function refreshServerSessionOnce(baseUrl: string, fetchImpl: FetchLike): Promise<boolean> {
-  if (!serverSessionRefreshInFlight) {
-    serverSessionRefreshInFlight = (async () => {
-      try {
-        const client = createServerAuthClient({
-          baseUrl,
-          device: "simplecrm-renderer",
-          fetchImpl,
-        })
-        const session = await client.refresh()
-        return session !== null
-      } catch {
-        // refresh() clears the stored session on a 401 (refresh token dead);
-        // report failure so the original 401 surfaces and the app re-auths.
-        return false
-      } finally {
-        serverSessionRefreshInFlight = null
-      }
-    })()
-  }
-  return serverSessionRefreshInFlight
 }
 
 function getElectronApi(): ElectronInvokeApi | undefined {

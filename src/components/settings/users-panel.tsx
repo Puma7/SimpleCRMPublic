@@ -3,7 +3,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { AlertCircle, HelpCircle } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
-import { getRendererTransport, invokeRenderer, RendererTransportError } from "@/services/transport"
+import {
+  createServerAuthClient,
+  getRendererTransport,
+  invokeRenderer,
+  RendererTransportError,
+} from "@/services/transport"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -11,8 +24,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
-
-const MIN_PASSWORD_LENGTH = 10
+import { MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 
 type UserRow = {
   id: string
@@ -20,6 +32,9 @@ type UserRow = {
   display_name: string
   role: string
   is_active: number
+  login_pin_enabled?: boolean
+  mfa_enabled?: boolean
+  mfa_method?: "totp" | "email" | null
 }
 
 export function UsersPanel() {
@@ -27,6 +42,7 @@ export function UsersPanel() {
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [password, setPassword] = useState("")
+  const [loginPin, setLoginPin] = useState("")
   const [inviteLink, setInviteLink] = useState("")
   const [inviteDelivery, setInviteDelivery] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -65,10 +81,12 @@ export function UsersPanel() {
         displayName: displayName.trim() || email,
         role: "agent",
         passphrase: password,
+        ...(serverClientMode && loginPin.trim() ? { loginPin: loginPin.trim() } : {}),
       })
       setUsername("")
       setDisplayName("")
       setPassword("")
+      setLoginPin("")
       await load()
     } catch (e) {
       setError(describeUserSaveError(e))
@@ -177,7 +195,7 @@ export function UsersPanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ul className="space-y-1 text-sm">
+        <ul className="space-y-2 text-sm">
           {users.map((u) => (
             <li key={u.id} className="flex flex-col gap-1 border-b py-1.5">
               <div className="flex items-center justify-between gap-2">
@@ -259,6 +277,9 @@ export function UsersPanel() {
                   </span>
                 </div>
               ) : null}
+              {serverClientMode ? (
+                <UserSecurityActions user={u} disabled={busy} onChanged={() => void load()} />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -306,6 +327,23 @@ export function UsersPanel() {
             />
             <PasswordStrengthMeter password={password} strength={strength} />
           </div>
+          {serverClientMode ? (
+            <div className="sm:col-span-2">
+              <Label htmlFor="new-user-login-pin">Login-PIN (optional)</Label>
+              <Input
+                id="new-user-login-pin"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                value={loginPin}
+                onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="6 Ziffern"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Nur noetig, wenn in den Login-Sicherheitseinstellungen das PIN-Tastenfeld aktiviert ist.
+              </p>
+            </div>
+          ) : null}
         </div>
         {error ? (
           <Alert variant="destructive">
@@ -344,6 +382,287 @@ export function UsersPanel() {
 type PasswordStrength = {
   score: 0 | 1 | 2 | 3 | 4
   meetsMinimum: boolean
+}
+
+function UserSecurityActions(props: {
+  user: UserRow
+  disabled?: boolean
+  onChanged: () => void
+}) {
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [totpOpen, setTotpOpen] = useState(false)
+  const [totpSecret, setTotpSecret] = useState("")
+  const [totpUri, setTotpUri] = useState("")
+  const [totpCode, setTotpCode] = useState("")
+  const [pinOpen, setPinOpen] = useState(false)
+  const [pinValue, setPinValue] = useState("")
+
+  function getClient() {
+    const transport = getRendererTransport()
+    if (transport.kind !== "http" || !transport.serverBaseUrl) {
+      throw new Error("Server-Modus ist nicht aktiv")
+    }
+    const session = createServerAuthClient({ baseUrl: transport.serverBaseUrl }).getSession()
+    const accessToken = session?.tokens.accessToken
+    if (!accessToken) throw new Error("Nicht angemeldet")
+    return createServerAuthClient({ baseUrl: transport.serverBaseUrl })
+  }
+
+  async function beginTotp() {
+    setError(null)
+    setBusy(true)
+    try {
+      const client = getClient()
+      const session = client.getSession()
+      const setup = await client.beginUserTotpSetup(session!.tokens.accessToken, props.user.id)
+      setTotpSecret(setup.secret)
+      setTotpUri(setup.otpauthUri)
+      setTotpCode("")
+      setTotpOpen(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Authenticator-Setup fehlgeschlagen")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmTotp() {
+    setError(null)
+    setBusy(true)
+    try {
+      const client = getClient()
+      const session = client.getSession()
+      await client.confirmUserTotpSetup(session!.tokens.accessToken, props.user.id, {
+        secret: totpSecret,
+        code: totpCode.trim(),
+      })
+      setTotpOpen(false)
+      props.onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Authenticator konnte nicht aktiviert werden")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function enableEmailMfa() {
+    setError(null)
+    setBusy(true)
+    try {
+      const client = getClient()
+      const session = client.getSession()
+      await client.enableUserEmailMfa(session!.tokens.accessToken, props.user.id)
+      props.onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "E-Mail-2FA konnte nicht aktiviert werden")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function disableMfa() {
+    setError(null)
+    setBusy(true)
+    try {
+      const client = getClient()
+      const session = client.getSession()
+      await client.disableUserMfa(session!.tokens.accessToken, props.user.id)
+      props.onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "2FA konnte nicht deaktiviert werden")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveLoginPin(nextPin: string | null) {
+    setError(null)
+    setBusy(true)
+    try {
+      await invokeRenderer(IPCChannels.Auth.SaveUser, {
+        id: props.user.id,
+        username: props.user.username,
+        displayName: props.user.display_name,
+        role: props.user.role,
+        is_active: props.user.is_active,
+        loginPin: nextPin ?? "",
+      })
+      setPinOpen(false)
+      setPinValue("")
+      props.onChanged()
+    } catch (e) {
+      setError(describeUserSaveError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const securityBits = [
+    props.user.login_pin_enabled ? "PIN" : null,
+    props.user.mfa_enabled
+      ? props.user.mfa_method === "email"
+        ? "2FA E-Mail"
+        : "2FA App"
+      : null,
+  ].filter(Boolean)
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        Login-Sicherheit: {securityBits.length > 0 ? securityBits.join(", ") : "keine Zusatzfaktoren"}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {props.user.login_pin_enabled ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => void saveLoginPin(null)}
+          >
+            PIN entfernen
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => {
+              setPinValue("")
+              setPinOpen(true)
+            }}
+          >
+            Login-PIN setzen
+          </Button>
+        )}
+        {props.user.login_pin_enabled ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => {
+              setPinValue("")
+              setPinOpen(true)
+            }}
+          >
+            PIN aendern
+          </Button>
+        ) : null}
+        {!props.user.mfa_enabled ? (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={props.disabled || busy}
+              onClick={() => void beginTotp()}
+            >
+              Authenticator einrichten
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={props.disabled || busy}
+              onClick={() => void enableEmailMfa()}
+            >
+              E-Mail-2FA aktivieren
+            </Button>
+          </>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={props.disabled || busy}
+            onClick={() => void disableMfa()}
+          >
+            2FA deaktivieren
+          </Button>
+        )}
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      <Dialog open={pinOpen} onOpenChange={setPinOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Login-PIN {props.user.login_pin_enabled ? "aendern" : "setzen"}</DialogTitle>
+            <DialogDescription>
+              6-stelliger PIN fuer das optionale Login-Tastenfeld. Nur wirksam, wenn die Funktion in den
+              Login-Sicherheitseinstellungen aktiviert ist.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label htmlFor={`login-pin-${props.user.id}`}>6-stelliger PIN</Label>
+            <Input
+              id={`login-pin-${props.user.id}`}
+              inputMode="numeric"
+              maxLength={6}
+              value={pinValue}
+              onChange={(e) => setPinValue(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="123456"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPinOpen(false)}>
+              Abbrechen
+            </Button>
+            <Button
+              type="button"
+              disabled={busy || pinValue.length !== 6}
+              onClick={() => void saveLoginPin(pinValue)}
+            >
+              Speichern
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={totpOpen} onOpenChange={setTotpOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Authenticator einrichten</DialogTitle>
+            <DialogDescription>
+              Secret in der Authenticator-App hinterlegen und den 6-stelligen Code bestaetigen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <div>
+              <Label htmlFor={`totp-secret-${props.user.id}`}>Secret</Label>
+              <Input id={`totp-secret-${props.user.id}`} readOnly value={totpSecret} />
+            </div>
+            <div>
+              <Label htmlFor={`totp-uri-${props.user.id}`}>otpauth-URI</Label>
+              <Input id={`totp-uri-${props.user.id}`} readOnly value={totpUri} />
+            </div>
+            <div>
+              <Label htmlFor={`totp-code-${props.user.id}`}>Bestaetigungscode</Label>
+              <Input
+                id={`totp-code-${props.user.id}`}
+                inputMode="numeric"
+                maxLength={6}
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setTotpOpen(false)}>
+              Abbrechen
+            </Button>
+            <Button
+              type="button"
+              disabled={busy || totpCode.length !== 6}
+              onClick={() => void confirmTotp()}
+            >
+              Aktivieren
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
 }
 
 const STRENGTH_LABELS = ["", "Schwach", "Okay", "Gut", "Stark"] as const

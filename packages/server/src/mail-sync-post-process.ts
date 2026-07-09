@@ -10,12 +10,10 @@ import type { MailSyncJobResult, MailSyncPostProcessPort } from './jobs';
 
 const DEFAULT_POST_SYNC_LIMIT = 250;
 const MAX_POST_SYNC_LIMIT = 1000;
-const INBOUND_WORKFLOW_DELAY_MS = 10_000;
 const REPLY_SUGGESTION_DELAY_MS = 60_000;
 const VACATION_AUTO_REPLY_DELAY_MS = 120_000;
 
 type CandidateMessageRow = Pick<Selectable<EmailMessagesTable>, 'id'>;
-type InboundWorkflowRow = Pick<Selectable<EmailWorkflowsTable>, 'id'>;
 
 export type PostgresMailSyncPostProcessorOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -30,17 +28,10 @@ export function createPostgresMailSyncPostProcessor(
   const limit = normalizeLimit(options.limit);
   return {
     async afterSync(input) {
-      const explicitIds = explicitReplySuggestionMessageIds(input.result);
-      const messageIds = explicitIds.length > 0
-        ? explicitIds.slice(0, limit)
-        : await selectPostSyncInboundMessageIds(options, {
-          workspaceId: input.workspaceId,
-          accountId: input.accountId,
-          syncStartedAt: input.syncStartedAt,
-          limit,
-        });
+      const postSyncMessageIds = await resolvePostSyncMessageIds(options, { ...input, limit });
+      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
 
-      for (const messageId of messageIds) {
+      for (const messageId of spamScoringMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.spam.score',
@@ -50,36 +41,14 @@ export function createPostgresMailSyncPostProcessor(
             ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
             applyStatus: true,
             runSecurityCheck: true,
+            enqueueInboundWorkflows: true,
           },
           maxAttempts: 3,
         });
       }
 
-      const inboundWorkflows = messageIds.length === 0
-        ? []
-        : await selectEnabledInboundWorkflowIds(options, input.workspaceId);
-      const inboundWorkflowRunAfter = new Date(input.syncFinishedAt.getTime() + INBOUND_WORKFLOW_DELAY_MS);
-      for (const messageId of messageIds) {
-        for (const workflow of inboundWorkflows) {
-          await options.jobQueue.enqueue({
-            workspaceId: input.workspaceId,
-            type: 'workflow.execute',
-            payload: {
-              workspaceId: input.workspaceId,
-              workflowId: Number(workflow.id),
-              messageId,
-              ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
-              triggerName: 'inbound',
-              context: { skipIfMessageSpamOrReview: true },
-            },
-            runAfter: inboundWorkflowRunAfter,
-            maxAttempts: 3,
-          });
-        }
-      }
-
       const replySuggestionRunAfter = new Date(input.syncFinishedAt.getTime() + REPLY_SUGGESTION_DELAY_MS);
-      for (const messageId of messageIds) {
+      for (const messageId of postSyncMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'ai.reply_suggestion',
@@ -96,7 +65,7 @@ export function createPostgresMailSyncPostProcessor(
       }
 
       const vacationRunAfter = new Date(input.syncFinishedAt.getTime() + VACATION_AUTO_REPLY_DELAY_MS);
-      for (const messageId of messageIds) {
+      for (const messageId of postSyncMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.vacation.auto_reply',
@@ -111,6 +80,31 @@ export function createPostgresMailSyncPostProcessor(
       }
     },
   };
+}
+
+function inboundSpamScoringMessageIds(result: MailSyncJobResult | null): number[] {
+  if (!result) return [];
+  return uniquePositiveIds(result.inboundMessageIds ?? []);
+}
+
+async function resolvePostSyncMessageIds(
+  options: PostgresMailSyncPostProcessorOptions,
+  input: {
+    workspaceId: string;
+    accountId: number;
+    syncStartedAt: Date;
+    result: MailSyncJobResult | null;
+    limit: number;
+  },
+): Promise<number[]> {
+  const explicitIds = explicitReplySuggestionMessageIds(input.result);
+  if (explicitIds.length > 0) return explicitIds.slice(0, input.limit);
+  return selectPostSyncInboundMessageIds(options, {
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    syncStartedAt: input.syncStartedAt,
+    limit: input.limit,
+  });
 }
 
 function explicitReplySuggestionMessageIds(result: MailSyncJobResult | null): number[] {
@@ -148,26 +142,6 @@ async function selectPostSyncInboundMessageIds(
     { applySession: options.applyWorkspaceSession },
   );
   return uniquePositiveIds(rows.map((row) => Number(row.id)));
-}
-
-async function selectEnabledInboundWorkflowIds(
-  options: PostgresMailSyncPostProcessorOptions,
-  workspaceId: string,
-): Promise<InboundWorkflowRow[]> {
-  return withWorkspaceTransaction(
-    options.db,
-    { workspaceId, role: 'system' },
-    async (trx) => trx
-      .selectFrom('email_workflows')
-      .select(['id'])
-      .where('workspace_id', '=', workspaceId)
-      .where('trigger_name', '=', 'inbound')
-      .where('enabled', '=', true)
-      .orderBy('priority', 'asc')
-      .orderBy('id', 'asc')
-      .execute() as Promise<InboundWorkflowRow[]>,
-    { applySession: options.applyWorkspaceSession },
-  );
 }
 
 function uniquePositiveIds(values: readonly unknown[]): number[] {

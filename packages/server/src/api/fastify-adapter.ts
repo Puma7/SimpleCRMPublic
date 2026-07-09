@@ -12,6 +12,7 @@ import {
   verifyAccessToken,
   type AccessTokenSigner,
 } from '../security';
+import { checkApiRateLimit } from '../security/api-rate-limit';
 import type {
   ApiRequest,
   AuthenticatedPrincipal,
@@ -79,6 +80,23 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     if (request.method === 'OPTIONS') {
       done();
       return;
+    }
+    const path = request.url.split('?')[0] ?? request.url;
+    if (path.startsWith('/api/v1/')) {
+      const rate = checkApiRateLimit({
+        ip: request.ip ?? '0.0.0.0',
+        path,
+      });
+      if (!rate.allowed) {
+        reply.code(429).send({
+          error: {
+            code: 'rate_limited',
+            message: 'Zu viele Anfragen',
+            details: { limit: rate.limit, bucket: rate.bucket },
+          },
+        });
+        return;
+      }
     }
     if (!applyCorsHeaders(request, reply, corsAllowedOrigins)) {
       reply.code(403).send({

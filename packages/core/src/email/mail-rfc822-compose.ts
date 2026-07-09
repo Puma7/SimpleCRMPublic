@@ -33,21 +33,7 @@ export function encodeRfc2047(text: string): string {
 export function encodeMailboxListHeader(value: string): string {
   const trimmed = sanitizeHeaderValue(value);
   if (!trimmed) return trimmed;
-  const parts: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i]!;
-    if (ch === '"') inQuotes = !inQuotes;
-    if (ch === ',' && !inQuotes) {
-      parts.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += ch;
-  }
-  if (current.trim()) parts.push(current.trim());
-  return parts.map(encodeSingleMailbox).join(', ');
+  return splitMailboxList(trimmed).map(encodeSingleMailbox).join(', ');
 }
 
 /** Rough upper bound for RFC822 size (base64 overhead on attachments + headers). */
@@ -223,6 +209,65 @@ function sanitizeHeaderValue(value: string): string {
   return value.replace(/[\r\n]+/g, ' ').trim();
 }
 
+function splitMailboxList(value: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let angleDepth = 0;
+
+  const flushIfComplete = (): void => {
+    const trimmed = current.trim();
+    if (!trimmed) {
+      current = '';
+      return;
+    }
+    if (isCompleteMailboxToken(trimmed)) {
+      parts.push(trimmed);
+      current = '';
+    }
+  };
+
+  // RFC 5322 quoted-pair: a backslash escapes the next character, but ONLY inside
+  // a quoted-string. Tracking this explicitly (rather than peeking at value[i-1])
+  // is what makes `\\"` close the quote — the backslash is itself escaped, so the
+  // quote is real. The old `value[i-1] !== '\\'` heuristic mis-read that and could
+  // leave inQuotes stuck on, swallowing the next mailbox in the list.
+  let escaped = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    if (escaped) {
+      escaped = false;
+      current += ch;
+      continue;
+    }
+    if (inQuotes && ch === '\\') {
+      escaped = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (!inQuotes) {
+      if (ch === '<') angleDepth += 1;
+      else if (ch === '>' && angleDepth > 0) angleDepth -= 1;
+    }
+    if (ch === ',' && !inQuotes && angleDepth === 0) {
+      flushIfComplete();
+      if (current) current += ch;
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function isCompleteMailboxToken(value: string): boolean {
+  const angleMatch = /<([^>]+)>\s*$/.exec(value);
+  if (angleMatch?.[1]) return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(angleMatch[1].trim());
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value.trim());
+}
+
 function encodeSingleMailbox(mailbox: string): string {
   const match = /^(?:"([^"]*)"|([^<]*?))\s*<([^>]+)>$/.exec(mailbox);
   if (!match) return mailbox;
@@ -231,9 +276,25 @@ function encodeSingleMailbox(mailbox: string): string {
   if (!rawName) return `<${email}>`;
   const encoded = encodeRfc2047(rawName);
   if (encoded === rawName) {
-    return /[,;"]/.test(rawName) ? `"${rawName.replace(/"/g, '\\"')}" <${email}>` : `${rawName} <${email}>`;
+    // Pure-ASCII display name. RFC 5322 lets it appear unquoted only if every
+    // character is "atext" (or a separating space). Anything else — @ . , ; :
+    // < > ( ) [ ] \ " etc. — must be a quoted-string, or strict relays (IONOS,
+    // …) reject the whole From header as syntactically invalid. A display name
+    // that equals the e-mail address (contains '@') is the common trigger.
+    return displayNameIsAtomSafe(rawName)
+      ? `${rawName} <${email}>`
+      : `"${rawName.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" <${email}>`;
   }
   return `${encoded} <${email}>`;
+}
+
+/**
+ * True when a pure-ASCII display name may appear unquoted in an RFC 5322
+ * mailbox (a phrase of space-separated atoms). atext is ALPHA / DIGIT plus
+ * ! # $ % & ' * + - / = ? ^ _ ` { | } ~ ; everything else needs quoting.
+ */
+function displayNameIsAtomSafe(name: string): boolean {
+  return /^[A-Za-z0-9 !#$%&'*+/=?^_`{|}~-]+$/.test(name);
 }
 
 function sanitizeFilename(filename: string): string {

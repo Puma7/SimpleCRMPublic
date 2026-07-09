@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
 import { RestoreWizardPanel } from "./restore-wizard-panel"
 import { ServerLogsSection } from "./server-logs-section"
+import { ArchiveRecoverySection } from "./archive-recovery-section"
 import { Button } from "@/components/ui/button"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import { invokeIpc } from "../types"
@@ -52,6 +53,21 @@ type DiagnosticsReport = {
     protocol: string
     inboxLastSyncedAt: string | null
   }[]
+  jobQueue?: {
+    ready: number
+    locked: number
+    lagSeconds: number
+    oldestLockedSeconds: number | null
+    samples: Array<{
+      id: number
+      type: string
+      attempts: number
+      maxAttempts: number
+      lockedBy: string | null
+      lockedSeconds: number | null
+      lastError: string | null
+    }>
+  }
 }
 
 function formatUsd(microUsd: number): string {
@@ -225,7 +241,9 @@ export function DiagnosticsPanel() {
 
       {localBackupAvailable ? <RestoreWizardPanel /> : null}
 
-      {serverClientMode ? <ServerLogsSection /> : null}
+      <ArchiveRecoverySection />
+
+      <ServerLogsSection desktopMode={!serverClientMode} />
 
       {!report && !loading ? (
         <p className="text-sm text-muted-foreground">Keine Diagnosedaten.</p>
@@ -252,9 +270,18 @@ export function DiagnosticsPanel() {
               <li>Gesamt: {report.messages.total}</li>
               <li>Post-Process ausstehend: {report.messages.pendingPostProcess}</li>
               <li>Outbound-Hold: {report.messages.outboundHold}</li>
+              {Object.keys(report.messages.byFolderKind).length > 0 ? (
+                <li>
+                  Nach Ordnerart:{" "}
+                  {Object.entries(report.messages.byFolderKind)
+                    .map(([kind, count]) => `${kind}: ${count}`)
+                    .join(", ")}
+                </li>
+              ) : null}
             </ul>
           </section>
 
+          {!serverClientMode ? (
           <section>
             <h4 className="font-medium">Sync (Hintergrund)</h4>
             <ul className="mt-1 list-inside list-disc text-muted-foreground">
@@ -272,6 +299,12 @@ export function DiagnosticsPanel() {
               </li>
             </ul>
           </section>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Hintergrund-Sync-Details (Cron, IMAP IDLE) sind im Server-Modus auf dem Server — siehe
+              Server-Logs (Filter „Info“, Quelle job-worker).
+            </p>
+          )}
 
           <section>
             <h4 className="font-medium">Hinweise</h4>
@@ -280,6 +313,41 @@ export function DiagnosticsPanel() {
               <li>UIDVALIDITY: {report.notices.uidValidity}</li>
             </ul>
           </section>
+
+          {report.jobQueue ? (
+            <section>
+              <h4 className="font-medium">Job-Warteschlange (legacy job_queue)</h4>
+              <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                <li>Bereit: {report.jobQueue.ready}</li>
+                <li>Gesperrt (läuft): {report.jobQueue.locked}</li>
+                <li>Verzögerung: {report.jobQueue.lagSeconds}s</li>
+                {report.jobQueue.oldestLockedSeconds != null ? (
+                  <li>Älteste Sperre: {report.jobQueue.oldestLockedSeconds}s</li>
+                ) : null}
+              </ul>
+              {report.jobQueue.samples.length > 0 ? (
+                <div className="mt-2 overflow-auto rounded border bg-background/60 p-2 font-mono text-[11px]">
+                  {report.jobQueue.samples.map((job) => (
+                    <div key={job.id} className="border-b py-1 last:border-b-0">
+                      <div>
+                        #{job.id} {job.type} · Versuch {job.attempts}/{job.maxAttempts}
+                        {job.lockedBy ? ` · Worker ${job.lockedBy}` : ""}
+                        {job.lockedSeconds != null ? ` · ${job.lockedSeconds}s gesperrt` : ""}
+                      </div>
+                      {job.lastError ? (
+                        <div className="text-destructive">{job.lastError}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">Keine wartenden oder gesperrten Jobs.</p>
+              )}
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Workflow-Nebeneffekte (Weiterleiten, HTTP, KI) laufen über job_queue — Details auch unter Server-Logs (Filter „Alle“, Quelle job-worker).
+              </p>
+            </section>
+          ) : null}
 
           <section>
             <h4 className="font-medium">Workflows (24 h)</h4>
@@ -314,6 +382,11 @@ export function DiagnosticsPanel() {
 
           <section>
             <h4 className="font-medium">KI-Nutzung & Kosten</h4>
+            {report.aiUsage.events24h === 0 && report.aiUsage.events30d === 0 && !serverClientMode ? (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                Desktop: KI-Nutzungsstatistik kann fehlen, wenn kein Usage-Collector aktiv ist.
+              </p>
+            ) : null}
             <ul className="mt-1 list-inside list-disc text-muted-foreground">
               <li>
                 24 h: {report.aiUsage.events24h} Aufrufe · {report.aiUsage.tokens24h.toLocaleString("de-DE")} Tokens ·{" "}

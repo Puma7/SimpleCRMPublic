@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { toast } from "sonner"
 import { invokeRenderer } from "@/services/transport"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 
@@ -35,16 +36,23 @@ type Props = {
 export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Props) {
   const { labelByType } = useWorkflowNodeCatalog()
   const [steps, setSteps] = useState<StepRow[]>([])
+  const [runLog, setRunLog] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
     if (runId == null || !open) return
     setLoading(true)
     try {
-      const s = await invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as StepRow[]
-      setSteps(s ?? [])
-    } catch {
+      const [stepsResult, logResult] = await Promise.all([
+        invokeRenderer(IPCChannels.Email.ListWorkflowRunSteps, runId) as Promise<StepRow[]>,
+        invokeRenderer(IPCChannels.Email.GetWorkflowRunLog, runId) as Promise<string[]>,
+      ])
+      setSteps(stepsResult ?? [])
+      setRunLog(Array.isArray(logResult) ? logResult : [])
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Workflow-Details konnten nicht geladen werden.")
       setSteps([])
+      setRunLog([])
     } finally {
       setLoading(false)
     }
@@ -60,33 +68,47 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
         <DialogHeader>
           <DialogTitle>{title ?? `Workflow-Lauf #${runId ?? "—"}`}</DialogTitle>
           <DialogDescription>
-            Schritte und Meldungen aus der letzten Ausführung.
+            Schritte, Lauf-Log und Meldungen aus der letzten Ausführung.
           </DialogDescription>
         </DialogHeader>
         {loading ? (
           <div className="flex justify-center py-8">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
-        ) : steps.length === 0 ? (
+        ) : steps.length === 0 && runLog.length === 0 ? (
           <p className="text-sm text-muted-foreground">Keine Schritte protokolliert.</p>
         ) : (
           <ScrollArea className="max-h-[50vh] pr-3">
-            <ul className="space-y-2 text-xs">
-              {steps.map((s) => (
-                <li key={s.id} className="rounded-md border bg-muted/30 px-3 py-2">
-                  <div className="font-medium">
-                    {resolveRegistryNodeLabel(s.node_type, labelByType)}
-                    <span className="ml-2 text-muted-foreground">({s.status})</span>
-                  </div>
-                  {s.message ? (
-                    <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{s.message}</p>
-                  ) : null}
-                  <p className="mt-0.5 text-[10px] text-muted-foreground">
-                    {s.duration_ms} ms{s.port ? ` · Port ${s.port}` : ""}
-                  </p>
-                </li>
-              ))}
-            </ul>
+            {runLog.length > 0 ? (
+              <div className="mb-3 rounded-md border bg-muted/20 p-3">
+                <p className="mb-1 text-xs font-medium">Lauf-Log</p>
+                <ul className="space-y-0.5 font-mono text-[11px] text-muted-foreground">
+                  {runLog.map((line, index) => (
+                    <li key={`${index}-${line}`} className="whitespace-pre-wrap break-all">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {steps.length > 0 ? (
+              <ul className="space-y-2 text-xs">
+                {steps.map((s) => (
+                  <li key={s.id} className="rounded-md border bg-muted/30 px-3 py-2">
+                    <div className="font-medium">
+                      {resolveRegistryNodeLabel(s.node_type, labelByType)}
+                      <span className="ml-2 text-muted-foreground">({s.status})</span>
+                    </div>
+                    {s.message ? (
+                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{s.message}</p>
+                    ) : null}
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {s.duration_ms} ms{s.port ? ` · Port ${s.port}` : ""}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </ScrollArea>
         )}
       </DialogContent>

@@ -3,11 +3,15 @@
 import { cn } from "@/lib/utils"
 import { useMailWorkspace, type MessageListFilter } from "./workspace-context"
 
-const CHIPS: { id: MessageListFilter; label: string }[] = [
+const CHIPS: { id: MessageListFilter; label: string; title?: string }[] = [
   { id: "all", label: "Alle" },
   { id: "unread", label: "Ungelesen" },
   { id: "attachment", label: "Mit Anhang" },
-  { id: "customer", label: "Vom Kunden" },
+  {
+    id: "customer",
+    label: "Kundenverknüpft",
+    title: "Zeigt Mails, die bereits einem CRM-Kunden zugeordnet sind.",
+  },
   { id: "workflow", label: "Workflow betroffen" },
 ]
 
@@ -20,6 +24,8 @@ export function MessageFilterChips({ className }: { className?: string }) {
         <button
           key={chip.id}
           type="button"
+          aria-label={`Filter: ${chip.label}`}
+          title={chip.title}
           onClick={() => setMessageListFilter(chip.id)}
           className={cn(
             "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",

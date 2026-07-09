@@ -13,6 +13,16 @@ export function setMessageSnoozedUntil(messageId: number, untilIso: string | nul
 }
 
 export function setDraftScheduledSendAt(messageId: number, atIso: string | null): void {
+  if (atIso) {
+    getDb()
+      .prepare(
+        `UPDATE ${EMAIL_MESSAGES_TABLE}
+         SET scheduled_send_at = ?, outbound_hold = 0, outbound_block_reason = NULL
+         WHERE id = ?`,
+      )
+      .run(atIso, messageId);
+    return;
+  }
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET scheduled_send_at = ? WHERE id = ?`)
     .run(atIso, messageId);

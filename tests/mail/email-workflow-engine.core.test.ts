@@ -16,6 +16,8 @@ const mockListAiPrompts = jest.fn(() => [] as { id: number; label: string; user_
 const mockListWorkflowsByTrigger = jest.fn(() => [] as { id: number; name: string; trigger: string; enabled: number }[]);
 const mockWasWorkflowAppliedToMessage = jest.fn(() => false);
 const mockMarkWorkflowAppliedToMessage = jest.fn();
+const mockTryClaimInboundWorkflowForMessage = jest.fn(() => true);
+const mockReleaseInboundWorkflowClaim = jest.fn();
 const mockInsertWorkflowRun = jest.fn();
 const mockGetWorkflowById = jest.fn();
 
@@ -28,6 +30,7 @@ const mockMaybeSendVacationAutoReply = jest.fn();
 const mockReturnOutboundDraftToInbox = jest.fn();
 const mockSyncInboxPop3 = jest.fn();
 const mockSyncInboxImap = jest.fn();
+const mockTryOutboundApprovalBypass = jest.fn(() => false);
 
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...args: unknown[]) => mockGetEmailMessageById(...args),
@@ -49,6 +52,8 @@ jest.mock('../../electron/email/email-workflow-store', () => ({
   listWorkflowsByTrigger: (...args: unknown[]) => mockListWorkflowsByTrigger(...args),
   wasWorkflowAppliedToMessage: (...args: unknown[]) => mockWasWorkflowAppliedToMessage(...args),
   markWorkflowAppliedToMessage: (...args: unknown[]) => mockMarkWorkflowAppliedToMessage(...args),
+  tryClaimInboundWorkflowForMessage: (...args: unknown[]) => mockTryClaimInboundWorkflowForMessage(...args),
+  releaseInboundWorkflowClaim: (...args: unknown[]) => mockReleaseInboundWorkflowClaim(...args),
   insertWorkflowRun: (...args: unknown[]) => mockInsertWorkflowRun(...args),
   getWorkflowById: (...args: unknown[]) => mockGetWorkflowById(...args),
 }));
@@ -79,6 +84,13 @@ jest.mock('../../electron/email/email-vacation', () => ({
 
 jest.mock('../../electron/email/email-outbound-review', () => ({
   returnOutboundDraftToInbox: (...args: unknown[]) => mockReturnOutboundDraftToInbox(...args),
+}));
+
+jest.mock('../../electron/email/outbound-approval', () => ({
+  tryOutboundApprovalBypass: (...args: unknown[]) => mockTryOutboundApprovalBypass(...args),
+  stampOutboundApprovalMarker: jest.fn(),
+  clearOutboundApprovalMarker: jest.fn(),
+  outboundReviewApprovedKey: (draftId: number) => `outbound_review_approved:${draftId}`,
 }));
 
 jest.mock('../../electron/email/email-pop3-sync', () => ({
@@ -172,6 +184,8 @@ describe('email-workflow-engine core', () => {
     mockRunChatCompletion.mockResolvedValue('OK');
     mockSyncInboxPop3.mockResolvedValue({ fetched: 2 });
     mockSyncInboxImap.mockResolvedValue({ fetched: 3 });
+    mockTryOutboundApprovalBypass.mockReturnValue(false);
+    mockGetEmailAccountById.mockReturnValue({ id: 1, protocol: 'imap', imap_sync_seen_on_open: 1 });
   });
 
   describe('outboundPayloadFromMessage', () => {
@@ -179,6 +193,7 @@ describe('email-workflow-engine core', () => {
       const row = draftRow();
       expect(outboundPayloadFromMessage(row, { attachmentCount: 2 })).toEqual({
         messageId: 10,
+        accountId: 1,
         subject: 'Subject',
         bodyText: 'Hello body',
         bodyHtml: '<p>Hello</p>',
@@ -228,14 +243,14 @@ describe('email-workflow-engine core', () => {
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
       expect(log).toContain('rule_matched');
       expect(mockAddMessageTag).toHaveBeenCalledWith(42, 'Amazon');
-      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true);
+      expect(mockSetMessageSeenLocal).toHaveBeenCalledWith(42, true, true);
       expect(mockSetMessageArchived).toHaveBeenCalledWith(42, true);
       expect(mockAssignCategoryPathToMessage).toHaveBeenCalledWith(42, 'Shop/Amazon');
       expect(mockTryLinkMessageToCustomer).toHaveBeenCalledWith(42);
       expect(log).toContain('stop');
     });
 
-    test('skips unconditional rules without stop', async () => {
+    test('skips unconditional compiled inbound side-effect rules fail-closed', async () => {
       const msg = inboundRow();
       const def: WorkflowDefinitionV1 = {
         version: 1,
@@ -243,7 +258,7 @@ describe('email-workflow-engine core', () => {
       };
       const log = await runCompiledInboundRules(def, msg.id, msg, 1);
       expect(log).toContain('skip_rule:unconditional');
-      expect(mockAddMessageTag).not.toHaveBeenCalled();
+      expect(mockAddMessageTag).not.toHaveBeenCalledWith(42, 'X');
     });
 
     test('hold_outbound inbound and unknown step default', async () => {
@@ -416,11 +431,12 @@ describe('email-workflow-engine core', () => {
     });
 
     test('allows when workflows pass', async () => {
-      const row = draftRow();
+      const row = draftRow({ account_id: 9 });
       mockGetEmailMessageById.mockReturnValue(row);
       mockListWorkflowsByTrigger.mockReturnValue([{ id: 1, name: 'W', trigger: 'outbound', enabled: 1 }]);
       const r = await evaluateOutboundWorkflows(outboundPayloadFromMessage(row));
       expect(r).toEqual({ allowed: true, reason: null, workflowRunId: null });
+      expect(mockListWorkflowsByTrigger).toHaveBeenCalledWith('outbound', 9);
       expect(mockSetOutboundHold).toHaveBeenCalledWith(10, false, null);
     });
 
@@ -503,20 +519,41 @@ describe('email-workflow-engine core', () => {
       expect(mockExecuteWorkflowForTrigger).not.toHaveBeenCalled();
     });
 
-    test('runs workflows and marks applied', async () => {
+    test('runs workflows and claims applied slot', async () => {
+      const row = inboundRow({ account_id: 7 });
+      const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
+      mockListWorkflowsByTrigger.mockReturnValue([wf]);
+      mockGetEmailMessageById.mockReturnValue(row);
+      await runInboundWorkflowsForMessage(row.id, { row, appliedWorkflowIds: new Set() });
+      expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
+      expect(mockListWorkflowsByTrigger).toHaveBeenCalledWith('inbound', 7);
+      expect(mockTryClaimInboundWorkflowForMessage).toHaveBeenCalledWith(row.id, 3);
+      expect(mockMarkWorkflowAppliedToMessage).not.toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).toHaveBeenCalled();
+    });
+
+    test('skips post-steps when an inbound workflow defers on delay', async () => {
       const row = inboundRow();
       const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
       mockListWorkflowsByTrigger.mockReturnValue([wf]);
       mockGetEmailMessageById.mockReturnValue(row);
+      mockExecuteWorkflowForTrigger.mockResolvedValueOnce({
+        runId: 1,
+        status: 'ok',
+        log: ['delayed'],
+        blocked: false,
+        blockReason: null,
+        deferred: true,
+      });
       await runInboundWorkflowsForMessage(row.id, {
         row,
         inboundWorkflows: [wf],
         appliedWorkflowIds: new Set(),
       });
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
-      expect(mockMarkWorkflowAppliedToMessage).toHaveBeenCalledWith(row.id, 3);
-      expect(mockEnsureReplySuggestion).toHaveBeenCalled();
-      expect(mockMaybeSendVacationAutoReply).toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
     });
 
     test('skips applied workflows and records executor errors', async () => {
@@ -545,14 +582,15 @@ describe('email-workflow-engine core', () => {
     });
 
     test('runs draft_created workflows', async () => {
-      const row = draftRow();
+      const row = draftRow({ account_id: 8 });
       mockGetEmailMessageById.mockReturnValue(row);
       mockListWorkflowsByTrigger.mockReturnValue([{ id: 4, name: 'D', trigger: 'draft_created', enabled: 1 }]);
       await runDraftCreatedWorkflowsForMessage(row.id);
+      expect(mockListWorkflowsByTrigger).toHaveBeenCalledWith('draft_created', 8);
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalledWith(
         expect.objectContaining({ trigger: 'draft_created', direction: 'draft_created' }),
       );
-      expect(mockMarkWorkflowAppliedToMessage).toHaveBeenCalledWith(row.id, 4);
+      expect(mockTryClaimInboundWorkflowForMessage).toHaveBeenCalledWith(row.id, 4);
     });
 
     test('records errors from draft_created executor', async () => {

@@ -238,8 +238,15 @@ describe('server edition repository boundaries', () => {
     expect(restore).toContain('checksum mismatch for $file_name');
     expect(restore).toContain('PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"');
     expect(restore).toContain('pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner');
-    expect(restore).toContain('tar -C "$ATTACHMENTS_DIR" -xf "$ATTACHMENTS_ARCHIVE"');
-    expect(restore).toContain('tar -C "$AUDIT_ARCHIVE_DIR" -xf "$AUDIT_ARCHIVE"');
+    expect(restore).toContain('validate_tar_archive "$ATTACHMENTS_ARCHIVE"');
+    expect(restore).toContain('validate_tar_archive "$AUDIT_ARCHIVE"');
+    expect(restore).toContain('if ($1 !~ /^[-d]/)');
+    expect(restore.indexOf('validate_tar_archive "$ATTACHMENTS_ARCHIVE"')).toBeLessThan(
+      restore.indexOf('pg_restore --clean --if-exists --no-owner'),
+    );
+    expect(restore).toContain('unsafe tar entry');
+    expect(restore).toContain('tar -C "$ATTACHMENTS_DIR" --no-same-owner --no-same-permissions -xf "$ATTACHMENTS_ARCHIVE"');
+    expect(restore).toContain('tar -C "$AUDIT_ARCHIVE_DIR" --no-same-owner --no-same-permissions -xf "$AUDIT_ARCHIVE"');
     expect(restoreCompose).toContain('compose stop caddy api');
     expect(restoreCompose).toContain('compose --profile restore run --rm restore');
     expect(restoreCompose).toContain('compose run --rm migrate');
@@ -2132,6 +2139,9 @@ describe('server edition repository boundaries', () => {
       port: 0,
       logger: false,
       databaseUrl: 'postgres://simplecrm@postgres/simplecrm',
+      env: {
+        DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+      },
     })).rejects.toThrow('ACCESS_TOKEN_SECRET');
 
     await expect(startServer({
@@ -2143,6 +2153,7 @@ describe('server edition repository boundaries', () => {
         keyId: 'test',
         secret: Buffer.alloc(32, 12),
       },
+      env: {},
     })).rejects.toThrow('DATABASE_URL');
   });
 

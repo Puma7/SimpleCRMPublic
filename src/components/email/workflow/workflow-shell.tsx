@@ -66,6 +66,11 @@ import { invokeIpc } from "../types"
 import { useHasElectron } from "../use-has-electron"
 import { logError } from "../log"
 import { WorkflowList, type WorkflowRow } from "./workflow-list"
+import {
+  AccountScopeToolbar,
+  listPayloadForScope,
+  type AccountScopeValue,
+} from "../settings/account-scope-toolbar"
 import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
 import { JsonDevDrawer } from "./json-dev-drawer"
@@ -166,6 +171,7 @@ export function WorkflowShell() {
   const [triggerFilter, setTriggerFilter] = useState<
     "all" | "inbound" | "outbound" | "other"
   >("all")
+  const [accountScope, setAccountScope] = useState<AccountScopeValue>("all")
   const browserImportInputRef = useRef<HTMLInputElement | null>(null)
 
   const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
@@ -193,7 +199,10 @@ export function WorkflowShell() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const list = await invokeRenderer(IPCChannels.Email.ListWorkflows) as FullWorkflowRow[]
+      const list = await invokeRenderer(
+        IPCChannels.Email.ListWorkflows,
+        listPayloadForScope(accountScope),
+      ) as FullWorkflowRow[]
       setRows(list)
       const acc = await invokeRenderer(IPCChannels.Email.ListAccounts) as AccountOpt[]
       setAccounts(acc.map((a) => ({ id: a.id, display_name: a.display_name })))
@@ -203,7 +212,7 @@ export function WorkflowShell() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [accountScope])
 
   useEffect(() => {
     void load()
@@ -866,6 +875,16 @@ export function WorkflowShell() {
               maxSize="30%"
             >
               <div className="flex h-full min-h-0 flex-col">
+                <div className="shrink-0 border-b p-2">
+                  <AccountScopeToolbar
+                    value={accountScope}
+                    onChange={(next) => {
+                      setAccountScope(next)
+                      setSelectedId(null)
+                    }}
+                    description="Zeigt globale Workflows plus konto-spezifische Overrides."
+                  />
+                </div>
                 <div className="flex shrink-0 gap-1 border-b p-2">
                   {(
                     [

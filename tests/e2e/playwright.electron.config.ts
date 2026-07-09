@@ -9,6 +9,7 @@ export default defineConfig({
     'edit-flows.spec.ts',
     'followup-calendar-customfields.spec.ts',
     'remaining-flows.spec.ts',
+    'workflow-parity-manual.spec.ts',
   ],
   timeout: 120_000,
   // One worker: Electron files share the same SQLite database on disk,

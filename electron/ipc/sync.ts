@@ -4,6 +4,8 @@ import { registerIpcHandler } from './register';
 import { runSync, getLastSyncStatus } from '../sync-service';
 import { readSyncInfo, writeSyncInfo } from '../sync-info-store';
 
+const ADMIN_IPC_ROLES = ['owner', 'admin'] as const;
+
 interface SyncHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   getMainWindow: () => BrowserWindow | null;
@@ -23,7 +25,7 @@ export function registerSyncHandlers(options: SyncHandlersOptions) {
       logger.error('IPC Error running sync:', error);
       return { success: false, error: (error as Error).message };
     }
-  }, { logger }));
+  }, { logger, requireRole: [...ADMIN_IPC_ROLES] }));
 
   disposers.push(registerIpcHandler(IPCChannels.Sync.GetStatus, async () => {
     try {
@@ -52,7 +54,7 @@ export function registerSyncHandlers(options: SyncHandlersOptions) {
       logger.error('IPC Error setting sync info:', error);
       return { success: false, error: (error as Error).message };
     }
-  }, { logger }));
+  }, { logger, requireRole: [...ADMIN_IPC_ROLES] }));
 
   return () => {
     disposers.forEach((dispose) => dispose());

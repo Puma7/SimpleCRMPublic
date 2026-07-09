@@ -78,6 +78,7 @@ describe('server auth client', () => {
       email: 'owner@example.com',
       password: 'new-passphrase',
       displayName: 'Owner',
+      setupToken: 'setup-token-secret',
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -89,6 +90,7 @@ describe('server auth client', () => {
           password: 'new-passphrase',
           displayName: 'Owner',
           workspaceName: 'SimpleCRM',
+          initialSetupToken: 'setup-token-secret',
           device: 'desktop-test',
         }),
       }),
@@ -232,6 +234,35 @@ describe('server auth client', () => {
     expect(session?.user.displayName).toBe('Owner Rotated');
     expect(readServerAuthSession(persistent)?.tokens.accessToken).toBe('access-new');
     expect(volatile.getItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)).toBe('access-new');
+  });
+
+  test('does not send JSON content-type for bodyless TOTP setup requests', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        secret: 'JBSWY3DPEHPK3PXP',
+        otpauthUri: 'otpauth://totp/SimpleCRM:owner@example.com?secret=JBSWY3DPEHPK3PXP',
+      },
+    }));
+    const client = createServerAuthClient({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(client.beginUserTotpSetup('access-totp', 'user-1')).resolves.toEqual({
+      secret: 'JBSWY3DPEHPK3PXP',
+      otpauthUri: 'otpauth://totp/SimpleCRM:owner@example.com?secret=JBSWY3DPEHPK3PXP',
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/auth/users/user-1/mfa/totp/setup',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: 'Bearer access-totp',
+        },
+      }),
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]).not.toHaveProperty('body');
   });
 
   test('logout sends refresh token with bearer token and clears session', async () => {

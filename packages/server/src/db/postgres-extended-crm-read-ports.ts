@@ -641,7 +641,11 @@ export function createPostgresCustomerCustomFieldValueReadPort(
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
-          if (input.customerId !== undefined) query = query.where('customer_id', '=', input.customerId);
+          if (input.customerIds !== undefined && input.customerIds.length > 0) {
+            query = query.where('customer_id', 'in', input.customerIds);
+          } else if (input.customerId !== undefined) {
+            query = query.where('customer_id', '=', input.customerId);
+          }
           if (input.fieldId !== undefined) query = query.where('field_id', '=', input.fieldId);
           const search = input.search?.trim();
           if (search) query = query.where('value', 'ilike', `%${search}%`);

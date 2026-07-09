@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import DOMPurify from "dompurify"
 import {
   blockRemoteImagesInHtml,
@@ -65,11 +65,15 @@ import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   firstAddress,
+  formatFrom,
+  formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
   type ConversationLockRecord,
+  type EmailAccount,
   type EmailMessage,
   type InternalNote,
   type MessageAttachment,
@@ -94,6 +98,7 @@ import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 
 type Props = {
+  accounts: EmailAccount[]
   teamMembers: TeamMember[]
   messageTags: string[]
   internalNotes: InternalNote[]
@@ -106,11 +111,13 @@ type Props = {
     advanceFromRemovedId?: number
   }) => void | Promise<void>
   advanceSelectionAfterMessageRemoved: (removedId: number) => void | Promise<void>
+  patchMessageInList?: (messageId: number, partial: Partial<EmailMessage>) => void
   categories: CategoryRow[]
   reloadTags: () => void | Promise<void>
   onReply: (m: EmailMessage, initialReplyHtml?: string) => void
   onReplyAll: (m: EmailMessage, initialReplyHtml?: string) => void
   onForward: (m: EmailMessage) => void
+  onOpenMessage?: (m: EmailMessage) => void | Promise<void>
   /** Beta layout: Metadaten in eigener Spalte. */
   metadataPlacement?: "inline" | "external"
   remoteContentPolicyRefreshKey?: number
@@ -181,8 +188,36 @@ function safeEmlFileName(message: EmailMessage): string {
   return `${safeBase || `message-${message.id}`}.eml`
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function recipientSummary(raw: string | null | undefined): string {
+  if (!raw?.trim()) return ""
+  try {
+    const parsed = JSON.parse(raw) as { value?: { name?: string; address?: string }[] }
+    return (parsed.value ?? [])
+      .map((v) => {
+        const name = (v.name ?? "").trim()
+        const address = (v.address ?? "").trim()
+        if (name && address) return `${name} <${address}>`
+        return address || name
+      })
+      .filter(Boolean)
+      .join(", ")
+  } catch {
+    return raw
+  }
+}
+
 export function MessageViewer(props: Props) {
   const {
+    accounts,
     teamMembers,
     messageTags,
     internalNotes,
@@ -193,9 +228,11 @@ export function MessageViewer(props: Props) {
     refreshCurrentMessage,
     refreshList,
     advanceSelectionAfterMessageRemoved,
+    patchMessageInList,
     onReply,
     onReplyAll,
     onForward,
+    onOpenMessage,
     metadataPlacement = "inline",
     remoteContentPolicyRefreshKey = 0,
   } = props
@@ -238,6 +275,34 @@ export function MessageViewer(props: Props) {
   const selectedLockOwner = selectedLock ? lockOwnerLabel(selectedLock) : ""
   const lockedByOther = Boolean(selectedLock && user?.id && selectedLock.userId !== user.id)
   const canTakeoverLock = lockedByOther && (user?.role === "owner" || user?.role === "admin")
+  const hydratedBodyForIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!selectedMessage?.id) {
+      hydratedBodyForIdRef.current = null
+      return
+    }
+    if (!needsFullMessageBody(selectedMessage)) {
+      hydratedBodyForIdRef.current = selectedMessage.id
+      return
+    }
+    if (hydratedBodyForIdRef.current === selectedMessage.id) return
+    hydratedBodyForIdRef.current = selectedMessage.id
+    const messageId = selectedMessage.id
+    void (async () => {
+      try {
+        const full = await invokeRenderer(
+          IPCChannels.Email.GetMessage,
+          messageId,
+        ) as EmailMessage | null
+        if (full && !needsFullMessageBody(full)) {
+          setSelectedMessage((prev) => (prev?.id === messageId ? full : prev))
+        }
+      } catch {
+        /* keep snippet fallback */
+      }
+    })()
+  }, [selectedMessage, setSelectedMessage])
 
   useEffect(() => {
     setHtmlView(false)
@@ -421,10 +486,10 @@ export function MessageViewer(props: Props) {
   const isDraft =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
-    (mailView === "drafts" || isOutboundHeld)
+    (mailView === "drafts" || mailView === "scheduled_send" || isOutboundHeld)
 
   const inTrash = mailView === "trash"
-  const inDraftsView = mailView === "drafts"
+  const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"
   const inSnoozed = mailView === "snoozed"
 
   const handleSnoozeMessage = async (until: string | null) => {
@@ -506,8 +571,7 @@ export function MessageViewer(props: Props) {
       seen: !seen,
     })
     toast.success(seen ? "Als ungelesen markiert" : "Als gelesen markiert")
-    await refreshCurrentMessage()
-    await refreshList({ preserveSelection: true })
+    patchMessageInList?.(selectedMessage.id, { seen_local: seen ? 0 : 1 })
   }
 
   const handleToggleDone = async () => {
@@ -517,12 +581,11 @@ export function MessageViewer(props: Props) {
       done: !done,
     })
     toast.success(done ? "Wieder als offen markiert" : "Als erledigt markiert")
-    const hideFromInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
-    if (hideFromInbox) {
+    const hideFromOpenInbox = !done && mailView === "inbox" && messageDoneFilter === "open"
+    if (hideFromOpenInbox) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
-      await refreshCurrentMessage()
-      await refreshList({ preserveSelection: true })
+      patchMessageInList?.(selectedMessage.id, { done_local: done ? 0 : 1 })
     }
   }
 
@@ -552,8 +615,9 @@ export function MessageViewer(props: Props) {
     if (targetView !== mailView) {
       await advanceSelectionAfterMessageRemoved(selectedMessage.id)
     } else {
-      await refreshCurrentMessage()
-      await refreshList({ preserveSelection: true })
+      patchMessageInList?.(selectedMessage.id, {
+        spam_status: status,
+      } as Partial<EmailMessage>)
     }
   }
 
@@ -580,6 +644,63 @@ export function MessageViewer(props: Props) {
     bodyFromHtml.length > bodyFromText.length + 30
       ? bodyFromHtml
       : bodyFromText || bodyFromHtml || selectedMessage.snippet || "—"
+
+  const handlePrintMessageOnly = () => {
+    const bodyMarkup =
+      htmlView && selectedMessage.body_html
+        ? blockRemoteImagesInHtml(sanitizedHtml)
+        : `<pre>${escapeHtml(decryptedPlain ?? bodyText)}</pre>`
+    const metaRows = [
+      ["Von", formatMessageFrom(selectedMessage, accounts)],
+      ["An", recipientSummary(selectedMessage.to_json)],
+      ["CC", recipientSummary(selectedMessage.cc_json)],
+      ["BCC", recipientSummary(selectedMessage.bcc_json)],
+      [
+        "Datum",
+        selectedMessage.date_received
+          ? new Date(selectedMessage.date_received).toLocaleString("de-DE")
+          : "—",
+      ],
+    ].filter(([, value]) => value)
+
+    const printWindow = window.open("", "_blank", "width=900,height=700")
+    if (!printWindow) {
+      toast.error("Druckfenster konnte nicht geöffnet werden.")
+      return
+    }
+    printWindow.document.write(`<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline';" />
+  <title>${escapeHtml(selectedMessage.subject || "E-Mail")}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #111827; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    .meta { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size: 12px; }
+    .row { display: grid; grid-template-columns: 72px 1fr; gap: 12px; margin: 4px 0; }
+    .label { color: #6b7280; font-weight: 600; }
+    .value { overflow-wrap: anywhere; }
+    .body { font-size: 14px; line-height: 1.55; }
+    pre { white-space: pre-wrap; font-family: inherit; }
+    img { max-width: 100%; }
+    a { color: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(selectedMessage.subject || "(Ohne Betreff)")}</h1>
+  <div class="meta">
+    ${metaRows.map(([label, value]) => `<div class="row"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`).join("")}
+  </div>
+  <main class="body">${bodyMarkup}</main>
+</body>
+</html>`)
+    printWindow.document.close()
+    printWindow.focus()
+    printWindow.setTimeout(() => {
+      printWindow.print()
+    }, 100)
+  }
 
   const isSignedPgpMessage =
     selectedMessage.pgp_status?.startsWith("signed_") ||
@@ -1022,192 +1143,6 @@ export function MessageViewer(props: Props) {
                   onTagsChanged={reloadTags}
                 />
 
-                <MessageAddressesBlock
-                  message={selectedMessage}
-                  onShowCorrespondentHistory={() => {
-                    if (metadataPlacement === "inline" && !metadataPanelOpen) {
-                      setMetadataPanelOpen(true)
-                    }
-                    window.setTimeout(() => {
-                      if (!scrollToMetadataConversationSection()) {
-                        toast.info(
-                          "Verlauf im Detailpanel rechts — Abschnitt „Alle Mails mit …“.",
-                        )
-                      }
-                    }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
-                  }}
-                />
-
-                {messageAttachments.length > 0 || omittedAttachments.length > 0 ? (
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Anhänge
-                      </p>
-                      {hasServerPgpEncryptedAttachment ? (
-                        <Input
-                          type="password"
-                          placeholder="PGP-Passphrase"
-                          className="h-7 max-w-[180px] text-xs"
-                          value={pgpPassphrase}
-                          onChange={(e) => setPgpPassphrase(e.target.value)}
-                        />
-                      ) : null}
-                    </div>
-                    <ul className="space-y-1">
-                      {messageAttachments.map((att) => {
-                        const detachedSignature = findDetachedSignatureAttachment(messageAttachments, att)
-                        return (
-                        <li
-                          key={att.id}
-                          className="flex flex-wrap items-center gap-2 rounded border bg-background px-3 py-2 text-xs"
-                        >
-                          <span className="min-w-0 flex-1 truncate">
-                            {att.filename_display}
-                          </span>
-                          <span className="text-muted-foreground">
-                            {(att.size_bytes / 1024).toFixed(1)} KB
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            className="h-7 text-xs"
-                            onClick={async () => {
-                              if (!localIpcAvailable) {
-                                try {
-                                  await openServerAttachment(att)
-                                } catch (e) {
-                                  toast.error(e instanceof Error ? e.message : "Oeffnen fehlgeschlagen")
-                                }
-                                return
-                              }
-                              type OpenAtt =
-                                | { success: true }
-                                | {
-                                    success: false
-                                    error?: string
-                                    needsConfirmation?: boolean
-                                    reason?: string
-                                  }
-                              let r = await invokeIpc<OpenAtt>(
-                                IPCChannels.Email.OpenAttachmentPath,
-                                { attachmentId: att.id },
-                              )
-                              if (
-                                !r.success &&
-                                "needsConfirmation" in r &&
-                                r.needsConfirmation &&
-                                r.reason === "risky_file_type"
-                              ) {
-                                const ok = window.confirm(
-                                  "Dieser Dateityp kann beim Öffnen Schadcode ausführen. Trotzdem mit der Standard-App öffnen?",
-                                )
-                                if (!ok) return
-                                r = await invokeIpc<OpenAtt>(
-                                  IPCChannels.Email.OpenAttachmentPath,
-                                  { attachmentId: att.id, confirmOpenRisky: true },
-                                )
-                              }
-                              if (!r.success) {
-                                const msg =
-                                  "error" in r && typeof r.error === "string"
-                                    ? r.error
-                                    : "Öffnen fehlgeschlagen"
-                                toast.error(msg)
-                              }
-                            }}
-                            disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
-                          >
-                            Öffnen
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="h-7 text-xs"
-                            onClick={async () => {
-                              if (localIpcAvailable) {
-                                const r = await invokeIpc<{
-                                  success: boolean
-                                  error?: string
-                                }>(IPCChannels.Email.SaveAttachmentToDisk, {
-                                  attachmentId: att.id,
-                                })
-                                if (r.success) toast.success("Gespeichert")
-                                else toast.error(r.error ?? "Speichern fehlgeschlagen")
-                                return
-                              }
-                              try {
-                                await downloadServerAttachment(att)
-                              } catch (e) {
-                                toast.error(e instanceof Error ? e.message : "Download fehlgeschlagen")
-                              }
-                            }}
-                            disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
-                          >
-                            Speichern…
-                          </Button>
-                          {serverClientMode && isPgpEncryptedAttachment(att) ? (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={async () => {
-                                try {
-                                  await decryptPgpAttachment(att)
-                                } catch (e) {
-                                  toast.error(e instanceof Error ? e.message : "PGP-Anhang konnte nicht entschluesselt werden")
-                                }
-                              }}
-                              disabled={!pgpPassphrase}
-                            >
-                              Entschl.
-                            </Button>
-                          ) : null}
-                          {serverClientMode && detachedSignature && !isPgpSignatureAttachment(att) ? (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={async () => {
-                                try {
-                                  await verifyPgpAttachmentSignature(att, detachedSignature)
-                                } catch (e) {
-                                  toast.error(e instanceof Error ? e.message : "PGP-Anhangsignatur konnte nicht geprueft werden")
-                                }
-                              }}
-                            >
-                              Signatur
-                            </Button>
-                          ) : null}
-                        </li>
-                        )
-                      })}
-                      {omittedAttachments.map((om, i) => (
-                        <li
-                          key={`omitted-${i}-${om.name}`}
-                          className="flex flex-wrap items-center gap-2 rounded border border-dashed border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs"
-                        >
-                          <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                            {om.name}
-                          </span>
-                          <span className="text-muted-foreground">
-                            {(om.size / 1024).toFixed(1)} KB
-                          </span>
-                          <span className="text-amber-700 dark:text-amber-400">
-                            {om.reason === "too_large"
-                              ? "Nicht gespeichert (zu groß)"
-                              : "Nicht gespeichert"}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-
                 <div className="flex flex-wrap gap-2">
                   {selectedMessage.body_html ? (
                     <Button
@@ -1231,7 +1166,7 @@ export function MessageViewer(props: Props) {
                     size="sm"
                     variant="outline"
                     className="h-8 gap-1.5 text-xs"
-                    onClick={() => window.print()}
+                    onClick={handlePrintMessageOnly}
                   >
                     <Printer className="h-3.5 w-3.5" />
                     Drucken
@@ -1271,6 +1206,23 @@ export function MessageViewer(props: Props) {
                     </>
                   ) : null}
                 </div>
+
+                <MessageAddressesBlock
+                  message={selectedMessage}
+                  accounts={accounts}
+                  onShowCorrespondentHistory={() => {
+                    if (metadataPlacement === "inline" && !metadataPanelOpen) {
+                      setMetadataPanelOpen(true)
+                    }
+                    window.setTimeout(() => {
+                      if (!scrollToMetadataConversationSection()) {
+                        toast.info(
+                          "Verlauf im Detailpanel rechts — Abschnitt „Alle Mails mit …“.",
+                        )
+                      }
+                    }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
+                  }}
+                />
 
                 {selectedMessage.pgp_status === "encrypted_unread" ||
                 bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (
@@ -1458,6 +1410,177 @@ export function MessageViewer(props: Props) {
                     {decryptedPlain ?? bodyText}
                   </pre>
                 )}
+
+                {messageAttachments.length > 0 || omittedAttachments.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Anhänge
+                      </p>
+                      {hasServerPgpEncryptedAttachment ? (
+                        <Input
+                          type="password"
+                          placeholder="PGP-Passphrase"
+                          className="h-7 max-w-[180px] text-xs"
+                          value={pgpPassphrase}
+                          onChange={(e) => setPgpPassphrase(e.target.value)}
+                        />
+                      ) : null}
+                    </div>
+                    <ul className="space-y-1">
+                      {messageAttachments.map((att) => {
+                        const detachedSignature = findDetachedSignatureAttachment(messageAttachments, att)
+                        return (
+                        <li
+                          key={att.id}
+                          className="flex flex-wrap items-center gap-2 rounded border bg-background px-3 py-2 text-xs"
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {att.filename_display}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {(att.size_bytes / 1024).toFixed(1)} KB
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-7 text-xs"
+                            onClick={async () => {
+                              if (!localIpcAvailable) {
+                                try {
+                                  await openServerAttachment(att)
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "Oeffnen fehlgeschlagen")
+                                }
+                                return
+                              }
+                              type OpenAtt =
+                                | { success: true }
+                                | {
+                                    success: false
+                                    error?: string
+                                    needsConfirmation?: boolean
+                                    reason?: string
+                                  }
+                              let r = await invokeIpc<OpenAtt>(
+                                IPCChannels.Email.OpenAttachmentPath,
+                                { attachmentId: att.id },
+                              )
+                              if (
+                                !r.success &&
+                                "needsConfirmation" in r &&
+                                r.needsConfirmation &&
+                                r.reason === "risky_file_type"
+                              ) {
+                                const ok = window.confirm(
+                                  "Dieser Dateityp kann beim Öffnen Schadcode ausführen. Trotzdem mit der Standard-App öffnen?",
+                                )
+                                if (!ok) return
+                                r = await invokeIpc<OpenAtt>(
+                                  IPCChannels.Email.OpenAttachmentPath,
+                                  { attachmentId: att.id, confirmOpenRisky: true },
+                                )
+                              }
+                              if (!r.success) {
+                                const msg =
+                                  "error" in r && typeof r.error === "string"
+                                    ? r.error
+                                    : "Öffnen fehlgeschlagen"
+                                toast.error(msg)
+                              }
+                            }}
+                            disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
+                          >
+                            Öffnen
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={async () => {
+                              if (localIpcAvailable) {
+                                const r = await invokeIpc<{
+                                  success: boolean
+                                  error?: string
+                                }>(IPCChannels.Email.SaveAttachmentToDisk, {
+                                  attachmentId: att.id,
+                                })
+                                if (r.success) toast.success("Gespeichert")
+                                else toast.error(r.error ?? "Speichern fehlgeschlagen")
+                                return
+                              }
+                              try {
+                                await downloadServerAttachment(att)
+                              } catch (e) {
+                                toast.error(e instanceof Error ? e.message : "Download fehlgeschlagen")
+                              }
+                            }}
+                            disabled={!localIpcAvailable && !serverAttachmentBaseUrl}
+                          >
+                            Speichern…
+                          </Button>
+                          {serverClientMode && isPgpEncryptedAttachment(att) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={async () => {
+                                try {
+                                  await decryptPgpAttachment(att)
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "PGP-Anhang konnte nicht entschluesselt werden")
+                                }
+                              }}
+                              disabled={!pgpPassphrase}
+                            >
+                              Entschl.
+                            </Button>
+                          ) : null}
+                          {serverClientMode && detachedSignature && !isPgpSignatureAttachment(att) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={async () => {
+                                try {
+                                  await verifyPgpAttachmentSignature(att, detachedSignature)
+                                } catch (e) {
+                                  toast.error(e instanceof Error ? e.message : "PGP-Anhangsignatur konnte nicht geprueft werden")
+                                }
+                              }}
+                            >
+                              Signatur
+                            </Button>
+                          ) : null}
+                        </li>
+                        )
+                      })}
+                      {omittedAttachments.map((om, i) => (
+                        <li
+                          key={`omitted-${i}-${om.name}`}
+                          className="flex flex-wrap items-center gap-2 rounded border border-dashed border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                            {om.name}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {(om.size / 1024).toFixed(1)} KB
+                          </span>
+                          <span className="text-amber-700 dark:text-amber-400">
+                            {om.reason === "too_large"
+                              ? "Nicht gespeichert (zu groß)"
+                              : "Nicht gespeichert"}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
               </div>
             </ScrollArea>
           </div>
@@ -1471,6 +1594,7 @@ export function MessageViewer(props: Props) {
               reloadNotes={reloadNotes}
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
+              onOpenMessage={onOpenMessage}
             />
           ) : null}
         </div>

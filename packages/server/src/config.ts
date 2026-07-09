@@ -14,6 +14,8 @@ export type ServerEditionEnv = {
   AUTH_INVITE_SMTP_TIMEOUT_MS?: string;
   ATTACHMENTS_DIR?: string;
   AUDIT_ARCHIVE_DIR?: string;
+  BACKUP_DIR?: string;
+  VERSION?: string;
   HOST?: string;
   PORT?: string;
   JOB_WORKER_ENABLED?: string;
@@ -25,6 +27,9 @@ export type ServerEditionEnv = {
   LOG_LEVEL?: string;
   NODE_ENV?: string;
   CI?: string;
+  INITIAL_SETUP_TOKEN?: string;
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
 };
 
 export type ServerEditionConfig = {
@@ -40,6 +45,9 @@ export type ServerEditionConfig = {
   host: string;
   port: number;
   jobWorker: ServerJobWorkerConfig;
+  initialSetupToken?: string;
+  turnstileSiteKey?: string;
+  turnstileSecretKey?: string;
 };
 
 export type ServerJobWorkerConfig = {
@@ -88,6 +96,9 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   const host = env.HOST?.trim() || '0.0.0.0';
   const port = parsePort(env.PORT ?? '3000');
   const jobWorker = parseServerJobWorkerConfig(env);
+  const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim() || undefined;
+  const turnstileSiteKey = env.TURNSTILE_SITE_KEY?.trim() || undefined;
+  const turnstileSecretKey = env.TURNSTILE_SECRET_KEY?.trim() || undefined;
 
   return {
     databaseUrl,
@@ -102,6 +113,9 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     host,
     port,
     jobWorker,
+    ...(initialSetupToken ? { initialSetupToken } : {}),
+    ...(turnstileSiteKey ? { turnstileSiteKey } : {}),
+    ...(turnstileSecretKey ? { turnstileSecretKey } : {}),
   };
 }
 

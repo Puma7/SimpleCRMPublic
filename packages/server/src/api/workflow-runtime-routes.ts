@@ -84,6 +84,11 @@ export async function handleWorkflowRuntimeReadRoute(
   const messageRunsMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/workflow-runs$/.exec(req.path);
   if (messageRunsMatch) return handleMessageScopedRuns(req, ports, messageRunsMatch[1]);
 
+  const runSourceGetMatch = /^\/api\/v1\/workflow-runs\/by-source\/([^/]+)$/.exec(req.path);
+  if (runSourceGetMatch) {
+    return handleWorkflowRunSourceGet(req, ports, runSourceGetMatch[1]);
+  }
+
   const runStepsMatch = /^\/api\/v1\/workflow-runs\/([^/]+)\/steps$/.exec(req.path);
   if (runStepsMatch) return handleRunScopedSteps(req, ports, runStepsMatch[1]);
 
@@ -251,6 +256,30 @@ async function handleRunScopedSteps(
   const runId = positiveIntFromPath(rawRunId);
   if (runId === null) return error(400, 'invalid_workflow_run_id', 'workflow run id muss eine positive Ganzzahl sein');
   return handleWorkflowRunStepList(req, ports, { runId });
+}
+
+async function handleWorkflowRunSourceGet(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawRunSourceSqliteId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'GET') return methodNotAllowed();
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const sourceSqliteId = parseNonZeroInt(rawRunSourceSqliteId);
+  if (sourceSqliteId === null) {
+    return error(400, 'invalid_workflow_run_source_sqlite_id', 'Workflow run sourceSqliteId muss eine Ganzzahl ungleich 0 sein');
+  }
+  if (!ports.workflowRuns) return unavailable('workflow_runs_unavailable', 'Workflow run API nicht konfiguriert');
+  const run = await findWorkflowRunBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
+  if (!run) return error(404, 'workflow_run_not_found', 'Workflow run nicht gefunden');
+  const detailed = await ports.workflowRuns.get({
+    workspaceId: principal.workspaceId,
+    id: run.id,
+    includeLog: true,
+  });
+  if (!detailed) return error(404, 'workflow_run_not_found', 'Workflow run nicht gefunden');
+  return data(200, sanitizeWorkflowRun(detailed, true));
 }
 
 async function handleWorkflowRunSourceScopedSteps(
@@ -610,11 +639,14 @@ async function handleKnowledgeBaseList(req: ApiRequest, ports: ServerApiPorts): 
   if (!base.ok) return base.response;
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return error(400, 'invalid_search', 'search darf maximal 200 Zeichen haben');
+  const accountId = parseOptionalPositiveInt(req.query?.accountId);
+  if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
   if (!ports.workflowKnowledgeBases) return unavailable('workflow_knowledge_bases_unavailable', 'Workflow knowledge base API nicht konfiguriert');
   const result = await ports.workflowKnowledgeBases.list({
     workspaceId: principal.workspaceId,
     ...base.filters,
     ...(search === undefined ? {} : { search }),
+    ...(accountId === undefined ? {} : { accountId }),
   });
   return data(200, sanitizeKnowledgeBaseList(result));
 }
@@ -1172,7 +1204,7 @@ function parseKnowledgeBaseMutationBody(
 
   const values: WorkflowKnowledgeBaseMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['name', 'description']);
+  const allowedFields = new Set(['name', 'description', 'accountId', 'overrideKey', 'knowledgeContext']);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -1186,6 +1218,21 @@ function parseKnowledgeBaseMutationBody(
     const description = normalizeNullableBodyText(body.description, 'description', 2000);
     if (description.ok) values.description = description.value;
     else errors.push({ field: 'description', message: description.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    const accountId = normalizeNullablePositiveBodyInt(body.accountId, 'accountId');
+    if (accountId.ok) values.accountId = accountId.value;
+    else errors.push({ field: 'accountId', message: accountId.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'overrideKey')) {
+    const overrideKey = normalizeNullableBodyText(body.overrideKey, 'overrideKey', 200);
+    if (overrideKey.ok) values.overrideKey = overrideKey.value;
+    else errors.push({ field: 'overrideKey', message: overrideKey.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'knowledgeContext')) {
+    const knowledgeContext = normalizeNullableBodyText(body.knowledgeContext, 'knowledgeContext', 32);
+    if (knowledgeContext.ok) values.knowledgeContext = knowledgeContext.value;
+    else errors.push({ field: 'knowledgeContext', message: knowledgeContext.message });
   }
 
   if (errors.length > 0) {
@@ -1666,6 +1713,10 @@ function sanitizeKnowledgeBase(base: WorkflowKnowledgeBaseRecord): WorkflowKnowl
     sourceSqliteId: base.sourceSqliteId,
     name: base.name,
     description: base.description,
+    accountSourceSqliteId: base.accountSourceSqliteId,
+    accountId: base.accountId,
+    overrideKey: base.overrideKey,
+    knowledgeContext: base.knowledgeContext,
     createdAt: base.createdAt,
     updatedAt: base.updatedAt,
   };
@@ -1928,6 +1979,12 @@ function normalizeNullableBodyText(
 ): { ok: true; value: string | null } | { ok: false; message: string } {
   if (rawValue === null) return { ok: true, value: null };
   return normalizeRequiredBodyText(rawValue, field, maxLength);
+}
+
+function normalizeNullablePositiveBodyInt(value: unknown, field: string): { ok: true; value: number | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, value: null };
+  const result = normalizePositiveBodyInt(value, field);
+  return result.ok ? { ok: true, value: result.value } : result;
 }
 
 function normalizePositiveBodyInt(

@@ -1,12 +1,20 @@
-import Database from 'better-sqlite3';
 import {
   EMAIL_MESSAGES_TABLE,
   EMAIL_THREADS_TABLE,
   EMAIL_THREAD_ALIASES_TABLE,
 } from '../../electron/database-schema';
 
+const stmt = {
+  get: jest.fn(),
+  run: jest.fn(() => ({ changes: 1, lastInsertRowid: 1 })),
+  all: jest.fn(() => []),
+};
+const db = {
+  prepare: jest.fn(() => stmt),
+};
+
 jest.mock('../../electron/sqlite-service', () => ({
-  getDb: () => (global as { __testDb?: Database.Database }).__testDb,
+  getDb: () => db,
 }));
 
 jest.mock('../../electron/email/email-thread-aggregate', () => ({
@@ -14,40 +22,49 @@ jest.mock('../../electron/email/email-thread-aggregate', () => ({
   upsertThreadAggregates: jest.fn(),
 }));
 
-import { mergeThreads } from '../../electron/email/email-thread-admin';
+jest.mock('../../electron/email/email-thread-resolve', () => ({
+  canonicalThreadId: (id: string) => id,
+  wouldCreateThreadAliasCycle: jest.fn(() => false),
+}));
 
-describe('mergeThreads', () => {
-  let db: Database.Database;
+jest.mock('../../electron/email/account-mail-settings-store', () => ({
+  allocateNextTicketCodeForAccount: jest.fn((accountId: number) => `SHOP${accountId}-000001`),
+}));
 
+import { mergeThreads, splitMessageToOwnThread } from '../../electron/email/email-thread-admin';
+
+describe('email thread admin', () => {
   beforeEach(() => {
-    db = new Database(':memory:');
-    (global as { __testDb?: Database.Database }).__testDb = db;
-    db.exec(`
-      CREATE TABLE ${EMAIL_THREADS_TABLE} (id TEXT PRIMARY KEY, ticket_code TEXT);
-      CREATE TABLE ${EMAIL_MESSAGES_TABLE} (
-        id INTEGER PRIMARY KEY, thread_id TEXT, ticket_code TEXT, account_id INTEGER
-      );
-      CREATE TABLE ${EMAIL_THREAD_ALIASES_TABLE} (
-        alias_thread_id TEXT PRIMARY KEY, canonical_thread_id TEXT, confidence TEXT, source TEXT
-      );
-      CREATE TABLE email_thread_edges (parent_message_id INTEGER, child_message_id INTEGER);
-    `);
-    db.prepare(`INSERT INTO ${EMAIL_THREADS_TABLE} (id, ticket_code) VALUES ('t-a', 'A'), ('t-b', 'B')`).run();
-    db.prepare(
-      `INSERT INTO ${EMAIL_MESSAGES_TABLE} (id, thread_id, ticket_code, account_id) VALUES (1, 't-a', 'A', 1)`,
-    ).run();
+    jest.clearAllMocks();
+    stmt.get.mockReturnValue(undefined);
+    stmt.run.mockReturnValue({ changes: 1, lastInsertRowid: 1 });
   });
 
-  afterEach(() => {
-    db.close();
-  });
-
-  it('merges alias into canonical', () => {
+  it('merges alias into canonical without touching other accounts', () => {
     const r = mergeThreads('t-b', 't-a', 1);
+
     expect(r.ok).toBe(true);
-    const alias = db
-      .prepare(`SELECT canonical_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE alias_thread_id = 't-b'`)
-      .get() as { canonical_thread_id: string };
-    expect(alias.canonical_thread_id).toBe('t-a');
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining(`UPDATE ${EMAIL_MESSAGES_TABLE} SET thread_id = ? WHERE thread_id = ? AND account_id = ?`),
+    );
+    expect(stmt.run).toHaveBeenCalledWith('t-a', 't-b', 1);
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining(`DELETE FROM ${EMAIL_THREADS_TABLE} WHERE id = ?`),
+    );
+  });
+
+  it('splits a message into an account-namespaced ticket/thread', () => {
+    stmt.get
+      .mockReturnValueOnce({ thread_id: 'old-thread', ticket_code: 'OLD-1', account_id: 7 })
+      .mockReturnValueOnce(undefined);
+
+    const r = splitMessageToOwnThread(42);
+
+    expect(r.ok).toBe(true);
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining(`INSERT INTO ${EMAIL_THREADS_TABLE} (id, ticket_code, account_id) VALUES (?, ?, ?)`),
+    );
+    expect(stmt.run).toHaveBeenCalledWith(expect.any(String), 'SHOP7-000001', 7);
+    expect(stmt.run).toHaveBeenCalledWith(expect.any(String), 'SHOP7-000001', 42);
   });
 });

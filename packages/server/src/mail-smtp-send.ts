@@ -20,6 +20,41 @@ export type ServerSmtpSendInput = Readonly<{
   rfc822: string;
   timeoutMs?: number;
   socketFactory?: SmtpSocketFactory;
+  diagnosticsContext?: SmtpSendDiagnosticsContext;
+  onDiagnostic?: (event: SmtpSendDiagnosticEvent) => void;
+}>;
+
+export type SmtpSendDiagnosticsContext = Readonly<{
+  workflowId?: number;
+  messageId?: number;
+  nodeId?: string;
+  nodeType?: string;
+  jobId?: number | string;
+  accountId?: number;
+}>;
+
+export type SmtpRfc822Diagnostics = Readonly<{
+  headerBytes: number;
+  bodyBytes: number;
+  lineCount: number;
+  headerCounts: Readonly<Record<string, number>>;
+  issues: readonly string[];
+}>;
+
+export type SmtpSendDiagnosticEvent = Readonly<{
+  kind: 'smtp_send_failed';
+  stage: string;
+  smtpCode?: number;
+  smtpResponse?: string;
+  host: string;
+  port: number;
+  tls: boolean;
+  secureSocket: boolean;
+  envelopeFromDomain: string | null;
+  recipientCount: number;
+  recipientDomains: readonly string[];
+  context?: SmtpSendDiagnosticsContext;
+  rfc822: SmtpRfc822Diagnostics;
 }>;
 
 const DEFAULT_TIMEOUT_MS = 90_000;
@@ -38,6 +73,25 @@ export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void>
   const secureSocket = input.tls && input.port === 465;
   const requireStartTls = input.tls && input.port !== 465;
   const socketFactory = input.socketFactory ?? connectSocket;
+  const rfc822Diagnostics = inspectRfc822ForSmtpDiagnostics(input.rfc822);
+  const failWithResponse = (stage: string, response: SmtpResponse): never => {
+    input.onDiagnostic?.({
+      kind: 'smtp_send_failed',
+      stage,
+      smtpCode: response.code || undefined,
+      smtpResponse: sanitizeSmtpResponse(response.text),
+      host: input.host,
+      port: input.port,
+      tls: input.tls,
+      secureSocket,
+      envelopeFromDomain: emailDomain(input.envelopeFrom),
+      recipientCount: input.recipients.length,
+      recipientDomains: uniqueDomains(input.recipients),
+      ...(input.diagnosticsContext ? { context: input.diagnosticsContext } : {}),
+      rfc822: rfc822Diagnostics,
+    });
+    throw new Error(response.text);
+  };
   const socket = await socketFactory({
     host: input.host,
     port: input.port,
@@ -47,18 +101,18 @@ export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void>
   const client = new LineProtocolClient(socket, timeoutMs);
   try {
     let response = await readSmtpResponse(client);
-    if (response.code !== 220) throw new Error(response.text);
+    if (response.code !== 220) failWithResponse('CONNECT', response);
 
     response = await smtpEhlo(client);
-    if (response.code !== 250) throw new Error(response.text);
+    if (response.code !== 250) failWithResponse('EHLO', response);
 
     if (!secureSocket && (requireStartTls || smtpSupports(response, 'STARTTLS'))) {
       if (!smtpSupports(response, 'STARTTLS')) throw new Error('SMTP STARTTLS nicht verfuegbar');
       response = await smtpCommand(client, 'STARTTLS');
-      if (response.code !== 220) throw new Error(response.text);
+      if (response.code !== 220) failWithResponse('STARTTLS', response);
       await upgradeClientToTls(client, input.host, timeoutMs);
       response = await smtpEhlo(client);
-      if (response.code !== 250) throw new Error(response.text);
+      if (response.code !== 250) failWithResponse('EHLO_AFTER_STARTTLS', response);
     }
 
     const auth = await smtpAuthenticate(client, response, {
@@ -66,21 +120,21 @@ export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void>
       password: input.password,
       accessToken: input.accessToken,
     });
-    if (auth.code !== 235) throw new Error(auth.text);
+    if (auth.code !== 235) failWithResponse('AUTH', auth);
 
     response = await smtpCommand(client, `MAIL FROM:<${input.envelopeFrom}>`);
-    if (response.code !== 250) throw new Error(response.text);
+    if (response.code !== 250) failWithResponse('MAIL_FROM', response);
 
     for (const recipient of input.recipients) {
       response = await smtpCommand(client, `RCPT TO:<${recipient}>`);
-      if (response.code !== 250 && response.code !== 251) throw new Error(response.text);
+      if (response.code !== 250 && response.code !== 251) failWithResponse('RCPT_TO', response);
     }
 
     response = await smtpCommand(client, 'DATA');
-    if (response.code !== 354) throw new Error(response.text);
+    if (response.code !== 354) failWithResponse('DATA', response);
     client.writeData(dotStuff(input.rfc822));
     response = await readSmtpResponse(client);
-    if (response.code !== 250) throw new Error(response.text);
+    if (response.code !== 250) failWithResponse('DATA_FINAL', response);
 
     await smtpCommand(client, 'QUIT').catch(() => undefined);
   } finally {
@@ -279,6 +333,86 @@ function dotStuff(value: string): string {
     .map((line) => (line.startsWith('.') ? `.${line}` : line))
     .join('\r\n');
   return `${stuffed}\r\n.\r\n`;
+}
+
+export function inspectRfc822ForSmtpDiagnostics(rfc822: string): SmtpRfc822Diagnostics {
+  const normalized = rfc822.replace(/\r?\n/g, '\r\n');
+  const headerEnd = normalized.indexOf('\r\n\r\n');
+  const headerSection = headerEnd >= 0 ? normalized.slice(0, headerEnd) : normalized;
+  const body = headerEnd >= 0 ? normalized.slice(headerEnd + 4) : '';
+  const unfolded = unfoldHeaderLines(headerSection);
+  const headerCounts: Record<string, number> = {};
+  const emptyHeaders = new Set<string>();
+  const issues = new Set<string>();
+
+  for (const line of unfolded) {
+    const match = /^([^:\s]+):\s*(.*)$/.exec(line);
+    if (!match) {
+      if (line.trim()) issues.add('malformed_header_line');
+      continue;
+    }
+    const name = match[1].toLowerCase();
+    const value = match[2] ?? '';
+    headerCounts[name] = (headerCounts[name] ?? 0) + 1;
+    if (!value.trim()) emptyHeaders.add(name);
+  }
+
+  const dateCount = headerCounts.date ?? 0;
+  if (dateCount === 0) issues.add('missing_date_header');
+  if (dateCount > 1) issues.add('duplicate_date_header');
+  const dateHeader = unfolded.find((line) => /^date:/i.test(line));
+  if (dateHeader) {
+    const value = dateHeader.replace(/^date:\s*/i, '').trim();
+    if (!value || Number.isNaN(Date.parse(value))) issues.add('invalid_date_header');
+  }
+
+  for (const name of ['from', 'sender', 'to', 'cc', 'subject']) {
+    if ((headerCounts[name] ?? 0) > 1) issues.add(`duplicate_${name}_header`);
+  }
+  for (const name of ['date', 'from', 'sender', 'to', 'cc', 'subject']) {
+    if (emptyHeaders.has(name)) issues.add(`empty_${name}_header`);
+  }
+
+  return {
+    headerBytes: Buffer.byteLength(headerSection, 'utf8'),
+    bodyBytes: Buffer.byteLength(body, 'utf8'),
+    lineCount: normalized ? normalized.split('\r\n').length : 0,
+    headerCounts,
+    issues: Array.from(issues).sort(),
+  };
+}
+
+function unfoldHeaderLines(headerSection: string): string[] {
+  const lines = headerSection.split('\r\n');
+  const out: string[] = [];
+  for (const line of lines) {
+    if (/^[\t ]/.test(line) && out.length > 0) {
+      out[out.length - 1] = `${out[out.length - 1]} ${line.trim()}`;
+    } else {
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+function sanitizeSmtpResponse(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const redacted = normalized
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ip]')
+    .replace(/\b[0-9A-F]{1,4}(?::[0-9A-F]{1,4}){2,7}\b/gi, '[ip]')
+    .replace(/"[^"]{2,120}"/g, '"[text]"')
+    .replace(/'[^']{2,120}'/g, "'[text]'");
+  return redacted.length > 300 ? `${redacted.slice(0, 300)}…` : redacted;
+}
+
+function emailDomain(value: string): string | null {
+  const match = /@([^@<>\s]+)$/.exec(value.trim().replace(/[<>]/g, ''));
+  return match ? match[1].toLowerCase() : null;
+}
+
+function uniqueDomains(values: readonly string[]): string[] {
+  return Array.from(new Set(values.map(emailDomain).filter((domain): domain is string => Boolean(domain)))).sort();
 }
 
 class LineProtocolClient {

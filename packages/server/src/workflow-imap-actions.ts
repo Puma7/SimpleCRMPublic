@@ -17,6 +17,7 @@ export type ServerWorkflowImapActionAccount = ServerImapAuthAccount & Readonly<{
   imapHost: string;
   imapPort: number;
   imapTls: boolean;
+  imapDeleteOptIn: boolean;
 }>;
 
 export type ServerWorkflowImapActionMessage = Readonly<{
@@ -139,12 +140,25 @@ export function createServerWorkflowImapActionPort(
       });
     },
     async delete(input) {
+      const message = await options.store.getMessage(input);
+      if (!message?.accountId) {
+        return { ok: false, error: 'Nachricht oder Konto nicht gefunden' };
+      }
+      const account = await options.store.getAccount({
+        workspaceId: input.workspaceId,
+        accountId: message.accountId,
+      });
       const settings = await options.store.getSyncInfo({
         workspaceId: input.workspaceId,
         keys: [WORKFLOW_IMAP_DELETE_OPT_IN_KEY],
       });
-      if (!syncInfoFlag(settings.get(WORKFLOW_IMAP_DELETE_OPT_IN_KEY), false)) {
-        return { ok: false, error: 'Server-Loeschung nicht aktiviert (workflow_imap_delete_opt_in)' };
+      const globalOptIn = syncInfoFlag(settings.get(WORKFLOW_IMAP_DELETE_OPT_IN_KEY), false);
+      const accountOptIn = account?.imapDeleteOptIn ?? false;
+      if (!accountOptIn && !globalOptIn) {
+        return {
+          ok: false,
+          error: 'Server-Loeschung nicht aktiviert (Konto oder workflow_imap_delete_opt_in)',
+        };
       }
       return runImapAction({
         store: options.store,
@@ -312,6 +326,7 @@ function createPostgresWorkflowImapActionStore(
               'imap_tls',
               'imap_username',
               'oauth_provider',
+              'imap_delete_opt_in',
             ])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.accountId)
@@ -325,6 +340,7 @@ function createPostgresWorkflowImapActionStore(
               imapTls: Boolean(row.imap_tls),
               imapUsername: row.imap_username,
               oauthProvider: row.oauth_provider,
+              imapDeleteOptIn: Boolean(row.imap_delete_opt_in),
             }
             : null;
         },

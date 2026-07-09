@@ -6,6 +6,8 @@ import {
   buildComposeRfc822,
   generateOutboundMessageId,
   normalizeEmailAddress,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
   type ComposeRfc822Attachment,
 } from '@simplecrm/core';
 
@@ -55,8 +57,8 @@ export type WorkflowForwardCopyJobPlan = Readonly<{
   actorUserId?: string;
   to: string;
   includeAttachments?: boolean;
-  /** Opt-in: run the forward through outbound review (placeholder; fail-closed
-   *  if any outbound workflows are enabled). Default false. */
+  /** Opt-in: run the forward through the configured outbound-review compose pipeline.
+   *  Default false: workflow forwards bypass outbound review and send directly. */
   runOutboundReview?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -187,7 +189,7 @@ export function createPostgresWorkflowForwardCopyPort(
       );
 
       if (!prepared.ok) {
-        await enqueueForwardCopyContinuation(options, input, {
+        await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
           error: prepared.error,
           duplicate: false,
@@ -213,7 +215,7 @@ export function createPostgresWorkflowForwardCopyPort(
       // here so retries don't create duplicate drafts.
       if (input.runOutboundReview === true) {
         if (!options.composeSender) {
-          await enqueueForwardCopyContinuation(options, input, {
+          await failOrEnqueueForwardCopyContinuation(options, input, {
             ok: false,
             error: 'runOutboundReview=true: composeSender ist nicht konfiguriert',
             duplicate: false,
@@ -231,9 +233,19 @@ export function createPostgresWorkflowForwardCopyPort(
           createDraft,
           now: now(),
         });
+        if (!reviewResult.ok) {
+          await failOrEnqueueForwardCopyContinuation(options, input, {
+            ok: false,
+            error: reviewResult.error,
+            duplicate: false,
+            now: now(),
+            reviewPending: reviewResult.reviewPending,
+          });
+          return;
+        }
         await enqueueForwardCopyContinuation(options, input, {
-          ok: reviewResult.ok,
-          error: reviewResult.error,
+          ok: true,
+          error: null,
           duplicate: false,
           now: now(),
           reviewPending: reviewResult.reviewPending,
@@ -250,7 +262,7 @@ export function createPostgresWorkflowForwardCopyPort(
         applyWorkspaceSession: options.applyWorkspaceSession,
       });
       if (!auth.ok) {
-        await enqueueForwardCopyContinuation(options, input, {
+        await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
           error: auth.error,
           duplicate: false,
@@ -259,17 +271,49 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
-      await smtpSend({
-        host: prepared.account.smtpHost?.trim() || prepared.account.imapHost,
-        port: prepared.account.smtpPort ?? 587,
-        tls: prepared.account.smtpTls,
-        user: auth.user,
-        envelopeFrom: prepared.account.emailAddress,
-        recipients: [...prepared.recipients],
-        rfc822: prepared.rfc822,
-        ...(auth.password !== undefined ? { password: auth.password } : {}),
-        ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
-      });
+      const smtpHost = resolveConfiguredSmtpHost(prepared.account.smtpHost);
+      if (!smtpHost) {
+        await failOrEnqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: SMTP_HOST_MISSING_ERROR,
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
+      try {
+        await smtpSend({
+          host: smtpHost,
+          port: prepared.account.smtpPort ?? 587,
+          tls: prepared.account.smtpTls,
+          user: auth.user,
+          envelopeFrom: prepared.account.emailAddress,
+          recipients: [...prepared.recipients],
+          rfc822: prepared.rfc822,
+          diagnosticsContext: {
+            workflowId: input.workflowId,
+            messageId: input.messageId,
+            nodeType: 'workflow.forward_copy',
+            accountId: prepared.account.id,
+          },
+          onDiagnostic: (event) => {
+            // Redacted by mail-smtp-send: no auth data, raw message body, attachments,
+            // or full sender/recipient addresses are included in this payload.
+            console.warn('workflow.forward_copy SMTP diagnostic', JSON.stringify(event));
+          },
+          ...(auth.password !== undefined ? { password: auth.password } : {}),
+          ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
+        });
+      } catch (error) {
+        await failOrEnqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
 
       await withWorkspaceTransaction(
         options.db,
@@ -622,10 +666,9 @@ async function forwardViaOutboundReview(args: {
     },
   });
 
-  // Record dedup only when the forward has been successfully sent OR queued
-  // for review (workflowRunId set). A real failure must remain retryable.
   const sent = sendResult.ok;
   const queuedForReview = !sendResult.ok && sendResult.workflowRunId != null;
+
   if (sent || queuedForReview) {
     await withWorkspaceTransaction(
       args.db,
@@ -638,6 +681,19 @@ async function forwardViaOutboundReview(args: {
   if (sent) return { ok: true, error: null, reviewPending: false };
   if (queuedForReview) return { ok: true, error: null, reviewPending: true };
   return { ok: false, error: sendResult.error, reviewPending: false };
+}
+
+
+async function failOrEnqueueForwardCopyContinuation(
+  options: PostgresWorkflowForwardCopyPortOptions,
+  input: WorkflowForwardCopyJobPlan,
+  result: { ok: false; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
+): Promise<void> {
+  if (input.continuation) {
+    await enqueueForwardCopyContinuation(options, input, result);
+    return;
+  }
+  throw new Error(result.error || 'workflow forward-copy failed');
 }
 
 async function enqueueForwardCopyContinuation(
@@ -804,7 +860,9 @@ function resolveSmtpUser(account: ForwardCopyAccount): string {
 function normalizeForwardCopyRecipients(value: string): string[] {
   const out: string[] = [];
   for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
-    const normalized = normalizeEmailAddress(part);
+    const angleMatch = part.match(/<([^>]+)>/);
+    const candidate = (angleMatch?.[1] ?? part).trim();
+    const normalized = candidate.toLowerCase();
     if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) && !out.includes(normalized)) {
       out.push(normalized);
     }

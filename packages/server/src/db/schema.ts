@@ -11,6 +11,7 @@ export type ServerDatabase = {
   auth_invitations: AuthInvitationsTable;
   refresh_tokens: RefreshTokensTable;
   auth_login_failures: AuthLoginFailuresTable;
+  auth_mfa_email_codes: AuthMfaEmailCodesTable;
   conversation_locks: ConversationLocksTable;
   job_queue: JobQueueTable;
   sync_info: SyncInfoTable;
@@ -42,6 +43,7 @@ export type ServerDatabase = {
   email_internal_notes: EmailInternalNotesTable;
   email_canned_responses: EmailCannedResponsesTable;
   email_account_signatures: EmailAccountSignaturesTable;
+  email_account_mail_settings: EmailAccountMailSettingsTable;
   email_remote_content_allowlist: EmailRemoteContentAllowlistTable;
   email_read_receipt_log: EmailReadReceiptLogTable;
   email_thread_edges: EmailThreadEdgesTable;
@@ -66,6 +68,10 @@ export type ServerDatabase = {
   automation_api_keys: AutomationApiKeysTable;
   ai_usage_events: AiUsageEventsTable;
   ai_reply_feedback: AiReplyFeedbackTable;
+  return_reasons: ReturnReasonsTable;
+  returns: ReturnsTable;
+  return_items: ReturnItemsTable;
+  workspace_portal_settings: WorkspacePortalSettingsTable;
 };
 
 export type AiReplyFeedbackTable = {
@@ -149,8 +155,22 @@ export type UsersTable = {
   password_hash: string;
   role: 'owner' | 'admin' | 'user';
   disabled_at: TimestampColumn | null;
+  login_pin_hash: string | null;
+  login_pin_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  mfa_method: 'totp' | 'email' | null;
+  mfa_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  mfa_totp_secret_id: string | null;
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
+};
+
+export type AuthMfaEmailCodesTable = {
+  id: Generated<string>;
+  user_id: string;
+  code_hash: string;
+  expires_at: TimestampColumn;
+  consumed_at: TimestampColumn | null;
+  created_at: TimestampColumn;
 };
 
 export type AuthInvitationsTable = {
@@ -492,6 +512,7 @@ export type EmailAccountsTable = {
   vacation_subject: string | null;
   vacation_body_text: string | null;
   request_read_receipt: boolean;
+  imap_delete_opt_in: boolean;
   default_remote_content_policy: string;
   respond_to_read_receipts: string;
   read_receipt_trusted_domains: string | null;
@@ -536,6 +557,8 @@ export type EmailThreadsTable = {
   id: string;
   workspace_id: string;
   ticket_code: string;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
   root_message_source_sqlite_id: number | null;
   root_message_id: number | null;
   last_message_at: TimestampColumn | null;
@@ -685,6 +708,9 @@ export type EmailCannedResponsesTable = {
   source_sqlite_id: number;
   title: string;
   body: string;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   sort_order: number;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
@@ -700,6 +726,20 @@ export type EmailAccountSignaturesTable = {
   signature_html: string | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
+  updated_at: TimestampColumn;
+};
+
+export type EmailAccountMailSettingsTable = {
+  workspace_id: string;
+  account_source_sqlite_id: number;
+  account_id: number | null;
+  ticket_prefix: string;
+  ticket_next_number: number;
+  ticket_number_padding: number;
+  thread_namespace: string;
+  source_row: JsonColumn;
+  imported_in_run_id: string | null;
+  created_at: TimestampColumn | null;
   updated_at: TimestampColumn;
 };
 
@@ -738,6 +778,8 @@ export type EmailThreadAliasesTable = {
   id: Generated<number>;
   workspace_id: string;
   source_sqlite_id: number;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
   alias_thread_id: string;
   canonical_thread_id: string;
   confidence: string;
@@ -769,6 +811,9 @@ export type EmailAiPromptsTable = SourceImportedTable & {
   target: string;
   profile_source_sqlite_id: number | null;
   profile_id: number | null;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   sort_order: number;
   created_at: TimestampColumn | null;
 };
@@ -784,6 +829,9 @@ export type EmailWorkflowsTable = SourceImportedTable & {
   cron_expr: string | null;
   schedule_account_source_sqlite_id: number | null;
   schedule_account_id: number | null;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
   execution_mode: string;
   engine_version: number;
   legacy_created_by_user_id: string | null;
@@ -847,6 +895,10 @@ export type WorkflowKnowledgeBasesTable = SourceImportedTable & {
   id: Generated<number>;
   name: string;
   description: string | null;
+  account_source_sqlite_id: number | null;
+  account_id: number | null;
+  override_key: string | null;
+  knowledge_context: string | null;
   created_at: TimestampColumn | null;
 };
 
@@ -998,3 +1050,70 @@ export type DealRow = Selectable<DealsTable>;
 export type TaskRow = Selectable<TasksTable>;
 export type CalendarEventRow = Selectable<CalendarEventsTable>;
 export type EmailMessageRow = Selectable<EmailMessagesTable>;
+export type ReturnReasonRow = Selectable<ReturnReasonsTable>;
+export type ReturnRow = Selectable<ReturnsTable>;
+export type ReturnItemRow = Selectable<ReturnItemsTable>;
+
+export type ReturnStatus =
+  | 'pending'
+  | 'approved'
+  | 'received'
+  | 'refunded'
+  | 'exchanged'
+  | 'credited'
+  | 'rejected'
+  | 'cancelled';
+export type ReturnOutcome = 'refund' | 'exchange' | 'credit' | 'keep';
+export type ReturnItemCondition = 'new' | 'opened' | 'used' | 'damaged';
+
+export type ReturnReasonsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  code: string;
+  label: string;
+  is_active: boolean;
+  sort_order: number;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type ReturnsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  return_number: string;
+  customer_id: number | null;
+  email_message_id: number | null;
+  jtl_order_number: string | null;
+  jtl_kauftrag: number | null;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  customer_email: string | null;
+  customer_name: string | null;
+  notes: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type ReturnItemsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  return_id: number;
+  product_id: number | null;
+  reason_id: number | null;
+  sku: string | null;
+  product_name: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  notes: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type WorkspacePortalSettingsTable = {
+  workspace_id: string;
+  returns_portal_token: string | null;
+  returns_portal_enabled: boolean;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+export type WorkspacePortalSettingsRow = Selectable<WorkspacePortalSettingsTable>;

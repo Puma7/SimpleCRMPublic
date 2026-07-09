@@ -7,7 +7,9 @@ import {
   evaluatePreWorkflowMailSecurity,
   evaluateSenderFilterFromLists,
   isCorruptRawHeaders,
+  isSpamLearningFeatureKey,
   normalizeAddressJson,
+  addressJson,
   normalizeEmailAddress,
   parseSenderList,
   parseScheduledSendDraftStateFromValues,
@@ -15,6 +17,10 @@ import {
   scheduledSendLastErrorKey,
   scheduledSendStatusKey,
   scheduledSendSyncInfoKeys,
+  shouldAutoApplySpamStatus,
+  shouldRunInitialSpamScoring,
+  SPAM_ENGINE_MODEL_VERSION,
+  addressesFromRecipientJson,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
@@ -49,6 +55,7 @@ import type {
   EmailMessageSpamStatusMutationInput,
   EmailComposeDraftCreateInput,
   EmailComposeDraftMutationResult,
+  EmailOutboundValidationApiPort,
   SpamDecisionRecord,
 } from '../api/types';
 import type {
@@ -78,6 +85,7 @@ export type PostgresMailReadPortOptions = Readonly<{
   applyWorkspaceSession?: WorkspaceSessionApplier;
   rspamdFetch?: typeof fetch;
   seenFlagSync?: Pick<ServerWorkflowImapActionPort, 'setSeen'>;
+  outboundValidation?: EmailOutboundValidationApiPort;
 }>;
 
 export type PostgresEmailAccountReadPortOptions = PostgresMailReadPortOptions & Readonly<{
@@ -132,6 +140,7 @@ const emailAccountSelectColumns = [
   'vacation_subject',
   'vacation_body_text',
   'request_read_receipt',
+  'imap_delete_opt_in',
   'default_remote_content_policy',
   'respond_to_read_receipts',
   'updated_at',
@@ -194,6 +203,11 @@ const emailMessageSpamStatusMutationColumns = [
   'rspamd_action',
   'raw_headers',
   'raw_rfc822_b64',
+  'spam_score',
+  'spam_score_label',
+  'spam_decision_source',
+  'spam_score_breakdown_json',
+  'spam_decided_at',
 ] as const;
 
 const emailMessageSecurityCheckColumns = [
@@ -252,12 +266,12 @@ const emailAttachmentSelectColumns = [
   'content_type',
   'size_bytes',
   'content_sha256',
+  'storage_path',
   'updated_at',
 ] as const;
 
 const emailAttachmentContentSelectColumns = [
   ...emailAttachmentSelectColumns,
-  'storage_path',
 ] as const;
 
 const MAX_EMAIL_MESSAGE_LIST_LIMIT = 500;
@@ -284,6 +298,7 @@ type EmailMailFolderCountsRow = {
   inbox_unread: number | string | bigint | null;
   sent_failed: number | string | bigint | null;
   drafts: number | string | bigint | null;
+  scheduled_send: number | string | bigint | null;
   archived: number | string | bigint | null;
   spam_review: number | string | bigint | null;
   spam: number | string | bigint | null;
@@ -418,6 +433,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
                 vacation_subject: input.values.vacationSubject ?? null,
                 vacation_body_text: input.values.vacationBodyText ?? null,
                 request_read_receipt: input.values.requestReadReceipt ?? false,
+                imap_delete_opt_in: input.values.imapDeleteOptIn ?? false,
                 default_remote_content_policy: 'blocked',
                 respond_to_read_receipts: 'never',
                 read_receipt_trusted_domains: null,
@@ -775,6 +791,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               snippet,
               ...(input.values.bodyHtml === undefined ? {} : { body_html: input.values.bodyHtml }),
               ...(input.values.toJson === undefined ? {} : { to_json: input.values.toJson }),
+              ...(input.values.fromJson === undefined ? {} : { from_json: input.values.fromJson }),
               ...(input.values.ccJson === undefined ? {} : { cc_json: input.values.ccJson }),
               ...(input.values.bccJson === undefined ? {} : { bcc_json: input.values.bccJson }),
               ...(input.values.draftAttachmentPaths === undefined ? {} : {
@@ -795,6 +812,40 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       );
     },
     async scheduleDraftSend(input) {
+      if (input.sendAt && options.outboundValidation) {
+        const draftForValidation = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => selectLocalDraftForMutation(trx, input.workspaceId, input.messageId),
+          { applySession: options.applyWorkspaceSession },
+        );
+        if (!draftForValidation) return { ok: false as const, reason: 'not_found' as const };
+        if (!isSchedulableLocalDraft(draftForValidation)) {
+          return { ok: false as const, reason: 'not_local_draft' as const };
+        }
+        const validation = await options.outboundValidation.validate({
+          workspaceId: input.workspaceId,
+          actorUserId: 'system',
+          values: {
+            messageId: input.messageId,
+            subject: draftForValidation.subject?.trim() || '(Ohne Betreff)',
+            bodyText: draftForValidation.body_text ?? '',
+            bodyHtml: draftForValidation.body_html,
+            to: recipientFieldFromStoredJson(draftForValidation.to_json),
+            cc: recipientFieldFromStoredJson(draftForValidation.cc_json) || undefined,
+            bcc: recipientFieldFromStoredJson(draftForValidation.bcc_json) || undefined,
+            attachmentCount: countDraftAttachmentPaths(draftForValidation.draft_attachment_paths_json),
+          },
+        });
+        if (!validation.allowed) {
+          return {
+            ok: false as const,
+            reason: 'outbound_blocked' as const,
+            message: validation.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
+          };
+        }
+      }
+
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -806,6 +857,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .updateTable('email_messages')
             .set({
               scheduled_send_at: input.sendAt,
+              outbound_hold: false,
+              outbound_block_reason: null,
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -1532,6 +1585,99 @@ async function runPostgresMailSecurityCheck(
   };
 }
 
+async function loadExistingSpamDecisionForMessage(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+): Promise<EmailMessageSpamDecisionResult> {
+  const message = await trx
+    .selectFrom('email_messages')
+    .select(emailMessageSummaryColumns)
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirstOrThrow();
+  const decisionRow = await trx
+    .selectFrom('email_spam_decisions')
+    .select([
+      'id',
+      'source_sqlite_id',
+      'message_source_sqlite_id',
+      'account_source_sqlite_id',
+      'message_id',
+      'account_id',
+      'score',
+      'status',
+      'source',
+      'breakdown_json',
+      'model_version',
+      'created_at',
+      'updated_at',
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('message_id', '=', messageId)
+    .orderBy('created_at', 'desc')
+    .orderBy('id', 'desc')
+    .limit(1)
+    .executeTakeFirst();
+  if (decisionRow) {
+    return {
+      message: mapEmailMessageRow(message, false),
+      decision: {
+        id: Number(decisionRow.id),
+        sourceSqliteId: decisionRow.source_sqlite_id === null ? null : Number(decisionRow.source_sqlite_id),
+        messageSourceSqliteId: decisionRow.message_source_sqlite_id === null
+          ? null
+          : Number(decisionRow.message_source_sqlite_id),
+        accountSourceSqliteId: Number(decisionRow.account_source_sqlite_id),
+        messageId: decisionRow.message_id === null ? null : Number(decisionRow.message_id),
+        accountId: decisionRow.account_id === null ? null : Number(decisionRow.account_id),
+        score: decisionRow.score,
+        status: decisionRow.status as 'clean' | 'review' | 'spam',
+        source: decisionRow.source,
+        breakdown: decisionRow.breakdown_json,
+        modelVersion: decisionRow.model_version,
+        createdAt: timestampToIsoOrNull(decisionRow.created_at),
+        updatedAt: timestampToIso(decisionRow.updated_at),
+      },
+    };
+  }
+
+  const stored = await trx
+    .selectFrom('email_messages')
+    .select([
+      'spam_score',
+      'spam_score_label',
+      'spam_decision_source',
+      'spam_score_breakdown_json',
+      'spam_decided_at',
+      'account_source_sqlite_id',
+      'source_sqlite_id',
+      'account_id',
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirstOrThrow();
+
+  return {
+    message: mapEmailMessageRow(message, false),
+    decision: {
+      id: 0,
+      sourceSqliteId: null,
+      messageSourceSqliteId: Number(stored.source_sqlite_id),
+      accountSourceSqliteId: Number(stored.account_source_sqlite_id),
+      messageId,
+      accountId: stored.account_id === null ? null : Number(stored.account_id),
+      score: stored.spam_score ?? 0,
+      status: (stored.spam_score_label ?? 'clean') as 'clean' | 'review' | 'spam',
+      source: stored.spam_decision_source ?? 'stored',
+      breakdown: stored.spam_score_breakdown_json,
+      modelVersion: SPAM_ENGINE_MODEL_VERSION,
+      createdAt: timestampToIsoOrNull(stored.spam_decided_at),
+      updatedAt: timestampToIsoOrNull(stored.spam_decided_at) ?? new Date().toISOString(),
+    },
+  };
+}
+
 async function evaluateSpamDecisionForMessage(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -1539,6 +1685,56 @@ async function evaluateSpamDecisionForMessage(
   applyStatus: boolean,
   now: Date,
 ): Promise<EmailMessageSpamDecisionResult> {
+  if (!shouldRunInitialSpamScoring({ spamDecidedAt: current.spam_decided_at })) {
+    const existing = await loadExistingSpamDecisionForMessage(trx, workspaceId, Number(current.id));
+    if (applyStatus && existing.decision) {
+      const nextStatus = existing.decision.status;
+      const currentStatus = current.spam_status ?? 'clean';
+      const decisionAtMs = Date.parse(
+        existing.decision.updatedAt ?? existing.decision.createdAt ?? '',
+      );
+      const messageDecidedAtMs = current.spam_decided_at
+        ? new Date(current.spam_decided_at).getTime()
+        : Number.NaN;
+      const scoreStoredAwaitingApply =
+        Number.isFinite(decisionAtMs) &&
+        Number.isFinite(messageDecidedAtMs) &&
+        messageDecidedAtMs <= decisionAtMs + 5000;
+      const pendingApply =
+        (nextStatus === 'review' || nextStatus === 'spam') &&
+        currentStatus !== nextStatus &&
+        scoreStoredAwaitingApply;
+      if (
+        pendingApply &&
+        shouldAutoApplySpamStatus(
+          {
+            doneLocal: current.done_local,
+            spamStatus: current.spam_status,
+            isSpam: current.is_spam,
+            spamDecidedAt: null,
+          },
+          nextStatus,
+        )
+      ) {
+        const updated = await trx
+          .updateTable('email_messages')
+          .set({
+            ...spamStatusPatch(nextStatus, current.folder_kind ?? 'inbox'),
+            updated_at: now,
+          })
+          .where('workspace_id', '=', workspaceId)
+          .where('id', '=', Number(current.id))
+          .returning(emailMessageSummaryColumns)
+          .executeTakeFirstOrThrow();
+        return {
+          message: mapEmailMessageRow(updated, false),
+          decision: existing.decision,
+        };
+      }
+    }
+    return existing;
+  }
+
   const preview = buildFeaturePreview(emailMessageSpamDecisionInputFromRow(current));
   const settings = await loadSpamEngineSettings(trx, workspaceId);
   const listMatch = await selectSpamListMatchForMessage(
@@ -1554,6 +1750,17 @@ async function evaluateSpamDecisionForMessage(
     listMatch,
     featureStats,
   });
+  const shouldApplyStatus =
+    applyStatus &&
+    shouldAutoApplySpamStatus(
+      {
+        doneLocal: current.done_local,
+        spamStatus: current.spam_status,
+        isSpam: current.is_spam,
+        spamDecidedAt: current.spam_decided_at,
+      },
+      decision.status,
+    );
   const messagePatch: Partial<Updateable<EmailMessagesTable>> = {
     spam_score: decision.score,
     spam_score_label: decision.status,
@@ -1561,7 +1768,7 @@ async function evaluateSpamDecisionForMessage(
     spam_score_breakdown_json: decision,
     spam_decided_at: now,
     updated_at: now,
-    ...(applyStatus ? spamStatusPatch(decision.status, current.folder_kind) : {}),
+    ...(shouldApplyStatus ? spamStatusPatch(decision.status, current.folder_kind) : {}),
   };
 
   const updated = await trx
@@ -1743,6 +1950,7 @@ async function selectConversationMessages(
         lower(coalesce(from_json::text, '')) LIKE ${pattern} ESCAPE '\\'
         OR lower(coalesce(to_json::text, '')) LIKE ${pattern} ESCAPE '\\'
         OR lower(coalesce(cc_json::text, '')) LIKE ${pattern} ESCAPE '\\'
+        OR lower(coalesce(bcc_json::text, '')) LIKE ${pattern} ESCAPE '\\'
       )`)
       .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')
       .orderBy('id', 'desc')
@@ -2364,7 +2572,7 @@ async function selectMailFolderCounts(
             and archived = false
             and is_spam = false
             and coalesce(spam_status, 'clean') = 'clean')
-          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true)
+          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true and scheduled_send_at is null)
         )
         and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('inbox'),
@@ -2377,7 +2585,7 @@ async function selectMailFolderCounts(
             and archived = false
             and is_spam = false
             and coalesce(spam_status, 'clean') = 'clean')
-          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true)
+          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true and scheduled_send_at is null)
         )
         and coalesce(done_local, false) = false
         and seen_local = false
@@ -2393,7 +2601,14 @@ async function selectMailFolderCounts(
         soft_deleted = false
         and (snoozed_until is null or snoozed_until <= now())
         and folder_kind = 'draft'
+        and scheduled_send_at is null
       ) then 1 else 0 end), 0)`.as('drafts'),
+      kyselySql<number | string | bigint | null>`coalesce(sum(case when (
+        soft_deleted = false
+        and (snoozed_until is null or snoozed_until <= now())
+        and folder_kind = 'draft'
+        and scheduled_send_at is not null
+      ) then 1 else 0 end), 0)`.as('scheduled_send'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
         and (snoozed_until is null or snoozed_until <= now())
@@ -2401,6 +2616,7 @@ async function selectMailFolderCounts(
         and (uid >= 0 or pop3_uidl is not null)
         and is_spam = false
         and coalesce(spam_status, 'clean') = 'clean'
+        and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('archived'),
       kyselySql<number | string | bigint | null>`coalesce(sum(case when (
         soft_deleted = false
@@ -2469,7 +2685,7 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
   if (view === 'inbox') {
     return query.where(kyselySql<boolean>`(
       ((${nonDraftMail}) AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = false AND is_spam = false AND coalesce(spam_status, 'clean') = 'clean')
-      OR (uid < 0 AND folder_kind = 'draft' AND outbound_hold = true)
+      OR (uid < 0 AND folder_kind = 'draft' AND outbound_hold = true AND scheduled_send_at IS NULL)
     )`);
   }
   if (view === 'sent') {
@@ -2483,10 +2699,19 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
       .where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'clean'`);
   }
   if (view === 'drafts') {
-    return query.where('folder_kind', '=', 'draft');
+    return query
+      .where('folder_kind', '=', 'draft')
+      .where('scheduled_send_at', 'is', null);
+  }
+  if (view === 'scheduled_send') {
+    return query
+      .where('folder_kind', '=', 'draft')
+      .where('scheduled_send_at', 'is not', null);
   }
   if (view === 'spam_review') {
-    return query.where(nonDraftMail).where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'review'`);
+    return query
+      .where(nonDraftMail)
+      .where(kyselySql<boolean>`coalesce(spam_status, 'clean') = 'review'`);
   }
   if (view === 'spam') {
     return query.where(nonDraftMail).where(kyselySql<boolean>`(is_spam = true OR coalesce(spam_status, 'clean') = 'spam')`);
@@ -2727,6 +2952,7 @@ function applyMessageListOrder(
   view: Parameters<EmailMessageApiPort['list']>[0]['view'],
 ): any {
   if (view === 'snoozed') return query.orderBy('snoozed_until', 'asc').orderBy('id', 'desc');
+  if (view === 'scheduled_send') return query.orderBy('scheduled_send_at', 'asc').orderBy('id', 'asc');
   if (sort === 'priority') {
     return query
       .orderBy(messagePriorityRankSql, 'asc')
@@ -3376,6 +3602,7 @@ async function insertSpamLearningEventForMessage(
     .execute();
 
   for (const featureKey of input.featureKeys) {
+    if (!isSpamLearningFeatureKey(featureKey)) continue;
     await trx
       .insertInto('email_spam_feature_stats')
       .values({
@@ -3437,7 +3664,14 @@ export async function createPostgresComposeDraftInTransaction(
       in_reply_to: null,
       references_header: null,
       subject: input.values.subject ?? '(Entwurf)',
-      from_json: null,
+      from_json: addressJson({
+        value: [{
+          address: String(account.email_address).trim(),
+          ...(String(account.display_name ?? '').trim()
+            ? { name: String(account.display_name).trim() }
+            : {}),
+        }],
+      }),
       to_json: input.values.toJson ?? null,
       cc_json: null,
       bcc_json: null,
@@ -3568,6 +3802,26 @@ function isLocalDraftUid(row: Pick<EmailMessageRow, 'uid'>): boolean {
 
 function isSchedulableLocalDraft(row: Pick<EmailMessageRow, 'uid' | 'folder_kind'>): boolean {
   return Number(row.uid) < 0 && row.folder_kind === 'draft';
+}
+
+function recipientFieldFromStoredJson(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  try {
+    const asString = typeof value === 'string' ? value : JSON.stringify(value);
+    return addressesFromRecipientJson(asString);
+  } catch {
+    return '';
+  }
+}
+
+function countDraftAttachmentPaths(value: unknown): number {
+  if (!value) return 0;
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function draftAttachmentPathsToJsonValue(paths: readonly string[]): string | null {
@@ -3858,6 +4112,7 @@ function mutationToEmailAccountPatch(
     ...(values.vacationSubject === undefined ? {} : { vacation_subject: values.vacationSubject }),
     ...(values.vacationBodyText === undefined ? {} : { vacation_body_text: values.vacationBodyText }),
     ...(values.requestReadReceipt === undefined ? {} : { request_read_receipt: values.requestReadReceipt }),
+    ...(values.imapDeleteOptIn === undefined ? {} : { imap_delete_opt_in: values.imapDeleteOptIn }),
   };
 }
 
@@ -3922,6 +4177,7 @@ function mapEmailAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelect
     vacationSubject: row.vacation_subject,
     vacationBodyText: row.vacation_body_text,
     requestReadReceipt: row.request_read_receipt,
+    imapDeleteOptIn: row.imap_delete_opt_in,
     defaultRemoteContentPolicy: row.default_remote_content_policy,
     respondToReadReceipts: row.respond_to_read_receipts,
     imapPasswordConfigured: Boolean(row.imap_password_secret_id ?? row.keytar_account_key),
@@ -4016,6 +4272,7 @@ function mapEmailMailFolderCountsRow(row: EmailMailFolderCountsRow | undefined):
     inboxUnread: countValue(row?.inbox_unread),
     sentFailed: countValue(row?.sent_failed),
     drafts: countValue(row?.drafts),
+    scheduledSend: countValue(row?.scheduled_send),
     archived: countValue(row?.archived),
     spamReview: countValue(row?.spam_review),
     spam: countValue(row?.spam),
@@ -4147,6 +4404,7 @@ function mapEmailAttachmentRow(
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     contentSha256: row.content_sha256,
+    storagePath: row.storage_path,
     updatedAt: timestampToIso(row.updated_at),
   };
 }

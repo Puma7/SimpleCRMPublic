@@ -1,6 +1,7 @@
 import { listAiPrompts, type AiPromptRow } from '../../email/email-crm-store';
 import { resolvePromptProfileId } from '../../email/email-ai-profiles';
 import { runChatCompletion } from '../../email/email-openai';
+import type { AccountOverrideScope } from '../../../shared/mail-account-overrides';
 
 function profileIdFromConfig(config: Record<string, unknown>): number | null {
   const v = config.profileId;
@@ -22,8 +23,9 @@ function effectiveProfileId(
 /** Match UI default: first library prompt when promptId is missing or 0. */
 function resolvePromptForConfig(
   config: Record<string, unknown>,
+  scope?: AccountOverrideScope,
 ): AiPromptRow | undefined {
-  const prompts = listAiPrompts();
+  const prompts = listAiPrompts(scope);
   const id = Number(config.promptId ?? 0);
   if (id > 0) {
     const found = prompts.find((x) => x.id === id);
@@ -42,10 +44,19 @@ import { parseOutboundReviewResponse } from '../../email/email-outbound-review-p
 // createComposeDraft used by ai.agent
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
 import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
-import { searchKnowledgeChunks } from '../knowledge-base';
+import {
+  classificationPrompt,
+  parseCannedPickNumber,
+  parseClassificationOutput,
+} from '../ai-classification-parse';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
+
+function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
+  return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+}
 
 export function registerAiNodes(register: Reg): void {
   register({
@@ -55,11 +66,13 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'action',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
     execute: async (ctx, config) => {
-      const p = resolvePromptForConfig(config);
+      if (ctx.dryRun && !ctx.previewOutbound) {
+        return { status: 'ok', message: 'dry-run ai review skipped' };
+      }
+      const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
       const blockKw = String(config.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
-      if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.review' };
       try {
         const out = await runChatCompletion(
           'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Prüfauftrag problematisch ist.',
@@ -75,7 +88,7 @@ export function registerAiNodes(register: Reg): void {
           if (!ctx.dryRun && id != null) setOutboundHold(id, true, reason);
           return { status: 'ok', blocked: true, blockReason: reason };
         }
-        if (blocked && ctx.messageId != null) addMessageTag(ctx.messageId, 'ki-review-block');
+        if (blocked && ctx.messageId != null && !ctx.dryRun) addMessageTag(ctx.messageId, 'ki-review-block');
         return { status: 'ok' };
       } catch (e) {
         if (ctx.direction === 'outbound') {
@@ -106,6 +119,9 @@ export function registerAiNodes(register: Reg): void {
       'Prüft ausgehende E-Mails (Ton, Rechtschreibung, Anhang, Betrugs-Antworten) vor dem Versand.',
     defaultConfig: { promptId: 0, checkReplyContext: true },
     execute: async (ctx, config) => {
+      if (ctx.dryRun && !ctx.previewOutbound) {
+        return { status: 'ok', message: 'dry-run outbound review skipped' };
+      }
       if (ctx.direction !== 'outbound') {
         return { status: 'skipped', message: 'Nur für ausgehende E-Mails' };
       }
@@ -113,7 +129,7 @@ export function registerAiNodes(register: Reg): void {
       if (id == null) return { status: 'error', message: 'Kein Entwurf' };
 
       const promptId = Number(config.promptId ?? 0);
-      const prompts = listAiPrompts();
+      const prompts = listAiPrompts(accountScopeFromContext(ctx));
       const custom = promptId > 0 ? prompts.find((x) => x.id === promptId) : undefined;
 
       let parentBlock = '';
@@ -171,8 +187,6 @@ export function registerAiNodes(register: Reg): void {
         'CODE: optionaler_code (z.B. MISSING_ATTACHMENT, PHISHING_REPLY, TONE, SPELLING, WRONG_NAME)',
       ].join('\n');
 
-      if (ctx.dryRun) return { status: 'ok', message: 'dry-run ai.outbound_review' };
-
       try {
         const out = await runChatCompletion(
           system,
@@ -202,7 +216,7 @@ export function registerAiNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { promptId: 0, targetVariable: 'ai.text' },
     execute: async (ctx, config) => {
-      const p = resolvePromptForConfig(config);
+      const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
       const user = interpolateTemplate(p.user_template, ctx);
       if (ctx.dryRun) return { status: 'ok' };
@@ -291,17 +305,27 @@ export function registerAiNodes(register: Reg): void {
         mode === 'full' || !ctx.message
           ? ctx.strings.combined_text
           : buildMetadataContextFromMessage(ctx.message).combined_text;
-      const prompt = `Klassifiziere die E-Mail in genau eine Kategorie: ${labels.join(', ')}. Antworte nur mit dem Kategorienamen.\n\n${text}`;
-      if (ctx.dryRun) return { status: 'ok' };
+      const prompt = classificationPrompt(labels, text);
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          variables: { 'ai.class': labels[0] ?? '', 'ai.class_confidence': 85 },
+        };
+      }
       const out = await runChatCompletion(
         'Du bist ein E-Mail-Klassifizierer.',
         prompt,
         profileIdFromConfig(config),
       );
       ctx.ai.lastResponse = out;
-      const label = out.trim().split(/\s+/)[0] ?? '';
+      const parsed = parseClassificationOutput(out);
+      const label = parsed.label;
+      const confidence = parsed.confidence ?? 0;
       if (ctx.messageId != null && label) addMessageTag(ctx.messageId, `ki:${label}`);
-      return { status: 'ok', variables: { 'ai.class': label } };
+      return {
+        status: 'ok',
+        variables: { 'ai.class': label, 'ai.class_confidence': confidence },
+      };
     },
   });
 
@@ -319,9 +343,11 @@ export function registerAiNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const system = String(config.systemPrompt ?? '');
       const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
-      const chunks = kbId
-        ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
-        : [];
+      const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+      const chunks =
+        kbId != null && kbId > 0
+          ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
+          : await searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
       const kbText = chunks.map((c) => c.content).join('\n---\n');
       const user = [
         'Nachricht:',
@@ -333,6 +359,10 @@ export function registerAiNodes(register: Reg): void {
       ctx.ai.lastResponse = out;
       const variables: Record<string, string | number | boolean | null> = {
         'ai.agent.response': out,
+        'ai.agent.source_count': chunks.length,
+        'ai.agent.sources': chunks
+          .map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`))
+          .join(', '),
       };
       if (config.createDraft !== false && ctx.message) {
         const id = createComposeDraft({
@@ -441,7 +471,7 @@ export function registerAiNodes(register: Reg): void {
       }
       if (tool === 'get_canned') {
         const { listCannedResponses } = await import('../../email/email-crm-store');
-        const list = listCannedResponses().slice(0, 5);
+        const list = listCannedResponses(accountScopeFromContext(ctx)).slice(0, 5);
         return {
           status: 'ok',
           variables: { 'tool.result': list.map((c) => c.title).join(', ') },
@@ -451,6 +481,79 @@ export function registerAiNodes(register: Reg): void {
         status: 'ok',
         variables: { 'tool.result': ctx.strings.combined_text.slice(0, 500) },
       };
+    },
+  });
+
+  register({
+    type: 'ai.pick_canned',
+    label: 'KI: Textbaustein wählen',
+    category: 'ai',
+    canvasType: 'registry',
+    description: 'Die KI wählt den passenden Textbaustein, füllt Platzhalter und legt einen Entwurf an.',
+    defaultConfig: { createDraft: true },
+    execute: async (ctx, config) => {
+      const { listCannedResponses } = await import('../../email/email-crm-store');
+      const canned = listCannedResponses(accountScopeFromContext(ctx));
+      if (canned.length === 0) {
+        return { status: 'error', message: 'Keine Textbausteine vorhanden' };
+      }
+
+      const createDraft = config.createDraft !== false;
+      if (ctx.dryRun) {
+        const variables: Record<string, string | number | boolean | null> = {
+          'ai.canned.pick': 1,
+          'ai.canned.status': 'ready',
+        };
+        if (createDraft) variables['draft.id'] = 0;
+        return { status: 'ok', message: 'dry-run pick_canned', variables };
+      }
+
+      const list = canned.map((row, index) => `${index + 1}. ${row.title}`).join('\n');
+      const out = await runChatCompletion(
+        'Du wählst den am besten passenden Textbaustein für die Kundenmail. Antworte nur mit der Nummer des Bausteins, oder 0 wenn keiner passt.',
+        `Textbausteine:\n${list}\n\nKundenmail:\n${ctx.strings.combined_text ?? ''}`,
+        profileIdFromConfig(config),
+      );
+      ctx.ai.lastResponse = out;
+      const pick = parseCannedPickNumber(out, canned.length);
+      const variables: Record<string, string | number | boolean | null> = {
+        'ai.canned.pick': pick,
+        'ai.canned.status': 'ready',
+      };
+
+      if (pick > 0) {
+        const chosen = canned[pick - 1]!;
+        variables['ai.canned.id'] = chosen.id;
+        variables['ai.canned.title'] = chosen.title;
+        const draftBody = interpolateTemplate(chosen.body, ctx);
+        variables['ai.canned.text'] = draftBody.slice(0, 8000);
+
+        if (createDraft && ctx.message) {
+          const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse');
+          const { updateComposeDraft } = await import('../../email/email-store');
+          const replyTo = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
+          const subjectRaw = ctx.message.subject?.trim() ?? '';
+          const reSubject = !subjectRaw
+            ? 'Re:'
+            : /^re:/i.test(subjectRaw)
+              ? subjectRaw
+              : `Re: ${subjectRaw}`;
+          const id = createComposeDraft({
+            accountId: ctx.message.account_id,
+            subject: reSubject,
+            bodyText: draftBody,
+            toJson: replyTo ? recipientJsonFromField(replyTo) : null,
+          });
+          if (ctx.messageId != null) {
+            updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
+          }
+          variables['draft.id'] = id;
+        }
+      } else if (createDraft) {
+        variables['ai.canned.no_match'] = true;
+      }
+
+      return { status: 'ok', variables };
     },
   });
 }

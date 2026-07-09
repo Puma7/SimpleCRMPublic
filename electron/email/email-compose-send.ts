@@ -3,6 +3,7 @@ import path from 'path';
 import {
   extractEmailAddressesFromRecipientField,
   recipientJsonFromField,
+  senderJsonFromMailbox,
   validateRecipientField,
 } from '../../shared/email-recipient-parse';
 import {
@@ -19,7 +20,7 @@ import {
 } from './compose-reply-done';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
-import { ensureTicketInSubject, extractTicketFromSubject, generateTicketCode, getOrCreateThreadForTicket } from './email-ticket';
+import { ensureTicketInSubject, extractKnownTicketFromSubject, getOrCreateThreadForTicket, createTicketCodeForAccount } from './email-ticket';
 import {
   buildOutboundThreadingHeaders,
   generateOutboundMessageId,
@@ -250,6 +251,7 @@ async function finalizeCommittedSmtpDraft(
     bcc?: string;
     inReplyToMessageId?: number | null;
     requestReadReceipt?: boolean;
+    attachmentPaths?: string[];
   },
   draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
   html: string | null,
@@ -273,6 +275,15 @@ async function finalizeCommittedSmtpDraft(
   const ticket = draft.ticket_code?.trim();
   const finalSubject = ticket ? ensureTicketInSubject(subjectBase, ticket) : subjectBase;
   const requestReceipt = resolveRequestReadReceipt(acc, input.requestReadReceipt);
+  const recoveredAttachments = (input.attachmentPaths ?? [])
+    .filter((attachmentPath) => {
+      try {
+        return fs.statSync(attachmentPath).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .map((attachmentPath) => ({ filename: path.basename(attachmentPath), path: attachmentPath }));
 
   const fin = await finalizeSentDraft({
     accountId: input.accountId,
@@ -287,7 +298,7 @@ async function finalizeCommittedSmtpDraft(
     messageId: outboundMessageId,
     inReplyTo: draft.in_reply_to ?? undefined,
     references: draft.references_header ?? undefined,
-    attachments: [],
+    attachments: recoveredAttachments,
     requestReadReceipt: requestReceipt,
   });
   if (fin.sentAppendWarning) {
@@ -368,6 +379,9 @@ export async function sendComposeDraft(input: {
 
   const inlineTempPaths: string[] = [];
   try {
+    const acc = getEmailAccountById(input.accountId);
+    if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
+
     let bodyText = input.bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
     if (input.pgpEncrypt) {
@@ -402,6 +416,7 @@ export async function sendComposeDraft(input: {
     const toJson = recipientJsonFromField(input.to);
     const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
     const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
+    const fromJson = senderJsonFromMailbox(acc.email_address, acc.display_name);
 
     updateComposeDraft(input.draftMessageId, {
       subject: input.subject,
@@ -410,6 +425,7 @@ export async function sendComposeDraft(input: {
       toJson,
       ccJson,
       bccJson,
+      fromJson,
       draftAttachmentPaths: input.attachmentPaths,
     });
 
@@ -428,6 +444,7 @@ export async function sendComposeDraft(input: {
 
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,
+      accountId: input.accountId,
       subject: input.subject,
       bodyText,
       bodyHtml: html ?? undefined,
@@ -457,21 +474,18 @@ export async function sendComposeDraft(input: {
       }
     }
     if (!ticketCode) {
-      const fromSubj = extractTicketFromSubject(input.subject);
+      const fromSubj = extractKnownTicketFromSubject(input.subject);
       if (fromSubj) {
         ticketCode = fromSubj;
       } else {
-        ticketCode = generateTicketCode();
+        ticketCode = createTicketCodeForAccount(input.accountId);
       }
     }
     if (!threadId && ticketCode) {
-      threadId = getOrCreateThreadForTicket(ticketCode);
+      threadId = getOrCreateThreadForTicket(ticketCode, input.accountId);
     }
 
     const finalSubject = ensureTicketInSubject(input.subject.trim() || '(Ohne Betreff)', ticketCode);
-
-    const acc = getEmailAccountById(input.accountId);
-    if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
     const threadHeaders = buildOutboundThreadingHeaders(
       parentForThreading

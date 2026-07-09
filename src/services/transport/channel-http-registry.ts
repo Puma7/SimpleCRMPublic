@@ -3,6 +3,18 @@ import { AUTOMATION_SCOPES, type AutomationScope } from "@shared/automation-api"
 import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
+import { isPasswordLengthValid, MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from "@shared/signature-template"
+import { RendererTransportError } from "./renderer-transport"
+import {
+  accountOverrideScopeFromPayload,
+  resolveScopedAccountOverrides,
+  type AccountOverrideScopePayload,
+  type ScopedAccountOverrideRow,
+} from "@shared/mail-account-overrides"
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE"
 
@@ -34,6 +46,9 @@ type AuthUserRecord = {
   displayName?: string | null
   role?: string | null
   disabledAt?: string | null
+  loginPinEnabled?: boolean | null
+  mfaEnabled?: boolean | null
+  mfaMethod?: "totp" | "email" | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -297,6 +312,7 @@ type EmailAccountRecord = {
   vacationSubject?: string | null
   vacationBodyText?: string | null
   requestReadReceipt?: boolean | number | null
+  imapDeleteOptIn?: boolean | number | null
   updatedAt?: string | null
 }
 
@@ -306,6 +322,7 @@ type EmailAttachmentRecord = {
   filename?: string | null
   contentType?: string | null
   sizeBytes?: number | null
+  storagePath?: string | null
 }
 
 type EmailMessageRecord = {
@@ -406,6 +423,7 @@ type EmailMailFolderCountsRecord = {
   inboxUnread?: number | null
   sentFailed?: number | null
   drafts?: number | null
+  scheduledSend?: number | null
   archived?: number | null
   spamReview?: number | null
   spam?: number | null
@@ -458,6 +476,13 @@ type EmailDiagnosticsRecord = {
     idleImapAccountIds?: unknown
   } | null
   accounts?: unknown
+  jobQueue?: {
+    ready?: number | null
+    locked?: number | null
+    lagSeconds?: number | null
+    oldestLockedSeconds?: number | null
+    samples?: unknown
+  } | null
 }
 
 type EmailReportingRecord = {
@@ -544,6 +569,9 @@ type EmailCannedResponseRecord = {
   id: number
   title?: string | null
   body?: string | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   sortOrder?: number | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -582,6 +610,9 @@ type AiPromptRecord = {
   target?: string | null
   profileSourceSqliteId?: number | null
   profileId?: number | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   sortOrder?: number | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -612,6 +643,9 @@ type WorkflowRecord = {
   cronExpr?: string | null
   scheduleAccountSourceSqliteId?: number | null
   scheduleAccountId?: number | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
   executionMode?: string | null
   engineVersion?: number | null
   legacyCreatedByUserId?: string | null
@@ -684,6 +718,10 @@ type WorkflowKnowledgeBaseRecord = {
   sourceSqliteId?: number | null
   name?: string | null
   description?: string | null
+  accountSourceSqliteId?: number | null
+  accountId?: number | null
+  overrideKey?: string | null
+  knowledgeContext?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -810,6 +848,15 @@ type AutomationApiKeyRecord = {
 }
 
 const DEFAULT_LIST_LIMIT = 100
+// Per-message category assignments are loaded for every check-then-act helper
+// (Add/Remove/Set). The full set MUST be visible — an unseen row leads to a
+// silent "removed: false" or a duplicate-POST 409. The server caps list
+// limits at 100 (see normalizeLimit in postgres-mail-metadata-read-ports), so
+// we stay at DEFAULT_LIST_LIMIT and use the standard cursor-pagination helper
+// (collectPagedListItems) to assemble the complete list across pages. In the
+// realistic common case (<100 categories per message) that's still a single
+// request.
+const MESSAGE_CATEGORY_FETCH_LIMIT = DEFAULT_LIST_LIMIT
 
 const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Sync.GetStatus, () => ({
@@ -1431,6 +1478,59 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     transform: (body) => dataBody<{ written: number }>(body),
   })],
 
+  [IPCChannels.Maintenance.GetStatus, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.RunDoctor, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/doctor",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.CheckMigrations, () => ({
+    method: "POST",
+    path: "/api/v1/maintenance/migrations/check",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.RunRepair, () => ({
+    method: "POST",
+    path: "/api/v1/maintenance/migrations/apply",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.PreviewHardReset, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/reset/preview",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Maintenance.ExecuteHardReset, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "hard reset payload")
+    return {
+      method: "POST",
+      path: "/api/v1/maintenance/reset/execute",
+      body: {
+        confirmPhrase: input.confirmPhrase,
+        acknowledgeDataLoss: input.acknowledgeDataLoss === true,
+      },
+      transform: (body) => dataBody(body),
+    }
+  }],
+  [IPCChannels.Maintenance.CheckForUpdates, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => ({ success: true, status: dataBody(body) }),
+  })],
+  [IPCChannels.Maintenance.InstallUpdate, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => ({ success: true, status: dataBody(body) }),
+  })],
+  [IPCChannels.Maintenance.GetUpdateStatus, () => ({
+    method: "GET",
+    path: "/api/v1/maintenance/status",
+    transform: (body) => dataBody(body),
+  })],
+
   [IPCChannels.Calendar.GetCalendarEvents, () => ({
     method: "GET",
     path: "/api/v1/calendar-events",
@@ -1764,6 +1864,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         customerId: input.customerId === undefined || input.customerId === null
           ? input.customerId ?? undefined
           : positiveId(input.customerId, "customer id"),
+        userContext: input.userContext === undefined || input.userContext === null
+          ? undefined
+          : stringPayloadField(input.userContext, "email reply draft user context"),
+        persistSuggestion: input.persistSuggestion === undefined
+          ? undefined
+          : optionalBoolean(input.persistSuggestion, "reply draft persist suggestion flag"),
       }),
       transform: (body) => dataBody<{ success: boolean; text?: string; error?: string }>(body),
     }
@@ -2495,6 +2601,23 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     body: mapSnoozeSettingsPayload(payload),
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.GetAccountMailSettings, ([payload]) => {
+    const input = objectPayload(payload, "email account mail settings query")
+    return {
+      method: "GET",
+      path: "/api/v1/email/settings/account-mail",
+      query: pruneQueryUndefined({
+        accountId: positiveId(input.accountId, "email account id"),
+      }),
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.SetAccountMailSettings, ([payload]) => ({
+    method: "PATCH",
+    path: "/api/v1/email/settings/account-mail",
+    body: mapAccountMailSettingsPayload(payload),
+    transform: (body) => dataBody<Record<string, unknown>>(body),
+  })],
   [IPCChannels.Email.GetReplySuggestionSettings, ([payload]) => {
     const input = objectPayload(payload, "email reply suggestion settings query")
     return {
@@ -2574,16 +2697,64 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   })],
   [IPCChannels.Email.GetComposeSignature, ([payload]) => {
     const input = objectPayload(payload, "email compose signature payload")
+    const accountId = positiveId(input.accountId, "email account id")
     return {
       method: "GET",
       path: "/api/v1/email/account-signatures",
       query: {
-        accountId: positiveId(input.accountId, "email account id"),
+        accountId,
         limit: 1,
       },
-      transform: (body) => {
+      transform: async (body, context) => {
         const signature = listItems<EmailAccountSignatureRecord>(body)[0]
-        return { html: signature?.signatureHtml ?? null }
+        let rawHtml: string | null = null
+        let teamMembers: EmailTeamMemberRecord[] = []
+        if (signature?.signatureHtml?.trim()) {
+          rawHtml = signature.signatureHtml.trim()
+          if (!rawHtml.includes('{{')) return { html: rawHtml }
+        } else {
+          const teamBody = await context.fetchJson({
+            method: "GET",
+            path: "/api/v1/email/team-members",
+            query: { limit: DEFAULT_LIST_LIMIT },
+          })
+          teamMembers = listItems<EmailTeamMemberRecord>(teamBody)
+          const withTeamSig = teamMembers.find((member) => member.signatureHtml?.trim())
+          if (withTeamSig?.signatureHtml) {
+            rawHtml = withTeamSig.signatureHtml.trim()
+          } else if (teamMembers.length > 0 && teamMembers[0]?.displayName?.trim()) {
+            rawHtml = `<p>Mit freundlichen Grüßen<br/>${teamMembers[0]!.displayName}</p>`
+          }
+        }
+        const accountsBody = await context.fetchJson({
+          method: "GET",
+          path: "/api/v1/email/accounts",
+        })
+        const account = listItems<EmailAccountRecord>(accountsBody)
+          .map(mapEmailAccountRecord)
+          .find((row) => row.id === accountId)
+        if (!rawHtml && account?.display_name?.trim()) {
+          rawHtml = `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>`
+        }
+        if (!rawHtml) return { html: null }
+        if (!rawHtml.includes('{{')) return { html: rawHtml }
+        if (teamMembers.length === 0) {
+          const teamBody = await context.fetchJson({
+            method: "GET",
+            path: "/api/v1/email/team-members",
+            query: { limit: DEFAULT_LIST_LIMIT },
+          })
+          teamMembers = listItems<EmailTeamMemberRecord>(teamBody)
+        }
+        const interpolated = interpolateSignatureTemplate(
+          rawHtml,
+          buildSignatureTemplateContext({
+            accountDisplayName: account?.display_name ?? null,
+            accountEmail: account?.email_address ?? null,
+            teamMemberDisplayName: teamMembers[0]?.displayName ?? null,
+          }),
+        )
+        return { html: interpolated }
       },
     }
   }],
@@ -2664,10 +2835,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: "/api/v1/workflow/plugins",
     transform: (body) => dataBody<Record<string, unknown>[]>(body),
   })],
-  [IPCChannels.Email.ListWorkflows, () => ({
+  [IPCChannels.Email.ListWorkflows, ([payload]) => ({
     method: "GET",
     path: "/api/v1/workflows",
-    query: { limit: DEFAULT_LIST_LIMIT },
+    query: scopedListQuery(payload),
     transform: (body) => listItems<WorkflowRecord>(body).map(mapWorkflowRecord),
   })],
   [IPCChannels.Email.GetWorkflow, ([id]) => ({
@@ -2808,17 +2979,37 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  [IPCChannels.Email.GetWorkflowRunLog, ([runId]) => ({
+    method: "GET",
+    path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}`,
+    query: { includeLog: true },
+    transform: (body) => {
+      const run = dataBody<WorkflowRunRecord>(body)
+      const log = run.log
+      if (log == null) return [] as string[]
+      if (Array.isArray(log)) return log.map((entry) => String(entry))
+      if (typeof log === "string") {
+        try {
+          const parsed = JSON.parse(log) as unknown
+          return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [log]
+        } catch {
+          return [log]
+        }
+      }
+      return [String(log)]
+    },
+  })],
   [IPCChannels.Email.ListWorkflowRunSteps, ([runId]) => ({
     method: "GET",
     path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}/steps`,
     query: { limit: DEFAULT_LIST_LIMIT },
     transform: (body) => listItems<WorkflowRunStepRecord>(body).map(mapWorkflowRunStepRecord),
   })],
-  [IPCChannels.Email.ListKnowledgeBases, () => ({
+  [IPCChannels.Email.ListKnowledgeBases, ([payload]) => ({
     method: "GET",
     path: "/api/v1/workflow-knowledge-bases",
-    query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<WorkflowKnowledgeBaseRecord>(body).map(mapWorkflowKnowledgeBaseRecord),
+    query: scopedListQuery(payload),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapWorkflowKnowledgeBaseRecord),
   })],
   [IPCChannels.Email.CreateKnowledgeBase, ([payload]) => {
     const input = objectPayload(payload, "workflow knowledge base payload")
@@ -2830,6 +3021,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         const knowledgeBase = dataBody<WorkflowKnowledgeBaseRecord>(body)
         return { success: true, id: knowledgeBase.id }
       },
+    }
+  }],
+  [IPCChannels.Email.UpdateKnowledgeBase, ([payload]) => {
+    const input = objectPayload(payload, "workflow knowledge base update payload")
+    const id = positiveId(input.id, "workflow knowledge base id")
+    return {
+      method: "PATCH",
+      path: `/api/v1/workflow-knowledge-bases/${id}`,
+      body: mapWorkflowKnowledgeBaseMutation(input),
+      transform: () => ({ success: true }),
     }
   }],
   [IPCChannels.Email.DeleteKnowledgeBase, ([id]) => ({
@@ -3134,6 +3335,170 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  // List all categories a message is in. Single source of truth for the
+  // category-chip UI on a row + the multi-select dialog. Uses cursor pagination
+  // so the full set is returned even past the server's per-page cap (100).
+  [IPCChannels.Email.ListMessageCategories, ([messageId]) => {
+    const id = positiveId(messageId, "email message id")
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${id}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        collectPagedListItems<EmailMessageCategoryRecord>(body, context, request),
+    }
+  }],
+  // Add a single category to a message. Idempotent + race-safe: paginate the
+  // current assignments so the pre-check sees them all, then POST; if a
+  // concurrent request (another tab, a workflow node, a fast second drag)
+  // raced us between GET and POST and the server replies 409, map it to
+  // { added: false, alreadyAssigned: true } — same payload the pre-check
+  // produces, so the UI shows the same dezenter toast in either path.
+  [IPCChannels.Email.AddMessageCategory, ([payload]) => {
+    const input = objectPayload(payload, "email add-message-category payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const categoryId = positiveId(input.categoryId, "email category id")
+    const listRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
+      transform: async (body, context) => {
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        if (existing.some((r) => r.categoryId === categoryId)) {
+          return { added: false, alreadyAssigned: true }
+        }
+        try {
+          const created = await context.fetchJson({
+            method: "POST",
+            path: `/api/v1/email/messages/${messageId}/categories`,
+            body: { categoryId },
+          })
+          return { added: true, record: dataBody<EmailMessageCategoryRecord>(created) }
+        } catch (error) {
+          if (isAlreadyAssignedConflict(error)) {
+            return { added: false, alreadyAssigned: true }
+          }
+          throw error
+        }
+      },
+    }
+  }],
+  // Remove one category assignment by message + category (UI doesn't track the
+  // junction-row id). Paginate the lookup so we don't miss the target row,
+  // then DELETE that row's id. Idempotent on a concurrent delete: if another
+  // client removed the row between our GET and our DELETE the server replies
+  // 404 — swallow it and report removed:false, exactly like the pre-GET miss
+  // path. The UI handles both as "war bereits nicht mehr zugewiesen".
+  [IPCChannels.Email.RemoveMessageCategory, ([payload]) => {
+    const input = objectPayload(payload, "email remove-message-category payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const categoryId = positiveId(input.categoryId, "email category id")
+    const listRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
+      transform: async (body, context) => {
+        const all = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        const assignment = all.find((record) => record.categoryId === categoryId)
+        if (!assignment) return { removed: false }
+        try {
+          await context.fetchJson({
+            method: "DELETE",
+            path: `/api/v1/email/message-categories/${positiveId(assignment.id, "email message category id")}`,
+          })
+          return { removed: true }
+        } catch (error) {
+          if (isNotFound(error)) return { removed: false }
+          throw error
+        }
+      },
+    }
+  }],
+  // Replace the message's category set with exactly the given ids. Computes
+  // the diff against the current assignments so unchanged rows are not touched
+  // (no spurious audit / event noise). Same TOCTOU 409 race as AddMessageCategory
+  // is swallowed per-row, since "set to {A,B,C}" doesn't care whether B was
+  // added by us or by a concurrent request a moment ago.
+  //
+  // Reserved for the multi-select dialog that will replace the single "+ Kategorie
+  // hinzufügen" dropdown in the metadata panel. Already exercised by the
+  // renderer-transport test so the future UI wiring stays cheap and safe.
+  [IPCChannels.Email.SetMessageCategories, ([payload]) => {
+    const input = objectPayload(payload, "email set-message-categories payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const rawIds = Array.isArray(input.categoryIds) ? input.categoryIds : []
+    const targetIds = new Set(rawIds.map((id) => positiveId(id, "email category id")))
+    const listRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/categories`,
+      query: { limit: MESSAGE_CATEGORY_FETCH_LIMIT },
+    }
+    return {
+      ...listRequest,
+      transform: async (body, context) => {
+        const existing = await collectPagedListItems<EmailMessageCategoryRecord>(
+          body,
+          context,
+          listRequest,
+        )
+        const existingIds = new Set<number>(
+          existing
+            .map((r) => r.categoryId)
+            .filter((id): id is number => typeof id === "number"),
+        )
+        // POST additions BEFORE DELETing removals: if any single POST fails
+        // (e.g. category was deleted between read and write, server rate-limits
+        // mid-batch), the user keeps the categories they had. The opposite
+        // order would silently drop their existing categorisation on a partial
+        // failure.
+        for (const id of targetIds) {
+          if (existingIds.has(id)) continue
+          try {
+            await context.fetchJson({
+              method: "POST",
+              path: `/api/v1/email/messages/${messageId}/categories`,
+              body: { categoryId: id },
+            })
+          } catch (error) {
+            // Concurrent create — the row already exists, which is exactly
+            // what we wanted to achieve. Don't fail the whole set on it.
+            if (!isAlreadyAssignedConflict(error)) throw error
+          }
+        }
+        for (const record of existing) {
+          if (typeof record.categoryId === "number" && targetIds.has(record.categoryId)) continue
+          try {
+            await context.fetchJson({
+              method: "DELETE",
+              path: `/api/v1/email/message-categories/${positiveId(record.id, "email message category id")}`,
+            })
+          } catch (error) {
+            // Concurrent delete — desired end-state already in place. Don't
+            // fail the whole set on it.
+            if (!isNotFound(error)) throw error
+          }
+        }
+        return { success: true }
+      },
+    }
+  }],
   [IPCChannels.Email.ListInternalNotes, ([messageId]) => ({
     method: "GET",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/internal-notes`,
@@ -3163,11 +3528,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/email/internal-notes/${positiveId(noteId, "email internal note id")}`,
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Email.ListCannedResponses, () => ({
+  [IPCChannels.Email.ListCannedResponses, ([payload]) => ({
     method: "GET",
     path: "/api/v1/email/canned-responses",
-    query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<EmailCannedResponseRecord>(body).map(mapEmailCannedResponseRecord),
+    query: scopedListQuery(payload),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapEmailCannedResponseRecord),
   })],
   [IPCChannels.Email.SaveCannedResponse, ([payload]) => {
     const input = objectPayload(payload, "email canned response payload")
@@ -3332,11 +3697,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     body: { apiKey: null },
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Email.ListAiPrompts, () => ({
+  [IPCChannels.Email.ListAiPrompts, ([payload]) => ({
     method: "GET",
     path: "/api/v1/ai/prompts",
-    query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<AiPromptRecord>(body).map(mapAiPromptRecord),
+    query: scopedListQuery(payload),
+    transform: (body) => scopedAccountOverrideListTransform(payload, body, mapAiPromptRecord),
   })],
   [IPCChannels.Email.SaveAiPrompt, ([payload]) => {
     const input = objectPayload(payload, "email ai prompt payload")
@@ -3377,13 +3742,17 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       query: { limit: DEFAULT_LIST_LIMIT },
       transform: async (body, context) => {
         const prompts = listItems<AiPromptRecord>(body)
-        const idx = prompts.findIndex((prompt) => prompt.id === id)
+        const currentPrompt = prompts.find((prompt) => prompt.id === id)
+        if (!currentPrompt) return { success: false, error: "Verschieben nicht möglich." }
+        const currentAccountId = currentPrompt.accountId ?? null
+        const visiblePrompts = prompts.filter((prompt) => (prompt.accountId ?? null) === currentAccountId)
+        const idx = visiblePrompts.findIndex((prompt) => prompt.id === id)
         const swapIdx = direction === "up" ? idx - 1 : idx + 1
-        if (idx < 0 || swapIdx < 0 || swapIdx >= prompts.length) {
+        if (idx < 0 || swapIdx < 0 || swapIdx >= visiblePrompts.length) {
           return { success: false, error: "Verschieben nicht möglich." }
         }
-        const current = prompts[idx]!
-        const other = prompts[swapIdx]!
+        const current = visiblePrompts[idx]!
+        const other = visiblePrompts[swapIdx]!
         await context.fetchJson({
           method: "POST",
           path: "/api/v1/ai/prompts/reorder",
@@ -3407,16 +3776,25 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         promptId: input.promptId === undefined || input.promptId === null
           ? undefined
           : positiveId(input.promptId, "email ai prompt id"),
-        text: stringPayloadField(input.text, "email ai transform text"),
+        text: input.insertMode === true
+          ? (typeof input.text === "string" ? input.text.trim() : "")
+          : stringPayloadField(input.text, "email ai transform text"),
         contextText: input.contextText === undefined || input.contextText === null
           ? undefined
           : stringPayloadField(input.contextText, "email ai transform context"),
         targetLanguage: input.targetLanguage === undefined || input.targetLanguage === null
           ? undefined
           : stringPayloadField(input.targetLanguage, "email ai target language"),
+        inboundContextText: input.inboundContextText === undefined || input.inboundContextText === null
+          ? undefined
+          : stringPayloadField(input.inboundContextText, "email ai transform inbound context"),
+        userContext: input.userContext === undefined || input.userContext === null
+          ? undefined
+          : stringPayloadField(input.userContext, "email ai transform user context"),
         customerId: input.customerId === undefined || input.customerId === null
           ? undefined
           : positiveId(input.customerId, "customer id"),
+        insertMode: input.insertMode === true ? true : undefined,
       }),
       transform: (body) => dataBody<{ success: boolean; text?: string; error?: string }>(body),
     }
@@ -3645,6 +4023,123 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/saved-views/${positiveId(id, "saved view id")}`,
     transform: () => ({ success: true }),
   })],
+
+  // ---- Returns / RMA suite -------------------------------------------------
+  [IPCChannels.Returns.List, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "returns list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/returns",
+      query: {
+        limit: input.limit,
+        offset: input.offset,
+        status: input.status,
+        customerId: input.customerId,
+        search: input.search,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.Get, ([id]) => ({
+    method: "GET",
+    path: `/api/v1/returns/${positiveId(id, "return id")}`,
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Create, ([payload]) => ({
+    method: "POST",
+    path: "/api/v1/returns",
+    body: payload,
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Update, ([payload]) => {
+    const input = objectPayload(payload, "return update payload")
+    return {
+      method: "PATCH",
+      path: `/api/v1/returns/${positiveId(input.id, "return id")}`,
+      body: {
+        status: input.status,
+        outcome: input.outcome,
+        notes: input.notes,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.ListReasons, () => ({
+    method: "GET",
+    path: "/api/v1/return-reasons",
+    transform: (body) => dataBody<{ items: unknown[] }>(body).items,
+  })],
+  [IPCChannels.Returns.LookupJtlOrder, ([orderNumber]) => ({
+    method: "GET",
+    path: "/api/v1/returns/jtl-order-lookup",
+    query: { orderNumber: typeof orderNumber === "string" ? orderNumber : "" },
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.Analytics, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "returns analytics payload")
+    return {
+      method: "GET",
+      path: "/api/v1/returns/analytics",
+      query: { sinceDays: input.sinceDays },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.GetPortalSettings, () => ({
+    method: "GET",
+    path: "/api/v1/returns/portal-settings",
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.RotatePortalToken, ([payload]) => {
+    const input = objectPayload(payload ?? {}, "rotate portal token payload")
+    return {
+      method: "POST",
+      path: "/api/v1/returns/portal-settings",
+      body: { action: "rotate", enable: input.enable },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.SetPortalEnabled, ([payload]) => {
+    const input = objectPayload(payload, "set portal enabled payload")
+    return {
+      method: "POST",
+      path: "/api/v1/returns/portal-settings",
+      body: { action: "set_enabled", enabled: input.enabled === true },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.RevokePortalToken, () => ({
+    method: "POST",
+    path: "/api/v1/returns/portal-settings",
+    body: { action: "revoke" },
+    transform: (body) => dataBody<unknown>(body),
+  })],
+  [IPCChannels.Returns.PortalCreate, ([payload]) => {
+    const input = objectPayload(payload, "portal create payload")
+    const token = String(input.token ?? "")
+    return {
+      method: "POST",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}`,
+      body: {
+        jtlOrderNumber: input.jtlOrderNumber,
+        customerEmail: input.customerEmail,
+        customerName: input.customerName,
+        notes: input.notes,
+        captchaChallenge: input.captchaChallenge,
+        items: input.items,
+      },
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
+  [IPCChannels.Returns.PortalLookup, ([payload]) => {
+    const input = objectPayload(payload, "portal lookup payload")
+    const token = String(input.token ?? "")
+    const returnNumber = String(input.returnNumber ?? "")
+    return {
+      method: "GET",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}/${encodeURIComponent(returnNumber)}`,
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
 ])
 
 export function buildHttpInvocation(channel: InvokeChannel, args: unknown[]): HttpInvocationSpec {
@@ -3671,6 +4166,16 @@ function listItems<T>(body: unknown): T[] {
   if (Array.isArray(data)) return data
   if (isRecord(data) && Array.isArray(data.items)) return data.items as T[]
   return []
+}
+
+/** True for an HTTP 409 thrown by fetchJson when posting a duplicate junction row. */
+function isAlreadyAssignedConflict(error: unknown): boolean {
+  return error instanceof RendererTransportError && error.status === 409
+}
+
+/** True for an HTTP 404 — the target row no longer exists (concurrent delete). */
+function isNotFound(error: unknown): boolean {
+  return error instanceof RendererTransportError && error.status === 404
 }
 
 function listResult<T>(body: unknown): ListResult<T> {
@@ -3766,6 +4271,9 @@ function mapAuthUserRecord(record: AuthUserRecord) {
     display_name: record.displayName ?? record.email ?? "",
     role: legacyAuthUserRole(record.role),
     is_active: record.disabledAt ? 0 : 1,
+    login_pin_enabled: Boolean(record.loginPinEnabled),
+    mfa_enabled: Boolean(record.mfaEnabled),
+    mfa_method: record.mfaMethod ?? null,
     created_at: record.createdAt ?? null,
     updated_at: record.updatedAt ?? null,
     last_login_at: null,
@@ -3859,12 +4367,19 @@ function mapAuthUserPayload(input: Record<string, any>): Record<string, unknown>
       ? authUserPasswordValue(input.passphrase)
       : undefined
 
+  const loginPin = Object.prototype.hasOwnProperty.call(input, "loginPin")
+    ? optionalAuthUserLoginPin(input.loginPin)
+    : Object.prototype.hasOwnProperty.call(input, "login_pin")
+      ? optionalAuthUserLoginPin(input.login_pin)
+      : undefined
+
   return pruneUndefined({
     email,
     displayName,
     role: authUserRoleValue(input.role),
     password,
     isActive: authUserActiveValue(input.isActive ?? input.is_active),
+    loginPin,
   })
 }
 
@@ -3907,8 +4422,18 @@ function authUserEmailValue(value: unknown): string {
 
 function authUserPasswordValue(value: unknown): string {
   if (typeof value !== "string") throw new Error("Invalid auth user password")
-  if (value.length < 10 || value.length > 1000) throw new Error("Invalid auth user password")
+  if (!isPasswordLengthValid(value)) throw new Error("Invalid auth user password")
   return value
+}
+
+function optionalAuthUserLoginPin(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== "string") throw new Error("Invalid auth user login pin")
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!/^\d{6}$/.test(trimmed)) throw new Error("Invalid auth user login pin")
+  return trimmed
 }
 
 function optionalAuthUserText(value: unknown, label: string, maxLength: number): string | undefined {
@@ -4016,23 +4541,27 @@ async function attachCustomerCustomFields<T extends { id: number }>(
 
   const fields = await fetchAllCustomerCustomFields(context)
   const fieldNamesById = new Map(fields.map((field) => [field.id, field.name ?? ""]))
-  const customFieldsByCustomerId = new Map<number, Record<string, string>>()
+  const customFieldsByCustomerId = new Map<number, Record<string, string>>(
+    customers.map((customer) => [customer.id, {}]),
+  )
 
-  await Promise.all(customers.map(async (customer) => {
-    const body = await context.fetchJson({
-      method: "GET",
-      path: "/api/v1/customer-custom-field-values",
-      query: { limit: DEFAULT_LIST_LIMIT, customerId: customer.id },
-    })
-    const values = listItems<CustomFieldValueRecord>(body)
-    const customFields: Record<string, string> = {}
-    for (const value of values) {
-      const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
-      if (!fieldName) continue
-      customFields[fieldName] = value.value ?? ""
-    }
-    customFieldsByCustomerId.set(customer.id, customFields)
-  }))
+  const body = await context.fetchJson({
+    method: "GET",
+    path: "/api/v1/customer-custom-field-values",
+    query: {
+      limit: DEFAULT_LIST_LIMIT,
+      customerIds: customers.map((customer) => customer.id).join(","),
+    },
+  })
+  const values = listItems<CustomFieldValueRecord>(body)
+  for (const value of values) {
+    const customerId = Number(value.customerId ?? 0)
+    const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
+    if (!fieldName || !customFieldsByCustomerId.has(customerId)) continue
+    const customFields = customFieldsByCustomerId.get(customerId) ?? {}
+    customFields[fieldName] = value.value ?? ""
+    customFieldsByCustomerId.set(customerId, customFields)
+  }
 
   return customers.map((customer) => ({
     ...customer,
@@ -4407,6 +4936,7 @@ function mapEmailAccountRecord(record: EmailAccountRecord) {
     vacation_subject: record.vacationSubject ?? null,
     vacation_body_text: record.vacationBodyText ?? null,
     request_read_receipt: record.requestReadReceipt ? 1 : 0,
+    imap_delete_opt_in: record.imapDeleteOptIn ? 1 : 0,
     created_at: record.updatedAt ?? "",
     updated_at: record.updatedAt ?? "",
   }
@@ -4442,6 +4972,7 @@ function mapEmailAccountMutationPayload(value: Record<string, any>): Record<stri
     vacationSubject: value.vacationSubject === undefined ? undefined : nullableTrimmedText(value.vacationSubject, "vacation subject", 500),
     vacationBodyText: value.vacationBodyText === undefined ? undefined : nullableTrimmedText(value.vacationBodyText, "vacation body", 10000),
     requestReadReceipt: optionalBoolean(value.requestReadReceipt, "read receipt request flag"),
+    imapDeleteOptIn: optionalBoolean(value.imapDeleteOptIn, "imap delete opt-in flag"),
   })
 }
 
@@ -4551,6 +5082,7 @@ function mapEmailAttachmentRecord(record: EmailAttachmentRecord) {
     filename_display: record.filename ?? "",
     size_bytes: record.sizeBytes ?? 0,
     content_type: record.contentType ?? null,
+    storage_path: record.storagePath ?? undefined,
   }
 }
 
@@ -4626,6 +5158,7 @@ function mapMailFolderCounts(record: EmailMailFolderCountsRecord) {
     inboxUnread: countValue(record.inboxUnread),
     sentFailed: countValue(record.sentFailed),
     drafts: countValue(record.drafts),
+    scheduledSend: countValue(record.scheduledSend),
     archived: countValue(record.archived),
     spamReview: countValue(record.spamReview),
     spam: countValue(record.spam),
@@ -4700,6 +5233,27 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
         inboxLastSyncedAt: typeof account.inboxLastSyncedAt === "string" ? account.inboxLastSyncedAt : null,
       }))
       : [],
+    ...(record.jobQueue ? {
+      jobQueue: {
+        ready: countValue(record.jobQueue.ready),
+        locked: countValue(record.jobQueue.locked),
+        lagSeconds: countValue(record.jobQueue.lagSeconds),
+        oldestLockedSeconds: record.jobQueue.oldestLockedSeconds == null
+          ? null
+          : countValue(record.jobQueue.oldestLockedSeconds),
+        samples: Array.isArray(record.jobQueue.samples)
+          ? record.jobQueue.samples.filter(isRecord).map((job) => ({
+            id: countValue(job.id),
+            type: typeof job.type === "string" ? job.type : "",
+            attempts: countValue(job.attempts),
+            maxAttempts: countValue(job.maxAttempts),
+            lockedBy: typeof job.lockedBy === "string" ? job.lockedBy : null,
+            lockedSeconds: job.lockedSeconds == null ? null : countValue(job.lockedSeconds),
+            lastError: typeof job.lastError === "string" ? job.lastError : null,
+          }))
+          : [],
+      },
+    } : {}),
   }
 }
 
@@ -4799,14 +5353,25 @@ function mapEmailCannedResponseRecord(record: EmailCannedResponseRecord) {
     id: record.id,
     title: record.title ?? "",
     body: record.body ?? "",
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
   }
 }
 
 function mapEmailCannedResponseMutation(value: Record<string, any>): Record<string, unknown> {
+  const accountId = Object.prototype.hasOwnProperty.call(value, 'accountId')
+    ? value.accountId
+    : value.account_id
+  const overrideKey = Object.prototype.hasOwnProperty.call(value, 'overrideKey')
+    ? value.overrideKey
+    : value.override_key
   return pruneUndefined({
     title: value.title === undefined || value.title === null ? undefined : String(value.title),
     body: value.body === undefined || value.body === null ? undefined : String(value.body),
     sortOrder: value.sortOrder ?? value.sort_order,
+    accountId,
+    overrideKey,
   })
 }
 
@@ -4911,6 +5476,9 @@ function mapAiPromptRecord(record: AiPromptRecord) {
     profile_source_sqlite_id: record.profileSourceSqliteId ?? undefined,
     profile_id: record.profileId ?? null,
     profileId: record.profileId ?? null,
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
     sort_order: record.sortOrder ?? 0,
     sortOrder: record.sortOrder ?? 0,
     created_at: record.createdAt ?? undefined,
@@ -4928,12 +5496,20 @@ function mapAiPromptMutation(
   const profileId = Object.prototype.hasOwnProperty.call(value, "profileId")
     ? value.profileId
     : value.profile_id
+  const accountId = Object.prototype.hasOwnProperty.call(value, "accountId")
+    ? value.accountId
+    : value.account_id
+  const overrideKey = Object.prototype.hasOwnProperty.call(value, "overrideKey")
+    ? value.overrideKey
+    : value.override_key
   return pruneUndefined({
     label: value.label === undefined || value.label === null ? undefined : String(value.label),
     userTemplate: value.userTemplate ?? value.user_template,
     target,
     profileId,
     sortOrder: value.sortOrder ?? value.sort_order,
+    accountId,
+    overrideKey,
   })
 }
 
@@ -4944,7 +5520,7 @@ function mapSpamListEntryRecord(record: SpamListEntryRecord) {
     list_type: record.listType ?? "block",
     pattern_type: record.patternType ?? "domain",
     pattern: record.pattern ?? "",
-    account_source_sqlite_id: record.accountSourceSqliteId ?? undefined,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
     account_id: record.accountId ?? null,
     note: record.note ?? null,
     created_at: record.createdAt ?? undefined,
@@ -5061,6 +5637,9 @@ function mapWorkflowRecord(record: WorkflowRecord) {
     cron_expr: record.cronExpr ?? null,
     schedule_account_id: record.scheduleAccountSourceSqliteId ?? record.scheduleAccountId ?? null,
     schedule_account_source_sqlite_id: record.scheduleAccountSourceSqliteId ?? undefined,
+    account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
+    ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
     execution_mode: record.executionMode ?? "graph",
     engine_version: record.engineVersion ?? 1,
     legacy_created_by_user_id: record.legacyCreatedByUserId ?? null,
@@ -5189,10 +5768,18 @@ function mapWorkflowRunStepRecord(record: WorkflowRunStepRecord) {
 }
 
 function mapWorkflowKnowledgeBaseRecord(record: WorkflowKnowledgeBaseRecord) {
+  const accountSourceSqliteId = record.accountSourceSqliteId ?? null
+  const accountId = accountSourceSqliteId != null && accountSourceSqliteId > 0
+    ? accountSourceSqliteId
+    : record.accountId ?? null
   return {
     id: record.id,
     name: record.name ?? "",
     description: record.description ?? null,
+    account_id: accountId,
+    ...(accountSourceSqliteId == null ? {} : { account_source_sqlite_id: accountSourceSqliteId }),
+    override_key: record.overrideKey ?? null,
+    knowledge_context: record.knowledgeContext ?? null,
   }
 }
 
@@ -5200,9 +5787,21 @@ function mapWorkflowKnowledgeBaseMutation(value: Record<string, any>): Record<st
   const description = Object.prototype.hasOwnProperty.call(value, "description")
     ? value.description
     : undefined
+  const accountId = Object.prototype.hasOwnProperty.call(value, "accountId")
+    ? value.accountId
+    : value.account_id
+  const overrideKey = Object.prototype.hasOwnProperty.call(value, "overrideKey")
+    ? value.overrideKey
+    : value.override_key
+  const knowledgeContext = Object.prototype.hasOwnProperty.call(value, "knowledgeContext")
+    ? value.knowledgeContext
+    : value.knowledge_context
   return pruneUndefined({
     name: stringPayloadField(value.name, "workflow knowledge base name"),
     description: description === undefined || description === null ? description : String(description),
+    accountId,
+    overrideKey,
+    knowledgeContext,
   })
 }
 
@@ -5487,24 +6086,51 @@ function accountScopeQueryValue(value: unknown): number | undefined {
   return positiveId(value, "email account id")
 }
 
+function accountOverrideScopePayloadValue(value: unknown): unknown {
+  if (isRecord(value)) return value.accountId ?? value.accountScope
+  return value
+}
+
+function scopedListQuery(
+  payload: unknown,
+): Record<string, string | number | boolean | null | undefined> {
+  return pruneQueryUndefined({
+    limit: DEFAULT_LIST_LIMIT,
+    accountId: accountScopeQueryValue(accountOverrideScopePayloadValue(payload)),
+  })
+}
+
+function scopedAccountOverrideListTransform<TRow extends ScopedAccountOverrideRow>(
+  payload: unknown,
+  body: unknown,
+  mapRow: (record: never) => TRow,
+): TRow[] {
+  const scope = accountOverrideScopeFromPayload(
+    accountOverrideScopePayloadValue(payload) as AccountOverrideScopePayload,
+  );
+  const rows = listItems(body).map((record) => mapRow(record as never));
+  return resolveScopedAccountOverrides(rows, scope ?? "all");
+}
+
 function optionalPositiveQueryId(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) return undefined
   return positiveId(value, label)
 }
 
-function messageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
+function messageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
   const view = optionalMessageViewValue(value)
   if (!view) throw new Error("Invalid email message view")
   return view
 }
 
-function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
+function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
   if (value === undefined || value === null) return undefined
   if (
     value === "inbox"
     || value === "sent"
     || value === "archived"
     || value === "drafts"
+    || value === "scheduled_send"
     || value === "spam_review"
     || value === "spam"
     || value === "trash"
@@ -5737,6 +6363,17 @@ function mapReplySuggestionSettingsPayload(value: unknown): Record<string, unkno
     triggerOnOpen: optionalBoolean(input.triggerOnOpen, "reply suggestion open trigger flag"),
     categoryMode: input.categoryMode === undefined ? undefined : replySuggestionCategoryMode(input.categoryMode),
     categoryIds: input.categoryIds === undefined ? undefined : positiveIdArray(input.categoryIds, "reply suggestion category id", 500),
+  })
+}
+
+function mapAccountMailSettingsPayload(value: unknown): Record<string, unknown> {
+  const input = objectPayload(value, "email account mail settings payload")
+  return pruneUndefined({
+    accountId: positiveId(input.accountId, "email account id"),
+    ticketPrefix: input.ticketPrefix === undefined ? undefined : optionalStringPayloadField(input.ticketPrefix, "ticket prefix", 12),
+    ticketNextNumber: input.ticketNextNumber === undefined ? undefined : boundedNumber(input.ticketNextNumber, "ticket next number", 1, 999_999_999, true),
+    ticketNumberPadding: input.ticketNumberPadding === undefined ? undefined : boundedNumber(input.ticketNumberPadding, "ticket number padding", 1, 12, true),
+    threadNamespace: input.threadNamespace === undefined ? undefined : optionalStringPayloadField(input.threadNamespace, "thread namespace", 64),
   })
 }
 

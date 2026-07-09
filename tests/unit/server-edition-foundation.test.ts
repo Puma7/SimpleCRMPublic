@@ -327,6 +327,11 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0017_ai_usage_events',
   '0018_ai_reply_feedback',
   '0019_task_assignment_scope_reset',
+  '0020_auth_login_security',
+  '0021_returns_schema',
+  '0022_returns_portal_settings',
+  '0023_account_scope_overrides',
+  '0024_settings_kb_context_imap',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1438,6 +1443,10 @@ describe('server edition foundation', () => {
     expect(sql).toContain('last_heartbeat_at timestamptz NOT NULL DEFAULT now()');
     expect(sql).toContain('reply_suggestion_text text');
     expect(sql).toContain('email_messages_reply_suggestion_pending_idx');
+    expect(sql).toContain('email_threads_workspace_account_ticket_idx');
+    expect(sql).toContain('email_account_mail_settings_workspace_isolation');
+    expect(sql).toContain('email_thread_aliases_workspace_account_pair_idx');
+    expect(sql).toContain('email_ai_prompts_scope_idx');
     expect(sql).toContain('ENABLE ROW LEVEL SECURITY');
     expect(sql).toContain('FORCE ROW LEVEL SECURITY');
     expect(sql).toContain("current_setting('app.workspace_id', true)");
@@ -1445,6 +1454,22 @@ describe('server edition foundation', () => {
     expect(sql).toContain('CREATE OR REPLACE FUNCTION app.can_access_workspace(target_workspace_id uuid)');
     expect(sql).toContain("app.current_role() IN ('owner', 'admin', 'system')");
     expect(sql).not.toContain('INDEX (run_after, locked_at) WHERE locked_at IS NULL');
+  });
+
+  test('desktop SQLite schema strings include account-scope fresh-install and roadmap parity', () => {
+    const schemaSource = readFileSync(join(process.cwd(), 'electron', 'database-schema.ts'), 'utf8');
+    const roadmapSource = readFileSync(join(process.cwd(), 'electron', 'mail-roadmap-migrations.ts'), 'utf8');
+
+    expect(schemaSource).toContain("EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE = 'email_account_mail_settings'");
+    expect(schemaSource).toContain('CREATE TABLE IF NOT EXISTS ${EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE}');
+    expect(schemaSource).toContain('ticket_prefix TEXT NOT NULL');
+    expect(schemaSource).toContain('ticket_next_number INTEGER NOT NULL DEFAULT 1');
+    expect(schemaSource).toContain('thread_namespace TEXT NOT NULL');
+    expect(schemaSource).toContain('account_id INTEGER,');
+    expect(schemaSource).toContain('idx_email_thread_aliases_account_pair');
+    expect(roadmapSource).toContain('ensureTable(conn, EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE, createEmailAccountMailSettingsTable');
+    expect(roadmapSource).toContain("addCol(conn, EMAIL_THREAD_ALIASES_TABLE, 'account_id'");
+    expect(roadmapSource).toContain('idx_email_thread_aliases_account_pair');
   });
 
   test('all RLS-enabled migration tables force owner-level policy enforcement', () => {
@@ -1479,7 +1504,7 @@ describe('server edition foundation', () => {
     expect(enabledTables.filter((tableName) => !forcedTables.has(tableName))).toEqual([]);
     expect(enabledTables.filter((tableName) => !policyTables.has(tableName))).toEqual([]);
     expect(RLS_POLICY_COVERAGE_TABLES.map((table) => table.tableName).toSorted()).toEqual(
-      enabledTables.toSorted(),
+      Array.from(new Set(enabledTables)).toSorted(),
     );
   });
 
@@ -1576,7 +1601,13 @@ describe('server edition foundation', () => {
     expect(sql).toContain('ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS vacation_enabled boolean NOT NULL DEFAULT false');
     expect(sql).toContain('ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS request_read_receipt boolean NOT NULL DEFAULT false');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_folders');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_account_mail_settings');
+    expect(sql).toContain('ticket_prefix text NOT NULL');
+    expect(sql).toContain('ticket_next_number bigint NOT NULL DEFAULT 1');
+    expect(sql).toContain('thread_namespace text NOT NULL');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_threads');
+    expect(sql).toContain('account_source_sqlite_id bigint');
+    expect(sql).toContain('account_id bigint REFERENCES email_accounts(id) ON DELETE SET NULL');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_messages');
     expect(sql).toContain('search_vector tsvector GENERATED ALWAYS AS');
     expect(sql).toContain('bcc_json jsonb');
@@ -1594,8 +1625,23 @@ describe('server edition foundation', () => {
     expect(sql).toContain('rspamd_score double precision');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_message_attachments');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_thread_aliases');
+    expect(sql).toContain('email_thread_aliases_workspace_account_pair_all_idx');
+    expect(sql).toContain('email_thread_aliases_workspace_global_pair_idx');
     expect(sql).toContain('CREATE POLICY email_messages_workspace_isolation');
+    expect(sql).toContain('CREATE POLICY email_account_mail_settings_workspace_isolation');
     expect(sql).toContain('conversation_locks_message_fk');
+  });
+
+  test('account-scope additive migration is idempotent and matches fresh mail schema', () => {
+    const sql = collectMigrationSql('up');
+    expect(sql).toContain('ALTER TABLE email_threads ADD COLUMN IF NOT EXISTS account_id bigint REFERENCES email_accounts(id) ON DELETE SET NULL;');
+    expect(sql).toContain('ALTER TABLE email_threads ADD COLUMN IF NOT EXISTS account_source_sqlite_id bigint;');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_account_mail_settings');
+    expect(sql).toContain('ALTER TABLE email_thread_aliases ADD COLUMN IF NOT EXISTS account_source_sqlite_id bigint;');
+    expect(sql).toContain('ALTER TABLE email_thread_aliases ADD COLUMN IF NOT EXISTS account_id bigint REFERENCES email_accounts(id) ON DELETE CASCADE;');
+    expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS email_thread_aliases_workspace_account_pair_all_idx');
+    expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS email_canned_responses_account_override_key_idx');
+    expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS email_ai_prompts_account_override_key_idx');
   });
 
   test('workflow/security migration creates AI, workflow, spam, PGP, and automation tables with RLS', () => {
@@ -1603,7 +1649,11 @@ describe('server edition foundation', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_ai_profiles');
     expect(sql).toContain('legacy_keytar_account text');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_ai_prompts');
+    expect(sql).toContain('account_source_sqlite_id bigint');
+    expect(sql).toContain('override_key text');
+    expect(sql).toContain('email_ai_prompts_account_override_key_idx');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_workflows');
+    expect(sql).toContain('email_workflows_scope_idx');
     expect(sql).toContain('trigger_name text NOT NULL');
     expect(sql).toContain('legacy_created_by_user_id text');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS email_workflow_runs');
@@ -1834,6 +1884,8 @@ describe('server edition foundation', () => {
       .toBe('mail.spam.score:workspace-a:11');
     expect(graphileJobKeyForJob('mail.vacation.auto_reply', { messageId: 11 }, 'workspace-a'))
       .toBe('mail.vacation.auto_reply:workspace-a:11');
+    expect(graphileJobKeyForJob('mail.send.scheduled', { draftId: 42 }, 'workspace-a'))
+      .toBe('mail.send.scheduled:workspace-a:42');
     expect(graphileJobKeyForJob('ai.reply_suggestion', { messageId: 11 }, 'workspace-a'))
       .toBe('ai.reply_suggestion:workspace-a:11');
     expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))
@@ -1875,6 +1927,18 @@ describe('server edition foundation', () => {
       jobKey: 'mail.sync.imap:workspace-a:42',
       jobKeyMode: 'replace',
     });
+    expect(graphileSpecFromJob({
+      type: 'mail.send.scheduled',
+      workspaceId: 'workspace-a',
+      payload: { workspaceId: 'workspace-a', draftId: 42, dueBefore: '2026-06-03T14:00:00.000Z' },
+      runAfter: new Date('2026-06-03T14:00:00.000Z'),
+    })).toEqual({
+      queueName: undefined,
+      runAt: new Date('2026-06-03T14:00:00.000Z'),
+      maxAttempts: 5,
+      jobKey: 'mail.send.scheduled:workspace-a:42',
+      jobKeyMode: 'replace',
+    });
     expect(() => buildGraphileWorkerPlan({
       connectionString: ' ',
       concurrency: { mailAccountCount: 1 },
@@ -1888,6 +1952,7 @@ describe('server edition foundation', () => {
 
   test('graphile queue port enqueues validated server jobs through worker utils', async () => {
     const added: Array<{ identifier: string; payload: Record<string, unknown>; spec: unknown }> = [];
+    const removed: string[] = [];
     let migrated = 0;
     let released = 0;
     const queue = await createGraphileQueuePort({
@@ -1896,6 +1961,13 @@ describe('server edition foundation', () => {
       createUtils: async () => ({
         async addJob(identifier, payload, spec) {
           added.push({ identifier, payload, spec });
+        },
+        async withPgClient(callback) {
+          await callback({
+            async query(sql, values) {
+              if (sql.includes('remove_job') && values?.[0]) removed.push(String(values[0]));
+            },
+          });
         },
         async migrate() {
           migrated += 1;
@@ -1912,6 +1984,13 @@ describe('server edition foundation', () => {
       payload: { workspaceId: 'workspace-a', accountId: 7 },
       maxAttempts: 4,
     });
+    await queue.enqueue({
+      type: 'mail.send.scheduled',
+      workspaceId: 'workspace-a',
+      payload: { workspaceId: 'workspace-a', draftId: 42, dueBefore: '2026-06-03T14:00:00.000Z' },
+      runAfter: new Date('2026-06-03T14:00:00.000Z'),
+    });
+    await queue.clearScheduledSendJob?.({ workspaceId: 'workspace-a', draftId: 42 });
     await expect(queue.enqueue({
       type: 'mail.sync',
       workspaceId: 'workspace-a',
@@ -1922,17 +2001,35 @@ describe('server edition foundation', () => {
 
     expect(migrated).toBe(2);
     expect(released).toBe(1);
-    expect(added).toEqual([{
-      identifier: 'mail.sync.imap',
-      payload: { workspaceId: 'workspace-a', accountId: 7 },
-      spec: {
-        queueName: 'account-7',
-        runAt: undefined,
-        maxAttempts: 4,
-        jobKey: 'mail.sync.imap:workspace-a:7',
-        jobKeyMode: 'replace',
+    expect(removed).toEqual(['mail.send.scheduled:workspace-a:42']);
+    expect(added).toEqual([
+      {
+        identifier: 'mail.sync.imap',
+        payload: { workspaceId: 'workspace-a', accountId: 7 },
+        spec: {
+          queueName: 'account-7',
+          runAt: undefined,
+          maxAttempts: 4,
+          jobKey: 'mail.sync.imap:workspace-a:7',
+          jobKeyMode: 'replace',
+        },
       },
-    }]);
+      {
+        identifier: 'mail.send.scheduled',
+        payload: {
+          workspaceId: 'workspace-a',
+          draftId: 42,
+          dueBefore: '2026-06-03T14:00:00.000Z',
+        },
+        spec: {
+          queueName: undefined,
+          runAt: new Date('2026-06-03T14:00:00.000Z'),
+          maxAttempts: 5,
+          jobKey: 'mail.send.scheduled:workspace-a:42',
+          jobKeyMode: 'replace',
+        },
+      },
+    ]);
   });
 
   test('graphile task list bridges server handlers and fails missing handlers', async () => {
@@ -4218,32 +4315,6 @@ describe('server edition foundation', () => {
     expect(enqueued).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
-        type: 'mail.spam.score',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          messageId: 31,
-          actorUserId: USER_A_ID,
-          applyStatus: true,
-          runSecurityCheck: true,
-        },
-        maxAttempts: 3,
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          workflowId: 23,
-          messageId: 31,
-          actorUserId: USER_A_ID,
-          triggerName: 'inbound',
-          context: { skipIfMessageSpamOrReview: true },
-        },
-        runAfter: new Date('2026-07-04T09:01:10.000Z'),
-        maxAttempts: 3,
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
         type: 'ai.reply_suggestion',
         payload: {
           workspaceId: WORKSPACE_A_ID,
@@ -4282,9 +4353,8 @@ describe('server edition foundation', () => {
     });
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
-    expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+      .map((item) => (item as any).payload.messageId)).toEqual([43, 44]);
+    expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
     expect(enqueued.filter((item) => (item as any).type === 'mail.vacation.auto_reply')
@@ -8980,12 +9050,12 @@ describe('server edition foundation', () => {
       },
     });
 
-    await port.forwardCopy({
+    await expect(port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 39,
       messageId: 27,
       to: 'not-an-email',
-    });
+    })).rejects.toThrow(/Empfaenger/);
     expect(smtpSends).toHaveLength(0);
     expect(rows.forwardDedup).toEqual([]);
 
@@ -8993,7 +9063,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       workflowId: 39,
       messageId: 27,
-      to: 'audit@example.com',
+      to: 'Audit Team <audit@example.com>',
       continuation: {
         workflowId: 39,
         triggerName: 'inbound',
@@ -9069,6 +9139,94 @@ describe('server edition foundation', () => {
             }),
           }),
         }),
+      }),
+    ]);
+  });
+
+  test('postgres workflow forward-copy port leaves dedup empty when SMTP fails so retries can resend', async () => {
+    const now = new Date('2026-07-04T11:04:10.000Z');
+    let smtpAttempts = 0;
+    const smtpSends: unknown[] = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 39,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 390,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        account_id: 7,
+        subject: 'Retry forward',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        snippet: 'Kurzfassung',
+        body_text: 'Originaltext',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: {
+        async readSecret(input: { kind: string }) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+        },
+        async writeSecret() {
+          throw new Error('unexpected writeSecret');
+        },
+        async deleteSecret() {
+          return false;
+        },
+        async rotateSecret() {
+          return null;
+        },
+      },
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async (input) => {
+        smtpAttempts += 1;
+        if (smtpAttempts === 1) throw new Error('smtp transient');
+        smtpSends.push(input);
+      },
+    });
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 27,
+      to: 'retry@example.com',
+    })).rejects.toThrow('smtp transient');
+    expect(rows.forwardDedup).toEqual([]);
+    expect(smtpSends).toHaveLength(0);
+
+    await port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 39,
+      messageId: 27,
+      to: 'retry@example.com',
+    });
+    expect(smtpSends).toHaveLength(1);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({
+        dest: 'retry@example.com',
+        message_id: 27,
+        workflow_id: 39,
       }),
     ]);
   });
@@ -9179,6 +9337,74 @@ describe('server edition foundation', () => {
     ]);
   });
 
+
+  test('postgres workflow forward-copy outbound-review send failures remain retryable', async () => {
+    const now = new Date('2026-07-04T11:05:20.000Z');
+    let draftCreates = 0;
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 51, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 510, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        account_id: 7,
+        subject: 'Review transient',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const composeSender = {
+      async send() {
+        return { ok: false as const, error: 'compose transient failure' };
+      },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender,
+      createDraft: async () => {
+        draftCreates += 1;
+        return { ok: true as const, draftMessageId: 54321 };
+      },
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 51,
+      messageId: 31,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    })).rejects.toThrow(/compose transient failure/);
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 51,
+      messageId: 31,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    })).rejects.toThrow(/compose transient failure/);
+
+    expect(draftCreates).toBe(2);
+    expect(rows.forwardDedup).toHaveLength(0);
+  });
+
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
     const now = new Date('2026-07-04T11:04:30.000Z');
     const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
@@ -9250,7 +9476,7 @@ describe('server edition foundation', () => {
     expect(smtpSends[0].rfc822).toContain('bank@example.com');
     expect(smtpSends[0].rfc822).toContain('buchhaltung@example.com');
     // The original attachment is read from disk and included as a MIME part.
-    expect(reads).toEqual(['/attachments/ws/28/rechnung.pdf']);
+    expect(reads.map((entry) => entry.replaceAll(String.fromCharCode(92), '/'))[0]).toEqual(expect.stringMatching(/(?:^|:)\/attachments\/ws\/28\/rechnung\.pdf$/));
     expect(smtpSends[0].rfc822).toContain('rechnung.pdf');
     expect(smtpSends[0].rfc822).toContain('Auto-Submitted: auto-forwarded');
     // Dedup over the sorted recipient set.
@@ -9373,6 +9599,54 @@ describe('server edition foundation', () => {
       to: 'audit@example.com',
     });
     expect(smtpSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('postgres workflow forward-copy last-node failures reject for job retry visibility', async () => {
+    const now = new Date('2026-07-04T11:05:10.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 42, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 420, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        account_id: 7,
+        subject: 'Forward last node',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        snippet: 'Kurzfassung',
+        body_text: 'Originaltext',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: jest.fn(),
+    });
+
+    await expect(port.forwardCopy({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 42,
+      messageId: 29,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    })).rejects.toThrow(/composeSender/);
+
+    expect(rows.jobs).toEqual([]);
+    expect(rows.forwardDedup).toEqual([]);
   });
 
   test('postgres workflow execution job port queues AI review continuations', async () => {
@@ -10615,6 +10889,7 @@ describe('server edition foundation', () => {
     const syncInfo = new Map<string, string | null>([
       ['scheduled_send_failures:104', '4'],
     ]);
+    const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
     const drafts = [
       {
         id: 101,
@@ -10627,6 +10902,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: null,
         replyParentMessageId: 11,
+        claimedSendAt,
       },
       {
         id: 102,
@@ -10639,6 +10915,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: null,
         replyParentMessageId: null,
+        claimedSendAt,
       },
       {
         id: 103,
@@ -10651,6 +10928,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: JSON.stringify([{ path: 'C:\\local\\blocked.pdf' }]),
         replyParentMessageId: null,
+        claimedSendAt,
       },
       {
         id: 104,
@@ -10663,6 +10941,7 @@ describe('server edition foundation', () => {
         bccJson: null,
         draftAttachmentPathsJson: null,
         replyParentMessageId: null,
+        claimedSendAt,
       },
     ];
     const port = createScheduledSendJobPort({
@@ -10683,8 +10962,8 @@ describe('server edition foundation', () => {
         },
       },
       store: {
-        async listDueDrafts(input) {
-          storeCalls.push(['listDueDrafts', input]);
+        async claimDueDrafts(input) {
+          storeCalls.push(['claimDueDrafts', input]);
           return drafts;
         },
         async setDraftScheduledAt(input) {
@@ -10696,6 +10975,9 @@ describe('server edition foundation', () => {
         async setSyncInfo(input) {
           storeCalls.push(['setSyncInfo', input]);
           for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        },
+        async deleteSyncInfo(input) {
+          storeCalls.push(['deleteSyncInfo', input]);
         },
       },
     });
@@ -10747,13 +11029,17 @@ describe('server edition foundation', () => {
       },
     ]);
     expect(storeCalls).toEqual([
-      ['listDueDrafts', {
+      ['claimDueDrafts', {
         workspaceId: WORKSPACE_A_ID,
         accountId: 7,
         dueBefore: new Date('2026-06-03T12:00:00.000Z'),
         limit: 10,
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 101, sendAt: null }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:101'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -10763,6 +11049,10 @@ describe('server edition foundation', () => {
         },
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 102, sendAt: null }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:102'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -10770,6 +11060,11 @@ describe('server edition foundation', () => {
           'scheduled_send_last_error:103': 'Lokale Dateianhaenge muessen vor dem Server-Client Versand hochgeladen werden',
           'scheduled_send_status:103': 'pending',
         },
+      }],
+      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 103, sendAt: claimedSendAt }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:103'],
       }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
@@ -10780,6 +11075,10 @@ describe('server edition foundation', () => {
         },
       }],
       ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 104, sendAt: null }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:104'],
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
         values: {
@@ -10789,6 +11088,212 @@ describe('server edition foundation', () => {
         },
       }],
     ]);
+  });
+
+  test('scheduled-send Postgres store atomically claims due drafts with SKIP LOCKED', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
+    expect(source).toMatch(/FOR UPDATE SKIP LOCKED/);
+    expect(source).toMatch(/claimDueDrafts/);
+    expect(source).toMatch(/outbound_hold = false/);
+    expect(source).toMatch(/SET scheduled_send_at = NULL/);
+    expect(source).toMatch(/scheduled_send_claimed_at:/);
+    expect(source).toMatch(/recoverOrphanedScheduledClaims/);
+    expect(source).toMatch(/persistScheduledSendClaims/);
+  });
+
+  test('thread list predicates align scheduled_send filters with message list', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-metadata-read-ports.ts'), 'utf8');
+    expect(source).toMatch(/view === 'scheduled_send'[\s\S]*m\.scheduled_send_at IS NOT NULL/);
+    expect(source).toMatch(/view === 'drafts'[\s\S]*m\.scheduled_send_at IS NULL/);
+    expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true AND m\.scheduled_send_at IS NULL/);
+  });
+
+  test('scheduled-send ticker isolates workspace failures', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
+    expect(source).toMatch(/scheduled send ticker workspace/);
+  });
+
+  test('postgres job queue replaces pending scheduled-send jobs per draft', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-job-queue-port.ts'), 'utf8');
+    expect(source).toMatch(/deletePendingScheduledSendJobs/);
+    expect(source).toMatch(/type === 'mail\.send\.scheduled'/);
+  });
+
+  test('desktop ai review skips real provider calls during normal dry-run', () => {
+    const aiNodes = readFileSync(resolve(__dirname, '../../electron/workflow/nodes/ai-nodes.ts'), 'utf8');
+    const engine = readFileSync(resolve(__dirname, '../../electron/email/email-workflow-engine.ts'), 'utf8');
+    expect(aiNodes).toMatch(/ctx\.dryRun && !ctx\.previewOutbound/);
+    expect(engine).toMatch(/previewOutbound: dryRun/);
+  });
+
+  test('scheduled-send job ignores compose send already in progress errors', async () => {
+    const storeCalls: unknown[] = [];
+    const claimedSendAt = new Date('2026-06-03T11:45:00.000Z');
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send() {
+          return { ok: false as const, error: 'Versand laeuft bereits fuer diesen Entwurf.' };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 201,
+            accountId: 7,
+            subject: 'Busy',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'busy@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            claimedSendAt,
+          }];
+        },
+        async setDraftScheduledAt(input) {
+          storeCalls.push(['setDraftScheduledAt', input]);
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, null]));
+        },
+        async setSyncInfo(input) {
+          storeCalls.push(['setSyncInfo', input]);
+        },
+        async deleteSyncInfo(input) {
+          storeCalls.push(['deleteSyncInfo', input]);
+        },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(storeCalls).toEqual([
+      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 201, sendAt: claimedSendAt }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:201'],
+      }],
+    ]);
+  });
+
+  test('scheduled-send job waits for outbound review without consuming retry budget', async () => {
+    const storeCalls: unknown[] = [];
+    const claimedSendAt = new Date('2026-06-03T11:45:00.000Z');
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send() {
+          return {
+            ok: false as const,
+            error: 'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.',
+          };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 202,
+            accountId: 7,
+            subject: 'Pending review',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'pending@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            claimedSendAt,
+          }];
+        },
+        async setDraftScheduledAt(input) {
+          storeCalls.push(['setDraftScheduledAt', input]);
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, null]));
+        },
+        async setSyncInfo(input) {
+          storeCalls.push(['setSyncInfo', input]);
+        },
+        async deleteSyncInfo(input) {
+          storeCalls.push(['deleteSyncInfo', input]);
+        },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(storeCalls).toEqual([
+      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 202, sendAt: claimedSendAt }],
+      ['deleteSyncInfo', {
+        workspaceId: WORKSPACE_A_ID,
+        keys: ['scheduled_send_claimed_at:202'],
+      }],
+    ]);
+  });
+
+  test('reviewOutbound.review returns dry-run block without queuing async review', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 94,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 940,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+        name: 'Blocker',
+      }],
+      messages: [{
+        id: 84,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 840,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: false,
+        outbound_block_reason: null,
+        body_text: 'blocked',
+        body_html: null,
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      workflowDryRun: async () => ({
+        success: true,
+        dryRun: true as const,
+        blocked: true,
+        blockReason: 'Workflow wuerde blockieren',
+        status: 'blocked' as const,
+      }),
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 84,
+      subject: 'Blocked',
+      bodyText: 'blocked',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Workflow wuerde blockieren',
+    });
+    expect(rows.messages.find((m) => m.id === 84)?.outbound_hold).toBe(false);
+    expect(rows.runs).toHaveLength(0);
+    expect(rows.jobs).toHaveLength(0);
   });
 
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
@@ -10829,6 +11334,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: true,
       runSecurityCheck: false,
+      enqueueInboundWorkflows: false,
       actorUserId: USER_A_ID,
     });
     expect(buildSpamScoringPlan({
@@ -10839,6 +11345,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: false,
       runSecurityCheck: false,
+      enqueueInboundWorkflows: false,
     });
     expect(() => buildSpamScoringPlan({
       workspaceId: WORKSPACE_B_ID,
@@ -10913,6 +11420,7 @@ describe('server edition foundation', () => {
       messageId: 11,
       applyStatus: true,
       runSecurityCheck: true,
+      enqueueInboundWorkflows: false,
     });
 
     const calls: unknown[] = [];
@@ -11821,12 +12329,13 @@ describe('server edition foundation', () => {
       workspaceId: 'workspace-a',
       runId: 'run-1',
     });
-    expect(commands).toHaveLength(48);
+    expect(commands).toHaveLength(49);
     expect(commands[0]).toMatchObject({ domain: 'core_crm', tableName: 'sync_info' });
     expect(commands[14]).toMatchObject({ domain: 'core_crm', tableName: 'jtl_versandarten' });
     expect(commands[15]).toMatchObject({ domain: 'core_mail', tableName: 'email_accounts' });
-    expect(commands[31]).toMatchObject({ domain: 'workflow_security', tableName: 'email_ai_profiles' });
-    expect(commands[47]).toMatchObject({ domain: 'workflow_security', tableName: 'pgp_peer_keys' });
+    expect(commands[16]).toMatchObject({ domain: 'core_mail', tableName: 'email_account_mail_settings' });
+    expect(commands[32]).toMatchObject({ domain: 'workflow_security', tableName: 'email_ai_profiles' });
+    expect(commands[48]).toMatchObject({ domain: 'workflow_security', tableName: 'pgp_peer_keys' });
     expect(commands.every((command) => command.params[0] === 'workspace-a' && command.params[2] === 'run-1'))
       .toBe(true);
     expect(commands.map((command) => command.sql).join('\n')).not.toContain('workspace-a');
@@ -11837,12 +12346,12 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(48);
+    expect(client.queries).toHaveLength(49);
     expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[47].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
+    expect(client.queries[48].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
     expect(result.domains.map((domain) => [domain.domain, domain.commandCount])).toEqual([
       ['core_crm', 15],
-      ['core_mail', 16],
+      ['core_mail', 17],
       ['workflow_security', 17],
     ]);
   });
@@ -12058,6 +12567,7 @@ describe('server edition foundation', () => {
 
     expect(commands.map((command) => command.tableName)).toEqual([
       'email_accounts',
+      'email_account_mail_settings',
       'email_folders',
       'email_team_members',
       'email_threads',
@@ -12081,20 +12591,25 @@ describe('server edition foundation', () => {
     expect(commands[0].sql).toContain('smtp_password_secret_id');
     expect(commands[0].sql).toContain('oauth_refresh_secret_id');
     expect(commands[0].sql).toContain('NULL::uuid');
-    expect(commands[1].sql).toContain('LEFT JOIN email_accounts a');
-    expect(commands[4].sql).toContain('LEFT JOIN email_folders f');
-    expect(commands[4].sql).toContain("r.source_row->>'from_json'");
-    expect(commands[4].sql).toContain("r.source_row->>'auth_spf'");
-    expect(commands[4].sql).toContain("r.source_row->>'rspamd_score'");
-    expect(commands[4].sql).toContain("r.source_row->>'reply_suggestion_text'");
-    expect(commands[4].sql).toContain('reply_suggestion_updated_at = EXCLUDED.reply_suggestion_updated_at');
-    expect(commands[4].sql).toContain('ON CONFLICT (workspace_id, source_sqlite_id)');
-    expect(commands[4].sql).toContain('legacy_assigned_to_user_id');
-    expect(commands[4].sql).not.toContain("assigned_to_user_id', '')::uuid");
-    expect(commands[5].sql).toContain('LEFT JOIN email_messages m');
-    expect(commands[8].sql).toContain('LEFT JOIN email_categories c');
-    expect(commands[14].sql).toContain('LEFT JOIN email_messages parent');
-    expect(commands[15].sql).toContain("r.source_row->>'alias_thread_id' <> r.source_row->>'canonical_thread_id'");
+    expect(commands[1].sql).toContain('INSERT INTO email_account_mail_settings');
+    expect(commands[1].sql).toContain("r.source_row->>'ticket_prefix'");
+    expect(commands[2].sql).toContain('LEFT JOIN email_accounts a');
+    expect(commands[4].sql).toContain('account_source_sqlite_id');
+    expect(commands[5].sql).toContain('LEFT JOIN email_folders f');
+    expect(commands[5].sql).toContain("r.source_row->>'from_json'");
+    expect(commands[5].sql).toContain("r.source_row->>'auth_spf'");
+    expect(commands[5].sql).toContain("r.source_row->>'rspamd_score'");
+    expect(commands[5].sql).toContain("r.source_row->>'reply_suggestion_text'");
+    expect(commands[5].sql).toContain('reply_suggestion_updated_at = EXCLUDED.reply_suggestion_updated_at');
+    expect(commands[5].sql).toContain('ON CONFLICT (workspace_id, source_sqlite_id)');
+    expect(commands[5].sql).toContain('legacy_assigned_to_user_id');
+    expect(commands[5].sql).not.toContain("assigned_to_user_id', '')::uuid");
+    expect(commands[6].sql).toContain('LEFT JOIN email_messages m');
+    expect(commands[9].sql).toContain('LEFT JOIN email_categories c');
+    expect(commands[11].sql).toContain('override_key');
+    expect(commands[15].sql).toContain('LEFT JOIN email_messages parent');
+    expect(commands[16].sql).toContain('account_source_sqlite_id');
+    expect(commands[16].sql).toContain("r.source_row->>'alias_thread_id' <> r.source_row->>'canonical_thread_id'");
     expect(commands.map((command) => command.sql).join('\n')).not.toContain('workspace-a');
   });
 
@@ -12106,11 +12621,11 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(16);
+    expect(client.queries).toHaveLength(17);
     expect(client.queries[0].params).toEqual(['workspace-a', 'email_accounts', 'run-1']);
-    expect(client.queries[15].params).toEqual(['workspace-a', 'email_thread_aliases', 'run-1']);
-    expect(client.queries[4].sql).not.toContain('workspace-a');
-    expect(client.queries[4].sql).not.toContain('run-1');
+    expect(client.queries[16].params).toEqual(['workspace-a', 'email_thread_aliases', 'run-1']);
+    expect(client.queries[5].sql).not.toContain('workspace-a');
+    expect(client.queries[5].sql).not.toContain('run-1');
     expect(() => buildCoreMailImportCommands({ workspaceId: ' ', runId: 'run-1' })).toThrow('workspaceId');
     expect(() => buildCoreMailImportCommands({ workspaceId: 'workspace-a', runId: ' ' })).toThrow('runId');
   });
@@ -12144,12 +12659,16 @@ describe('server edition foundation', () => {
       .toBe(true);
     expect(commands[0].sql).toContain('INSERT INTO email_ai_profiles');
     expect(commands[1].sql).toContain('LEFT JOIN email_ai_profiles p');
-    expect(commands[2].sql).toContain('LEFT JOIN email_accounts a');
+    expect(commands[1].sql).toContain('override_key');
+    expect(commands[2].sql).toContain('LEFT JOIN email_accounts schedule_account');
+    expect(commands[2].sql).toContain('LEFT JOIN email_accounts scope_account');
+    expect(commands[2].sql).toContain('override_key');
     expect(commands[2].sql).toContain('legacy_created_by_user_id');
     expect(commands[2].sql).not.toContain("created_by_user_id', '')::uuid");
     expect(commands[4].sql).toContain('LEFT JOIN email_messages m');
     expect(commands[5].sql).toContain('LEFT JOIN email_workflow_runs wr');
     expect(commands[7].sql).toContain('INSERT INTO email_workflow_forward_dedup');
+    expect(commands[8].sql).toContain('override_key');
     expect(commands[9].sql).toContain('LEFT JOIN workflow_knowledge_bases kb');
     expect(commands[11].sql).toContain('LEFT JOIN email_accounts a');
     expect(commands[13].sql).toContain('FROM sqlite_import_rows r');
@@ -12425,7 +12944,7 @@ describe('server edition foundation', () => {
       expect(output.checks.find((check: { name: string }) => check.name === 'database').details)
         .toEqual({ databaseName: 'simplecrm', databaseSize: '42 MB' });
       expect(output.checks.find((check: { name: string }) => check.name === 'job_queue').details)
-        .toEqual({ readyJobs: 2, lagSeconds: 30 });
+        .toEqual({ readyJobs: 2, lockedJobs: 0, lagSeconds: 30, oldestLockedSeconds: null });
       expect(output.checks.find((check: { name: string }) => check.name === 'backups').message)
         .toContain('verified');
       expect(JSON.stringify(output.checks.find((check: { name: string }) => check.name === 'backups').details))
@@ -13186,6 +13705,68 @@ describe('server edition foundation', () => {
     }
   });
 
+  test('server auth route requires captcha for unknown emails when workspace captcha is enabled', async () => {
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async getLoginConfig() {
+          return {
+            captcha: { enabled: true, provider: 'turnstile' as const, siteKey: 'site-key' },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          };
+        },
+        assertCaptchaChallenge() {
+          return false;
+        },
+      },
+    };
+    const api = createServerApi(ports);
+
+    const blocked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: { email: 'unknown@example.com', password: 'guess' },
+    });
+    expect(blocked.status).toBe(403);
+    expect((blocked.body as { error: { code: string } }).error.code).toBe('captcha_required');
+  });
+
+  test('server auth security route allows non-admin users to enable email MFA for themselves', async () => {
+    const enableCalls: Array<{ workspaceId: string; userId: string }> = [];
+    const ports = {
+      ...makeServerApiPorts(),
+      loginSecurity: {
+        async enableEmailMfa(input: { workspaceId: string; userId: string }) {
+          enableCalls.push(input);
+        },
+      },
+    };
+    const api = createServerApi(ports);
+    const userPrincipal = { userId: 'user-b', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const enabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-b/mfa/email',
+      principal: userPrincipal,
+    });
+    expect(enabled.status).toBe(200);
+    expect((enabled.body as { data: { enabled: boolean; method: string } }).data).toEqual({
+      enabled: true,
+      method: 'email',
+    });
+    expect(enableCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, userId: 'user-b' }]);
+
+    const forbidden = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/users/user-a/mfa/email',
+      principal: userPrincipal,
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
   test('server auth routes login, refresh, and logout without leaking password hash', async () => {
     const ports = makeServerApiPorts();
     const api = createServerApi(ports);
@@ -13255,7 +13836,10 @@ describe('server edition foundation', () => {
 
   test('server auth setup routes expose initial state and create first owner without leaking secrets', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
-    const ports = makeServerApiPorts({ auditEvents, initialSetupNeeded: true });
+    const ports = {
+      ...makeServerApiPorts({ auditEvents, initialSetupNeeded: true }),
+      initialSetupToken: 'setup-token-secret',
+    };
     const api = createServerApi(ports);
 
     const state = await api.handle({
@@ -13264,6 +13848,17 @@ describe('server edition foundation', () => {
     });
     expect(state.status).toBe(200);
     expect((state.body as any).data).toEqual({ needsInitialSetup: true });
+
+    const missingToken = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/initial-setup',
+      body: {
+        email: 'owner@example.com',
+        password: 'new-passphrase',
+      },
+    });
+    expect(missingToken.status).toBe(403);
+    expect((missingToken.body as any).error.code).toBe('forbidden');
 
     const created = await api.handle({
       method: 'POST',
@@ -13274,6 +13869,7 @@ describe('server edition foundation', () => {
         displayName: ' Owner ',
         workspaceName: ' Vertrieb ',
         device: 'browser',
+        initialSetupToken: 'setup-token-secret',
       },
     });
     expect(created.status).toBe(201);
@@ -13296,7 +13892,7 @@ describe('server edition foundation', () => {
     const invalid = await api.handle({
       method: 'POST',
       path: '/api/v1/auth/initial-setup',
-      body: { email: 'invalid', password: 'short' },
+      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret' },
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -13307,6 +13903,7 @@ describe('server edition foundation', () => {
       body: {
         email: 'second@example.com',
         password: 'another-passphrase',
+        initialSetupToken: 'setup-token-secret',
       },
     });
     expect(blocked.status).toBe(409);
@@ -13385,6 +13982,22 @@ describe('server edition foundation', () => {
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
     expect(listSection.indexOf('query = applyMessageCursor('))
       .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
+  });
+
+  test('postgres mail folder badge counts exclude done archived messages', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const countsSection = source.slice(
+      source.indexOf('async getFolderCounts(input): Promise<EmailMailFolderCounts>'),
+      source.indexOf('function normalizeRestoreFolderKind'),
+    );
+    const archivedAggregate = countsSection.slice(
+      countsSection.indexOf("`.as('archived')") - 450,
+      countsSection.indexOf("`.as('archived')"),
+    );
+
+    expect(archivedAggregate).toContain('and archived = true');
+    expect(archivedAggregate).toContain("and coalesce(spam_status, 'clean') = 'clean'");
+    expect(archivedAggregate).toContain('and coalesce(done_local, false) = false');
   });
 
   test('server auth user admin routes list, create, update, and protect owners without secret leakage', async () => {
@@ -13505,6 +14118,7 @@ describe('server edition foundation', () => {
       role: 'admin',
       isActive: false,
       passwordChanged: false,
+      loginPinChanged: false,
     });
     expect(JSON.stringify(created.body)).not.toContain('agent-passphrase');
     expect(JSON.stringify(auditEvents)).not.toContain('agent-passphrase');
@@ -16782,6 +17396,28 @@ describe('server edition foundation', () => {
       search: 'DE',
     }]);
 
+    const batchedCustomFieldValues = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customer-custom-field-values',
+      query: { customerIds: '7,8' },
+      principal,
+    });
+    expect(batchedCustomFieldValues.status).toBe(200);
+    expect(customFieldValueCalls.at(-1)).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      limit: 50,
+      customerIds: [7, 8],
+    });
+
+    const conflictingCustomerFilters = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customer-custom-field-values',
+      query: { customerId: '7', customerIds: '8' },
+      principal,
+    });
+    expect(conflictingCustomerFilters.status).toBe(400);
+    expect((conflictingCustomerFilters.body as any).error.code).toBe('invalid_customer_filter');
+
     const activityLog = await api.handle({
       method: 'GET',
       path: '/api/v1/activity-log',
@@ -17474,6 +18110,7 @@ describe('server edition foundation', () => {
             inboxUnread: 2,
             sentFailed: 1,
             drafts: 4,
+            scheduledSend: 0,
             archived: 5,
             spamReview: 6,
             spam: 7,
@@ -17602,6 +18239,7 @@ describe('server edition foundation', () => {
       inboxUnread: 2,
       sentFailed: 1,
       drafts: 4,
+      scheduledSend: 0,
       archived: 5,
       spamReview: 6,
       spam: 7,
@@ -18288,6 +18926,12 @@ describe('server edition foundation', () => {
         values: { subject: 'Nope' },
       }],
     ]);
+  });
+
+  test('server outbound validation persists manual approval marker on success', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-compose-send.ts'), 'utf8');
+    expect(source).toMatch(/persistManualOutboundApproval/);
+    expect(source).toMatch(/evaluateComposeOutboundDryRun/);
   });
 
   test('server outbound validation route delegates to server review port', async () => {
@@ -19165,24 +19809,50 @@ describe('server edition foundation', () => {
     }, '+OK POP3 ready\r\n');
 
     const smtpLines: string[] = [];
+    let inData = false;
     const smtpServer = await startLineServer((line, socket) => {
       smtpLines.push(line);
+      if (inData) {
+        if (line === '.') {
+          inData = false;
+          socket.write('250 2.0.0 queued\r\n');
+        }
+        return;
+      }
       if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH LOGIN\r\n250 OK\r\n');
       else if (line === 'AUTH LOGIN') socket.write('334 VXNlcm5hbWU6\r\n');
       else if (line === Buffer.from('user@example.com', 'utf8').toString('base64')) socket.write('334 UGFzc3dvcmQ6\r\n');
       else if (line === Buffer.from('secret', 'utf8').toString('base64')) socket.write('235 2.7.0 Authentication successful\r\n');
-      else if (line === 'QUIT') socket.write('221 bye\r\n');
+      else if (line === 'MAIL FROM:<user@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<user@example.com>') socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        inData = true;
+        socket.write('354 end with dot\r\n');
+      } else if (line === 'QUIT') socket.write('221 bye\r\n');
       else socket.write('500 unknown command\r\n');
     }, '220 SMTP ready\r\n');
 
     const smtpOauthLines: string[] = [];
     let smtpOauthPayload = '';
+    let smtpOauthInData = false;
     const smtpOauthServer = await startLineServer((line, socket) => {
       smtpOauthLines.push(line);
+      if (smtpOauthInData) {
+        if (line === '.') {
+          smtpOauthInData = false;
+          socket.write('250 2.0.0 queued\r\n');
+        }
+        return;
+      }
       if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH XOAUTH2\r\n250 OK\r\n');
       else if (line.startsWith('AUTH XOAUTH2 ')) {
         smtpOauthPayload = Buffer.from(line.slice('AUTH XOAUTH2 '.length), 'base64').toString('utf8');
         socket.write('235 2.7.0 Authentication successful\r\n');
+      } else if (line === 'MAIL FROM:<user@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<user@example.com>') socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        smtpOauthInData = true;
+        socket.write('354 end with dot\r\n');
       } else if (line === 'QUIT') socket.write('221 bye\r\n');
       else socket.write('500 unknown command\r\n');
     }, '220 SMTP ready\r\n');
@@ -19235,8 +19905,24 @@ describe('server edition foundation', () => {
       expect(smtpLines).toContain('AUTH LOGIN');
       expect(smtpLines).toContain(Buffer.from('user@example.com', 'utf8').toString('base64'));
       expect(smtpLines).toContain(Buffer.from('secret', 'utf8').toString('base64'));
+      expect(smtpLines).toContain('MAIL FROM:<user@example.com>');
+      expect(smtpLines).toContain('RCPT TO:<user@example.com>');
+      expect(smtpLines).toContain('DATA');
+      expect(smtpLines).toContain('.');
       expect(smtpOauthLines.find((line) => line.startsWith('AUTH XOAUTH2 '))).toBeTruthy();
       expect(smtpOauthPayload).toBe('user=user@example.com\u0001auth=Bearer oauth-access-token\u0001\u0001');
+
+      await expect(port.testSmtp({
+        workspaceId: WORKSPACE_A_ID,
+        host: '',
+        port: smtpServer.port,
+        tls: false,
+        user: 'user@example.com',
+        password: 'secret',
+      })).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('SMTP-Host fehlt'),
+      });
 
       const guardedPort = createServerMailConnectionTestPort({
         timeoutMs: 1000,
@@ -19719,6 +20405,15 @@ describe('server edition foundation', () => {
           updates.push(['deleteSyncInfo', input]);
           for (const key of input.keys) syncInfo.delete(key);
         },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          const existing = syncInfo.get(key);
+          if (existing === '1' || existing === 'sent') return 'committed';
+          if (existing === 'outbox') return 'outbox';
+          syncInfo.set(key, 'outbox');
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -19799,9 +20494,13 @@ describe('server edition foundation', () => {
         inReplyTo: '<parent@example.com>',
         references: '<root@example.com> <parent@example.com>',
       })],
+      ['claimSmtpOutbox', {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 44,
+      }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
-        values: { 'email_compose_smtp_ok:44': '1' },
+        values: { 'email_compose_smtp_ok:44': 'sent' },
       }],
       ['markDraftAsSent', {
         workspaceId: WORKSPACE_A_ID,
@@ -20077,6 +20776,10 @@ describe('server edition foundation', () => {
         async deleteSyncInfo(input) {
           updates.push(['deleteSyncInfo', input]);
         },
+        async claimSmtpOutbox(input) {
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -20214,6 +20917,10 @@ describe('server edition foundation', () => {
         async deleteSyncInfo(input) {
           updates.push(['deleteSyncInfo', input]);
         },
+        async claimSmtpOutbox(input) {
+          updates.push(['claimSmtpOutbox', input]);
+          return 'claimed';
+        },
         async tryAcquireSendingLock() {
           if (locked) return false;
           locked = true;
@@ -20268,6 +20975,180 @@ describe('server edition foundation', () => {
       messageId: 45,
       sentImapSyncFailed: false,
     }]);
+  });
+
+  test('server compose sender uses outbox claim and recovers without duplicate SMTP', async () => {
+    const smtpSends: unknown[] = [];
+    const syncInfo = new Map<string, string | null>();
+    let locked = false;
+    const draft = {
+      id: 48,
+      accountId: 7,
+      uid: -48,
+      folderKind: 'draft' as const,
+      subject: 'Outbox',
+      bodyText: 'Retry',
+      bodyHtml: null,
+      messageIdHeader: null,
+      inReplyToHeader: null,
+      referencesHeader: null,
+      ticketCode: null,
+      threadId: null,
+      draftAttachmentPathsJson: null,
+      outboundHold: false,
+      outboundBlockReason: null,
+    };
+    const account = {
+      id: 7,
+      sourceSqliteId: 70,
+      displayName: 'Support',
+      emailAddress: 'agent@example.com',
+      imapHost: 'imap.example.com',
+      imapUsername: 'agent@example.com',
+      smtpHost: 'smtp.example.com',
+      smtpPort: 587,
+      smtpTls: true,
+      smtpUsername: 'smtp-agent@example.com',
+      smtpUseImapAuth: false,
+      oauthProvider: null,
+      protocol: 'imap' as const,
+      requestReadReceipt: false,
+    };
+    let smtpAttempts = 0;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: async (input) => {
+        smtpAttempts += 1;
+        if (smtpAttempts === 1) throw new Error('smtp transient');
+        smtpSends.push(input);
+      },
+      store: {
+        async getDraft(input) {
+          return input.messageId === 48 ? draft : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7 ? account : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-outbox';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+        },
+        async setSyncInfo(input) {
+          for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        },
+        async deleteSyncInfo(input) {
+          for (const key of input.keys) syncInfo.delete(key);
+        },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          const existing = syncInfo.get(key);
+          if (existing === '1' || existing === 'sent') return 'committed';
+          if (existing === 'outbox') return 'outbox';
+          syncInfo.set(key, 'outbox');
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend() {
+          return undefined;
+        },
+        async markDraftAsSent() {
+          return undefined;
+        },
+        async markMessageDone() {
+          return undefined;
+        },
+      },
+    });
+
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toEqual({
+      ok: false,
+      error: 'smtp transient',
+    });
+    expect(syncInfo.get('email_compose_smtp_ok:48')).toBeUndefined();
+    expect(smtpSends).toHaveLength(0);
+
+    syncInfo.set('email_compose_smtp_ok:48', 'outbox');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+    });
+    expect(smtpSends).toHaveLength(1);
+    expect(smtpAttempts).toBe(2);
+
+    smtpSends.length = 0;
+    syncInfo.set('email_compose_smtp_ok:48', 'sent');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+      recoveredSentAppend: true,
+    });
+    expect(smtpSends).toHaveLength(0);
+    expect(smtpAttempts).toBe(2);
+
+    smtpSends.length = 0;
+    syncInfo.set('email_compose_smtp_ok:48', '1');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Outbox',
+        bodyText: 'Retry',
+        to: 'customer@example.com',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      messageId: 48,
+      recoveredSentAppend: true,
+    });
+    expect(smtpSends).toHaveLength(0);
+    expect(smtpAttempts).toBe(2);
   });
 
   test('server read receipt responder validates MDN guards and sends through SMTP port', async () => {
@@ -25780,6 +26661,7 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const workflow = await api.handle({
       method: 'GET',
@@ -25802,7 +26684,7 @@ describe('server edition foundation', () => {
     });
     expect(misc.status).toBe(200);
     expect((misc.body as any).data).toEqual({
-      webhookSecret: 'secret-1',
+      webhookSecret: 'se****-1',
       maxAttachmentMb: '30',
     });
 
@@ -25841,7 +26723,7 @@ describe('server edition foundation', () => {
       },
     });
 
-    const miscPatch = await api.handle({
+    const miscPatchDenied = await api.handle({
       method: 'PATCH',
       path: '/api/v1/email/settings/misc',
       body: {
@@ -25849,6 +26731,17 @@ describe('server edition foundation', () => {
         maxAttachmentMb: 55,
       },
       principal,
+    });
+    expect(miscPatchDenied.status).toBe(403);
+
+    const miscPatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/settings/misc',
+      body: {
+        webhookSecret: ' rotated ',
+        maxAttachmentMb: 55,
+      },
+      principal: adminPrincipal,
     });
     expect(miscPatch.status).toBe(200);
     expect(setCalls[1]).toEqual({
@@ -26198,6 +27091,7 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const loaded = await api.handle({
       method: 'GET',
@@ -26243,7 +27137,7 @@ describe('server edition foundation', () => {
         forcePort: true,
         cWaehrung: 'eur',
       },
-      principal,
+      principal: adminPrincipal,
     });
     expect(saved.status).toBe(200);
     expect((saved.body as any).data).toEqual({ success: true });
@@ -26251,7 +27145,7 @@ describe('server edition foundation', () => {
     const cleared = await api.handle({
       method: 'DELETE',
       path: '/api/v1/mssql/password',
-      principal,
+      principal: adminPrincipal,
     });
     expect(cleared.status).toBe(200);
     expect((cleared.body as any).data.success).toBe(true);
@@ -26314,7 +27208,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const saved = await api.handle({
       method: 'PATCH',
@@ -27601,6 +28495,25 @@ describe('server edition foundation', () => {
       { field: 'text', message: 'text darf nicht leer sein' },
     ]));
 
+    const insertMode = await api.handle({
+      method: 'POST',
+      path: '/api/v1/ai/transform-text',
+      body: {
+        promptId: '22',
+        text: '',
+        insertMode: true,
+        inboundContextText: 'Kundenanfrage',
+      },
+      principal,
+    });
+    expect(insertMode.status).toBe(200);
+    expect(calls.at(-1)).toEqual(expect.objectContaining({
+      promptId: 22,
+      text: '',
+      insertMode: true,
+      inboundContextText: 'Kundenanfrage',
+    }));
+
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',
       path: '/api/v1/ai/transform-text',
@@ -27957,13 +28870,16 @@ describe('server edition foundation', () => {
       body: { messageId: '11' },
       principal,
     });
-    expect(bySource.status).toBe(202);
+    expect(bySource.status).toBe(200);
     expect((bySource.body as any).data).toEqual({
       success: true,
-      queued: true,
-      status: 'queued',
+      dryRun: true,
       workflowId: -23,
       messageId: 11,
+      status: 'ok',
+      blocked: false,
+      blockReason: null,
+      log: ['dry_run:server', 'dry_run:email.tag'],
     });
 
     const byId = await api.handle({
@@ -27972,7 +28888,32 @@ describe('server edition foundation', () => {
       body: {},
       principal,
     });
-    expect(byId.status).toBe(202);
+    expect(byId.status).toBe(200);
+    expect((byId.body as any).data.dryRun).toBe(true);
+
+    const liveDenied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: false },
+      principal,
+    });
+    expect(liveDenied.status).toBe(403);
+
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+    const liveQueued = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: false },
+      principal: adminPrincipal,
+    });
+    expect(liveQueued.status).toBe(202);
+    expect((liveQueued.body as any).data).toEqual({
+      success: true,
+      queued: true,
+      status: 'queued',
+      workflowId: -23,
+      messageId: 11,
+    });
 
     const missingMessage = await api.handle({
       method: 'POST',
@@ -28024,9 +28965,11 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(unavailable.status).toBe(503);
-    expect((unavailable.body as any).error.code).toBe('job_queue_unavailable');
+    expect((unavailable.body as any).error.code).toBe('workflow_dry_run_unavailable');
 
     expect(workflowListCalls).toEqual([
+      expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
+      expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
@@ -28035,17 +28978,36 @@ describe('server edition foundation', () => {
     expect(workflowGetCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 23 }]);
     expect(messageGetCalls).toEqual([
       { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
+      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
+      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
       { workspaceId: WORKSPACE_A_ID, id: 77, includeBody: false },
       { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
     ]);
-    expect(dryRunCalls).toEqual([{
-      workspaceId: WORKSPACE_A_ID,
-      workflowId: 23,
-      messageId: 11,
-      triggerName: 'manual',
-      actorUserId: USER_A_ID,
-      context: {},
-    }]);
+    expect(dryRunCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 23,
+        messageId: 11,
+        triggerName: 'manual',
+        actorUserId: USER_A_ID,
+        context: {},
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 23,
+        triggerName: 'manual',
+        actorUserId: USER_A_ID,
+        context: {},
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 23,
+        messageId: 11,
+        triggerName: 'manual',
+        actorUserId: USER_A_ID,
+        context: {},
+      },
+    ]);
     expect(queueCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
@@ -28054,17 +29016,6 @@ describe('server edition foundation', () => {
           workspaceId: WORKSPACE_A_ID,
           workflowId: 23,
           messageId: 11,
-          triggerName: 'manual',
-          actorUserId: USER_A_ID,
-          context: {},
-        },
-      },
-      {
-        workspaceId: WORKSPACE_A_ID,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: WORKSPACE_A_ID,
-          workflowId: 23,
           triggerName: 'manual',
           actorUserId: USER_A_ID,
           context: {},
@@ -35606,7 +36557,7 @@ function makeDoctorPgClient(input: {
         if (input.failJobQueue) {
           throw new Error('job_queue missing');
         }
-        return { rows: [{ ready_jobs: 2, queue_lag_seconds: 30 } as T] };
+        return { rows: [{ ready_jobs: 2, locked_jobs: 0, queue_lag_seconds: 30, oldest_locked_seconds: null } as T] };
       }
       if (sql.includes('FROM conversation_locks')) {
         return { rows: [{ stale_locks: 0 } as T] };
@@ -35707,6 +36658,7 @@ type AiReplySuggestionFakeRows = {
   tags: Array<Record<string, unknown>>;
   jobs: Array<Record<string, unknown>>;
   knowledgeChunks: Array<Record<string, unknown>>;
+  knowledgeBases: Array<Record<string, unknown>>;
   activityLog: Array<Record<string, unknown>>;
   cannedResponses: Array<Record<string, unknown>>;
 };
@@ -35727,6 +36679,7 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
     tags: input.tags ?? [],
     jobs: input.jobs ?? [],
     knowledgeChunks: input.knowledgeChunks ?? [],
+    knowledgeBases: input.knowledgeBases ?? [],
     activityLog: input.activityLog ?? [],
     cannedResponses: input.cannedResponses ?? [],
   };
@@ -35754,6 +36707,8 @@ function makeAiReplySuggestionDb(input: Partial<AiReplySuggestionFakeRows>): {
         return rows.jobs;
       case 'workflow_knowledge_chunks':
         return rows.knowledgeChunks;
+      case 'workflow_knowledge_bases':
+        return rows.knowledgeBases;
       case 'activity_log':
         return rows.activityLog;
       case 'email_canned_responses':
@@ -36031,6 +36986,7 @@ type WorkflowExecutionFakeRows = {
   delayedJobs: Array<Record<string, unknown>>;
   jobs: Array<Record<string, unknown>>;
   messageAttachments: Array<Record<string, unknown>>;
+  accountMailSettings: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -36066,6 +37022,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     delayedJobs: input.delayedJobs ?? [],
     jobs: input.jobs ?? [],
     messageAttachments: input.messageAttachments ?? [],
+    accountMailSettings: input.accountMailSettings ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
@@ -36125,6 +37082,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.delayedJobs;
       case 'job_queue':
         return rows.jobs;
+      case 'email_account_mail_settings':
+        return rows.accountMailSettings;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }

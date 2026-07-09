@@ -2439,7 +2439,7 @@ function parseTeamMemberFilters(req: ApiRequest): ParseResult<{ search?: string;
 
 function parseThreadFilters(req: ApiRequest): ParseResult<{
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -2766,7 +2766,7 @@ function parseEmailCannedResponseMutationBody(
 
   const values: EmailCannedResponseMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['title', 'body', 'sortOrder']);
+  const allowedFields = new Set(['title', 'body', 'sortOrder', 'accountId', 'overrideKey']);
   let hasBody = false;
 
   for (const key of Object.keys(body)) {
@@ -2790,6 +2790,25 @@ function parseEmailCannedResponseMutationBody(
     const sortOrder = normalizeIntegerBody(body.sortOrder, 'sortOrder', 0);
     if (sortOrder.ok) values.sortOrder = sortOrder.value;
     else errors.push({ field: 'sortOrder', message: sortOrder.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    if (body.accountId === null) {
+      values.accountId = null;
+    } else {
+      const accountId = normalizePositiveBodyInt(body.accountId, 'accountId');
+      if (accountId.ok) values.accountId = accountId.value;
+      else errors.push({ field: 'accountId', message: accountId.message });
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'overrideKey')) {
+    if (body.overrideKey === null) {
+      values.overrideKey = null;
+    } else if (typeof body.overrideKey === 'string') {
+      const trimmed = body.overrideKey.trim();
+      values.overrideKey = trimmed || null;
+    } else {
+      errors.push({ field: 'overrideKey', message: 'overrideKey muss ein String oder null sein' });
+    }
   }
 
   if (errors.length > 0) {
@@ -3398,10 +3417,12 @@ function parseEmailInternalNoteMutationBody(
   return { ok: true, values };
 }
 
-function parseCannedResponseFilters(req: ApiRequest): ParseResult<{ search?: string }> {
+function parseCannedResponseFilters(req: ApiRequest): ParseResult<{ search?: string; accountId?: number }> {
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return parseError('invalid_search', 'search darf maximal 200 Zeichen haben');
-  return { ok: true, filters: omitUndefined({ search }) };
+  const accountId = parseOptionalPositiveInt(req.query?.accountId);
+  if (accountId === null) return parseError('invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+  return { ok: true, filters: omitUndefined({ search, accountId }) };
 }
 
 function parseAccountSignatureFilters(req: ApiRequest): ParseResult<{ accountId?: number }> {
@@ -3504,6 +3525,8 @@ function sanitizeEmailThread(thread: EmailThreadRecord): EmailThreadRecord {
   return {
     id: thread.id,
     ticketCode: thread.ticketCode,
+    accountSourceSqliteId: thread.accountSourceSqliteId,
+    accountId: thread.accountId,
     rootMessageSourceSqliteId: thread.rootMessageSourceSqliteId,
     rootMessageId: thread.rootMessageId,
     lastMessageAt: thread.lastMessageAt,
@@ -3582,6 +3605,9 @@ function sanitizeEmailCannedResponse(response: EmailCannedResponseRecord): Email
     sourceSqliteId: response.sourceSqliteId,
     title: response.title,
     body: response.body,
+    accountSourceSqliteId: response.accountSourceSqliteId,
+    accountId: response.accountId,
+    overrideKey: response.overrideKey,
     sortOrder: response.sortOrder,
     createdAt: response.createdAt,
     updatedAt: response.updatedAt,
@@ -3638,6 +3664,8 @@ function sanitizeEmailThreadAlias(alias: EmailThreadAliasRecord): EmailThreadAli
   return {
     id: alias.id,
     sourceSqliteId: alias.sourceSqliteId,
+    accountSourceSqliteId: alias.accountSourceSqliteId,
+    accountId: alias.accountId,
     aliasThreadId: alias.aliasThreadId,
     canonicalThreadId: alias.canonicalThreadId,
     confidence: alias.confidence,
@@ -3711,6 +3739,7 @@ function parseOptionalThreadView(value: string | undefined):
   | 'sent'
   | 'archived'
   | 'drafts'
+  | 'scheduled_send'
   | 'spam_review'
   | 'spam'
   | 'trash'
@@ -3719,7 +3748,7 @@ function parseOptionalThreadView(value: string | undefined):
   | undefined
   | null {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

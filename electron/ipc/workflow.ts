@@ -1,16 +1,21 @@
 import fs from 'fs';
 import { IpcMainInvokeEvent, dialog } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
+import {
+  accountOverrideScopeFromPayload,
+  type AccountOverrideScopePayload,
+} from '../../shared/mail-account-overrides';
 import { registerIpcHandler } from './register';
 import { getWorkflowById, createWorkflow, updateWorkflow } from '../email/email-workflow-store';
 import { listWorkflowNodeCatalog, ensureBuiltinWorkflowNodes } from '../workflow/registry';
 import { executeWorkflowNow, testWorkflowOnMessage } from '../workflow/workflow-executor';
-import { listRecentWorkflowRuns, listWorkflowRunSteps } from '../workflow/run-steps';
+import { listRecentWorkflowRuns, listWorkflowRunSteps, getWorkflowRunLog } from '../workflow/run-steps';
 import { WORKFLOW_TEMPLATES } from '../workflow/templates';
 import { exportWorkflowBundle, parseWorkflowImport } from '../workflow/export-import';
 import {
   listKnowledgeBases,
   createKnowledgeBase,
+  updateKnowledgeBase,
   deleteKnowledgeBase,
   addTextChunk,
   getKnowledgeBaseDocument,
@@ -50,7 +55,7 @@ export function registerWorkflowHandlers(options: {
       async (
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId: number; dryRun?: boolean },
-      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, payload.dryRun !== false),
+      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, true),
       { logger },
     ),
   );
@@ -62,7 +67,7 @@ export function registerWorkflowHandlers(options: {
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId?: number | null; dryRun?: boolean },
       ) => executeWorkflowNow(payload.workflowId, payload),
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -70,6 +75,14 @@ export function registerWorkflowHandlers(options: {
     registerIpcHandler(
       IPCChannels.Email.ListWorkflowRuns,
       async (_event: IpcMainInvokeEvent, workflowId: number) => listRecentWorkflowRuns(workflowId),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetWorkflowRunLog,
+      async (_event: IpcMainInvokeEvent, runId: number) => getWorkflowRunLog(runId),
       { logger },
     ),
   );
@@ -231,17 +244,74 @@ export function registerWorkflowHandlers(options: {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.ListKnowledgeBases, async () => listKnowledgeBases(), {
-      logger,
-    }),
+    registerIpcHandler(
+      IPCChannels.Email.ListKnowledgeBases,
+      async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
+        listKnowledgeBases(accountOverrideScopeFromPayload(payload)),
+      { logger },
+    ),
   );
 
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.CreateKnowledgeBase,
-      async (_event: IpcMainInvokeEvent, payload: { name: string; description?: string }) => {
-        const id = createKnowledgeBase(payload.name, payload.description ?? null);
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          name: string;
+          description?: string | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
+          knowledgeContext?: string | null;
+        },
+      ) => {
+        const id = createKnowledgeBase(payload.name, payload.description ?? null, {
+          accountId: payload.accountId,
+          overrideKey: payload.overrideKey,
+          knowledgeContext: payload.knowledgeContext ?? null,
+        });
         return { success: true as const, id };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.UpdateKnowledgeBase,
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: {
+          id: number;
+          name?: string;
+          description?: string | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
+          knowledgeContext?: string | null;
+        },
+      ) => {
+        const patch: {
+          name?: string;
+          description?: string | null;
+          accountId?: number | null;
+          overrideKey?: string | null;
+          knowledgeContext?: string | null;
+        } = {};
+        if (payload.name !== undefined) patch.name = payload.name;
+        if (Object.prototype.hasOwnProperty.call(payload, 'description')) {
+          patch.description = payload.description ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'accountId')) {
+          patch.accountId = payload.accountId ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'overrideKey')) {
+          patch.overrideKey = payload.overrideKey ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'knowledgeContext')) {
+          patch.knowledgeContext = payload.knowledgeContext ?? null;
+        }
+        updateKnowledgeBase(payload.id, patch);
+        return { success: true as const };
       },
       { logger },
     ),

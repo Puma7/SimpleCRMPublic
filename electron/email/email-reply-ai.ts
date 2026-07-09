@@ -8,6 +8,8 @@ import { getEmailMessageById, type EmailMessageRow } from './email-store';
 import { hasAnyAiProfileWithKey } from './email-ai-profiles';
 import type { ReplySuggestionAutoTrigger } from '../../shared/reply-suggestion-settings';
 import { shouldAutoEnsureReplySuggestion } from './reply-suggestion-settings';
+import { searchKnowledgeForWorkflow } from '../workflow/knowledge-base';
+import { formatKnowledgeChunksForPrompt } from '../../shared/knowledge-prompt';
 
 const REPLY_BODY_MAX = 12_000;
 const INFLIGHT = new Set<number>();
@@ -52,8 +54,7 @@ function messageBodyForReply(row: EmailMessageRow): string {
   return raw.slice(0, REPLY_BODY_MAX);
 }
 
-function findReplyPrompt(): AiPromptRow | undefined {
-  const prompts = listAiPrompts();
+function findReplyPrompt(prompts: readonly AiPromptRow[]): AiPromptRow | undefined {
   return prompts.find((p) => p.target === 'reply') ?? prompts[0];
 }
 
@@ -198,7 +199,7 @@ function setReplySuggestionDb(
 
 export async function generateReplyDraftText(
   messageId: number,
-  opts?: { promptId?: number; customerId?: number | null },
+  opts?: { promptId?: number; customerId?: number | null; userContext?: string },
 ): Promise<{ success: true; text: string } | { success: false; error: string }> {
   const row = getEmailMessageById(messageId);
   if (!row) return { success: false, error: 'Nachricht nicht gefunden' };
@@ -212,12 +213,28 @@ export async function generateReplyDraftText(
   const customerId =
     opts?.customerId !== undefined ? opts.customerId : row.customer_id;
 
-  const prompts = listAiPrompts();
+  const prompts = listAiPrompts(row.account_id);
   const prompt =
     (opts?.promptId != null ? prompts.find((p) => p.id === opts.promptId) : undefined) ??
-    findReplyPrompt();
+    findReplyPrompt(prompts);
   const template = prompt?.user_template ?? DEFAULT_REPLY_USER_TEMPLATE;
-  const user = interpolateReplyTemplate(template, row, customerId);
+  let user = interpolateReplyTemplate(template, row, customerId);
+
+  const userContext = opts?.userContext?.trim();
+  if (userContext) {
+    user = `${user}\n\nZusätzlicher Kontext vom Bearbeiter:\n${userContext}`;
+  }
+
+  const query = messageBodyForReply(row).slice(0, 2000);
+  if (query.length >= 8) {
+    try {
+      const chunks = await searchKnowledgeForWorkflow(row.account_id, 'inbound', query, 5);
+      const kbBlock = formatKnowledgeChunksForPrompt(chunks);
+      if (kbBlock) user = `${user}${kbBlock}`;
+    } catch {
+      // KB lookup must not block reply generation.
+    }
+  }
 
   try {
     const profileId = prompt ? resolvePromptProfileId(prompt) : null;
@@ -295,9 +312,16 @@ export function ensureReplySuggestion(
     .catch(() => undefined);
 }
 
+export async function generateReplyDraftOnly(
+  messageId: number,
+  opts?: { promptId?: number; customerId?: number | null; userContext?: string },
+): Promise<{ success: true; text: string } | { success: false; error: string }> {
+  return generateReplyDraftText(messageId, opts);
+}
+
 export async function generateAndStoreReplySuggestion(
   messageId: number,
-  opts?: { promptId?: number; customerId?: number | null },
+  opts?: { promptId?: number; customerId?: number | null; userContext?: string },
 ): Promise<{ success: true; text: string } | { success: false; error: string }> {
   const result = await generateReplyDraftText(messageId, opts);
   if (result.success) {

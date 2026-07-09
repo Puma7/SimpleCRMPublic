@@ -4,7 +4,11 @@ import type { Readable } from 'node:stream';
 import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from '../jobs';
 import type { ConversationLockReason } from '../locks';
 import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
+import type { JtlOrderLookupApiPort } from '../jtl-order-lookup';
 import type { LoginPenalty } from '../auth';
+import type { ServerMaintenancePort } from '../maintenance/service';
+
+export type ServerMaintenanceApiPort = ServerMaintenancePort;
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
@@ -53,6 +57,11 @@ export type AuthUserRecord = {
   role: AuthenticatedPrincipal['role'];
   passwordHash: string;
   disabledAt?: string | null;
+  loginPinHash?: string | null;
+  loginPinEnabled?: boolean;
+  mfaEnabled?: boolean;
+  mfaMethod?: 'totp' | 'email' | null;
+  mfaTotpSecretId?: string | null;
 };
 
 export type TokenPair = {
@@ -83,6 +92,9 @@ export type AuthUserAdminRecord = {
   displayName: string;
   role: AuthenticatedPrincipal['role'];
   disabledAt: string | null;
+  loginPinEnabled: boolean;
+  mfaEnabled: boolean;
+  mfaMethod: 'totp' | 'email' | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 };
@@ -109,6 +121,9 @@ export type AuthUserSaveInput = {
   role: AuthenticatedPrincipal['role'];
   password?: string;
   isActive?: boolean;
+  loginPin?: string | null;
+  mfaMethod?: 'totp' | 'email' | null;
+  disableMfa?: boolean;
 };
 
 export type AuthUserSaveResult =
@@ -156,6 +171,74 @@ export type AuthInvitationMailInput = {
 
 export type AuthInvitationMailerApiPort = Readonly<{
   sendInvitation(input: AuthInvitationMailInput): Promise<AuthInvitationDeliveryStatus>;
+}>;
+
+export type AuthSecurityWorkspaceSettings = {
+  captchaEnabled: boolean;
+  pinKeypadEnabled: boolean;
+  mfaEnabled: boolean;
+  mfaTotpEnabled: boolean;
+  mfaEmailEnabled: boolean;
+};
+
+export type LoginSecurityApiPort = Readonly<{
+  getWorkspaceSettings(workspaceId: string): Promise<AuthSecurityWorkspaceSettings>;
+  setWorkspaceSettings(
+    workspaceId: string,
+    settings: AuthSecurityWorkspaceSettings,
+  ): Promise<AuthSecurityWorkspaceSettings>;
+  getLoginConfig(email?: string): Promise<{
+    captcha: { enabled: boolean; provider: 'turnstile' | null; siteKey: string | null };
+    pinKeypad: { enabled: boolean };
+    mfa: { enabled: boolean; methods: readonly ('totp' | 'email')[] };
+    user: {
+      pinRequired: boolean;
+      mfaRequired: boolean;
+      mfaMethod: 'totp' | 'email' | null;
+    } | null;
+  }>;
+  verifyCaptcha(input: { token: string; ip: string }): Promise<
+    | { ok: true; challenge: string }
+    | { ok: false; code: string }
+  >;
+  assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): boolean;
+  assertLoginPin(input: {
+    user: AuthUserRecord;
+    workspaceSettings: AuthSecurityWorkspaceSettings;
+    pin: string | undefined;
+  }): Promise<boolean>;
+  beginMfaIfRequired(input: {
+    user: AuthUserRecord;
+    workspaceSettings: AuthSecurityWorkspaceSettings;
+    device?: string;
+  }): Promise<
+    | { kind: 'complete' }
+    | { kind: 'mfa_required'; mfaChallengeToken: string; mfaMethod: 'totp' | 'email' }
+    | { kind: 'mfa_delivery_failed' }
+  >;
+  completeMfaLogin(input: {
+    mfaChallengeToken: string;
+    code: string;
+    device?: string;
+    ip?: string;
+  }): Promise<
+    | { ok: true; user: AuthUserRecord; tokens: TokenPair }
+    | { ok: false; code: string }
+  >;
+  setUserPin(input: { workspaceId: string; userId: string; pin: string | null }): Promise<void>;
+  beginTotpSetup(input: {
+    workspaceId: string;
+    userId: string;
+    email: string;
+  }): Promise<{ secret: string; otpauthUri: string }>;
+  confirmTotpSetup(input: {
+    workspaceId: string;
+    userId: string;
+    secret: string;
+    code: string;
+  }): Promise<boolean>;
+  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
 }>;
 
 export type AuthApiPort = {
@@ -1149,6 +1232,7 @@ export type CustomerCustomFieldValueApiPort = {
   list(input: {
     workspaceId: string;
     customerId?: number;
+    customerIds?: number[];
     fieldId?: number;
     search?: string;
     cursor?: number;
@@ -1431,6 +1515,7 @@ export type EmailAccountRecord = {
   vacationSubject: string | null;
   vacationBodyText: string | null;
   requestReadReceipt: boolean;
+  imapDeleteOptIn: boolean;
   defaultRemoteContentPolicy: string;
   respondToReadReceipts: string;
   imapPasswordConfigured: boolean;
@@ -1501,6 +1586,7 @@ export type EmailAccountMutationInput = {
   vacationSubject?: string | null;
   vacationBodyText?: string | null;
   requestReadReceipt?: boolean;
+  imapDeleteOptIn?: boolean;
 };
 
 export type EmailAccountMutationPortResult =
@@ -1656,6 +1742,9 @@ export type AiReplySuggestionApiPort = {
     promptId?: number;
     profileId?: number;
     customerId?: number | null;
+    userContext?: string;
+    /** When false, returns draft text without updating stored suggestion. Default true. */
+    persistSuggestion?: boolean;
   }): Promise<EmailReplyDraftGenerationResult>;
 };
 
@@ -1684,6 +1773,7 @@ export type EmailMailFolderCounts = {
   inboxUnread: number;
   sentFailed: number;
   drafts: number;
+  scheduledSend: number;
   archived: number;
   spamReview: number;
   spam: number;
@@ -1749,6 +1839,21 @@ export type EmailDiagnosticsReport = {
     protocol: string;
     inboxLastSyncedAt: string | null;
   }>;
+  jobQueue?: {
+    ready: number;
+    locked: number;
+    lagSeconds: number;
+    oldestLockedSeconds: number | null;
+    samples: Array<{
+      id: number;
+      type: string;
+      attempts: number;
+      maxAttempts: number;
+      lockedBy: string | null;
+      lockedSeconds: number | null;
+      lastError: string | null;
+    }>;
+  };
 };
 
 export type EmailDiagnosticsApiPort = {
@@ -1862,6 +1967,7 @@ export type EmailComposeDraftUpdateInput = {
   subject?: string;
   bodyText?: string;
   bodyHtml?: string | null;
+  fromJson?: unknown | null;
   toJson?: unknown | null;
   ccJson?: unknown | null;
   bccJson?: unknown | null;
@@ -1871,7 +1977,11 @@ export type EmailComposeDraftUpdateInput = {
 
 export type EmailComposeDraftMutationResult =
   | { ok: true; message: EmailMessageRecord }
-  | { ok: false; reason: 'not_found' | 'not_local_draft' | 'account_not_found' };
+  | {
+    ok: false;
+    reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked';
+    message?: string;
+  };
 
 export type EmailScheduledSendDraftState = {
   failureCount: number;
@@ -2025,7 +2135,7 @@ export type EmailMessageApiPort = {
     done?: boolean;
     spam?: boolean;
     search?: string;
-    view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+    view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
     categoryId?: number;
     sort?: 'date_desc' | 'date_asc' | 'priority';
     listFilter?: 'all' | 'unread' | 'attachment' | 'customer' | 'workflow';
@@ -2230,6 +2340,7 @@ export type EmailAttachmentRecord = {
   filename: string;
   contentType: string | null;
   sizeBytes: number;
+  storagePath?: string | null;
   contentSha256: string | null;
   updatedAt: string;
 };
@@ -2386,6 +2497,8 @@ export type EmailTeamMemberApiPort = EmailStringRecordApiPort<EmailTeamMemberRec
 export type EmailThreadRecord = {
   id: string;
   ticketCode: string;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
   rootMessageSourceSqliteId: number | null;
   rootMessageId: number | null;
   lastMessageAt: string | null;
@@ -2411,7 +2524,7 @@ export type EmailThreadSplitMessagePortResult =
 
 export type EmailThreadApiPort = EmailStringRecordApiPort<EmailThreadRecord, {
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -2615,6 +2728,9 @@ export type EmailCannedResponseRecord = {
   sourceSqliteId: number;
   title: string;
   body: string;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   sortOrder: number;
   createdAt: string | null;
   updatedAt: string;
@@ -2625,11 +2741,14 @@ export type EmailCannedResponseListResult = EmailNumericCursorListResult<EmailCa
 export type EmailCannedResponseMutationInput = {
   title?: string;
   body?: string;
+  accountId?: number | null;
+  overrideKey?: string | null;
   sortOrder?: number;
 };
 
 export type EmailCannedResponseApiPort = EmailNumericRecordApiPort<EmailCannedResponseRecord, {
   search?: string;
+  accountId?: number;
 }> & {
   create?(input: {
     workspaceId: string;
@@ -2647,6 +2766,29 @@ export type EmailCannedResponseApiPort = EmailNumericRecordApiPort<EmailCannedRe
     actorUserId: string;
     id: number;
   }): Promise<EmailCannedResponseRecord | null>;
+};
+
+
+export type EmailAccountMailSettingsRecord = {
+  accountId: number;
+  ticketPrefix: string;
+  ticketNextNumber: number;
+  ticketNumberPadding: number;
+  threadNamespace: string;
+  updatedAt: string | null;
+};
+
+export type EmailAccountMailSettingsMutationInput = {
+  accountId: number;
+  ticketPrefix?: string;
+  ticketNextNumber?: number;
+  ticketNumberPadding?: number;
+  threadNamespace?: string;
+};
+
+export type EmailAccountMailSettingsApiPort = {
+  get(input: { workspaceId: string; accountId: number }): Promise<EmailAccountMailSettingsRecord | null>;
+  set(input: { workspaceId: string; actorUserId: string; values: EmailAccountMailSettingsMutationInput }): Promise<EmailAccountMailSettingsRecord>;
 };
 
 export type EmailAccountSignatureRecord = {
@@ -2814,6 +2956,8 @@ export type EmailThreadEdgeApiPort = EmailNumericRecordApiPort<EmailThreadEdgeRe
 export type EmailThreadAliasRecord = {
   id: number;
   sourceSqliteId: number;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
   aliasThreadId: string;
   canonicalThreadId: string;
   confidence: string;
@@ -2834,6 +2978,7 @@ export type EmailThreadAliasWarningRecord = {
 export type EmailThreadAliasListResult = EmailNumericCursorListResult<EmailThreadAliasRecord>;
 
 export type EmailThreadAliasMutationInput = {
+  accountId?: number | null;
   aliasThreadId?: string;
   canonicalThreadId?: string;
   confidence?: string;
@@ -2960,6 +3105,9 @@ export type AiPromptRecord = {
   target: string;
   profileSourceSqliteId: number | null;
   profileId: number | null;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   sortOrder: number;
   createdAt: string | null;
   updatedAt: string;
@@ -2975,6 +3123,8 @@ export type AiPromptMutationInput = {
   userTemplate?: string;
   target?: string;
   profileId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
   sortOrder?: number;
 };
 
@@ -2997,6 +3147,7 @@ export type AiPromptApiPort = {
     search?: string;
     target?: string;
     profileId?: number;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<AiPromptListResult>;
@@ -3040,7 +3191,11 @@ export type AiTextTransformInput = {
   /** When set, translate `text` into this language (default AI profile), rather
    *  than running a stored prompt. */
   targetLanguage?: string;
+  inboundContextText?: string;
+  userContext?: string;
   customerId?: number | null;
+  /** Generate new text to insert without replacing the existing draft. */
+  insertMode?: boolean;
 };
 
 export type AiTextTransformResult =
@@ -3063,6 +3218,9 @@ export type WorkflowRecord = {
   cronExpr: string | null;
   scheduleAccountSourceSqliteId: number | null;
   scheduleAccountId: number | null;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
   executionMode: string;
   engineVersion: number;
   legacyCreatedByUserId: string | null;
@@ -3085,6 +3243,8 @@ export type WorkflowMutationInput = {
   graph?: unknown | null;
   cronExpr?: string | null;
   scheduleAccountId?: number | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
   executionMode?: string;
   engineVersion?: number;
 };
@@ -3099,6 +3259,7 @@ export type WorkflowApiPort = {
     search?: string;
     triggerName?: string;
     enabled?: boolean;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<WorkflowListResult>;
@@ -3333,6 +3494,10 @@ export type WorkflowKnowledgeBaseRecord = {
   sourceSqliteId: number | null;
   name: string;
   description: string | null;
+  accountSourceSqliteId: number | null;
+  accountId: number | null;
+  overrideKey: string | null;
+  knowledgeContext: string | null;
   createdAt: string | null;
   updatedAt: string;
 };
@@ -3342,12 +3507,16 @@ export type WorkflowKnowledgeBaseListResult = WorkflowRuntimeListResult<Workflow
 export type WorkflowKnowledgeBaseMutationInput = {
   name?: string;
   description?: string | null;
+  accountId?: number | null;
+  overrideKey?: string | null;
+  knowledgeContext?: string | null;
 };
 
 export type WorkflowKnowledgeBaseApiPort = {
   list(input: {
     workspaceId: string;
     search?: string;
+    accountId?: number;
     cursor?: number;
     limit: number;
   }): Promise<WorkflowKnowledgeBaseListResult>;
@@ -4085,6 +4254,10 @@ export type AutomationApiKeyApiPort = {
 
 export type ServerJobQueueApiPort = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<unknown>;
+  clearScheduledSendJob?(input: {
+    workspaceId: string;
+    draftId: number;
+  }): Promise<void>;
   releaseAccountSyncLocks?(input: {
     workspaceId: string;
     accountId: number;
@@ -4130,9 +4303,236 @@ export type ServerLogReadPort = {
   count(): number;
 };
 
+/** Status lifecycle / outcome / condition enums live in the DB-schema module
+ *  so the Kysely table types and the API records share one source of truth. */
+export type { ReturnStatus, ReturnOutcome, ReturnItemCondition } from '../db/schema';
+import type { ReturnItemCondition, ReturnOutcome, ReturnStatus } from '../db/schema';
+
+export type ReturnReasonRecord = {
+  id: number;
+  code: string;
+  label: string;
+  isActive: boolean;
+  sortOrder: number;
+};
+
+export type ReturnItemRecord = {
+  id: number;
+  returnId: number;
+  productId: number | null;
+  reasonId: number | null;
+  sku: string | null;
+  productName: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  notes: string | null;
+};
+
+export type ReturnRecord = {
+  id: number;
+  returnNumber: string;
+  customerId: number | null;
+  emailMessageId: number | null;
+  jtlOrderNumber: string | null;
+  jtlKauftrag: number | null;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  customerEmail: string | null;
+  customerName: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: ReturnItemRecord[];
+};
+
+export type ReturnItemMutationInput = {
+  productId?: number | null;
+  reasonId?: number | null;
+  sku?: string | null;
+  productName?: string | null;
+  quantity: number;
+  condition?: ReturnItemCondition | null;
+  notes?: string | null;
+};
+
+export type ReturnCreateInput = {
+  customerId?: number | null;
+  emailMessageId?: number | null;
+  jtlOrderNumber?: string | null;
+  jtlKauftrag?: number | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
+  notes?: string | null;
+  items: readonly ReturnItemMutationInput[];
+};
+
+export type ReturnUpdateInput = {
+  status?: ReturnStatus;
+  outcome?: ReturnOutcome | null;
+  notes?: string | null;
+};
+
+export type ReturnListInput = {
+  workspaceId: string;
+  limit: number;
+  offset?: number;
+  status?: ReturnStatus;
+  customerId?: number;
+  search?: string;
+};
+
+export type ReturnListResult = {
+  items: readonly ReturnRecord[];
+  totalCount: number;
+};
+
+export type ReturnsAnalyticsInput = {
+  workspaceId: string;
+  /** Optional rolling window; when set, only returns created in the last N days count. */
+  sinceDays?: number;
+};
+
+export type ReturnsAnalyticsResult = {
+  totalCount: number;
+  /** Counts per status, descending by count. Only non-zero buckets are listed. */
+  byStatus: ReadonlyArray<{ status: ReturnStatus; count: number }>;
+  /** Counts per outcome; `outcome: null` is the not-yet-decided bucket. */
+  byOutcome: ReadonlyArray<{ outcome: ReturnOutcome | null; count: number }>;
+  /**
+   * Top return reasons by item count. `reasonId: null` groups items with no
+   * reason set; code/label are null for that bucket and for reasons that were
+   * since deleted.
+   */
+  topReasons: ReadonlyArray<{
+    reasonId: number | null;
+    code: string | null;
+    label: string | null;
+    count: number;
+  }>;
+  generatedAt: string;
+};
+
+export type ReturnsApiPort = {
+  list(input: ReturnListInput): Promise<ReturnListResult>;
+  get(input: { workspaceId: string; id: number }): Promise<ReturnRecord | null>;
+  create(input: {
+    workspaceId: string;
+    actorUserId: string;
+    input: ReturnCreateInput;
+  }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+  update(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    update: ReturnUpdateInput;
+  }): Promise<{ ok: true; record: ReturnRecord } | { ok: false; error: string }>;
+  analytics(input: ReturnsAnalyticsInput): Promise<ReturnsAnalyticsResult>;
+  /**
+   * Public-shaped lookup by return_number. Returns the narrowed PortalReturnRecord
+   * (no internal IDs, no customer PII beyond what the customer typed themselves),
+   * or null when not found. The lookup is case-insensitive on return_number so
+   * URLs printed in e-mails are forgiving.
+   */
+  getPublicByReturnNumber(input: {
+    workspaceId: string;
+    returnNumber: string;
+  }): Promise<PortalReturnRecord | null>;
+  /**
+   * Public-shaped create. Same idempotency rules as create() but no actor,
+   * and the resulting record is the narrowed PortalReturnRecord.
+   */
+  createPublic(input: {
+    workspaceId: string;
+    input: PortalReturnCreateInput;
+  }): Promise<{ ok: true; record: PortalReturnRecord } | { ok: false; error: string }>;
+};
+
+export type ReturnReasonsApiPort = {
+  /**
+   * Returns the active reasons for the workspace, seeding a default vocabulary
+   * (size_wrong, not_liked, defective, wrong_item, late_delivery, other) on
+   * first call when the workspace has none. Idempotent.
+   */
+  list(input: { workspaceId: string }): Promise<readonly ReturnReasonRecord[]>;
+};
+
+// ---------------------------------------------------------------------------
+// Portal settings (Phase 5/6: public customer portal)
+//
+// One row per workspace. The token is the sole credential the public portal
+// uses to resolve a workspace, so rotating it invalidates every public URL
+// previously printed. The `enabled` flag pauses public creates without
+// destroying the URL (useful for short maintenance windows).
+// ---------------------------------------------------------------------------
+
+export type ReturnsPortalSettings = {
+  enabled: boolean;
+  /** Present only when admin reads the settings; never echoed to public requests. */
+  token: string | null;
+  /** Stable identifier the admin UI shows ("•••• last 4") even when token is hidden. */
+  hasToken: boolean;
+  updatedAt: string | null;
+};
+
+export type ReturnsPortalResolveResult =
+  | { ok: true; workspaceId: string; enabled: true }
+  | { ok: false; reason: 'unknown_token' | 'portal_disabled' };
+
+export type ReturnsPortalSettingsApiPort = {
+  get(input: { workspaceId: string }): Promise<ReturnsPortalSettings>;
+  /** Rotates (or first-creates) the token. Returns the new settings including the cleartext token once. */
+  rotate(input: { workspaceId: string; enable?: boolean }): Promise<ReturnsPortalSettings>;
+  /** Sets `enabled` without touching the token. */
+  setEnabled(input: { workspaceId: string; enabled: boolean }): Promise<ReturnsPortalSettings>;
+  /** Clears the token entirely; the next public request fails until rotate() is called. */
+  revoke(input: { workspaceId: string }): Promise<ReturnsPortalSettings>;
+  /** Cross-workspace lookup used by the public dispatcher. Bypasses RLS by design. */
+  resolveByToken(input: { token: string }): Promise<ReturnsPortalResolveResult>;
+};
+
+// ---------------------------------------------------------------------------
+// Public portal records (a narrowed shape — never leaks internal fields)
+// ---------------------------------------------------------------------------
+
+export type PortalReturnItem = {
+  sku: string | null;
+  productName: string | null;
+  quantity: number;
+  condition: ReturnItemCondition | null;
+  reasonCode: string | null;
+  reasonLabel: string | null;
+};
+
+export type PortalReturnRecord = {
+  returnNumber: string;
+  status: ReturnStatus;
+  outcome: ReturnOutcome | null;
+  jtlOrderNumber: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: readonly PortalReturnItem[];
+};
+
+export type PortalReturnCreateInput = {
+  jtlOrderNumber?: string | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
+  notes?: string | null;
+  items: readonly ReturnItemMutationInput[];
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
+  /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
+  initialSetupToken?: string;
+  /**
+   * Login hardening (CAPTCHA, PIN, MFA). Strongly recommended for deployments
+   * that enable the public returns portal: the portal's CAPTCHA gate degrades
+   * open when this port is missing (visible as captcha:'unavailable' in the
+   * returns.portal.create audit metadata).
+   */
+  loginSecurity?: LoginSecurityApiPort;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;
   calendarEvents?: CalendarEventApiPort;
@@ -4152,6 +4552,7 @@ export type ServerApiPorts = {
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
+  emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;
   emailAttachmentContent?: EmailAttachmentContentApiPort;
   emailAttachments?: EmailAttachmentApiPort;
@@ -4184,6 +4585,7 @@ export type ServerApiPorts = {
   jobQueue?: ServerJobQueueApiPort;
   jtlFirmen?: JtlReferenceApiPort;
   jtlOrders?: JtlOrderApiPort;
+  jtlOrderLookup?: JtlOrderLookupApiPort;
   jtlSync?: JtlSyncApiPort;
   jtlVersandarten?: JtlReferenceApiPort;
   jtlWarenlager?: JtlReferenceApiPort;
@@ -4193,6 +4595,9 @@ export type ServerApiPorts = {
   pgpMessages?: PgpMessageCryptoApiPort;
   pgpPeerKeys?: PgpPeerKeyApiPort;
   products?: ProductApiPort;
+  returns?: ReturnsApiPort;
+  returnReasons?: ReturnReasonsApiPort;
+  returnsPortalSettings?: ReturnsPortalSettingsApiPort;
   spamDecisions?: SpamDecisionApiPort;
   spamFeatureStats?: SpamFeatureStatApiPort;
   spamLearningEvents?: SpamLearningEventApiPort;
@@ -4213,6 +4618,7 @@ export type ServerApiPorts = {
   workflowTemplates?: WorkflowTemplateApiPort;
   workflowVersions?: WorkflowVersionApiPort;
   workflows?: WorkflowApiPort;
+  maintenance?: ServerMaintenanceApiPort;
 };
 
 export function json<T>(status: number, body: T, headers?: Record<string, string>): ApiResponse<T> {

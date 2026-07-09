@@ -41,11 +41,18 @@ export function registerLogicNodes(register: Reg): void {
     label: 'Verzögerung',
     category: 'logic',
     canvasType: 'registry',
-    defaultConfig: { minutes: 5 },
+    defaultConfig: { delaySeconds: 60 },
     execute: async (ctx, config, nodeId) => {
-      const minutes = Math.max(1, Math.min(60 * 24 * 7, Number(config.minutes ?? 5)));
-      const executeAt = new Date(Date.now() + minutes * 60_000).toISOString();
-      if (ctx.dryRun) return { status: 'ok', message: `delay ${minutes}m` };
+      const totalMs =
+        config.delaySeconds !== undefined
+          ? Math.max(1000, Math.min(60 * 24 * 7 * 60 * 1000, Number(config.delaySeconds ?? 60) * 1000))
+          : Math.max(60_000, Math.min(60 * 24 * 7 * 60 * 1000, Number(config.minutes ?? 5) * 60_000));
+      const executeAt = new Date(Date.now() + totalMs).toISOString();
+      const delayLabel =
+        config.delaySeconds !== undefined
+          ? `${Number(config.delaySeconds ?? 60)}s`
+          : `${Number(config.minutes ?? 5)}m`;
+      if (ctx.dryRun) return { status: 'ok', message: `delay ${delayLabel}` };
       const wf = getWorkflowById(ctx.workflowId);
       const doc = parseGraphDocument(wf?.graph_json ?? null);
       let resumeNodeId = String(config.resumeNodeId ?? '').trim();
@@ -66,7 +73,7 @@ export function registerLogicNodes(register: Reg): void {
           eventStrings: ctx.strings,
         }),
       });
-      return { status: 'ok', stop: true, message: `delayed_until:${executeAt}` };
+      return { status: 'ok', stop: true, deferred: true, message: `delayed_until:${executeAt}` };
     },
   });
 

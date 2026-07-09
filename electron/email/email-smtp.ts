@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
+import { resolveConfiguredSmtpHost, SMTP_HOST_MISSING_ERROR } from '@simplecrm/core';
 import { getEmailAccountById } from './email-store';
 import { getEmailPassword } from './email-keytar';
 import { resolveImapAuth } from './email-imap-auth';
@@ -12,18 +13,27 @@ export async function testSmtpConnection(input: {
   pass?: string;
   accessToken?: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
+  const host = input.host.trim();
+  if (!host) return { ok: false, error: SMTP_HOST_MISSING_ERROR };
+
   const auth: SMTPTransport.Options['auth'] = input.accessToken
     ? { type: 'OAuth2', user: input.user, accessToken: input.accessToken }
     : { user: input.user, pass: input.pass ?? '' };
 
   const transporter = nodemailer.createTransport({
-    host: input.host,
+    host,
     port: input.port,
     secure: input.secure,
     auth,
   });
   try {
-    await transporter.verify();
+    await transporter.sendMail({
+      from: input.user,
+      to: input.user,
+      subject: 'SimpleCRM SMTP-Verbindungstest',
+      text: 'Dies ist ein automatischer Verbindungstest von SimpleCRM.',
+      headers: { 'Auto-Submitted': 'auto-generated' },
+    });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -79,7 +89,8 @@ export async function sendSmtpForAccount(
   const acc = getEmailAccountById(accountId);
   if (!acc) throw new Error('Konto nicht gefunden');
 
-  const host = acc.smtp_host?.trim() || acc.imap_host;
+  const host = resolveConfiguredSmtpHost(acc.smtp_host);
+  if (!host) throw new Error(SMTP_HOST_MISSING_ERROR);
   const port = acc.smtp_port ?? 587;
   const useTls = Boolean(acc.smtp_tls);
   const secure = useTls && port === 465;

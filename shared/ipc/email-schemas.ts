@@ -18,11 +18,25 @@ const failResult = z.object({ success: z.literal(false), error: z.string().optio
 const standardResult = z.union([successResult, failResult]);
 
 const mailAccountScopeSchema = z.union([z.literal('all'), positiveInt]);
+const accountOverrideMutationFields = {
+  accountId: z.number().int().positive().nullable().optional(),
+  overrideKey: z.string().max(120).nullable().optional(),
+};
+const accountOverrideScopePayloadSchema = z
+  .union([
+    mailAccountScopeSchema,
+    z.object({
+      accountId: mailAccountScopeSchema.optional(),
+      accountScope: mailAccountScopeSchema.optional(),
+    }),
+  ])
+  .optional();
 const accountMailViewSchema = z.enum([
   'inbox',
   'sent',
   'archived',
   'drafts',
+  'scheduled_send',
   'spam_review',
   'spam',
   'trash',
@@ -105,6 +119,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         vacationSubject: z.string().nullable().optional(),
         vacationBodyText: z.string().nullable().optional(),
         requestReadReceipt: z.boolean().optional(),
+        imapDeleteOptIn: z.boolean().optional(),
       })
       .passthrough(),
     result: standardResult,
@@ -286,6 +301,26 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.SetSnoozeSettings, {
     payload: snoozeSettingsShape,
     result: standardResult,
+  });
+
+  const accountMailSettingsSchema = z.object({
+    accountId: positiveInt,
+    ticketPrefix: z.string().min(1).max(12),
+    ticketNextNumber: z.number().int().min(1),
+    ticketNumberPadding: z.number().int().min(1).max(12),
+    threadNamespace: z.string().min(1).max(64),
+  });
+  const accountMailSettingsQuerySchema = z.object({ accountId: positiveInt });
+  const accountMailSettingsSetSchema = accountMailSettingsSchema.partial().extend({
+    accountId: positiveInt,
+  });
+  set(IPCChannels.Email.GetAccountMailSettings, {
+    payload: accountMailSettingsQuerySchema,
+    result: accountMailSettingsSchema,
+  });
+  set(IPCChannels.Email.SetAccountMailSettings, {
+    payload: accountMailSettingsSetSchema,
+    result: accountMailSettingsSchema,
   });
 
   set(IPCChannels.Email.ListUidValidityNotices, {
@@ -937,19 +972,20 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: positiveInt,
     result: standardResult,
   });
-  set(IPCChannels.Email.ListCannedResponses, { payload: voidPayload, result: recordArray });
+  set(IPCChannels.Email.ListCannedResponses, { payload: accountOverrideScopePayloadSchema, result: recordArray });
   set(IPCChannels.Email.SaveCannedResponse, {
     payload: z.object({
       id: z.number().int().positive().optional(),
       title: nonEmptyString,
       body: z.string(),
+      ...accountOverrideMutationFields,
     }),
     result: standardResult,
   });
   set(IPCChannels.Email.DeleteCannedResponse, { payload: positiveInt, result: standardResult });
 
   // --- AI ---
-  set(IPCChannels.Email.ListAiPrompts, { payload: voidPayload, result: recordArray });
+  set(IPCChannels.Email.ListAiPrompts, { payload: accountOverrideScopePayloadSchema, result: recordArray });
   set(IPCChannels.Email.SaveAiPrompt, {
     payload: z.object({
       id: z.number().int().positive().optional(),
@@ -957,6 +993,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       userTemplate: z.string(),
       target: z.string().optional(),
       profileId: z.number().int().positive().nullable().optional(),
+      ...accountOverrideMutationFields,
     }),
     result: standardResult,
   });
@@ -975,9 +1012,12 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       // stored prompt, so no promptId is required.
       promptId: positiveInt.optional(),
       text: z.string(),
-      contextText: z.string().optional(),
+      contextText: z.string().max(40000).optional(),
       targetLanguage: z.string().min(1).max(60).optional(),
+      inboundContextText: z.string().max(40000).optional(),
+      userContext: z.string().max(4000).optional(),
       customerId: z.number().int().positive().nullable().optional(),
+      insertMode: z.boolean().optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), text: z.string().optional() }),
@@ -1027,6 +1067,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       messageId: positiveInt,
       promptId: positiveInt.optional(),
       customerId: z.number().int().positive().nullable().optional(),
+      userContext: z.string().max(4000).optional(),
+      persistSuggestion: z.boolean().optional(),
     }),
     result: z.union([
       z.object({ success: z.literal(true), text: z.string() }),
@@ -1120,7 +1162,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.DeleteTeamMember, { payload: nonEmptyString, result: standardResult });
 
   // --- Workflows (email:* + workflow:* on Email namespace) ---
-  set(IPCChannels.Email.ListWorkflows, { payload: voidPayload, result: recordArray });
+  set(IPCChannels.Email.ListWorkflows, { payload: accountOverrideScopePayloadSchema, result: recordArray });
   set(IPCChannels.Email.GetWorkflow, { payload: positiveInt, result: nullableRecord });
   set(IPCChannels.Email.CreateWorkflow, {
     payload: z.object({
@@ -1198,6 +1240,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({}).passthrough(),
   });
   set(IPCChannels.Email.ListWorkflowRuns, { payload: positiveInt, result: recordArray });
+  set(IPCChannels.Email.GetWorkflowRunLog, { payload: positiveInt, result: z.array(z.string()) });
   set(IPCChannels.Email.ListWorkflowRunSteps, { payload: positiveInt, result: recordArray });
   set(IPCChannels.Email.ListWorkflowTemplates, { payload: voidPayload, result: recordArray });
   set(IPCChannels.Email.ImportWorkflowBundle, {
@@ -1251,13 +1294,28 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: standardResult,
   });
-  set(IPCChannels.Email.ListKnowledgeBases, { payload: voidPayload, result: recordArray });
+  set(IPCChannels.Email.ListKnowledgeBases, { payload: accountOverrideScopePayloadSchema, result: recordArray });
   set(IPCChannels.Email.CreateKnowledgeBase, {
-    payload: z.object({ name: nonEmptyString }),
+    payload: z.object({
+      name: nonEmptyString,
+      description: z.string().nullable().optional(),
+      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      ...accountOverrideMutationFields,
+    }),
     result: z.union([
       z.object({ success: z.literal(true), id: positiveInt }),
       failResult,
     ]),
+  });
+  set(IPCChannels.Email.UpdateKnowledgeBase, {
+    payload: z.object({
+      id: positiveInt,
+      name: nonEmptyString.optional(),
+      description: z.string().nullable().optional(),
+      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      ...accountOverrideMutationFields,
+    }),
+    result: standardResult,
   });
   set(IPCChannels.Email.DeleteKnowledgeBase, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.AddKnowledgeChunk, {

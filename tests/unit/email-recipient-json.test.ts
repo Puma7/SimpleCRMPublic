@@ -2,6 +2,7 @@ import {
   extractEmailAddressesFromRecipientField,
   recipientFieldFromJson,
   recipientJsonFromField,
+  senderJsonFromMailbox,
 } from '../../shared/email-recipient-parse';
 import {
   addressJson,
@@ -30,10 +31,28 @@ describe('email recipient mapping', () => {
 
   it('extractEmailAddresses rejects invalid tokens', () => {
     expect(extractEmailAddressesFromRecipientField('not-an-email')).toEqual([]);
+    expect(extractEmailAddressesFromRecipientField('bad<addr@example.com')).toEqual([]);
+    expect(extractEmailAddressesFromRecipientField('addr@example.com>')).toEqual([]);
+  });
+
+  it('extractEmailAddresses can preserve plus-addressed delivery mailboxes', () => {
+    expect(
+      extractEmailAddressesFromRecipientField('Audit <audit+invoices@example.com>', {
+        preservePlusAddressing: true,
+      }),
+    ).toEqual(['audit+invoices@example.com']);
   });
 
   it('recipientFieldFromJson round-trips compose fields', () => {
     const json = recipientJsonFromField('Shop <shop@example.com>, b@example.com');
     expect(recipientFieldFromJson(json)).toBe('shop@example.com, b@example.com');
+  });
+
+  it('senderJsonFromMailbox builds outbound From JSON', () => {
+    const json = senderJsonFromMailbox('shop@example.com', 'Shop Nord');
+    expect(JSON.parse(json)).toEqual({
+      value: [{ address: 'shop@example.com', name: 'Shop Nord' }],
+    });
+    expect(recipientFieldFromJson(json)).toBe('Shop Nord <shop@example.com>');
   });
 });

@@ -43,23 +43,32 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: [
-                'electron',
-                'better-sqlite3',
-                'mssql',
-                'keytar',
-                'electron-window-state',
-                'electron-log',
-                'electron-rebuild',
-                'imapflow',
-                'mailparser',
-                'nodemailer',
-                'node-pop3',
-                'google-auth-library',
-                'node-cron',
-                'archiver',
-                'safe-regex',
-              ],
+              // electron/main.js loads its real implementation lazily via
+              // require('../dist-electron/electron/<service>') — those files
+              // are produced by build:electron:main (a separate tsc step) and
+              // are NOT part of this Vite bundle. Vite 7/Rollup silently
+              // tolerated the unresolved imports; Vite 8/Rolldown errors on
+              // them. The function-form external keeps them external.
+              external: (id) =>
+                id === 'electron'
+                || id.startsWith('electron/')
+                || id.includes('dist-electron/')
+                || [
+                  'better-sqlite3',
+                  'mssql',
+                  'keytar',
+                  'electron-window-state',
+                  'electron-log',
+                  'electron-rebuild',
+                  'imapflow',
+                  'mailparser',
+                  'nodemailer',
+                  'node-pop3',
+                  'google-auth-library',
+                  'node-cron',
+                  'archiver',
+                  'safe-regex',
+                ].includes(id),
             },
           },
         },

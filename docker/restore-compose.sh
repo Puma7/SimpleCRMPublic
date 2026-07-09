@@ -3,7 +3,12 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-simplecrm}"
+# Derive the project name and .env location from the compose file's directory —
+# the same value plain `docker compose -f docker/docker-compose.yml` and the
+# simplecrm helper use — so a direct invocation restores the SAME stack the rest
+# of the tooling targets, and the project .env isn't shadowed by the caller's PWD.
+COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "$COMPOSE_FILE")" && pwd)"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
 RESTORE_API_HEALTH_TIMEOUT_SECONDS="${RESTORE_API_HEALTH_TIMEOUT_SECONDS:-180}"
 
 usage() {
@@ -15,7 +20,7 @@ service restores the latest /backups/db-*.dump and auto-detects matching attachm
 Optional env:
   RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health
   RESTORE_CADDY_INSECURE=true
-  COMPOSE_PROJECT_NAME=simplecrm
+  COMPOSE_PROJECT_NAME   Compose project (default: this file's directory name)
   COMPOSE_FILE=/path/to/docker-compose.yml
 USAGE
 }
@@ -41,7 +46,7 @@ if [ -n "${3:-}" ]; then
 fi
 
 compose() {
-  docker compose -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
+  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"
 }
 
 wait_for_api_health() {

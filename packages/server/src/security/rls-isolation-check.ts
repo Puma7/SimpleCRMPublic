@@ -77,6 +77,7 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('email_internal_notes'),
   rlsPolicyTable('email_canned_responses'),
   rlsPolicyTable('email_account_signatures'),
+  rlsPolicyTable('email_account_mail_settings'),
   rlsPolicyTable('email_remote_content_allowlist'),
   rlsPolicyTable('email_read_receipt_log'),
   rlsPolicyTable('email_thread_edges'),
@@ -101,6 +102,9 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('automation_api_keys'),
   rlsPolicyTable('ai_usage_events'),
   rlsPolicyTable('ai_reply_feedback'),
+  rlsPolicyTable('return_reasons'),
+  rlsPolicyTable('returns'),
+  rlsPolicyTable('return_items'),
 ];
 
 export async function runRlsIsolationCheck(client: RlsCheckClient): Promise<RlsCheckResult> {

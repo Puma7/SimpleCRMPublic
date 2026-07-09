@@ -13,6 +13,8 @@ export type WorkflowContext = {
   workflowId: number;
   runId: number;
   dryRun: boolean;
+  /** True for compose outbound validation — runs real AI without persisting holds/tags. */
+  previewOutbound?: boolean;
   variables: Record<string, string | number | boolean | null>;
   strings: WorkflowStringContext;
   ai: { lastResponse?: string };
@@ -24,6 +26,8 @@ export type NodeExecuteResult = {
   /** Branch port; built-in names plus dynamic labels (e.g. logic.switch cases). */
   port?: string;
   stop?: boolean;
+  /** Workflow paused (e.g. logic.delay) — inbound applied flag must not be set yet. */
+  deferred?: boolean;
   blocked?: boolean;
   blockReason?: string;
   message?: string;
@@ -52,4 +56,5 @@ export type GraphRunResult = {
   status: 'ok' | 'error' | 'blocked';
   blocked: boolean;
   blockReason: string | null;
+  deferred?: boolean;
 };

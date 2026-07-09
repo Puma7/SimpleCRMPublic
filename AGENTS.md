@@ -45,3 +45,39 @@ See `package.json` `scripts` for the full list.
 - **Mail coverage:** `jest.mail.config.cjs` collects coverage from `electron/email/**/*.ts` with a **ratchet** threshold (~91% lines, ~80% branches). Run `npm run test:mail` while iterating (threshold disabled); use `npm run test:mail:coverage` before merging mail changes. See [`docs/MAIL_TESTING.md`](docs/MAIL_TESTING.md).
 - The app UI is in German (e.g., "Kunden" = Customers, "Aufgaben" = Tasks, "Kalender" = Calendar, "Einstellungen" = Settings).
 - **Workflow graph UI:** `@xyflow/react` v12 (`^12.10.1`). Optional isolated Svelte experiment: `packages/svelte-lab` (`@xyflow/svelte`), see `packages/svelte-lab/README.md` and `VITE_ENABLE_SVELTE_LAB`.
+
+## Hermes autonomous working mode
+
+Pascal has granted Hermes high autonomy for this project.
+
+### Allowed without additional confirmation
+
+- Read, search, analyze and summarize repository files.
+- Run local tests, typechecks, builds, scripts and diagnostics.
+- Install local development dependencies when needed for verification.
+- Add or update regression tests before bug fixes.
+- Modify source code and project documentation.
+- Use OpenCode as a focused coding or review worker.
+- Create Hermes support artifacts under `.hermes/`.
+- Store long audits and logs in `.hermes/reports/`; keep chat summaries concise.
+
+### Ask Pascal before
+
+- Pushing to GitHub, merging PRs, creating releases or deploying.
+- Touching production data, real customer data, or live infrastructure.
+- Handling real secrets, API keys, passwords, OAuth tokens or private credentials.
+- Destructive deletion of large data sets or irreversible migrations.
+- Paid external actions or anything with business/financial side effects.
+
+### Preferred implementation loop
+
+1. Map relevant code and tests.
+2. Reproduce the bug or establish a baseline.
+3. Add a regression test first.
+4. Implement the smallest root-cause fix.
+5. Run focused tests and typecheck.
+6. Write longer findings to `.hermes/reports/` and report only the concise result in German.
+
+### Current local environment note
+
+On this Windows machine, broad workflow tests that import Electron may fail if `node_modules/electron/dist/electron.exe` is missing. Reinstalling can require Visual Studio Build Tools because `electron-rebuild` rebuilds native modules such as `better-sqlite3` and `keytar`. Prefer focused server/core tests when the Electron binary is blocked.

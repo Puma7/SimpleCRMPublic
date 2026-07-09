@@ -109,6 +109,7 @@ async function collectDiagnostics(
   const aiUsageByNodeType24h = await selectAiUsageByNodeType(trx, workspaceId, since24h);
   const syncInfoRows = await selectSyncInfoRows(trx, workspaceId);
   const accounts = await selectAccounts(trx, workspaceId);
+  const jobQueue = await selectJobQueueStats(trx, workspaceId, now);
 
   return {
     collectedAt: now.toISOString(),
@@ -150,6 +151,7 @@ async function collectDiagnostics(
       idleImapAccountIds: [],
     },
     accounts,
+    jobQueue,
   };
 }
 
@@ -438,6 +440,91 @@ function countValue(value: CountValue | undefined): number {
 function timestampToIsoOrNull(value: Date | string | null): string | null {
   if (value === null) return null;
   return value instanceof Date ? value.toISOString() : value;
+}
+
+type JobQueueStatsRow = {
+  ready: CountValue;
+  locked: CountValue;
+  lag_seconds: CountValue;
+  oldest_locked_seconds: CountValue | null;
+};
+
+type JobQueueSampleRow = {
+  id: CountValue;
+  type: string;
+  attempts: CountValue;
+  max_attempts: CountValue;
+  locked_by: string | null;
+  locked_seconds: CountValue | null;
+  last_error: string | null;
+};
+
+async function selectJobQueueStats(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  now: Date,
+): Promise<NonNullable<EmailDiagnosticsReport['jobQueue']>> {
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+  const stats = await trx
+    .selectFrom('job_queue')
+    .select([
+      kyselySql<CountValue>`
+        count(*) filter (where locked_at is null and run_after <= ${now})
+      `.as('ready'),
+      kyselySql<CountValue>`
+        count(*) filter (where locked_at is not null)
+      `.as('locked'),
+      kyselySql<CountValue>`
+        coalesce(extract(epoch from max(${now} - run_after))::integer, 0)
+      `.as('lag_seconds'),
+      kyselySql<CountValue | null>`
+        max(extract(epoch from (${now} - locked_at))::integer)
+      `.as('oldest_locked_seconds'),
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .executeTakeFirst() as JobQueueStatsRow | undefined;
+
+  const samples = await trx
+    .selectFrom('job_queue')
+    .select([
+      'id',
+      'type',
+      'attempts',
+      'max_attempts',
+      'locked_by',
+      'last_error',
+      kyselySql<CountValue | null>`
+        case when locked_at is null then null
+        else extract(epoch from (${now} - locked_at))::integer end
+      `.as('locked_seconds'),
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where((eb) => eb.or([
+      eb('locked_at', 'is not', null),
+      eb('run_after', '<=', now),
+    ]))
+    .orderBy('locked_at', 'desc')
+    .orderBy('run_after', 'asc')
+    .limit(8)
+    .execute() as JobQueueSampleRow[];
+
+  return {
+    ready: countValue(stats?.ready),
+    locked: countValue(stats?.locked),
+    lagSeconds: countValue(stats?.lag_seconds),
+    oldestLockedSeconds: stats?.oldest_locked_seconds == null
+      ? null
+      : countValue(stats.oldest_locked_seconds),
+    samples: samples.map((row) => ({
+      id: countValue(row.id),
+      type: row.type,
+      attempts: countValue(row.attempts),
+      maxAttempts: countValue(row.max_attempts),
+      lockedBy: row.locked_by,
+      lockedSeconds: row.locked_seconds == null ? null : countValue(row.locked_seconds),
+      lastError: row.last_error?.slice(0, 240) ?? null,
+    })),
+  };
 }
 
 async function dirSizeBytes(dir: string): Promise<number> {

@@ -19,7 +19,8 @@ Konkrete Erkenntnisse aus Design, Implementierung und QA — **kurz**, damit sie
 - **Outbound fail-open** bei Exceptions war ein Sicherheitsrisiko. **Fail-closed** mit Hold — aber: alle Workflows **trotzdem ausführen**, damit Logging und spätere Regeln nicht „stumm“ wegfallen.
 - **Outbound blockiert:** Entwurf bleibt lokal; `outbound_hold=1`; Warnbanner im Text; erscheint im **Posteingang** (nicht nur Entwürfe). Details: `email-outbound-review.ts`, [OUTBOUND_EMAIL_WORKFLOW.md](OUTBOUND_EMAIL_WORKFLOW.md).
 - **Ausgang prüfen (Compose):** IPC `validate-outbound` mit Dry-Run — darf Hold/Banner **nicht** persistieren.
-- **`forward_copy`:** Dedupe **vor** SMTP blockiert Retries nach SMTP-Fehler. Dedupe **nach** erfolgreichem Send ist robuster.
+- **`forward_copy` (Server Edition):** Dedup-Zeile **vor** `smtpSend` einfügen; bei SMTP-Fehler wieder löschen — sonst blockiert ein Crash zwischen Send und Dedup alle Retries. Continuation erst nach erfolgreichem SMTP.
+- **Compose SMTP outbox (Server Edition):** `claimSmtpOutbox` schreibt `email_compose_smtp_ok:<id>=outbox` atomar (INSERT ON CONFLICT DO NOTHING) **vor** SMTP. Erfolg → `1`. Fehler → Claim löschen. Retry bei `outbox` oder `1` → nur Finalize/APPEND, kein zweites SMTP (verhindert Duplikate nach Crash zwischen Send und Mark).
 
 ## Posteingang-Liste & Held drafts
 

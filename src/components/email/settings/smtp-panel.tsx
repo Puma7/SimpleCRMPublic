@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { invokeRenderer } from "@/services/transport"
 import { isServerClientMode } from "@/lib/runtime-mode"
+import { guessSmtpHostFromImapHost } from "@shared/mail-host-hints"
 import { type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
@@ -43,6 +44,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [importingInbox, setImportingInbox] = useState(false)
+  const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -62,7 +64,8 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   useEffect(() => {
     const a = accounts.find((x) => x.id === accId)
     if (a) {
-      setSmtpHost(a.smtp_host || a.imap_host || "")
+      const stored = a.smtp_host?.trim() ?? ""
+      setSmtpHost(stored || guessSmtpHostFromImapHost(a.imap_host) || "")
       setSmtpPort(String(a.smtp_port ?? 587))
       setSmtpTls((a.smtp_tls ?? 1) === 1)
       setSmtpUser(a.smtp_username || "")
@@ -73,16 +76,22 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       setSyncSpam((a.imap_sync_spam ?? 0) === 1)
       setArchiveFolder(a.sync_archive_folder_path || "")
       setSpamFolder(a.sync_spam_folder_path || "")
+      setImapDeleteOptIn((a.imap_delete_opt_in ?? 0) === 1)
     }
   }, [accId, accounts])
 
   const saveSmtp = async () => {
     if (accId == null) return
+    const host = smtpHost.trim()
+    if (!host) {
+      toast.error("Bitte SMTP-Host eintragen (z. B. smtp.ionos.de).")
+      return
+    }
     setSaving(true)
     try {
       await invokeRenderer(IPCChannels.Email.UpdateAccount, {
         id: accId,
-        smtpHost: smtpHost.trim() || null,
+        smtpHost: host,
         smtpPort: parseInt(smtpPort, 10) || 587,
         smtpTls,
         smtpUsername: smtpUser.trim() || null,
@@ -94,6 +103,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         imapSyncSent: syncSent,
         imapSyncArchive: syncArchive,
         imapSyncSpam: syncSpam,
+        imapDeleteOptIn,
       })
       toast.success("SMTP gespeichert.")
       setSmtpPass("")
@@ -108,6 +118,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   }
 
   const testSmtp = async () => {
+    const host = smtpHost.trim()
+    if (!host) {
+      toast.error("Bitte SMTP-Host eintragen (z. B. smtp.ionos.de).")
+      return
+    }
     const user = smtpImapAuth
       ? accounts.find((x) => x.id === accId)?.imap_username || ""
       : smtpUser
@@ -121,7 +136,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         IPCChannels.Email.TestSmtp,
         {
           ...(accId != null ? { accountId: accId } : {}),
-          host: smtpHost.trim(),
+          host,
           port: parseInt(smtpPort, 10) || 587,
           secure: smtpTls && (parseInt(smtpPort, 10) || 587) === 465,
           user,
@@ -129,7 +144,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
           smtpUseImapAuth: smtpImapAuth,
         },
       ) as { success: boolean; error?: string }
-      if (r.success) toast.success("SMTP OK")
+      if (r.success) toast.success("SMTP-Verbindung und Versand OK")
       else toast.error(r.error ?? "Fehler")
     } finally {
       setTesting(false)
@@ -183,7 +198,14 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         <>
           <div className="space-y-1.5">
             <Label>SMTP-Host</Label>
-            <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} />
+            <Input
+              value={smtpHost}
+              onChange={(e) => setSmtpHost(e.target.value)}
+              placeholder="z. B. smtp.ionos.de"
+            />
+            <p className="text-xs text-muted-foreground">
+              Separater SMTP-Server — nicht der IMAP-Host (z. B. smtp.ionos.de statt imap.ionos.de).
+            </p>
           </div>
           <div className="flex gap-2">
             <div className="flex-1 space-y-1.5">
@@ -287,6 +309,22 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
                 </Button>
               </div>
               ) : null}
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="space-y-1">
+                  <Label htmlFor="imap-delete-account" className="text-xs font-medium">
+                    IMAP-Löschung auf dem Server (dieses Konto)
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Erlaubt den Workflow-Knoten „Auf Server löschen" für Nachrichten dieses Postfachs.
+                    Globaler Fallback unter Automatisierung bleibt möglich.
+                  </p>
+                </div>
+                <Switch
+                  id="imap-delete-account"
+                  checked={imapDeleteOptIn}
+                  onCheckedChange={setImapDeleteOptIn}
+                />
+              </div>
             </div>
           ) : null}
           <div className="flex gap-2">

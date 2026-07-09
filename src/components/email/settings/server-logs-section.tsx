@@ -5,6 +5,8 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { ClipboardCopy, FlaskConical, Loader2, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import { invokeRenderer } from "@/services/transport"
 
 type ServerLogEntry = {
@@ -16,13 +18,20 @@ type ServerLogEntry = {
 
 type LogLevelFilter = "info" | "warn" | "error"
 
-/** Central server log (warnings + errors), persisted across restarts, with
- *  copy/export and clear — server edition only. */
-export function ServerLogsSection() {
+type Props = {
+  /** Standalone Electron: same UI, reads local app log store via IPC. */
+  desktopMode?: boolean
+}
+
+const AUTO_REFRESH_MS = 5000;
+
+/** Central app log (warnings + errors), persisted across restarts. */
+export function ServerLogsSection({ desktopMode = false }: Props) {
   const [entries, setEntries] = useState<ServerLogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [testing, setTesting] = useState(false)
   const [level, setLevel] = useState<LogLevelFilter>("warn")
+  const [autoRefresh, setAutoRefresh] = useState(false)
 
   const load = useCallback(async (lvl: LogLevelFilter = level) => {
     setLoading(true)
@@ -55,6 +64,14 @@ export function ServerLogsSection() {
     void load()
   }, [load])
 
+  useEffect(() => {
+    if (!autoRefresh) return
+    const timer = window.setInterval(() => {
+      void load()
+    }, AUTO_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [autoRefresh, load])
+
   const copyAll = async () => {
     const text = entries.map((e) => `${e.time} [${e.level}] (${e.source}) ${e.message}`).join("\n")
     try {
@@ -80,10 +97,15 @@ export function ServerLogsSection() {
     <section className="space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-medium">Server-Logs (Warnungen &amp; Fehler)</p>
+          <p className="text-sm font-medium">
+            {desktopMode ? "Anwendungs-Logs" : "Server-Logs"} (Warnungen &amp; Fehler)
+          </p>
           <p className="text-xs text-muted-foreground">
-            Zentral gesammelt und über Neustarts/Neubauten hinweg gespeichert. {entries.length} Einträge.
-            Mit „Selbsttest" prüfst du, ob die Erfassung funktioniert.
+            Zentral gesammelt und über Neustarts hinweg gespeichert. {entries.length} Einträge.
+            {desktopMode
+              ? " Desktop: nur console.warn/error aus dem Renderer-Hauptprozess — kein Pino/job-worker. Filter „Info“ zeigt Server-Job-Logs nur im Server-Modus."
+              : " Mit „Selbsttest“ prüfst du, ob die Erfassung funktioniert. Filter „Info“ für Job-Worker (Pino)."}
+            {" "}Filter „Alle“ zeigt auch Job-Worker-Fortschritt (Quelle job-worker).
           </p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -97,6 +119,16 @@ export function ServerLogsSection() {
             <option value="warn">Warnungen + Fehler</option>
             <option value="error">Nur Fehler</option>
           </select>
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <Switch
+              id="server-logs-auto-refresh"
+              checked={autoRefresh}
+              onCheckedChange={setAutoRefresh}
+            />
+            <Label htmlFor="server-logs-auto-refresh" className="text-xs font-normal">
+              Live ({AUTO_REFRESH_MS / 1000}s)
+            </Label>
+          </div>
           <Button type="button" size="sm" variant="outline" onClick={() => void runSelfTest()} disabled={testing} aria-label="Selbsttest">
             {testing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="mr-1 h-3.5 w-3.5" />}
             Selbsttest
@@ -127,7 +159,9 @@ export function ServerLogsSection() {
                     : "text-destructive"
               }
             >
-              <span className="text-muted-foreground">{entry.time}</span> [{entry.level}] {entry.message}
+              <span className="text-muted-foreground">{entry.time}</span> [{entry.level}]
+              {entry.source !== "app" ? <span className="text-muted-foreground"> ({entry.source})</span> : null}
+              {" "}{entry.message}
             </div>
           ))}
         </div>

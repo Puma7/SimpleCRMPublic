@@ -26,6 +26,7 @@ export async function executeWorkflowForTrigger(input: {
   message?: EmailMessageRow | null;
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
+  previewOutbound?: boolean;
   eventStrings?: Record<string, string>;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -36,6 +37,7 @@ export async function executeWorkflowForTrigger(input: {
   log: string[];
   blocked: boolean;
   blockReason: string | null;
+  deferred?: boolean;
 }> {
   const runId = startWorkflowRun({
     workflowId: input.workflow.id,
@@ -56,6 +58,7 @@ export async function executeWorkflowForTrigger(input: {
         message: input.message,
         outbound: input.outbound,
         dryRun: input.dryRun,
+        previewOutbound: input.previewOutbound,
         eventStrings: input.eventStrings,
         eventVariables: input.eventVariables,
         initialVariables: input.initialVariables,
@@ -74,6 +77,7 @@ export async function executeWorkflowForTrigger(input: {
         log,
         blocked: result.blocked,
         blockReason: result.blockReason,
+        deferred: result.deferred === true,
       };
     }
 

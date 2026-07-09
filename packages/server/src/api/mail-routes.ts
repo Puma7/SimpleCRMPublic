@@ -9,6 +9,7 @@ import type {
   EmailAccountMutationInput,
   EmailAccountMutationPortResult,
   EmailAccountRecord,
+  EmailComposeDraftMutationResult,
   EmailComposeSendInput,
   EmailDiagnosticsReport,
   EmailMessageListResult,
@@ -174,7 +175,14 @@ type EmailReplySuggestionEnsureParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type EmailReplyDraftGenerateParseResult =
-  | { ok: true; promptId?: number; profileId?: number; customerId?: number | null }
+  | {
+    ok: true;
+    promptId?: number;
+    profileId?: number;
+    customerId?: number | null;
+    userContext?: string;
+    persistSuggestion?: boolean;
+  }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type EmailMessageCustomerLinkMutationParseResult =
@@ -1053,7 +1061,29 @@ async function handleScheduledSendDraftSchedule(
     messageId,
     sendAt: parsed.sendAt,
   });
-  if (!result.ok) return composeDraftMutationError(result.reason);
+  if (!result.ok) return composeDraftMutationError(result.reason, result.message);
+  if (ports.jobQueue) {
+    if (parsed.sendAt) {
+      const sendAt = new Date(parsed.sendAt);
+      if (!Number.isNaN(sendAt.getTime())) {
+        await ports.jobQueue.enqueue({
+          workspaceId: principal.workspaceId,
+          type: 'mail.send.scheduled',
+          payload: {
+            workspaceId: principal.workspaceId,
+            draftId: messageId,
+            dueBefore: sendAt.toISOString(),
+          },
+          runAfter: sendAt,
+        });
+      }
+    } else if (ports.jobQueue.clearScheduledSendJob) {
+      await ports.jobQueue.clearScheduledSendJob({
+        workspaceId: principal.workspaceId,
+        draftId: messageId,
+      });
+    }
+  }
   return data(200, { success: true });
 }
 
@@ -1132,7 +1162,13 @@ async function handleScheduledSendDraftRetry(
   return data(200, { success: true });
 }
 
-function composeDraftMutationError(reason: 'not_found' | 'not_local_draft' | 'account_not_found'): ApiResponse<ApiErrorBody> {
+function composeDraftMutationError(
+  reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked',
+  message?: string,
+): ApiResponse<ApiErrorBody> {
+  if (reason === 'outbound_blocked') {
+    return error(409, 'email_outbound_blocked', message ?? 'Ausgangspruefung wuerde den Versand blockieren');
+  }
   if (reason === 'account_not_found') return error(404, 'email_account_not_found', 'Email account nicht gefunden');
   if (reason === 'not_local_draft') {
     return error(409, 'email_message_not_local_draft', 'Nur lokale Entwuerfe koennen hier bearbeitet werden');
@@ -1677,6 +1713,8 @@ async function handleMessageReplyDraftGenerate(
     ...(parsed.promptId === undefined ? {} : { promptId: parsed.promptId }),
     ...(parsed.profileId === undefined ? {} : { profileId: parsed.profileId }),
     ...(parsed.customerId === undefined ? {} : { customerId: parsed.customerId }),
+    ...(parsed.userContext === undefined ? {} : { userContext: parsed.userContext }),
+    ...(parsed.persistSuggestion === undefined ? {} : { persistSuggestion: parsed.persistSuggestion }),
   });
   return data(200, sanitizeEmailReplyDraftGeneration(result));
 }
@@ -2493,6 +2531,7 @@ function sanitizeEmailAccount(account: EmailAccountRecord): EmailAccountRecord {
     vacationSubject: account.vacationSubject,
     vacationBodyText: account.vacationBodyText,
     requestReadReceipt: account.requestReadReceipt,
+    imapDeleteOptIn: account.imapDeleteOptIn,
     defaultRemoteContentPolicy: account.defaultRemoteContentPolicy,
     respondToReadReceipts: account.respondToReadReceipts,
     imapPasswordConfigured: account.imapPasswordConfigured,
@@ -2627,6 +2666,7 @@ function sanitizeMailFolderCounts(counts: EmailMailFolderCounts): EmailMailFolde
     inboxUnread: safeCount(counts.inboxUnread),
     sentFailed: safeCount(counts.sentFailed),
     drafts: safeCount(counts.drafts),
+    scheduledSend: safeCount(counts.scheduledSend),
     archived: safeCount(counts.archived),
     spamReview: safeCount(counts.spamReview),
     spam: safeCount(counts.spam),
@@ -3687,6 +3727,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
     'vacationSubject',
     'vacationBodyText',
     'requestReadReceipt',
+    'imapDeleteOptIn',
   ]);
 
   for (const key of Object.keys(body)) {
@@ -3721,6 +3762,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
   assignParsed(values, errors, body, 'vacationSubject', (value) => normalizeNullableBodyText(value, 'vacationSubject', 500));
   assignParsed(values, errors, body, 'vacationBodyText', (value) => normalizeNullableBodyText(value, 'vacationBodyText', 10000));
   assignParsed(values, errors, body, 'requestReadReceipt', (value) => normalizeBooleanBody(value, 'requestReadReceipt'));
+  assignParsed(values, errors, body, 'imapDeleteOptIn', (value) => normalizeBooleanBody(value, 'imapDeleteOptIn'));
 
   if (errors.length > 0) {
     return {
@@ -4179,7 +4221,13 @@ function parseEmailReplyDraftGenerateBody(body: unknown): EmailReplyDraftGenerat
       response: error(400, 'invalid_reply_draft_payload', 'Reply draft payload muss ein JSON-Objekt sein'),
     };
   }
-  const result: { promptId?: number; profileId?: number; customerId?: number | null } = {};
+  const result: {
+    promptId?: number;
+    profileId?: number;
+    customerId?: number | null;
+    userContext?: string;
+    persistSuggestion?: boolean;
+  } = {};
   if (Object.prototype.hasOwnProperty.call(body, 'promptId')) {
     const promptId = normalizePositiveBodyInt(body.promptId, 'promptId');
     if (!promptId.ok) return { ok: false, response: error(400, 'invalid_prompt_id', promptId.message) };
@@ -4194,6 +4242,20 @@ function parseEmailReplyDraftGenerateBody(body: unknown): EmailReplyDraftGenerat
     const customerId = normalizeNullablePositiveBodyInt(body.customerId, 'customerId');
     if (!customerId.ok) return { ok: false, response: error(400, 'invalid_customer_id', customerId.message) };
     result.customerId = customerId.value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'userContext')) {
+    const userContext = normalizeRequiredBodyText(body.userContext, 'userContext', 4000);
+    if (!userContext.ok) return { ok: false, response: error(400, 'invalid_user_context', userContext.message) };
+    result.userContext = userContext.value;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'persistSuggestion')) {
+    if (typeof body.persistSuggestion !== 'boolean') {
+      return {
+        ok: false,
+        response: error(400, 'invalid_persist_suggestion', 'persistSuggestion muss ein Boolean sein'),
+      };
+    }
+    result.persistSuggestion = body.persistSuggestion;
   }
   return { ok: true, ...result };
 }
@@ -4575,7 +4637,7 @@ function textIdFromPath(value: string | undefined, maxLength: number): string | 
 
 function parseOptionalMessageView(value: string | undefined) {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

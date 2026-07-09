@@ -31,6 +31,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './types';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
@@ -271,6 +272,8 @@ async function handleListRoute(
       if (target === null) return error(400, 'invalid_target', 'target darf maximal 100 Zeichen haben');
       const profileId = parseOptionalPositiveInt(req.query?.profileId);
       if (profileId === null) return error(400, 'invalid_profile_id', 'profileId muss eine positive Ganzzahl sein');
+      const accountId = parseOptionalPositiveInt(req.query?.accountId);
+      if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
       if (!ports.aiPrompts) return error(503, 'ai_prompts_unavailable', 'AI prompt API nicht konfiguriert');
       const result = await ports.aiPrompts.list({
         workspaceId: principal.workspaceId,
@@ -279,6 +282,7 @@ async function handleListRoute(
         ...(search === undefined ? {} : { search }),
         ...(target === undefined ? {} : { target }),
         ...(profileId === undefined ? {} : { profileId }),
+        ...(accountId === undefined ? {} : { accountId }),
       });
       return data(200, sanitizeAiPromptList(result));
     }
@@ -287,6 +291,8 @@ async function handleListRoute(
       if (triggerName === null) return error(400, 'invalid_trigger_name', 'triggerName darf maximal 100 Zeichen haben');
       const enabled = parseOptionalBoolean(req.query?.enabled);
       if (enabled === null) return error(400, 'invalid_enabled', 'enabled muss true oder false sein');
+      const accountId = parseOptionalPositiveInt(req.query?.accountId);
+      if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
       if (!ports.workflows) return error(503, 'workflows_unavailable', 'Workflow API nicht konfiguriert');
       const result = await ports.workflows.list({
         workspaceId: principal.workspaceId,
@@ -295,6 +301,7 @@ async function handleListRoute(
         ...(search === undefined ? {} : { search }),
         ...(triggerName === undefined ? {} : { triggerName }),
         ...(enabled === undefined ? {} : { enabled }),
+        ...(accountId === undefined ? {} : { accountId }),
       });
       return data(200, sanitizeWorkflowList(result));
     }
@@ -426,7 +433,12 @@ async function handleWorkflowExecute(
     if (!message) return error(404, 'email_message_not_found', 'Email message nicht gefunden');
   }
 
-  if (parsed.values.dryRun) {
+  const dryRun = parsed.values.dryRun !== false;
+  if (!dryRun && !requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte');
+  }
+
+  if (dryRun) {
     if (!ports.workflowExecution?.dryRun) {
       return error(503, 'workflow_dry_run_unavailable', 'Workflow Dry-Run API nicht konfiguriert');
     }
@@ -1174,6 +1186,9 @@ function sanitizeAiPrompt(prompt: AiPromptRecord): AiPromptRecord {
     target: prompt.target,
     profileSourceSqliteId: prompt.profileSourceSqliteId,
     profileId: prompt.profileId,
+    accountSourceSqliteId: prompt.accountSourceSqliteId,
+    accountId: prompt.accountId,
+    overrideKey: prompt.overrideKey,
     sortOrder: prompt.sortOrder,
     createdAt: prompt.createdAt,
     updatedAt: prompt.updatedAt,
@@ -1200,6 +1215,9 @@ function sanitizeWorkflow(workflow: WorkflowRecord): WorkflowRecord {
     cronExpr: workflow.cronExpr,
     scheduleAccountSourceSqliteId: workflow.scheduleAccountSourceSqliteId,
     scheduleAccountId: workflow.scheduleAccountId,
+    accountSourceSqliteId: workflow.accountSourceSqliteId,
+    accountId: workflow.accountId,
+    overrideKey: workflow.overrideKey,
     executionMode: workflow.executionMode,
     engineVersion: workflow.engineVersion,
     legacyCreatedByUserId: workflow.legacyCreatedByUserId,
@@ -1382,6 +1400,8 @@ function parseWorkflowMutationBody(
     'graph',
     'cronExpr',
     'scheduleAccountId',
+    'accountId',
+    'overrideKey',
     'executionMode',
     'engineVersion',
   ]);
@@ -1428,6 +1448,16 @@ function parseWorkflowMutationBody(
     const scheduleAccountId = normalizeNullablePositiveBodyInt(body.scheduleAccountId, 'scheduleAccountId');
     if (scheduleAccountId.ok) values.scheduleAccountId = scheduleAccountId.value;
     else errors.push({ field: 'scheduleAccountId', message: scheduleAccountId.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    const accountId = normalizeNullablePositiveBodyInt(body.accountId, 'accountId');
+    if (accountId.ok) values.accountId = accountId.value;
+    else errors.push({ field: 'accountId', message: accountId.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'overrideKey')) {
+    const overrideKey = normalizeNullableBodyText(body.overrideKey, 'overrideKey', 200);
+    if (overrideKey.ok) values.overrideKey = overrideKey.value;
+    else errors.push({ field: 'overrideKey', message: overrideKey.message });
   }
   if (Object.prototype.hasOwnProperty.call(body, 'executionMode')) {
     const executionMode = normalizeRequiredBodyText(body.executionMode, 'executionMode', 50);
@@ -1609,7 +1639,7 @@ function parseAiPromptMutationBody(
 
   const values: AiPromptMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['label', 'userTemplate', 'target', 'profileId', 'sortOrder']);
+  const allowedFields = new Set(['label', 'userTemplate', 'target', 'profileId', 'accountId', 'overrideKey', 'sortOrder']);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -1633,6 +1663,16 @@ function parseAiPromptMutationBody(
     const profileId = normalizeNullablePositiveBodyInt(body.profileId, 'profileId');
     if (profileId.ok) values.profileId = profileId.value;
     else errors.push({ field: 'profileId', message: profileId.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    const accountId = normalizeNullablePositiveBodyInt(body.accountId, 'accountId');
+    if (accountId.ok) values.accountId = accountId.value;
+    else errors.push({ field: 'accountId', message: accountId.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'overrideKey')) {
+    const overrideKey = normalizeNullableBodyText(body.overrideKey, 'overrideKey', 200);
+    if (overrideKey.ok) values.overrideKey = overrideKey.value;
+    else errors.push({ field: 'overrideKey', message: overrideKey.message });
   }
   if (Object.prototype.hasOwnProperty.call(body, 'sortOrder')) {
     const sortOrder = normalizeNonNegativeBodyInt(body.sortOrder, 'sortOrder');
@@ -1725,7 +1765,7 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
   }
 
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['promptId', 'text', 'contextText', 'targetLanguage', 'customerId']);
+  const allowedFields = new Set(['promptId', 'text', 'contextText', 'targetLanguage', 'inboundContextText', 'userContext', 'customerId', 'insertMode']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
@@ -1735,7 +1775,10 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     text?: string;
     contextText?: string;
     targetLanguage?: string;
+    inboundContextText?: string;
+    userContext?: string;
     customerId?: number | null;
+    insertMode?: boolean;
   } = {};
 
   // promptId is required in prompt mode but omitted in translate mode.
@@ -1745,7 +1788,15 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     else errors.push({ field: 'promptId', message: promptId.message });
   }
 
-  const text = normalizeRequiredBodyText(body.text, 'text', 20000);
+  if (Object.prototype.hasOwnProperty.call(body, 'insertMode')) {
+    if (typeof body.insertMode === 'boolean') values.insertMode = body.insertMode;
+    else errors.push({ field: 'insertMode', message: 'insertMode muss ein Boolean sein' });
+  }
+
+  const insertMode = values.insertMode === true;
+  const text = insertMode
+    ? normalizeOptionalBodyText(body.text, 'text', 20000)
+    : normalizeRequiredBodyText(body.text, 'text', 20000);
   if (text.ok) values.text = text.value;
   else errors.push({ field: 'text', message: text.message });
 
@@ -1761,6 +1812,18 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     else errors.push({ field: 'targetLanguage', message: targetLanguage.message });
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'inboundContextText')) {
+    const inboundContextText = normalizeRequiredBodyText(body.inboundContextText, 'inboundContextText', 40000);
+    if (inboundContextText.ok) values.inboundContextText = inboundContextText.value;
+    else errors.push({ field: 'inboundContextText', message: inboundContextText.message });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'userContext')) {
+    const userContext = normalizeRequiredBodyText(body.userContext, 'userContext', 4000);
+    if (userContext.ok) values.userContext = userContext.value;
+    else errors.push({ field: 'userContext', message: userContext.message });
+  }
+
   if (Object.prototype.hasOwnProperty.call(body, 'customerId')) {
     const customerId = normalizeNullablePositiveBodyInt(body.customerId, 'customerId');
     if (customerId.ok) values.customerId = customerId.value;
@@ -1772,21 +1835,26 @@ function parseAiTextTransformBody(body: unknown): AiTextTransformParseResult {
     errors.push({ field: 'promptId', message: 'promptId oder targetLanguage ist erforderlich' });
   }
 
-  if (errors.length > 0 || values.text === undefined) {
+  if (errors.length > 0 || (!insertMode && values.text === undefined)) {
     return {
       ok: false,
       response: error(400, 'validation_error', 'AI text transform payload ist ungueltig', { fields: errors }),
     };
   }
 
+  const resolvedText = values.text ?? '';
+
   return {
     ok: true,
     values: {
       ...(values.promptId === undefined ? {} : { promptId: values.promptId }),
-      text: values.text,
+      text: resolvedText,
       ...(values.contextText === undefined ? {} : { contextText: values.contextText }),
       ...(values.targetLanguage === undefined ? {} : { targetLanguage: values.targetLanguage }),
+      ...(values.inboundContextText === undefined ? {} : { inboundContextText: values.inboundContextText }),
+      ...(values.userContext === undefined ? {} : { userContext: values.userContext }),
       ...(values.customerId === undefined ? {} : { customerId: values.customerId }),
+      ...(values.insertMode === undefined ? {} : { insertMode: values.insertMode }),
     },
   };
 }
@@ -1827,6 +1895,18 @@ function normalizeTextFilter(value: string | undefined, maxLength: number): stri
   const normalized = value.trim();
   if (!normalized) return undefined;
   return normalized.length > maxLength ? null : normalized;
+}
+
+function normalizeOptionalBodyText(
+  rawValue: unknown,
+  field: string,
+  maxLength: number,
+): { ok: true; value: string } | { ok: false; message: string } {
+  if (rawValue === undefined || rawValue === null) return { ok: true, value: '' };
+  if (typeof rawValue !== 'string') return { ok: false, message: `${field} muss ein String sein` };
+  const value = rawValue.trim();
+  if (value.length > maxLength) return { ok: false, message: `${field} darf maximal ${maxLength} Zeichen haben` };
+  return { ok: true, value };
 }
 
 function normalizeRequiredBodyText(

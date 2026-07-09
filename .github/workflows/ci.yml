@@ -32,11 +32,27 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Provide Electron path.txt (tests import 'electron' in Node)
+        # The Node-context jest suites do `import … from 'electron'`, which runs
+        # electron/index.js → it reads dist/path.txt and THROWS "Electron failed
+        # to install correctly" when path.txt is missing. In CI electron's
+        # install.js short-circuits (verified: <1s, no download output) and
+        # never writes path.txt — pnpm restores the package without it. Since
+        # jest runs under Node (never launches the binary), the import only needs
+        # index.js to return a path string instead of throwing, i.e. a non-empty
+        # path.txt. Reproduce install.js's final step deterministically: it
+        # writes path.txt = the platform binary name (getPlatformPath()), which
+        # on linux (this runner) is exactly "electron".
+        run: |
+          node node_modules/electron/install.js || true
+          [ -s node_modules/electron/path.txt ] || printf 'electron' > node_modules/electron/path.txt
+          test -s node_modules/electron/path.txt
 
       - name: Rebuild better-sqlite3 for Node (mail integration tests)
         run: npm rebuild better-sqlite3

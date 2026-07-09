@@ -2,3 +2,10 @@ packages:
   - "packages/core"
   - "packages/server"
   - "packages/desktop"
+
+# pnpm 10 changed the default of link-workspace-packages to false (requires the
+# workspace: protocol). We keep plain semver refs like "@simplecrm/core": "0.1.0"
+# so npm's Docker `npm ci` (which does not understand workspace:*) also resolves
+# them as local workspace links. This setting restores pnpm's version-based
+# workspace linking.
+linkWorkspacePackages: true

@@ -1,4 +1,5 @@
 import { handleAuthRoute } from './auth-routes';
+import { handleAuthSecurityRoute } from './auth-security-routes';
 import { handleAutomationReadRoute } from './automation-routes';
 import { handleCoreCrmReadRoute } from './core-crm-routes';
 import { handleCustomerRoute } from './customer-routes';
@@ -8,8 +9,10 @@ import { handleExtendedCrmReadRoute } from './extended-crm-routes';
 import { handleFollowUpRoute } from './follow-up-routes';
 import { handleLockRoute } from './lock-routes';
 import { handleMailReadRoute } from './mail-routes';
+import { handleMaintenanceRoute } from './maintenance-routes';
 import { handleNoticeRoute } from './notice-routes';
 import { handlePgpReadRoute } from './pgp-routes';
+import { handlePublicPortalRoute, handleReturnsRoute } from './returns-routes';
 import { handleSpamReadRoute } from './spam-routes';
 import { handleSettingsRoute } from './settings-routes';
 import { handleUserGroupRoute } from './user-group-routes';
@@ -33,6 +36,12 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
           version: 1,
         });
       }
+      // Public portal routes MUST be matched before the authenticated dispatchers,
+      // because they intentionally have no principal. They return null when the
+      // path is not /api/v1/portal/..., so the rest of the dispatcher is unaffected.
+      const publicPortal = await handlePublicPortalRoute(req, ports);
+      if (publicPortal) return publicPortal;
+
       if (req.path === '/health/ready' || req.path === '/api/v1/health/ready') {
         if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
         if (!ports.health) {
@@ -63,6 +72,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
         };
       }
 
+      const authSecurity = await handleAuthSecurityRoute(req, ports);
+      if (authSecurity) return authSecurity;
+
       const auth = await handleAuthRoute(req, ports);
       if (auth) return auth;
 
@@ -77,6 +89,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const diagnostics = await handleDiagnosticsRoute(req, ports);
       if (diagnostics) return diagnostics;
+
+      const maintenance = await handleMaintenanceRoute(req, ports);
+      if (maintenance) return maintenance;
 
       const coreCrm = await handleCoreCrmReadRoute(req, ports);
       if (coreCrm) return coreCrm;
@@ -107,6 +122,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const spam = await handleSpamReadRoute(req, ports);
       if (spam) return spam;
+
+      const returns = await handleReturnsRoute(req, ports);
+      if (returns) return returns;
 
       const locks = await handleLockRoute(req, ports);
       if (locks) return locks;

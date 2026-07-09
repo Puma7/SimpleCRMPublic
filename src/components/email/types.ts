@@ -1,6 +1,15 @@
 import { getRendererTransport } from "@/services/transport"
 
-export type MailView = "inbox" | "sent" | "archived" | "drafts" | "spam_review" | "spam" | "trash" | "snoozed"
+export type MailView =
+  | "inbox"
+  | "sent"
+  | "archived"
+  | "drafts"
+  | "scheduled_send"
+  | "spam_review"
+  | "spam"
+  | "trash"
+  | "snoozed"
 
 export type EmailAccount = {
   id: number
@@ -32,6 +41,7 @@ export type EmailAccount = {
   vacation_subject?: string | null
   vacation_body_text?: string | null
   request_read_receipt?: number
+  imap_delete_opt_in?: number | null
   created_at: string
   updated_at: string
 }
@@ -124,7 +134,13 @@ export type CustomerOpt = {
   email?: string | null
   customerNumber?: string | null
 }
-export type CannedResponse = { id: number; title: string; body: string }
+export type CannedResponse = {
+  id: number
+  title: string
+  body: string
+  account_id?: number | null
+  override_key?: string | null
+}
 export type AiPrompt = {
   id: number
   label: string
@@ -132,6 +148,8 @@ export type AiPrompt = {
   target?: string
   profile_id?: number | null
   sort_order?: number
+  account_id?: number | null
+  override_key?: string | null
 }
 export type InternalNote = { id: number; body: string; created_at: string }
 export type MessageAttachment = {
@@ -179,6 +197,11 @@ export function stripHtmlToText(html: string): string {
     .trim()
 }
 
+/** List/conversation rows often ship without body fields — only snippet. */
+export function needsFullMessageBody(message: Pick<EmailMessage, "body_text" | "body_html">): boolean {
+  return !message.body_text?.trim() && !message.body_html?.trim()
+}
+
 export function firstAddress(fromJson: string | null): string {
   if (!fromJson) return ""
   try {
@@ -202,6 +225,27 @@ export function formatFrom(fromJson: string | null): string {
   } catch {
     return fromJson
   }
+}
+
+/** From line with account fallback for outbound drafts/sent missing from_json. */
+export function formatMessageFrom(
+  message: Pick<EmailMessage, "from_json" | "folder_kind" | "account_id">,
+  accounts?: readonly EmailAccount[],
+): string {
+  if (message.from_json?.trim()) return formatFrom(message.from_json)
+  if (message.folder_kind === "sent" || message.folder_kind === "draft") {
+    const acc = accounts?.find((a) => a.id === message.account_id)
+    if (acc?.email_address) {
+      const json = JSON.stringify({
+        value: [{
+          address: acc.email_address,
+          ...(acc.display_name?.trim() ? { name: acc.display_name.trim() } : {}),
+        }],
+      })
+      return formatFrom(json)
+    }
+  }
+  return formatFrom(message.from_json)
 }
 
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
