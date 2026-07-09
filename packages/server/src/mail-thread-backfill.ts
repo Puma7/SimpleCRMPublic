@@ -2,6 +2,7 @@ import { sql, type Kysely, type Selectable } from 'kysely';
 
 import type { MailThreadBackfillApiPort, MailThreadBackfillResult } from './api/types';
 import type { EmailMessagesTable, ServerDatabase } from './db';
+import { accountSyncAdvisoryLockKey } from './jobs/policy';
 import {
   resolveReferenceThreadForSync,
   refreshThreadAggregateAfterSync,
@@ -116,6 +117,12 @@ async function threadOneRow(
   row: UnthreadedRow,
   now: Date,
 ): Promise<boolean> {
+  // Take the SAME per-account advisory lock the live sync path holds, so a
+  // backfill can't race a concurrent sync (or a second backfill) and mint a
+  // different thread for the same conversation. Auto-released on commit/rollback.
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${accountSyncAdvisoryLockKey(accountId)}))`
+    .execute(trx);
+
   // Re-check under the row's own transaction: a previous row's backfill (or a
   // concurrent live sync) may have threaded it already.
   const current = await trx

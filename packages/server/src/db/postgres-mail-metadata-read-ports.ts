@@ -2798,6 +2798,90 @@ async function getOrCreateThreadForTicket(
   throw new Error('email thread ticket insert failed');
 }
 
+function formatServerTicketSequence(value: number, padding: number): string {
+  const normalizedValue = Number.isSafeInteger(value) && value > 0 ? value : 1;
+  const normalizedPadding = Number.isSafeInteger(padding) && padding > 0 ? Math.min(padding, 12) : 6;
+  return String(normalizedValue).padStart(normalizedPadding, '0');
+}
+
+/**
+ * Allocate a ticket code for a header-only synced conversation from the SAME
+ * account-scoped settings compose uses (ticket_prefix / ticket_next_number /
+ * padding), advancing the sequence. These codes are persisted onto messages and
+ * reused in later compose reply subjects, so they must live in the account's
+ * configured namespace and sequence — not the legacy random `SCR` prefix.
+ * Mirrors mail-compose-send's allocateNextTicketCodeForAccount.
+ */
+async function allocateAccountScopedTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number,
+  now: Date,
+): Promise<string> {
+  let settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', accountId)
+    .forUpdate()
+    .executeTakeFirst();
+
+  if (!settings) {
+    const account = await trx
+      .selectFrom('email_accounts')
+      .select(['id', 'source_sqlite_id', 'email_address', 'display_name'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    if (!account) return generateTicketCode();
+    const defaults = buildDefaultServerAccountMailSettings({
+      id: Number(account.id),
+      displayName: account.display_name ?? '',
+      emailAddress: account.email_address ?? '',
+    });
+    await trx
+      .insertInto('email_account_mail_settings')
+      .values({
+        workspace_id: workspaceId,
+        account_source_sqlite_id: account.source_sqlite_id,
+        account_id: accountId,
+        ticket_prefix: defaults.ticketPrefix,
+        ticket_next_number: defaults.ticketNextNumber,
+        ticket_number_padding: defaults.ticketNumberPadding,
+        thread_namespace: defaults.threadNamespace,
+        source_row: serverApiSourceRow(),
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+      .execute();
+    settings = await trx
+      .selectFrom('email_account_mail_settings')
+      .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+      .where('workspace_id', '=', workspaceId)
+      .where('account_id', '=', accountId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+  }
+
+  const prefix = settings.ticket_prefix.trim() || `ACC${accountId}`;
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Number(settings.ticket_number_padding);
+  const ticketCode = generateTicketCode({
+    prefix,
+    sequence: formatServerTicketSequence(currentNumber, padding),
+  });
+  const nextNumber = (Number.isSafeInteger(currentNumber) && currentNumber > 0 ? currentNumber : 1) + 1;
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: nextNumber, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', accountId)
+    .execute();
+  return ticketCode;
+}
+
 async function resolveCanonicalThreadId(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -2997,7 +3081,8 @@ export async function resolveReferenceThreadForSync(
   // one) onto the message and siblings so the conversation is a proper Vorgang
   // and compose replies reuse it.
   if (nullSiblingIds.length > 0) {
-    const ticket = subjectTicket ?? generateTicketCode();
+    const ticket = subjectTicket
+      ?? await allocateAccountScopedTicketCode(trx, args.workspaceId, args.accountId, args.now);
     const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, ticket, args.accountId, args.now);
     await backfillNullSiblings(canonical, ticket);
     return { threadId: canonical, ticketCode: ticket };
