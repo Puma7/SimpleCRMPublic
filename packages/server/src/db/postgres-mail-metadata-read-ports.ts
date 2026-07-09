@@ -561,7 +561,7 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
 
           const now = new Date();
           const ticketCode = generateTicketCode();
-          const threadId = await getOrCreateThreadForTicket(trx, input.workspaceId, ticketCode, now);
+          const threadId = await getOrCreateThreadForTicket(trx, input.workspaceId, ticketCode, null, now);
           await trx
             .updateTable('email_messages')
             .set({
@@ -2730,42 +2730,61 @@ async function getOrCreateThreadForTicket(
   trx: WorkspaceTransaction,
   workspaceId: string,
   ticketCode: string,
+  accountId: number | null,
   now: Date,
 ): Promise<string> {
+  // account_id scopes the ticket thread. Server compose creates ticket threads
+  // under the sending account (unique on workspace+account+ticket), so sync must
+  // resolve/create against the SAME account scope — otherwise a synced reply
+  // `Re: [SCR-123]` opens a parallel account_id-null thread instead of joining
+  // the compose thread. Pass null only for the legacy workspace-global scope
+  // (unique on workspace+ticket WHERE account_id IS NULL).
+  const scopeOp = accountId == null ? 'is' : '=';
   const existing = await trx
     .selectFrom('email_threads')
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
-    .where('account_id', 'is', null)
+    .where('account_id', scopeOp, accountId ?? null)
     .executeTakeFirst();
   if (existing?.id) return existing.id;
 
   const threadId = `th-${randomBytes(8).toString('hex')}`;
-  const inserted = await trx
-    .insertInto('email_threads')
-    .values({
-      workspace_id: workspaceId,
-      id: threadId,
-      ticket_code: ticketCode,
-      root_message_source_sqlite_id: null,
-      root_message_id: null,
-      last_message_at: null,
-      message_count: 0,
-      has_unread: false,
-      has_attachments: false,
-      subject_normalized: null,
-      source_row: serverApiSourceRow(),
-      imported_in_run_id: null,
-      created_at: now,
-      updated_at: now,
-    })
-    .onConflict((oc) => oc
-      .columns(['workspace_id', 'ticket_code'])
-      .where('account_id', 'is', null)
-      .doNothing())
-    .returning('id')
-    .executeTakeFirst();
+  const values = {
+    workspace_id: workspaceId,
+    id: threadId,
+    ticket_code: ticketCode,
+    account_id: accountId ?? null,
+    root_message_source_sqlite_id: null,
+    root_message_id: null,
+    last_message_at: null,
+    message_count: 0,
+    has_unread: false,
+    has_attachments: false,
+    subject_normalized: null,
+    source_row: serverApiSourceRow(),
+    imported_in_run_id: null,
+    created_at: now,
+    updated_at: now,
+  };
+  const inserted = accountId == null
+    ? await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'ticket_code'])
+        .where('account_id', 'is', null)
+        .doNothing())
+      .returning('id')
+      .executeTakeFirst()
+    : await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'account_id', 'ticket_code'])
+        .doNothing())
+      .returning('id')
+      .executeTakeFirst();
   if (inserted?.id) return inserted.id;
 
   const existingAfterConflict = await trx
@@ -2773,7 +2792,7 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
-    .where('account_id', 'is', null)
+    .where('account_id', scopeOp, accountId ?? null)
     .executeTakeFirst();
   if (existingAfterConflict?.id) return existingAfterConflict.id;
   throw new Error('email thread ticket insert failed');
@@ -2924,38 +2943,58 @@ export async function resolveReferenceThreadForSync(
     }
   }
 
-  const backfillNullSiblings = async (threadId: string): Promise<void> => {
+  const backfillNullSiblings = async (threadId: string, ticketCode: string | null): Promise<void> => {
     if (nullSiblingIds.length === 0) return;
     await trx
       .updateTable('email_messages')
-      .set({ thread_id: threadId, updated_at: args.now })
+      .set({
+        thread_id: threadId,
+        // Fill the thread's ticket only where a sibling has none — coalesce so we
+        // never clobber a message that already carries its own subject ticket.
+        ...(ticketCode ? { ticket_code: kyselySql`coalesce(ticket_code, ${ticketCode})` } : {}),
+        updated_at: args.now,
+      })
       .where('workspace_id', '=', args.workspaceId)
       .where('id', 'in', nullSiblingIds)
       .execute();
   };
 
-  // (1) Inherit an existing conversation thread. Preserve a subject-carried
-  // ticket on the message (don't drop it just because we inherited by headers).
+  const threadTicketCode = async (threadId: string): Promise<string | null> => {
+    const row = await trx
+      .selectFrom('email_threads')
+      .select('ticket_code')
+      .where('workspace_id', '=', args.workspaceId)
+      .where('id', '=', threadId)
+      .executeTakeFirst();
+    return row?.ticket_code?.trim() || null;
+  };
+
+  // (1) Inherit an existing conversation thread. Carry the thread's ticket onto
+  // this message (and backfilled siblings) — a subject ticket if present, else
+  // the inherited thread's own ticket — so a later compose reply reuses this
+  // thread instead of allocating a fresh ticket/thread.
   if (canonicalThreads.length > 0) {
     const canonical = canonicalThreads.slice().sort()[0]!;
-    await backfillNullSiblings(canonical);
-    return { threadId: canonical, ticketCode: subjectTicket ?? null };
+    const ticket = subjectTicket ?? await threadTicketCode(canonical);
+    await backfillNullSiblings(canonical, ticket);
+    return { threadId: canonical, ticketCode: ticket };
   }
 
-  // (2) 2+ messages of a brand-new conversation, none threaded yet → mint one.
-  // The email_threads row needs a ticket_code, but we only denormalize a
-  // ticket onto the MESSAGE when it is meaningful (carried in the subject);
-  // an arbitrary generated code is not copied, so siblings stay consistent.
+  // (2) 2+ messages of a brand-new conversation, none threaded yet → mint one
+  // under this account's scope. Persist the ticket (subject ticket or a generated
+  // one) onto the message and siblings so the conversation is a proper Vorgang
+  // and compose replies reuse it.
   if (nullSiblingIds.length > 0) {
     const ticket = subjectTicket ?? generateTicketCode();
-    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, ticket, args.now);
-    await backfillNullSiblings(canonical);
-    return { threadId: canonical, ticketCode: subjectTicket ?? null };
+    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, ticket, args.accountId, args.now);
+    await backfillNullSiblings(canonical, ticket);
+    return { threadId: canonical, ticketCode: ticket };
   }
 
-  // (3) Subject carries a known ticket → attach to (or open) that thread.
+  // (3) Subject carries a known ticket → attach to (or open) that account-scoped
+  // thread (matching how server compose creates ticket threads).
   if (subjectTicket) {
-    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, subjectTicket, args.now);
+    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, subjectTicket, args.accountId, args.now);
     return { threadId: canonical, ticketCode: subjectTicket };
   }
 
