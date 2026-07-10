@@ -1,3 +1,4 @@
+export * from './attachment-text';
 export * from './imap-sync-cursor';
 export * from './email-address-normalize';
 export * from './imap-mailbox-names';
