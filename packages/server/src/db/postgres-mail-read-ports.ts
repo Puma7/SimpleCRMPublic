@@ -2246,27 +2246,45 @@ async function backfillMessageCustomerLinks(
   if (customerByEmail.size === 0) return { count: 0 };
 
   const now = new Date();
-  let count = 0;
+  const targets: Array<{ id: number; customerId: number; sourceSqliteId: number }> = [];
   for (const message of messages) {
     const sender = firstAddressFromRecipientJson(message.from_json);
     if (!sender) continue;
     const customer = customerByEmail.get(normalizeEmailAddress(sender));
     if (!customer) continue;
-    const updated = await trx
-      .updateTable('email_messages')
-      .set({
-        customer_id: customer.id,
-        customer_source_sqlite_id: customer.sourceSqliteId,
-        updated_at: now,
-      })
-      .where('workspace_id', '=', input.workspaceId)
-      .where('id', '=', Number(message.id))
-      .where('customer_id', 'is', null)
-      .returning('id')
-      .executeTakeFirst();
-    if (updated) count += 1;
+    targets.push({
+      id: Number(message.id),
+      customerId: customer.id,
+      sourceSqliteId: customer.sourceSqliteId,
+    });
   }
-  return { count };
+  if (targets.length === 0) return { count: 0 };
+
+  // Single set-based UPDATE joining email_messages against an in-memory
+  // (id, customer_id, customer_source_sqlite_id) VALUES list — replaces the
+  // former one-UPDATE-per-row loop. The `customer_id IS NULL` guard stays in
+  // the WHERE so a row linked concurrently is left untouched. Built by chaining
+  // sql template tags (not kyselySql.join) so it also works under the unit-test
+  // kysely mock, which provides only the tag and sql.ref.
+  let linkRows = kyselySql`(${targets[0].id}::bigint, ${targets[0].customerId}::bigint, ${targets[0].sourceSqliteId}::bigint)`;
+  for (let i = 1; i < targets.length; i += 1) {
+    const t = targets[i];
+    linkRows = kyselySql`${linkRows}, (${t.id}::bigint, ${t.customerId}::bigint, ${t.sourceSqliteId}::bigint)`;
+  }
+  const updatedRows = await trx
+    .updateTable('email_messages')
+    .from(kyselySql`(values ${linkRows}) as backfill_links(id, customer_id, customer_source_sqlite_id)`)
+    .set({
+      customer_id: kyselySql.ref('backfill_links.customer_id'),
+      customer_source_sqlite_id: kyselySql.ref('backfill_links.customer_source_sqlite_id'),
+      updated_at: now,
+    })
+    .whereRef('email_messages.id', '=', 'backfill_links.id')
+    .where('email_messages.workspace_id', '=', input.workspaceId)
+    .where('email_messages.customer_id', 'is', null)
+    .returning('email_messages.id')
+    .execute();
+  return { count: updatedRows.length };
 }
 
 function normalizeBackfillCustomerLinkLimit(value: number | undefined): number {
