@@ -128,6 +128,16 @@ export async function runPluginNode(
   };
 }
 
+// Sicherheitsrelevante Variablen, die Plugins NICHT überschreiben dürfen —
+// sonst könnte ein Plugin z. B. draft.id umbiegen und den Auto-Versand
+// (email.send_draft) auf einen fremden Entwurf lenken.
+const PLUGIN_RESERVED_VARIABLE_PREFIXES = [
+  'draft.',
+  'auto_reply.',
+  'ai.review.',
+  'send_draft.',
+];
+
 /** `run()` darf { variables: { name: wert } } zurückgeben — landet als Workflow-Variablen. */
 function pluginResultVariables(
   out: unknown,
@@ -139,6 +149,7 @@ function pluginResultVariables(
   let count = 0;
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!/^[\w.$:-]{1,100}$/.test(key)) continue;
+    if (PLUGIN_RESERVED_VARIABLE_PREFIXES.some((p) => key.startsWith(p))) continue;
     if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
       vars[key] = value as string | number | boolean | null;
     } else {

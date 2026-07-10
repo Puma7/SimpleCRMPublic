@@ -15,11 +15,21 @@ export type DraftReviewVerdict = {
   parsed: boolean;
 };
 
+/** Letzten Treffer eines zeilen-verankerten Musters nehmen. */
+function lastMatch(re: RegExp, text: string): RegExpExecArray | null {
+  let match: RegExpExecArray | null = null;
+  for (let m = re.exec(text); m; m = re.exec(text)) match = m;
+  return match;
+}
+
 export function parseDraftReviewResponse(raw: string): DraftReviewVerdict {
   const text = String(raw ?? '').trim();
-  const statusMatch = /status\s*:\s*(send|hold|senden|halten)/i.exec(text);
-  const answeredMatch = /answered\s*:\s*(yes|no|ja|nein)/i.exec(text);
-  const reasonMatch = /reason\s*:\s*(.+)/i.exec(text);
+  // Zeilen-verankert (^…$) und LETZTER Treffer gewinnt: Modelle zitieren gern
+  // die Format-Anweisung ("STATUS: SEND oder HOLD") vor der echten Antwort —
+  // ein Substring-Match darauf würde fail-OPEN in Richtung Senden kippen.
+  const statusMatch = lastMatch(/^\s*status\s*:\s*(send|hold|senden|halten)\s*$/gim, text);
+  const answeredMatch = lastMatch(/^\s*answered\s*:\s*(yes|no|ja|nein)\s*$/gim, text);
+  const reasonMatch = lastMatch(/^\s*reason\s*:\s*(.+)$/gim, text);
 
   const reason = (reasonMatch?.[1] ?? '').split('\n')[0]!.trim().slice(0, 300);
 

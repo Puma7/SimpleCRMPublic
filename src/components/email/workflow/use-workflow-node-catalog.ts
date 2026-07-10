@@ -8,6 +8,7 @@ import { getRendererTransport, invokeRenderer } from "@/services/transport"
 // Ein Fetch pro Sitzung, geteilt über alle Verwender (Panel, Palette,
 // Canvas-Karten, Referenz-Dialog) — die Canvas rendert viele Karten.
 let catalogCache: WorkflowNodeCatalogEntry[] | null = null
+let catalogCacheByType: Map<string, WorkflowNodeCatalogEntry> | null = null
 let catalogPromise: Promise<WorkflowNodeCatalogEntry[]> | null = null
 
 function loadCatalogOnce(): Promise<WorkflowNodeCatalogEntry[]> {
@@ -20,6 +21,7 @@ function loadCatalogOnce(): Promise<WorkflowNodeCatalogEntry[]> {
         // Server-only-Knoten (returns.*, jtl.order_context, …) laufen im
         // Desktop-Interpreter nicht — dort aus Palette/Auswahl fernhalten.
         catalogCache = serverClientMode ? all : all.filter((e) => e.runtime !== "server")
+        catalogCacheByType = new Map(catalogCache.map((e) => [e.type, e]))
         return catalogCache
       })
       .catch(() => {
@@ -38,8 +40,8 @@ function loadCatalogOnce(): Promise<WorkflowNodeCatalogEntry[]> {
 export function getCachedWorkflowNodeCatalogEntry(
   type: string | undefined,
 ): WorkflowNodeCatalogEntry | undefined {
-  if (!type || !catalogCache) return undefined
-  return catalogCache.find((e) => e.type === type)
+  if (!type || !catalogCacheByType) return undefined
+  return catalogCacheByType.get(type)
 }
 
 export function useWorkflowNodeCatalog() {

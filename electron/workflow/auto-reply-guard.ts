@@ -6,14 +6,17 @@
  */
 import { getDb } from '../sqlite-service';
 import { EMAIL_AUTO_REPLY_DEDUP_TABLE } from '../database-schema';
+import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { loadAutoReplyMaxPerSenderPerDay } from './auto-reply-settings';
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Volle Normalisierung (Plus-Tags weg, Punycode-Domain): sonst umgeht
+// bot+1@x.de / bot+2@x.de das Tageslimit mit je eigenem Budget.
 function normalizeSender(sender: string): string {
-  return sender.trim().toLowerCase();
+  return normalizeEmailAddress(sender);
 }
 
 /** Wie viele automatische Antworten gingen heute schon an diesen Absender? */

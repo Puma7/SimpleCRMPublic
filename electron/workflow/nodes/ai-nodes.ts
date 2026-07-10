@@ -43,6 +43,7 @@ import {
   setOutboundHold,
 } from '../../email/email-store';
 import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
+import { replySubject } from '../../../shared/email-reply-subject';
 import {
   aiDraftLikelyIncludesGreeting,
   buildReplyGreeting,
@@ -71,16 +72,40 @@ function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
   return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
 }
 
-/** Konto-Signatur (HTML) → Plain-Text für Workflow-Entwürfe. */
+/** Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung. */
+async function resolveKnowledgeChunks(
+  ctx: WorkflowContext,
+  config: Record<string, unknown>,
+): Promise<Awaited<ReturnType<typeof searchKnowledgeChunks>>> {
+  const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
+  if (kbId != null && kbId > 0) {
+    return searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5);
+  }
+  const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+  return searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
+}
+
+function knowledgeSourcesLabel(
+  chunks: Awaited<ReturnType<typeof searchKnowledgeChunks>>,
+): string {
+  return chunks.map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`)).join(', ');
+}
+
+/**
+ * Konto-Signatur (HTML) → Plain-Text für Workflow-Entwürfe.
+ * Bewusst lokal statt core htmlToPlainText: Signaturen brauchen die
+ * Zeilenstruktur (<br>/<p> → \n), die der Core-Helper zu Spaces kollabiert.
+ * &amp; wird als LETZTES dekodiert, sonst würde "&amp;lt;" zu "<".
+ */
 function signatureHtmlToText(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -371,12 +396,7 @@ export function registerAiNodes(register: Reg): void {
     },
     execute: async (ctx, config) => {
       const system = String(config.systemPrompt ?? '');
-      const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
-      const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
-      const chunks =
-        kbId != null && kbId > 0
-          ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
-          : await searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
+      const chunks = await resolveKnowledgeChunks(ctx, config);
       const kbText = chunks.map((c) => c.content).join('\n---\n');
       const user = [
         'Nachricht:',
@@ -389,9 +409,7 @@ export function registerAiNodes(register: Reg): void {
       const variables: Record<string, string | number | boolean | null> = {
         'ai.agent.response': out,
         'ai.agent.source_count': chunks.length,
-        'ai.agent.sources': chunks
-          .map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`))
-          .join(', '),
+        'ai.agent.sources': knowledgeSourcesLabel(chunks),
       };
       if (config.createDraft !== false && ctx.message) {
         const id = createComposeDraft({
@@ -547,17 +565,7 @@ export function registerAiNodes(register: Reg): void {
         return { status: 'ok', message: 'dry-run draft_reply', variables };
       }
 
-      // Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung.
-      const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
-      const chunks =
-        kbId != null && kbId > 0
-          ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
-          : await searchKnowledgeForWorkflow(
-              message.account_id,
-              ctx.direction,
-              ctx.strings.combined_text,
-              5,
-            );
+      const chunks = await resolveKnowledgeChunks(ctx, config);
       const kbText = chunks.map((c) => c.content).join('\n---\n');
 
       let cannedBlock = '';
@@ -639,12 +647,7 @@ export function registerAiNodes(register: Reg): void {
       }
 
       const bodyText = parts.join('\n');
-      const subjectRaw = message.subject?.trim() ?? '';
-      const reSubject = !subjectRaw
-        ? 'Re:'
-        : /^re:/i.test(subjectRaw)
-          ? subjectRaw
-          : `Re: ${subjectRaw}`;
+      const reSubject = replySubject(message.subject);
 
       // Korrekt adressierter Antwort-Entwurf (Reply-To vor From) mit
       // Thread-Bezug — nur so kann send_draft ihn später wirklich versenden.
@@ -667,9 +670,7 @@ export function registerAiNodes(register: Reg): void {
           'draft.id': draftId,
           'ai.draft.text': bodyText.slice(0, 8000),
           'ai.draft.subject': reSubject,
-          'ai.draft.sources': chunks
-            .map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`))
-            .join(', '),
+          'ai.draft.sources': knowledgeSourcesLabel(chunks),
         },
       };
     },
@@ -828,13 +829,9 @@ export function registerAiNodes(register: Reg): void {
         if (createDraft && ctx.message) {
           const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse');
           const { updateComposeDraft } = await import('../../email/email-store');
-          const replyTo = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
-          const subjectRaw = ctx.message.subject?.trim() ?? '';
-          const reSubject = !subjectRaw
-            ? 'Re:'
-            : /^re:/i.test(subjectRaw)
-              ? subjectRaw
-              : `Re: ${subjectRaw}`;
+          // Reply-To vor From (wie ai.draft_reply) — nicht der erste From-Eintrag.
+          const replyTo = primaryReplyRecipient(ctx.message);
+          const reSubject = replySubject(ctx.message.subject);
           const id = createComposeDraft({
             accountId: ctx.message.account_id,
             subject: reSubject,

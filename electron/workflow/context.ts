@@ -147,8 +147,10 @@ export function createWorkflowContext(input: {
 
 // Single-Pass: kein Re-Scan bereits eingesetzter Werte, Keys mit mehreren
 // Punkten werden exakt aufgelöst. Unbekannte Platzhalter bleiben stehen.
+// Key = alles außer geschweiften Klammern (Variablennamen dürfen Umlaute,
+// Leerzeichen etc. enthalten — logic.set_variable erlaubt freie Namen).
 export function interpolateTemplate(template: string, ctx: WorkflowContext): string {
-  return template.replace(/\{\{\s*([\w.$:-]+)\s*\}\}/g, (match, key: string) => {
+  return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (match, key: string) => {
     if (key === 'text') return ctx.strings.combined_text ?? '';
     if (Object.prototype.hasOwnProperty.call(ctx.strings, key)) {
       return (ctx.strings as Record<string, string>)[key] ?? '';

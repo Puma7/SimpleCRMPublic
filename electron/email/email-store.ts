@@ -2093,6 +2093,9 @@ export function updateComposeDraft(
   }
   // Inhaltliche Änderung entwertet die KI-Freigabe-Empfehlung — der
   // "Wartet auf Freigabe"-Zustand bezieht sich auf den geprüften Stand.
+  // Auch der RFC-3834-Marker fällt: eine vom Menschen umgeschriebene Antwort
+  // ist keine automatische Antwort mehr und darf nicht als solche gestempelt
+  // versendet werden.
   const contentEdited =
     input.subject !== undefined ||
     input.bodyText !== undefined ||
@@ -2101,7 +2104,7 @@ export function updateComposeDraft(
     input.ccJson !== undefined ||
     input.bccJson !== undefined;
   if (contentEdited) {
-    sets.push('approval_state = NULL', 'approval_reason = NULL');
+    sets.push('approval_state = NULL', 'approval_reason = NULL', 'auto_submitted = 0');
   }
   vals.push(messageId);
   getDb()

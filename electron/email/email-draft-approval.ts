@@ -33,28 +33,13 @@ export function clearDraftApproval(messageId: number): void {
     .run(messageId);
 }
 
-export function getDraftApproval(
-  messageId: number,
-): { state: DraftApprovalState; reason: string | null } {
-  const row = getDb()
-    .prepare(`SELECT approval_state, approval_reason FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
-    .get(messageId) as { approval_state: string | null; approval_reason: string | null } | undefined;
-  return {
-    state: row?.approval_state === 'pending' ? 'pending' : null,
-    reason: row?.approval_reason ?? null,
-  };
-}
-
-/** RFC-3834-Marker: dieser Entwurf ist eine automatische Antwort. */
+/**
+ * RFC-3834-Marker: dieser Entwurf ist eine automatische Antwort.
+ * Gelesen wird der Marker direkt von der Message-Row (auto_submitted),
+ * z. B. in email-compose-send — hier gibt es bewusst keinen Getter.
+ */
 export function markDraftAutoSubmitted(messageId: number): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET auto_submitted = 1 WHERE id = ?`)
     .run(messageId);
-}
-
-export function isDraftAutoSubmitted(messageId: number): boolean {
-  const row = getDb()
-    .prepare(`SELECT auto_submitted FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
-    .get(messageId) as { auto_submitted: number } | undefined;
-  return row?.auto_submitted === 1;
 }

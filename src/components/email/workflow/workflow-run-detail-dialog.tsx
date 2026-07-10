@@ -6,8 +6,8 @@ import {
   humanizeWorkflowPort,
   humanizeWorkflowStepMessage,
   stepTone,
-  type WorkflowStepTone,
 } from "@shared/workflow-run-humanize"
+import { TONE_BORDER, TONE_TEXT } from "./run-tone-styles"
 import { resolveRegistryNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import {
@@ -20,7 +20,10 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { toast } from "sonner"
 import { invokeRenderer } from "@/services/transport"
-import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import {
+  getCachedWorkflowNodeCatalogEntry,
+  useWorkflowNodeCatalog,
+} from "./use-workflow-node-catalog"
 
 type StepRow = {
   id: number
@@ -39,18 +42,6 @@ type Props = {
   title?: string
 }
 
-// Farbgebung nach stepTone: ok = Standard, warn = Amber, error = Rose.
-const TONE_BORDER: Record<WorkflowStepTone, string> = {
-  ok: "",
-  warn: "border-amber-500/50",
-  error: "border-rose-500/50",
-}
-
-const TONE_TEXT: Record<WorkflowStepTone, string> = {
-  ok: "text-muted-foreground",
-  warn: "text-amber-700 dark:text-amber-400",
-  error: "text-rose-700 dark:text-rose-400",
-}
 
 export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Props) {
   const { labelByType } = useWorkflowNodeCatalog()
@@ -115,7 +106,12 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
                 {steps.map((s) => {
                   const tone = stepTone(s.status, s.port)
                   const humanMessage = humanizeWorkflowStepMessage(s.message)
-                  const portLabel = humanizeWorkflowPort(s.port)
+                  // Port-Label bevorzugt aus dem Knoten-Schema (z. B. „Erlaubt“/„Prüfen“),
+                  // generische Übersetzung nur als Fallback.
+                  const schemaPortLabel = getCachedWorkflowNodeCatalogEntry(s.node_type)?.ports?.find(
+                    (p) => p.id === s.port,
+                  )?.label
+                  const portLabel = schemaPortLabel ?? humanizeWorkflowPort(s.port)
                   return (
                     <li
                       key={s.id}

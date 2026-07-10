@@ -141,9 +141,13 @@ describe('email.release_outbound (eine Registrierung, beide Richtungen)', () => 
     expect(releaseOutboundHoldForDraft).toHaveBeenCalledWith(9, true, false);
   });
 
-  test('ohne Nachricht im Kontext: Fehler', async () => {
+  test('ohne Nachricht im Kontext: nicht-outbound überspringt, outbound meldet Fehler', async () => {
     const def = defs.get('email.release_outbound')!;
-    await expect(def.execute(ctx(), {}, 'n1')).resolves.toMatchObject({ status: 'error' });
+    // z. B. Schedule-Trigger: gutmütig überspringen statt den Lauf abzubrechen
+    await expect(def.execute(ctx(), {}, 'n1')).resolves.toMatchObject({ status: 'skipped' });
+    await expect(
+      def.execute(ctx({ direction: 'outbound' }), {}, 'n1'),
+    ).resolves.toMatchObject({ status: 'error' });
   });
 });
 

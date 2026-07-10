@@ -19,21 +19,36 @@ import { getBuiltinWorkflowNodeCatalogEntry } from '../../packages/core/src/work
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
  * `interpolate: true` markiert, bekommen {{Platzhalter}} VOR dem execute()
  * aufgelöst — einheitlich für alle Knoten, auf einer Kopie (nie persistiert).
+ * Die Flag-Liste pro Typ ist gecacht — der Katalog-Lookup samt Klon wäre
+ * sonst auf jedem Node-Schritt (inkl. Schleifen) unnötige Arbeit.
  */
+const interpolateFieldKeysByType = new Map<string, readonly string[]>();
+
+function interpolateFieldKeysFor(type: string): readonly string[] {
+  let keys = interpolateFieldKeysByType.get(type);
+  if (!keys) {
+    const entry = getBuiltinWorkflowNodeCatalogEntry(type);
+    keys = (entry?.fields ?? [])
+      .filter((f) => f.interpolate === true)
+      .map((f) => f.key);
+    interpolateFieldKeysByType.set(type, keys);
+  }
+  return keys;
+}
+
 function interpolateSchemaFields(
   type: string,
   config: Record<string, unknown>,
   ctx: WorkflowContext,
 ): Record<string, unknown> {
-  const entry = getBuiltinWorkflowNodeCatalogEntry(type);
-  const fields = entry?.fields?.filter((f) => f.interpolate === true);
-  if (!fields || fields.length === 0) return config;
+  const keys = interpolateFieldKeysFor(type);
+  if (keys.length === 0) return config;
   let copy: Record<string, unknown> | null = null;
-  for (const field of fields) {
-    const value = config[field.key];
+  for (const key of keys) {
+    const value = config[key];
     if (typeof value !== 'string' || !value.includes('{{')) continue;
     if (!copy) copy = { ...config };
-    copy[field.key] = interpolateTemplate(value, ctx);
+    copy[key] = interpolateTemplate(value, ctx);
   }
   return copy ?? config;
 }
@@ -313,6 +328,11 @@ async function walkGraph(
     }
 
     if (gate) {
+      // Bewusst eine harte (nodeType, port)-Liste statt einer Schema-Ableitung
+      // (ports[].kind === 'success'): Das Inbound-Gate ist ein Sicherheits-
+      // mechanismus — welcher Ausgang als "bestandene Bedingung" zählt, soll
+      // sich nicht durch eine Katalog-Text-Änderung verschieben. Bei neuen
+      // Gate-Knoten hier ergänzen (vgl. inbound-gate.ts Allowlist).
       const tripped =
         (node.type === 'condition' && port === 'yes') ||
         (regType === 'email.auto_reply' && port === 'approved') ||

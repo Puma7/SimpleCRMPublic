@@ -823,8 +823,6 @@ function CustomWidgetFields({
           language={nodeType === "code.python" ? "python" : "javascript"}
         />
       )
-    case "jtlOrderContext":
-      return <JtlOrderContextFields config={config} patch={patch} />
     default:
       return null
   }
@@ -850,16 +848,14 @@ function RegistryFields({
   const entry = d.nodeType ? catalogByType.get(d.nodeType) : undefined
   const customWidget =
     entry?.customWidget ??
-    // Fallback solange Schemata unvollständig sind: bekannte Spezialformen.
+    // Fallback, solange der Katalog noch nicht geladen ist: bekannte Spezialformen.
     (d.nodeType === "logic.switch"
       ? "switchCases"
       : d.nodeType === "logic.loop"
         ? "loopBuilder"
         : d.nodeType === "code.javascript" || d.nodeType === "code.python"
           ? "code"
-          : d.nodeType === "jtl.order_context"
-            ? "jtlOrderContext"
-            : undefined)
+          : undefined)
   const schemaDriven = !customWidget && (entry?.fields?.length ?? 0) > 0
   const prerequisites = entry?.docs?.prerequisites ?? []
 
@@ -887,7 +883,11 @@ function RegistryFields({
           </div>
         ) : null}
       </div>
-      {d.nodeType === "email.auto_reply" ? <AutoReplySwitchStatus /> : null}
+      {d.nodeType === "email.auto_reply" || d.nodeType === "email.send_draft" ? (
+        // Beide Knoten hängen am globalen Auto-Antwort-Schalter
+        // (send_draft prüft ihn bei eingehenden Mails erneut).
+        <AutoReplySwitchStatus />
+      ) : null}
       {customWidget ? (
         <CustomWidgetFields
           widget={customWidget}
@@ -938,32 +938,6 @@ function expertJsonError(expertJson: string | undefined): string | null {
   }
 }
 
-function JtlOrderContextFields({ config, patch }: FieldFnProps) {
-  return (
-    <div className="space-y-2 rounded-md border p-3">
-      <div className="space-y-1.5">
-        <Label className="text-xs">SQL (MSSQL, read-only)</Label>
-        <Textarea
-          className="min-h-[100px] font-mono text-xs"
-          value={String(config.query ?? "")}
-          onChange={(e) => patchConfig(patch, config, "query", e.target.value)}
-        />
-        <p className="text-[11px] text-muted-foreground">
-          Platzhalter: {`{{email}}`}, {`{{orderNo}}`}. Die erste Zeile wird auf {`jtl.*`}-Variablen gemappt.
-        </p>
-      </div>
-      <div className="space-y-1.5">
-        <Label className="text-xs">Mapping (optional)</Label>
-        <Textarea
-          className="min-h-[60px] font-mono text-xs"
-          placeholder="cStatus:jtl.status, dDatum:jtl.date"
-          value={String(config.mapping ?? "")}
-          onChange={(e) => patchConfig(patch, config, "mapping", e.target.value)}
-        />
-      </div>
-    </div>
-  )
-}
 
 function ActionFields({ node, patch, replaceData }: ActionFieldProps) {
   const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([])

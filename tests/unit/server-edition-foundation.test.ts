@@ -182,6 +182,7 @@ import {
   createPostgresWorkflowForwardCopyPort,
   createPostgresWorkflowHttpRequestPort,
   listServerWorkflowNodeCatalog,
+  isServerWorkflowNodeTypeSupported,
   createEmailReadReceiptResponderPort,
   createPostgresReadReceiptOutboundReviewPort,
   createScheduledSendJobPort,
@@ -450,12 +451,15 @@ describe('server edition foundation', () => {
     expect(syncInfoStoreSource).toMatch(/\bsetSyncInfo\b/);
   });
 
-  test('server workflow node catalog hides local code and plugin nodes', () => {
-    const builtinTypes = listBuiltinWorkflowNodeCatalog().map((entry) => entry.type);
+  test('server workflow node catalog hides local code, plugin and desktop-only nodes', () => {
+    const builtin = listBuiltinWorkflowNodeCatalog();
+    const builtinTypes = builtin.map((entry) => entry.type);
     expect(builtinTypes).toEqual(expect.arrayContaining([
       'code.javascript',
       'code.python',
       'plugin.custom',
+      'ai.draft_reply',
+      'ai.review_draft',
     ]));
 
     const serverTypes = listServerWorkflowNodeCatalog().map((entry) => entry.type);
@@ -470,6 +474,18 @@ describe('server edition foundation', () => {
       'code.python',
       'plugin.custom',
     ]));
+
+    // Generisch: JEDER runtime:'desktop'-Eintrag des Core-Katalogs fehlt im
+    // Server-Katalog — auch künftige Desktop-only-Nodes ohne Pflege der
+    // SERVER_UNSUPPORTED-Liste (aktuell ai.draft_reply / ai.review_draft).
+    const desktopOnlyTypes = builtin
+      .filter((entry) => entry.runtime === 'desktop')
+      .map((entry) => entry.type);
+    expect(desktopOnlyTypes).toEqual(expect.arrayContaining(['ai.draft_reply', 'ai.review_draft']));
+    for (const type of desktopOnlyTypes) {
+      expect(serverTypes).not.toContain(type);
+      expect(isServerWorkflowNodeTypeSupported(type)).toBe(false);
+    }
   });
 
   test('desktop setup config persists AP-10 deploy-mode choices in userData config.json', async () => {
@@ -26591,6 +26607,8 @@ describe('server edition foundation', () => {
       ['workflow_imap_delete_opt_in', 'yes'],
       ['workflow_http_allowlist', ' api.example.com '],
       ['workflow_spam_score_threshold', '82'],
+      ['auto_reply_enabled', '1'],
+      ['auto_reply_max_per_sender_per_day', '3'],
       ['email_webhook_secret', 'secret-1'],
       ['email_max_attachment_mb', '30'],
       ['mail_security_rspamd_enabled', '1'],
@@ -26678,6 +26696,8 @@ describe('server edition foundation', () => {
       senderWhitelist: '',
       senderBlacklist: '',
       spamScoreThreshold: '82',
+      autoReplyEnabled: true,
+      autoReplyMaxPerSenderPerDay: 3,
     });
 
     const misc = await api.handle({
@@ -26713,6 +26733,8 @@ describe('server edition foundation', () => {
         imapDeleteOptIn: false,
         httpAllowlist: ' hooks.example.com ',
         spamScoreThreshold: '101',
+        autoReplyEnabled: false,
+        autoReplyMaxPerSenderPerDay: 120,
       },
       principal,
     });
@@ -26723,6 +26745,8 @@ describe('server edition foundation', () => {
         workflow_imap_delete_opt_in: 'false',
         workflow_http_allowlist: 'hooks.example.com',
         workflow_spam_score_threshold: '100',
+        auto_reply_enabled: '0',
+        auto_reply_max_per_sender_per_day: '50',
       },
     });
 
@@ -27675,11 +27699,43 @@ describe('server edition foundation', () => {
               execute: 'should-not-leak',
             } as any,
             {
+              type: 'email.tag',
+              label: 'Tag setzen',
+              category: 'email',
+              canvasType: 'action',
+              runtime: 'both',
+              defaultConfig: { tag: '' },
+              fields: [{
+                key: 'tag',
+                type: 'text',
+                label: 'Tag',
+                required: true,
+                resolve: 'should-not-leak',
+              }],
+              ports: [{ id: 'ok', label: 'Weiter', kind: 'success' }],
+              outputs: [{ name: 'tag.value', label: 'Tag', type: 'string' }],
+              docs: { longHelp: 'Setzt einen Tag.', seeAlso: ['email.categorize'] },
+              customWidget: 'tagPicker',
+            } as any,
+            {
               type: 'code.javascript',
               label: 'JavaScript',
               category: 'code',
               canvasType: 'registry',
               defaultConfig: { code: 'should-not-run' },
+            } as any,
+            {
+              type: 'custom.desktop_only',
+              label: 'Desktop-only',
+              category: 'ai',
+              canvasType: 'registry',
+              runtime: 'desktop',
+            } as any,
+            {
+              type: 'ai.draft_reply',
+              label: 'KI-Antwort entwerfen',
+              category: 'ai',
+              canvasType: 'registry',
             } as any,
           ];
         },
@@ -27706,14 +27762,33 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(nodeCatalog.status).toBe(200);
-    expect((nodeCatalog.body as any).data).toEqual([{
-      type: 'logic.stop',
-      label: 'Stopp',
-      category: 'logic',
-      canvasType: 'action',
-    }]);
+    expect((nodeCatalog.body as any).data).toEqual([
+      {
+        type: 'logic.stop',
+        label: 'Stopp',
+        category: 'logic',
+        canvasType: 'action',
+      },
+      {
+        type: 'email.tag',
+        label: 'Tag setzen',
+        category: 'email',
+        canvasType: 'action',
+        runtime: 'both',
+        defaultConfig: { tag: '' },
+        fields: [{ key: 'tag', type: 'text', label: 'Tag', required: true }],
+        ports: [{ id: 'ok', label: 'Weiter', kind: 'success' }],
+        outputs: [{ name: 'tag.value', label: 'Tag', type: 'string' }],
+        docs: { longHelp: 'Setzt einen Tag.', seeAlso: ['email.categorize'] },
+        customWidget: 'tagPicker',
+      },
+    ]);
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('should-not-leak');
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('code.javascript');
+    // runtime:'desktop' am Eintrag selbst UND desktop-only-Typen aus dem
+    // Core-Katalog (ai.draft_reply) werden serverseitig gefiltert.
+    expect(JSON.stringify(nodeCatalog.body)).not.toContain('custom.desktop_only');
+    expect(JSON.stringify(nodeCatalog.body)).not.toContain('ai.draft_reply');
     expect(workflowNodeCatalogCalls).toEqual([{ workspaceId: WORKSPACE_A_ID }]);
 
     const templates = await api.handle({

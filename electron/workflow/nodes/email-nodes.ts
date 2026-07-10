@@ -424,18 +424,9 @@ export function registerEmailNodes(register: Reg): void {
       });
 
       if (!ctx.message) return block('no_message');
-      if (ctx.dryRun) {
-        return confidenceValue >= minConfidence
-          ? {
-              status: 'ok',
-              port: 'approved',
-              variables: {
-                'auto_reply.decision': 'approved',
-                'auto_reply.confidence': confidenceValue,
-              },
-            }
-          : block('low_confidence');
-      }
+      // Alle Guards sind rein lesend — sie laufen bewusst AUCH im Dry-Run.
+      // Sonst zeigte der Test „approved", obwohl der Schalter aus ist
+      // („funktioniert im Test, nicht in echt").
       if (!loadAutoReplyEnabled()) return block('disabled');
       if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
       // Anti-Loop: automatisch erzeugte Mails (RFC 3834, Newsletter) nie
@@ -472,14 +463,17 @@ export function registerEmailNodes(register: Reg): void {
     defaultConfig: { autoSend: true },
     execute: async (ctx, config) => {
       const id = ctx.messageId ?? ctx.outbound?.messageId;
-      if (id == null) return { status: 'error', message: 'Keine Nachricht im Kontext' };
       if (ctx.direction !== 'outbound') {
+        // Gutmütig wie die alte Aktions-Variante: ohne Nachricht (z. B.
+        // Schedule-Trigger) einfach überspringen statt den Lauf abzubrechen.
+        if (id == null) return { status: 'skipped', message: 'Keine Nachricht im Kontext' };
         if (!ctx.dryRun) setOutboundHold(id, false, null);
         const variables: Record<string, string | number | boolean | null> = {
           'email.outbound_hold': false,
         };
         return { status: 'ok', message: 'outbound_hold_cleared', variables };
       }
+      if (id == null) return { status: 'error', message: 'Keine Nachricht im Kontext' };
       const autoSend = config.autoSend === true;
       const r = releaseOutboundHoldForDraft(id, autoSend, ctx.dryRun);
       if (!r.ok) return { status: 'error', message: r.message };
@@ -532,6 +526,10 @@ export function registerEmailNodes(register: Reg): void {
 
       if (ctx.direction === 'inbound' && !ctx.dryRun) {
         // Anti-Loop-Buchhaltung + RFC-3834-Marker für den SMTP-Versand.
+        // Bewusst beim EINPLANEN gezählt (nicht erst bei SMTP-Erfolg):
+        // fail-safe in Richtung "lieber eine Antwort zu wenig als ein Loop" —
+        // auch fehlgeschlagene Zustellversuche verbrauchen das Tageslimit.
+        // Endgültig gescheiterte Sends bleiben als Entwurf sichtbar.
         const sender = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
         const accountId = ctx.message?.account_id;
         if (sender && accountId != null) {

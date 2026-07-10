@@ -1,7 +1,7 @@
 "use client"
 
 import "@xyflow/react/dist/style.css"
-import { useCallback } from "react"
+import { useCallback, useMemo } from "react"
 import {
   ReactFlow,
   Background,
@@ -21,10 +21,14 @@ import {
 import { cn } from "@/lib/utils"
 import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
 import { validateNodeConfig } from "@shared/workflow-config-validate"
+import type { WorkflowNodePortSchema } from "@shared/workflow-node-schema"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { workflowTriggerLabel } from "./trigger-labels"
-import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import {
+  getCachedWorkflowNodeCatalogEntry,
+  useWorkflowNodeCatalog,
+} from "./use-workflow-node-catalog"
 import {
   defaultLabelForConnection,
   switchCaseHandles,
@@ -158,6 +162,35 @@ const PORT_HANDLE_COLORS: Record<string, string> = {
   sky: "!bg-sky-500",
 }
 
+// Fallback, solange der Katalog (IPC) noch nicht geladen ist oder der Fetch
+// fehlschlug: ohne diese Handles würden bestehende Kanten mit benannten
+// sourceHandles (whitelist/yes/approved/…) vom Canvas detachen.
+const FALLBACK_PORTS: Record<string, WorkflowNodePortSchema[]> = {
+  "email.sender_filter": [
+    { id: "whitelist", label: "Vertrauenswürdig", kind: "branch" },
+    { id: "blacklist", label: "Blockiert", kind: "branch" },
+    { id: "default", label: "Unbekannt", kind: "branch" },
+  ],
+  "logic.threshold": [
+    { id: "yes", label: "Ja", kind: "branch" },
+    { id: "no", label: "Nein", kind: "branch" },
+  ],
+  "email.auto_reply": [
+    { id: "approved", label: "Erlaubt", kind: "branch" },
+    { id: "blocked", label: "Blockiert", kind: "branch" },
+  ],
+  "email.auth_check": [
+    { id: "pass", label: "Bestanden", kind: "branch" },
+    { id: "fail", label: "Nicht bestanden", kind: "branch" },
+    { id: "none", label: "Keine Prüfung", kind: "branch" },
+    { id: "default", label: "Sonstiges", kind: "branch" },
+  ],
+  "ai.review_draft": [
+    { id: "send", label: "Senden", kind: "branch" },
+    { id: "hold", label: "Prüfen", kind: "branch" },
+  ],
+}
+
 function RegistryNodeCard({ data, selected }: NodeProps) {
   const d = data as {
     nodeType?: string
@@ -165,18 +198,33 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
     config?: Record<string, unknown>
   }
   const { catalog } = useWorkflowNodeCatalog()
-  const entry = d.nodeType ? catalog.find((e) => e.type === d.nodeType) : undefined
+  // ReactFlow rendert Karten bei jedem Drag-Frame neu — Katalog-Lookup,
+  // Validierung und Port-Ableitung nur bei echten Datenänderungen rechnen.
+  const derived = useMemo(() => {
+    const entry = getCachedWorkflowNodeCatalogEntry(d.nodeType)
+    const isLoop = d.nodeType === "logic.loop"
+    const isSwitch = d.nodeType === "logic.switch"
+    return {
+      entry,
+      isLoop,
+      isSwitch,
+      switchPorts: isSwitch ? switchCaseHandles(d.config) : [],
+      // Ausgänge aus dem deklarativen Schema (auto_reply, auth_check,
+      // sender_filter, threshold, …) — sichtbar beschriftet, damit niemand
+      // „unsichtbare" Ports hat.
+      schemaPorts:
+        !isLoop && !isSwitch
+          ? (entry?.ports ?? (d.nodeType ? FALLBACK_PORTS[d.nodeType] : undefined) ?? [])
+          : [],
+      configIssues: entry ? validateNodeConfig(entry, d.config ?? {}) : [],
+    }
+    // catalog als Dep: nach dem (einmaligen) Laden neu ableiten.
+  }, [catalog, d.nodeType, d.config])
+  const { entry, isLoop, isSwitch, switchPorts, schemaPorts, configIssues } = derived
   const title = d.label?.trim() || entry?.label || d.nodeType || "Erweiterter Knoten"
-  const isLoop = d.nodeType === "logic.loop"
-  const isSwitch = d.nodeType === "logic.switch"
-  const switchPorts = isSwitch ? switchCaseHandles(d.config) : []
-
-  // Ausgänge aus dem deklarativen Schema (auto_reply, auth_check, sender_filter,
-  // threshold, …) — sichtbar beschriftet, damit niemand „unsichtbare" Ports hat.
-  const schemaPorts = !isLoop && !isSwitch ? (entry?.ports ?? []) : []
-
-  const configIssues = entry ? validateNodeConfig(entry, d.config ?? {}) : []
-  const hasError = configIssues.some((i) => i.severity === "error")
+  // Badge bei jedem Problem (auch leere Pflichtfelder = Warnung) — nur echte
+  // Fehler blockieren das Speichern, aber sichtbar sein sollen beide.
+  const hasError = configIssues.length > 0
 
   return (
     <div

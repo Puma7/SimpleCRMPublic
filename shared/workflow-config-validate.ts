@@ -36,11 +36,15 @@ export function validateNodeConfig(
 
     if (isEmpty(value)) {
       if (field.required) {
+        // Bewusst nur WARNUNG: die Laufzeit überspringt Knoten mit leeren
+        // Pflichtfeldern gutmütig (z. B. email.tag → "skipped"), und
+        // Bestands-Workflows mit leeren Feldern müssen speicherbar bleiben.
+        // Blockierende Fehler sind Wertebereichs-/Typ-Verstöße (unten).
         issues.push({
           fieldKey: field.key,
           fieldLabel: field.label,
-          severity: 'error',
-          message: `„${field.label}“ darf nicht leer sein.`,
+          severity: 'warning',
+          message: `„${field.label}“ ist leer — der Knoten wird beim Lauf übersprungen.`,
         });
       }
       continue;
@@ -177,9 +181,12 @@ export function validateWorkflowGraphConfigs(
 
     if (entry.ports && entry.ports.length > 1) {
       const outgoing = edges.filter((e) => e.source === node.id);
+      // Gleiche Akzeptanz wie die UI-Normalisierung: Port-ID, deutsches
+      // Port-Label und deklarierte Synonyme.
       const validIds = new Set(entry.ports.map((p) => p.id.toLowerCase()));
       const synonyms = new Map<string, string>();
       for (const p of entry.ports) {
+        synonyms.set(p.label.toLowerCase(), p.id);
         for (const s of p.synonyms ?? []) synonyms.set(s.toLowerCase(), p.id);
       }
       for (const e of outgoing) {

@@ -279,7 +279,6 @@ export const INTEGRATION_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtensio
   },
 
   'jtl.order_context': {
-    customWidget: 'jtlOrderContext',
     fields: [
       {
         key: 'query',

@@ -4854,6 +4854,8 @@ describe('renderer transport', () => {
           senderWhitelist: '',
           senderBlacklist: '',
           spamScoreThreshold: '82',
+          autoReplyEnabled: true,
+          autoReplyMaxPerSenderPerDay: 3,
         },
       }))
       .mockResolvedValueOnce(jsonResponse({ data: { success: true } }))
@@ -4940,11 +4942,15 @@ describe('renderer transport', () => {
       senderWhitelist: '',
       senderBlacklist: '',
       spamScoreThreshold: '82',
+      autoReplyEnabled: true,
+      autoReplyMaxPerSenderPerDay: 3,
     });
     await expect(transport.invoke(IPCChannels.Email.SetWorkflowAutomationSettings, {
       imapDeleteOptIn: false,
       httpAllowlist: ' hooks.example.com ',
       spamScoreThreshold: '101',
+      autoReplyEnabled: true,
+      autoReplyMaxPerSenderPerDay: 120,
     })).resolves.toEqual({ success: true });
     await expect(transport.invoke(IPCChannels.Email.GetEmailMiscSettings)).resolves.toEqual({
       webhookSecret: 'secret-1',
@@ -5043,6 +5049,8 @@ describe('renderer transport', () => {
           imapDeleteOptIn: false,
           httpAllowlist: 'hooks.example.com',
           spamScoreThreshold: '100',
+          autoReplyEnabled: true,
+          autoReplyMaxPerSenderPerDay: 50,
         }),
       }),
     );

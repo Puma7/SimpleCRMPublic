@@ -22,7 +22,15 @@ const WORKFLOW_AUTOMATION_KEYS = [
   'workflow_sender_whitelist',
   'workflow_sender_blacklist',
   'workflow_spam_score_threshold',
+  // Auto-Reply-Master-Schalter + Anti-Loop-Tageslimit. Gleiche sync_info-Keys
+  // wie die Desktop-Edition (electron/workflow/auto-reply-settings.ts); das
+  // email.auto_reply-Gate in workflow-execution.ts liest auto_reply_enabled.
+  'auto_reply_enabled',
+  'auto_reply_max_per_sender_per_day',
 ] as const;
+
+const AUTO_REPLY_MAX_PER_SENDER_DEFAULT = 1;
+const AUTO_REPLY_MAX_PER_SENDER_LIMIT = 50;
 
 const EMAIL_MISC_KEYS = [
   'email_webhook_secret',
@@ -266,6 +274,13 @@ async function handleWorkflowAutomationSettings(
       senderWhitelist: loaded.values.get('workflow_sender_whitelist') ?? '',
       senderBlacklist: loaded.values.get('workflow_sender_blacklist') ?? '',
       spamScoreThreshold: String(syncInfoBoundedInt(loaded.values.get('workflow_spam_score_threshold'), 70, 1, 100)),
+      autoReplyEnabled: syncInfoFlag(loaded.values.get('auto_reply_enabled'), false),
+      autoReplyMaxPerSenderPerDay: syncInfoBoundedInt(
+        loaded.values.get('auto_reply_max_per_sender_per_day'),
+        AUTO_REPLY_MAX_PER_SENDER_DEFAULT,
+        1,
+        AUTO_REPLY_MAX_PER_SENDER_LIMIT,
+      ),
     });
   }
 
@@ -663,7 +678,15 @@ async function saveSyncInfo(
 function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadParseResult {
   const payload = settingsPayloadObject(body, 'invalid_workflow_automation_settings_payload', 'Workflow automation settings payload muss ein JSON-Objekt sein');
   if (!payload.ok) return payload;
-  const allowed = new Set(['imapDeleteOptIn', 'httpAllowlist', 'senderWhitelist', 'senderBlacklist', 'spamScoreThreshold']);
+  const allowed = new Set([
+    'imapDeleteOptIn',
+    'httpAllowlist',
+    'senderWhitelist',
+    'senderBlacklist',
+    'spamScoreThreshold',
+    'autoReplyEnabled',
+    'autoReplyMaxPerSenderPerDay',
+  ]);
   const errors = unknownFieldErrors(payload.value, allowed);
   const values: Record<string, string | null> = {};
 
@@ -671,6 +694,27 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
     const value = payload.value.imapDeleteOptIn;
     if (typeof value !== 'boolean') errors.push({ field: 'imapDeleteOptIn', message: 'imapDeleteOptIn muss ein Boolean sein' });
     else values.workflow_imap_delete_opt_in = value ? 'true' : 'false';
+  }
+  if ('autoReplyEnabled' in payload.value) {
+    const value = payload.value.autoReplyEnabled;
+    if (typeof value !== 'boolean') errors.push({ field: 'autoReplyEnabled', message: 'autoReplyEnabled muss ein Boolean sein' });
+    else values.auto_reply_enabled = value ? '1' : '0';
+  }
+  if ('autoReplyMaxPerSenderPerDay' in payload.value) {
+    const normalized = normalizedBoundedNumberText(
+      payload.value.autoReplyMaxPerSenderPerDay,
+      1,
+      AUTO_REPLY_MAX_PER_SENDER_LIMIT,
+      true,
+    );
+    if (normalized === null) {
+      errors.push({
+        field: 'autoReplyMaxPerSenderPerDay',
+        message: `autoReplyMaxPerSenderPerDay muss eine Zahl zwischen 1 und ${AUTO_REPLY_MAX_PER_SENDER_LIMIT} sein`,
+      });
+    } else {
+      values.auto_reply_max_per_sender_per_day = normalized;
+    }
   }
   if ('httpAllowlist' in payload.value) {
     addTrimmedTextValue(values, errors, payload.value.httpAllowlist, 'httpAllowlist', 'workflow_http_allowlist', 10000);

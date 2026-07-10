@@ -20,6 +20,20 @@ jest.mock('../../electron/workflow/run-steps', () => ({
   insertWorkflowRunStep: jest.fn(),
 }));
 
+// Das Auto-Antwort-Gate prüft seine (rein lesenden) Guards auch im Dry-Run —
+// Schalter an, kein Rate-Limit, damit der Confidence-Pfad testbar bleibt.
+jest.mock('../../electron/sqlite-service', () => ({
+  getSyncInfo: jest.fn((key: string) => (key === 'auto_reply_enabled' ? '1' : null)),
+  setSyncInfo: jest.fn(),
+  getDb: jest.fn(),
+  getCustomerById: jest.fn(() => null),
+}));
+
+jest.mock('../../electron/workflow/auto-reply-guard', () => ({
+  isAutoReplyRateLimited: jest.fn(() => false),
+  markAutoReplySent: jest.fn(),
+}));
+
 function collect(registerNodes: (register: (def: RegisteredWorkflowNode) => void) => void) {
   const defs = new Map<string, RegisteredWorkflowNode>();
   registerNodes((def) => defs.set(def.type, def));

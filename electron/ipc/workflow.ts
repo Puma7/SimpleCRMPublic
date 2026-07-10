@@ -275,9 +275,11 @@ export function registerWorkflowHandlers(options: {
         }
         const { clearDraftApproval } = await import('../email/email-draft-approval');
         const { prepareDraftForWorkflowSend } = await import('../workflow/draft-send-prep');
-        clearDraftApproval(draftId);
+        // Erst einplanen, dann Freigabe-Zustand löschen: schlägt das Einplanen
+        // fehl, bleiben Banner und KI-Begründung erhalten (nichts wurde gesendet).
         const prep = prepareDraftForWorkflowSend(draftId, { runOutboundReview: false });
         if (!prep.ok) return { success: false as const, error: prep.message };
+        clearDraftApproval(draftId);
         return { success: true as const };
       },
       { logger },

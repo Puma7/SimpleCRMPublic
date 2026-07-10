@@ -9,11 +9,21 @@ jest.mock('../../electron/sqlite-service', () => ({
 
 import {
   clearDraftApproval,
-  getDraftApproval,
-  isDraftAutoSubmitted,
   markDraftAutoSubmitted,
   setDraftApprovalPending,
 } from '../../electron/email/email-draft-approval';
+
+type Row = {
+  approval_state: string | null;
+  approval_reason: string | null;
+  auto_submitted: number;
+};
+
+function row(id: number): Row {
+  return db
+    .prepare('SELECT approval_state, approval_reason, auto_submitted FROM email_messages WHERE id = ?')
+    .get(id) as Row;
+}
 
 beforeAll(() => {
   db.exec(`
@@ -34,32 +44,26 @@ beforeEach(() => {
 describe('email-draft-approval', () => {
   test('setDraftApprovalPending setzt Zustand und Grund (Grund gekappt auf 500 Zeichen)', () => {
     setDraftApprovalPending(42, 'Kulanz-Zusage bitte prüfen');
-    expect(getDraftApproval(42)).toEqual({
-      state: 'pending',
-      reason: 'Kulanz-Zusage bitte prüfen',
+    expect(row(42)).toMatchObject({
+      approval_state: 'pending',
+      approval_reason: 'Kulanz-Zusage bitte prüfen',
     });
     // Nachbar-Datensatz unberührt
-    expect(getDraftApproval(43)).toEqual({ state: null, reason: null });
+    expect(row(43)).toMatchObject({ approval_state: null, approval_reason: null });
 
     setDraftApprovalPending(42, 'x'.repeat(600));
-    expect(getDraftApproval(42).reason).toHaveLength(500);
+    expect(row(42).approval_reason).toHaveLength(500);
   });
 
   test('clearDraftApproval räumt Zustand und Grund auf', () => {
     setDraftApprovalPending(42, 'Grund');
     clearDraftApproval(42);
-    expect(getDraftApproval(42)).toEqual({ state: null, reason: null });
+    expect(row(42)).toMatchObject({ approval_state: null, approval_reason: null });
   });
 
-  test('getDraftApproval für unbekannte Nachricht → neutral', () => {
-    expect(getDraftApproval(999)).toEqual({ state: null, reason: null });
-  });
-
-  test('markDraftAutoSubmitted / isDraftAutoSubmitted (RFC-3834-Marker)', () => {
-    expect(isDraftAutoSubmitted(42)).toBe(false);
+  test('markDraftAutoSubmitted setzt den RFC-3834-Marker nur für den Ziel-Entwurf', () => {
     markDraftAutoSubmitted(42);
-    expect(isDraftAutoSubmitted(42)).toBe(true);
-    expect(isDraftAutoSubmitted(43)).toBe(false);
-    expect(isDraftAutoSubmitted(999)).toBe(false);
+    expect(row(42).auto_submitted).toBe(1);
+    expect(row(43).auto_submitted).toBe(0);
   });
 });

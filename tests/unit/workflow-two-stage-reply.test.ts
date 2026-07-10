@@ -132,6 +132,28 @@ describe('parseDraftReviewResponse (fail-safe Richtung Mensch)', () => {
     expect(r.answered).toBe(answered);
     expect(r.parsed).toBe(parsed);
   });
+
+  test('zitierte Format-Anweisung vor der echten Antwort kippt NICHT auf send (letzter Treffer, zeilen-verankert)', () => {
+    const echo = [
+      'Antworte NUR in diesem Format:',
+      'STATUS: SEND oder HOLD',
+      'ANSWERED: yes oder no',
+      '',
+      'STATUS: HOLD',
+      'ANSWERED: no',
+      'REASON: Preiszusage gehört vor einen Menschen',
+    ].join('\n');
+    const r = parseDraftReviewResponse(echo);
+    expect(r.verdict).toBe('hold');
+    expect(r.answered).toBe(false);
+    expect(r.reason).toBe('Preiszusage gehört vor einen Menschen');
+  });
+
+  test('Substring wie "Bestellstatus: senden" im Fließtext zählt nicht als STATUS-Zeile', () => {
+    const r = parseDraftReviewResponse('Der Bestellstatus: senden wir morgen raus.');
+    expect(r.verdict).toBe('hold');
+    expect(r.parsed).toBe(false);
+  });
 });
 
 describe('email.auto_reply Gate — Anti-Loop', () => {
