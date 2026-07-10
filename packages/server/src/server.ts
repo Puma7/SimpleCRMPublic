@@ -139,6 +139,7 @@ import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import { createPostgresServerImapSentCopyAppenderPort } from './mail-imap-append';
 import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt-responder';
 import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
+import { startAttachmentTextBackfillTicker } from './mail-attachment-text';
 import { createPostgresMailSyncJobPort } from './mail-sync';
 import { createPostgresMailSyncPostProcessor } from './mail-sync-post-process';
 import {
@@ -249,6 +250,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let postgresJobQueueWorker: PostgresJobQueueWorkerRuntime | undefined;
   let eventNotifications: PostgresServerEventNotificationChannel | undefined;
   let scheduledSendTicker: ReturnType<typeof startScheduledSendTicker> | undefined;
+  let attachmentTextTicker: ReturnType<typeof startAttachmentTextBackfillTicker> | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
     accessTokenSigner,
@@ -355,9 +357,16 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         composeSender: ports.emailComposeSender,
       });
     }
+    if (db) {
+      attachmentTextTicker = startAttachmentTextBackfillTicker({
+        db,
+        attachmentsRoot,
+      });
+    }
     await app.listen({ host, port });
   } catch (error) {
     scheduledSendTicker?.stop();
+    attachmentTextTicker?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }

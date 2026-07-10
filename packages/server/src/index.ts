@@ -25,6 +25,7 @@ export * from './mail-gdpr-export';
 export * from './mail-imap-append';
 export * from './mail-security-check';
 export * from './mail-read-receipt-responder';
+export * from './mail-attachment-text';
 export * from './mail-scheduled-send';
 export * from './mail-sync';
 export * from './mail-sync-post-process';
