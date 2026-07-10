@@ -210,6 +210,174 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
     },
   },
 
+  'ai.draft_reply': {
+    fields: [
+      {
+        key: 'systemPrompt',
+        type: 'textarea',
+        label: 'Auftrag an die KI (System-Prompt)',
+        help:
+          'Beschreibt, WIE die KI antworten soll: Rolle, Tonfall, was erlaubt ist und was nicht. ' +
+          'Anrede und Grußformel/Signatur werden automatisch ergänzt — die KI soll nur den Antworttext schreiben.',
+        example:
+          'Du bist der Kundenservice von Muster GmbH. Antworte freundlich und knapp. Bei Retouren immer auf das Retourenportal verweisen.',
+        required: true,
+        interpolate: true,
+      },
+      {
+        key: 'knowledgeBaseId',
+        type: 'knowledgeBase',
+        label: 'Wissensbasis',
+        help:
+          'Aus dieser Wissensbasis bekommt die KI passende Auszüge zur Kundenmail (FAQ, Richtlinien, Produktinfos). ' +
+          '„Automatisch" nimmt die für eingehende Mails hinterlegten Wissensbasen.',
+      },
+      {
+        key: 'profileId',
+        type: 'aiProfile',
+        label: 'KI-Profil (Anbieter & Modell)',
+        help: 'Welches KI-Modell den Entwurf schreibt. Leer = Standard-Profil aus den Einstellungen.',
+      },
+      {
+        key: 'includeCanned',
+        type: 'boolean',
+        label: 'Textbausteine als Formulierungshilfe mitgeben',
+        help:
+          'Gibt der KI bis zu 5 Textbausteine als Vorlage mit — sie übernimmt bewährte Formulierungen, ' +
+          'statt frei zu erfinden.',
+      },
+      {
+        key: 'greeting',
+        type: 'select',
+        label: 'Anrede',
+        help: 'Automatisch: „Sehr geehrte/r …" bzw. „Guten Tag …" aus Kundendaten oder Absender-Namen.',
+        options: [
+          { value: 'auto', label: 'Automatisch ergänzen (empfohlen)' },
+          { value: 'none', label: 'Keine Anrede einfügen' },
+        ],
+      },
+      {
+        key: 'signature',
+        type: 'select',
+        label: 'Grußformel / Signatur',
+        help: 'Hängt die Signatur des E-Mail-Kontos an (Einstellungen → E-Mail → Signaturen).',
+        options: [
+          { value: 'account', label: 'Konto-Signatur anhängen (empfohlen)' },
+          { value: 'none', label: 'Keine Signatur' },
+        ],
+      },
+    ],
+    outputs: [
+      {
+        name: 'draft.id',
+        label: 'Entwurfs-Nummer',
+        description: 'Der fertig adressierte Antwort-Entwurf — z. B. für „KI-Gegenprüfung" und „Entwurf versenden".',
+        example: '123',
+        type: 'number',
+      },
+      { name: 'ai.draft.text', label: 'Entwurfstext (mit Anrede/Signatur)', type: 'string' },
+      { name: 'ai.draft.subject', label: 'Betreff des Entwurfs', example: 'Re: Frage zu Bestellung 1234', type: 'string' },
+      { name: 'ai.draft.sources', label: 'Verwendete Wissensbasis-Quellen', type: 'string' },
+    ],
+    docs: {
+      longHelp:
+        'Agent 1 der Zwei-Stufen-KI-Antwort: schreibt mit deinem Auftrag (System-Prompt) und der Wissensbasis ' +
+        'eine vollständige Antwort, ergänzt Anrede und Konto-Signatur und legt einen korrekt adressierten ' +
+        'Antwort-Entwurf mit Thread-Bezug an. Der Entwurf wird als automatische Antwort markiert (RFC 3834). ' +
+        'Versendet wird hier noch nichts — danach „KI-Gegenprüfung (Entwurf)" und „Entwurf versenden" anschließen.',
+      prerequisites: [
+        'Ein KI-Profil mit API-Schlüssel (Einstellungen → E-Mail → KI).',
+        'Empfohlen: eine Wissensbasis mit FAQ/Richtlinien, damit die Antworten fachlich stimmen.',
+      ],
+      seeAlso: ['ai.review_draft', 'email.send_draft', 'email.auto_reply', 'ai.pick_canned'],
+    },
+  },
+
+  'ai.review_draft': {
+    fields: [
+      {
+        key: 'draftIdVariable',
+        type: 'variableRef',
+        label: 'Variable mit der Entwurfs-Nummer',
+        help: 'Standard draft.id — wird von „KI-Antwort entwerfen", „KI: Textbaustein wählen" oder „Antwort-Entwurf erstellen" gesetzt.',
+        example: 'draft.id',
+        placeholder: 'draft.id',
+        required: true,
+      },
+      {
+        key: 'reviewPrompt',
+        type: 'textarea',
+        label: 'Zusätzliche Prüf-Kriterien (optional)',
+        help:
+          'Eigene Regeln für die Gegenprüfung — z. B. „Keine Rabatte über 10 % zusagen" oder ' +
+          '„Bei Widerruf immer an einen Menschen". Die Grundprüfung (Frage beantwortet? Ton ok? nichts erfunden?) läuft immer.',
+        example: 'Preiszusagen und Liefertermine dürfen nie automatisch rausgehen.',
+        interpolate: true,
+      },
+      {
+        key: 'profileId',
+        type: 'aiProfile',
+        label: 'KI-Profil (Anbieter & Modell)',
+        help:
+          'Welches Modell gegenliest. Tipp: hier ein anderes (gern stärkeres) Modell wählen als beim Entwerfen — ' +
+          'vier Augen sehen mehr als zwei.',
+      },
+    ],
+    ports: [
+      {
+        id: 'send',
+        label: 'Senden',
+        description: 'Die Gegenlese-KI hält den Entwurf für versandfertig — hier „Entwurf versenden" anschließen.',
+        kind: 'success',
+        color: 'emerald',
+        synonyms: ['senden'],
+      },
+      {
+        id: 'hold',
+        label: 'Prüfen',
+        description:
+          'Der Entwurf bleibt liegen und wartet im Posteingang auf menschliche Freigabe („Wartet auf Freigabe"-Banner). ' +
+          'Hier z. B. einen Tag setzen oder eine Aufgabe anlegen.',
+        kind: 'branch',
+        color: 'amber',
+        synonyms: ['halten', 'prüfen'],
+      },
+    ],
+    outputs: [
+      {
+        name: 'ai.review.verdict',
+        label: 'Prüf-Ergebnis',
+        description: '"send" oder "hold".',
+        example: 'hold',
+        type: 'string',
+      },
+      {
+        name: 'ai.review.answered',
+        label: 'Kundenfrage beantwortet?',
+        type: 'boolean',
+      },
+      {
+        name: 'ai.review.reason',
+        label: 'Begründung der Prüf-KI',
+        example: 'Liefertermin-Zusage ohne Beleg — bitte manuell prüfen.',
+        type: 'string',
+      },
+    ],
+    docs: {
+      longHelp:
+        'Agent 2 der Zwei-Stufen-KI-Antwort: liest den Entwurf gegen die ursprüngliche Kundenmail gegen ' +
+        '(Frage vollständig beantwortet? Ton professionell? nichts erfunden?) und entscheidet. ' +
+        '„Senden" führt zum Versand-Zweig; „Prüfen" markiert den Entwurf neutral als „Wartet auf Freigabe" — ' +
+        'ein Mensch entscheidet dann im Posteingang per Klick („Jetzt senden" / „Als Entwurf behalten"). ' +
+        'Fail-safe: bei unklarer KI-Antwort oder KI-Fehler geht es IMMER auf „Prüfen", nie auf „Senden".',
+      prerequisites: [
+        'Ein vorheriger Knoten muss einen Entwurf anlegen (draft.id) — z. B. „KI-Antwort entwerfen".',
+        'Ein KI-Profil mit API-Schlüssel.',
+      ],
+      seeAlso: ['ai.draft_reply', 'email.send_draft', 'email.auto_reply'],
+    },
+  },
+
   'ai.classify': {
     fields: [
       {

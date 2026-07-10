@@ -438,6 +438,12 @@ export function registerEmailNodes(register: Reg): void {
       }
       if (!loadAutoReplyEnabled()) return block('disabled');
       if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+      // Anti-Loop: automatisch erzeugte Mails (RFC 3834, Newsletter) nie
+      // beantworten; Tageslimit pro Absender (Dedup-Tabelle).
+      const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
+      if (isUnsafeAutoReplyTarget(ctx.message.raw_headers)) return block('automated_sender');
+      const { isAutoReplyRateLimited } = await import('../auto-reply-guard');
+      if (isAutoReplyRateLimited(ctx.message.account_id, sender)) return block('rate_limited');
       if (confidenceValue < minConfidence) return block('low_confidence');
 
       return {
@@ -523,6 +529,18 @@ export function registerEmailNodes(register: Reg): void {
         dryRun: ctx.dryRun,
       });
       if (!prep.ok) return { status: 'error', message: prep.message };
+
+      if (ctx.direction === 'inbound' && !ctx.dryRun) {
+        // Anti-Loop-Buchhaltung + RFC-3834-Marker für den SMTP-Versand.
+        const sender = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
+        const accountId = ctx.message?.account_id;
+        if (sender && accountId != null) {
+          const { markAutoReplySent } = await import('../auto-reply-guard');
+          markAutoReplySent(accountId, sender, ctx.messageId);
+        }
+        const { markDraftAutoSubmitted } = await import('../../email/email-draft-approval');
+        markDraftAutoSubmitted(draftId);
+      }
 
       return {
         status: 'ok',

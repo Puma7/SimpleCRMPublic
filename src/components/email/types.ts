@@ -102,6 +102,9 @@ export type EmailMessage = {
   archived?: number
   outbound_hold?: number
   outbound_block_reason?: string | null
+  /** KI-Gegenlese: 'pending' = Entwurf wartet auf menschliche Freigabe. */
+  approval_state?: string | null
+  approval_reason?: string | null
   ticket_code?: string | null
   thread_id?: string | null
   customer_id?: number | null

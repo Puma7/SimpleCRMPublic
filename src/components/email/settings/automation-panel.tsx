@@ -18,6 +18,7 @@ import {
   subscribeServerEvents,
 } from "@/services/transport"
 import { AutomationMiscSettingsSection } from "./automation-misc-settings-section"
+import { AutoReplySettingsSection } from "./auto-reply-settings-section"
 import { hasLocalIpc, invokeIpc } from "../types"
 
 type ServerAutomationApiKey = {
@@ -39,6 +40,8 @@ export function AutomationPanel() {
   const serverClientMode = rendererTransport.kind === "http"
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)
+  const [autoReplyMaxPerDay, setAutoReplyMaxPerDay] = useState("1")
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
   const [apiEnabled, setApiEnabled] = useState(false)
   const [apiPort, setApiPort] = useState("3847")
@@ -62,9 +65,13 @@ export function AutomationPanel() {
       const wf = await invokeRenderer(IPCChannels.Email.GetWorkflowAutomationSettings) as {
         imapDeleteOptIn: boolean
         httpAllowlist: string
+        autoReplyEnabled: boolean
+        autoReplyMaxPerSenderPerDay: number
       }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
       setHttpAllowlist(wf.httpAllowlist)
+      setAutoReplyEnabled(wf.autoReplyEnabled === true)
+      setAutoReplyMaxPerDay(String(wf.autoReplyMaxPerSenderPerDay ?? 1))
 
       if (serverClientMode) {
         const api = await invokeRenderer(
@@ -107,10 +114,14 @@ export function AutomationPanel() {
 
   const saveWorkflowOpts = async () => {
     if (!serverClientMode && !hasLocalIpc()) return
+    const maxPerDay = Math.min(50, Math.max(1, parseInt(autoReplyMaxPerDay, 10) || 1))
     await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, {
       imapDeleteOptIn,
       httpAllowlist,
+      autoReplyEnabled,
+      autoReplyMaxPerSenderPerDay: maxPerDay,
     })
+    setAutoReplyMaxPerDay(String(maxPerDay))
     toast.success("Workflow-Optionen gespeichert.")
   }
 
@@ -421,6 +432,14 @@ export function AutomationPanel() {
             <strong>Einstellungen → Mail-Sicherheit</strong>.
           </p>
         </div>
+
+        <AutoReplySettingsSection
+          enabled={autoReplyEnabled}
+          onEnabledChange={setAutoReplyEnabled}
+          maxPerDay={autoReplyMaxPerDay}
+          onMaxPerDayChange={setAutoReplyMaxPerDay}
+          disabled={loading}
+        />
 
         <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
           <div className="space-y-1">

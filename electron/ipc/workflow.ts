@@ -198,12 +198,16 @@ export function registerWorkflowHandlers(options: {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetWorkflowAutomationSettings, async () => {
+      const { loadAutoReplySettings } = await import('../workflow/auto-reply-settings');
+      const autoReply = loadAutoReplySettings();
       return {
         imapDeleteOptIn: isImapDeleteOptInEnabled(),
         httpAllowlist: readSyncInfo('workflow_http_allowlist') ?? '',
         senderWhitelist: readSyncInfo('workflow_sender_whitelist') ?? '',
         senderBlacklist: readSyncInfo('workflow_sender_blacklist') ?? '',
         spamScoreThreshold: readSyncInfo('workflow_spam_score_threshold') ?? '70',
+        autoReplyEnabled: autoReply.enabled,
+        autoReplyMaxPerSenderPerDay: autoReply.maxPerSenderPerDay,
       };
     }, { logger }),
   );
@@ -219,10 +223,26 @@ export function registerWorkflowHandlers(options: {
           senderWhitelist?: string;
           senderBlacklist?: string;
           spamScoreThreshold?: string;
+          autoReplyEnabled?: boolean;
+          autoReplyMaxPerSenderPerDay?: number;
         },
       ) => {
         if (payload.imapDeleteOptIn !== undefined) {
           setImapDeleteOptIn(payload.imapDeleteOptIn);
+        }
+        if (
+          payload.autoReplyEnabled !== undefined ||
+          payload.autoReplyMaxPerSenderPerDay !== undefined
+        ) {
+          const { saveAutoReplySettings } = await import('../workflow/auto-reply-settings');
+          saveAutoReplySettings({
+            ...(payload.autoReplyEnabled === undefined
+              ? {}
+              : { enabled: payload.autoReplyEnabled }),
+            ...(payload.autoReplyMaxPerSenderPerDay === undefined
+              ? {}
+              : { maxPerSenderPerDay: payload.autoReplyMaxPerSenderPerDay }),
+          });
         }
         if (payload.httpAllowlist !== undefined) {
           writeSyncInfo('workflow_http_allowlist', payload.httpAllowlist.trim());
@@ -237,6 +257,43 @@ export function registerWorkflowHandlers(options: {
           const t = Math.max(1, Math.min(100, Math.floor(Number(payload.spamScoreThreshold) || 70)));
           writeSyncInfo('workflow_spam_score_threshold', String(t));
         }
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  // Zwei-Stufen-KI-Antwort: menschliche Entscheidung über "Wartet auf
+  // Freigabe"-Entwürfe (gesetzt von ai.review_draft).
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ApproveDraftSend,
+      async (_event: IpcMainInvokeEvent, payload: { draftId: number }) => {
+        const draftId = Number(payload?.draftId);
+        if (!Number.isFinite(draftId) || draftId <= 0) {
+          return { success: false as const, error: 'Ungültige Entwurfs-ID' };
+        }
+        const { clearDraftApproval } = await import('../email/email-draft-approval');
+        const { prepareDraftForWorkflowSend } = await import('../workflow/draft-send-prep');
+        clearDraftApproval(draftId);
+        const prep = prepareDraftForWorkflowSend(draftId, { runOutboundReview: false });
+        if (!prep.ok) return { success: false as const, error: prep.message };
+        return { success: true as const };
+      },
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.DismissDraftApproval,
+      async (_event: IpcMainInvokeEvent, payload: { draftId: number }) => {
+        const draftId = Number(payload?.draftId);
+        if (!Number.isFinite(draftId) || draftId <= 0) {
+          return { success: false as const, error: 'Ungültige Entwurfs-ID' };
+        }
+        const { clearDraftApproval } = await import('../email/email-draft-approval');
+        clearDraftApproval(draftId);
         return { success: true as const };
       },
       { logger },

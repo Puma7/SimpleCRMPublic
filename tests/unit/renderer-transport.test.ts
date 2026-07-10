@@ -8130,6 +8130,11 @@ describe('renderer transport', () => {
       IPCChannels.Email.ImportWorkflowBundleFromFile,
       IPCChannels.Email.ExportKnowledgeBaseDocument,
       IPCChannels.Email.ImportKnowledgeFile,
+
+      // Zwei-Stufen-KI-Antwort (ai.draft_reply/ai.review_draft) ist Desktop-only;
+      // die Server-Edition implementiert die Knoten nicht, daher kein HTTP-Mapping.
+      IPCChannels.Email.ApproveDraftSend,
+      IPCChannels.Email.DismissDraftApproval,
     ]);
     const missing = AllowedInvokeChannels
       .filter((channel) => !hasHttpInvocation(channel))

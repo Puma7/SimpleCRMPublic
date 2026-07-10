@@ -588,15 +588,15 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   },
   {
     id: 'inbound-ai-auto-reply',
-    name: 'Eingehend: KI antwortet vollautomatisch (mit Gate)',
+    name: 'Eingehend: KI antwortet mit Textbaustein (mit Gate)',
     description:
-      'Vollautomatischer Antwort-Loop: KI klassifiziert, Auto-Antwort-Gate prüft Schalter + Confidence + No-Reply-Schutz, KI wählt einen passenden Textbaustein und legt einen adressierten Entwurf an (draft.id), der direkt versendet wird. Für KI-prüft-KI am send-Knoten runOutboundReview=true setzen.',
+      'KI klassifiziert, das Auto-Antwort-Gate prüft (Schalter, Absender, Sicherheit, Anti-Loop), die KI wählt einen Textbaustein und der Entwurf wird versendet. Blockierte Mails bekommen den Tag ki-manuell. Voraussetzungen: Auto-Antwort-Schalter (Einstellungen → Automatisierung) AN, ein KI-Profil mit API-Schlüssel, mindestens ein Textbaustein.',
     trigger: 'inbound',
     graph: {
       version: 1,
       nodes: [
         { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
-        // (1) Klassifizieren + Confidence setzen.
+        // (1) Klassifizieren + Sicherheit (0–100) setzen.
         {
           id: 'classify',
           type: 'registry',
@@ -605,7 +605,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { labels: 'Frage,Bestellstatus,Reklamation,Sonstiges', contextMode: 'metadata' },
           },
         },
-        // (2) Auto-Antwort-Gate: nur bei hoher Confidence + kein no-reply-Absender + Schalter aktiv.
+        // (2) Auto-Antwort-Gate: Schalter + Absender-Schutz + Anti-Loop + Mindest-Sicherheit.
         {
           id: 'gate',
           type: 'registry',
@@ -614,16 +614,14 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { confidenceVar: 'ai.class_confidence', minConfidence: 80 },
           },
         },
-        // (3) KI wählt einen Textbaustein und LEGT EINEN ENTWURF AN — setzt
-        //     draft.id als Variable (ai.reply_suggestion macht das NICHT,
-        //     daher hier pick_canned).
+        // (3a) approved: KI wählt einen Textbaustein und legt einen adressierten
+        //      Entwurf an (setzt draft.id).
         {
           id: 'compose',
           type: 'registry',
           data: { nodeType: 'ai.pick_canned', config: { createDraft: true } },
         },
-        // (4) Entwurf vollautomatisch versenden — Default ohne erneute Prüfung
-        //     (das Gate hat schon gefiltert).
+        // (4) Entwurf versenden (das Gate hat schon gefiltert).
         {
           id: 'send',
           type: 'registry',
@@ -632,13 +630,114 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { draftIdVariable: 'draft.id', runOutboundReview: false },
           },
         },
+        // (3b) blocked: Mail sichtbar machen, damit sie nicht untergeht.
+        {
+          id: 'tag_manual',
+          type: 'registry',
+          data: { nodeType: 'email.tag', config: { tag: 'ki-manuell' } },
+        },
       ],
       edges: [
         { id: 'e0', source: 't1', target: 'classify' },
         { id: 'e1', source: 'classify', target: 'gate' },
-        // Gate hat zwei Ports: 'approved' und 'blocked'. Wir verzweigen nur auf approved.
         { id: 'e2', source: 'gate', target: 'compose', label: 'approved' },
         { id: 'e3', source: 'compose', target: 'send' },
+        { id: 'e4', source: 'gate', target: 'tag_manual', label: 'blocked' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
+    id: 'inbound-ai-two-stage-reply',
+    name: 'Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)',
+    description:
+      'Zwei-Stufen-Antwort: Agent 1 entwirft mit Wissensbasis eine Antwort (Anrede + Signatur automatisch), Agent 2 liest gegen und entscheidet — nur bei „senden" geht die Mail raus, sonst wartet der Entwurf im Posteingang auf menschliche Freigabe. Voraussetzungen: Auto-Antwort-Schalter AN, KI-Profil mit API-Schlüssel; Wissensbasis empfohlen.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        // (1) Klassifizieren — liefert die Sicherheits-Variable fürs Gate.
+        {
+          id: 'classify',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.classify',
+            config: { labels: 'Frage,Bestellstatus,Reklamation,Sonstiges', contextMode: 'metadata' },
+          },
+        },
+        // (2) Gate: Schalter + No-Reply-/Automaten-Schutz + Tageslimit + Sicherheit.
+        {
+          id: 'gate',
+          type: 'registry',
+          data: {
+            nodeType: 'email.auto_reply',
+            config: { confidenceVar: 'ai.class_confidence', minConfidence: 80 },
+          },
+        },
+        // (3) Agent 1: Antwort entwerfen (Wissensbasis automatisch, Anrede + Signatur).
+        {
+          id: 'draft',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.draft_reply',
+            config: {
+              systemPrompt:
+                'Du bist ein freundlicher Kundenservice-Mitarbeiter. Beantworte die Kundenmail vollständig, korrekt und auf Deutsch. Nutze die Wissensbasis, wenn vorhanden. Schreibe NUR den Antworttext ohne Anrede und ohne Grußformel — beide werden automatisch ergänzt.',
+              knowledgeBaseId: null,
+              includeCanned: true,
+              greeting: 'auto',
+              signature: 'account',
+            },
+          },
+        },
+        // (4) Agent 2: Gegenprüfung — im Zweifel wartet der Entwurf auf einen Menschen.
+        {
+          id: 'review',
+          type: 'registry',
+          data: {
+            nodeType: 'ai.review_draft',
+            config: { draftIdVariable: 'draft.id', reviewPrompt: '' },
+          },
+        },
+        // (5a) send: Entwurf versenden.
+        {
+          id: 'send',
+          type: 'registry',
+          data: {
+            nodeType: 'email.send_draft',
+            config: { draftIdVariable: 'draft.id', runOutboundReview: false },
+          },
+        },
+        // (5b) hold: sichtbar machen — Entwurf wartet im Posteingang auf Freigabe.
+        {
+          id: 'tag_review',
+          type: 'registry',
+          data: { nodeType: 'email.tag', config: { tag: 'ki-freigabe' } },
+        },
+        {
+          id: 'task_review',
+          type: 'registry',
+          data: {
+            nodeType: 'crm.create_task',
+            config: { title: 'KI-Entwurf prüfen: {{subject}}', priority: 'medium', daysUntilDue: 1 },
+          },
+        },
+        // (3b) blocked: nichts senden, aber die Mail markieren.
+        {
+          id: 'tag_manual',
+          type: 'registry',
+          data: { nodeType: 'email.tag', config: { tag: 'ki-manuell' } },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'classify' },
+        { id: 'e1', source: 'classify', target: 'gate' },
+        { id: 'e2', source: 'gate', target: 'draft', label: 'approved' },
+        { id: 'e3', source: 'draft', target: 'review' },
+        { id: 'e4', source: 'review', target: 'send', label: 'send' },
+        { id: 'e5', source: 'review', target: 'tag_review', label: 'hold' },
+        { id: 'e6', source: 'tag_review', target: 'task_review' },
+        { id: 'e7', source: 'gate', target: 'tag_manual', label: 'blocked' },
       ],
     } as WorkflowGraphDocument,
   },

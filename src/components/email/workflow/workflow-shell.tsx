@@ -1031,6 +1031,16 @@ export function WorkflowShell() {
           open={templatesOpen}
           onOpenChange={setTemplatesOpen}
           onPick={(t: WorkflowTemplateDto) => {
+            // Eine Vorlage ERSETZT den aktuellen Canvas — nie ohne Rückfrage
+            // über bestehende Arbeit bügeln (mehr als nur der Trigger-Knoten).
+            const currentNodes = useWorkflowEditorStore.getState().nodes
+            if (currentNodes.length > 1) {
+              const confirmed = window.confirm(
+                `Vorlage „${t.name}" laden?\n\nDer aktuelle Graph dieses Workflows wird dabei ersetzt. ` +
+                  'Über „Versionen" lässt sich der vorherige Stand wiederherstellen, sobald er gespeichert war.',
+              )
+              if (!confirmed) return
+            }
             useWorkflowEditorStore.getState().resetFromGraph(t.graph)
             setSelectedNodeId(null)
             setSelectedEdgeId(null)

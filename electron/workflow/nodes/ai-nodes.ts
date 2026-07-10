@@ -37,9 +37,22 @@ function resolvePromptForConfig(
 import {
   addMessageTag,
   createComposeDraft,
+  getEmailAccountById,
   getEmailMessageById,
+  listAccountSignatureRows,
   setOutboundHold,
 } from '../../email/email-store';
+import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
+import {
+  aiDraftLikelyIncludesGreeting,
+  buildReplyGreeting,
+} from '../../../shared/email-reply-greeting';
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from '../../../shared/signature-template';
+import { markDraftAutoSubmitted, setDraftApprovalPending } from '../../email/email-draft-approval';
+import { parseDraftReviewResponse } from '../draft-review-parse';
 import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
@@ -56,6 +69,20 @@ type Reg = (def: RegisteredWorkflowNode) => void;
 
 function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
   return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+}
+
+/** Konto-Signatur (HTML) → Plain-Text für Workflow-Entwürfe. */
+function signatureHtmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function registerAiNodes(register: Reg): void {
@@ -483,6 +510,274 @@ export function registerAiNodes(register: Reg): void {
         status: 'ok',
         variables: { 'tool.result': ctx.strings.combined_text.slice(0, 500) },
       };
+    },
+  });
+
+  register({
+    type: 'ai.draft_reply',
+    label: 'KI-Antwort entwerfen',
+    category: 'ai',
+    canvasType: 'registry',
+    defaultConfig: {
+      systemPrompt:
+        'Du bist ein freundlicher Kundenservice-Mitarbeiter. Beantworte die Kundenmail vollständig, ' +
+        'korrekt und auf Deutsch. Nutze die Wissensbasis, wenn vorhanden. Schreibe NUR den Antworttext ' +
+        'ohne Anrede und ohne Grußformel — beide werden automatisch ergänzt.',
+      knowledgeBaseId: null,
+      profileId: null,
+      includeCanned: false,
+      greeting: 'auto',
+      signature: 'account',
+    },
+    execute: async (ctx, config) => {
+      if (ctx.direction !== 'inbound') {
+        return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
+      }
+      const { message } = ctx;
+      if (!message || ctx.messageId == null) {
+        return { status: 'error', message: 'Keine Nachricht im Kontext' };
+      }
+
+      if (ctx.dryRun) {
+        const variables: Record<string, string | number | boolean | null> = {
+          'draft.id': 0,
+          'ai.draft.text': '(Dry-Run)',
+          'ai.draft.subject': 'Re:',
+        };
+        return { status: 'ok', message: 'dry-run draft_reply', variables };
+      }
+
+      // Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung.
+      const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
+      const chunks =
+        kbId != null && kbId > 0
+          ? await searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5)
+          : await searchKnowledgeForWorkflow(
+              message.account_id,
+              ctx.direction,
+              ctx.strings.combined_text,
+              5,
+            );
+      const kbText = chunks.map((c) => c.content).join('\n---\n');
+
+      let cannedBlock = '';
+      if (config.includeCanned === true) {
+        const { listCannedResponses } = await import('../../email/email-crm-store');
+        const canned = listCannedResponses(accountScopeFromContext(ctx)).slice(0, 5);
+        if (canned.length > 0) {
+          cannedBlock = canned
+            .map((c) => `• ${c.title}:\n${c.body.slice(0, 1200)}`)
+            .join('\n\n');
+        }
+      }
+
+      const system = String(config.systemPrompt ?? '').trim() || 'Beantworte die Kundenmail freundlich auf Deutsch.';
+      const user = [
+        'Kundenmail:',
+        ctx.strings.combined_text,
+        kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
+        cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      let aiText: string;
+      try {
+        aiText = (await runChatCompletion(system, user, profileIdFromConfig(config))).trim();
+      } catch (e) {
+        return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+      }
+      ctx.ai.lastResponse = aiText;
+      if (!aiText) return { status: 'error', message: 'KI lieferte keinen Antworttext' };
+
+      // Anrede: automatisch, außer die KI hat schon eine geschrieben.
+      const parts: string[] = [];
+      if (config.greeting !== 'none' && !aiDraftLikelyIncludesGreeting(aiText)) {
+        const customerName = ctx.variables['customer.name'];
+        parts.push(
+          buildReplyGreeting({
+            customer:
+              typeof customerName === 'string' && customerName
+                ? { name: customerName }
+                : null,
+            fromJson: message.from_json,
+          }),
+          '',
+        );
+      }
+      parts.push(aiText);
+
+      // Signatur des Kontos (HTML → Text), Platzhalter gefüllt.
+      if (config.signature !== 'none') {
+        const account = getEmailAccountById(message.account_id);
+        const sigRow = listAccountSignatureRows().find(
+          (r) => r.account_id === message.account_id,
+        );
+        const sigHtml = sigRow?.signature_html?.trim();
+        if (sigHtml && account) {
+          const sigText = signatureHtmlToText(
+            interpolateSignatureTemplate(
+              sigHtml,
+              buildSignatureTemplateContext({
+                accountDisplayName: account.display_name,
+                accountEmail: account.email_address,
+                customerName:
+                  typeof ctx.variables['customer.name'] === 'string'
+                    ? (ctx.variables['customer.name'] as string)
+                    : '',
+                customerEmail:
+                  typeof ctx.variables['customer.email'] === 'string'
+                    ? (ctx.variables['customer.email'] as string)
+                    : '',
+              }),
+            ),
+          );
+          if (sigText) parts.push('', sigText);
+        } else {
+          parts.push('', 'Mit freundlichen Grüßen');
+        }
+      }
+
+      const bodyText = parts.join('\n');
+      const subjectRaw = message.subject?.trim() ?? '';
+      const reSubject = !subjectRaw
+        ? 'Re:'
+        : /^re:/i.test(subjectRaw)
+          ? subjectRaw
+          : `Re: ${subjectRaw}`;
+
+      // Korrekt adressierter Antwort-Entwurf (Reply-To vor From) mit
+      // Thread-Bezug — nur so kann send_draft ihn später wirklich versenden.
+      const replyTo = primaryReplyRecipient(message);
+      if (!replyTo) return { status: 'error', message: 'Kein Antwort-Empfänger ermittelbar' };
+      const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse');
+      const { updateComposeDraft } = await import('../../email/email-store');
+      const draftId = createComposeDraft({
+        accountId: message.account_id,
+        subject: reSubject,
+        bodyText,
+        toJson: recipientJsonFromField(replyTo),
+      });
+      updateComposeDraft(draftId, { replyParentMessageId: ctx.messageId });
+      markDraftAutoSubmitted(draftId);
+
+      return {
+        status: 'ok',
+        variables: {
+          'draft.id': draftId,
+          'ai.draft.text': bodyText.slice(0, 8000),
+          'ai.draft.subject': reSubject,
+          'ai.draft.sources': chunks
+            .map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`))
+            .join(', '),
+        },
+      };
+    },
+  });
+
+  register({
+    type: 'ai.review_draft',
+    label: 'KI-Gegenprüfung (Entwurf)',
+    category: 'ai',
+    canvasType: 'registry',
+    defaultConfig: {
+      draftIdVariable: 'draft.id',
+      reviewPrompt: '',
+      profileId: null,
+    },
+    execute: async (ctx, config) => {
+      const draftIdVar =
+        String(config.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
+      const draftId = Number(ctx.variables[draftIdVar]);
+
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          port: 'hold',
+          message: 'dry-run review_draft',
+          variables: {
+            'ai.review.verdict': 'hold',
+            'ai.review.answered': false,
+            'ai.review.reason': 'Dry-Run — es wird nie automatisch gesendet',
+          },
+        };
+      }
+
+      if (!Number.isFinite(draftId) || draftId <= 0) {
+        return { status: 'error', message: `Kein Entwurf unter Variable ${draftIdVar}` };
+      }
+      const draft = getEmailMessageById(draftId);
+      if (!draft) return { status: 'error', message: `Entwurf ${draftId} nicht gefunden` };
+
+      const original = ctx.message;
+      const originalBlock = original
+        ? [
+            `Betreff: ${original.subject ?? ''}`,
+            `Von: ${ctx.strings.from_address ?? ''}`,
+            '',
+            (original.body_text ?? original.snippet ?? '').slice(0, 6000),
+          ].join('\n')
+        : '(Original-Nachricht nicht verfügbar)';
+
+      const extraCriteria = String(config.reviewPrompt ?? '').trim();
+      const system = [
+        'Du bist die Endkontrolle für automatische Kundenservice-Antworten.',
+        'Prüfe: Beantwortet der Entwurf die Fragen des Kunden vollständig und korrekt?',
+        'Ist der Ton professionell? Enthält er keine erfundenen Fakten, keine unklaren Zusagen',
+        'und nichts, was ein Mensch erst freigeben müsste (Preise, Rechtsthemen, Kulanz über Standard)?',
+        extraCriteria ? `Zusätzliche Kriterien: ${extraCriteria}` : '',
+        '',
+        'Antworte NUR in diesem Format:',
+        'STATUS: SEND oder HOLD',
+        'ANSWERED: yes oder no',
+        'REASON: kurze deutsche Begründung (eine Zeile)',
+        'SEND nur, wenn der Entwurf ohne Änderung verschickt werden kann. Im Zweifel HOLD.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const user = [
+        '--- Kundenmail ---',
+        originalBlock,
+        '',
+        '--- Antwort-Entwurf ---',
+        `Betreff: ${draft.subject ?? ''}`,
+        '',
+        (draft.body_text ?? '').slice(0, 6000),
+      ].join('\n');
+
+      try {
+        const out = await runChatCompletion(system, user, profileIdFromConfig(config));
+        ctx.ai.lastResponse = out;
+        const parsed = parseDraftReviewResponse(out);
+        const variables: Record<string, string | number | boolean | null> = {
+          'ai.review.verdict': parsed.verdict,
+          'ai.review.answered': parsed.answered,
+          'ai.review.reason': parsed.reason,
+        };
+        if (parsed.verdict === 'send') {
+          return { status: 'ok', port: 'send', variables };
+        }
+        setDraftApprovalPending(
+          draftId,
+          parsed.reason || 'Gegenlese-KI empfiehlt menschliche Prüfung',
+        );
+        return { status: 'ok', port: 'hold', variables };
+      } catch (e) {
+        // KI-Fehler: fail-safe Richtung Mensch — Entwurf wartet auf Freigabe.
+        const msg = e instanceof Error ? e.message : String(e);
+        setDraftApprovalPending(draftId, `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`);
+        return {
+          status: 'ok',
+          port: 'hold',
+          message: `review_error:${msg}`,
+          variables: {
+            'ai.review.verdict': 'hold',
+            'ai.review.answered': false,
+            'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
+          },
+        };
+      }
     },
   });
 

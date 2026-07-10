@@ -107,6 +107,11 @@ export type EmailMessageRow = {
   soft_deleted: number;
   outbound_hold: number;
   outbound_block_reason: string | null;
+  /** Zwei-Stufen-KI-Antwort: 'pending' = wartet auf menschliche Freigabe. */
+  approval_state?: string | null;
+  approval_reason?: string | null;
+  /** RFC-3834-Marker: Entwurf ist eine automatische Antwort. */
+  auto_submitted?: number;
   thread_id: string | null;
   ticket_code: string | null;
   customer_id: number | null;
@@ -2085,6 +2090,18 @@ export function updateComposeDraft(
   if (input.replyParentMessageId !== undefined) {
     sets.push('reply_parent_message_id = ?');
     vals.push(input.replyParentMessageId);
+  }
+  // Inhaltliche Änderung entwertet die KI-Freigabe-Empfehlung — der
+  // "Wartet auf Freigabe"-Zustand bezieht sich auf den geprüften Stand.
+  const contentEdited =
+    input.subject !== undefined ||
+    input.bodyText !== undefined ||
+    input.bodyHtml !== undefined ||
+    input.toJson !== undefined ||
+    input.ccJson !== undefined ||
+    input.bccJson !== undefined;
+  if (contentEdited) {
+    sets.push('approval_state = NULL', 'approval_reason = NULL');
   }
   vals.push(messageId);
   getDb()

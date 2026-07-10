@@ -16,6 +16,14 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
     "contextMode",
     "labels",
   ],
+  "ai.draft_reply": [
+    "greeting",
+    "includeCanned",
+    "knowledgeBaseId",
+    "profileId",
+    "signature",
+    "systemPrompt",
+  ],
   "ai.outbound_review": [
     "checkReplyContext",
     "promptId",
@@ -30,6 +38,11 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
   "ai.review": [
     "blockKeyword",
     "promptId",
+  ],
+  "ai.review_draft": [
+    "draftIdVariable",
+    "profileId",
+    "reviewPrompt",
   ],
   "ai.spam_score": [
     "contextMode",
