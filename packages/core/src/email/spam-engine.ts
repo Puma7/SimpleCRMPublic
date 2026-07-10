@@ -70,9 +70,47 @@ export type SpamStatusApplyMessageInput = {
   spamDecidedAt?: string | Date | null;
 };
 
-/** Passing auth checks correlate with ham; they must not feed local learning stats. */
+/**
+ * Objectively-neutral features that appear on virtually every legitimate mail
+ * (newsletters, order confirmations, business mail all contain links). They are
+ * already statically scored; letting learning accumulate spam weight on them
+ * double-counts the signal and slowly drifts ordinary legitimate mail into
+ * review ("valid signals eventually count as spam").
+ */
+const NEUTRAL_LEARNING_FEATURE_KEYS = new Set(['content:has_url', 'content:many_urls']);
+
+/**
+ * Features eligible for local learning. Excluded:
+ * - `auth:*:pass` — correlates with ham; spam-marks must not poison it.
+ * - `auth:*:none` / `auth:*:neutral` — the normal state of direct legitimate
+ *   mail (e.g. ARC headers are only added by forwarders), so learned spam
+ *   weight on them punishes ordinary mail wholesale.
+ * - the neutral content keys above.
+ * Discriminative keys (sender identity, suspicious terms, auth *failures*,
+ * risky attachment types) stay eligible.
+ */
 export function isSpamLearningFeatureKey(featureKey: string): boolean {
-  return !(featureKey.startsWith('auth:') && featureKey.endsWith(':pass'));
+  if (
+    featureKey.startsWith('auth:') &&
+    (featureKey.endsWith(':pass') || featureKey.endsWith(':none') || featureKey.endsWith(':neutral'))
+  ) {
+    return false;
+  }
+  return !NEUTRAL_LEARNING_FEATURE_KEYS.has(featureKey);
+}
+
+/**
+ * SPF, DKIM and DMARC all verified: the sender identity is objectively
+ * authenticated. ARC is deliberately not required — `arc:none` is the normal
+ * state for direct (non-forwarded) mail.
+ */
+export function isObjectivelyAuthenticated(message: SpamDecisionMessageInput): boolean {
+  const val = (v: string | null | undefined) => String(v ?? '').toLowerCase();
+  return (
+    val(message.authSpf ?? message.auth_spf) === 'pass' &&
+    val(message.authDkim ?? message.auth_dkim) === 'pass' &&
+    val(message.authDmarc ?? message.auth_dmarc) === 'pass'
+  );
 }
 
 function hasSpamDecision(message: SpamStatusApplyMessageInput): boolean {
@@ -296,10 +334,23 @@ export function buildSpamDecision(
   addReason(reasons, authReason('arc', message.authArc ?? message.auth_arc));
   if (settings.rspamdContributionEnabled) addReason(reasons, rspamdReason(message));
   for (const r of heuristicReasons(featureSet)) addReason(reasons, r);
-  if (settings.localLearningEnabled) {
+  // Objective whitelist: a fully authenticated sender (SPF+DKIM+DMARC pass) is
+  // judged by the static rules alone. Learned weights live on neutral features
+  // and must never push verified legitimate mail into review/spam; genuinely
+  // hostile content (script/form/suspicious terms/risky attachments) still
+  // escalates through the static heuristics above.
+  const authAligned = isObjectivelyAuthenticated(message);
+  const learningApplied = settings.localLearningEnabled && !authAligned;
+  if (learningApplied) {
     for (const r of learningReasons(preview.featureKeys, normalizeFeatureStats(options.featureStats))) {
       addReason(reasons, r);
     }
+  } else if (settings.localLearningEnabled && authAligned) {
+    reasons.push({
+      code: 'auth.aligned',
+      label: 'Objektiv authentifiziert (SPF, DKIM, DMARC bestanden) - Lernsignale nicht angewendet',
+      points: 0,
+    });
   }
 
   const base = 8;
@@ -307,7 +358,7 @@ export function buildSpamDecision(
   const status = statusForScore(score, settings.spamReviewThreshold, settings.spamSpamThreshold);
   const sourceParts = ['local'];
   if (settings.rspamdContributionEnabled && (message.rspamdScore ?? message.rspamd_score) != null) sourceParts.push('rspamd');
-  if (settings.localLearningEnabled) sourceParts.push('learning');
+  if (learningApplied) sourceParts.push('learning');
 
   return {
     score,
