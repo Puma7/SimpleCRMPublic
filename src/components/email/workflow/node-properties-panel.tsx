@@ -679,6 +679,18 @@ function LoopConfigFields({
   )
 }
 
+const JS_CODE_EXAMPLE = `// Beispiel: Betreff prüfen und Variablen setzen
+const betreff = ctx.strings.subject || "";
+result = {
+  hat_rechnung: betreff.toLowerCase().includes("rechnung"),
+  kunde: ctx.variables["customer.name"] || "unbekannt",
+};`
+
+const PY_CODE_EXAMPLE = `# Beispiel: Kontext lesen und etwas ausgeben
+import json, os
+ctx = json.loads(os.environ["WORKFLOW_CTX"])
+print("Betreff:", ctx.get("subject", ""))`
+
 function CodeConfigFields({
   config,
   patch,
@@ -716,7 +728,70 @@ function CodeConfigFields({
           />
         </div>
       </div>
+      <details className="space-y-1.5">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+          Was steht dem Code zur Verfügung? (Beispiel & Erklärung)
+        </summary>
+        {language === "javascript" ? (
+          <div className="space-y-1.5 pt-1 text-[11px] text-muted-foreground">
+            <p>
+              <code>ctx.strings</code> enthält die Mail-Daten (<code>subject</code>,{" "}
+              <code>body_text</code>, <code>from_address</code>, …), <code>ctx.variables</code>{" "}
+              alle Workflow-Variablen, dazu <code>ctx.messageId</code> und <code>ctx.dryRun</code>.
+              Mit <code>{"result = { name: wert }"}</code> gesetzte Werte stehen Folge-Knoten als
+              Variablen zur Verfügung. Zusätzlich verfügbar: <code>JSON</code>, <code>Math</code>,{" "}
+              <code>Date</code>. Zeitlimit 30 s.
+            </p>
+            <pre className="overflow-x-auto rounded bg-muted p-2 font-mono text-[10px] leading-relaxed">
+              {JS_CODE_EXAMPLE}
+            </pre>
+          </div>
+        ) : (
+          <div className="space-y-1.5 pt-1 text-[11px] text-muted-foreground">
+            <p>
+              Die Mail-Daten liegen als JSON in der Umgebungsvariable{" "}
+              <code>WORKFLOW_CTX</code> (Felder wie <code>subject</code>, <code>body_text</code>,{" "}
+              <code>from_address</code>). Die Ausgabe (<code>print</code>) landet in der
+              Workflow-Variable <code>python.stdout</code>. Voraussetzung: <code>python3</code> ist
+              auf dem Rechner installiert. Zeitlimit 30 s.
+            </p>
+            <pre className="overflow-x-auto rounded bg-muted p-2 font-mono text-[10px] leading-relaxed">
+              {PY_CODE_EXAMPLE}
+            </pre>
+          </div>
+        )}
+      </details>
     </div>
+  )
+}
+
+/** Live-Status des globalen Auto-Antwort-Schalters am Gate-Knoten. */
+function AutoReplySwitchStatus() {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  useEffect(() => {
+    let active = true
+    void invokeRenderer(IPCChannels.Email.GetWorkflowAutomationSettings)
+      .then((s) => {
+        if (active) setEnabled(Boolean((s as { autoReplyEnabled?: boolean })?.autoReplyEnabled))
+      })
+      .catch(() => {
+        if (active) setEnabled(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+  if (enabled === null) return null
+  return enabled ? (
+    <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-[11px]">
+      Der globale Auto-Antwort-Schalter ist <strong>AN</strong> — dieses Gate kann automatische
+      Antworten freigeben.
+    </p>
+  ) : (
+    <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px]">
+      Der globale Auto-Antwort-Schalter ist <strong>AUS</strong> — dieses Gate blockiert derzeit
+      jede Mail. Einschalten unter Einstellungen → Automatisierung.
+    </p>
   )
 }
 
@@ -812,6 +887,7 @@ function RegistryFields({
           </div>
         ) : null}
       </div>
+      {d.nodeType === "email.auto_reply" ? <AutoReplySwitchStatus /> : null}
       {customWidget ? (
         <CustomWidgetFields
           widget={customWidget}

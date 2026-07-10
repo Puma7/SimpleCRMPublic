@@ -630,7 +630,17 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { draftIdVariable: 'draft.id', runOutboundReview: false },
           },
         },
-        // (3b) blocked: Mail sichtbar machen, damit sie nicht untergeht.
+        // (3b) blocked: NUR bei "KI unsicher" (low_confidence) taggen — bei
+        //      ausgeschaltetem Schalter o. Ä. würde sonst jede Mail markiert.
+        //      Der Switch (Nicht-default-Fall) erfüllt zudem das Inbound-Gate.
+        {
+          id: 'blocked_reason',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.switch',
+            config: { field: 'auto_reply.blocked_reason', cases: 'low_confidence' },
+          },
+        },
         {
           id: 'tag_manual',
           type: 'registry',
@@ -642,7 +652,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e1', source: 'classify', target: 'gate' },
         { id: 'e2', source: 'gate', target: 'compose', label: 'approved' },
         { id: 'e3', source: 'compose', target: 'send' },
-        { id: 'e4', source: 'gate', target: 'tag_manual', label: 'blocked' },
+        { id: 'e4', source: 'gate', target: 'blocked_reason', label: 'blocked' },
+        { id: 'e5', source: 'blocked_reason', target: 'tag_manual', label: 'low_confidence' },
       ],
     } as WorkflowGraphDocument,
   },
@@ -722,7 +733,17 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { title: 'KI-Entwurf prüfen: {{subject}}', priority: 'medium', daysUntilDue: 1 },
           },
         },
-        // (3b) blocked: nichts senden, aber die Mail markieren.
+        // (3b) blocked: NUR bei "KI unsicher" (low_confidence) taggen — bei
+        //      ausgeschaltetem Schalter o. Ä. würde sonst jede Mail markiert.
+        //      Der Switch (Nicht-default-Fall) erfüllt zudem das Inbound-Gate.
+        {
+          id: 'blocked_reason',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.switch',
+            config: { field: 'auto_reply.blocked_reason', cases: 'low_confidence' },
+          },
+        },
         {
           id: 'tag_manual',
           type: 'registry',
@@ -737,7 +758,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e4', source: 'review', target: 'send', label: 'send' },
         { id: 'e5', source: 'review', target: 'tag_review', label: 'hold' },
         { id: 'e6', source: 'tag_review', target: 'task_review' },
-        { id: 'e7', source: 'gate', target: 'tag_manual', label: 'blocked' },
+        { id: 'e7', source: 'gate', target: 'blocked_reason', label: 'blocked' },
+        { id: 'e8', source: 'blocked_reason', target: 'tag_manual', label: 'low_confidence' },
       ],
     } as WorkflowGraphDocument,
   },

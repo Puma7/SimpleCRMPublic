@@ -48,16 +48,24 @@
 
 ## P1 — differenzierend
 
-### P1-4 · Abgesicherter Auto-Antwort-Modus (Modus 3)  — Status: 🟩 Basis steht (Gate, ohne Versand)
+### P1-4 · Abgesicherter Auto-Antwort-Modus (Modus 3)  — Status: 🟩 stark ausgebaut (Versand + Anti-Loop + UI gebaut; Whitelist/Audit offen)
 **Ziel:** Pro Tickettyp echte Auto-Antwort — aber nur mit Sicherheits-Layer. Heute existiert bewusst nur Draft/Hold.
 
 **Basis (jetzt):**
 - [x] Einstellung `auto_reply_enabled` (sync_info, Default aus).
 - [x] Policy-Knoten `email.auto_reply`: prüft alle Guards — Workspace-Schalter an, Confidence ≥ Schwelle (`confidenceVar`/`minConfidence`, nutzt P0-2), **Anti-Loop** (kein Auto-Antwort an no-reply/mailer-daemon/postmaster-Absender). Ports `approved`/`blocked` + `auto_reply.*`-Variablen.
-- [x] **Sendet bewusst (noch) NICHT** — der Knoten entscheidet nur; so kann das Aktivieren der Guards nie einen versehentlichen Versand auslösen.
+- [x] ~~Sendet bewusst (noch) NICHT~~ → Versand existiert seit 2026-07 (siehe Tiefe unten), weiterhin nur hinter allen Guards.
 - [x] Tests: approved / low_confidence / noreply / disabled.
 
-**Tiefe (später):** tatsächlichen SMTP-Auto-Versand hinter separatem „live"-Flag + Rate-Limit-Tabelle + `Auto-Submitted: auto-replied`-Header (RFC 3834) verdrahten; Tickettyp-/Absender-Whitelist; Audit-Eintrag; Eskalations-Routing.
+**Tiefe — 2026-07 GEBAUT (Desktop-Workflow-Overhaul, Commit `8dc8298`):**
+- [x] **Tatsächlicher Auto-Versand:** `email.send_draft` plant den Versand eines Workflow-Entwurfs; prüft selbst nochmals Master-Schalter + No-Reply-Filter (`electron/workflow/nodes/email-nodes.ts`).
+- [x] **RFC-3834-Anti-Loop eingehend:** `Auto-Submitted`/`X-Auto-Response-Suppress`/`Precedence`- sowie Newsletter-Header (`List-Unsubscribe`/`List-Id`) blocken am Gate (`electron/email/email-automation-headers.ts`, verdrahtet in `email.auto_reply`; Block-Grund `automated_sender`).
+- [x] **`Auto-Submitted: auto-replied` ausgehend:** automatische Antworten werden beim SMTP-Versand gestempelt (`electron/email/email-compose-send.ts`; Markierung über neue Spalte `email_messages.auto_submitted`).
+- [x] **Rate-Limit-Tabelle:** Tageslimit pro Absender über Dedup-Tabelle `email_auto_reply_dedup` (`electron/workflow/auto-reply-guard.ts`; gezählt wird erst beim tatsächlichen Einplanen des Versands; Block-Grund `rate_limited`).
+- [x] **Master-Schalter mit UI:** Einstellungen → Automatisierung — Schalter + „Max. Antworten pro Absender/Tag" (1–50, Default 1) (`src/components/email/settings/auto-reply-settings-section.tsx`).
+- [x] **Statt separatem „live"-Flag: Zwei-Stufen-Pipeline ausgeliefert** — `ai.draft_reply` (Agent 1 entwirft mit Wissensbasis, Anrede, Signatur) + `ai.review_draft` (Agent 2 liest gegen, Ports `send`/`hold`, fail-safe: Fehler/Zweifel gehen immer auf `hold`) + neutraler Freigabe-Zustand `approval_state` („Wartet auf Freigabe" im Postfach, Jetzt senden / Als Entwurf behalten). Vorlage `inbound-ai-two-stage-reply` („Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)"). Code: `electron/workflow/nodes/ai-nodes.ts`, `electron/workflow/draft-review-parse.ts`, `electron/email/email-draft-approval.ts`, `packages/core/src/workflow/templates.ts`.
+
+**Tiefe (weiter offen):** Tickettyp-/Absender-Whitelist; Audit-Eintrag; Eskalations-Routing; Parität der neuen Versand-/Anti-Loop-Schicht in der Server-Edition.
 
 ### P1-5 · KI-gestützte Textbaustein-Auswahl + Variablenfüllung  — Status: 🟩 Basis steht
 **Ziel:** KI wählt aus Canned Responses den passenden Baustein und füllt Variablen (günstiger/rechtssicherer als Freitext).
@@ -161,5 +169,6 @@
 | 2026-06-06 | P1-6 | Native Anthropic/Gemini Provider-Adapter (`ai-providers.ts`) | 2bbb546 |
 | 2026-06-06 | P2-9 | Feedback-Lernen (`ai_reply_feedback` + Snapshot/Diff beim Senden) | 0a028a0 |
 | 2026-06-06 | P1-5 | `ai.pick_canned` (KI wählt Textbaustein, async Pipeline) | _dieser Commit_ |
+| 2026-07-10 | P1-4 Tiefe | Auto-Versand + Zwei-Stufen-Gegenprüfung + RFC-3834/Rate-Limit-Anti-Loop + Schalter-UI (Desktop) | 8dc8298 |
 
-**Alle P0/P1/P2-Items: Basis steht ✅** — verbleibend sind nur noch als „Tiefe (später)" markierte Vertiefungen je Item.
+**Alle P0/P1/P2-Items: Basis steht ✅** — verbleibend sind nur noch als „Tiefe (später)" markierte Vertiefungen je Item. **Update 2026-07:** Die P1-4-Tiefe (Versand, RFC-3834-Header, Rate-Limit-Dedup, Schalter-UI) ist im Desktop-Workflow-Overhaul gebaut; zusätzlich ist die Zwei-Stufen-KI-Antwort (`ai.draft_reply` + `ai.review_draft` mit Freigabe-Zustand) ausgeliefert — siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) „Überarbeitung 2026-07".

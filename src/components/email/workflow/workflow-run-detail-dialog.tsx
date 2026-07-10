@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import {
+  humanizeWorkflowPort,
+  humanizeWorkflowStepMessage,
+  stepTone,
+  type WorkflowStepTone,
+} from "@shared/workflow-run-humanize"
 import { resolveRegistryNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import {
@@ -31,6 +37,19 @@ type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
   title?: string
+}
+
+// Farbgebung nach stepTone: ok = Standard, warn = Amber, error = Rose.
+const TONE_BORDER: Record<WorkflowStepTone, string> = {
+  ok: "",
+  warn: "border-amber-500/50",
+  error: "border-rose-500/50",
+}
+
+const TONE_TEXT: Record<WorkflowStepTone, string> = {
+  ok: "text-muted-foreground",
+  warn: "text-amber-700 dark:text-amber-400",
+  error: "text-rose-700 dark:text-rose-400",
 }
 
 export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Props) {
@@ -93,20 +112,41 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
             ) : null}
             {steps.length > 0 ? (
               <ul className="space-y-2 text-xs">
-                {steps.map((s) => (
-                  <li key={s.id} className="rounded-md border bg-muted/30 px-3 py-2">
-                    <div className="font-medium">
-                      {resolveRegistryNodeLabel(s.node_type, labelByType)}
-                      <span className="ml-2 text-muted-foreground">({s.status})</span>
-                    </div>
-                    {s.message ? (
-                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{s.message}</p>
-                    ) : null}
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {s.duration_ms} ms{s.port ? ` · Port ${s.port}` : ""}
-                    </p>
-                  </li>
-                ))}
+                {steps.map((s) => {
+                  const tone = stepTone(s.status, s.port)
+                  const humanMessage = humanizeWorkflowStepMessage(s.message)
+                  const portLabel = humanizeWorkflowPort(s.port)
+                  return (
+                    <li
+                      key={s.id}
+                      className={`rounded-md border bg-muted/30 px-3 py-2 ${TONE_BORDER[tone]}`}
+                    >
+                      <div className="font-medium">
+                        {resolveRegistryNodeLabel(s.node_type, labelByType)}
+                        <span className={`ml-2 ${TONE_TEXT[tone]}`}>({s.status})</span>
+                      </div>
+                      {humanMessage ? (
+                        <p
+                          className={`mt-1 whitespace-pre-wrap ${TONE_TEXT[tone]}`}
+                          title={s.message ?? undefined}
+                        >
+                          {humanMessage}
+                        </p>
+                      ) : null}
+                      {humanMessage && s.message && humanMessage !== s.message ? (
+                        <p className="mt-0.5 break-all font-mono text-[10px] text-muted-foreground/70">
+                          {s.message}
+                        </p>
+                      ) : null}
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                        {s.duration_ms} ms
+                        {portLabel ? (
+                          <span title={s.port ?? undefined}> · Ergebnis: {portLabel}</span>
+                        ) : null}
+                      </p>
+                    </li>
+                  )
+                })}
               </ul>
             ) : null}
           </ScrollArea>

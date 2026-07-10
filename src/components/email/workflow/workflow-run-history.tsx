@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useState } from "react"
 import type { Node } from "@xyflow/react"
 import { IPCChannels } from "@shared/ipc/channels"
+import {
+  humanizeWorkflowPort,
+  humanizeWorkflowStepMessage,
+  stepTone,
+  type WorkflowStepTone,
+} from "@shared/workflow-run-humanize"
 import { resolveRunStepNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -31,6 +37,19 @@ type StepRow = {
 type Props = {
   workflowId: number | null
   graphNodes: Node[]
+}
+
+// Farbgebung nach stepTone: ok = Standard, warn = Amber, error = Rose.
+const TONE_BORDER: Record<WorkflowStepTone, string> = {
+  ok: "",
+  warn: "border-amber-500/50",
+  error: "border-rose-500/50",
+}
+
+const TONE_TEXT: Record<WorkflowStepTone, string> = {
+  ok: "text-muted-foreground",
+  warn: "text-amber-700 dark:text-amber-400",
+  error: "text-rose-700 dark:text-rose-400",
 }
 
 export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
@@ -100,7 +119,7 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
                     onClick={() => void loadSteps(r.id)}
                   >
                     <div className="font-medium">Lauf #{r.id}</div>
-                    <div className="text-muted-foreground">
+                    <div className={TONE_TEXT[stepTone(r.status, null)]}>
                       {r.status} ·{" "}
                       {r.finished_at ? new Date(r.finished_at).toLocaleString("de-DE") : "—"}
                     </div>
@@ -125,17 +144,35 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
                     data: n.data as Record<string, unknown>,
                   })),
                 })
+                const tone = stepTone(s.status, s.port)
+                const humanMessage = humanizeWorkflowStepMessage(s.message)
+                const portLabel = humanizeWorkflowPort(s.port)
                 return (
-                  <li key={s.id} className="rounded border bg-background px-2 py-1.5">
+                  <li
+                    key={s.id}
+                    className={`rounded border bg-background px-2 py-1.5 ${TONE_BORDER[tone]}`}
+                  >
                     <div className="font-medium">{title}</div>
                     {subtitle ? (
                       <div className="font-mono text-[10px] text-muted-foreground">{subtitle}</div>
                     ) : null}
-                    <div className="text-muted-foreground">
+                    <div className={TONE_TEXT[tone]}>
                       {s.status}
-                      {s.port ? ` · ${s.port}` : ""} · {s.duration_ms} ms
+                      {portLabel ? (
+                        <span title={s.port ?? undefined}> · {portLabel}</span>
+                      ) : null}{" "}
+                      · {s.duration_ms} ms
                     </div>
-                    {s.message ? <div className="text-muted-foreground">{s.message}</div> : null}
+                    {humanMessage ? (
+                      <div className={TONE_TEXT[tone]} title={s.message ?? undefined}>
+                        {humanMessage}
+                      </div>
+                    ) : null}
+                    {humanMessage && s.message && humanMessage !== s.message ? (
+                      <div className="break-all font-mono text-[10px] text-muted-foreground/70">
+                        {s.message}
+                      </div>
+                    ) : null}
                   </li>
                 )
               })}
