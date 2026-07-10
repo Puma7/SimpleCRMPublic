@@ -34,6 +34,7 @@ import { sql as kyselySql, type Kysely, type Selectable, type Updateable } from 
 import {
   addressIlikePattern,
   buildTsQueryText,
+  buildTsQueryTokenTexts,
   escapeIlikePattern,
   hasSearchOperators,
   ilikeTextNeedles,
@@ -710,6 +711,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const search = input.search?.trim();
           const regex = search ? parseRegexSearch(search) : null;
           const parsed = search && !regex ? parseServerMailSearchQuery(search) : null;
+          const tsQueryTokens = parsed ? buildTsQueryTokenTexts(parsed) : [];
           const tsQueryText = parsed ? buildTsQueryText(parsed) : null;
           const broadScope =
             search && input.scope?.mode === 'broad' ? input.scope : null;
@@ -763,6 +765,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
 
           const orderQuery = (query: any, mode: 'fts' | 'like' | 'regex' | undefined) => {
             if (mode === 'fts' && input.sort === 'relevance' && tsQueryText) {
+              // ts_rank_cd liefert 0 fuer Vektoren ohne Voll-Match — Anhang-
+              // only-/Teiltreffer bleiben in der Ergebnismenge (WHERE ist
+              // OR-basiert) und sortieren ans Ende, danach Datum.
               return query
                 .orderBy(
                   kyselySql`ts_rank_cd(email_messages.search_vector, to_tsquery('simple', ${tsQueryText}))`,
@@ -780,10 +785,12 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             page: { limit: number; offset: number | undefined },
           ) => {
             let query = buildQuery(page);
-            if (mode === 'fts' && tsQueryText) {
-              query = applyMessageFtsFilter(query, tsQueryText);
+            if (mode === 'fts' && tsQueryTokens.length > 0) {
+              query = applyMessageFtsFilter(query, tsQueryTokens);
+              // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
+              const headlineQuery = tsQueryTokens.join(' | ');
               query = query.select(
-                kyselySql<string | null>`ts_headline('simple', coalesce(email_messages.body_text, email_messages.snippet, ''), to_tsquery('simple', ${tsQueryText}), ${TS_HEADLINE_OPTIONS})`.as('search_snippet'),
+                kyselySql<string | null>`ts_headline('simple', coalesce(email_messages.body_text, email_messages.snippet, ''), to_tsquery('simple', ${headlineQuery}), ${TS_HEADLINE_OPTIONS})`.as('search_snippet'),
               );
             } else if (mode === 'like' && parsed) {
               query = applyMessageIlikeFilter(query, parsed);
@@ -3046,18 +3053,25 @@ function applyMessageOperatorFilter(query: any, parsed: ParsedMailSearchQuery): 
   return query;
 }
 
-/** FTS-Match: Nachrichten-search_vector ODER Anhang-search_vector (0026). */
-function applyMessageFtsFilter(query: any, tsQueryText: string): any {
+/**
+ * FTS-Match pro Token: Nachrichten-search_vector ODER Anhang-search_vector
+ * (0026), Tokens AND-verknuepft — so matcht auch eine Mail, deren Begriffe
+ * sich auf Body und Anhang verteilen.
+ */
+function applyMessageFtsFilter(query: any, tsQueryTokens: readonly string[]): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
-  return query.where(rawSql<boolean>`(
-    email_messages.search_vector @@ to_tsquery('simple', ${tsQueryText})
-    OR EXISTS (
-      SELECT 1 FROM email_message_attachments a
-      WHERE a.workspace_id = email_messages.workspace_id
-        AND a.message_id = email_messages.id
-        AND a.search_vector @@ to_tsquery('simple', ${tsQueryText})
-    )
-  )`);
+  for (const token of tsQueryTokens) {
+    query = query.where(rawSql<boolean>`(
+      email_messages.search_vector @@ to_tsquery('simple', ${token})
+      OR EXISTS (
+        SELECT 1 FROM email_message_attachments a
+        WHERE a.workspace_id = email_messages.workspace_id
+          AND a.message_id = email_messages.id
+          AND a.search_vector @@ to_tsquery('simple', ${token})
+      )
+    )`);
+  }
+  return query;
 }
 
 /**

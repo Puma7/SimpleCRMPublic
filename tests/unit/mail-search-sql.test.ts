@@ -1,6 +1,7 @@
 import {
   addressIlikePattern,
   buildTsQueryText,
+  buildTsQueryTokenTexts,
   escapeIlikePattern,
   hasSearchOperators,
   ilikeTextNeedles,
@@ -29,6 +30,14 @@ describe('buildTsQueryText', () => {
   test('operator-only query yields null', () => {
     expect(buildTsQueryText(parseServerMailSearchQuery('von:max@test.de'))).toBeNull();
     expect(buildTsQueryText(parseServerMailSearchQuery(''))).toBeNull();
+  });
+
+  test('per-token texts stay separate for cross-index composition', () => {
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('anhang "Auftrag 4711"'))).toEqual([
+      "('Auftrag' <-> '4711')",
+      "'anhang':*",
+    ]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('von:max@test.de'))).toEqual([]);
   });
 
   test('caps at 12 tokens', () => {

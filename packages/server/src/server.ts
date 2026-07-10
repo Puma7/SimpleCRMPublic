@@ -318,6 +318,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
 
   app.addHook('onClose', async () => {
     scheduledSendTicker?.stop();
+    attachmentTextTicker?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
   });
 

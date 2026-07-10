@@ -25,11 +25,12 @@ function tsqueryLexeme(token: string): string | null {
 }
 
 /**
- * to_tsquery('simple', …) input: phrases as `'a' <-> 'b'`, terms as prefix
- * lexemes `'t':*`, AND-joined, capped like the SQLite engine. Null when the
- * query carries no text tokens (operator-only query).
+ * One to_tsquery('simple', …) input per phrase (`'a' <-> 'b'`) and term
+ * (`'t':*` prefix), capped like the SQLite engine. Engines compose these per
+ * token (message vector OR attachment vector, AND across tokens) so a query
+ * whose terms are split across body and attachment still matches.
  */
-export function buildTsQueryText(parsed: ParsedMailSearchQuery): string | null {
+export function buildTsQueryTokenTexts(parsed: ParsedMailSearchQuery): string[] {
   const parts: string[] = [];
   for (const phrase of parsed.phrases) {
     if (parts.length >= MAX_SEARCH_TEXT_TOKENS) break;
@@ -45,6 +46,15 @@ export function buildTsQueryText(parsed: ParsedMailSearchQuery): string | null {
     const lex = tsqueryLexeme(term);
     if (lex) parts.push(`${lex}:*`);
   }
+  return parts;
+}
+
+/**
+ * AND-joined full tsquery text (ranking/ts_headline). Null when the query
+ * carries no text tokens (operator-only query).
+ */
+export function buildTsQueryText(parsed: ParsedMailSearchQuery): string | null {
+  const parts = buildTsQueryTokenTexts(parsed);
   if (parts.length === 0) return null;
   return parts.join(' & ');
 }
