@@ -83,6 +83,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { setMailDragData } from "./mail-drag"
 import { MessageAiSuggestions } from "./message-ai-suggestions"
+import { EmailHtmlFrame } from "./email-html-frame"
 import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
 import { ApplyWorkflowMenu } from "./apply-workflow-menu"
@@ -275,7 +276,7 @@ export function MessageViewer(props: Props) {
   // "error" = fetch failed or returned no body.
   const [bodyLoadState, setBodyLoadState] = useState<"idle" | "loading" | "error">("idle")
   const [bodyRetryKey, setBodyRetryKey] = useState(0)
-  const { handleBodyLinkClick, dialog: externalLinkDialog } = useExternalLinkConfirm()
+  const { dialog: externalLinkDialog } = useExternalLinkConfirm()
   const localIpcAvailable = !serverClientMode && hasLocalIpc()
   const selectedLock = selectedMessage ? conversationLocks[selectedMessage.id] : undefined
   const selectedLockOwner = selectedLock ? lockOwnerLabel(selectedLock) : ""
@@ -398,6 +399,16 @@ export function MessageViewer(props: Props) {
 
   const sanitizedHtml = useMemo(() => {
     if (!selectedMessage?.body_html) return ""
+    // Neutralize anchors so a click cannot navigate the sandboxed iframe's own
+    // browsing context (an empty `sandbox` still lets `<a href>` navigate). Links
+    // render as inert styled text; this pairs with the frame's `navigate-to 'none'`
+    // CSP as defense-in-depth.
+    DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+      if (node.tagName === "A") {
+        node.removeAttribute("href")
+        node.removeAttribute("target")
+      }
+    })
     const clean = DOMPurify.sanitize(selectedMessage.body_html, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "link"],
@@ -412,6 +423,7 @@ export function MessageViewer(props: Props) {
         "onsubmit",
       ],
     })
+    DOMPurify.removeHook("afterSanitizeAttributes")
     return loadRemoteImages ? clean : blockRemoteImagesInHtml(clean)
   }, [selectedMessage?.body_html, loadRemoteImages])
 
@@ -1347,8 +1359,9 @@ export function MessageViewer(props: Props) {
                 {htmlView && selectedMessage.body_html ? (
                   <div className="space-y-2">
                     <p className="text-[10px] text-muted-foreground">
-                      HTML-Ansicht: Skripte und Formulare sind blockiert. Externe Bilder nur nach
-                      explizitem Laden. Links öffnen nach Bestätigung im Standard-Browser.
+                      HTML-Ansicht: Wird isoliert in einer Sandbox (iframe) ohne Skripte,
+                      Formulare oder aktive Links angezeigt. Externe Bilder werden nur nach
+                      explizitem Laden angezeigt.
                     </p>
                     {htmlHasRemoteImages && !loadRemoteImages ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -1440,11 +1453,11 @@ export function MessageViewer(props: Props) {
                         </Button>
                       </div>
                     ) : null}
-                    <div
-                      role="document"
-                      className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3 [&_a]:cursor-pointer [&_a]:break-all [&_a]:text-primary [&_a]:underline"
-                      dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-                      onClick={handleBodyLinkClick}
+                    <EmailHtmlFrame
+                      html={sanitizedHtml}
+                      allowRemote={loadRemoteImages}
+                      title={selectedMessage.subject || "E-Mail-Inhalt"}
+                      className="h-[min(70vh,900px)] w-full rounded-md border bg-white"
                     />
                   </div>
                 ) : (
