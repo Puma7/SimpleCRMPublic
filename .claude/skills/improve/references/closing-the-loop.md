@@ -16,7 +16,7 @@ The founding rule survives unchanged: **the advisor never edits source code.** I
 
 ### Dispatch
 
-Spawn **one** `general-purpose` subagent with `isolation: "worktree"`. Executor model: default `sonnet`; use what the user named if they named one (`execute 003 haiku`).
+Spawn **one** `general-purpose` subagent with `isolation: "worktree"`. **Base the worktree on the plan's stamped commit, not the default branch:** an isolated worktree defaults to `worktree.baseRef: fresh`, which branches from `origin/<default-branch>` and excludes unpushed local HEAD — so when the plan was written on a feature branch or an unpushed HEAD, pass `worktree.baseRef: head` (or otherwise check out the plan's `Planned at` SHA inside the worktree) so the executor edits the code the plan was actually stamped against. Otherwise it starts from the wrong base and hits false drift failures. Executor model: default `sonnet`; use what the user named if they named one (`execute 003 haiku`).
 
 The subagent prompt must contain:
 
@@ -51,8 +51,8 @@ Note on fresh worktrees: they share git history but not `node_modules` or build 
 
 Review like a tech lead reviewing a PR against the spec — never fix anything yourself:
 
-1. **Re-run every done criterion** in the worktree. Don't trust the executor's report — verify.
-2. **Scope compliance**: `git -C <worktree> diff --stat` against the plan's in-scope list. Any file outside scope fails review, full stop.
+1. **Re-run every done criterion** in the worktree — with ONE exception: the plan-index / `README.md` status-row update. The executor preamble tells the subagent to skip that because *you* maintain the index, so don't fail it for the one change you told it not to make; verify all the other criteria. Don't trust the executor's report — verify.
+2. **Scope compliance**: the executor commits its work before reporting, so a plain worktree `git diff` is empty and would falsely pass. Diff the *committed* work against the plan's stamped base: `git -C <worktree> diff --stat <Planned-at-SHA>..HEAD`. Any file outside the plan's in-scope list fails review, full stop.
 3. **Read the full diff.** Judge it against "Why this matters" (does it solve the actual problem?) and the repo conventions named in the plan (does it look like the rest of the codebase?).
 4. **Audit the new tests.** Executors game criteria — a test that asserts nothing meaningful passes `pnpm test` and proves nothing. Read what the tests assert.
 

@@ -21,7 +21,9 @@ File naming: `plans/NNN-short-slug.md`, numbered in recommended execution order.
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
 > report — do not improvise. When done, update the status row for this plan
-> in `plans/README.md` — unless a reviewer dispatched you and told you they
+> in the `README.md` of the directory this plan lives in (`plans/README.md`,
+> or `advisor-plans/README.md` if the plans were placed there because `plans/`
+> was already taken) — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
 > **Drift check (run first)**: `git diff --stat <planned-at SHA>..HEAD -- <in-scope paths>`
