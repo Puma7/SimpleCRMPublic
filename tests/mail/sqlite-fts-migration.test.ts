@@ -142,6 +142,35 @@ describe('email FTS v3 migration (real sqlite)', () => {
     expect(ftsColumns()).toContain('attachments_json');
   });
 
+  test('fts indexes stay consistent through insert/update/delete (integrity-check)', () => {
+    seedMessage(10, { subject: 'Alpha Nachricht', body_text: 'eins zwei drei' });
+    const msg = db
+      .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid = 10`)
+      .get() as { id: number };
+    db.prepare(
+      `INSERT INTO email_message_attachments (message_id, filename_display, size_bytes, storage_path, text_content, text_extracted_at)
+       VALUES (?, 'report.docx', 10, '/tmp/x', 'vertraulicher inhalt', datetime('now'))`,
+    ).run(msg.id);
+    db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET subject = 'Beta Nachricht' WHERE id = ?`).run(msg.id);
+    db.prepare(`UPDATE email_message_attachments SET text_content = 'anderer inhalt' WHERE message_id = ?`).run(msg.id);
+    db.prepare(`DELETE FROM email_message_attachments WHERE message_id = ?`).run(msg.id);
+    db.prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(msg.id);
+    // External-content-Integritaet: schlaegt fehl, wenn delete/update-Trigger
+    // die alten Spaltenwerte nicht mitliefern (stale Index-Eintraege).
+    expect(() =>
+      db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rank) VALUES('integrity-check', 1)`),
+    ).not.toThrow();
+    expect(() =>
+      db.exec(`INSERT INTO email_attachments_fts(email_attachments_fts, rank) VALUES('integrity-check', 1)`),
+    ).not.toThrow();
+    expect(
+      db.prepare(`SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH '"beta"'`).all(),
+    ).toHaveLength(0);
+    expect(
+      db.prepare(`SELECT rowid FROM email_attachments_fts WHERE email_attachments_fts MATCH '"vertraulicher"'`).all(),
+    ).toHaveLength(0);
+  });
+
   test('mismatched triggers on a v2 table are healed by the migration', () => {
     simulateV2Database();
     // Worst case before the fix: v3-column triggers on a v2 table make every

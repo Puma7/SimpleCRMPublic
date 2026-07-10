@@ -386,13 +386,19 @@ function ensureEmailFtsTriggers() {
     if (ftsCols.length === 0) return; // no FTS table — nothing to keep in sync
     const colList = ftsCols.join(', ');
     const newValues = ftsCols.map((c) => `new.${c}`).join(', ');
+    const oldValues = ftsCols.map((c) => `old.${c}`).join(', ');
     const triggers = db
         .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'email_messages_fts_%'")
         .all() as { name: string; sql: string | null }[];
     const byName = new Map(triggers.map((t) => [t.name, t.sql ?? '']));
+    // External-content FTS5 verlangt beim 'delete' die ALTEN Spaltenwerte —
+    // sonst akkumuliert der Index stale Eintraege und integrity-check bricht.
+    const deleteForm = `VALUES('delete', old.id, ${oldValues})`;
     const aiOk = byName.get('email_messages_fts_ai')?.includes(`(rowid, ${colList})`) ?? false;
-    const auOk = byName.get('email_messages_fts_au')?.includes(`(rowid, ${colList})`) ?? false;
-    if (aiOk && auOk && byName.has('email_messages_fts_ad')) return;
+    const adOk = byName.get('email_messages_fts_ad')?.includes(deleteForm) ?? false;
+    const auOk = (byName.get('email_messages_fts_au')?.includes(deleteForm) ?? false)
+        && (byName.get('email_messages_fts_au')?.includes(`(rowid, ${colList})`) ?? false);
+    if (aiOk && adOk && auOk) return;
     console.log('Repairing email_messages FTS5 triggers...');
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
@@ -405,12 +411,14 @@ function ensureEmailFtsTriggers() {
     `);
     db.exec(`
       CREATE TRIGGER email_messages_fts_ad AFTER DELETE ON ${EMAIL_MESSAGES_TABLE} BEGIN
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid, ${colList})
+        VALUES('delete', old.id, ${oldValues});
       END;
     `);
     db.exec(`
       CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid, ${colList})
+        VALUES('delete', old.id, ${oldValues});
         INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, ${colList})
         VALUES (new.id, ${newValues});
       END;
@@ -538,13 +546,18 @@ function ensureAttachmentsFtsTriggers() {
     if (ftsCols.length === 0) return; // no FTS table — nothing to keep in sync
     const colList = ftsCols.join(', ');
     const newValues = ftsCols.map((c) => `new.${c}`).join(', ');
+    const oldValues = ftsCols.map((c) => `old.${c}`).join(', ');
     const triggers = db
         .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'email_attachments_fts_%'")
         .all() as { name: string; sql: string | null }[];
     const byName = new Map(triggers.map((t) => [t.name, t.sql ?? '']));
+    // External-content FTS5 verlangt beim 'delete' die ALTEN Spaltenwerte.
+    const deleteForm = `VALUES('delete', old.id, ${oldValues})`;
     const aiOk = byName.get('email_attachments_fts_ai')?.includes(`(rowid, ${colList})`) ?? false;
-    const auOk = byName.get('email_attachments_fts_au')?.includes(`(rowid, ${colList})`) ?? false;
-    if (aiOk && auOk && byName.has('email_attachments_fts_ad')) return;
+    const adOk = byName.get('email_attachments_fts_ad')?.includes(deleteForm) ?? false;
+    const auOk = (byName.get('email_attachments_fts_au')?.includes(deleteForm) ?? false)
+        && (byName.get('email_attachments_fts_au')?.includes(`(rowid, ${colList})`) ?? false);
+    if (aiOk && adOk && auOk) return;
     console.log('Repairing email_attachments FTS5 triggers...');
     db.exec(`DROP TRIGGER IF EXISTS email_attachments_fts_ai`);
     db.exec(`DROP TRIGGER IF EXISTS email_attachments_fts_ad`);
@@ -557,12 +570,14 @@ function ensureAttachmentsFtsTriggers() {
     `);
     db.exec(`
       CREATE TRIGGER email_attachments_fts_ad AFTER DELETE ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} BEGIN
-        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}, rowid) VALUES('delete', old.id);
+        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}, rowid, ${colList})
+        VALUES('delete', old.id, ${oldValues});
       END;
     `);
     db.exec(`
       CREATE TRIGGER email_attachments_fts_au AFTER UPDATE ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} BEGIN
-        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}, rowid) VALUES('delete', old.id);
+        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}, rowid, ${colList})
+        VALUES('delete', old.id, ${oldValues});
         INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(rowid, ${colList})
         VALUES (new.id, ${newValues});
       END;
