@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
+import { createPinnedFetch, type GuardedFetch } from './pinned-fetch';
 import type { JobPayload } from './types';
 import type { JobHandlerRegistry } from './worker';
 
@@ -26,26 +27,12 @@ export type WebhookDispatchPort = Readonly<{
 
 export type FetchWebhookDispatchOptions = Readonly<{
   allowlist: string | readonly string[];
-  fetch?: FetchLike;
+  fetch?: GuardedFetch;
   lookup?: WebhookLookup;
 }>;
 
 export type WebhookJobHandlersOptions = Readonly<{
   dispatcher?: WebhookDispatchPort;
-}>;
-
-type FetchLike = (
-  url: string,
-  init: {
-    method: WebhookHttpMethod;
-    headers: Record<string, string>;
-    body?: string;
-    signal?: AbortSignal;
-  },
-) => Promise<{
-  ok: boolean;
-  status: number;
-  text(): Promise<string>;
 }>;
 
 type WebhookLookup = (hostname: string) => Promise<readonly { address: string }[]>;
@@ -77,24 +64,25 @@ export function createWebhookJobHandlers(options: WebhookJobHandlersOptions): Jo
 }
 
 export function createFetchWebhookDispatchPort(options: FetchWebhookDispatchOptions): WebhookDispatchPort {
-  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const fetchImpl = options.fetch ?? createPinnedFetch();
   const lookup = options.lookup ?? ((hostname: string) => dnsLookup(hostname, { all: true, verbatim: true }));
-
-  if (!fetchImpl) {
-    throw new Error('global fetch is not available for webhook dispatch');
-  }
 
   return {
     async dispatch(input) {
-      await assertWebhookUrlAllowed(input.url, options.allowlist, lookup);
-      const response = await fetchImpl(input.url, {
-        method: input.method,
-        headers: {
-          ...(input.body !== undefined ? { 'content-type': 'application/json' } : {}),
-          ...input.headers,
+      const response = await guardedFetch({
+        url: input.url,
+        allowlist: options.allowlist,
+        lookup,
+        fetchImpl,
+        init: {
+          method: input.method,
+          headers: {
+            ...(input.body !== undefined ? { 'content-type': 'application/json' } : {}),
+            ...input.headers,
+          },
+          ...(input.body !== undefined ? { body: input.body } : {}),
+          timeoutMs: input.timeoutMs,
         },
-        ...(input.body !== undefined ? { body: input.body } : {}),
-        signal: AbortSignal.timeout(input.timeoutMs),
       });
       const bodyPreview = (await response.text()).slice(0, 1000);
       if (!response.ok) {
@@ -106,6 +94,45 @@ export function createFetchWebhookDispatchPort(options: FetchWebhookDispatchOpti
       };
     },
   };
+}
+
+export async function guardedFetch(args: {
+  url: string;
+  allowlist: string | readonly string[];
+  lookup: WebhookLookup;
+  fetchImpl: GuardedFetch;
+  init: { method: WebhookHttpMethod; headers: Record<string, string>; body?: string; timeoutMs: number };
+  maxRedirects?: number;
+}): Promise<{ ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> }> {
+  const maxRedirects = args.maxRedirects ?? 3;
+  let currentUrl = args.url;
+  for (let hop = 0; ; hop += 1) {
+    const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup);
+    const signal =
+      typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(args.init.timeoutMs)
+        : undefined;
+    const response = await args.fetchImpl(currentUrl, {
+      method: args.init.method,
+      headers: args.init.headers,
+      ...(args.init.body !== undefined ? { body: args.init.body } : {}),
+      ...(signal ? { signal } : {}),
+      redirect: 'manual',
+      pinnedAddresses: addresses,
+    });
+    if (response.status >= 300 && response.status < 400) {
+      if (hop >= maxRedirects) {
+        throw new Error(`webhook exceeded ${maxRedirects} redirects`);
+      }
+      const location = response.headers.get('location');
+      if (!location) {
+        throw new Error('webhook redirect response is missing a Location header');
+      }
+      currentUrl = new URL(location, currentUrl).toString();
+      continue; // re-runs assertWebhookUrlAllowed on the new URL → blocks private/off-allowlist hops
+    }
+    return response;
+  }
 }
 
 export function buildWebhookFirePlan(payload: JobPayload, jobWorkspaceId: string): WebhookFirePlan {
@@ -134,7 +161,7 @@ export async function assertWebhookUrlAllowed(
   url: string,
   allowlist: string | readonly string[],
   lookup: WebhookLookup,
-): Promise<void> {
+): Promise<readonly string[]> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -168,6 +195,7 @@ export async function assertWebhookUrlAllowed(
       throw new Error('webhook DNS lookup resolved to a blocked address');
     }
   }
+  return records.map((record) => record.address);
 }
 
 function requiredString(payload: JobPayload, key: string): string {

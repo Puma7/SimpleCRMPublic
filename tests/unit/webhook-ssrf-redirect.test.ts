@@ -1,0 +1,96 @@
+import {
+  createFetchWebhookDispatchPort,
+  guardedFetch,
+} from '../../packages/server/src/jobs/webhook-handlers';
+
+// `guardedFetch` is imported to assert the redirect-hardening export exists and
+// is what the dispatch port routes through.
+void guardedFetch;
+
+const basePlan = {
+  workspaceId: 'ws-1',
+  url: 'https://api.example.com/hook',
+  method: 'POST' as const,
+  headers: {},
+  timeoutMs: 5000,
+};
+
+describe('webhook SSRF redirect + DNS-rebind hardening', () => {
+  test('blocks a 302 redirect to the cloud metadata service', async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: false,
+      status: 302,
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'location' ? 'http://169.254.169.254/latest/meta-data/' : null,
+      },
+      text: async () => '',
+    }));
+
+    const port = createFetchWebhookDispatchPort({
+      allowlist: 'example.com',
+      fetch: fetchImpl,
+      lookup: async () => [{ address: '93.184.216.34' }],
+    });
+
+    await expect(port.dispatch(basePlan)).rejects.toThrow();
+    // The 2nd hop re-validates 169.254.169.254 and throws before any second
+    // fetch, so the metadata address is never connected to.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('pins the connection to the validated IP and never re-resolves (DNS rebind)', async () => {
+    let capturedPinned: readonly string[] | undefined;
+    const fetchImpl = jest.fn(async (_url: string, init: { pinnedAddresses: readonly string[] }) => {
+      capturedPinned = init.pinnedAddresses;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => 'ok',
+      };
+    });
+
+    let lookupCalls = 0;
+    const lookup = jest.fn(async () => {
+      lookupCalls += 1;
+      // First resolution is the validated public IP; any later (rebindable)
+      // resolution would return a private IP.
+      return lookupCalls === 1
+        ? [{ address: '93.184.216.34' }]
+        : [{ address: '169.254.169.254' }];
+    });
+
+    const port = createFetchWebhookDispatchPort({
+      allowlist: 'example.com',
+      fetch: fetchImpl,
+      lookup,
+    });
+
+    await expect(port.dispatch(basePlan)).resolves.toEqual({ status: 200, bodyPreview: 'ok' });
+    expect(capturedPinned).toEqual(['93.184.216.34']);
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
+  test('allows a normal allowlisted request and requests redirect: manual', async () => {
+    let capturedRedirect: string | undefined;
+    const fetchImpl = jest.fn(async (_url: string, init: { redirect: string }) => {
+      capturedRedirect = init.redirect;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => 'pong',
+      };
+    });
+
+    const port = createFetchWebhookDispatchPort({
+      allowlist: 'example.com',
+      fetch: fetchImpl,
+      lookup: async () => [{ address: '93.184.216.34' }],
+    });
+
+    await expect(port.dispatch(basePlan)).resolves.toEqual({ status: 200, bodyPreview: 'pong' });
+    expect(capturedRedirect).toBe('manual');
+  });
+});

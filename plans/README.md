@@ -16,7 +16,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 
 | Plan | Title | Priority | Effort | Category | Depends on | Status |
 |------|-------|----------|--------|----------|------------|--------|
-| 001 | Harden webhook/workflow HTTP against redirect + DNS-rebind SSRF | P1 | M | security | — | TODO |
+| 001 | Harden webhook/workflow HTTP against redirect + DNS-rebind SSRF | P1 | M | security | — | DONE |
 | 002 | CI test gate fails on empty discovery + fast `typecheck` script | P1 | S | dx | — | TODO |
 | 003 | Ratcheted coverage floor for the server edition in CI | P2 | M | tests | 002 | TODO |
 | 004 | Reject invalid productId/reasonId in return items | P1 | S | bug | — | DONE |
