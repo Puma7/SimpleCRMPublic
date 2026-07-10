@@ -20,37 +20,60 @@ function findPackageDir() {
   return candidates.find(p => fs.existsSync(path.join(p, 'src')));
 }
 
-const pkgDir = findPackageDir();
-if (!pkgDir) {
-  console.warn('patch-better-sqlite3: package directory not found, skipping.');
-  process.exit(0);
-}
+const TARGET_FILES = ['src/objects/database.cpp', 'src/objects/statement.cpp'];
+const FROM = 'info.Holder()';
+const TO = 'info.HolderV2()';
 
-const files = [
-  {
-    file: path.join(pkgDir, 'src/objects/database.cpp'),
-    replacements: [['info.Holder()', 'info.HolderV2()']],
-  },
-  {
-    file: path.join(pkgDir, 'src/objects/statement.cpp'),
-    replacements: [['info.Holder()', 'info.HolderV2()']],
-  },
-];
-
-let patched = 0;
-for (const { file, replacements } of files) {
-  if (!fs.existsSync(file)) {
-    console.warn(`patch-better-sqlite3: skipping (not found): ${file}`);
-    continue;
+function patchBetterSqlite3(pkgDir) {
+  if (!pkgDir) {
+    throw new Error(
+      'patch-better-sqlite3: better-sqlite3 package directory not found. ' +
+      'The dependency must be installed with its src/ before this patch runs; ' +
+      'refusing to continue with a possibly broken native module.'
+    );
   }
-  let content = fs.readFileSync(file, 'utf8');
-  for (const [from, to] of replacements) {
-    const count = (content.match(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-    if (count > 0) {
-      content = content.replaceAll(from, to);
-      patched += count;
+  let applied = 0;
+  for (const rel of TARGET_FILES) {
+    const file = path.join(pkgDir, rel);
+    if (!fs.existsSync(file)) {
+      throw new Error(
+        `patch-better-sqlite3: target file missing: ${file}. ` +
+        'The better-sqlite3 source layout changed; the patch can no longer be ' +
+        'applied. Update this script for the new upstream layout.'
+      );
+    }
+    const before = fs.readFileSync(file, 'utf8');
+    const after = before.split(FROM).join(TO); // replaceAll of a literal
+    // Informational count only (TO is longer than FROM by 2 chars per hit):
+    applied += (after.length - before.length) / (TO.length - FROM.length) || 0;
+    fs.writeFileSync(file, after);
+
+    // End-state assertion (idempotent): the file must end patched, whether we
+    // just changed it or it was already patched on a re-run. FROM is not a
+    // substring of TO, so this cannot be fooled by an already-patched file.
+    const result = fs.readFileSync(file, 'utf8');
+    if (result.includes(FROM) || !result.includes(TO)) {
+      throw new Error(
+        `patch-better-sqlite3: ${file} is not in the expected patched state ` +
+        `after processing (want '${TO}', still found unpatched '${FROM}', or ` +
+        `'${TO}' absent). Refusing to ship a broken native module.`
+      );
     }
   }
-  fs.writeFileSync(file, content);
+  console.log(
+    `patch-better-sqlite3: verified ${TARGET_FILES.length} file(s) patched ` +
+    `(${applied} replacement(s) applied this run) in ${pkgDir}`
+  );
+  return applied;
 }
-console.log(`patch-better-sqlite3: applied ${patched} replacement(s) in ${pkgDir}`);
+
+if (require.main === module) {
+  try {
+    patchBetterSqlite3(findPackageDir());
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+}
+
+module.exports = { patchBetterSqlite3, findPackageDir, TARGET_FILES };

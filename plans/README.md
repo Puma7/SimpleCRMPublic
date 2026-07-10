@@ -31,7 +31,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | DONE |
 | 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | TODO |
 | 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | TODO |
-| 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | TODO |
+| 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | DONE |
 | 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | TODO |
 | 018 | Lazy-load the HTTP route registry out of the desktop bundle | P3 | M | perf | — | DONE |
 | 019 | Separate runtime helpers from types in `api/types.ts` | P3 | L | tech-debt | — | TODO |
