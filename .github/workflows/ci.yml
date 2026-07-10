@@ -66,6 +66,11 @@ jobs:
       - name: Mail module tests
         run: pnpm run test:mail
 
+      - name: Server module coverage (ratchet)
+        run: |
+          pnpm run test:server:coverage
+          node scripts/check-server-coverage-ratchet.mjs
+
       - name: Typecheck
         run: pnpm run typecheck
 
