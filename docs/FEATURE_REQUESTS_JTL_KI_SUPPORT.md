@@ -20,7 +20,7 @@ Legende: ✅ vorhanden · 🟡 Bausteine da / teilweise · ❌ fehlt
 | 4 | Modi: Vorschlag / Freigabe / Auto | 🟡 | Vorschlag ✅ (`ai.agent` createDraft, reply_suggestion); Freigabe ✅ (`email.hold_outbound` + `ai.outbound_review`, fail-closed) | **Modus 3 Vollauto-Antwort ❌** (kein Auto-Versand) |
 | 5 | KI wählt Textbaustein statt Freitext | 🟡 | Canned Responses + `{{customer.*}}`-Platzhalter (Schema vorhanden) | KI-gestützte **Auswahl** des passenden Bausteins + Variablenfüllung |
 | 6 | Wissensdatenbank / RAG | ✅ | `workflow_knowledge_bases` + `knowledge_context` pro Konto (inbound/outbound/general), Runtime in `ai.agent` | **Quellen-Transparenz** in der Antwort („basiert auf …") |
-| 7 | Kostenkontrolle pro Antwort/Nutzer/Monat | ❌ | — (kein Token-/Kosten-Tracking gefunden) | Token-/Kosten-Erfassung, Budget- & Limit-Regeln |
+| 7 | Kostenkontrolle pro Antwort/Nutzer/Monat | 🟡 | Token-/Kosten-/Latenz-Tracking vorhanden: `ai-usage.ts` schreibt `ai_usage_events`, in Diagnose sichtbar (`diagnostics-panel.tsx`) | **Budget-/Limit-Regeln (weich/hart)** + Gate vor KI-Aufruf; **Desktop-Parität** des Trackings |
 | 8 | Modell-Router / Multi-Provider / lokale KI | 🟡 | AI-Profile mit `base_url` → **OpenAI-kompatibel inkl. LM Studio/Ollama** (`ai-classification.ts:880`) | Native Anthropic/Gemini; **Modellwahl pro Tickettyp** (günstig vs. stark) |
 | 9 | Outbound-Workflow / Qualitätsprüfung | ✅ | `ai.outbound_review`, `email.hold_outbound`, fail-closed Hold+Banner (`OUTBOUND_EMAIL_WORKFLOW.md`) | — (starkes Bestandsfeature) |
 | 10 | „KI antwortet nur, wenn sie sicher ist" | 🟡 | `logic.threshold`-Node (numerische Gates, z. B. `ai.spam_score`) | `ai.classify` liefert **keine Confidence** → Gate für Klassifikation nicht schließbar |
@@ -35,7 +35,7 @@ Legende: ✅ vorhanden · 🟡 Bausteine da / teilweise · ❌ fehlt
 ## TODO — nur die echten Lücken, priorisiert
 
 ### P0 — größter Hebel, kleiner/mittlerer Aufwand
-- [ ] **Token-/Kosten-Tracking (#7).** Pro KI-Aufruf prompt/completion-Tokens + geschätzte Kosten je Modell erfassen; Aggregation pro Tag/Nutzer/Tickettyp; Budget- und Limit-Regeln (weich/hart). Anzeige in Diagnose.
+- [ ] **AI-Budget-Gates + Desktop-Parität (#7).** Token-/Kosten-Tracking existiert bereits (`ai_usage_events`, Diagnose). Offen: konfigurierbare Budget-/Limit-Regeln (weich/hart, Tag/Konto), Schwellwert-Gate vor dem KI-Aufruf, und das Tracking in die Desktop-Edition bringen. Siehe Spike `docs/AI_BUDGET_GATES_SPIKE.md` / Plan `plans/021-spike-ai-budget-gates.md`.
 - [ ] **Confidence aus `ai.classify` (#3 + #10).** Klassifizierung soll einen Sicherheitswert (0–100) als Variable ausgeben, damit `logic.threshold` „nur antworten, wenn ≥ X %" erlaubt. Schließt die „nur wenn sicher"-Logik.
 - [ ] **JTL-Kontextblock automatisch zur Mail (#2).** Auf Basis von `jtl.lookup`/`mssql.query`: Absender → Bestellung(en) → Tracking/Retoure/Zahlstatus als strukturierter Kontext, der KI-Nodes automatisch mitbekommen.
 
