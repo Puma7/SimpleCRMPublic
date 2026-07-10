@@ -66,6 +66,7 @@ export function useEmailMessages() {
   const selectedMessageIdRef = useRef<number | null>(null)
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
+  const loadSeqRef = useRef(0)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadMessagesRef = useRef<(
     accountScope: MailAccountScope,
@@ -183,6 +184,7 @@ export function useEmailMessages() {
       const silent = opts?.silent ?? false
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
+      const requestSeq = ++loadSeqRef.current
       if (append) setLoadingMore(true)
       else if (!silent) setLoadingMessages(true)
       try {
@@ -203,6 +205,7 @@ export function useEmailMessages() {
             hasMore?: boolean
           }
           list = res.messages
+          if (requestSeq !== loadSeqRef.current) return
           if (!silent) {
             if (res.searchMode === "like") {
               toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
@@ -225,6 +228,7 @@ export function useEmailMessages() {
             listFilter: listFilter === "all" ? undefined : listFilter,
             doneFilter,
           }) as EmailMessage[]
+          if (requestSeq !== loadSeqRef.current) return
           setHasMore(list.length >= PAGE_SIZE)
         }
         if (append) {
@@ -276,10 +280,14 @@ export function useEmailMessages() {
         }
       } catch (e) {
         logError("use-email-messages: load", e)
-        if (!silent) toast.error("Nachrichten konnten nicht geladen werden.")
+        if (!silent && requestSeq === loadSeqRef.current) {
+          toast.error("Nachrichten konnten nicht geladen werden.")
+        }
       } finally {
-        setLoadingMessages(false)
-        setLoadingMore(false)
+        if (requestSeq === loadSeqRef.current) {
+          setLoadingMessages(false)
+          setLoadingMore(false)
+        }
       }
     },
     [setSelectedMessage, messageDoneFilter, selectMessageById],
@@ -301,7 +309,10 @@ export function useEmailMessages() {
         messageListFilter,
       )
     } else {
+      loadSeqRef.current += 1
       setMessages([])
+      setLoadingMessages(false)
+      setLoadingMore(false)
     }
   }, [
     selectedAccountId,

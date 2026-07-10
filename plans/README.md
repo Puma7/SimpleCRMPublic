@@ -20,7 +20,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 002 | CI test gate fails on empty discovery + fast `typecheck` script | P1 | S | dx | — | DONE |
 | 003 | Ratcheted coverage floor for the server edition in CI | P2 | M | tests | 002 | DONE |
 | 004 | Reject invalid productId/reasonId in return items | P1 | S | bug | — | DONE |
-| 005 | Guard the email list load against stale/racing responses | P2 | S | bug | — | TODO |
+| 005 | Guard the email list load against stale/racing responses | P2 | S | bug | — | DONE |
 | 006 | Remove dead deps + committed junk; fix phantom server dep | P2 | S | tech-debt | — | DONE |
 | 007 | Replace 87 inline `require('kysely')` with static imports | P3 | S | tech-debt | — | TODO |
 | 008 | Virtualize and memoize the email message list | P2 | M | perf | — | TODO |
