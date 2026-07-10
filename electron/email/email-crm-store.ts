@@ -1136,9 +1136,9 @@ export function searchMessagesForAccountWithMeta(
     // erreichbar.
     const REGEX_SCAN_BATCH = 500;
     // Harter Gesamt-Deckel gegen Full-Mailbox-Scans: Regex-Matching laeuft in
-    // JS, jede gescannte Zeile kostet Heap und CPU. Greift der Deckel und
-    // existieren weitere Kandidaten, melden wir hasMore=true, damit der
-    // Nutzer nachladen kann (naechste Seite scannt die naechsten Batches).
+    // JS, jede gescannte Zeile kostet Heap und CPU. Die Regex-Suche ist damit
+    // bewusst auf die neuesten REGEX_SCAN_CAP Kandidaten begrenzt; aeltere
+    // Matches erfordern eine praezisere Query.
     const REGEX_SCAN_CAP = 5000;
     const wanted = offset + limit + 1;
     const matches: import('./email-store').EmailMessageRow[] = [];
@@ -1170,21 +1170,19 @@ export function searchMessagesForAccountWithMeta(
         if (matches.length >= wanted) break;
       }
     }
-    // Deckel hat vor genug Treffern gegriffen: nur dann hasMore, wenn hinter
-    // dem Scan-Fenster ueberhaupt noch Kandidaten liegen.
-    const cappedWithMoreCandidates =
-      !exhausted &&
-      matches.length < wanted &&
-      listRegexSearchCandidates(accountId, opts, 1, scanned).length > 0;
     const rows = matches.slice(offset, offset + limit);
     for (const m of rows) {
       m.search_snippet = buildRegexSearchSnippet(m, re);
       delete (m as RegexSearchCandidate).attachment_search_text;
     }
+    // hasMore NUR bei echten Matches im Scan-Fenster. Greift der Deckel mit
+    // weniger Treffern, bewusst false: die zustandslose Offset-Pagination
+    // kann keinen Kandidaten-Cursor ausdruecken — "Weitere laden" wuerde
+    // denselben Scan wiederholen und nie ueber den Deckel hinauskommen.
     return {
       rows,
       searchMode: 'regex',
-      hasMore: matches.length > offset + limit || cappedWithMoreCandidates,
+      hasMore: matches.length > offset + limit,
     };
   }
   const r = runMessageSearch(trimmed, opts, { accountId, applySnoozeFilter: true }, limit + 1, offset);

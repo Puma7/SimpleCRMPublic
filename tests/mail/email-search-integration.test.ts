@@ -508,9 +508,12 @@ describe('regex search attachments + match pagination (real sqlite)', () => {
     expect(r.hasMore).toBe(false);
   });
 
-  test('scan cap reports hasMore when candidates remain behind the window', () => {
+  test('scan cap is honest: no unreachable hasMore beyond the window', () => {
     // 5200 zusaetzliche neuere Nicht-Treffer: der Treffer (uid 2000, aeltester
-    // Kandidat) liegt hinter dem 5000er-Scan-Deckel.
+    // Kandidat) liegt hinter dem 5000er-Scan-Deckel. Die zustandslose
+    // Offset-Pagination kann keinen Kandidaten-Cursor ausdruecken — hasMore
+    // muss deshalb false sein ("Weitere laden" wuerde denselben Scan nur
+    // wiederholen und nie neue Treffer liefern).
     const insertFiller = db.prepare(
       `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
          account_id, folder_id, uid, subject, body_text, date_received, folder_kind
@@ -524,7 +527,6 @@ describe('regex search attachments + match pagination (real sqlite)', () => {
     const r = searchMessagesForAccountWithMeta(1, '/uraltmuster/i', { view: 'inbox', limit: 10 });
     expect(r.searchMode).toBe('regex');
     expect(r.rows).toHaveLength(0);
-    // Deckel hat gegriffen und hinter dem Scan-Fenster liegen Kandidaten.
-    expect(r.hasMore).toBe(true);
+    expect(r.hasMore).toBe(false);
   });
 });

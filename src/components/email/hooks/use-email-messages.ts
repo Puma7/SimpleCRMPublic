@@ -240,7 +240,12 @@ export function useEmailMessages() {
           if (generation !== loadGenerationRef.current) return
           list = res.messages
           if (!silent && res.searchMode === "regex") {
-            toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
+            // Hinweis auf den Scan-Deckel: Regex durchsucht die neuesten
+            // Nachrichten (Desktop: 5000-Kandidaten-Fenster).
+            toast.info("Regex-Suche aktiv (/muster/flags) – durchsucht die neuesten Nachrichten.", {
+              id: "search-regex",
+              duration: 3000,
+            })
           }
           setHasMore(Boolean(res.hasMore))
         } else {
