@@ -57,17 +57,20 @@ export function escapeIlikePattern(value: string): string {
  * ILIKE pattern for from:/to: operator values against the address JSON text —
  * identical 3-case semantics to the desktop engine: `@bar.de` domain suffix,
  * `foo@bar.de` exact address, `foo@bar` address prefix, plain value substring.
+ * NB: Postgres re-serializes jsonb with a space after the colon
+ * (`"address": "max@test.de"`), so the anchor differs from the desktop's raw
+ * TEXT JSON — verified against a real Postgres.
  */
 export function addressIlikePattern(value: string): string {
   const escaped = escapeIlikePattern(value);
   if (value.startsWith('@')) {
-    return `%"address":"%${escaped}"%`;
+    return `%"address": "%${escaped}"%`;
   }
   if (/^\S+@\S+\.\S{2,}$/.test(value)) {
-    return `%"address":"${escaped}"%`;
+    return `%"address": "${escaped}"%`;
   }
   if (value.includes('@')) {
-    return `%"address":"${escaped}%`;
+    return `%"address": "${escaped}%`;
   }
   return `%${escaped}%`;
 }

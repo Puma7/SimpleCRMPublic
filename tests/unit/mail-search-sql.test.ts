@@ -40,9 +40,10 @@ describe('buildTsQueryText', () => {
 
 describe('addressIlikePattern (Desktop-Paritaet, Fix 2)', () => {
   test('domain suffix, exact address, prefix, plain substring', () => {
-    expect(addressIlikePattern('@test.de')).toBe('%"address":"%@test.de"%');
-    expect(addressIlikePattern('max@test.de')).toBe('%"address":"max@test.de"%');
-    expect(addressIlikePattern('max@test')).toBe('%"address":"max@test%');
+    // jsonb::text serialisiert mit Leerzeichen nach dem Doppelpunkt.
+    expect(addressIlikePattern('@test.de')).toBe('%"address": "%@test.de"%');
+    expect(addressIlikePattern('max@test.de')).toBe('%"address": "max@test.de"%');
+    expect(addressIlikePattern('max@test')).toBe('%"address": "max@test%');
     expect(addressIlikePattern('Mustermann')).toBe('%Mustermann%');
   });
 
