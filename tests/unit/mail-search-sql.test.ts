@@ -93,4 +93,22 @@ describe('ilikeTextNeedles / operators', () => {
     expect(hasSearchOperators(parseServerMailSearchQuery('hat:anhang'))).toBe(true);
     expect(hasSearchOperators(parseServerMailSearchQuery('nur text'))).toBe(false);
   });
+
+  test('stays index-aligned with buildTsQueryTokenTexts (fts attachments_json OR)', () => {
+    // applyMessageFtsFilter zippt tsQueryTokens[i] mit ilikeTextNeedles[i]
+    // fuer die Metadaten-only-Anhangnamen-Bedingung — beide Builder muessen
+    // pro Phrase/Term genau einen Eintrag in gleicher Reihenfolge liefern.
+    const queries = [
+      'rechnung',
+      '"Auftrag 4711" anhang',
+      '"exakte Phrase" foo_bar "noch eine" baz',
+      'a b c d e f g h i j k l m n',
+    ];
+    for (const q of queries) {
+      const parsed = parseServerMailSearchQuery(q);
+      const tokens = buildTsQueryTokenTexts(parsed);
+      expect(tokens).not.toBeNull();
+      expect(tokens!.length).toBe(ilikeTextNeedles(parsed).length);
+    }
+  });
 });

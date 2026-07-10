@@ -803,7 +803,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           ) => {
             let query = buildQuery(page);
             if (mode === 'fts' && tsQueryTokens && tsQueryTokens.length > 0) {
-              query = applyMessageFtsFilter(query, tsQueryTokens);
+              query = applyMessageFtsFilter(
+                query,
+                tsQueryTokens,
+                parsed ? ilikeTextNeedles(parsed) : [],
+              );
               // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
               // Sentinel-Codepoints werden aus dem Quelltext gestrippt, bevor
               // ts_headline markiert — sonst waeren Marker aus Mail-Inhalten
@@ -3103,12 +3107,28 @@ function applyMessageOperatorFilter(query: any, parsed: ParsedMailSearchQuery): 
 
 /**
  * FTS-Match pro Token: Nachrichten-search_vector ODER Anhang-search_vector
- * (0026), Tokens AND-verknuepft — so matcht auch eine Mail, deren Begriffe
- * sich auf Body und Anhang verteilen.
+ * (0026) ODER Dateiname in attachments_json (Metadaten-only-Anhaenge ueber
+ * der Groessen-/Gesamt-Cap haben KEINE email_message_attachments-Zeile —
+ * der Name steht nur im attachments_json der Message; Desktop-Paritaet:
+ * SQLite-FTS v3 indexiert attachments_json). ILIKE statt tsvector, weil die
+ * generierte search_vector-Spalte aus 0007 produktiv appliziert und nicht
+ * erweiterbar ist. Performance: bewusst ohne eigenen Index — der Ausdruck
+ * filtert nur die bereits durch Workspace-/View-/Vektor-Bedingungen
+ * eingeschraenkte Menge nach.
+ * Tokens AND-verknuepft — so matcht auch eine Mail, deren Begriffe sich auf
+ * Body und Anhang verteilen. attachmentNamePatterns ist index-aligned zu
+ * tsQueryTokens (beide phrases-then-terms mit identischer Kappung; der
+ * Parser liefert keine leeren Phrasen/Terme).
  */
-function applyMessageFtsFilter(query: any, tsQueryTokens: readonly string[]): any {
+function applyMessageFtsFilter(
+  query: any,
+  tsQueryTokens: readonly string[],
+  attachmentNamePatterns: readonly string[],
+): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
-  for (const token of tsQueryTokens) {
+  tsQueryTokens.forEach((token, index) => {
+    // Leerer Fallback matcht nichts (ILIKE '' trifft nur den Leerstring).
+    const namePattern = attachmentNamePatterns[index] ?? '';
     query = query.where(rawSql<boolean>`(
       email_messages.search_vector @@ to_tsquery('simple', ${token})
       OR EXISTS (
@@ -3117,14 +3137,17 @@ function applyMessageFtsFilter(query: any, tsQueryTokens: readonly string[]): an
           AND a.message_id = email_messages.id
           AND a.search_vector @@ to_tsquery('simple', ${token})
       )
+      OR email_messages.attachments_json::text ILIKE ${namePattern} ESCAPE '\\'
     )`);
-  }
+  });
   return query;
 }
 
 /**
  * ILIKE-Fallback: ein AND-verknuepfter Feldblock pro Phrase/Term (Desktop-
  * Paritaet). Customer-EXISTS bleibt bewusst nur in diesem Zweig.
+ * attachments_json::text deckt Metadaten-only-Anhangnamen ab (keine
+ * email_message_attachments-Zeile, s. applyMessageFtsFilter).
  */
 function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
@@ -3138,6 +3161,7 @@ function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any
       OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
       OR bcc_json::text ILIKE ${pattern} ESCAPE '\\'
       OR ticket_code ILIKE ${pattern} ESCAPE '\\'
+      OR attachments_json::text ILIKE ${pattern} ESCAPE '\\'
       OR EXISTS (
         SELECT 1 FROM email_message_attachments a
         WHERE a.workspace_id = email_messages.workspace_id

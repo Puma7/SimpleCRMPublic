@@ -13997,6 +13997,28 @@ describe('server edition foundation', () => {
     expect(listSection).toContain('const effectiveCursor = relevanceSort ? undefined : input.cursor;');
   });
 
+  test('postgres mail search matches metadata-only attachment names via attachments_json', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const ftsSection = source.slice(
+      source.indexOf('function applyMessageFtsFilter('),
+      source.indexOf('function applyMessageIlikeFilter('),
+    );
+    const ilikeSection = source.slice(
+      source.indexOf('function applyMessageIlikeFilter('),
+      source.indexOf('const TS_HEADLINE_OPTIONS'),
+    );
+    // Anhaenge ueber der Groessen-/Gesamt-Cap haben KEINE
+    // email_message_attachments-Zeile — der Dateiname steht nur in
+    // attachments_json auf der Message und muss in BEIDEN Suchzweigen
+    // matchen (Desktop-Paritaet: SQLite-FTS v3 indexiert attachments_json).
+    expect(ftsSection).toContain(
+      "OR email_messages.attachments_json::text ILIKE ${namePattern} ESCAPE '\\\\'",
+    );
+    expect(ilikeSection).toContain("OR attachments_json::text ILIKE ${pattern} ESCAPE '\\\\'");
+    // Der fts-Zweig bekommt die index-alignten ILIKE-Patterns aus dem Parser.
+    expect(source).toContain('parsed ? ilikeTextNeedles(parsed) : []');
+  });
+
   test('postgres mail folder badge counts exclude done archived messages', () => {
     const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
     const countsSection = source.slice(
