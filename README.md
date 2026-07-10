@@ -1,6 +1,6 @@
 # SimpleCRM
 
-SimpleCRM is a desktop-based Customer Relationship Management (CRM) application built with Electron, React, and TypeScript. It bundles essential CRM features on your local machine, helping you manage customers, products, deals, tasks, and your schedule. It also offers optional one-way data synchronization from your JTL MSSQL database.
+SimpleCRM is a desktop-based Customer Relationship Management (CRM) application built with Electron, React, and TypeScript. It bundles essential CRM features on your local machine, helping you manage customers, products, deals, tasks, and your schedule. It also offers optional one-way data synchronization from your JTL MSSQL database. A self-hostable **server edition** (Fastify API + PostgreSQL, deployed with Docker) is also available — see [Server edition (Docker)](#server-edition-docker) below.
 
 <p align="center">
   <img src="assets/simplecrm.png" alt="SimpleCRM Dashboard" width="800">
@@ -56,9 +56,11 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
    ```
 2. **Install Dependencies:**
    ```bash
-   npm install --legacy-peer-deps
+   pnpm install
    ```
-   (`--legacy-peer-deps` avoids peer-resolution conflicts in the current dependency tree.)
+   (This project uses **pnpm**. pnpm resolves the peer-dependency tree
+   automatically — no `--legacy-peer-deps` flag is needed. Install pnpm 9+
+   first if you don't have it: `npm install -g pnpm@9`.)
 3. **Rebuild Native Modules:**
    Electron apps sometimes need native modules rebuilt for your specific setup. The `postinstall` script should handle this, but if you encounter issues, run:
    ```bash
@@ -98,6 +100,16 @@ To create an installer (`.exe`, `.dmg`, etc.):
    npm run electron:build
    ```
    The installer will be created in the `dist-build` directory.
+
+## Server edition (Docker)
+
+Beyond the desktop app, SimpleCRM has a self-hostable **server edition**: a Fastify HTTP API (`packages/server`) backed by PostgreSQL, fronted by Caddy for TLS, and deployed with Docker Compose from the `docker/` directory. It enables multi-user, browser-based access to the same CRM data model.
+
+- **Setup:** [docs/SETUP_SERVER.md](docs/SETUP_SERVER.md) — Docker Compose stack (Caddy + PostgreSQL + API), environment/secrets, and first-run owner setup.
+- **Migrate from the desktop/standalone app:** [docs/MIGRATION_STANDALONE_TO_SERVER.md](docs/MIGRATION_STANDALONE_TO_SERVER.md).
+- **Implementation status:** [docs/SERVER_EDITION_IMPLEMENTATION.md](docs/SERVER_EDITION_IMPLEMENTATION.md).
+
+CI validates the stack end-to-end in the `server-compose-smoke` job (`.github/workflows/ci.yml`): it builds the images, boots PostgreSQL + migrations + API + Caddy, then runs the backup, doctor, and restore-drill profiles.
 
 ## Configuration
 

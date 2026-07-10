@@ -3,6 +3,8 @@
 # dependencies
 node_modules/
 **/node_modules/
+# We standardize on pnpm; npm's lockfile is intentionally untracked.
+package-lock.json
 
 # next.js
 /.next/

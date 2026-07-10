@@ -14,28 +14,33 @@ Domain: [`docs/DEVELOPER_EMAIL.md`](docs/DEVELOPER_EMAIL.md), [`docs/WORKFLOW_PH
 
 ### Project overview
 
-SimpleCRM is an Electron + React + TypeScript desktop CRM app. All data is stored locally in SQLite (`better-sqlite3`). There is no backend server; everything runs inside the Electron main process plus a Vite-served renderer.
+SimpleCRM ships in **two editions** from one pnpm-workspaces monorepo (`packages/core`, `packages/desktop`, `packages/server`; see `pnpm-workspace.yaml`):
+
+- **Desktop edition** — an Electron + React + TypeScript app. Data is stored locally in SQLite (`better-sqlite3`); everything runs inside the Electron main process plus a Vite-served renderer.
+- **Server edition** — a Fastify HTTP API (`packages/server`, ~185 source files) backed by PostgreSQL, deployed with Docker Compose (`docker/`: `caddy`, `api`, `postgres`, `migrate`, `backup`, …). See [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md). CI boots and smoke-tests it in the `server-compose-smoke` job of `.github/workflows/ci.yml`.
+
+Unless noted otherwise, the commands and gotchas below target the **desktop edition**; for the server edition follow [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md).
 
 ### Key commands
 
 | Task | Command |
 |---|---|
-| Install deps | `npm install --legacy-peer-deps` |
-| Lint | `npx eslint . --ext ts,tsx --max-warnings 0` |
-| Unit + integration tests | `npm test` |
-| Unit tests only | `npm run test:unit` |
-| Mail module tests | `npm run test:mail` |
-| Mail module coverage (ratchet on `electron/email`) | `npm run test:mail:coverage` |
-| Integration tests only | `npm run test:integration` |
-| Build (web + electron main) | `npm run build` |
-| Dev mode | `xvfb-run --auto-servernum npm run electron:dev` |
-| Production mode | `npm run electron:start` |
+| Install deps | `pnpm install` |
+| Lint | `pnpm run lint` |
+| Unit + integration tests | `pnpm test` |
+| Unit tests only | `pnpm run test:unit` |
+| Mail module tests | `pnpm run test:mail` |
+| Mail module coverage (ratchet on `electron/email`) | `pnpm run test:mail:coverage` |
+| Integration tests only | `pnpm run test:integration` |
+| Build (web + electron main) | `pnpm run build` |
+| Dev mode | `xvfb-run --auto-servernum pnpm run electron:dev` |
+| Production mode | `pnpm run electron:start` |
 
 See `package.json` `scripts` for the full list.
 
 ### Gotchas
 
-- **`--legacy-peer-deps` is required** for `npm install` because the dependency tree has peer-resolution conflicts. Without it, install fails.
+- **Package manager is pnpm** (pinned to 9 in CI). pnpm resolves the peer-dependency conflicts automatically (`autoInstallPeers` in `pnpm-lock.yaml` settings), so no `--legacy-peer-deps` flag is needed. Do not add a second lockfile.
 - **`@testing-library/dom` is a missing peer dep** — `@testing-library/react` requires it but it is not listed in `package.json`. The update script installs it explicitly so tests pass.
 - **Native modules** (`better-sqlite3`, `keytar`) are compiled by the `postinstall` script (`electron-rebuild`). If you see "module was compiled against a different Node.js version" errors, run `npm run postinstall` to rebuild.
 - **Xvfb is required** on headless Linux to run the Electron app or E2E tests. Use `xvfb-run --auto-servernum` as a prefix.
@@ -77,7 +82,3 @@ Pascal has granted Hermes high autonomy for this project.
 4. Implement the smallest root-cause fix.
 5. Run focused tests and typecheck.
 6. Write longer findings to `.hermes/reports/` and report only the concise result in German.
-
-### Current local environment note
-
-On this Windows machine, broad workflow tests that import Electron may fail if `node_modules/electron/dist/electron.exe` is missing. Reinstalling can require Visual Studio Build Tools because `electron-rebuild` rebuilds native modules such as `better-sqlite3` and `keytar`. Prefer focused server/core tests when the Electron binary is blocked.

@@ -33,7 +33,6 @@
 *.toml  text eol=lf
 
 # Lockfiles (avoid CRLF churn on Windows)
-package-lock.json text eol=lf
 yarn.lock         text eol=lf
 pnpm-lock.yaml    text eol=lf
 *.lock            text eol=lf
