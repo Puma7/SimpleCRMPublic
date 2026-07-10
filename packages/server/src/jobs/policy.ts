@@ -82,14 +82,26 @@ export function normalizeAiJobConcurrency(value: number | undefined): number {
   return value;
 }
 
-export function accountSyncAdvisoryLockCommand(accountId: number | string): JobSqlCommand {
+/**
+ * Shared key for the per-account sync advisory lock. Every path that fetches +
+ * threads mail for an account MUST lock on this same key so concurrent syncs
+ * (e.g. a Graphile-queued sync and a workflow-triggered legacy-queue sync for
+ * the same account) serialize instead of both minting a thread for one
+ * conversation. Used by both accountSyncAdvisoryLockCommand (job runner) and the
+ * mail-sync message transaction.
+ */
+export function accountSyncAdvisoryLockKey(accountId: number | string): string {
   const normalized = String(accountId).trim();
   if (!normalized) {
     throw new Error('accountId is required for account sync advisory lock');
   }
+  return `account-${normalized}`;
+}
+
+export function accountSyncAdvisoryLockCommand(accountId: number | string): JobSqlCommand {
   return {
     sql: 'SELECT pg_advisory_xact_lock(hashtext($1));',
-    params: [`account-${normalized}`],
+    params: [accountSyncAdvisoryLockKey(accountId)],
   };
 }
 

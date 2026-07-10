@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { CompiledQuery, type Kysely } from 'kysely';
 
 import type { DoctorResult } from '../cli/doctor';
 import { runDoctorChecks } from '../cli/doctor';
@@ -7,6 +7,7 @@ import {
   inspectServerMigrations,
   runServerMigrations,
   serverMigrations,
+  type MigrationDatabase,
   type MigrationPlan,
   type MigrationRunResult,
 } from '../migrations';
@@ -43,6 +44,30 @@ export type ServerMaintenancePort = Readonly<{
   executeHardReset(): Promise<{ truncatedTables: number }>;
 }>;
 
+/**
+ * A read-only MigrationDatabase backed by the shared Kysely pool. Used only for
+ * the migration *inspection* (checkMigrations). It deliberately omits
+ * `transaction`, so it can never be wired into applyMigrations /
+ * reconcileAppliedChecksums — those must keep a dedicated single connection for
+ * their BEGIN/COMMIT.
+ */
+function createKyselyMigrationDatabase(db: Kysely<ServerDatabase>): MigrationDatabase {
+  return {
+    async execute(text: string, params?: readonly unknown[]): Promise<void> {
+      await db.executeQuery(CompiledQuery.raw(text, params ? [...params] : []));
+    },
+    async query<T extends Record<string, unknown> = Record<string, unknown>>(
+      text: string,
+      params?: readonly unknown[],
+    ): Promise<readonly T[]> {
+      const result = await db.executeQuery<T>(
+        CompiledQuery.raw(text, params ? [...params] : []) as CompiledQuery<T>,
+      );
+      return result.rows;
+    },
+  };
+}
+
 export function createServerMaintenancePort(options: ServerMaintenancePortOptions): ServerMaintenancePort {
   return {
     async getStatus() {
@@ -64,13 +89,14 @@ export function createServerMaintenancePort(options: ServerMaintenancePortOption
     },
 
     async checkMigrations() {
-      const client = createPgClientFromDatabaseUrl(options.databaseUrl);
-      await client.connect();
-      try {
-        return inspectServerMigrations(createPgMigrationDatabase(client), serverMigrations);
-      } finally {
-        await client.end();
-      }
+      // Run the READ-ONLY migration inspection over the existing Kysely pool
+      // instead of opening a fresh short-lived pg.Client. That fresh connection
+      // is what surfaced "Connection terminated" for POST /migrations/check;
+      // the pool is already established and healthy. inspectServerMigrations only
+      // runs CREATE TABLE IF NOT EXISTS + a SELECT (no transaction), so a
+      // transaction-less adapter is safe — and it can never be misused for
+      // applyMigrations, which keeps its own dedicated connection below.
+      return inspectServerMigrations(createKyselyMigrationDatabase(options.db), serverMigrations);
     },
 
     async applyMigrations() {

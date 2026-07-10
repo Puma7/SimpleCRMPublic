@@ -22,6 +22,7 @@ import { returnsSchemaMigration } from './0021_returns_schema';
 import { returnsPortalSettingsMigration } from './0022_returns_portal_settings';
 import { accountScopeOverridesMigration } from './0023_account_scope_overrides';
 import { settingsKbContextImapMigration } from './0024_settings_kb_context_imap';
+import { emailMessageThreadLookupMigration } from './0025_email_message_thread_lookup';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -50,6 +51,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   returnsPortalSettingsMigration,
   accountScopeOverridesMigration,
   settingsKbContextImapMigration,
+  emailMessageThreadLookupMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

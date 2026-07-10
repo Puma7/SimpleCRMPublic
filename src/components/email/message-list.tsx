@@ -73,8 +73,19 @@ type Props = {
 }
 
 function threadKey(m: EmailMessage): string {
-  const t = m.thread_id?.trim() || m.imap_thread_id?.trim() || m.ticket_code?.trim()
-  if (t) return `t:${t}`
+  // thread_id is a globally-unique th-<hex>, so it keys directly. ticket_code and
+  // imap_thread_id are BOTH account-scoped: server ticket threads are unique per
+  // (account, ticket) and IMAP THREAD numbers restart at 1 per mailbox, so per
+  // account the same visible value can recur. Both must therefore be scoped by
+  // account_id — otherwise, in the "all accounts" view, two unrelated accounts
+  // sharing a ticket code or imap_thread_id collapse into one expandable thread
+  // and a mitarbeiter sees a foreign account's mail under another customer's thread.
+  const tid = m.thread_id?.trim()
+  if (tid) return `t:${tid}`
+  const ticket = m.ticket_code?.trim()
+  if (ticket) return `t:${m.account_id}:${ticket}`
+  const imapKey = m.imap_thread_id?.trim()
+  if (imapKey) return `i:${m.account_id}:${imapKey}`
   return `m:${m.id}`
 }
 
@@ -131,6 +142,21 @@ export function MessageList({
     }
     return out
   }, [messages, listDisplayMode])
+  // All loaded rows grouped by threadKey, so a collapsed thread can be expanded
+  // from the messages already on the page — even ones grouped only by
+  // imap_thread_id / ticket_code (no internal thread_id yet). This makes the
+  // "Threads (Vorschau)" mode usable immediately, before the server thread
+  // resolver has backfilled thread_id.
+  const threadGroups = useMemo(() => {
+    const map = new Map<string, EmailMessage[]>()
+    for (const m of messages) {
+      const key = threadKey(m)
+      const arr = map.get(key)
+      if (arr) arr.push(m)
+      else map.set(key, [m])
+    }
+    return map
+  }, [messages])
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
@@ -616,9 +642,15 @@ export function MessageList({
               const checked = selectedIds.has(m.id)
               const tKey = threadKey(m)
               const threadIdForExpand = m.thread_id?.trim() ?? ""
-              const isThreadRoot = listDisplayMode === "thread" && threadIdForExpand.length > 0
+              const localSiblings = threadGroups.get(tKey) ?? []
+              const hasLocalSiblings = localSiblings.length > 1
+              const isThreadRoot =
+                listDisplayMode === "thread" && (threadIdForExpand.length > 0 || hasLocalSiblings)
               const expanded = expandedThreads.has(tKey)
-              const children = threadChildren[tKey] ?? []
+              // Prefer server-fetched thread messages; fall back to the siblings
+              // already loaded on this page (covers imap_thread_id / ticket_code
+              // groups with no thread_id). The child render filters out `m`.
+              const children = threadChildren[tKey] ?? (expanded ? localSiblings : [])
               const lock = conversationLocks[m.id]
               const lockOwner = lock?.displayName?.trim() || lock?.email?.trim() || lock?.userId
               return (
@@ -629,7 +661,7 @@ export function MessageList({
                       active && "bg-muted",
                     )}
                   >
-                    {isThreadRoot && threadIdForExpand ? (
+                    {isThreadRoot ? (
                       <Button
                         type="button"
                         variant="ghost"

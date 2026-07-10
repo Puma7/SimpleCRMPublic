@@ -11,6 +11,7 @@ export * from './outbound-threading';
 export * from './parse-utils';
 export * from './pop3-uidl-cache';
 export * from './read-receipt';
+export * from './reference-threading';
 export * from './scheduled-send-state';
 export * from './spam-engine';
 export * from './spam-features';

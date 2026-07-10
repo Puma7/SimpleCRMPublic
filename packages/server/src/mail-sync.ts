@@ -23,11 +23,16 @@ import {
   type MailboxListEntry,
 } from '@simplecrm/core';
 import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
+import { sql } from 'kysely';
 import type { Kysely, Selectable, Transaction, Updateable } from 'kysely';
 
 import type { EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier } from './db';
 import { resolveAttachmentStoragePath } from './db';
+import {
+  refreshThreadAggregateAfterSync,
+  resolveReferenceThreadForSync,
+} from './db/postgres-mail-metadata-read-ports';
 import {
   MAX_SYNC_ATTACHMENT_BYTES,
   MAX_SYNC_ATTACHMENT_TOTAL_BYTES,
@@ -54,6 +59,7 @@ import type { EmailAccountsTable, EmailFoldersTable, EmailMessagesTable, ServerD
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type { MailSyncJobPlan, MailSyncJobPort, MailSyncJobResult } from './jobs';
+import { accountSyncAdvisoryLockKey } from './jobs/policy';
 
 const FIRST_SYNC_MAX_MESSAGES = 2000;
 const POP3_UID_CEILING = -1_000_000;
@@ -1399,6 +1405,16 @@ async function upsertPostgresMailSyncMessage(
   input: ServerMailSyncMessageInput,
   context: ServerMailSyncUpsertContext | undefined,
 ): Promise<{ id: number; isNew: boolean }> {
+  // Serialize concurrent syncs of the SAME account (a Graphile-queued sync and a
+  // workflow-triggered legacy-queue sync can run at once — the two queues are not
+  // coordinated). Without this, two new messages of one conversation can each see
+  // no existing sibling in resolveReferenceThreadForSync and mint a separate
+  // thread, silently splitting the very conversations this sync path threads. The
+  // xact lock auto-releases on commit/rollback; the second txn then reads the
+  // first's committed thread and inherits it.
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${accountSyncAdvisoryLockKey(input.account.id)}))`
+    .execute(trx);
+
   const pop3Uidl = input.pop3Uidl?.trim() || null;
   if (pop3Uidl) {
     const cachedId = context?.pop3UidlToId?.get(pop3Uidl);
@@ -1446,6 +1462,18 @@ async function upsertPostgresMailSyncMessage(
   }
 
   const now = new Date();
+  // Reference-thread the message (Message-ID / In-Reply-To / References) so it
+  // joins its conversation. Runs in this sync transaction and backfills
+  // thread-less siblings; standalone/headerless mail stays unthreaded.
+  const resolvedThread = await resolveReferenceThreadForSync(trx, {
+    workspaceId: input.workspaceId,
+    accountId: input.account.id,
+    messageId: input.messageId,
+    inReplyTo: input.inReplyTo,
+    referencesHeader: input.referencesHeader,
+    subject: input.subject,
+    now,
+  });
   const row = await trx
     .insertInto('email_messages')
     .values({
@@ -1475,8 +1503,8 @@ async function upsertPostgresMailSyncMessage(
       soft_deleted: false,
       outbound_hold: false,
       outbound_block_reason: null,
-      thread_id: null,
-      ticket_code: null,
+      thread_id: resolvedThread.threadId,
+      ticket_code: resolvedThread.ticketCode,
       customer_source_sqlite_id: null,
       customer_id: null,
       folder_kind: input.folderKind,
@@ -1498,7 +1526,7 @@ async function upsertPostgresMailSyncMessage(
       raw_rfc822_b64: input.rawRfc822B64,
       remote_content_policy: 'blocked',
       read_receipt_requested: false,
-      thread_resolver_version: 0,
+      thread_resolver_version: resolvedThread.threadId ? 1 : 0,
       source_row: serverMailSyncSourceRow(),
       imported_in_run_id: null,
       created_at: now,
@@ -1507,6 +1535,12 @@ async function upsertPostgresMailSyncMessage(
     .returning(['id'])
     .executeTakeFirstOrThrow();
   const id = Number(row.id);
+  // Refresh the thread aggregate now that this message (and any backfilled
+  // siblings) are stored, so message_count / last_message_at / unread reflect
+  // reality instead of the freshly-minted thread's zeros.
+  if (resolvedThread.threadId) {
+    await refreshThreadAggregateAfterSync(trx, input.workspaceId, resolvedThread.threadId, now);
+  }
   if (pop3Uidl) context?.pop3UidlToId?.set(pop3Uidl, id);
   else context?.imapUidToId?.set(uidForRow, id);
   return { id, isNew: true };
@@ -1520,11 +1554,33 @@ async function updateExistingPostgresMailSyncMessage(
 ): Promise<void> {
   const current = await trx
     .selectFrom('email_messages')
-    .select(['seen_local', 'is_spam', 'spam_status'])
+    .select([
+      'seen_local', 'is_spam', 'spam_status', 'thread_id', 'has_attachments', 'date_received',
+      'message_id', 'in_reply_to', 'references_header',
+    ])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', id)
-    .executeTakeFirst() as Pick<EmailMessageRow, 'seen_local' | 'is_spam' | 'spam_status'> | undefined;
+    .executeTakeFirst() as
+      | Pick<EmailMessageRow,
+        | 'seen_local' | 'is_spam' | 'spam_status' | 'thread_id' | 'has_attachments' | 'date_received'
+        | 'message_id' | 'in_reply_to' | 'references_header'>
+      | undefined;
   const now = new Date();
+  const nextSeenLocal = mergeSeenLocalOnMailSync({
+    currentSeenLocal: Boolean(current?.seen_local),
+    incomingSeenLocal: input.seenLocal,
+    spamStatus: current?.spam_status,
+    reconcileSeenFromServer,
+  });
+  const nextDateReceived = input.dateReceived ? new Date(input.dateReceived) : null;
+  const currentDateMs = current?.date_received ? new Date(current.date_received).getTime() : null;
+  const dateChanged = currentDateMs !== (nextDateReceived ? nextDateReceived.getTime() : null);
+  // Threading inputs — only these should trigger an edge rebuild. Read-state /
+  // date changes refresh the aggregate but must leave the edge graph untouched.
+  const headersChanged =
+    (current?.message_id ?? null) !== (input.messageId ?? null)
+    || (current?.in_reply_to ?? null) !== (input.inReplyTo ?? null)
+    || (current?.references_header ?? null) !== (input.referencesHeader ?? null);
   await trx
     .updateTable('email_messages')
     .set({
@@ -1536,16 +1592,11 @@ async function updateExistingPostgresMailSyncMessage(
       to_json: input.toJson,
       cc_json: input.ccJson,
       bcc_json: input.bccJson ?? undefined,
-      date_received: input.dateReceived ? new Date(input.dateReceived) : null,
+      date_received: nextDateReceived,
       snippet: input.snippet,
       body_text: input.bodyText,
       body_html: input.bodyHtml,
-      seen_local: mergeSeenLocalOnMailSync({
-        currentSeenLocal: Boolean(current?.seen_local),
-        incomingSeenLocal: input.seenLocal,
-        spamStatus: current?.spam_status,
-        reconcileSeenFromServer,
-      }),
+      seen_local: nextSeenLocal,
       imap_thread_id: input.imapThreadId ?? undefined,
       has_attachments: input.hasAttachments,
       attachments_json: input.attachmentsJson ?? undefined,
@@ -1563,6 +1614,27 @@ async function updateExistingPostgresMailSyncMessage(
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', id)
     .execute();
+
+  // The insert path refreshes the thread aggregate, but existing-row resyncs can
+  // flip an aggregate input too — reconcileSeenFromServer changes seen_local
+  // (→ has_unread), attachments can appear, and a corrected Date header rewrites
+  // date_received (→ last_message_at / root-message fields) — without recomputing
+  // it, thread lists keep stale unread/last-date values. Recompute only when an
+  // aggregate input actually changed on a threaded row. Rebuild the edge graph
+  // ONLY when the threading headers changed, so a pure read-state/date resync
+  // doesn't clobber parent/child edits made via the thread-edges API.
+  const threadId = current?.thread_id?.trim();
+  if (
+    threadId
+    && (
+      nextSeenLocal !== Boolean(current?.seen_local)
+      || input.hasAttachments !== Boolean(current?.has_attachments)
+      || dateChanged
+      || headersChanged
+    )
+  ) {
+    await refreshThreadAggregateAfterSync(trx, input.workspaceId, threadId, now, { rebuildEdges: headersChanged });
+  }
 }
 
 async function nextPostgresPop3Uid(

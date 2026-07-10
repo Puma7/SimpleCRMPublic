@@ -1,4 +1,9 @@
-import { generateTicketCode } from '@simplecrm/core';
+import {
+  collectRelatedIds,
+  extractTicketFromSubject,
+  generateTicketCode,
+  normalizeMessageId,
+} from '@simplecrm/core';
 import { randomBytes } from 'crypto';
 
 import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
@@ -76,6 +81,8 @@ import type {
   EmailThreadSplitMessagePortResult,
 } from '../api/types';
 import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
+import { listWorkspaceTicketPrefixes } from '../mail-ticket-prefixes';
+import { normalizedMessageIdSql } from './mail-thread-normalization-sql';
 import type {
   EmailAccountMailSettingsTable,
   EmailAccountSignaturesTable,
@@ -554,7 +561,7 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
 
           const now = new Date();
           const ticketCode = generateTicketCode();
-          const threadId = await getOrCreateThreadForTicket(trx, input.workspaceId, ticketCode, now);
+          const threadId = await getOrCreateThreadForTicket(trx, input.workspaceId, ticketCode, null, now);
           await trx
             .updateTable('email_messages')
             .set({
@@ -2723,42 +2730,61 @@ async function getOrCreateThreadForTicket(
   trx: WorkspaceTransaction,
   workspaceId: string,
   ticketCode: string,
+  accountId: number | null,
   now: Date,
 ): Promise<string> {
+  // account_id scopes the ticket thread. Server compose creates ticket threads
+  // under the sending account (unique on workspace+account+ticket), so sync must
+  // resolve/create against the SAME account scope — otherwise a synced reply
+  // `Re: [SCR-123]` opens a parallel account_id-null thread instead of joining
+  // the compose thread. Pass null only for the legacy workspace-global scope
+  // (unique on workspace+ticket WHERE account_id IS NULL).
+  const scopeOp = accountId == null ? 'is' : '=';
   const existing = await trx
     .selectFrom('email_threads')
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
-    .where('account_id', 'is', null)
+    .where('account_id', scopeOp, accountId ?? null)
     .executeTakeFirst();
   if (existing?.id) return existing.id;
 
   const threadId = `th-${randomBytes(8).toString('hex')}`;
-  const inserted = await trx
-    .insertInto('email_threads')
-    .values({
-      workspace_id: workspaceId,
-      id: threadId,
-      ticket_code: ticketCode,
-      root_message_source_sqlite_id: null,
-      root_message_id: null,
-      last_message_at: null,
-      message_count: 0,
-      has_unread: false,
-      has_attachments: false,
-      subject_normalized: null,
-      source_row: serverApiSourceRow(),
-      imported_in_run_id: null,
-      created_at: now,
-      updated_at: now,
-    })
-    .onConflict((oc) => oc
-      .columns(['workspace_id', 'ticket_code'])
-      .where('account_id', 'is', null)
-      .doNothing())
-    .returning('id')
-    .executeTakeFirst();
+  const values = {
+    workspace_id: workspaceId,
+    id: threadId,
+    ticket_code: ticketCode,
+    account_id: accountId ?? null,
+    root_message_source_sqlite_id: null,
+    root_message_id: null,
+    last_message_at: null,
+    message_count: 0,
+    has_unread: false,
+    has_attachments: false,
+    subject_normalized: null,
+    source_row: serverApiSourceRow(),
+    imported_in_run_id: null,
+    created_at: now,
+    updated_at: now,
+  };
+  const inserted = accountId == null
+    ? await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'ticket_code'])
+        .where('account_id', 'is', null)
+        .doNothing())
+      .returning('id')
+      .executeTakeFirst()
+    : await trx
+      .insertInto('email_threads')
+      .values(values)
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'account_id', 'ticket_code'])
+        .doNothing())
+      .returning('id')
+      .executeTakeFirst();
   if (inserted?.id) return inserted.id;
 
   const existingAfterConflict = await trx
@@ -2766,10 +2792,94 @@ async function getOrCreateThreadForTicket(
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('ticket_code', '=', ticketCode)
-    .where('account_id', 'is', null)
+    .where('account_id', scopeOp, accountId ?? null)
     .executeTakeFirst();
   if (existingAfterConflict?.id) return existingAfterConflict.id;
   throw new Error('email thread ticket insert failed');
+}
+
+function formatServerTicketSequence(value: number, padding: number): string {
+  const normalizedValue = Number.isSafeInteger(value) && value > 0 ? value : 1;
+  const normalizedPadding = Number.isSafeInteger(padding) && padding > 0 ? Math.min(padding, 12) : 6;
+  return String(normalizedValue).padStart(normalizedPadding, '0');
+}
+
+/**
+ * Allocate a ticket code for a header-only synced conversation from the SAME
+ * account-scoped settings compose uses (ticket_prefix / ticket_next_number /
+ * padding), advancing the sequence. These codes are persisted onto messages and
+ * reused in later compose reply subjects, so they must live in the account's
+ * configured namespace and sequence — not the legacy random `SCR` prefix.
+ * Mirrors mail-compose-send's allocateNextTicketCodeForAccount.
+ */
+async function allocateAccountScopedTicketCode(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number,
+  now: Date,
+): Promise<string> {
+  let settings = await trx
+    .selectFrom('email_account_mail_settings')
+    .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', accountId)
+    .forUpdate()
+    .executeTakeFirst();
+
+  if (!settings) {
+    const account = await trx
+      .selectFrom('email_accounts')
+      .select(['id', 'source_sqlite_id', 'email_address', 'display_name'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    if (!account) return generateTicketCode();
+    const defaults = buildDefaultServerAccountMailSettings({
+      id: Number(account.id),
+      displayName: account.display_name ?? '',
+      emailAddress: account.email_address ?? '',
+    });
+    await trx
+      .insertInto('email_account_mail_settings')
+      .values({
+        workspace_id: workspaceId,
+        account_source_sqlite_id: account.source_sqlite_id,
+        account_id: accountId,
+        ticket_prefix: defaults.ticketPrefix,
+        ticket_next_number: defaults.ticketNextNumber,
+        ticket_number_padding: defaults.ticketNumberPadding,
+        thread_namespace: defaults.threadNamespace,
+        source_row: serverApiSourceRow(),
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc.columns(['workspace_id', 'account_id']).doNothing())
+      .execute();
+    settings = await trx
+      .selectFrom('email_account_mail_settings')
+      .select(['ticket_prefix', 'ticket_next_number', 'ticket_number_padding'])
+      .where('workspace_id', '=', workspaceId)
+      .where('account_id', '=', accountId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+  }
+
+  const prefix = settings.ticket_prefix.trim() || `ACC${accountId}`;
+  const currentNumber = Number(settings.ticket_next_number);
+  const padding = Number(settings.ticket_number_padding);
+  const ticketCode = generateTicketCode({
+    prefix,
+    sequence: formatServerTicketSequence(currentNumber, padding),
+  });
+  const nextNumber = (Number.isSafeInteger(currentNumber) && currentNumber > 0 ? currentNumber : 1) + 1;
+  await trx
+    .updateTable('email_account_mail_settings')
+    .set({ ticket_next_number: nextNumber, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', accountId)
+    .execute();
+  return ticketCode;
 }
 
 async function resolveCanonicalThreadId(
@@ -2792,6 +2902,230 @@ async function resolveCanonicalThreadId(
     current = row.canonical_thread_id;
   }
   return current;
+}
+
+/**
+ * Reference-thread a freshly-synced message: find its conversation siblings in
+ * the same account by normalized Message-ID / In-Reply-To / References, and
+ *  - inherit an existing thread_id (backfilling any thread-less siblings), or
+ *  - mint a new thread once a 2nd message of the conversation is seen, or
+ *  - honor a ticket carried in the subject, or
+ *  - leave thread_id = null for standalone / headerless (POP3) mail (as before).
+ *
+ * Runs inside the caller's sync transaction (so a query error aborts that one
+ * message's sync — it retries). When siblings span more than one existing
+ * thread we pick the lexicographically-smallest and deliberately DO NOT merge
+ * the others: an under-merge from imperfect headers is safe; a mis-merge is not.
+ * The heavy alias-based merge stays in the explicit user "merge threads" action.
+ */
+export async function resolveReferenceThreadForSync(
+  trx: WorkspaceTransaction,
+  args: {
+    workspaceId: string;
+    accountId: number;
+    messageId: string | null;
+    inReplyTo: string | null;
+    referencesHeader: string | null;
+    subject: string | null;
+    now: Date;
+    /**
+     * Exclude one message id from the sibling lookup. Used by the historical
+     * backfill, where the row being threaded is ALREADY in the table — without
+     * excluding it the resolver would see the row as its own sibling and, e.g.,
+     * mint a thread for a lone reply whose parent isn't synced, diverging from
+     * the new-message path (which runs before the row exists).
+     */
+    excludeMessageId?: number;
+  },
+): Promise<{ threadId: string | null; ticketCode: string | null }> {
+  const related = collectRelatedIds(args.messageId, args.inReplyTo, args.referencesHeader);
+  // Ancestor ids only (In-Reply-To ∪ References, WITHOUT our own Message-ID).
+  // Used to match stored `message_id`: a message references its ANCESTORS, never
+  // itself. Matching stored message_id against our own id would treat a duplicate
+  // folder copy of THIS same standalone email (e.g. INBOX + Archive/All Mail) as
+  // a conversation sibling and thread the copies together.
+  const ancestorIds = collectRelatedIds(null, args.inReplyTo, args.referencesHeader);
+  // Recognize the same custom per-account ticket prefixes the rest of the app
+  // uses, not just the legacy `SCR` default. Fast path: try the default first;
+  // only when the subject carries a bracketed ticket token the default missed do
+  // we load the workspace's configured prefixes (2 extra queries) and retry, so
+  // ordinary mail without a ticket bracket stays query-free on the hot sync path.
+  let subjectTicket = extractTicketFromSubject(args.subject);
+  if (
+    !subjectTicket
+    && args.subject
+    && /\[[A-Za-z0-9]{1,12}-[A-Za-z0-9]{1,20}\]/.test(args.subject)
+  ) {
+    const allowedPrefixes = await listWorkspaceTicketPrefixes(trx, args.workspaceId);
+    subjectTicket = extractTicketFromSubject(args.subject, { allowedPrefixes });
+  }
+
+  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
+
+  let siblings: { id: number; thread_id: string | null }[] = [];
+  if (related.length > 0) {
+    // Match siblings by NORMALIZED Message-ID / In-Reply-To (trim, strip a
+    // single outer <> pair, lowercase). The expression comes from the SAME
+    // normalizedMessageIdSql() helper as the migration 0025 functional indexes,
+    // so the lookup stays index-backed AND matches the JS normalizeMessageId()
+    // that produced `related` (a blanket bracket strip would diverge on ids
+    // like `<<x@y>>`). `sql.join` binds each id as its own parameter (an
+    // IN-list) — avoids `any(array)` colliding with the pool's jsonb-array plugin.
+    const normMsgId = kyselySql.raw(normalizedMessageIdSql('message_id'));
+    const normIrt = kyselySql.raw(normalizedMessageIdSql('in_reply_to'));
+    // The `IS NOT NULL` guards let Postgres use the partial functional indexes
+    // from migration 0025 (`WHERE message_id IS NOT NULL` / `... in_reply_to ...`)
+    // instead of a full scan. Stored message_id is matched ONLY against ancestor
+    // ids (so self-duplicates don't match); stored in_reply_to is matched against
+    // our own id + ancestors (so a reply TO us, or a sibling reply to a shared
+    // ancestor, is found even when synced out of order).
+    const branches: RawBuilder<boolean>[] = [];
+    if (ancestorIds.length > 0) {
+      branches.push(
+        kyselySql<boolean>`(message_id IS NOT NULL AND ${normMsgId} in (${kyselySql.join(ancestorIds)}))`,
+      );
+    }
+    branches.push(
+      kyselySql<boolean>`(in_reply_to IS NOT NULL AND ${normIrt} in (${kyselySql.join(related)}))`,
+    );
+    const whereClause = branches.length === 1
+      ? branches[0]!
+      : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` OR `)})`;
+    let siblingQuery = trx
+      .selectFrom('email_messages')
+      .select(['id', 'thread_id'])
+      .where('workspace_id', '=', args.workspaceId)
+      .where('account_id', '=', args.accountId)
+      .where(whereClause);
+    if (args.excludeMessageId != null) {
+      siblingQuery = siblingQuery.where('id', '!=', args.excludeMessageId);
+    }
+    siblings = (await siblingQuery
+      // Prioritize siblings that already carry a `thread_id` before the cap so a
+      // huge (>500 message) conversation can't drop its single threaded row and
+      // mint a duplicate thread. `thread_id IS NULL` sorts `false` (non-null)
+      // first under Postgres' default ASC ordering.
+      .orderBy(kyselySql`(thread_id is null)`)
+      .limit(500)
+      .execute()) as { id: number; thread_id: string | null }[];
+  }
+
+  const canonicalThreads: string[] = [];
+  const seenCanonical = new Set<string>();
+  const nullSiblingIds: number[] = [];
+  // Collect the DISTINCT raw thread_ids first, then resolve each to its canonical
+  // exactly once. A busy conversation (e.g. a support ticket with hundreds of
+  // replies all sharing one thread_id) otherwise fires one resolveCanonicalThreadId
+  // round-trip per sibling — an N+1 that hits the most active tickets hardest.
+  // Resolved sequentially: a single transaction connection can't run them in parallel.
+  const distinctRawThreadIds: string[] = [];
+  const seenRaw = new Set<string>();
+  for (const sibling of siblings) {
+    const tid = sibling.thread_id?.trim();
+    if (!tid) {
+      nullSiblingIds.push(sibling.id);
+      continue;
+    }
+    if (!seenRaw.has(tid)) {
+      seenRaw.add(tid);
+      distinctRawThreadIds.push(tid);
+    }
+  }
+  for (const tid of distinctRawThreadIds) {
+    const canonical = await resolveCanonicalThreadId(trx, args.workspaceId, tid);
+    if (!seenCanonical.has(canonical)) {
+      seenCanonical.add(canonical);
+      canonicalThreads.push(canonical);
+    }
+  }
+
+  const backfillNullSiblings = async (threadId: string, ticketCode: string | null): Promise<void> => {
+    if (nullSiblingIds.length === 0) return;
+    await trx
+      .updateTable('email_messages')
+      .set({
+        thread_id: threadId,
+        // Fill the thread's ticket only where a sibling has none — coalesce so we
+        // never clobber a message that already carries its own subject ticket.
+        ...(ticketCode ? { ticket_code: kyselySql`coalesce(ticket_code, ${ticketCode})` } : {}),
+        updated_at: args.now,
+      })
+      .where('workspace_id', '=', args.workspaceId)
+      .where('id', 'in', nullSiblingIds)
+      .execute();
+  };
+
+  const threadTicketCode = async (threadId: string): Promise<string | null> => {
+    const row = await trx
+      .selectFrom('email_threads')
+      .select('ticket_code')
+      .where('workspace_id', '=', args.workspaceId)
+      .where('id', '=', threadId)
+      .executeTakeFirst();
+    return row?.ticket_code?.trim() || null;
+  };
+
+  // (1) Inherit an existing conversation thread. Carry the thread's ticket onto
+  // this message (and backfilled siblings) — a subject ticket if present, else
+  // the inherited thread's own ticket — so a later compose reply reuses this
+  // thread instead of allocating a fresh ticket/thread.
+  if (canonicalThreads.length > 0) {
+    const canonical = canonicalThreads.slice().sort()[0]!;
+    const ticket = subjectTicket ?? await threadTicketCode(canonical);
+    await backfillNullSiblings(canonical, ticket);
+    return { threadId: canonical, ticketCode: ticket };
+  }
+
+  // (2) 2+ messages of a brand-new conversation, none threaded yet → mint one
+  // under this account's scope. Persist the ticket (subject ticket or a generated
+  // one) onto the message and siblings so the conversation is a proper Vorgang
+  // and compose replies reuse it.
+  if (nullSiblingIds.length > 0) {
+    const ticket = subjectTicket
+      ?? await allocateAccountScopedTicketCode(trx, args.workspaceId, args.accountId, args.now);
+    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, ticket, args.accountId, args.now);
+    await backfillNullSiblings(canonical, ticket);
+    return { threadId: canonical, ticketCode: ticket };
+  }
+
+  // (3) Subject carries a known ticket → attach to (or open) that account-scoped
+  // thread (matching how server compose creates ticket threads).
+  if (subjectTicket) {
+    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, subjectTicket, args.accountId, args.now);
+    return { threadId: canonical, ticketCode: subjectTicket };
+  }
+
+  // (4) Standalone / headerless mail → leave unthreaded, exactly as before.
+  return { threadId: null, ticketCode: null };
+}
+
+/**
+ * Recompute a thread's aggregate row (message_count, last_message_at, unread,
+ * attachments, …) after sync threading assigned/backfilled thread_id. Call this
+ * AFTER the current message is inserted so the counts include it; otherwise the
+ * freshly-minted email_threads row keeps message_count = 0 / last_message_at =
+ * null and the thread APIs return stale values.
+ */
+export async function refreshThreadAggregateAfterSync(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  threadId: string,
+  now: Date,
+  options?: { rebuildEdges?: boolean },
+): Promise<void> {
+  const canonical = await resolveCanonicalThreadId(trx, workspaceId, threadId);
+  // Rebuild the JWZ parent/child edge graph when threading inputs change — the
+  // split/admin and desktop paths maintain email_thread_edges after any thread
+  // change, so without this /email/thread-edges stays empty/stale for freshly
+  // synced conversations. But a pure read-state / date resync of an already
+  // threaded message must NOT rebuild edges (rebuildEdges: false): that would
+  // delete+recreate rows and clobber parent/child edits made via the
+  // emailThreadEdges.create/delete API even though membership and reference
+  // headers are unchanged.
+  if (options?.rebuildEdges ?? true) {
+    await rebuildThreadEdgesForCanonicalThread(trx, workspaceId, canonical);
+  }
+  await upsertThreadAggregateForCanonicalThread(trx, workspaceId, canonical, now);
 }
 
 type ThreadAdminMessageRow = {
@@ -2876,9 +3210,13 @@ async function rebuildThreadEdgesForCanonicalThread(
     .where('child_message_id', 'in', messageIds)
     .execute();
 
+  // Key by the SAME normalizeMessageId() (trim, strip a single outer <> pair,
+  // lowercase) the sync resolver uses, not a bracket-preserving lowercase — so a
+  // parent stored as `<x@y>` still matches a child `In-Reply-To: x@y` / `<<x@y>>`
+  // and the edge actually forms for synced conversations.
   const byMessageId = new Map<string, ThreadAdminMessageRow>();
   for (const message of messages) {
-    const normalized = message.messageId?.trim().toLowerCase();
+    const normalized = normalizeMessageId(message.messageId);
     if (normalized) byMessageId.set(normalized, message);
   }
 
@@ -2917,18 +3255,29 @@ function findThreadParent(
   child: ThreadAdminMessageRow,
   byMessageId: Map<string, ThreadAdminMessageRow>,
 ): ThreadAdminMessageRow | null {
-  const refs: string[] = [];
-  if (child.inReplyTo?.trim()) refs.push(child.inReplyTo.trim());
-  if (child.referencesHeader?.trim()) {
-    for (const part of child.referencesHeader.split(/\s+/)) {
-      const ref = part.trim();
-      if (ref) refs.push(ref);
-      if (refs.length >= 64) break;
-    }
-  }
-  for (const ref of refs) {
-    const parent = byMessageId.get(ref.toLowerCase());
+  // Normalize refs with the same helper used to key byMessageId so bracket-only
+  // differences between a child's In-Reply-To/References and a parent's
+  // Message-ID don't prevent the edge from forming.
+  // In-Reply-To names the immediate parent directly — prefer it.
+  const parentRef = normalizeMessageId(child.inReplyTo);
+  if (parentRef) {
+    const parent = byMessageId.get(parentRef);
     if (parent && parent.id !== child.id) return parent;
+  }
+  // References run oldest-ancestor → newest-parent, so when there is no direct
+  // In-Reply-To match the immediate parent is the LAST reference present in the
+  // thread. Walk from the end (bounded to 64 checks) so a grandchild attaches to
+  // its parent, not the root — otherwise the edge graph flattens.
+  if (child.referencesHeader?.trim()) {
+    const parts = child.referencesHeader.split(/\s+/);
+    let checked = 0;
+    for (let i = parts.length - 1; i >= 0 && checked < 64; i -= 1) {
+      const ref = normalizeMessageId(parts[i]);
+      if (!ref) continue;
+      checked += 1;
+      const parent = byMessageId.get(ref);
+      if (parent && parent.id !== child.id) return parent;
+    }
   }
   return null;
 }

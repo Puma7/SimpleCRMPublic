@@ -93,6 +93,7 @@ import {
   SERVER_JOB_TYPES,
   accessTokenSignerFromBase64,
   accountSyncAdvisoryLockCommand,
+  accountSyncAdvisoryLockKey,
   acquireConversationLockCommand,
   archiveFileName,
   assertServerJobType,
@@ -332,6 +333,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0022_returns_portal_settings',
   '0023_account_scope_overrides',
   '0024_settings_kb_context_imap',
+  '0025_email_message_thread_lookup',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1766,6 +1768,7 @@ describe('server edition foundation', () => {
     expect(normalizeAiJobConcurrency(undefined)).toBe(5);
     expect(normalizeAiJobConcurrency(12)).toBe(12);
     expect(() => normalizeAiJobConcurrency(0)).toThrow('AI job concurrency');
+    expect(accountSyncAdvisoryLockKey(42)).toBe('account-42');
     expect(accountSyncAdvisoryLockCommand(42)).toEqual({
       sql: 'SELECT pg_advisory_xact_lock(hashtext($1));',
       params: ['account-42'],

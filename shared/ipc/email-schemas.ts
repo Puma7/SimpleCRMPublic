@@ -256,6 +256,18 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       .optional(),
     result: z.object({ success: z.literal(true), count: z.number().int().nonnegative() }),
   });
+  set(IPCChannels.Email.BackfillThreads, {
+    payload: z
+      .object({
+        limit: z.number().int().positive().optional(),
+      })
+      .optional(),
+    result: z.object({
+      success: z.boolean(),
+      scanned: z.number().int().nonnegative(),
+      threaded: z.number().int().nonnegative(),
+    }),
+  });
   set(IPCChannels.Email.FireWebhookWorkflow, {
     payload: z.object({
       secret: z.string(),

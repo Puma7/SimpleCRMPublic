@@ -296,6 +296,10 @@ export async function handleMailReadRoute(
     return handleEmailGdprExport(req, ports);
   }
 
+  if (req.path === '/api/v1/email/threads/backfill') {
+    return handleMailThreadBackfill(req, ports);
+  }
+
   if (req.path === '/api/v1/email/messages/backfill-customer-links') {
     return handleMessageCustomerLinkBackfill(req, ports);
   }
@@ -1447,6 +1451,29 @@ async function handleEmailGdprExport(req: ApiRequest, ports: ServerApiPorts): Pr
       'Content-Disposition': attachmentDisposition(result.filename),
     },
   };
+}
+
+async function handleMailThreadBackfill(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.mailThreadBackfill) {
+    return error(503, 'mail_thread_backfill_unavailable', 'Thread-Backfill API nicht konfiguriert');
+  }
+  const body = (req.body ?? {}) as { limit?: unknown };
+  let limit: number | undefined;
+  if (body.limit !== undefined) {
+    const n = Number(body.limit);
+    if (!Number.isSafeInteger(n) || n <= 0) {
+      return error(400, 'invalid_limit', 'limit muss eine positive Ganzzahl sein');
+    }
+    limit = n;
+  }
+  const result = await ports.mailThreadBackfill.backfill({
+    workspaceId: principal.workspaceId,
+    ...(limit === undefined ? {} : { limit }),
+  });
+  return data(202, result);
 }
 
 async function handleMessageBulkSoftDelete(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

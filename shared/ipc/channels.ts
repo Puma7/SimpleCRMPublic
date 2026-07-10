@@ -243,6 +243,7 @@ const EmailChannels = literal({
   TestVacationAutoReply: 'email:test-vacation-auto-reply',
   ExportMessageEml: 'email:export-message-eml',
   BackfillCustomerLinks: 'email:backfill-customer-links',
+  BackfillThreads: 'email:backfill-threads',
   FireWebhookWorkflow: 'email:fire-webhook-workflow',
   ClearAccountSyncLock: 'email:clear-account-sync-lock',
   GetEmailMiscSettings: 'email:get-misc-settings',

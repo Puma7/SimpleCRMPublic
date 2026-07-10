@@ -153,6 +153,7 @@ import {
 import { createSmokePorts } from './server-smoke';
 import { createPostgresWorkflowExecutionJobPort } from './workflow-execution';
 import { createPostgresWorkflowInboundBackfillPort } from './workflow-backfill';
+import { createPostgresMailThreadBackfillPort } from './mail-thread-backfill';
 import { createPostgresWorkflowForwardCopyPort } from './workflow-forward-copy';
 import { createPostgresWorkflowHttpRequestPort } from './workflow-http-request';
 import { createPostgresWorkflowImapActionPort } from './workflow-imap-actions';
@@ -284,6 +285,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
           db,
           jobQueue: apiJobQueue,
         });
+        ports.mailThreadBackfill = createPostgresMailThreadBackfillPort({ db });
       }
     } catch (error) {
       await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
@@ -513,6 +515,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     emailThreads: createPostgresEmailThreadReadPort({ db: options.db }),
     followUp: createPostgresFollowUpPort({ db: options.db }),
     events: options.events ?? createPostgresServerEventPort({ db: options.db }),
+    mailThreadBackfill: createPostgresMailThreadBackfillPort({ db: options.db }),
     ...(options.jobQueue ? {
       jobQueue: options.jobQueue,
       workflowInboundBackfill: createPostgresWorkflowInboundBackfillPort({
