@@ -93,6 +93,8 @@ import {
     EMAIL_ACCOUNT_MAIL_SETTINGS_TABLE,
     EMAIL_MESSAGE_ATTACHMENTS_TABLE,
     EMAIL_MESSAGES_FTS_TABLE,
+    EMAIL_ATTACHMENTS_FTS_TABLE,
+    createEmailAttachmentsFtsTable,
     EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE,
     ACTIVITY_LOG_TABLE,
     SAVED_VIEWS_TABLE,
@@ -187,6 +189,7 @@ export function bootstrapFreshDatabaseSchema(
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
         migrateEmailFtsSearchV3();
+        migrateAttachmentTextSearch();
         setSyncInfo('lastSyncStatus', 'Never');
         setSyncInfo('lastSyncTimestamp', '');
     } finally {
@@ -522,6 +525,94 @@ function setupEmailFtsIndex() {
         }
     }
     ensureEmailFtsTriggers();
+}
+
+/**
+ * Idempotently (re)create the email_attachments_fts sync triggers with the
+ * same introspection hardening as the message FTS triggers.
+ */
+function ensureAttachmentsFtsTriggers() {
+    if (!db) return;
+    const ftsCols = (db.prepare(`PRAGMA table_info(${EMAIL_ATTACHMENTS_FTS_TABLE})`).all() as { name: string }[])
+        .map((c) => c.name);
+    if (ftsCols.length === 0) return; // no FTS table — nothing to keep in sync
+    const colList = ftsCols.join(', ');
+    const newValues = ftsCols.map((c) => `new.${c}`).join(', ');
+    const triggers = db
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'email_attachments_fts_%'")
+        .all() as { name: string; sql: string | null }[];
+    const byName = new Map(triggers.map((t) => [t.name, t.sql ?? '']));
+    const aiOk = byName.get('email_attachments_fts_ai')?.includes(`(rowid, ${colList})`) ?? false;
+    const auOk = byName.get('email_attachments_fts_au')?.includes(`(rowid, ${colList})`) ?? false;
+    if (aiOk && auOk && byName.has('email_attachments_fts_ad')) return;
+    console.log('Repairing email_attachments FTS5 triggers...');
+    db.exec(`DROP TRIGGER IF EXISTS email_attachments_fts_ai`);
+    db.exec(`DROP TRIGGER IF EXISTS email_attachments_fts_ad`);
+    db.exec(`DROP TRIGGER IF EXISTS email_attachments_fts_au`);
+    db.exec(`
+      CREATE TRIGGER email_attachments_fts_ai AFTER INSERT ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} BEGIN
+        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(rowid, ${colList})
+        VALUES (new.id, ${newValues});
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER email_attachments_fts_ad AFTER DELETE ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} BEGIN
+        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}, rowid) VALUES('delete', old.id);
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER email_attachments_fts_au AFTER UPDATE ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} BEGIN
+        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}, rowid) VALUES('delete', old.id);
+        INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(rowid, ${colList})
+        VALUES (new.id, ${newValues});
+      END;
+    `);
+}
+
+/**
+ * Suche Phase 2: text_content/text_extracted_at on email_message_attachments
+ * plus the email_attachments_fts index. Structural guards (PRAGMA/
+ * sqlite_master) make this idempotent; the initial creation runs in one
+ * transaction so a crash leaves no half-migrated state. Fresh installs end in
+ * the same state (columns come from the schema, the FTS table from here).
+ */
+function migrateAttachmentTextSearch(): void {
+    if (!db) return;
+    const conn = db;
+    const cols = (conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGE_ATTACHMENTS_TABLE})`).all() as { name: string }[])
+        .map((c) => c.name);
+    if (cols.length === 0) return; // attachments table not created yet
+    const ftsMaster = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(EMAIL_ATTACHMENTS_FTS_TABLE) as { name: string } | undefined;
+    const needCols = !cols.includes('text_content') || !cols.includes('text_extracted_at');
+    if (!needCols && ftsMaster) {
+        ensureAttachmentsFtsTriggers();
+        return;
+    }
+    console.log('Migrating email_message_attachments for text search...');
+    conn.exec('BEGIN');
+    try {
+        if (!cols.includes('text_content')) {
+            conn.exec(`ALTER TABLE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} ADD COLUMN text_content TEXT`);
+        }
+        if (!cols.includes('text_extracted_at')) {
+            conn.exec(`ALTER TABLE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} ADD COLUMN text_extracted_at TEXT`);
+        }
+        if (!ftsMaster) {
+            conn.exec(createEmailAttachmentsFtsTable);
+            conn.exec(`INSERT INTO ${EMAIL_ATTACHMENTS_FTS_TABLE}(${EMAIL_ATTACHMENTS_FTS_TABLE}) VALUES('rebuild')`);
+        }
+        ensureAttachmentsFtsTriggers();
+        conn.exec('COMMIT');
+    } catch (error) {
+        try {
+            conn.exec('ROLLBACK');
+        } catch {
+            /* connection may already have rolled back */
+        }
+        console.error('Attachment text search migration failed — will retry next start:', error);
+    }
 }
 
 /**
@@ -930,6 +1021,7 @@ function runMigrations() {
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
         migrateEmailFtsSearchV3();
+        migrateAttachmentTextSearch();
 
         // Migration: Add snoozed_until column to tasks table if it doesn't exist
         const taskColsForSnooze = db.prepare(`PRAGMA table_info(${TASKS_TABLE})`).all();

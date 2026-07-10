@@ -64,6 +64,13 @@ describe('sqlite fresh install integration', () => {
     expect(columnExists(EMAIL_MESSAGES_FTS_TABLE, 'attachments_json')).toBe(true);
   });
 
+  test('attachment text search structures exist (Suche Phase 2)', () => {
+    expect(columnExists('email_message_attachments', 'text_content')).toBe(true);
+    expect(columnExists('email_message_attachments', 'text_extracted_at')).toBe(true);
+    expect(tableExists('email_attachments_fts')).toBe(true);
+    expect(columnExists('email_attachments_fts', 'text_content')).toBe(true);
+  });
+
   test('seeds initial sync status rows', () => {
     const status = db
       .prepare(`SELECT value FROM ${SYNC_INFO_TABLE} WHERE key = ?`)
