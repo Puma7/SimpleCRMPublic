@@ -319,6 +319,21 @@ describe('email search integration (real sqlite)', () => {
     expect(broad.rows.map((m) => m.uid).sort((a, b) => a - b)).toEqual([1, 20]);
   });
 
+  test('regex search excludes snoozed mail in normal views (snooze parity)', () => {
+    // uid 20 (gesnoozt) matcht /zahlung/i im Body — darf in der Inbox-Suche
+    // nicht auftauchen, wohl aber in der snoozed-Ansicht selbst.
+    const inbox = searchMessagesForAccountWithMeta(1, '/zahlung/i', { view: 'inbox' });
+    expect(inbox.searchMode).toBe('regex');
+    expect(inbox.rows.map((m) => m.uid)).toEqual([1]);
+    const snoozedView = searchMessagesForAccountWithMeta(1, '/zahlung/i', { view: 'snoozed' });
+    expect(snoozedView.rows.map((m) => m.uid)).toEqual([20]);
+  });
+
+  test('snoozed view text search finds snoozed mail (no snooze/view contradiction)', () => {
+    const r = searchMessagesForAccountWithMeta(1, 'zahlungsplan', { view: 'snoozed' });
+    expect(r.rows.map((m) => m.uid)).toEqual([20]);
+  });
+
   test('regex search finds matching rows and respects the view', () => {
     const r = searchMessagesForAccountWithMeta(1, '/^Rechnung \\d+$/m', { view: 'inbox' });
     expect(r.searchMode).toBe('regex');

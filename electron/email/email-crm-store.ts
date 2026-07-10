@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { MAX_EMAIL_CATEGORY_DEPTH } from '../../shared/email-constants';
 import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
@@ -766,6 +767,17 @@ function likeTextSearchSql(parsed: ParsedMailSearchQuery): { sql: string; params
 /** Non-draft or draft mail that belongs in search results at all. */
 const SEARCHABLE_MAIL_SQL = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')`;
 
+/**
+ * Snooze-Praedikat fuer die Suche: nur im View-Modus normaler Ansichten —
+ * die snoozed-View zeigt gesnoozte Mails per Definition, der Papierkorb
+ * soll vollstaendig durchsuchbar bleiben, broad ignoriert Snooze bewusst.
+ */
+function searchSnoozeSql(opts: MessageSearchOpts, broad: boolean, apply: boolean | undefined): string {
+  if (broad || !apply) return '';
+  if (opts.view === 'snoozed' || opts.view === 'trash') return '';
+  return ` AND ${SNOOZE_FILTER_SQL}`;
+}
+
 /** WHERE fragment for the search scope: broad (cross-view) or per-view. */
 function searchScopeSql(opts: MessageSearchOpts): { sql: string; broad: boolean } {
   const scope = opts.scope;
@@ -805,6 +817,11 @@ const FTS_BM25_WEIGHTS = '3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0';
  * Attach highlighted search_snippet values (sentinel-marked, no HTML) to FTS
  * result rows: message-level snippet() first, attachment snippet as fallback
  * for attachment-only hits. Cosmetic — never fails the search.
+ *
+ * Anti-Spoofing: snippet() markiert mit einem pro Aufruf zufaelligen Nonce-
+ * Marker (Mail-Inhalte sind zum Suchzeitpunkt bereits indexiert und koennen
+ * den Nonce nicht enthalten); echte Sentinel-Codepoints aus dem Quelltext
+ * werden gestrippt, bevor die Nonce-Marker in Sentinels umgeschrieben werden.
  */
 function attachFtsSearchSnippets(
   rows: import('./email-store').EmailMessageRow[],
@@ -813,9 +830,19 @@ function attachFtsSearchSnippets(
 ): void {
   if (rows.length === 0) return;
   try {
+    const nonce = randomBytes(8).toString('hex');
+    const startTok = `[[HL${nonce}S]]`;
+    const endTok = `[[HL${nonce}E]]`;
+    const sanitize = (raw: string): string =>
+      raw
+        .replace(/[\uE000\uE001]/g, '')
+        .split(startTok)
+        .join(SEARCH_MARK_START)
+        .split(endTok)
+        .join(SEARCH_MARK_END);
     const ids = rows.map((r) => r.id);
     const ph = ids.map(() => '?').join(',');
-    const snippetArgs = `-1, '${SEARCH_MARK_START}', '${SEARCH_MARK_END}', ' … ', 12`;
+    const snippetArgs = `-1, '${startTok}', '${endTok}', ' … ', 12`;
     const byId = new Map<number, string>();
     const msgSnips = getDb()
       .prepare(
@@ -825,7 +852,7 @@ function attachFtsSearchSnippets(
       )
       .all(match, ...ids) as { id: number; s: string | null }[];
     for (const r of msgSnips) {
-      if (r.s && r.s.includes(SEARCH_MARK_START)) byId.set(r.id, r.s);
+      if (r.s && r.s.includes(startTok)) byId.set(r.id, sanitize(r.s));
     }
     const missing = ids.filter((id) => !byId.has(id));
     if (missing.length > 0 && withAttachments) {
@@ -839,7 +866,7 @@ function attachFtsSearchSnippets(
         )
         .all(match, ...missing) as { id: number; s: string | null }[];
       for (const r of attSnips) {
-        if (r.s && r.s.includes(SEARCH_MARK_START) && !byId.has(r.id)) byId.set(r.id, r.s);
+        if (r.s && r.s.includes(startTok) && !byId.has(r.id)) byId.set(r.id, sanitize(r.s));
       }
     }
     for (const row of rows) {
@@ -894,7 +921,7 @@ function runMessageSearch(
   const parsed = parseMailSearchQuery(trimmed);
   const { sql: scopeSql, broad } = searchScopeSql(opts);
   const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
-  const snoozeSql = !broad && target.applySnoozeFilter ? ` AND ${SNOOZE_FILTER_SQL}` : '';
+  const snoozeSql = searchSnoozeSql(opts, broad, target.applySnoozeFilter);
   const cat = categoryJoinSql(opts.categoryId);
   const ops = operatorSearchSql(parsed);
   const access =
@@ -1033,6 +1060,8 @@ function listRegexSearchCandidates(
 ): import('./email-store').EmailMessageRow[] {
   const { sql: scopeSql, broad } = searchScopeSql(opts);
   const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
+  // Regex laeuft nur im per-Account-Meta-Pfad — Snooze-Filter wie FTS/LIKE.
+  const snoozeSql = searchSnoozeSql(opts, broad, true);
   const cat = categoryJoinSql(opts.categoryId);
   const params: (string | number)[] = [];
   if (cat.param != null) params.push(cat.param);
@@ -1041,7 +1070,7 @@ function listRegexSearchCandidates(
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        ${cat.sql}
-       WHERE m.account_id = ? AND ${scopeSql}
+       WHERE m.account_id = ? AND ${scopeSql}${snoozeSql}
        ${doneSql}
        ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
        LIMIT ?`,
