@@ -370,27 +370,34 @@ function setupPragmas() {
 }
 
 /**
- * Idempotently create the email_messages FTS5 virtual table and its
- * insert/delete/update triggers. Called from both new-database init and
- * runMigrations() so a fresh install ends up with a working full-text
- * search index, not just upgraded databases.
+ * Idempotently (re)create the email_messages FTS5 sync triggers. The column
+ * list is introspected from the actual FTS table so the triggers always match
+ * its shape (a v2 table gets v2-column triggers, a v3 table v3 columns) —
+ * otherwise every mail ingest would fail between schema versions. Existing
+ * triggers are recreated when their SQL no longer matches the table columns.
  */
 function ensureEmailFtsTriggers() {
     if (!db) return;
+    const ftsCols = (db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_FTS_TABLE})`).all() as { name: string }[])
+        .map((c) => c.name);
+    if (ftsCols.length === 0) return; // no FTS table — nothing to keep in sync
+    const colList = ftsCols.join(', ');
+    const newValues = ftsCols.map((c) => `new.${c}`).join(', ');
     const triggers = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'email_messages_fts_%'")
-        .all() as { name: string }[];
-    const names = new Set(triggers.map((t) => t.name));
-    const need = !names.has('email_messages_fts_ai') || !names.has('email_messages_fts_ad') || !names.has('email_messages_fts_au');
-    if (!need) return;
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'email_messages_fts_%'")
+        .all() as { name: string; sql: string | null }[];
+    const byName = new Map(triggers.map((t) => [t.name, t.sql ?? '']));
+    const aiOk = byName.get('email_messages_fts_ai')?.includes(`(rowid, ${colList})`) ?? false;
+    const auOk = byName.get('email_messages_fts_au')?.includes(`(rowid, ${colList})`) ?? false;
+    if (aiOk && auOk && byName.has('email_messages_fts_ad')) return;
     console.log('Repairing email_messages FTS5 triggers...');
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
     db.exec(`
       CREATE TRIGGER email_messages_fts_ai AFTER INSERT ON ${EMAIL_MESSAGES_TABLE} BEGIN
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code, attachments_json)
-        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code, new.attachments_json);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, ${colList})
+        VALUES (new.id, ${newValues});
       END;
     `);
     db.exec(`
@@ -401,16 +408,23 @@ function ensureEmailFtsTriggers() {
     db.exec(`
       CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
         INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code, attachments_json)
-        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code, new.attachments_json);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, ${colList})
+        VALUES (new.id, ${newValues});
       END;
     `);
+}
+
+function emailFtsSearchVersion(): number {
+    const raw = getSyncInfo('email_fts_search_version');
+    const n = Number.parseInt(raw ?? '0', 10);
+    return Number.isFinite(n) ? n : 0;
 }
 
 /** Rebuild FTS when recipient/ticket columns were added (Codex P1 search). */
 function migrateEmailFtsSearchV2(): void {
     if (!db) return;
-    if (getSyncInfo('email_fts_search_version') === '2') return;
+    // >= 2 also covers v3 databases — never downgrade the version marker.
+    if (emailFtsSearchVersion() >= 2) return;
     const ftsMaster = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
         .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
@@ -436,62 +450,60 @@ function migrateEmailFtsSearchV2(): void {
 
 /**
  * FTS v3 (Mail Search Phase 1): attachments_json column + prefix index.
- * Backfills body_text from body_html for HTML-only mail first, so the
- * rebuilt index (and LIKE search) can see those bodies.
+ * Runs as ONE transaction so a crash rolls back to a clean v2 state:
+ * drop triggers -> backfill body_text from body_html for HTML-only mail
+ * (no triggers firing into the doomed index) -> recreate table -> rebuild
+ * -> recreate triggers (introspected columns) -> set version '3'.
  */
 function migrateEmailFtsSearchV3(): void {
     if (!db) return;
-    if (getSyncInfo('email_fts_search_version') === '3') return;
+    if (emailFtsSearchVersion() >= 3) return;
     const conn = db;
+    console.log('Migrating email_messages FTS to v3 (attachments + prefix + body_text backfill)...');
+    conn.exec('BEGIN');
+    try {
+        conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
+        conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
+        conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
 
-    // 1) body_text backfill for HTML-only mail (batched, one txn per batch).
-    const selectBatch = conn.prepare(
-        `SELECT id, body_html FROM ${EMAIL_MESSAGES_TABLE}
-         WHERE id > ? AND (body_text IS NULL OR body_text = '')
-           AND body_html IS NOT NULL AND body_html <> ''
-         ORDER BY id LIMIT 200`,
-    );
-    const updateBody = conn.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ? WHERE id = ?`);
-    const applyBatch = conn.transaction((batch: { id: number; text: string }[]) => {
-        for (const row of batch) updateBody.run(row.text, row.id);
-    });
-    let lastId = 0;
-    let backfilled = 0;
-    for (;;) {
-        const rows = selectBatch.all(lastId) as { id: number; body_html: string }[];
-        if (rows.length === 0) break;
-        lastId = rows[rows.length - 1]!.id;
-        const batch = rows
-            .map((r) => ({ id: r.id, text: plainTextFromHtml(r.body_html) }))
-            .filter((r) => r.text.length > 0);
-        if (batch.length > 0) {
-            applyBatch(batch);
-            backfilled += batch.length;
+        const selectBatch = conn.prepare(
+            `SELECT id, body_html FROM ${EMAIL_MESSAGES_TABLE}
+             WHERE id > ? AND (body_text IS NULL OR body_text = '')
+               AND body_html IS NOT NULL AND body_html <> ''
+             ORDER BY id LIMIT 200`,
+        );
+        const updateBody = conn.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ? WHERE id = ?`);
+        let lastId = 0;
+        let backfilled = 0;
+        for (;;) {
+            const rows = selectBatch.all(lastId) as { id: number; body_html: string }[];
+            if (rows.length === 0) break;
+            lastId = rows[rows.length - 1]!.id;
+            for (const row of rows) {
+                const text = plainTextFromHtml(row.body_html);
+                if (text.length === 0) continue;
+                updateBody.run(text, row.id);
+                backfilled += 1;
+            }
         }
-    }
-    if (backfilled > 0) {
-        console.log(`FTS v3: backfilled body_text for ${backfilled} HTML-only messages`);
-    }
+        if (backfilled > 0) {
+            console.log(`FTS v3: backfilled body_text for ${backfilled} HTML-only messages`);
+        }
 
-    // 2) Rebuild the index with attachments_json + prefix support (skip when
-    // the table was already created with the v3 schema, e.g. fresh installs).
-    const ftsMaster = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-        .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
-    if (ftsMaster) {
-        const cols = db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_FTS_TABLE})`).all() as { name: string }[];
-        if (!cols.some((c) => c.name === 'attachments_json')) {
-            console.log('Migrating email_messages FTS to v3 (attachments + prefix search)...');
-            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
-            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
-            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
-            db.exec(`DROP TABLE IF EXISTS ${EMAIL_MESSAGES_FTS_TABLE}`);
-            db.exec(createEmailMessagesFtsTable);
-            db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
-            ensureEmailFtsTriggers();
+        conn.exec(`DROP TABLE IF EXISTS ${EMAIL_MESSAGES_FTS_TABLE}`);
+        conn.exec(createEmailMessagesFtsTable);
+        conn.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+        ensureEmailFtsTriggers();
+        setSyncInfo('email_fts_search_version', '3');
+        conn.exec('COMMIT');
+    } catch (error) {
+        try {
+            conn.exec('ROLLBACK');
+        } catch {
+            /* connection may already have rolled back */
         }
+        console.error('FTS v3 migration failed — keeping previous FTS state, will retry next start:', error);
     }
-    setSyncInfo('email_fts_search_version', '3');
 }
 
 function setupEmailFtsIndex() {
@@ -501,6 +513,13 @@ function setupEmailFtsIndex() {
         console.log('Creating email_messages FTS5 index...');
         db.exec(createEmailMessagesFtsTable);
         db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+        // Fresh table already has the v3 shape. Mark the version only when no
+        // key exists yet (true fresh install); an existing key means an
+        // upgrade path whose migrations (e.g. body_text backfill) must still
+        // run against the recreated table.
+        if (getSyncInfo('email_fts_search_version') == null) {
+            setSyncInfo('email_fts_search_version', '3');
+        }
     }
     ensureEmailFtsTriggers();
 }
