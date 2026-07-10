@@ -1049,15 +1049,25 @@ function buildRegexSearchSnippet(
   return null;
 }
 
+/** Candidate row incl. aggregated attachment text for the JS regex haystack. */
+type RegexSearchCandidate = import('./email-store').EmailMessageRow & {
+  attachment_search_text?: string | null;
+};
+
 /**
  * Candidate rows for the regex search (regex matching happens in JS): plain
- * scope/view-filtered SELECT, newest first, capped by the caller.
+ * scope/view-filtered SELECT, newest first, batch window via limit/offset.
+ * Der Heuhaufen enthaelt neben attachments_json auch die aggregierten
+ * filename_display/text_content der Attachment-Zeilen (pro Anhang auf 20k
+ * Zeichen gedeckelt), damit Regex-Treffer im extrahierten Anhangstext nicht
+ * verloren gehen. id-Tiebreak haelt die Batch-Fenster stabil.
  */
 function listRegexSearchCandidates(
   accountId: number,
   opts: MessageSearchOpts,
   limit: number,
-): import('./email-store').EmailMessageRow[] {
+  offset = 0,
+): RegexSearchCandidate[] {
   const { sql: scopeSql, broad } = searchScopeSql(opts);
   const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
   // Regex laeuft nur im per-Account-Meta-Pfad — Snooze-Filter wie FTS/LIKE.
@@ -1065,17 +1075,25 @@ function listRegexSearchCandidates(
   const cat = categoryJoinSql(opts.categoryId);
   const params: (string | number)[] = [];
   if (cat.param != null) params.push(cat.param);
-  params.push(accountId, limit);
+  params.push(accountId, limit, offset);
   return getDb()
     .prepare(
-      `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+      `SELECT m.*, (
+         SELECT GROUP_CONCAT(
+           COALESCE(a.filename_display, '') || char(10) || COALESCE(SUBSTR(a.text_content, 1, 20000), ''),
+           char(10)
+         )
+         FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} a
+         WHERE a.message_id = m.id
+       ) AS attachment_search_text
+       FROM ${EMAIL_MESSAGES_TABLE} m
        ${cat.sql}
        WHERE m.account_id = ? AND ${scopeSql}${snoozeSql}
        ${doneSql}
-       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-       LIMIT ?`,
+       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC, m.id DESC
+       LIMIT ? OFFSET ?`,
     )
-    .all(...params) as import('./email-store').EmailMessageRow[];
+    .all(...params) as RegexSearchCandidate[];
 }
 
 export function searchMessagesForAccountWithMeta(
@@ -1112,10 +1130,27 @@ export function searchMessagesForAccountWithMeta(
       });
       return { rows, searchMode: 'like', hasMore: rows.length >= limit };
     }
-    const all = listRegexSearchCandidates(accountId, opts, Math.min((limit + offset) * 3, 500));
-    const rows = all
-      .filter((m) => messageMatchesDoneFilter(m, opts.doneFilter, view))
-      .filter((m) => {
+    // Pagination laeuft ueber MATCHES statt Kandidaten: batchweise scannen,
+    // bis offset+limit(+1 fuer hasMore) Treffer gesammelt sind — sonst waeren
+    // Matches jenseits des ersten Kandidaten-Fensters (alte Mails) nie
+    // erreichbar.
+    const REGEX_SCAN_BATCH = 500;
+    // Harter Gesamt-Deckel gegen Full-Mailbox-Scans: Regex-Matching laeuft in
+    // JS, jede gescannte Zeile kostet Heap und CPU. Greift der Deckel und
+    // existieren weitere Kandidaten, melden wir hasMore=true, damit der
+    // Nutzer nachladen kann (naechste Seite scannt die naechsten Batches).
+    const REGEX_SCAN_CAP = 5000;
+    const wanted = offset + limit + 1;
+    const matches: import('./email-store').EmailMessageRow[] = [];
+    let scanned = 0;
+    let exhausted = false;
+    while (matches.length < wanted && scanned < REGEX_SCAN_CAP && !exhausted) {
+      const batchLimit = Math.min(REGEX_SCAN_BATCH, REGEX_SCAN_CAP - scanned);
+      const batch = listRegexSearchCandidates(accountId, opts, batchLimit, scanned);
+      scanned += batch.length;
+      if (batch.length < batchLimit) exhausted = true;
+      for (const m of batch) {
+        if (!messageMatchesDoneFilter(m, opts.doneFilter, view)) continue;
         const hay = [
           m.subject,
           m.snippet,
@@ -1126,16 +1161,31 @@ export function searchMessagesForAccountWithMeta(
           m.bcc_json,
           m.ticket_code,
           m.attachments_json,
+          m.attachment_search_text,
         ]
           .filter(Boolean)
           .join('\n');
-        return re.test(hay);
-      })
-      .slice(offset, offset + limit);
+        if (!re.test(hay)) continue;
+        matches.push(m);
+        if (matches.length >= wanted) break;
+      }
+    }
+    // Deckel hat vor genug Treffern gegriffen: nur dann hasMore, wenn hinter
+    // dem Scan-Fenster ueberhaupt noch Kandidaten liegen.
+    const cappedWithMoreCandidates =
+      !exhausted &&
+      matches.length < wanted &&
+      listRegexSearchCandidates(accountId, opts, 1, scanned).length > 0;
+    const rows = matches.slice(offset, offset + limit);
     for (const m of rows) {
       m.search_snippet = buildRegexSearchSnippet(m, re);
+      delete (m as RegexSearchCandidate).attachment_search_text;
     }
-    return { rows, searchMode: 'regex', hasMore: rows.length >= limit };
+    return {
+      rows,
+      searchMode: 'regex',
+      hasMore: matches.length > offset + limit || cappedWithMoreCandidates,
+    };
   }
   const r = runMessageSearch(trimmed, opts, { accountId, applySnoozeFilter: true }, limit + 1, offset);
   return { rows: r.rows.slice(0, limit), searchMode: r.searchMode, hasMore: r.rows.length > limit };

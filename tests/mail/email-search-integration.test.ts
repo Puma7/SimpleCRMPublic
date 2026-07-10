@@ -425,3 +425,106 @@ describe('email search integration (real sqlite)', () => {
     expect(regex.rows[0]?.search_snippet).toContain(`${SEARCH_MARK_START}Zahlung${SEARCH_MARK_END}`);
   });
 });
+
+/**
+ * Codex R8: Regex ueber Anhangsinhalte + Match-basierte Pagination.
+ * Eigene DB, weil der Pagination-Fall tausende Filler-Zeilen braucht, die
+ * die Erwartungen der geteilten Seeds oben verfaelschen wuerden.
+ */
+describe('regex search attachments + match pagination (real sqlite)', () => {
+  beforeAll(() => {
+    db = new Database(':memory:');
+    bootstrapFreshDatabaseSchema(db);
+    db.prepare(
+      `INSERT INTO ${EMAIL_ACCOUNTS_TABLE}
+         (id, display_name, email_address, imap_host, imap_username, keytar_account_key)
+       VALUES (1, 'Test', 'test@firma.de', 'imap.firma.de', 'test', 'k1')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO ${EMAIL_FOLDERS_TABLE} (id, account_id, path) VALUES (1, 1, 'INBOX')`,
+    ).run();
+
+    // Treffer NUR im extrahierten Anhangstext bzw. im Attachment-Dateinamen
+    // (kein attachments_json — pinnt die aggregierte Subquery, Finding 2).
+    seedMessage({
+      uid: 1000,
+      subject: 'Vertragsmail',
+      bodyText: 'Dokumente siehe beigefuegte Datei.',
+      hasAttachments: 1,
+      dateReceived: '2026-07-05T10:00:00.000Z',
+    });
+    const msg1000 = db
+      .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid = 1000`)
+      .get() as { id: number };
+    db.prepare(
+      `INSERT INTO email_message_attachments
+         (message_id, filename_display, content_type, size_bytes, storage_path, text_content, text_extracted_at)
+       VALUES (?, 'vertragsdokument.pdf', 'application/pdf', 10, '/tmp/x',
+               'Klausel 7 enthaelt den GEHEIMCODE-77X fuer die Abnahme', datetime('now'))`,
+    ).run(msg1000.id);
+
+    // Aeltester Treffer hinter einem grossen Filler-Fenster (Finding 4):
+    // 520 neuere Nicht-Treffer > alter 500er-Kandidaten-Cap.
+    seedMessage({
+      uid: 2000,
+      subject: 'Archivfund',
+      bodyText: 'Das Uraltmuster liegt hier.',
+      dateReceived: '2020-01-01T10:00:00.000Z',
+    });
+    const insertFiller = db.prepare(
+      `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
+         account_id, folder_id, uid, subject, body_text, date_received, folder_kind
+       ) VALUES (1, 1, ?, ?, 'Fuelltext ohne Muster', ?, 'inbox')`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 520; i += 1) {
+        insertFiller.run(3000 + i, `Filler ${i}`, '2026-06-15T10:00:00.000Z');
+      }
+    })();
+  });
+
+  afterAll(() => {
+    db.close();
+  });
+
+  test('regex hit only in extracted attachment text is found (PDF text)', () => {
+    const r = searchMessagesForAccountWithMeta(1, '/geheimcode-77x/i', { view: 'inbox' });
+    expect(r.searchMode).toBe('regex');
+    expect(r.rows.map((m) => m.uid)).toEqual([1000]);
+    // Aggregiertes Hilfsfeld darf nicht an den Renderer leaken.
+    expect('attachment_search_text' in (r.rows[0] as object)).toBe(false);
+  });
+
+  test('regex hit on the attachment row filename is found', () => {
+    const r = searchMessagesForAccountWithMeta(1, '/vertragsdokument\\.pdf/i', { view: 'inbox' });
+    expect(r.searchMode).toBe('regex');
+    expect(r.rows.map((m) => m.uid)).toEqual([1000]);
+  });
+
+  test('match beyond the first 500 candidates is found (batch scan)', () => {
+    const r = searchMessagesForAccountWithMeta(1, '/uraltmuster/i', { view: 'inbox', limit: 10 });
+    expect(r.searchMode).toBe('regex');
+    expect(r.rows.map((m) => m.uid)).toEqual([2000]);
+    expect(r.hasMore).toBe(false);
+  });
+
+  test('scan cap reports hasMore when candidates remain behind the window', () => {
+    // 5200 zusaetzliche neuere Nicht-Treffer: der Treffer (uid 2000, aeltester
+    // Kandidat) liegt hinter dem 5000er-Scan-Deckel.
+    const insertFiller = db.prepare(
+      `INSERT INTO ${EMAIL_MESSAGES_TABLE} (
+         account_id, folder_id, uid, subject, body_text, date_received, folder_kind
+       ) VALUES (1, 1, ?, ?, 'Fuelltext ohne Muster', ?, 'inbox')`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 5200; i += 1) {
+        insertFiller.run(10000 + i, `Cap-Filler ${i}`, '2026-06-20T10:00:00.000Z');
+      }
+    })();
+    const r = searchMessagesForAccountWithMeta(1, '/uraltmuster/i', { view: 'inbox', limit: 10 });
+    expect(r.searchMode).toBe('regex');
+    expect(r.rows).toHaveLength(0);
+    // Deckel hat gegriffen und hinter dem Scan-Fenster liegen Kandidaten.
+    expect(r.hasMore).toBe(true);
+  });
+});
