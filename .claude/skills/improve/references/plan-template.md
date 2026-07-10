@@ -133,13 +133,17 @@ callers, then remove old path.)
 
 ## Done criteria
 
-Machine-checkable. ALL must hold:
+Machine-checkable. ALL must hold. **Use the exact commands from the
+"Commands you will need" table above — do not leave the `pnpm`/`npm` examples
+below verbatim; they are placeholders. If recon found no typecheck script, drop
+that row rather than inventing one.**
 
-- [ ] `pnpm typecheck` exits 0
-- [ ] `pnpm test` exits 0; new tests for <X> exist and pass
+- [ ] `<typecheck cmd from the Commands table, or drop this row if the repo has none>` exits 0
+- [ ] `<test cmd from the Commands table>` exits 0; new tests for <X> exist and pass
 - [ ] `grep -rn "<old pattern>" src/` returns no matches
 - [ ] No files outside the in-scope list are modified (`git status`)
-- [ ] `plans/README.md` status row updated
+- [ ] Status row for this plan updated in the plan directory's `README.md`
+      (`plans/README.md`, or `advisor-plans/README.md` if the plans live there)
 
 ## STOP conditions
 
@@ -181,7 +185,10 @@ honor its STOP conditions, and update your row when done.
 | 001  | ...   | P1       | S      | —          | TODO   |
 | 002  | ...   | P1       | M      | 001        | TODO   |
 
-Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
+Status values: TODO | IN PROGRESS | APPROVED (reviewed & approved in an unmerged worktree — code not yet on this branch; record the approved commit SHA and branch in the cell, e.g. `APPROVED — commit abc1234, branch advisor/002-slug`, so `reconcile` can later confirm the merge) | DONE (merged / present on HEAD) | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
+
+A dependency only unblocks a dependent plan once it is **DONE** (its code is on
+the branch the executor builds from), not merely **APPROVED** in an unmerged worktree.
 
 ## Dependency notes
 
