@@ -68,6 +68,10 @@ export function useEmailMessages() {
   // keinen Refetch auslösen (der Reload-Effekt hängt am query-gated Key).
   const searchScopeRef = useRef(searchScope)
   const searchSortRef = useRef(searchSortMode)
+  // Lade-Generation: volle Reloads starten eine neue Generation; Antworten
+  // aelterer Generationen (z. B. ein loadMore, waehrend Query/Scope/Sort
+  // wechselten) werden verworfen statt in die neue Liste zu mergen.
+  const loadGenerationRef = useRef(0)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
   const messagesRef = useRef<EmailMessage[]>([])
@@ -195,6 +199,7 @@ export function useEmailMessages() {
     ) => {
       const append = opts?.append ?? false
       const silent = opts?.silent ?? false
+      const generation = append ? loadGenerationRef.current : ++loadGenerationRef.current
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
       if (append) setLoadingMore(true)
@@ -232,6 +237,7 @@ export function useEmailMessages() {
             searchMode: "fts" | "like" | "regex"
             hasMore?: boolean
           }
+          if (generation !== loadGenerationRef.current) return
           list = res.messages
           if (!silent && res.searchMode === "regex") {
             toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
@@ -248,6 +254,7 @@ export function useEmailMessages() {
             listFilter: listFilter === "all" ? undefined : listFilter,
             doneFilter,
           }) as EmailMessage[]
+          if (generation !== loadGenerationRef.current) return
           setHasMore(list.length >= PAGE_SIZE)
         }
         if (append) {
