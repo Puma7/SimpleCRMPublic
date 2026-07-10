@@ -644,13 +644,22 @@ export function MessageList({
         </div>
         <div className="flex flex-wrap gap-2">
           <Select
-            value={searchActive && searchSortMode === "relevance" ? "relevance" : listSortMode}
+            // Während aktiver Suche zeigt das Select den EFFEKTIVEN Zustand:
+            // die Suche unterstützt nur "Neueste zuerst" und "Relevanz" —
+            // eine andere Listen-Sortierung (Älteste/Priorität) bleibt
+            // erhalten und greift wieder, sobald die Suche verlassen wird.
+            value={
+              searchActive
+                ? searchSortMode === "relevance"
+                  ? "relevance"
+                  : "date_desc"
+                : listSortMode
+            }
             onValueChange={(v) => {
-              if (v === "relevance") {
-                setSearchSortMode("relevance")
+              if (searchActive) {
+                setSearchSortMode(v === "relevance" ? "relevance" : "date")
                 return
               }
-              setSearchSortMode("date")
               setListSortMode(v as MessageListSortMode)
             }}
           >
@@ -659,8 +668,8 @@ export function MessageList({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="date_desc">Neueste zuerst</SelectItem>
-              <SelectItem value="date_asc">Älteste zuerst</SelectItem>
-              <SelectItem value="priority">Priorität</SelectItem>
+              {searchActive ? null : <SelectItem value="date_asc">Älteste zuerst</SelectItem>}
+              {searchActive ? null : <SelectItem value="priority">Priorität</SelectItem>}
               {searchActive ? <SelectItem value="relevance">Relevanz</SelectItem> : null}
             </SelectContent>
           </Select>
