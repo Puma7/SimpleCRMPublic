@@ -13990,6 +13990,11 @@ describe('server edition foundation', () => {
     // letzten FTS-Treffer darf den Modus nicht auf ILIKE kippen.
     expect(listSection).toContain("runQuery('fts', { limit: 1, offset: 0, withCursor: false })");
     expect(listSection).toContain('if (page.withCursor !== false) {');
+    // sort=relevance ist nur bei aktiver Suche wirksam: ohne search muss der
+    // normale Cursor greifen (sonst haengt die Liste dauerhaft auf Seite 1,
+    // weil der Cursor ignoriert wird und nextCursor null bleibt).
+    expect(listSection).toContain("const relevanceSort = input.sort === 'relevance' && Boolean(search);");
+    expect(listSection).toContain('const effectiveCursor = relevanceSort ? undefined : input.cursor;');
   });
 
   test('postgres mail folder badge counts exclude done archived messages', () => {

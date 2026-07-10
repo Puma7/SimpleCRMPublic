@@ -722,8 +722,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
 
           // sort=relevance: Keyset-Cursor passt nicht zur Rank-Order —
           // eingehender Cursor wird ignoriert, nextCursor bleibt null
-          // (Offset-Pagination ist der unterstuetzte Weg).
-          const relevanceSort = input.sort === 'relevance';
+          // (Offset-Pagination ist der unterstuetzte Weg). Nur bei aktiver
+          // Suche wirksam: ohne search gilt die Default-Sortierung samt
+          // normalem Cursor, sonst bliebe eine normale Liste auf Seite 1
+          // haengen (Cursor ignoriert + nextCursor null).
+          const relevanceSort = input.sort === 'relevance' && Boolean(search);
           const effectiveCursor = relevanceSort ? undefined : input.cursor;
           const priorityCursor =
             effectiveCursor !== undefined && input.sort === 'priority'
