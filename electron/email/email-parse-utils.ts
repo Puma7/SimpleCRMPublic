@@ -1,6 +1,10 @@
 export {
   addressJson,
   addressesFromRecipientJson,
+  ATTACHMENT_TEXT_MAX_BYTES,
+  ATTACHMENT_TEXT_MAX_CHARS,
+  attachmentTextKind,
+  capAttachmentText,
   formatDate,
   formatMailparserHeaderValue,
   isCorruptRawHeaders,
@@ -9,5 +13,6 @@ export {
   plainTextFromHtml,
   rawHeadersFromParsed,
   snippetFromParsed,
+  type AttachmentTextKind,
   type CanonicalAddressJson,
 } from '../../packages/core/src/email';

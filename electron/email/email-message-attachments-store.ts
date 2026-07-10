@@ -151,6 +151,13 @@ function insertPreparedAttachments(
   });
 
   transaction();
+  if (storedCount > 0) {
+    // Best-effort text extraction (pdf/docx/txt/html) for the search index;
+    // lazy import keeps the parser deps off the sync hot path.
+    void import('./attachment-text-extract')
+      .then((m) => m.extractTextForMessageAttachments(messageId))
+      .catch(() => undefined);
+  }
   return { storedCount, writeFailures };
 }
 
