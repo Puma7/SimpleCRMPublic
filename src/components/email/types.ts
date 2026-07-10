@@ -286,6 +286,48 @@ export function isTrashedMessage(
   return (message?.soft_deleted ?? 0) !== 0
 }
 
+/**
+ * Draft-Ordner-Zugehoerigkeit der Zeile (statt drafts/scheduled_send-View):
+ * gated im Viewer die Controls, die fuer JEDE Draft-Zeile gelten — auch fuer
+ * uid >= 0-IMAP-Drafts, die isEditableDraftMessage bewusst nicht abdeckt
+ * (Antworten/Weiterleiten ausblenden, IMAP-Draft-Loeschen, Spam-Buttons).
+ * In den drafts/scheduled_send-Views hat per View-Filter jede Zeile
+ * folder_kind 'draft', dort aendert sich nichts.
+ */
+export function isDraftFolderMessage(
+  message: Pick<EmailMessage, "folder_kind"> | null | undefined,
+): boolean {
+  return message?.folder_kind === "draft"
+}
+
+/**
+ * Inbox-Zugehoerigkeit der Zeile — exakt die Inbox-View-Praedikat-Semantik
+ * der Store-Logik (viewFilterClause 'inbox'): nicht geloescht, folder_kind
+ * inbox/NULL/leer, nicht archiviert, kein Spam (inkl. spam_status 'review',
+ * das in der spam_review-View lebt). uid >= 0 entspricht dem bisherigen
+ * Toggle-Gating (outbound-held- und POP3-Zeilen mit synthetischer uid
+ * behalten ihr Verhalten). Gated Controls, die nur fuer Inbox-Mails gelten
+ * (Erledigt-Toggle), unabhaengig von der aktiven View: Broad-Treffer aus
+ * sent/archived zeigen sie nicht mehr, Inbox-Treffer aus jeder View schon.
+ */
+export function isInboxMessage(
+  message:
+    | Pick<
+        EmailMessage,
+        "uid" | "folder_kind" | "soft_deleted" | "archived" | "is_spam" | "spam_status"
+      >
+    | null
+    | undefined,
+): boolean {
+  if (!message || message.uid < 0) return false
+  if ((message.soft_deleted ?? 0) !== 0) return false
+  const kind = message.folder_kind ?? ""
+  if (kind !== "" && kind !== "inbox") return false
+  if ((message.archived ?? 0) !== 0) return false
+  if ((message.is_spam ?? 0) !== 0) return false
+  return (message.spam_status ?? "clean") === "clean"
+}
+
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
   const c = customer ?? undefined
   return body
