@@ -366,7 +366,8 @@ export const createEmailMessagesTable = `
   );
 `;
 
-/** FTS5 external-content index on email_messages (rowid = message id). */
+/** FTS5 external-content index on email_messages (rowid = message id).
+ * prefix index speeds up the term prefix queries ("ter"*) used by search. */
 export const createEmailMessagesFtsTable = `
   CREATE VIRTUAL TABLE IF NOT EXISTS ${EMAIL_MESSAGES_FTS_TABLE} USING fts5(
     subject,
@@ -377,9 +378,11 @@ export const createEmailMessagesFtsTable = `
     cc_json,
     bcc_json,
     ticket_code,
+    attachments_json,
     content='${EMAIL_MESSAGES_TABLE}',
     content_rowid='id',
-    tokenize = 'unicode61'
+    tokenize = 'unicode61',
+    prefix = '2 3 4'
   );
 `;
 

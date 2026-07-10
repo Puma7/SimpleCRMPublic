@@ -60,7 +60,8 @@ describe('sqlite fresh install integration', () => {
     const version = db
       .prepare(`SELECT value FROM ${SYNC_INFO_TABLE} WHERE key = ?`)
       .get('email_fts_search_version') as { value: string } | undefined;
-    expect(version?.value).toBe('2');
+    expect(version?.value).toBe('3');
+    expect(columnExists(EMAIL_MESSAGES_FTS_TABLE, 'attachments_json')).toBe(true);
   });
 
   test('seeds initial sync status rows', () => {

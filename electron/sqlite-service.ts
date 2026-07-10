@@ -4,6 +4,7 @@ import os from 'os';
 import { app } from 'electron';
 import fs from 'fs';
 import { ensureAssignedToReferentialIntegrity } from './email/email-assigned-to-integrity';
+import { plainTextFromHtml } from './email/email-parse-utils';
 import { runMailRoadmapMigrations } from './mail-roadmap-migrations';
 import {
     createCustomersTable,
@@ -185,6 +186,7 @@ export function bootstrapFreshDatabaseSchema(
         runMigrations();
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
+        migrateEmailFtsSearchV3();
         setSyncInfo('lastSyncStatus', 'Never');
         setSyncInfo('lastSyncTimestamp', '');
     } finally {
@@ -387,8 +389,8 @@ function ensureEmailFtsTriggers() {
     db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
     db.exec(`
       CREATE TRIGGER email_messages_fts_ai AFTER INSERT ON ${EMAIL_MESSAGES_TABLE} BEGIN
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code)
-        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code, attachments_json)
+        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code, new.attachments_json);
       END;
     `);
     db.exec(`
@@ -399,8 +401,8 @@ function ensureEmailFtsTriggers() {
     db.exec(`
       CREATE TRIGGER email_messages_fts_au AFTER UPDATE ON ${EMAIL_MESSAGES_TABLE} BEGIN
         INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}, rowid) VALUES('delete', old.id);
-        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code)
-        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code);
+        INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(rowid, subject, snippet, body_text, from_json, to_json, cc_json, bcc_json, ticket_code, attachments_json)
+        VALUES (new.id, new.subject, new.snippet, new.body_text, new.from_json, new.to_json, new.cc_json, new.bcc_json, new.ticket_code, new.attachments_json);
       END;
     `);
 }
@@ -430,6 +432,66 @@ function migrateEmailFtsSearchV2(): void {
     db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
     ensureEmailFtsTriggers();
     setSyncInfo('email_fts_search_version', '2');
+}
+
+/**
+ * FTS v3 (Mail Search Phase 1): attachments_json column + prefix index.
+ * Backfills body_text from body_html for HTML-only mail first, so the
+ * rebuilt index (and LIKE search) can see those bodies.
+ */
+function migrateEmailFtsSearchV3(): void {
+    if (!db) return;
+    if (getSyncInfo('email_fts_search_version') === '3') return;
+    const conn = db;
+
+    // 1) body_text backfill for HTML-only mail (batched, one txn per batch).
+    const selectBatch = conn.prepare(
+        `SELECT id, body_html FROM ${EMAIL_MESSAGES_TABLE}
+         WHERE id > ? AND (body_text IS NULL OR body_text = '')
+           AND body_html IS NOT NULL AND body_html <> ''
+         ORDER BY id LIMIT 200`,
+    );
+    const updateBody = conn.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ? WHERE id = ?`);
+    const applyBatch = conn.transaction((batch: { id: number; text: string }[]) => {
+        for (const row of batch) updateBody.run(row.text, row.id);
+    });
+    let lastId = 0;
+    let backfilled = 0;
+    for (;;) {
+        const rows = selectBatch.all(lastId) as { id: number; body_html: string }[];
+        if (rows.length === 0) break;
+        lastId = rows[rows.length - 1]!.id;
+        const batch = rows
+            .map((r) => ({ id: r.id, text: plainTextFromHtml(r.body_html) }))
+            .filter((r) => r.text.length > 0);
+        if (batch.length > 0) {
+            applyBatch(batch);
+            backfilled += batch.length;
+        }
+    }
+    if (backfilled > 0) {
+        console.log(`FTS v3: backfilled body_text for ${backfilled} HTML-only messages`);
+    }
+
+    // 2) Rebuild the index with attachments_json + prefix support (skip when
+    // the table was already created with the v3 schema, e.g. fresh installs).
+    const ftsMaster = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
+    if (ftsMaster) {
+        const cols = db.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_FTS_TABLE})`).all() as { name: string }[];
+        if (!cols.some((c) => c.name === 'attachments_json')) {
+            console.log('Migrating email_messages FTS to v3 (attachments + prefix search)...');
+            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
+            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
+            db.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
+            db.exec(`DROP TABLE IF EXISTS ${EMAIL_MESSAGES_FTS_TABLE}`);
+            db.exec(createEmailMessagesFtsTable);
+            db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+            ensureEmailFtsTriggers();
+        }
+    }
+    setSyncInfo('email_fts_search_version', '3');
 }
 
 function setupEmailFtsIndex() {
@@ -848,6 +910,7 @@ function runMigrations() {
 
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
+        migrateEmailFtsSearchV3();
 
         // Migration: Add snoozed_until column to tasks table if it doesn't exist
         const taskColsForSnooze = db.prepare(`PRAGMA table_info(${TASKS_TABLE})`).all();
