@@ -25,7 +25,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 007 | Replace 87 inline `require('kysely')` with static imports | P3 | S | tech-debt | — | DONE |
 | 008 | Virtualize and memoize the email message list | P2 | M | perf | — | BLOCKED (needs new dep @tanstack/react-virtual; installs proxy-blocked in this env — apply + verify where `pnpm install` works) |
 | 009 | Set-based `backfillCustomerLinks` (drop per-row UPDATE loop) | P3 | S | perf | — | DONE |
-| 010 | Make scheduled-send state transitions atomic | P2 | M | bug | — | TODO |
+| 010 | Make scheduled-send state transitions atomic | P2 | M | bug | — | DONE |
 | 011 | Render email HTML in a sandboxed iframe | P2 | M | security | — | DONE |
 | 012 | Standardize on pnpm; remove the second lockfile | P2 | S | dx | — | DONE |
 | 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | DONE |

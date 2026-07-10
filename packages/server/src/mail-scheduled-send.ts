@@ -37,23 +37,36 @@ type ScheduledDraft = Readonly<{
 
 export type ScheduledSendStore = Readonly<{
   claimDueDrafts(input: ScheduledSendJobPlan): Promise<readonly ScheduledDraft[]>;
-  setDraftScheduledAt(input: {
+
+  /** Atomic: schedule=null, clear claim, reset failure markers to "ok". After a successful send. */
+  finalizeSentDraft(input: { workspaceId: string; draftId: number }): Promise<void>;
+
+  /** Atomic: schedule=null, clear claim; failure markers left untouched. When a claimed draft is abandoned (no recipient). */
+  releaseClaimedDraft(input: { workspaceId: string; draftId: number }): Promise<void>;
+
+  /** Atomic: restore schedule to claimedSendAt and clear claim. No-op when claimedSendAt is null. For transient/back-off retries. */
+  restoreClaimedDraft(input: {
     workspaceId: string;
     draftId: number;
-    sendAt: Date | null;
+    claimedSendAt: Date | null;
   }): Promise<void>;
-  getSyncInfo(input: {
+
+  /** Atomic: schedule=null, clear claim, mark status=failed with error. Permanent give-up (e.g. missing account). */
+  giveUpDraft(input: { workspaceId: string; draftId: number; error: string }): Promise<void>;
+
+  /**
+   * Atomic: increment the failure counter and, in the SAME transaction, either
+   * back off (restore schedule + clear claim + status=pending) or give up when
+   * the new count reaches maxFailures (schedule=null + clear claim + status=failed).
+   * Returns the new count and whether it gave up.
+   */
+  recordFailedAttempt(input: {
     workspaceId: string;
-    keys: readonly string[];
-  }): Promise<ReadonlyMap<string, string | null>>;
-  setSyncInfo(input: {
-    workspaceId: string;
-    values: Readonly<Record<string, string | null>>;
-  }): Promise<void>;
-  deleteSyncInfo(input: {
-    workspaceId: string;
-    keys: readonly string[];
-  }): Promise<void>;
+    draftId: number;
+    error: string;
+    claimedSendAt: Date | null;
+    maxFailures: number;
+  }): Promise<{ failures: number; gaveUp: boolean }>;
 }>;
 
 export type ScheduledSendJobPortOptions = Readonly<{
@@ -105,18 +118,20 @@ async function processScheduledDraft(input: {
 }): Promise<void> {
   const draft = input.draft;
   if (!draft.accountId) {
-    await giveUpScheduledDraft(input.store, input.workspaceId, draft.id, 'Konto nicht gefunden');
+    await input.store.giveUpDraft({
+      workspaceId: input.workspaceId,
+      draftId: draft.id,
+      error: 'Konto nicht gefunden',
+    });
     return;
   }
 
   const to = recipientFieldFromJson(draft.toJson);
   if (!to.trim()) {
-    await input.store.setDraftScheduledAt({
+    await input.store.releaseClaimedDraft({
       workspaceId: input.workspaceId,
       draftId: draft.id,
-      sendAt: null,
     });
-    await clearClaimedScheduledSendAt(input.store, input.workspaceId, draft.id);
     return;
   }
 
@@ -138,117 +153,28 @@ async function processScheduledDraft(input: {
   });
 
   if (result.ok) {
-    await input.store.setDraftScheduledAt({
+    await input.store.finalizeSentDraft({
       workspaceId: input.workspaceId,
       draftId: draft.id,
-      sendAt: null,
     });
-    await clearScheduledDraftMeta(input.store, input.workspaceId, draft.id);
     return;
   }
 
-  if (isComposeSendAlreadyInProgressError(result.error)) {
-    await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
+  if (isComposeSendAlreadyInProgressError(result.error) || isOutboundReviewPendingError(result.error)) {
+    await input.store.restoreClaimedDraft({
+      workspaceId: input.workspaceId,
+      draftId: draft.id,
+      claimedSendAt: draft.claimedSendAt,
+    });
     return;
   }
 
-  if (isOutboundReviewPendingError(result.error)) {
-    await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
-    return;
-  }
-
-  const failures = await recordScheduledAttemptFailure(
-    input.store,
-    input.workspaceId,
-    draft.id,
-    result.error,
-  );
-  if (failures >= MAX_SCHEDULED_SEND_FAILURES) {
-    await giveUpScheduledDraft(input.store, input.workspaceId, draft.id, result.error);
-    return;
-  }
-  await restoreClaimedScheduledSendAt(input.store, input.workspaceId, draft);
-}
-
-async function restoreClaimedScheduledSendAt(
-  store: ScheduledSendStore,
-  workspaceId: string,
-  draft: ScheduledDraft,
-): Promise<void> {
-  if (draft.claimedSendAt === null) return;
-  await store.setDraftScheduledAt({
-    workspaceId,
+  await input.store.recordFailedAttempt({
+    workspaceId: input.workspaceId,
     draftId: draft.id,
-    sendAt: draft.claimedSendAt,
-  });
-  await clearClaimedScheduledSendAt(store, workspaceId, draft.id);
-}
-
-async function clearClaimedScheduledSendAt(
-  store: ScheduledSendStore,
-  workspaceId: string,
-  draftId: number,
-): Promise<void> {
-  await store.deleteSyncInfo({
-    workspaceId,
-    keys: [scheduledSendClaimedAtKey(draftId)],
-  });
-}
-
-async function recordScheduledAttemptFailure(
-  store: ScheduledSendStore,
-  workspaceId: string,
-  draftId: number,
-  error: string,
-): Promise<number> {
-  const values = await store.getSyncInfo({
-    workspaceId,
-    keys: [scheduledSendFailuresKey(draftId)],
-  });
-  const current = Number.parseInt(values.get(scheduledSendFailuresKey(draftId)) ?? '0', 10);
-  const failures = (Number.isFinite(current) && current >= 0 ? current : 0) + 1;
-  await store.setSyncInfo({
-    workspaceId,
-    values: {
-      [scheduledSendFailuresKey(draftId)]: String(failures),
-      [scheduledSendLastErrorKey(draftId)]: truncateScheduledSendError(error),
-      [scheduledSendStatusKey(draftId)]: 'pending',
-    },
-  });
-  return failures;
-}
-
-async function giveUpScheduledDraft(
-  store: ScheduledSendStore,
-  workspaceId: string,
-  draftId: number,
-  error: string,
-): Promise<void> {
-  await store.setDraftScheduledAt({ workspaceId, draftId, sendAt: null });
-  await clearClaimedScheduledSendAt(store, workspaceId, draftId);
-  await store.setSyncInfo({
-    workspaceId,
-    values: {
-      [scheduledSendFailuresKey(draftId)]: '0',
-      [scheduledSendLastErrorKey(draftId)]: truncateScheduledSendError(error),
-      [scheduledSendStatusKey(draftId)]: 'failed',
-    },
-  });
-}
-
-async function clearScheduledDraftMeta(
-  store: ScheduledSendStore,
-  workspaceId: string,
-  draftId: number,
-): Promise<void> {
-  await clearClaimedScheduledSendAt(store, workspaceId, draftId);
-  await store.setSyncInfo({
-    workspaceId,
-    values: {
-      [scheduledSendFailuresKey(draftId)]: '0',
-      [scheduledSendLastErrorKey(draftId)]: '',
-      [scheduledSendStatusKey(draftId)]: '',
-    },
+    error: result.error,
+    claimedSendAt: draft.claimedSendAt,
+    maxFailures: MAX_SCHEDULED_SEND_FAILURES,
   });
 }
 
@@ -495,84 +421,157 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
         },
       );
     },
-    async setDraftScheduledAt(input) {
+    async finalizeSentDraft(input) {
       await withWorkspaceTransaction(
         db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          await trx
-            .updateTable('email_messages')
-            .set({
-              scheduled_send_at: input.sendAt,
-              updated_at: new Date(),
-            })
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.draftId)
-            .execute();
+          await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
+          await deleteClaimTx(trx, input.workspaceId, input.draftId);
+          await upsertSyncInfoTx(trx, input.workspaceId, {
+            [scheduledSendFailuresKey(input.draftId)]: '0',
+            [scheduledSendLastErrorKey(input.draftId)]: '',
+            [scheduledSendStatusKey(input.draftId)]: '',
+          });
         },
       );
     },
-    async getSyncInfo(input) {
+    async releaseClaimedDraft(input) {
+      await withWorkspaceTransaction(
+        db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
+          await deleteClaimTx(trx, input.workspaceId, input.draftId);
+        },
+      );
+    },
+    async restoreClaimedDraft(input) {
+      if (input.claimedSendAt === null) return;
+      await withWorkspaceTransaction(
+        db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          await updateScheduleTx(trx, input.workspaceId, input.draftId, input.claimedSendAt);
+          await deleteClaimTx(trx, input.workspaceId, input.draftId);
+        },
+      );
+    },
+    async giveUpDraft(input) {
+      await withWorkspaceTransaction(
+        db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
+          await deleteClaimTx(trx, input.workspaceId, input.draftId);
+          await upsertSyncInfoTx(trx, input.workspaceId, {
+            [scheduledSendFailuresKey(input.draftId)]: '0',
+            [scheduledSendLastErrorKey(input.draftId)]: truncateScheduledSendError(input.error),
+            [scheduledSendStatusKey(input.draftId)]: 'failed',
+          });
+        },
+      );
+    },
+    async recordFailedAttempt(input) {
       return withWorkspaceTransaction(
         db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const rows = await trx
-            .selectFrom('sync_info')
-            .select(['key', 'value'])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('key', 'in', input.keys)
-            .execute();
-          const values = new Map<string, string | null>();
-          for (const key of input.keys) values.set(key, null);
-          for (const row of rows) values.set(row.key, row.value);
-          return values;
-        },
-      );
-    },
-    async setSyncInfo(input) {
-      await withWorkspaceTransaction(
-        db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          const entries = Object.entries(input.values);
-          if (entries.length === 0) return;
-          const now = new Date();
-          await trx
-            .insertInto('sync_info')
-            .values(entries.map(([key, value]) => ({
-              workspace_id: input.workspaceId,
-              key,
-              value,
-              last_updated: now,
-              source_row: serverApiSourceRow(),
-              imported_in_run_id: null,
-              updated_at: now,
-            })))
-            .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
-              value: (eb) => eb.ref('excluded.value'),
-              last_updated: now,
-              updated_at: now,
-            }))
-            .execute();
-        },
-      );
-    },
-    async deleteSyncInfo(input) {
-      if (input.keys.length === 0) return;
-      await withWorkspaceTransaction(
-        db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          await trx
-            .deleteFrom('sync_info')
-            .where('workspace_id', '=', input.workspaceId)
-            .where('key', 'in', [...input.keys])
-            .execute();
+          const current = await readFailureCountTx(trx, input.workspaceId, input.draftId);
+          const failures = current + 1;
+          const gaveUp = failures >= input.maxFailures;
+          if (gaveUp) {
+            await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
+            await deleteClaimTx(trx, input.workspaceId, input.draftId);
+            await upsertSyncInfoTx(trx, input.workspaceId, {
+              [scheduledSendFailuresKey(input.draftId)]: '0',
+              [scheduledSendLastErrorKey(input.draftId)]: truncateScheduledSendError(input.error),
+              [scheduledSendStatusKey(input.draftId)]: 'failed',
+            });
+          } else {
+            await upsertSyncInfoTx(trx, input.workspaceId, {
+              [scheduledSendFailuresKey(input.draftId)]: String(failures),
+              [scheduledSendLastErrorKey(input.draftId)]: truncateScheduledSendError(input.error),
+              [scheduledSendStatusKey(input.draftId)]: 'pending',
+            });
+            if (input.claimedSendAt !== null) {
+              await updateScheduleTx(trx, input.workspaceId, input.draftId, input.claimedSendAt);
+              await deleteClaimTx(trx, input.workspaceId, input.draftId);
+            }
+          }
+          return { failures, gaveUp };
         },
       );
     },
   };
+}
+
+async function updateScheduleTx(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+  draftId: number,
+  sendAt: Date | null,
+): Promise<void> {
+  await trx
+    .updateTable('email_messages')
+    .set({ scheduled_send_at: sendAt, updated_at: new Date() })
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', draftId)
+    .execute();
+}
+
+async function deleteClaimTx(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+  draftId: number,
+): Promise<void> {
+  await trx
+    .deleteFrom('sync_info')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', scheduledSendClaimedAtKey(draftId))
+    .execute();
+}
+
+async function upsertSyncInfoTx(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+  values: Readonly<Record<string, string | null>>,
+): Promise<void> {
+  const entries = Object.entries(values);
+  if (entries.length === 0) return;
+  const now = new Date();
+  await trx
+    .insertInto('sync_info')
+    .values(entries.map(([key, value]) => ({
+      workspace_id: workspaceId,
+      key,
+      value,
+      last_updated: now,
+      source_row: serverApiSourceRow(),
+      imported_in_run_id: null,
+      updated_at: now,
+    })))
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: (eb) => eb.ref('excluded.value'),
+      last_updated: now,
+      updated_at: now,
+    }))
+    .execute();
+}
+
+async function readFailureCountTx(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+  draftId: number,
+): Promise<number> {
+  const row = await trx
+    .selectFrom('sync_info')
+    .select(['value'])
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', scheduledSendFailuresKey(draftId))
+    .executeTakeFirst();
+  const current = Number.parseInt(row?.value ?? '0', 10);
+  return Number.isFinite(current) && current >= 0 ? current : 0;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
