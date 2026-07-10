@@ -69,14 +69,113 @@ export function formatDate(d: Date | undefined): string | null {
 }
 
 /**
+ * Common named HTML entities (pragmatic table, not the full HTML5 list):
+ * markup basics, German umlauts/ß, frequent accents, typography and symbols.
+ * `amp` is intentionally absent — `&amp;` is decoded LAST in
+ * {@link decodeHtmlEntities} so `&amp;uuml;` stays the literal `&uuml;`
+ * instead of double-decoding to `ü`.
+ */
+const NAMED_HTML_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+  auml: 'ä',
+  ouml: 'ö',
+  uuml: 'ü',
+  Auml: 'Ä',
+  Ouml: 'Ö',
+  Uuml: 'Ü',
+  szlig: 'ß',
+  aacute: 'á',
+  agrave: 'à',
+  acirc: 'â',
+  eacute: 'é',
+  egrave: 'è',
+  ecirc: 'ê',
+  iacute: 'í',
+  igrave: 'ì',
+  icirc: 'î',
+  oacute: 'ó',
+  ograve: 'ò',
+  ocirc: 'ô',
+  uacute: 'ú',
+  ugrave: 'ù',
+  ucirc: 'û',
+  ccedil: 'ç',
+  ntilde: 'ñ',
+  euro: '€',
+  pound: '£',
+  cent: '¢',
+  copy: '©',
+  reg: '®',
+  trade: '™',
+  sect: '§',
+  para: '¶',
+  deg: '°',
+  middot: '·',
+  bull: '•',
+  hellip: '…',
+  ndash: '–',
+  mdash: '—',
+  lsquo: '‘',
+  rsquo: '’',
+  ldquo: '“',
+  rdquo: '”',
+  laquo: '«',
+  raquo: '»',
+  times: '×',
+  divide: '÷',
+  plusmn: '±',
+  frac12: '½',
+  frac14: '¼',
+  frac34: '¾',
+};
+
+/** Decodable target for numeric entities: no surrogates, no C0 controls (except whitespace). */
+function isDecodableCodePoint(code: number): boolean {
+  if (!Number.isInteger(code) || code <= 0 || code > 0x10ffff) return false;
+  if (code >= 0xd800 && code <= 0xdfff) return false;
+  if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) return false;
+  return true;
+}
+
+/**
+ * Decode numeric (`&#228;`, `&#xE4;`) and common named HTML entities so
+ * `M&uuml;ller` is indexed/searchable as `Müller`. `&amp;` is decoded in a
+ * final pass so already-escaped sequences like `&amp;uuml;` yield the literal
+ * `&uuml;` (no double-decode). Unknown entities are left untouched.
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#(\d{1,7});/g, (match, dec: string) => {
+      const code = Number.parseInt(dec, 10);
+      return isDecodableCodePoint(code) ? String.fromCodePoint(code) : match;
+    })
+    .replace(/&#[xX]([0-9a-fA-F]{1,6});/g, (match, hex: string) => {
+      const code = Number.parseInt(hex, 16);
+      return isDecodableCodePoint(code) ? String.fromCodePoint(code) : match;
+    })
+    .replace(/&([a-zA-Z][a-zA-Z0-9]{1,30});/g, (match, name: string) => {
+      if (name === 'amp') return match;
+      return NAMED_HTML_ENTITIES[name] ?? match;
+    })
+    .replace(/&amp;/g, '&');
+}
+
+/**
  * Strip HTML down to searchable plain text (style/script content removed).
  * Used as body_text fallback for HTML-only mail so search/FTS can see it.
+ * HTML entities are decoded after the tag strip (before whitespace collapse)
+ * so text like `M&uuml;ller` or `Rechnung&nbsp;2026` becomes searchable.
  */
 export function plainTextFromHtml(html: string, cap = 500_000): string {
-  const text = html
+  const stripped = html
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<[^>]+>/g, ' ');
+  const text = decodeHtmlEntities(stripped)
     .replace(/\s+/g, ' ')
     .trim();
   return text.length > cap ? text.slice(0, cap) : text;

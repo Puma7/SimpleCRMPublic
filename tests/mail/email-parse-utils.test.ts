@@ -1,9 +1,11 @@
 import {
   addressJson,
   addressesFromRecipientJson,
+  decodeHtmlEntities,
   formatDate,
   normalizeAddressJson,
   parseAttachmentsMeta,
+  plainTextFromHtml,
   rawHeadersFromParsed,
   snippetFromParsed,
 } from '../../electron/email/email-parse-utils';
@@ -53,6 +55,42 @@ describe('email-parse-utils', () => {
     expect(snippetFromParsed(null, '<p></p>')).toBeNull();
     const longHtml = `<p>${'y'.repeat(9000)}</p>`;
     expect(snippetFromParsed(null, longHtml)?.length).toBeLessThanOrEqual(220);
+  });
+
+  test('plainTextFromHtml decodes named entities (umlauts, nbsp) for indexing', () => {
+    expect(plainTextFromHtml('<p>M&uuml;ller</p>')).toBe('Müller');
+    expect(plainTextFromHtml('<p>&Auml;rger mit Stra&szlig;e und S&ouml;hne &Uuml;bersicht</p>'))
+      .toBe('Ärger mit Straße und Söhne Übersicht');
+    expect(plainTextFromHtml('Rechnung&nbsp;2026')).toBe('Rechnung 2026');
+    // &lt;/&gt; werden erst NACH dem Tag-Strip decodiert — kein Re-Strip.
+    expect(plainTextFromHtml('a &lt;b&gt; c')).toBe('a <b> c');
+    // Unbekannte benannte Entities bleiben unangetastet.
+    expect(plainTextFromHtml('bleibt &foobar; stehen')).toBe('bleibt &foobar; stehen');
+  });
+
+  test('plainTextFromHtml decodes numeric entities (decimal and hex)', () => {
+    expect(plainTextFromHtml('M&#252;ller')).toBe('Müller');
+    expect(plainTextFromHtml('M&#xFC;ller &#x2F; Partner')).toBe('Müller / Partner');
+    expect(plainTextFromHtml('Emoji &#128512;')).toBe('Emoji 😀');
+    // Ungueltige Codepoints (NUL, Surrogates, out of range) bleiben literal.
+    expect(plainTextFromHtml('x&#0;y')).toBe('x&#0;y');
+    expect(plainTextFromHtml('x&#xD800;y')).toBe('x&#xD800;y');
+    expect(plainTextFromHtml('x&#1114112;y')).toBe('x&#1114112;y');
+  });
+
+  test('plainTextFromHtml decodes &amp; last — no double-decode', () => {
+    expect(plainTextFromHtml('M&uuml;ller &amp; S&ouml;hne')).toBe('Müller & Söhne');
+    // &amp;uuml; ist die Escaped-Darstellung von "&uuml;" — sie darf NICHT
+    // weiter zu "ü" decodiert werden.
+    expect(plainTextFromHtml('literal &amp;uuml; bleibt')).toBe('literal &uuml; bleibt');
+    expect(plainTextFromHtml('literal &amp;#252; bleibt')).toBe('literal &#252; bleibt');
+    expect(plainTextFromHtml('doppelt &amp;amp; bleibt einfach')).toBe('doppelt &amp; bleibt einfach');
+  });
+
+  test('decodeHtmlEntities standalone keeps unrelated text intact', () => {
+    expect(decodeHtmlEntities('R&D ohne Semikolon & Co')).toBe('R&D ohne Semikolon & Co');
+    expect(decodeHtmlEntities('a &euro; 5 &ndash; 7')).toBe('a € 5 – 7');
+    expect(decodeHtmlEntities('&quot;Zitat&quot; &apos;x&apos;')).toBe('"Zitat" \'x\'');
   });
 
   test('rawHeadersFromParsed uses headerLines or headers map', () => {

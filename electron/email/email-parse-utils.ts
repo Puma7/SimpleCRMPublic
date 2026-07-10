@@ -5,6 +5,7 @@ export {
   ATTACHMENT_TEXT_MAX_CHARS,
   attachmentTextKind,
   capAttachmentText,
+  decodeHtmlEntities,
   formatDate,
   formatMailparserHeaderValue,
   isCorruptRawHeaders,
