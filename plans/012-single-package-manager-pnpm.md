@@ -277,7 +277,10 @@ COPY tsconfig.json tsconfig.electron.json ./
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
 RUN pnpm run build:packages
-RUN pnpm prune --prod
+# CI=true is REQUIRED: in a non-TTY `RUN`, `pnpm prune --prod` needs to recreate
+# node_modules and otherwise aborts with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY,
+# which would break the API image build in the server-compose-smoke CI job.
+RUN CI=true pnpm prune --prod
 
 FROM node:24-alpine
 

@@ -426,11 +426,19 @@ Notes for the executor:
 
 Create `tests/unit/jtl-context-spike.test.ts`, modeled structurally on
 `tests/unit/workflow-builtin-nodes.test.ts` (reuse its `collect` and `ctx`
-helpers — copy them into this file). Mock the MSSQL helper so no DB is needed:
+helpers — copy them into this file). Mock BOTH the MSSQL helper AND
+`sqlite-service`: `electron/workflow/nodes/integration-nodes.ts` imports
+`getSyncInfo` from `../../sqlite-service` at module top level, so importing
+`registerIntegrationNodes` in a Node unit test would otherwise load
+`electron/sqlite-service` and its native `better-sqlite3`/electron deps before
+the resolver runs. Mirror `workflow-builtin-nodes.test.ts`:
 
 ```ts
 jest.mock('../../electron/mssql-keytar-service', () => ({
   executeReadOnlyMssqlQuery: jest.fn(),
+}));
+jest.mock('../../electron/sqlite-service', () => ({
+  getSyncInfo: jest.fn(() => ''),   // integration-nodes.ts reads the HTTP allowlist from here
 }));
 ```
 

@@ -935,8 +935,16 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+// Wrap a render-time helper the row calls so we can COUNT renders. DOM-node
+// identity is not a valid React.memo guard (React reuses the node when output is
+// unchanged even without memo); a call-count on a render-time function is.
+jest.mock('@/components/email/types', () => {
+  const actual = jest.requireActual('@/components/email/types');
+  return { ...actual, formatMessageFrom: jest.fn(actual.formatMessageFrom) };
+});
+
 import { MessageRow, type MessageRowProps } from '@/components/email/message-row';
-import type { EmailMessage } from '@/components/email/types';
+import { formatMessageFrom, type EmailMessage } from '@/components/email/types';
 
 const baseMessage = {
   id: 42,
@@ -1003,12 +1011,16 @@ describe('MessageRow', () => {
   });
 
   test('does not re-render when the same props are passed again (memo holds)', () => {
+    const fromSpy = formatMessageFrom as jest.Mock;
     const props = makeProps();
     const { rerender } = render(<MessageRow {...props} />);
-    const node = screen.getByText('Rechnung 2026');
+    const callsAfterMount = fromSpy.mock.calls.length;
+    expect(callsAfterMount).toBeGreaterThan(0); // rendered once
     rerender(<MessageRow {...props} />);
-    // Same DOM node instance => React.memo skipped the re-render.
-    expect(screen.getByText('Rechnung 2026')).toBe(node);
+    // Identical props → React.memo skips the row's render body, so its
+    // render-time formatMessageFrom() is NOT called again. Removing the memo
+    // boundary makes this count increase, which fails the test.
+    expect(fromSpy.mock.calls.length).toBe(callsAfterMount);
   });
 });
 ```

@@ -304,14 +304,17 @@ returning "email_messages"."id"
 - `updatedRows.length` counts the rows actually updated (rows returned by
   `RETURNING`), which is what `count` meant before.
 
-**Verify** (types compile, and the old loop is gone):
+**Verify** (types compile; the per-row UPDATE is gone):
 ```
 npx tsc -b packages/core packages/server ; echo "tsc exit=$?"
-grep -n "for (const message of messages)" packages/server/src/db/postgres-mail-read-ports.ts ; echo "grep exit=$?"
 ```
-→ `tsc exit=0` with no errors; the `grep` prints nothing and `grep exit=1`
-(the per-row loop over `messages` is removed; a `for` loop over `targets` remains,
-which is fine).
+→ `tsc exit=0` with no errors. **Do NOT** grep for `for (const message of messages)`
+as a guard: the set-based rewrite still loops over `messages` once to build the
+`targets` array (and over `targets` to build the values list), so that string
+legitimately remains. The real invariant — **one** `UPDATE` for N rows, not one
+per row — is asserted by the unit test in Step 3 (which fakes the query builder
+and checks exactly one `updateTable('email_messages')` call). That test, not a
+grep, is the authoritative machine check here.
 
 ### Step 3: Create the unit test
 
@@ -506,8 +509,7 @@ git commit -m "perf(mail): link backfilled customers in one set-based UPDATE ins
 
 Machine-checkable. ALL must hold:
 
-- [ ] `grep -n "for (const message of messages)" packages/server/src/db/postgres-mail-read-ports.ts` returns no match (the per-row loop is gone)
-- [ ] `grep -n "\.from(kyselySql\`(values" packages/server/src/db/postgres-mail-read-ports.ts` returns exactly one match (the new set-based UPDATE)
+- [ ] `grep -n "\.from(kyselySql\`(values" packages/server/src/db/postgres-mail-read-ports.ts` returns exactly one match (the new set-based UPDATE) — this, plus the Step 3 unit test asserting exactly one `updateTable('email_messages')` call for N messages, is the guard that the per-row UPDATE is gone. (Do NOT grep for `for (const message of messages)`: the set-based code still loops over `messages` once to build `targets`, so that string legitimately remains.)
 - [ ] `npx tsc -b packages/core packages/server` exits 0 (and `pnpm run build` exits 0)
 - [ ] `pnpm run lint` exits 0
 - [ ] `pnpm test` exits 0; `tests/unit/postgres-mail-backfill-customer-links.test.ts` exists and its 2 tests pass

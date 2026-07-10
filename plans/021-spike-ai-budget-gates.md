@@ -15,7 +15,7 @@
 > implementation). Prefer a smaller, cleaner prototype over a fuller one.
 >
 > **Drift check (run first)**:
-> `git diff --stat f24fb27..HEAD -- docs/AI_BUDGET_GATES_SPIKE.md docs/FEATURE_REQUESTS_JTL_KI_SUPPORT.md packages/server/src/ai-budget.ts packages/server/src/index.ts packages/server/src/ai-classification.ts tests/unit/ai-budget.test.ts`
+> `git diff --stat f24fb27..HEAD -- docs/AI_BUDGET_GATES_SPIKE.md docs/FEATURE_REQUESTS_JTL_KI_SUPPORT.md packages/server/src/ai-budget.ts packages/server/src/index.ts packages/server/src/ai-classification.ts packages/server/src/ai-reply-suggestion.ts tests/unit/ai-budget.test.ts`
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
@@ -80,9 +80,11 @@ already exists.
 
 ### The single choke point where a gate belongs (server edition)
 
-- `packages/server/src/ai-classification.ts` — ALL server AI calls funnel through
-  `runTrackedChatCompletion`, which records usage *after* the call. This is where
-  a *pre-call* budget check belongs. Excerpt (`ai-classification.ts:1365-1383`):
+- `packages/server/src/ai-classification.ts` — MOST server AI calls funnel through
+  `runTrackedChatCompletion`, which records usage *after* the call. This is the
+  primary place a *pre-call* budget check belongs. (It is not the ONLY chat entry
+  point — `ai-reply-suggestion.ts` has its own; Step 4 gates that too.) Excerpt
+  (`ai-classification.ts:1365-1383`):
 
   ```ts
   /**
@@ -244,6 +246,7 @@ package managers; CI uses pnpm.
 - `packages/server/src/ai-budget.ts` (create) — prototype gate module
 - `tests/unit/ai-budget.test.ts` (create) — prototype unit test
 - `packages/server/src/ai-classification.ts` (edit) — one guarded, default-off gate call in `runTrackedChatCompletion`
+- `packages/server/src/ai-reply-suggestion.ts` (edit) — the same guarded, default-off gate before its own `chatCompletion` call (second AI entry point)
 - `packages/server/src/index.ts` (edit) — add `export * from './ai-budget';`
 
 **Out of scope** (do NOT touch, even though they look related):
@@ -502,12 +505,22 @@ Add the import at the top of the file (next to
 import { evaluateAiBudgetSafe, readAiBudgetLimitsFromEnv } from './ai-budget';
 ```
 
-Keep the gate ONLY here (this is the single choke point) — do not touch
-individual node call sites. The prototype thereby covers `ai.classify` (and, as
-a bonus, every other node) with one guarded edit.
+This covers `ai.classify` and every node that routes through
+`ai-classification.ts`. But it is **not** the only chat entry point:
+`packages/server/src/ai-reply-suggestion.ts` has its own `chatCompletion` call
+(it records `nodeType: 'ai.reply_suggestion'` via `recordAiUsageSafe` around
+`:519-526`), so a budget-exhausted account could still spend there. Add the same
+guard immediately before that second `chatCompletion` call (same
+`evaluateAiBudgetSafe(...)` → skip-and-record-blocked pattern). In the design
+doc, record the productionization recommendation: factor a shared
+`trackedChatCompletion(input)` helper that does the budget check + the usage
+record in one place, and route BOTH paths through it so a future third AI call
+site can't silently bypass the budget.
 
 **Verify**:
 - `npx tsc -p tsconfig.json --noEmit` → exit 0.
+- `git grep -n "evaluateAiBudgetSafe" packages/server/src` → returns matches in
+  BOTH `ai-classification.ts` and `ai-reply-suggestion.ts`.
 - `pnpm test -- tests/unit/ai-usage.test.ts` → still all pass (existing AI-flow
   tests unaffected because the gate is default-off).
 
