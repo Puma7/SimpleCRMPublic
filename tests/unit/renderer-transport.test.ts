@@ -5,7 +5,6 @@ import {
   buildServerEventProtocols,
   buildServerEventWebSocketUrl,
   invokeRenderer,
-  hasHttpInvocation,
   decryptServerPgpAttachment,
   isAutomationApiKeyRefreshEvent,
   isCalendarEventRefreshEvent,
@@ -36,6 +35,7 @@ import {
   buildServerAuthSession,
   saveServerAuthSession,
 } from '@/services/transport';
+import { hasHttpInvocation } from '@/services/transport/channel-http-registry';
 
 describe('renderer transport', () => {
   const ipcInvoke = jest.fn();
