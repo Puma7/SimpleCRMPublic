@@ -7,7 +7,7 @@ import {
   positiveIntFromPath,
   requireAdmin,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const LOCK_RE = /^\/api\/v1\/locks\/(\d+)(?:\/(heartbeat|takeover))?$/;
 const LOCK_REASONS: readonly ConversationLockReason[] = ['reply', 'forward', 'edit'];

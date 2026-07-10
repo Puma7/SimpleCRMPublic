@@ -13,7 +13,7 @@ import {
   getStringField,
   requireAdmin,
   requirePrincipal,
-} from './types';
+} from './http';
 import { timingSafeEqual } from 'node:crypto';
 
 const DEFAULT_AUDIT_LIMIT = 100;

@@ -39,7 +39,7 @@ import {
   error,
   positiveIntFromPath,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const DEFAULT_METADATA_LIMIT = 50;
 const MAX_METADATA_LIMIT = 100;

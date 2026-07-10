@@ -11,7 +11,7 @@ import {
   positiveIntFromPath,
   requireAdmin,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const MAX_GROUP_NAME = 120;
 const MAX_GROUP_DESCRIPTION = 2000;

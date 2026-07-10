@@ -34,7 +34,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | DONE |
 | 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | DONE |
 | 018 | Lazy-load the HTTP route registry out of the desktop bundle | P3 | M | perf | — | DONE |
-| 019 | Separate runtime helpers from types in `api/types.ts` | P3 | L | tech-debt | — | TODO |
+| 019 | Separate runtime helpers from types in `api/types.ts` | P3 | L | tech-debt | — | DONE |
 | 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | 001 | TODO |
 | 021 | SPIKE: AI budget gates on existing usage tracking (D2) | P2 | M | direction | — | TODO |
 | 022 | SPIKE: GDPR erasure/anonymization counterpart (D3) | P2 | L | direction | — | TODO |

@@ -1,6 +1,6 @@
 import { maintenanceHardResetPhraseMatches } from '@simplecrm/core';
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
-import { data, error, getStringField, requireAdmin, requirePrincipal } from './types';
+import { data, error, getStringField, requireAdmin, requirePrincipal } from './http';
 
 function requireOwner(principal: { role: string }): boolean {
   return principal.role === 'owner';

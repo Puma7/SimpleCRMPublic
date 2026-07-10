@@ -42,7 +42,7 @@ import {
   error,
   positiveIntFromPath,
   requirePrincipal,
-} from './types';
+} from './http';
 import { JOB_STALE_LOCK_SECONDS } from '../jobs';
 import { handleMailMetadataReadRoute } from './mail-metadata-routes';
 
