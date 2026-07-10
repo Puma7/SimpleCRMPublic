@@ -1694,6 +1694,8 @@ export type EmailMessageRecord = {
   snoozedUntil: string | null;
   draftAttachmentPathsJson?: string | null;
   replyParentMessageId?: number | null;
+  /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
+  searchSnippet?: string | null;
   bodyText?: string | null;
   bodyHtml?: string | null;
   updatedAt: string;
@@ -2137,7 +2139,9 @@ export type EmailMessageApiPort = {
     search?: string;
     view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
     categoryId?: number;
-    sort?: 'date_desc' | 'date_asc' | 'priority';
+    sort?: 'date_desc' | 'date_asc' | 'priority' | 'relevance';
+    /** Suchbereich: 'broad' sucht ueber alle Ordner (nur mit search wirksam). */
+    scope?: { mode: 'view' | 'broad'; includeSpam?: boolean; includeTrash?: boolean };
     listFilter?: 'all' | 'unread' | 'attachment' | 'customer' | 'workflow';
     doneFilter?: 'all' | 'open' | 'done';
     offset?: number;
