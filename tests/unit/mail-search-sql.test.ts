@@ -40,6 +40,24 @@ describe('buildTsQueryText', () => {
     expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('von:max@test.de'))).toEqual([]);
   });
 
+  test('tsquery syntax characters stay literal inside quoted lexemes', () => {
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('a&b'))).toEqual(["'a&b':*"]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('(bar)'))).toEqual(["'(bar)':*"]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('foo|bar'))).toEqual(["'foo|bar':*"]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('a:b'))).toEqual(["'a:b':*"]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('!wichtig'))).toEqual(["'!wichtig':*"]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery("O'Brien"))).toEqual(["'O Brien':*"]);
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('back\\slash'))).toEqual(["'back slash':*"]);
+  });
+
+  test('lexeme-less tokens force ILIKE mode (null) so AND semantics survive', () => {
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('&'))).toBeNull();
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('foo &'))).toBeNull();
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('<->'))).toBeNull();
+    expect(buildTsQueryTokenTexts(parseServerMailSearchQuery('"foo & bar"'))).toBeNull();
+    expect(buildTsQueryText(parseServerMailSearchQuery('foo &'))).toBeNull();
+  });
+
   test('caps at 12 tokens', () => {
     const many = Array.from({ length: 20 }, (_, i) => `wort${i}`).join(' ');
     const expr = buildTsQueryText(parseServerMailSearchQuery(many));

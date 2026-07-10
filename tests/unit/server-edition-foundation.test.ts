@@ -13970,7 +13970,7 @@ describe('server edition foundation', () => {
     );
 
     expect(listSection).toContain('const priorityCursor =');
-    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, input.cursor)');
+    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)');
     expect(listSection).toContain('query = applyMessageCursor(');
     expect(source).toContain("if (view === 'snoozed')");
     expect(source).toContain("if (sort === 'date_asc')");
@@ -13985,7 +13985,7 @@ describe('server edition foundation', () => {
     expect(source).toContain('email_messages.id < cursor_message.id');
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
     expect(listSection.indexOf('query = applyMessageCursor('))
-      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
+      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, broadScope ? undefined : input.view);'));
   });
 
   test('postgres mail folder badge counts exclude done archived messages', () => {

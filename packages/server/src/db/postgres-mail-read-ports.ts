@@ -33,7 +33,6 @@ import { sql as kyselySql, type Kysely, type Selectable, type Updateable } from 
 
 import {
   addressIlikePattern,
-  buildTsQueryText,
   buildTsQueryTokenTexts,
   escapeIlikePattern,
   hasSearchOperators,
@@ -711,14 +710,24 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const search = input.search?.trim();
           const regex = search ? parseRegexSearch(search) : null;
           const parsed = search && !regex ? parseServerMailSearchQuery(search) : null;
+          // null = Query enthaelt lexemlose Tokens (z. B. '&') — dann komplette
+          // ILIKE-Behandlung, damit die AND-Semantik keinen Term verliert.
           const tsQueryTokens = parsed ? buildTsQueryTokenTexts(parsed) : [];
-          const tsQueryText = parsed ? buildTsQueryText(parsed) : null;
+          const tsQueryText =
+            tsQueryTokens && tsQueryTokens.length > 0 ? tsQueryTokens.join(' & ') : null;
+          const hasTextNeedles =
+            parsed !== null && parsed.phrases.length + parsed.terms.length > 0;
           const broadScope =
             search && input.scope?.mode === 'broad' ? input.scope : null;
 
+          // sort=relevance: Keyset-Cursor passt nicht zur Rank-Order —
+          // eingehender Cursor wird ignoriert, nextCursor bleibt null
+          // (Offset-Pagination ist der unterstuetzte Weg).
+          const relevanceSort = input.sort === 'relevance';
+          const effectiveCursor = relevanceSort ? undefined : input.cursor;
           const priorityCursor =
-            input.cursor !== undefined && input.sort === 'priority'
-              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, input.cursor)
+            effectiveCursor !== undefined && input.sort === 'priority'
+              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)
               : undefined;
 
           const buildQuery = (page: { limit: number; offset: number | undefined }) => {
@@ -755,7 +764,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             query = applyMessageCursor(
               query,
               input.workspaceId,
-              input.cursor,
+              effectiveCursor,
               input.sort,
               input.view,
               priorityCursor,
@@ -776,7 +785,10 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')
                 .orderBy('id', 'desc');
             }
-            query = applyMessageListOrder(query, input.sort, input.view);
+            // Broad-Suche sortiert IMMER neutral (Datum bzw. Relevanz) — nie
+            // view-spezifisch (snoozed/scheduled_send-Order ueber ein
+            // ordneruebergreifendes Ergebnis waere sinnlos).
+            query = applyMessageListOrder(query, input.sort, broadScope ? undefined : input.view);
             return query;
           };
 
@@ -785,16 +797,24 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             page: { limit: number; offset: number | undefined },
           ) => {
             let query = buildQuery(page);
-            if (mode === 'fts' && tsQueryTokens.length > 0) {
+            if (mode === 'fts' && tsQueryTokens && tsQueryTokens.length > 0) {
               query = applyMessageFtsFilter(query, tsQueryTokens);
               // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
+              // Sentinel-Codepoints werden aus dem Quelltext gestrippt, bevor
+              // ts_headline markiert — sonst waeren Marker aus Mail-Inhalten
+              // spoofbar.
               const headlineQuery = tsQueryTokens.join(' | ');
               query = query.select(
-                kyselySql<string | null>`ts_headline('simple', coalesce(email_messages.body_text, email_messages.snippet, ''), to_tsquery('simple', ${headlineQuery}), ${TS_HEADLINE_OPTIONS})`.as('search_snippet'),
+                kyselySql<string | null>`ts_headline('simple', replace(replace(coalesce(email_messages.body_text, email_messages.snippet, ''), ${SEARCH_MARK_START}, ''), ${SEARCH_MARK_END}, ''), to_tsquery('simple', ${headlineQuery}), ${TS_HEADLINE_OPTIONS})`.as('search_snippet'),
               );
             } else if (mode === 'like' && parsed) {
+              // body_text mitselektieren, damit der JS-Snippet-Builder wie im
+              // Desktop auch Body-Treffer zeigen kann (Record bleibt body-frei).
+              query = query.select('body_text');
               query = applyMessageIlikeFilter(query, parsed);
             } else if (mode === 'regex' && search) {
+              // Regex-Modus liefert bewusst kein search_snippet (Paritaet zur
+              // Desktop-App ist hier nicht noetig; Highlight nur fuer fts/like).
               query = applyMessageSearchFilter(query, search, 'regex');
             }
             query = orderQuery(query, mode);
@@ -809,28 +829,37 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           } else if (regex) {
             searchMode = 'regex';
             rows = await runQuery('regex', page);
-          } else if (parsed && !tsQueryText && !hasSearchOperators(parsed)) {
+          } else if (!hasTextNeedles && parsed && !hasSearchOperators(parsed)) {
             // Nichts Suchbares in der Query (z. B. nur Anfuehrungszeichen):
             // nie die ungefilterte Ansicht zurueckgeben.
             searchMode = 'like';
             rows = [];
           } else {
             // Deterministischer Modus pro Query (Paritaet zur SQLite-Engine):
-            // Seite 1 entscheidet; offset>0 mit 0 FTS-Zeilen fragt Seite 1 an,
-            // um "echtes FTS-Ende" von "Query ist ILIKE-Modus" zu unterscheiden.
+            // Seite 1 entscheidet; Folgeseiten (offset ODER cursor) mit 0
+            // FTS-Zeilen fragen Seite 1 an, um "echtes FTS-Ende" von "Query
+            // ist ILIKE-Modus" zu unterscheiden. runQuery('fts') ist defensiv
+            // gecatcht: sollte to_tsquery trotz Escaping werfen, dispatchen
+            // wir deterministisch in den ILIKE-Modus statt den Request zu
+            // failen (Spiegel des SQLite-Pfads).
             searchMode = 'like';
             rows = [];
             let ftsServed = false;
             if (tsQueryText) {
-              rows = await runQuery('fts', page);
-              if (rows.length > 0) {
-                ftsServed = true;
-              } else if ((input.offset ?? 0) > 0) {
-                const probe = await runQuery('fts', { limit: 1, offset: 0 });
-                if (probe.length > 0) {
+              try {
+                rows = await runQuery('fts', page);
+                if (rows.length > 0) {
                   ftsServed = true;
-                  rows = [];
+                } else if ((input.offset ?? 0) > 0 || input.cursor !== undefined) {
+                  const probe = await runQuery('fts', { limit: 1, offset: 0 });
+                  if (probe.length > 0) {
+                    ftsServed = true;
+                    rows = [];
+                  }
                 }
+              } catch {
+                ftsServed = false;
+                rows = [];
               }
             }
             if (ftsServed) {
@@ -846,14 +875,21 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const items = pageRows.map((row) => {
             const record = mapEmailMessageRow(row, false);
             if (likeNeedles.length > 0 && record.searchSnippet === undefined) {
-              const snippet = buildLikeSearchSnippet(row.snippet, likeNeedles);
+              const snippet =
+                buildLikeSearchSnippet(row.body_text ?? null, likeNeedles) ??
+                buildLikeSearchSnippet(row.snippet, likeNeedles) ??
+                buildLikeSearchSnippet(row.subject, likeNeedles);
               if (snippet) return { ...record, searchSnippet: snippet };
             }
             return record;
           });
           return {
             items,
-            nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
+            nextCursor: relevanceSort
+              ? null
+              : rows.length > limit
+                ? pageRows[pageRows.length - 1]?.id ?? null
+                : null,
             ...(searchMode === undefined ? {} : { searchMode }),
           };
         },

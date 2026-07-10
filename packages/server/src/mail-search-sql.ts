@@ -17,10 +17,17 @@ export function parseServerMailSearchQuery(raw: string): ParsedMailSearchQuery {
   return parseMailSearchQuery(raw);
 }
 
-/** Single tsquery lexeme: quotes/backslashes stripped, single-quoted. */
+/**
+ * Single tsquery lexeme: quotes/backslashes stripped, single-quoted (inside
+ * quoted lexemes tsquery operators like & | ! ( ) : <-> are literal text).
+ * Null when the token cannot yield a lexeme: PostgreSQLs 'simple' config
+ * produces lexemes only for letter/digit runs — punctuation-only tokens
+ * become an EMPTY tsquery and would silently fall out of the AND chain.
+ */
 function tsqueryLexeme(token: string): string | null {
   const cleaned = token.replace(/['\\]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!cleaned) return null;
+  if (!/[\p{L}\p{N}]/u.test(cleaned)) return null;
   return `'${cleaned}'`;
 }
 
@@ -29,33 +36,42 @@ function tsqueryLexeme(token: string): string | null {
  * (`'t':*` prefix), capped like the SQLite engine. Engines compose these per
  * token (message vector OR attachment vector, AND across tokens) so a query
  * whose terms are split across body and attachment still matches.
+ *
+ * Returns NULL when any phrase word or term is lexeme-less (e.g. `&`, `<->`)
+ * — the whole query must then run in ILIKE mode so the AND semantics keep
+ * every term (Postgres would silently drop the empty operand).
  */
-export function buildTsQueryTokenTexts(parsed: ParsedMailSearchQuery): string[] {
+export function buildTsQueryTokenTexts(parsed: ParsedMailSearchQuery): string[] | null {
   const parts: string[] = [];
   for (const phrase of parsed.phrases) {
     if (parts.length >= MAX_SEARCH_TEXT_TOKENS) break;
-    const words = phrase
-      .split(/\s+/)
-      .map((w) => tsqueryLexeme(w))
-      .filter((w): w is string => w !== null);
+    const words: string[] = [];
+    for (const word of phrase.split(/\s+/)) {
+      if (!word) continue;
+      const lex = tsqueryLexeme(word);
+      if (lex === null) return null;
+      words.push(lex);
+    }
     if (words.length === 1) parts.push(words[0]!);
     else if (words.length > 1) parts.push(`(${words.join(' <-> ')})`);
   }
   for (const term of parsed.terms) {
     if (parts.length >= MAX_SEARCH_TEXT_TOKENS) break;
     const lex = tsqueryLexeme(term);
-    if (lex) parts.push(`${lex}:*`);
+    if (lex === null) return null;
+    parts.push(`${lex}:*`);
   }
   return parts;
 }
 
 /**
  * AND-joined full tsquery text (ranking/ts_headline). Null when the query
- * carries no text tokens (operator-only query).
+ * carries no text tokens (operator-only query) or must fall back to ILIKE
+ * (lexeme-less token).
  */
 export function buildTsQueryText(parsed: ParsedMailSearchQuery): string | null {
   const parts = buildTsQueryTokenTexts(parsed);
-  if (parts.length === 0) return null;
+  if (!parts || parts.length === 0) return null;
   return parts.join(' & ');
 }
 
