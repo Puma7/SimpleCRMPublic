@@ -665,6 +665,9 @@ export type EmailMessageAttachmentsTable = EmailMessageChildTable & {
   size_bytes: number;
   storage_path: string;
   content_sha256: string | null;
+  /** Extrahierter Anhangstext fuer die Suche (Suche Phase 3, Migration 0026). */
+  content_text: string | null;
+  text_extracted_at: TimestampColumn | null;
 };
 
 export type EmailMessageTagsTable = EmailMessageChildTable & {

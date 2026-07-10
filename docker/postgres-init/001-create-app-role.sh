@@ -27,6 +27,7 @@ SELECT format(
 \gexec
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE SCHEMA IF NOT EXISTS app;
 
 SELECT format('ALTER DATABASE %I OWNER TO %I', :'db_name', :'app_user');

@@ -334,6 +334,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0023_account_scope_overrides',
   '0024_settings_kb_context_imap',
   '0025_email_message_thread_lookup',
+  '0026_mail_search_overhaul',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -18052,8 +18053,12 @@ describe('server edition foundation', () => {
         async list(input) {
           messageListCalls.push(input);
           return {
-            items: [withRuntimeLeaks(makeEmailMessageRecord(11, true))],
+            items: [withRuntimeLeaks({
+              ...makeEmailMessageRecord(11, true),
+              ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
+            })],
             nextCursor: 11,
+            ...((input as { search?: string }).search ? { searchMode: 'fts' as const } : {}),
           };
         },
         async get(input) {
@@ -18229,6 +18234,40 @@ describe('server edition foundation', () => {
       cursor: 20,
       limit: 10,
     }]);
+    expect((messages.body as any).data.searchMode).toBe('fts');
+    expect((messages.body as any).data.items[0].searchSnippet).toBe('Treffer: \uE000Hello\uE001');
+
+    // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.
+    const broadSearch = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages',
+      query: {
+        view: 'inbox',
+        search: 'Hello',
+        sort: 'relevance',
+        scopeMode: 'broad',
+        scopeIncludeSpam: 'true',
+        scopeIncludeTrash: 'false',
+        limit: '10',
+      },
+      principal,
+    });
+    expect(broadSearch.status).toBe(200);
+    expect(messageListCalls[1]).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      view: 'inbox',
+      search: 'Hello',
+      sort: 'relevance',
+      scope: { mode: 'broad', includeSpam: true, includeTrash: false },
+      limit: 10,
+    });
+    const invalidScope = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages',
+      query: { scopeMode: 'weird', limit: '10' },
+      principal,
+    });
+    expect(invalidScope.status).toBe(400);
 
     const folderCounts = await api.handle({
       method: 'GET',
