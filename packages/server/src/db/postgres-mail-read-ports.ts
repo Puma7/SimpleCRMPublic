@@ -3195,6 +3195,11 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
     const parsed = parseRegexSearch(search);
     if (parsed) {
       const operator = parsed.caseInsensitive ? kyselySql`~*` : kyselySql`~`;
+      // Heuhaufen inkl. Anhaenge (Desktop-Paritaet): attachments_json deckt
+      // Metadaten-only-Anhangnamen ab, die string_agg-Subquery Dateinamen und
+      // extrahierten Text der Attachment-Zeilen (pro Anhang per left() auf
+      // 20k Zeichen gedeckelt) — sonst verschwinden /invoice\.pdf/i-Treffer
+      // im Regex-Modus. bcc_json ergaenzt die Desktop-Feldliste.
       return query.where(kyselySql<boolean>`(
         coalesce(subject, '') || E'\n' ||
         coalesce(snippet, '') || E'\n' ||
@@ -3202,7 +3207,18 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
         coalesce(from_json::text, '') || E'\n' ||
         coalesce(to_json::text, '') || E'\n' ||
         coalesce(cc_json::text, '') || E'\n' ||
-        coalesce(ticket_code, '')
+        coalesce(bcc_json::text, '') || E'\n' ||
+        coalesce(ticket_code, '') || E'\n' ||
+        coalesce(attachments_json::text, '') || E'\n' ||
+        coalesce((
+          SELECT string_agg(
+            coalesce(a.filename_display, '') || E'\n' || coalesce(left(a.content_text, 20000), ''),
+            E'\n'
+          )
+          FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+        ), '')
       ) ${operator} ${parsed.pattern}`);
     }
   }

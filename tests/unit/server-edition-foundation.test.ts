@@ -14019,6 +14019,23 @@ describe('server edition foundation', () => {
     expect(source).toContain('parsed ? ilikeTextNeedles(parsed) : []');
   });
 
+  test('postgres mail regex search haystack includes attachments (names + extracted text)', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const regexSection = source.slice(
+      source.indexOf('function applyMessageSearchFilter('),
+      source.indexOf('function applyMessageListOrder('),
+    );
+    // /invoice\.pdf/i-Treffer duerfen im Regex-Modus nicht verschwinden:
+    // attachments_json (Metadaten-only-Namen) plus aggregierte
+    // filename_display/content_text der Attachment-Zeilen (gedeckelt) muessen
+    // Teil des Heuhaufens sein; bcc_json ergaenzt die Desktop-Feldliste.
+    expect(regexSection).toContain("coalesce(attachments_json::text, '')");
+    expect(regexSection).toContain('SELECT string_agg(');
+    expect(regexSection).toContain("coalesce(left(a.content_text, 20000), '')");
+    expect(regexSection).toContain("coalesce(a.filename_display, '')");
+    expect(regexSection).toContain("coalesce(bcc_json::text, '')");
+  });
+
   test('postgres mail folder badge counts exclude done archived messages', () => {
     const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
     const countsSection = source.slice(
