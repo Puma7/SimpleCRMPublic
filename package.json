@@ -62,7 +62,7 @@
     "test:ui:coverage": "jest --config jest.ui.config.cjs",
     "test:ui:coverage:update-baseline": "npm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs --update-baseline",
     "test:ui:coverage:check": "npm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs",
-    "test:server-edition": "jest --runTestsByPath tests/unit/server-edition-foundation.test.ts tests/integration/server-edition-foundation.test.ts --runInBand",
+    "test:server-edition": "jest --runInBand tests/unit/server-edition-foundation tests/integration/server-edition-foundation.test.ts",
     "test:electron": "jest --testMatch='**/__tests__/electron/**/*.test.ts'",
     "test:frontend": "jest --testMatch='**/__tests__/frontend/**/*.test.tsx'"
   },
