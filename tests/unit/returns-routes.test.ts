@@ -262,6 +262,39 @@ describe('handleReturnsRoute', () => {
     expect((badCondition?.body as { error: { code: string } }).error.code).toBe('invalid_condition');
   });
 
+  test('POST /api/v1/returns rejects an invalid item productId/reasonId instead of dropping the link', async () => {
+    const harness = makeReturnsPort();
+    const ports: ServerApiPorts = { auth: {} as never, returns: harness.port };
+
+    const badProduct = await handleReturnsRoute(
+      makeBaseRequest({ method: 'POST', body: { items: [{ quantity: 1, productId: 'abc' }] } }),
+      ports,
+    );
+    expect(badProduct?.status).toBe(400);
+    expect((badProduct?.body as { error: { code: string } }).error.code).toBe('invalid_product_id');
+
+    const badReason = await handleReturnsRoute(
+      makeBaseRequest({ method: 'POST', body: { items: [{ quantity: 1, reasonId: -5 }] } }),
+      ports,
+    );
+    expect(badReason?.status).toBe(400);
+    expect((badReason?.body as { error: { code: string } }).error.code).toBe('invalid_reason_id');
+
+    // Neither invalid payload reached the create port.
+    expect(harness.createCalls).toHaveLength(0);
+
+    // Valid id forwarded; truly-absent id still normalizes to undefined.
+    const ok = await handleReturnsRoute(
+      makeBaseRequest({ method: 'POST', body: { items: [{ quantity: 1, productId: 5, reasonId: 3 }] } }),
+      ports,
+    );
+    expect(ok?.status).toBe(201);
+    expect(harness.createCalls).toHaveLength(1);
+    expect(harness.createCalls[0]!.input.input.items).toEqual([
+      { productId: 5, reasonId: 3, sku: null, productName: null, quantity: 1, condition: null, notes: null },
+    ]);
+  });
+
   test('POST /api/v1/returns forwards a normalized payload and audits the create', async () => {
     const harness = makeReturnsPort();
     const auditCalls: Array<{ action: string; entityType: string; entityId: string; metadata: unknown }> = [];

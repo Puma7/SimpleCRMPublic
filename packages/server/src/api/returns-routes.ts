@@ -352,9 +352,17 @@ function parseItems(
         message: `condition muss einer der Werte ${CONDITION_VALUES.join(', ')} oder null sein`,
       };
     }
+    const productId = parseOptionalPositiveIntField(raw.productId, 'productId');
+    if (productId === undefined && raw.productId != null) {
+      return { ok: false, code: 'invalid_product_id', message: 'productId muss eine positive Ganzzahl sein' };
+    }
+    const reasonId = parseOptionalPositiveIntField(raw.reasonId, 'reasonId');
+    if (reasonId === undefined && raw.reasonId != null) {
+      return { ok: false, code: 'invalid_reason_id', message: 'reasonId muss eine positive Ganzzahl sein' };
+    }
     items.push({
-      productId: parseOptionalPositiveIntField(raw.productId, 'productId') ?? undefined,
-      reasonId: parseOptionalPositiveIntField(raw.reasonId, 'reasonId') ?? undefined,
+      productId: productId ?? undefined,
+      reasonId: reasonId ?? undefined,
       sku: nullableTrimmedString(raw.sku, MAX_TEXT_LEN),
       productName: nullableTrimmedString(raw.productName, MAX_TEXT_LEN),
       quantity: Math.floor(quantity),

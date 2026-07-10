@@ -152,6 +152,28 @@ describe('public portal dispatcher', () => {
     expect((result?.body as { error: { code: string } }).error.code).toBe('invalid_items');
   });
 
+  test('POST rejects an invalid item productId/reasonId (does not silently drop the link)', async () => {
+    const ports: ServerApiPorts = {
+      auth: {} as never,
+      returns: makeReturnsPort(),
+      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+    };
+
+    const badProduct = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [{ quantity: 1, productId: 'abc' }] } }),
+      ports,
+    );
+    expect(badProduct?.status).toBe(400);
+    expect((badProduct?.body as { error: { code: string } }).error.code).toBe('invalid_product_id');
+
+    const badReason = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [{ quantity: 1, reasonId: -5 }] } }),
+      ports,
+    );
+    expect(badReason?.status).toBe(400);
+    expect((badReason?.body as { error: { code: string } }).error.code).toBe('invalid_reason_id');
+  });
+
   test('POST with CAPTCHA enabled fails closed when no challenge is provided', async () => {
     const ports: ServerApiPorts = {
       auth: {} as never,
