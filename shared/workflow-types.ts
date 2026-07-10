@@ -1,5 +1,7 @@
 /** Shared workflow runtime types (main + renderer metadata). */
 
+import type { WorkflowNodeSchemaExtension } from './workflow-node-schema';
+
 export type WorkflowExecutionMode = 'compiled' | 'graph';
 
 export type WorkflowTriggerKind =
@@ -25,7 +27,7 @@ export type WorkflowNodeCategory =
 
 export type WorkflowPortId = 'default' | 'yes' | 'no' | 'error' | 'success';
 
-export type WorkflowNodeCatalogEntry = {
+export type WorkflowNodeCatalogEntry = WorkflowNodeSchemaExtension & {
   type: string;
   label: string;
   category: WorkflowNodeCategory;

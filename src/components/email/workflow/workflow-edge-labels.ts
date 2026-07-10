@@ -1,3 +1,5 @@
+import { getCachedWorkflowNodeCatalogEntry } from "./use-workflow-node-catalog"
+
 type EdgeSourceNode = {
   type?: string
   data?: unknown
@@ -69,6 +71,13 @@ export function edgeLabelOptionsForSource(
   if (nt === "logic.threshold") {
     return { restricted: true, labels: ["yes", "no"] }
   }
+  // Deklarierte Schema-Ports (email.auto_reply, email.auth_check, …):
+  // sobald ein Knoten Ports deklariert, ist das Kantenlabel eine Auswahl —
+  // Freitext-Tippfehler würden still ins Leere routen.
+  const entry = getCachedWorkflowNodeCatalogEntry(nt)
+  if (entry?.ports?.length) {
+    return { restricted: true, labels: entry.ports.map((p) => p.id) }
+  }
   return { restricted: false, labels: [] }
 }
 
@@ -97,6 +106,16 @@ export function normalizeEdgeLabelForSource(
     return l
   }
   if (nt === "email.sender_filter" || nt === "logic.switch" || nt === "returns.evaluate") return l
+  const entry = getCachedWorkflowNodeCatalogEntry(nt)
+  if (entry?.ports?.length) {
+    // Synonyme (de/en) und Labels auf die Port-ID normalisieren.
+    for (const port of entry.ports) {
+      if (port.id.toLowerCase() === l) return port.id
+      if (port.label.toLowerCase() === l) return port.id
+      if ((port.synonyms ?? []).some((s) => s.toLowerCase() === l)) return port.id
+    }
+    return l
+  }
   return raw
 }
 
@@ -131,6 +150,10 @@ export function edgeSourceHandleFromLabel(
   if (registryTypeOf(source) === "email.sender_filter") return normalized
   if (registryTypeOf(source) === "logic.switch" || registryTypeOf(source) === "returns.evaluate") {
     return isEdgeLabelValidForSource(source, normalized) ? normalized : undefined
+  }
+  const entry = getCachedWorkflowNodeCatalogEntry(registryTypeOf(source))
+  if (entry?.ports?.length) {
+    return entry.ports.some((p) => p.id === normalized) ? normalized : undefined
   }
   return undefined
 }

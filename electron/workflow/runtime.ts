@@ -7,12 +7,36 @@ import {
   type WorkflowConditionItem,
 } from '../email/email-workflow-types';
 import type { EmailWorkflowRow } from '../email/email-workflow-store';
-import { createWorkflowContext } from './context';
+import { createWorkflowContext, interpolateTemplate } from './context';
 import { ensureBuiltinWorkflowNodes, getWorkflowNode, LEGACY_ACTION_MAP } from './registry';
 import { inboundNodeRequiresConditionGate } from './inbound-gate';
 import { insertWorkflowRunStep } from './run-steps';
 import type { GraphRunResult, NodeExecuteResult, WorkflowContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
+import { getBuiltinWorkflowNodeCatalogEntry } from '../../packages/core/src/workflow/node-catalog';
+
+/**
+ * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
+ * `interpolate: true` markiert, bekommen {{Platzhalter}} VOR dem execute()
+ * aufgelöst — einheitlich für alle Knoten, auf einer Kopie (nie persistiert).
+ */
+function interpolateSchemaFields(
+  type: string,
+  config: Record<string, unknown>,
+  ctx: WorkflowContext,
+): Record<string, unknown> {
+  const entry = getBuiltinWorkflowNodeCatalogEntry(type);
+  const fields = entry?.fields?.filter((f) => f.interpolate === true);
+  if (!fields || fields.length === 0) return config;
+  let copy: Record<string, unknown> | null = null;
+  for (const field of fields) {
+    const value = config[field.key];
+    if (typeof value !== 'string' || !value.includes('{{')) continue;
+    if (!copy) copy = { ...config };
+    copy[field.key] = interpolateTemplate(value, ctx);
+  }
+  return copy ?? config;
+}
 
 function conditionFromNodeData(data: Record<string, unknown>): WorkflowCondition {
   return {
@@ -73,9 +97,6 @@ async function executeNode(
     const def = getWorkflowNode(type);
     if (!def) {
       log.push(`unknown_node:${type}`);
-      const { getBuiltinWorkflowNodeCatalogEntry } = await import(
-        '../../packages/core/src/workflow/node-catalog'
-      );
       const catalogEntry = getBuiltinWorkflowNodeCatalogEntry(type);
       if (catalogEntry?.runtime === 'server') {
         return {
@@ -85,7 +106,7 @@ async function executeNode(
       }
       return { status: 'error', message: `Unbekannter Knoten: ${type}` };
     }
-    return def.execute(ctx, config, node.id);
+    return def.execute(ctx, interpolateSchemaFields(type, config, ctx), node.id);
   }
 
   return { status: 'skipped', message: `Unbekannter Knotentyp ${node.type}` };

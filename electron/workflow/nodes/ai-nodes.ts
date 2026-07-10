@@ -258,6 +258,9 @@ export function registerAiNodes(register: Reg): void {
         attachment_names: strings.attachment_names,
         attachment_types: strings.attachment_types,
       });
+      // Bewusst EIGENE Interpolation mit dem ggf. metadaten-reduzierten
+      // Kontext: der zentrale Pre-Pass würde {{body_text}} auch im
+      // "Nur Kopfdaten"-Modus füllen (Datenschutz). Schema-Flag daher aus.
       const custom = String(config.customPrompt ?? '').trim();
       const prompt = custom
         ? interpolateTemplate(custom, { ...ctx, strings })

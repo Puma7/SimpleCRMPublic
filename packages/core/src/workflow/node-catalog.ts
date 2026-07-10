@@ -7,12 +7,15 @@ export type WorkflowNodeCategory =
   | 'integration'
   | 'code';
 
+import type { WorkflowNodeSchemaExtension } from './node-schema';
+import { WORKFLOW_NODE_SCHEMAS } from './schema';
+
 export type WorkflowNodeCanvasType = 'trigger' | 'condition' | 'action' | 'registry';
 
 /** Wo der Knoten ausführbar ist. Fehlend = 'both'. */
 export type WorkflowNodeRuntime = 'both' | 'desktop' | 'server';
 
-export type WorkflowNodeCatalogEntry = {
+export type WorkflowNodeCatalogEntry = WorkflowNodeSchemaExtension & {
   type: string;
   label: string;
   category: WorkflowNodeCategory;
@@ -50,7 +53,8 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Versand sperren',
     category: 'email',
     canvasType: 'action',
-    description: 'Setzt outbound_hold=true mit Grund (Banner in Liste + Editor). Beendet den Workflow am „blocked"-Port — Folgeknoten werden nicht ausgeführt. Freigabe nur über einen separaten Workflow (email.release_outbound) oder manuell.',
+    description:
+      'Hält den Versand an: setzt eine Sperre mit Grund (Banner in Liste + Editor) und beendet diesen Workflow-Zweig — Folgeknoten laufen nicht. Freigabe über „Versand freigeben" (separater Workflow) oder manuell.',
     defaultConfig: { reason: '' },
   },
   {
@@ -194,7 +198,8 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Prüfung',
     category: 'ai',
     canvasType: 'action',
-    description: 'Generische KI-Prüfung mit Prompt; wenn die Antwort das Blockwort enthält, geht es auf "blocked".',
+    description:
+      'Generische KI-Prüfung mit eigenem Prompt. Enthält die KI-Antwort das Blockwort: ausgehend wird der Versand angehalten, eingehend bekommt die Mail den Tag ki-review-block (kein eigener Ausgang).',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
   },
   {
@@ -489,14 +494,25 @@ export function cloneWorkflowNodeCatalogEntry(
     canvasType: entry.canvasType,
     ...(entry.defaultConfig === undefined ? {} : { defaultConfig: { ...entry.defaultConfig } }),
     ...(entry.runtime === undefined ? {} : { runtime: entry.runtime }),
+    ...(entry.fields === undefined ? {} : { fields: entry.fields.map((f) => ({ ...f })) }),
+    ...(entry.ports === undefined ? {} : { ports: entry.ports.map((p) => ({ ...p })) }),
+    ...(entry.outputs === undefined ? {} : { outputs: entry.outputs.map((o) => ({ ...o })) }),
+    ...(entry.docs === undefined ? {} : { docs: { ...entry.docs } }),
+    ...(entry.customWidget === undefined ? {} : { customWidget: entry.customWidget }),
   };
+}
+
+/** Katalogeintrag + Schema-Erweiterung (fields/ports/outputs/docs) zusammenführen. */
+function withSchemaExtension(entry: WorkflowNodeCatalogEntry): WorkflowNodeCatalogEntry {
+  const ext = WORKFLOW_NODE_SCHEMAS[entry.type];
+  return ext ? { ...ext, ...entry } : entry;
 }
 
 export function getBuiltinWorkflowNodeCatalogEntry(
   type: string,
 ): WorkflowNodeCatalogEntry | undefined {
   const entry = BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES.find((e) => e.type === type);
-  return entry ? cloneWorkflowNodeCatalogEntry(entry) : undefined;
+  return entry ? cloneWorkflowNodeCatalogEntry(withSchemaExtension(entry)) : undefined;
 }
 
 export function sortWorkflowNodeCatalog(
@@ -506,7 +522,7 @@ export function sortWorkflowNodeCatalog(
 }
 
 export const BUILTIN_WORKFLOW_NODE_CATALOG: readonly WorkflowNodeCatalogEntry[] = sortWorkflowNodeCatalog(
-  BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES,
+  BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES.map(withSchemaExtension),
 );
 
 export function listBuiltinWorkflowNodeCatalog(): WorkflowNodeCatalogEntry[] {

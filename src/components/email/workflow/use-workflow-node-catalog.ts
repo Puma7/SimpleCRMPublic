@@ -5,21 +5,60 @@ import { IPCChannels } from "@shared/ipc/channels"
 import type { WorkflowNodeCatalogEntry } from "@shared/workflow-types"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
 
-export function useWorkflowNodeCatalog() {
-  const [catalog, setCatalog] = useState<WorkflowNodeCatalogEntry[]>([])
-  const [loaded, setLoaded] = useState(false)
+// Ein Fetch pro Sitzung, geteilt über alle Verwender (Panel, Palette,
+// Canvas-Karten, Referenz-Dialog) — die Canvas rendert viele Karten.
+let catalogCache: WorkflowNodeCatalogEntry[] | null = null
+let catalogPromise: Promise<WorkflowNodeCatalogEntry[]> | null = null
 
-  useEffect(() => {
+function loadCatalogOnce(): Promise<WorkflowNodeCatalogEntry[]> {
+  if (catalogCache) return Promise.resolve(catalogCache)
+  if (!catalogPromise) {
     const serverClientMode = getRendererTransport().kind === "http"
-    void invokeRenderer(IPCChannels.Email.ListWorkflowNodeCatalog)
+    catalogPromise = invokeRenderer(IPCChannels.Email.ListWorkflowNodeCatalog)
       .then((entries) => {
         const all = entries as WorkflowNodeCatalogEntry[]
         // Server-only-Knoten (returns.*, jtl.order_context, …) laufen im
         // Desktop-Interpreter nicht — dort aus Palette/Auswahl fernhalten.
-        setCatalog(serverClientMode ? all : all.filter((e) => e.runtime !== "server"))
+        catalogCache = serverClientMode ? all : all.filter((e) => e.runtime !== "server")
+        return catalogCache
       })
-      .catch(() => setCatalog([]))
-      .finally(() => setLoaded(true))
+      .catch(() => {
+        catalogPromise = null
+        return []
+      })
+  }
+  return catalogPromise
+}
+
+/**
+ * Synchroner Zugriff auf den bereits geladenen Katalog (z. B. für die
+ * Kantenlabel-Logik). Vor dem ersten Laden: undefined → Aufrufer nutzen
+ * ihre Fallbacks.
+ */
+export function getCachedWorkflowNodeCatalogEntry(
+  type: string | undefined,
+): WorkflowNodeCatalogEntry | undefined {
+  if (!type || !catalogCache) return undefined
+  return catalogCache.find((e) => e.type === type)
+}
+
+export function useWorkflowNodeCatalog() {
+  const [catalog, setCatalog] = useState<WorkflowNodeCatalogEntry[]>(catalogCache ?? [])
+  const [loaded, setLoaded] = useState(catalogCache !== null)
+
+  useEffect(() => {
+    if (catalogCache) return
+    let active = true
+    void loadCatalogOnce()
+      .then((entries) => {
+        if (active) setCatalog(entries)
+      })
+      .finally(() => {
+        if (active) setLoaded(true)
+      })
+    return () => {
+      active = false
+    }
   }, [])
 
   const labelByType = useMemo(

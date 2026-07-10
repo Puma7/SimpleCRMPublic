@@ -1,0 +1,183 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConfig-Keys bleiben stabil 1`] = `
+{
+  "ai.agent": [
+    "createDraft",
+    "knowledgeBaseId",
+    "profileId",
+    "systemPrompt",
+  ],
+  "ai.agent_tool": [
+    "knowledgeBaseId",
+    "tool",
+  ],
+  "ai.classify": [
+    "contextMode",
+    "labels",
+  ],
+  "ai.outbound_review": [
+    "checkReplyContext",
+    "promptId",
+  ],
+  "ai.pick_canned": [
+    "createDraft",
+  ],
+  "ai.reply_suggestion": [
+    "promptId",
+    "skipIfReady",
+  ],
+  "ai.review": [
+    "blockKeyword",
+    "promptId",
+  ],
+  "ai.spam_score": [
+    "contextMode",
+  ],
+  "ai.transform_text": [
+    "promptId",
+    "targetVariable",
+  ],
+  "code.javascript": [
+    "code",
+  ],
+  "code.python": [
+    "code",
+  ],
+  "crm.create_task": [
+    "daysUntilDue",
+    "priority",
+    "title",
+  ],
+  "crm.link_customer": [],
+  "crm.log_activity": [
+    "activityType",
+    "title",
+  ],
+  "crm.update_deal": [
+    "dealId",
+    "stage",
+  ],
+  "email.archive": [],
+  "email.assign": [
+    "teamMemberId",
+  ],
+  "email.auth_check": [
+    "protocol",
+    "treatSoftfailAsFail",
+  ],
+  "email.auto_reply": [
+    "confidenceVar",
+    "minConfidence",
+  ],
+  "email.create_draft": [
+    "bodyPrefix",
+  ],
+  "email.delete_server": [],
+  "email.forward_copy": [
+    "includeAttachments",
+    "runOutboundReview",
+    "to",
+  ],
+  "email.hold_outbound": [
+    "reason",
+  ],
+  "email.mark_seen": [],
+  "email.mark_spam": [
+    "moveImap",
+    "spam",
+    "tag",
+  ],
+  "email.move_imap": [
+    "folderPath",
+  ],
+  "email.release_outbound": [
+    "autoSend",
+  ],
+  "email.send_draft": [
+    "draftIdVariable",
+    "runOutboundReview",
+  ],
+  "email.sender_filter": [
+    "extraBlacklist",
+    "extraWhitelist",
+    "useBuiltinTrusted",
+    "useGlobalLists",
+  ],
+  "email.set_category": [
+    "path",
+  ],
+  "email.set_priority": [
+    "level",
+  ],
+  "email.set_spam_status": [
+    "status",
+    "tag",
+    "train",
+  ],
+  "email.tag": [
+    "tag",
+  ],
+  "email.tag_attachment_meta": [
+    "tag",
+  ],
+  "http.request": [
+    "body",
+    "method",
+    "url",
+  ],
+  "jtl.lookup": [
+    "entity",
+  ],
+  "jtl.order_context": [
+    "mapping",
+    "query",
+  ],
+  "jtl.prepare_action": [
+    "kind",
+    "requireApproval",
+  ],
+  "logic.delay": [
+    "delaySeconds",
+  ],
+  "logic.loop": [
+    "items",
+    "maxItems",
+    "sourceVariable",
+  ],
+  "logic.merge": [],
+  "logic.set_variable": [
+    "name",
+    "value",
+  ],
+  "logic.stop": [],
+  "logic.switch": [
+    "cases",
+    "field",
+  ],
+  "logic.threshold": [
+    "operator",
+    "value",
+    "variable",
+  ],
+  "mssql.query": [
+    "sql",
+  ],
+  "plugin.custom": [
+    "handler",
+    "pluginId",
+  ],
+  "returns.evaluate": [
+    "creditReasonCodes",
+    "defaultOutcome",
+    "exchangeReasonCodes",
+    "reviewConditions",
+  ],
+  "returns.offer_credit": [],
+  "returns.offer_exchange": [],
+  "sync.run": [],
+  "workflow.subflow": [
+    "workflowId",
+  ],
+}
+`;

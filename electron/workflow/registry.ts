@@ -32,6 +32,11 @@ export function listWorkflowNodeCatalog(): WorkflowNodeCatalogEntry[] {
             ? { ...core?.defaultConfig, ...n.defaultConfig }
             : undefined,
         ...(core?.runtime === undefined ? {} : { runtime: core.runtime }),
+        ...(core?.fields === undefined ? {} : { fields: core.fields }),
+        ...(core?.ports === undefined ? {} : { ports: core.ports }),
+        ...(core?.outputs === undefined ? {} : { outputs: core.outputs }),
+        ...(core?.docs === undefined ? {} : { docs: core.docs }),
+        ...(core?.customWidget === undefined ? {} : { customWidget: core.customWidget }),
       };
     })
     .sort((a, b) => a.label.localeCompare(b.label, 'de'));

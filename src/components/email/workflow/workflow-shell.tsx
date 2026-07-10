@@ -81,6 +81,7 @@ import { WorkflowRunHistory } from "./workflow-run-history"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import { validateWorkflowGraphConfigs } from "@shared/workflow-config-validate"
 import {
   enrichRegistryFlowNodes,
   enrichRegistryGraphDocument,
@@ -174,7 +175,7 @@ export function WorkflowShell() {
   const [accountScope, setAccountScope] = useState<AccountScopeValue>("all")
   const browserImportInputRef = useRef<HTMLInputElement | null>(null)
 
-  const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
+  const { catalog, labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
 
   const filteredRows = useMemo(() => {
@@ -321,6 +322,50 @@ export function WorkflowShell() {
           "Aktionen hängen direkt am Trigger ohne Bedingung — sie würden auf jede Mail angewendet. Bitte Trigger → Bedingung → (Ja) → Aktion verbinden.",
           { duration: 8000 },
         )
+      }
+      // Schema-Validierung: Pflichtfelder/Wertebereiche blockieren das
+      // Speichern (Knoten wird markiert); Kanten-Probleme an Mehrfach-Port-
+      // Knoten werden als Warnung gezeigt.
+      {
+        const state = useWorkflowEditorStore.getState()
+        const catalogByType = new Map(catalog.map((entry) => [entry.type, entry]))
+        const validationNodes = state.nodes.map((n) => {
+          const data = n.data as {
+            nodeType?: string
+            label?: string
+            config?: Record<string, unknown>
+          }
+          const nodeType = typeof data.nodeType === "string" ? data.nodeType : null
+          return {
+            id: n.id,
+            nodeType,
+            title:
+              data.label?.trim() ||
+              (nodeType ? labelByType.get(nodeType) ?? nodeType : n.id),
+            config: data.config ?? {},
+          }
+        })
+        const validationEdges = state.edges.map((e) => ({
+          source: e.source,
+          label: typeof e.label === "string" ? e.label : null,
+        }))
+        const issues = validateWorkflowGraphConfigs(validationNodes, validationEdges, catalogByType)
+        const errors = issues.filter((i) => i.severity === "error")
+        const warnings = issues.filter((i) => i.severity === "warning")
+        for (const w of warnings.slice(0, 3)) {
+          toast.warning(w.message, { duration: 8000 })
+        }
+        if (errors.length > 0) {
+          setSelectedNodeId(errors[0]!.nodeId)
+          setSelectedEdgeId(null)
+          throw new Error(
+            `Nicht gespeichert — ${errors.length === 1 ? "ein Knoten ist" : `${errors.length} Knoten sind`} unvollständig: ` +
+              errors
+                .slice(0, 3)
+                .map((i) => `„${i.nodeTitle}“: ${i.message}`)
+                .join(" · "),
+          )
+        }
       }
       // Server-client only: there the outbound review holds EVERY draft up front
       // and only sends it when a path reaches a release node, so a graph that
