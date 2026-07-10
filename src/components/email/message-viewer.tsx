@@ -69,6 +69,7 @@ import {
   formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  isActivelySnoozedMessage,
   isDraftFolderMessage,
   isEditableDraftMessage,
   isInboxMessage,
@@ -543,6 +544,9 @@ export function MessageViewer(props: Props) {
   // keine Antworten-/Spam-Controls, dafuer der IMAP-Draft-Loeschen-Button.
   const inDraftFolder = isDraftFolderMessage(selectedMessage)
   const inSnoozed = mailView === "snoozed"
+  // Message-basiert statt view-basiert: aktiv gesnoozte Broad-Treffer
+  // brauchen Unsnooze/"Snooze ändern" auch ausserhalb der snoozed-View.
+  const isSnoozedRow = isActivelySnoozedMessage(selectedMessage)
 
   const handleSnoozeMessage = async (until: string | null) => {
     if (!selectedMessage) return
@@ -1245,7 +1249,7 @@ export function MessageViewer(props: Props) {
                         Als .eml
                       </Button>
                       <SnoozePopover
-                        showUnsnooze={inSnoozed}
+                        showUnsnooze={isSnoozedRow}
                         onUnsnooze={() => void handleSnoozeMessage(null)}
                         onSnooze={(until) => void handleSnoozeMessage(until)}
                       >
@@ -1256,7 +1260,7 @@ export function MessageViewer(props: Props) {
                           className="h-8 gap-1.5 text-xs"
                         >
                           <Clock className="h-3.5 w-3.5" />
-                          {inSnoozed ? "Snooze ändern" : "Zurückstellen"}
+                          {isSnoozedRow ? "Snooze ändern" : "Zurückstellen"}
                         </Button>
                       </SnoozePopover>
                     </>

@@ -328,6 +328,24 @@ export function isInboxMessage(
   return (message.spam_status ?? "clean") === "clean"
 }
 
+/**
+ * Aktiver Snooze der Zeile (statt snoozed-View): ein gesnoozter Broad-
+ * Treffer braucht die Unsnooze-Aktion auch ausserhalb der snoozed-View,
+ * sonst laesst er sich aus dem Viewer nicht zurueckholen. Spiegelt das
+ * View-Praedikat der Store-Logik (snoozed_until gesetzt und in der
+ * Zukunft); clientseitiger Zeitvergleich genuegt. In der snoozed-View
+ * selbst ist jede Zeile aktiv gesnoozt — Verhalten dort identisch.
+ */
+export function isActivelySnoozedMessage(
+  message: Pick<EmailMessage, "snoozed_until"> | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  const until = message?.snoozed_until
+  if (!until) return false
+  const ts = new Date(until).getTime()
+  return Number.isFinite(ts) && ts > now.getTime()
+}
+
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
   const c = customer ?? undefined
   return body

@@ -1,4 +1,5 @@
 import {
+  isActivelySnoozedMessage,
   isDraftFolderMessage,
   isEditableDraftMessage,
   isInboxMessage,
@@ -127,5 +128,33 @@ describe('isInboxMessage', () => {
   test('fehlende Nachricht ist keine Inbox-Zeile', () => {
     expect(isInboxMessage(null)).toBe(false);
     expect(isInboxMessage(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Aktiver Snooze an der Zeile (Codex R9): gesnoozte Broad-Treffer brauchen
+ * die Unsnooze-Aktion auch ausserhalb der snoozed-View; in der snoozed-View
+ * ist jede Zeile aktiv gesnoozt (View-Filter) — Verhalten dort identisch.
+ */
+describe('isActivelySnoozedMessage', () => {
+  const now = new Date('2026-07-10T12:00:00.000Z');
+
+  test('snoozed_until in der Zukunft zaehlt als aktiv gesnoozt', () => {
+    expect(isActivelySnoozedMessage({ snoozed_until: '2026-07-11T08:00:00.000Z' }, now)).toBe(true);
+    expect(isActivelySnoozedMessage({ snoozed_until: '2099-01-01T00:00:00.000Z' }, now)).toBe(true);
+  });
+
+  test('abgelaufener oder fehlender Snooze zaehlt nicht', () => {
+    expect(isActivelySnoozedMessage({ snoozed_until: '2026-07-10T11:59:00.000Z' }, now)).toBe(false);
+    // Exakt "jetzt" ist nicht mehr in der Zukunft (Store-Praedikat: > now).
+    expect(isActivelySnoozedMessage({ snoozed_until: '2026-07-10T12:00:00.000Z' }, now)).toBe(false);
+    expect(isActivelySnoozedMessage({ snoozed_until: null }, now)).toBe(false);
+    expect(isActivelySnoozedMessage({}, now)).toBe(false);
+    expect(isActivelySnoozedMessage(null, now)).toBe(false);
+    expect(isActivelySnoozedMessage(undefined, now)).toBe(false);
+  });
+
+  test('unparsebare Zeitstempel zaehlen nicht', () => {
+    expect(isActivelySnoozedMessage({ snoozed_until: 'kein-datum' }, now)).toBe(false);
   });
 });
