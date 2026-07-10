@@ -690,7 +690,15 @@ export function MessageList({
                 size="sm"
                 variant={variant ?? "outline"}
                 className="h-7 text-xs"
-                disabled={bulkBusy}
+                // Broad-Suche: Auswahl kann Mails aus fremden Ordnern enthalten
+                // (Gesendet/Archiv) — view-spezifische Aktionen wie Spam/Erledigt
+                // waeren dort Datenmurks (Muster wie die Erledigt-Chips).
+                disabled={bulkBusy || broadSearchActive}
+                title={
+                  broadSearchActive
+                    ? "Bei Suche über alle Ordner nicht verfügbar"
+                    : undefined
+                }
                 onClick={() => void runBulk(action)}
               >
                 {label}
