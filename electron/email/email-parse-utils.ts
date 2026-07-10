@@ -6,6 +6,7 @@ export {
   isCorruptRawHeaders,
   normalizeAddressJson,
   parseAttachmentsMeta,
+  plainTextFromHtml,
   rawHeadersFromParsed,
   snippetFromParsed,
   type CanonicalAddressJson,

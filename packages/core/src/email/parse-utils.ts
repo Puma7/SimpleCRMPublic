@@ -68,6 +68,20 @@ export function formatDate(d: Date | undefined): string | null {
   return d.toISOString();
 }
 
+/**
+ * Strip HTML down to searchable plain text (style/script content removed).
+ * Used as body_text fallback for HTML-only mail so search/FTS can see it.
+ */
+export function plainTextFromHtml(html: string, cap = 500_000): string {
+  const text = html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > cap ? text.slice(0, cap) : text;
+}
+
 export function snippetFromParsed(textBody: string | null, htmlBody: string | null): string | null {
   if (textBody?.trim()) {
     const t = textBody.trim();
@@ -75,7 +89,7 @@ export function snippetFromParsed(textBody: string | null, htmlBody: string | nu
   }
   if (htmlBody) {
     const capped = htmlBody.length > 8000 ? htmlBody.slice(0, 8000) : htmlBody;
-    const plain = capped.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const plain = plainTextFromHtml(capped);
     if (!plain) return null;
     return plain.length > 220 ? `${plain.slice(0, 217)}...` : plain;
   }
