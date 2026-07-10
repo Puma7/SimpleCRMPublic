@@ -331,7 +331,9 @@ describe('server edition repository boundaries', () => {
   test('api Docker image keeps runtime node dependencies for server CLI commands', () => {
     const dockerfile = readFileSync(join(__dirname, '..', '..', 'docker', 'api.Dockerfile'), 'utf8');
     expect(dockerfile).toContain('pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts');
-    expect(dockerfile).toContain('pnpm prune --prod');
+    // --ignore-scripts is load-bearing: without it prune re-runs the desktop-only
+    // postinstall (electron install), which fails in the prod image. Regression guard.
+    expect(dockerfile).toContain('pnpm prune --prod --ignore-scripts');
     expect(dockerfile).toContain('COPY --from=build /app/node_modules ./node_modules');
     expect(dockerfile).toContain('CMD ["node", "packages/server/dist/server.js"]');
   });
