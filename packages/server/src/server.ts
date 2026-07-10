@@ -140,6 +140,7 @@ import { createPostgresServerImapSentCopyAppenderPort } from './mail-imap-append
 import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt-responder';
 import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
 import { startAttachmentTextBackfillTicker } from './mail-attachment-text';
+import { startBodyTextBackfillRun } from './mail-body-text-backfill';
 import { createPostgresMailSyncJobPort } from './mail-sync';
 import { createPostgresMailSyncPostProcessor } from './mail-sync-post-process';
 import {
@@ -251,6 +252,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let eventNotifications: PostgresServerEventNotificationChannel | undefined;
   let scheduledSendTicker: ReturnType<typeof startScheduledSendTicker> | undefined;
   let attachmentTextTicker: ReturnType<typeof startAttachmentTextBackfillTicker> | undefined;
+  let bodyTextBackfillRun: ReturnType<typeof startBodyTextBackfillRun> | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
     accessTokenSigner,
@@ -319,6 +321,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   app.addHook('onClose', async () => {
     scheduledSendTicker?.stop();
     attachmentTextTicker?.stop();
+    bodyTextBackfillRun?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
   });
 
@@ -363,11 +366,13 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         db,
         attachmentsRoot,
       });
+      bodyTextBackfillRun = startBodyTextBackfillRun({ db });
     }
     await app.listen({ host, port });
   } catch (error) {
     scheduledSendTicker?.stop();
     attachmentTextTicker?.stop();
+    bodyTextBackfillRun?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }

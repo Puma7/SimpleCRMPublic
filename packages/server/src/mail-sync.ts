@@ -1827,10 +1827,11 @@ export async function replacePostgresMailSyncAttachments(input: {
 
   if (rows.length > 0) {
     // Best-effort Textextraktion fuer die Suche (pdf/docx/txt/html) — non-fatal,
-    // der Backfill-Ticker holt Reste nach. Lazy import haelt die Parser-Deps
-    // vom Sync-Hot-Path fern.
+    // der Backfill-Ticker holt Reste nach. Serialisierte Queue (Concurrency 1),
+    // damit Bulk-Syncs keine parallelen Extraktionsketten aufstauen; lazy
+    // import haelt die Parser-Deps vom Sync-Hot-Path fern.
     void import('./mail-attachment-text')
-      .then((m) => m.extractTextForMessageAttachments(
+      .then((m) => m.queueMessageAttachmentExtraction(
         {
           db: input.db,
           attachmentsRoot: input.attachmentsRoot,

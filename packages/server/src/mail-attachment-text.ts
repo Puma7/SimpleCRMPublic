@@ -6,7 +6,14 @@
  * email_message_attachments.content_text (search_vector regenerates itself);
  * every failure is non-fatal — the row is marked as tried
  * (text_extracted_at) and skipped from future backfills.
+ *
+ * RLS: email_message_attachments is FORCE ROW LEVEL SECURITY. Candidate
+ * enumeration across workspaces therefore runs inside a
+ * withWorkspaceTransaction with role 'system' + crossWorkspaceAccess (the
+ * same pattern the job-queue/auth ports use for cross-workspace scans);
+ * per-row updates run in the row's own workspace session.
  */
+import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 
 import {
@@ -28,6 +35,8 @@ import {
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_POLL_INTERVAL_MS = 30_000;
 const BACKFILL_BUSY_PAUSE_MS = 2_000;
+/** Hard cap per parse — a hung pdf/docx parse must not stall the pipeline. */
+const EXTRACT_TIMEOUT_MS = 30_000;
 
 export type AttachmentTextExtractionOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -43,6 +52,36 @@ type ExtractableAttachmentRow = Readonly<{
   size_bytes: number | string;
   storage_path: string;
 }>;
+
+const EXTRACTABLE_COLUMNS = [
+  'id',
+  'workspace_id',
+  'filename_display',
+  'content_type',
+  'size_bytes',
+  'storage_path',
+] as const;
+
+/**
+ * Reject after ms. NB: the underlying parse promise cannot be cancelled and
+ * may keep running detached — acceptable, the row is marked as tried and the
+ * pipeline moves on.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error(`extraction timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      },
+    );
+  });
+}
 
 /** Buffer -> plain text for a supported kind (caller checked size limits). */
 export async function extractAttachmentTextFromBuffer(
@@ -115,7 +154,7 @@ export async function extractTextForAttachmentRow(
       return false;
     }
     const buf = await readFile(resolvedPath);
-    const text = await extractAttachmentTextFromBuffer(buf, kind);
+    const text = await withTimeout(extractAttachmentTextFromBuffer(buf, kind), EXTRACT_TIMEOUT_MS);
     await markExtracted(options, row, text.length > 0 ? text : null);
     return text.length > 0;
   } catch {
@@ -135,13 +174,19 @@ export async function extractTextForMessageAttachments(
 ): Promise<void> {
   let rows: ExtractableAttachmentRow[];
   try {
-    rows = (await options.db
-      .selectFrom('email_message_attachments')
-      .select(['id', 'workspace_id', 'filename_display', 'content_type', 'size_bytes', 'storage_path'])
-      .where('workspace_id', '=', input.workspaceId)
-      .where('message_id', '=', input.messageId)
-      .where('text_extracted_at', 'is', null)
-      .execute()) as unknown as ExtractableAttachmentRow[];
+    rows = (await withWorkspaceTransaction(
+      options.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) =>
+        trx
+          .selectFrom('email_message_attachments')
+          .select(EXTRACTABLE_COLUMNS)
+          .where('workspace_id', '=', input.workspaceId)
+          .where('message_id', '=', input.messageId)
+          .where('text_extracted_at', 'is', null)
+          .execute(),
+      { applySession: options.applyWorkspaceSession },
+    )) as unknown as ExtractableAttachmentRow[];
   } catch {
     return;
   }
@@ -150,18 +195,41 @@ export async function extractTextForMessageAttachments(
   }
 }
 
+let syncExtractionQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Sync-time hook: serialized queue (concurrency 1) so bulk syncs cannot pile
+ * up parallel extraction chains and their file buffers.
+ */
+export function queueMessageAttachmentExtraction(
+  options: AttachmentTextExtractionOptions,
+  input: { workspaceId: string; messageId: number },
+): void {
+  syncExtractionQueue = syncExtractionQueue
+    .then(() => extractTextForMessageAttachments(options, input))
+    .catch(() => undefined);
+}
+
 /** One backfill batch across workspaces; returns processed row count. */
 export async function runAttachmentTextBackfillBatch(
   options: AttachmentTextExtractionOptions,
   limit = BACKFILL_BATCH_SIZE,
 ): Promise<number> {
-  const rows = (await options.db
-    .selectFrom('email_message_attachments')
-    .select(['id', 'workspace_id', 'filename_display', 'content_type', 'size_bytes', 'storage_path'])
-    .where('text_extracted_at', 'is', null)
-    .orderBy('id', 'asc')
-    .limit(limit)
-    .execute()) as unknown as ExtractableAttachmentRow[];
+  // Cross-workspace candidate scan needs an explicit system session with
+  // cross-workspace access — without it FORCE RLS returns zero rows.
+  const rows = (await withWorkspaceTransaction(
+    options.db,
+    { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
+    async (trx) =>
+      trx
+        .selectFrom('email_message_attachments')
+        .select(EXTRACTABLE_COLUMNS)
+        .where('text_extracted_at', 'is', null)
+        .orderBy('id', 'asc')
+        .limit(limit)
+        .execute(),
+    { applySession: options.applyWorkspaceSession },
+  )) as unknown as ExtractableAttachmentRow[];
   for (const row of rows) {
     await extractTextForAttachmentRow(options, row);
   }
