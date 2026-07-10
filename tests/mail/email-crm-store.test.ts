@@ -405,11 +405,14 @@ describe('email-crm-store', () => {
       expect(sql).not.toContain('fts MATCH');
     });
 
-    test('fts terms use prefix queries and phrases stay exact', () => {
+    test('fts terms use prefix queries and phrases stay exact (per-token match)', () => {
       mock.setFtsTableExists(true);
       searchMessagesForAccountWithMeta(1, 'rechnung "Auftrag 4711"');
       const args = mock.stmt.all.mock.calls.at(0) as unknown[];
-      expect(args).toContain('"Auftrag 4711" AND "rechnung"*');
+      // Pro Token eine eigene MATCH-Expression (Nachricht ODER Anhang).
+      expect(args).toContain('"Auftrag 4711"');
+      expect(args).toContain('"rechnung"*');
+      expect(args).not.toContain('"Auftrag 4711" AND "rechnung"*');
     });
 
     test('operator-only query runs plain filtered select', () => {

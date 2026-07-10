@@ -345,6 +345,30 @@ describe('email search integration (real sqlite)', () => {
     expect(r.rows.map((m) => m.uid)).toEqual([30]);
   });
 
+  test('multi-term query split across body and attachment still matches (per-token)', () => {
+    // 'anhang' steht nur im Body (uid 30), 'quartalszahlen' nur im Anhangstext.
+    const r = searchMessagesForAccountWithMeta(1, 'anhang quartalszahlen', { view: 'inbox' });
+    expect(r.searchMode).toBe('fts');
+    expect(r.rows.map((m) => m.uid)).toEqual([30]);
+  });
+
+  test('relevance sort keeps attachment-only hits in the result set', () => {
+    const r = searchMessagesForAccountWithMeta(1, 'quartalszahlen', {
+      view: 'inbox',
+      sort: 'relevance',
+    });
+    expect(r.searchMode).toBe('fts');
+    expect(r.rows.map((m) => m.uid)).toEqual([30]);
+    // Gemischter Fall: Nachricht-Treffer ranken vor Anhang-only-Treffern
+    // (bm25 negativ = besser, Anhang-only = 0 = ans Ende).
+    const mixed = searchMessagesForAccountWithMeta(1, 'unterlagen quartalszahlen', {
+      view: 'inbox',
+      sort: 'relevance',
+      scope: { mode: 'broad' },
+    });
+    expect(mixed.rows.map((m) => m.uid)).toEqual([30]);
+  });
+
   test('relevance sort ranks subject hits first, date sort ranks newest first', () => {
     const byDate = searchMessagesForAccountWithMeta(1, 'sonderkondition', { view: 'inbox' });
     expect(byDate.searchMode).toBe('fts');

@@ -102,11 +102,12 @@ export function hasSearchOperators(parsed: ParsedMailSearchQuery): boolean {
 }
 
 /**
- * FTS5 MATCH expression: phrases exact (`"..."`), terms as prefix queries
- * (`"..."*`), AND-joined, capped at MAX_SEARCH_TEXT_TOKENS. Null when the
- * query has no text tokens (operator-only query).
+ * One FTS5 MATCH expression per phrase (`"..."` exact) and term (`"..."*`
+ * prefix), capped at MAX_SEARCH_TEXT_TOKENS. Engines compose these per token
+ * (message index OR attachment index, AND across tokens) so a query whose
+ * terms are split across body and attachment still matches.
  */
-export function buildFtsMatchExpression(parsed: ParsedMailSearchQuery): string | null {
+export function buildFtsTokenExpressions(parsed: ParsedMailSearchQuery): string[] {
   const parts: string[] = [];
   for (const phrase of parsed.phrases) {
     if (parts.length >= MAX_SEARCH_TEXT_TOKENS) break;
@@ -116,6 +117,16 @@ export function buildFtsMatchExpression(parsed: ParsedMailSearchQuery): string |
     if (parts.length >= MAX_SEARCH_TEXT_TOKENS) break;
     parts.push(`"${term.replace(/"/g, '""')}"*`);
   }
+  return parts;
+}
+
+/**
+ * FTS5 MATCH expression: phrases exact (`"..."`), terms as prefix queries
+ * (`"..."*`), AND-joined, capped at MAX_SEARCH_TEXT_TOKENS. Null when the
+ * query has no text tokens (operator-only query).
+ */
+export function buildFtsMatchExpression(parsed: ParsedMailSearchQuery): string | null {
+  const parts = buildFtsTokenExpressions(parsed);
   if (parts.length === 0) return null;
   return parts.join(' AND ');
 }

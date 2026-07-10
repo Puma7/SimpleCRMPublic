@@ -10,6 +10,7 @@ import {
 } from '../../shared/email-search-highlight';
 import {
   buildFtsMatchExpression,
+  buildFtsTokenExpressions,
   MAX_SEARCH_TEXT_TOKENS,
   parseMailSearchQuery,
   type ParsedMailSearchQuery,
@@ -911,43 +912,54 @@ function runMessageSearch(
     try {
       const relevance = opts.sort === 'relevance';
       const withAttachments = attachmentsFtsTableExists();
+      const tokens = buildFtsTokenExpressions(parsed);
       const params: (string | number)[] = [];
       if (cat.param != null) params.push(cat.param);
       if (target.accountId != null) params.push(target.accountId);
-      params.push(...access.params, ...ops.params, fts);
-      let sql: string;
-      if (relevance) {
-        // NB: MATCH/bm25 need the alias-qualified *table* name
-        // (`fts.email_messages_fts`); a bare `fts MATCH ?` is "no such column".
-        sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-           ${cat.sql}
-           INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-           WHERE ${accountSql}${scopeSql}${snoozeSql}
-           ${doneSql}${access.sql}${ops.sql}
-           AND fts.${EMAIL_MESSAGES_FTS_TABLE} MATCH ?
-           ORDER BY bm25(fts.${EMAIL_MESSAGES_FTS_TABLE}, ${FTS_BM25_WEIGHTS}),
-                    datetime(COALESCE(m.date_received, m.created_at)) DESC
-           LIMIT ? OFFSET ?`;
-      } else {
-        const attachmentMatch = withAttachments
-          ? ` OR m.id IN (
+      params.push(...access.params, ...ops.params);
+      // Pro Token: Treffer in der Nachricht ODER in einem Anhang; Tokens
+      // AND-verknuepft — so matcht auch eine Mail, deren Begriffe sich auf
+      // Body und Anhang verteilen.
+      const tokenConds: string[] = [];
+      for (const token of tokens) {
+        if (withAttachments) {
+          tokenConds.push(`(m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)
+             OR m.id IN (
                SELECT a.message_id FROM ${EMAIL_ATTACHMENTS_FTS_TABLE} f
                JOIN ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} a ON a.id = f.rowid
-               WHERE f.${EMAIL_ATTACHMENTS_FTS_TABLE} MATCH ?)`
-          : '';
-        if (withAttachments) params.push(fts);
-        sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+               WHERE f.${EMAIL_ATTACHMENTS_FTS_TABLE} MATCH ?))`);
+          params.push(token, token);
+        } else {
+          tokenConds.push(`m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)`);
+          params.push(token);
+        }
+      }
+      // Relevanz: korrelierte bm25-Subquery statt INNER JOIN, damit Anhang-
+      // only-/Teiltreffer in der Ergebnismenge bleiben. bm25 ist negativ
+      // (kleiner = besser); Zeilen ohne Voll-MATCH der Nachricht bekommen 0
+      // und sortieren ans Ende, danach Datum.
+      let orderSql = `ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC`;
+      if (relevance) {
+        orderSql = `ORDER BY COALESCE((
+             SELECT bm25(${EMAIL_MESSAGES_FTS_TABLE}, ${FTS_BM25_WEIGHTS})
+             FROM ${EMAIL_MESSAGES_FTS_TABLE}
+             WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ? AND rowid = m.id
+           ), 0) ASC,
+           datetime(COALESCE(m.date_received, m.created_at)) DESC`;
+        params.push(fts);
+      }
+      const sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
            ${cat.sql}
            WHERE ${accountSql}${scopeSql}${snoozeSql}
            ${doneSql}${access.sql}${ops.sql}
-           AND (m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)${attachmentMatch})
-           ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+           AND ${tokenConds.join(' AND ')}
+           ${orderSql}
            LIMIT ? OFFSET ?`;
-      }
       const stmt = getDb().prepare(sql);
       const rows = stmt.all(...params, limit, offset) as import('./email-store').EmailMessageRow[];
       if (rows.length > 0) {
-        attachFtsSearchSnippets(rows, fts, withAttachments);
+        // Snippets: OR-Ausdruck, damit auch Teiltreffer markiert werden.
+        attachFtsSearchSnippets(rows, tokens.join(' OR '), withAttachments);
         return { rows, searchMode: 'fts' };
       }
       if (offset > 0) {
