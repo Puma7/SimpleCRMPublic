@@ -460,6 +460,39 @@ function migrateEmailFtsSearchV2(): void {
 }
 
 /**
+ * Backfill body_text from body_html for HTML-only mail (id-keyset batches).
+ * Must run BEFORE an FTS 'rebuild' (so the rebuild indexes the filled
+ * column) and never with old FTS triggers active — callers drop the
+ * email_messages_fts_* triggers first.
+ */
+function backfillBodyTextFromHtml(conn: Database.Database): number {
+    const selectBatch = conn.prepare(
+        `SELECT id, body_html FROM ${EMAIL_MESSAGES_TABLE}
+         WHERE id > ? AND (body_text IS NULL OR body_text = '')
+           AND body_html IS NOT NULL AND body_html <> ''
+         ORDER BY id LIMIT 200`,
+    );
+    const updateBody = conn.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ? WHERE id = ?`);
+    let lastId = 0;
+    let backfilled = 0;
+    for (;;) {
+        const rows = selectBatch.all(lastId) as { id: number; body_html: string }[];
+        if (rows.length === 0) break;
+        lastId = rows[rows.length - 1]!.id;
+        for (const row of rows) {
+            const text = plainTextFromHtml(row.body_html);
+            if (text.length === 0) continue;
+            updateBody.run(text, row.id);
+            backfilled += 1;
+        }
+    }
+    if (backfilled > 0) {
+        console.log(`FTS: backfilled body_text for ${backfilled} HTML-only messages`);
+    }
+    return backfilled;
+}
+
+/**
  * FTS v3 (Mail Search Phase 1): attachments_json column + prefix index.
  * Runs as ONE transaction so a crash rolls back to a clean v2 state:
  * drop triggers -> backfill body_text from body_html for HTML-only mail
@@ -477,29 +510,7 @@ function migrateEmailFtsSearchV3(): void {
         conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
         conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
 
-        const selectBatch = conn.prepare(
-            `SELECT id, body_html FROM ${EMAIL_MESSAGES_TABLE}
-             WHERE id > ? AND (body_text IS NULL OR body_text = '')
-               AND body_html IS NOT NULL AND body_html <> ''
-             ORDER BY id LIMIT 200`,
-        );
-        const updateBody = conn.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ? WHERE id = ?`);
-        let lastId = 0;
-        let backfilled = 0;
-        for (;;) {
-            const rows = selectBatch.all(lastId) as { id: number; body_html: string }[];
-            if (rows.length === 0) break;
-            lastId = rows[rows.length - 1]!.id;
-            for (const row of rows) {
-                const text = plainTextFromHtml(row.body_html);
-                if (text.length === 0) continue;
-                updateBody.run(text, row.id);
-                backfilled += 1;
-            }
-        }
-        if (backfilled > 0) {
-            console.log(`FTS v3: backfilled body_text for ${backfilled} HTML-only messages`);
-        }
+        backfillBodyTextFromHtml(conn);
 
         conn.exec(`DROP TABLE IF EXISTS ${EMAIL_MESSAGES_FTS_TABLE}`);
         conn.exec(createEmailMessagesFtsTable);
@@ -519,17 +530,45 @@ function migrateEmailFtsSearchV3(): void {
 
 function setupEmailFtsIndex() {
     if (!db) return;
-    const ftsMaster = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
+    const conn = db;
+    const ftsMaster = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_MESSAGES_FTS_TABLE);
     if (!ftsMaster) {
         console.log('Creating email_messages FTS5 index...');
-        db.exec(createEmailMessagesFtsTable);
-        db.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
-        // Fresh table already has the v3 shape. Mark the version only when no
-        // key exists yet (true fresh install); an existing key means an
-        // upgrade path whose migrations (e.g. body_text backfill) must still
-        // run against the recreated table.
-        if (getSyncInfo('email_fts_search_version') == null) {
-            setSyncInfo('email_fts_search_version', '3');
+        const versionKeyMissing = getSyncInfo('email_fts_search_version') == null;
+        const hasMessages = conn.prepare(`SELECT 1 FROM ${EMAIL_MESSAGES_TABLE} LIMIT 1`).get() != null;
+        conn.exec('BEGIN');
+        try {
+            // Legacy-DB von VOR der FTS-Einfuehrung (Tabelle fehlt, Version-
+            // Key fehlt, aber Mails existieren): body_text-Backfill fuer den
+            // HTML-only-Altbestand MUSS vor dem 'rebuild' laufen — die unten
+            // gesetzte Version '3' laesst migrateEmailFtsSearchV3 frueh
+            // zurueckkehren, sonst bliebe der Altbestand ueber den Snippet
+            // hinaus unauffindbar. Trigger-Drops davor: der Backfill darf nie
+            // alte FTS-Trigger feuern (verwaiste Trigger ohne Tabelle wuerden
+            // jedes UPDATE scheitern lassen).
+            if (versionKeyMissing && hasMessages) {
+                conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ai`);
+                conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_ad`);
+                conn.exec(`DROP TRIGGER IF EXISTS email_messages_fts_au`);
+                backfillBodyTextFromHtml(conn);
+            }
+            conn.exec(createEmailMessagesFtsTable);
+            conn.exec(`INSERT INTO ${EMAIL_MESSAGES_FTS_TABLE}(${EMAIL_MESSAGES_FTS_TABLE}) VALUES('rebuild')`);
+            // Fresh table already has the v3 shape. Mark the version only when
+            // no key exists yet (fresh install or pre-FTS legacy DB, handled
+            // above); an existing key means an upgrade path whose migrations
+            // must still run against the recreated table.
+            if (versionKeyMissing) {
+                setSyncInfo('email_fts_search_version', '3');
+            }
+            conn.exec('COMMIT');
+        } catch (error) {
+            try {
+                conn.exec('ROLLBACK');
+            } catch {
+                /* connection may already have rolled back */
+            }
+            console.error('FTS index creation failed — will retry next start:', error);
         }
     }
     ensureEmailFtsTriggers();
