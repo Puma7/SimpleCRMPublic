@@ -91,4 +91,33 @@ src/.DS_Store
 
 coverage/
 .playwright-cli/
-.claude/
+# Ignore local Claude Code state (settings.local.json, session data). Keep only
+# the shared, versioned MARKDOWN under .claude/skills and .claude/commands: the
+# subtree is ignored by default, then just directories + *.md are re-included,
+# so arbitrary nested files (settings.local.json, *.sqlite, caches, deps, logs,
+# secrets) are never force-tracked past the repo-wide ignores.
+.claude/*
+!.claude/skills/
+.claude/skills/**
+!.claude/skills/**/
+!.claude/skills/**/*.md
+!.claude/commands/
+.claude/commands/**
+!.claude/commands/**/
+!.claude/commands/**/*.md
+# Re-ignore vendored/generated subtrees under the tracked assets. A skill or
+# command may grow deps or reports (node_modules, coverage, dist); without these
+# a parent-dir ignore, the `*.md` negations above would force-track third-party
+# READMEs and generated reports. An excluded parent dir wins over the file rule.
+.claude/skills/**/node_modules/
+.claude/skills/**/coverage/
+.claude/skills/**/dist/
+.claude/commands/**/node_modules/
+.claude/commands/**/coverage/
+.claude/commands/**/dist/
+# The /improve skill writes implementation plans here as markdown; surface them
+# to git instead of letting the global *.md rule hide (and silently lose) them.
+!plans/
+!plans/**/*.md
+!advisor-plans/
+!advisor-plans/**/*.md
