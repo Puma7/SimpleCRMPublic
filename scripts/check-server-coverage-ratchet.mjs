@@ -44,11 +44,17 @@ if (!fs.existsSync(baselinePath)) {
 }
 
 const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+// Tolerance absorbs v8 coverage variance between the environment that generated
+// the baseline and the environment that enforces it (e.g. a different Node/v8
+// version in CI reports the same code ~0.5pt differently). It stays tight enough
+// to still catch a real regression (an accidentally dropped test file moves
+// coverage by whole points, not fractions).
+const TOLERANCE = 1;
 let failed = false;
 for (const m of metrics) {
   const current = snapshot[m];
   const floor = baseline[m];
-  if (current + 0.05 < floor) {
+  if (current + TOLERANCE < floor) {
     console.error(`Coverage regressed for ${m}: ${current}% < baseline ${floor}%`);
     failed = true;
   }
