@@ -1,4 +1,4 @@
-import { isEditableDraftMessage } from '../../src/components/email/types';
+import { isEditableDraftMessage, isTrashedMessage } from '../../src/components/email/types';
 
 /**
  * Message-basierte Draft-Erkennung des MessageViewers (Codex R7): Drafts aus
@@ -35,5 +35,25 @@ describe('isEditableDraftMessage', () => {
     expect(isEditableDraftMessage(undefined)).toBe(false);
     expect(isEditableDraftMessage({ uid: 3, folder_kind: 'inbox' })).toBe(false);
     expect(isEditableDraftMessage({ uid: -2, folder_kind: 'sent' })).toBe(false);
+  });
+});
+
+/**
+ * Message-basierte Papierkorb-Erkennung (Codex R8): soft-geloeschte Treffer
+ * der Broad-Suche ("Papierkorb einbeziehen") muessen Wiederherstellen- statt
+ * der normalen destruktiven Controls zeigen — unabhaengig von der aktiven
+ * View. In der Trash-View selbst ist jede Zeile soft-geloescht (View-
+ * Filter), dort aendert sich nichts.
+ */
+describe('isTrashedMessage', () => {
+  test('soft-geloeschte Nachricht gilt unabhaengig von der View als Papierkorb', () => {
+    expect(isTrashedMessage({ soft_deleted: 1 })).toBe(true);
+  });
+
+  test('nicht geloeschte Nachricht bleibt normal, auch ohne Feld (Legacy/Server)', () => {
+    expect(isTrashedMessage({ soft_deleted: 0 })).toBe(false);
+    expect(isTrashedMessage({})).toBe(false);
+    expect(isTrashedMessage(null)).toBe(false);
+    expect(isTrashedMessage(undefined)).toBe(false);
   });
 });

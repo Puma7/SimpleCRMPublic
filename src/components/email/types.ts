@@ -272,6 +272,20 @@ export function isEditableDraftMessage(
   return message.folder_kind === "draft" && (message.soft_deleted ?? 0) === 0
 }
 
+/**
+ * Papierkorb-Erkennung an der Nachricht statt an der View: Die Broad-Suche
+ * mit "Papierkorb einbeziehen" liefert soft-geloeschte Treffer, waehrend die
+ * aktive View z. B. 'inbox' ist — solche Zeilen brauchen Wiederherstellen-
+ * statt der normalen destruktiven Controls. In der Trash-View selbst sind
+ * alle Zeilen soft-geloescht (View-Filter), das Verhalten dort bleibt
+ * identisch.
+ */
+export function isTrashedMessage(
+  message: Pick<EmailMessage, "soft_deleted"> | null | undefined,
+): boolean {
+  return (message?.soft_deleted ?? 0) !== 0
+}
+
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
   const c = customer ?? undefined
   return body

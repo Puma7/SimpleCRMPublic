@@ -70,6 +70,7 @@ import {
   hasLocalIpc,
   invokeIpc,
   isEditableDraftMessage,
+  isTrashedMessage,
   needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
@@ -530,7 +531,11 @@ export function MessageViewer(props: Props) {
   // ausserhalb der drafts/scheduled_send-Views) sind sonst nicht editierbar.
   const isDraft = isEditableDraftMessage(selectedMessage)
 
-  const inTrash = mailView === "trash"
+  // Message-basiert statt view-basiert: soft-geloeschte Treffer der Broad-
+  // Suche ("Papierkorb einbeziehen") brauchen Wiederherstellen- statt der
+  // normalen destruktiven Controls; in der Trash-View selbst ist jede Zeile
+  // soft-geloescht, dort aendert sich nichts.
+  const inTrash = isTrashedMessage(selectedMessage)
   const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"
   const inSnoozed = mailView === "snoozed"
 
