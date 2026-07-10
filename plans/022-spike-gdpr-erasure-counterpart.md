@@ -349,7 +349,7 @@ Create `docs/design/gdpr-erasure-spike.md`. It MUST contain these sections
    |---|---|---|---|
    | `email_messages` | `subject, from_json, to_json, cc_json, snippet, body_text, body_html, attachments_json, raw_headers, raw_rfc822_b64` | overwrite each with a tombstone (`'[erased]'` / `NULL`); keep `id, account_id, thread_id, date_received` | delete row → cascades to notes/attachments |
    | `email_internal_notes` | `body` | set `body='[erased]'` | cascade on message delete |
-   | `email_message_attachments` | file at `storage_path`, `filename_display`, `content_sha256` | unlink file; `filename_display='[erased]'`, `content_sha256=NULL`, `size_bytes=0`; keep row | cascade on message delete |
+   | `email_message_attachments` | file at `storage_path`, `filename_display`, `content_sha256` | collect `storage_path` for post-commit unlink, then tombstone the row: `filename_display='[erased]'`, `content_sha256=NULL`, `size_bytes=0`, and `storage_path='[erased]'` (a non-null tombstone — the column is `TEXT NOT NULL`, so do **not** set it to NULL); keep row | cascade on message delete |
    | `email_workflow_runs` | `log_json` | set `log_json=NULL` | keep row (`message_id` is `SET NULL`) |
    | `customers` (contact) | name/email/etc. | open question — mail-PII-only vs full contact record | — |
 
@@ -362,8 +362,10 @@ Create `docs/design/gdpr-erasure-spike.md`. It MUST contain these sections
    `eraseSubject(input, { dryRun }) → ErasureResult` where **`dryRun` defaults
    to `true`**. Describe execution in **two phases**: (a) the DB anonymization is
    transactional (Electron `BEGIN/COMMIT/ROLLBACK`, Server
-   `withWorkspaceTransaction`) and clears each attachment row's metadata /
-   `storage_path`; (b) file deletion is a **separate post-commit cleanup step**,
+   `withWorkspaceTransaction`) and tombstones each attachment row's metadata,
+   setting `storage_path` to a **non-null** sentinel (`'[erased]'`) — never NULL,
+   the column is `TEXT NOT NULL` — after capturing the real path for cleanup;
+   (b) file deletion is a **separate post-commit cleanup step**,
    NOT inside the transaction — a filesystem `unlink` is not rollback-safe (a
    `ROLLBACK` restores the rows but cannot un-delete files, leaving rows pointing
    at missing storage). So unlink the collected paths only **after** the DB

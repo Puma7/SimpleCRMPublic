@@ -12,14 +12,24 @@
 > **Drift check (run first)**: `git diff --stat f24fb27..HEAD -- AGENTS.md README.md`
 > If either file changed since this plan was written, compare the "Current
 > state" excerpts below against the live code before proceeding; on a
-> mismatch, treat it as a STOP condition.
+> mismatch, treat it as a STOP condition. **Expected-drift exception:** plan 012
+> (which the index sequences BEFORE this one) also edits the `npm install
+> --legacy-peer-deps` → pnpm guidance in these files. If the ONLY changes are
+> 012's package-manager edits, that is expected — proceed and layer this plan's
+> architecture/overview fixes on top (skip the now-redundant pnpm edits, keep the
+> "no backend server" / editions fixes). Treat any OTHER change to the excerpted
+> sections as drift and STOP.
 
 ## Status
 
 - **Priority**: P1
 - **Effort**: S
 - **Risk**: LOW
-- **Depends on**: none
+- **Depends on**: plans/012-single-package-manager-pnpm.md — soft/ordering
+  dependency: 012 rewrites the `npm`→`pnpm` install guidance in the same
+  `AGENTS.md`/`README.md` this plan edits. Run 012 first (per the index) and honor
+  the expected-drift exception in the drift check; if 012 has NOT landed, this
+  plan may still run but must also apply the pnpm command fix itself.
 - **Category**: docs
 - **Planned at**: commit `f24fb27`, 2026-07-10
 

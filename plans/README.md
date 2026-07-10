@@ -28,14 +28,14 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 010 | Make scheduled-send state transitions atomic | P2 | M | bug | — | TODO |
 | 011 | Render email HTML in a sandboxed iframe | P2 | M | security | — | TODO |
 | 012 | Standardize on pnpm; remove the second lockfile | P2 | S | dx | — | TODO |
-| 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | — | TODO |
+| 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | TODO |
 | 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | TODO |
 | 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | TODO |
 | 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | TODO |
 | 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | TODO |
 | 018 | Lazy-load the HTTP route registry out of the desktop bundle | P3 | M | perf | — | TODO |
 | 019 | Separate runtime helpers from types in `api/types.ts` | P3 | L | tech-debt | — | TODO |
-| 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | — | TODO |
+| 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | 001 | TODO |
 | 021 | SPIKE: AI budget gates on existing usage tracking (D2) | P2 | M | direction | — | TODO |
 | 022 | SPIKE: GDPR erasure/anonymization counterpart (D3) | P2 | L | direction | — | TODO |
 | 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | TODO |
@@ -47,8 +47,8 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - **003 requires 002** — the server coverage ratchet builds on the CI test-gate/typecheck work; wiring a coverage step is cleaner once the gate is trustworthy.
 - **015 requires 002** — splitting the giant test file is only safe once empty-discovery failure is guaranteed (so a mis-split that drops tests fails CI instead of passing silently).
 - **017 requires 003** — the new email-UI tests should fold into the server/UI coverage scope that 003 establishes.
-- **012 and 013 overlap** on the npm→pnpm doc guidance: 012 owns the lockfile deletion + `.gitignore`; 013 owns the AGENTS.md/README prose. Do 012 first or coordinate the doc edits.
-- **020 relates to 001** — the outbound-webhook spike must reuse the same allowlist/redirect/IP-pin SSRF discipline hardened in 001.
+- **013 requires 012** — both edit the `npm`→`pnpm` install guidance in `AGENTS.md`/`README.md`. 012 owns the lockfile deletion + `.gitignore` + the command rewrite; 013 owns the architecture/overview prose. Run 012 first; 013 carries an expected-drift exception so it doesn't STOP on 012's edits.
+- **020 requires 001** — the outbound-webhook spike's production `emitWebhookEvent` seam reuses 001's hardened resolver (validated addresses) + pinned, redirect-guarded fetch. Until 001 lands, 020 builds only the injected prototype path and leaves `emitWebhookEvent` a typed-but-unwired stub (never a raw `fetch`).
 
 ## Direction spikes (020–023)
 

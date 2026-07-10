@@ -26,7 +26,12 @@
 - **Priority**: P2
 - **Effort**: L
 - **Risk**: MED
-- **Depends on**: none
+- **Depends on**: plans/001-ssrf-webhook-redirect-hardening.md — the production
+  `emitWebhookEvent` seam reuses plan 001's hardened resolver (returns validated
+  addresses) + pinned, redirect-guarded fetch. Until 001 lands, build ONLY the
+  injected/prototype path (dispatcher + tests); leave `emitWebhookEvent` as a
+  typed-but-unwired stub whose comment points at 001, and do not implement it with
+  a raw `globalThis.fetch`.
 - **Category**: direction
 - **Planned at**: commit `f24fb27`, 2026-07-10
 
@@ -367,11 +372,16 @@ export type WebhookDeps = {
   recordDelivery: (row: { subscriptionId: number; event: string; payload: string; status: string; attempts: number; lastError?: string }) => void;
   now: () => number;
   maxAttempts?: number;      // default 3
-  baseBackoffMs?: number;    // default 500 (exponential; skip real sleeps when injected in tests)
+  baseBackoffMs?: number;    // default 500 (exponential base)
+  // Injectable sleep so tests run instantly (pass `() => Promise.resolve()` or a
+  // spy). Defaults to a real timer; with baseBackoffMs = 0 the delay is skipped.
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export async function dispatchWebhookEvent(event: string, data: Record<string, unknown>, deps: WebhookDeps): Promise<void> {
   const maxAttempts = deps.maxAttempts ?? 3;
+  const baseBackoffMs = deps.baseBackoffMs ?? 500;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const rawBody = JSON.stringify({ event, data, sentAt: new Date(deps.now()).toISOString() });
   for (const sub of deps.listSubscriptionsForEvent(event)) {
     let attempts = 0;
@@ -391,7 +401,11 @@ export async function dispatchWebhookEvent(event: string, data: Record<string, u
         if (res.ok) { delivered = true; break; }
         lastError = `status ${res.status}`;
       } catch (e) { lastError = e instanceof Error ? e.message : String(e); }
-      // exponential backoff between attempts (in the real build; injected no-op in tests)
+      // Exponential backoff BEFORE the next attempt (not after the last, not on
+      // success). baseBackoffMs = 0 (tests) makes this a no-op.
+      if (!delivered && attempts < maxAttempts && baseBackoffMs > 0) {
+        await sleep(baseBackoffMs * 2 ** (attempts - 1));
+      }
     }
     deps.recordDelivery({ subscriptionId: sub.id, event, payload: rawBody, status: delivered ? 'delivered' : 'dead_letter', attempts, ...(lastError ? { lastError } : {}) });
   }
@@ -438,8 +452,9 @@ functions (`recordDelivery`, `listSubscriptionsForEvent`) as **fakes/spies via
    Assert `fetchImpl` was **never** called and `recordDelivery` recorded
    `dead_letter` with the block reason in `lastError`.
 
-Inject `maxAttempts: 3`, a `now: () => 0`, and a `baseBackoffMs: 0` (or make the
-loop skip sleeping when it is 0) so the test runs instantly.
+Inject `maxAttempts: 3`, a `now: () => 0`, and `baseBackoffMs: 0` (the loop skips
+the delay when it is 0) — or inject a `sleep` spy and assert it was awaited
+`maxAttempts - 1` times in the retry case — so the test runs instantly.
 
 **Verify**: `pnpm test -- tests/unit/automation-webhooks-spike.test.ts` → all
 pass (the 4 cases). Then `pnpm run lint` → exit 0.
