@@ -153,9 +153,10 @@ function insertPreparedAttachments(
   transaction();
   if (storedCount > 0) {
     // Best-effort text extraction (pdf/docx/txt/html) for the search index;
-    // lazy import keeps the parser deps off the sync hot path.
+    // serialized queue (concurrency 1) so bulk syncs cannot pile up parallel
+    // extraction chains; lazy import keeps the parser deps off the hot path.
     void import('./attachment-text-extract')
-      .then((m) => m.extractTextForMessageAttachments(messageId))
+      .then((m) => m.queueMessageAttachmentExtraction(messageId))
       .catch(() => undefined);
   }
   return { storedCount, writeFailures };

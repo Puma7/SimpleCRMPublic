@@ -4,10 +4,16 @@
  * email_message_attachments.text_content and are indexed by the
  * email_attachments_fts triggers. Every failure is non-fatal: the row is
  * marked as tried (text_extracted_at) and skipped from future backfills.
+ *
+ * storage_path values from the DB are confined to the attachments root
+ * (resolve + prefix check, like the server's resolveAttachmentStoragePath) —
+ * a manipulated row must not pull arbitrary files into the search index.
  */
 import fs from 'fs';
+import path from 'path';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE } from '../database-schema';
+import { getAttachmentsRootForExport } from './email-message-attachments-store';
 import {
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
@@ -18,6 +24,8 @@ import {
 
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_BATCH_PAUSE_MS = 2_000;
+/** Hard cap per parse — a hung pdf/docx parse must not stall the pipeline. */
+const EXTRACT_TIMEOUT_MS = 30_000;
 
 type ExtractableRow = {
   id: number;
@@ -26,6 +34,40 @@ type ExtractableRow = {
   size_bytes: number;
   storage_path: string;
 };
+
+export type ExtractOpts = {
+  /** Override fuer Tests; Default: userData/email-attachments. */
+  attachmentsRoot?: string;
+};
+
+/** storage_path -> absoluter Pfad, nur wenn er im Attachments-Root liegt. */
+function resolveConfinedStoragePath(storagePath: string, attachmentsRoot?: string): string | null {
+  const root = path.resolve(attachmentsRoot ?? getAttachmentsRootForExport());
+  const resolved = path.resolve(storagePath);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+  return resolved;
+}
+
+/**
+ * Reject after ms. NB: the underlying parse promise cannot be cancelled and
+ * may keep running detached — acceptable, the row is marked as tried and the
+ * pipeline moves on.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error(`extraction timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      },
+    );
+  });
+}
 
 /** Buffer -> plain text for a supported kind (caller checked size limits). */
 export async function extractAttachmentTextFromBuffer(
@@ -68,19 +110,28 @@ function markExtracted(id: number, text: string | null): void {
  * Extract one attachment row; always marks the row as tried. Returns true
  * when non-empty text was stored.
  */
-export async function extractTextForAttachmentRow(row: ExtractableRow): Promise<boolean> {
+export async function extractTextForAttachmentRow(
+  row: ExtractableRow,
+  opts?: ExtractOpts,
+): Promise<boolean> {
   try {
     const kind = attachmentTextKind(row.filename_display, row.content_type);
     if (!kind || row.size_bytes > ATTACHMENT_TEXT_MAX_BYTES) {
       markExtracted(row.id, null);
       return false;
     }
-    const buf = await fs.promises.readFile(row.storage_path);
-    if (buf.length > ATTACHMENT_TEXT_MAX_BYTES) {
+    const resolvedPath = resolveConfinedStoragePath(row.storage_path, opts?.attachmentsRoot);
+    if (!resolvedPath) {
       markExtracted(row.id, null);
       return false;
     }
-    const text = await extractAttachmentTextFromBuffer(buf, kind);
+    const fileStat = await fs.promises.stat(resolvedPath);
+    if (!fileStat.isFile() || fileStat.size > ATTACHMENT_TEXT_MAX_BYTES) {
+      markExtracted(row.id, null);
+      return false;
+    }
+    const buf = await fs.promises.readFile(resolvedPath);
+    const text = await withTimeout(extractAttachmentTextFromBuffer(buf, kind), EXTRACT_TIMEOUT_MS);
     markExtracted(row.id, text.length > 0 ? text : null);
     return text.length > 0;
   } catch {
@@ -94,7 +145,10 @@ export async function extractTextForAttachmentRow(row: ExtractableRow): Promise<
 }
 
 /** Best-effort extraction for all not-yet-tried attachments of one message. */
-export async function extractTextForMessageAttachments(messageId: number): Promise<void> {
+export async function extractTextForMessageAttachments(
+  messageId: number,
+  opts?: ExtractOpts,
+): Promise<void> {
   let rows: ExtractableRow[];
   try {
     rows = getDb()
@@ -108,13 +162,26 @@ export async function extractTextForMessageAttachments(messageId: number): Promi
     return;
   }
   for (const row of rows) {
-    await extractTextForAttachmentRow(row);
+    await extractTextForAttachmentRow(row, opts);
   }
+}
+
+let syncExtractionQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Sync-time hook: serialized queue (concurrency 1) so bulk syncs cannot pile
+ * up parallel extraction chains and their file buffers.
+ */
+export function queueMessageAttachmentExtraction(messageId: number, opts?: ExtractOpts): void {
+  syncExtractionQueue = syncExtractionQueue
+    .then(() => extractTextForMessageAttachments(messageId, opts))
+    .catch(() => undefined);
 }
 
 /** One backfill batch over legacy attachments; returns processed row count. */
 export async function runAttachmentTextBackfillBatch(
   limit = BACKFILL_BATCH_SIZE,
+  opts?: ExtractOpts,
 ): Promise<number> {
   const rows = getDb()
     .prepare(
@@ -125,7 +192,7 @@ export async function runAttachmentTextBackfillBatch(
     )
     .all(limit) as ExtractableRow[];
   for (const row of rows) {
-    await extractTextForAttachmentRow(row);
+    await extractTextForAttachmentRow(row, opts);
   }
   return rows.length;
 }

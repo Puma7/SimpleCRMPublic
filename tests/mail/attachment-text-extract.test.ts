@@ -33,6 +33,8 @@ import {
   runAttachmentTextBackfillBatch,
 } from '../../electron/email/attachment-text-extract';
 
+/** Alle Aufrufe nutzen tmpDir als Attachments-Root (Pfad-Confinement). */
+
 /** Minimal single-page PDF containing the given ASCII text. */
 function buildMiniPdf(text: string): Buffer {
   const objs: string[] = [];
@@ -155,13 +157,16 @@ describe('attachment text extraction', () => {
     const file = path.join(tmpDir, 'brief.txt');
     fs.writeFileSync(file, 'Vertraulicher Briefinhalt');
     const id = seedAttachment({ filename: 'brief.txt', sizeBytes: 25, storagePath: file });
-    const ok = await extractTextForAttachmentRow({
-      id,
-      filename_display: 'brief.txt',
-      content_type: 'text/plain',
-      size_bytes: 25,
-      storage_path: file,
-    });
+    const ok = await extractTextForAttachmentRow(
+      {
+        id,
+        filename_display: 'brief.txt',
+        content_type: 'text/plain',
+        size_bytes: 25,
+        storage_path: file,
+      },
+      { attachmentsRoot: tmpDir },
+    );
     expect(ok).toBe(true);
     const row = rowById(id);
     expect(row.text_content).toBe('Vertraulicher Briefinhalt');
@@ -173,13 +178,16 @@ describe('attachment text extraction', () => {
     fs.writeFileSync(file, 'PNGDATA');
     const pngId = seedAttachment({ filename: 'bild.png', sizeBytes: 7, storagePath: file });
     expect(
-      await extractTextForAttachmentRow({
-        id: pngId,
-        filename_display: 'bild.png',
-        content_type: 'image/png',
-        size_bytes: 7,
-        storage_path: file,
-      }),
+      await extractTextForAttachmentRow(
+        {
+          id: pngId,
+          filename_display: 'bild.png',
+          content_type: 'image/png',
+          size_bytes: 7,
+          storage_path: file,
+        },
+        { attachmentsRoot: tmpDir },
+      ),
     ).toBe(false);
     expect(rowById(pngId).text_extracted_at).not.toBeNull();
     expect(rowById(pngId).text_content).toBeNull();
@@ -190,13 +198,16 @@ describe('attachment text extraction', () => {
       storagePath: file,
     });
     expect(
-      await extractTextForAttachmentRow({
-        id: bigId,
-        filename_display: 'riesig.txt',
-        content_type: 'text/plain',
-        size_bytes: 20 * 1024 * 1024,
-        storage_path: file,
-      }),
+      await extractTextForAttachmentRow(
+        {
+          id: bigId,
+          filename_display: 'riesig.txt',
+          content_type: 'text/plain',
+          size_bytes: 20 * 1024 * 1024,
+          storage_path: file,
+        },
+        { attachmentsRoot: tmpDir },
+      ),
     ).toBe(false);
     expect(rowById(bigId).text_content).toBeNull();
   });
@@ -208,25 +219,68 @@ describe('attachment text extraction', () => {
       storagePath: path.join(tmpDir, 'gibt-es-nicht.txt'),
     });
     expect(
-      await extractTextForAttachmentRow({
-        id,
-        filename_display: 'weg.txt',
-        content_type: 'text/plain',
-        size_bytes: 10,
-        storage_path: path.join(tmpDir, 'gibt-es-nicht.txt'),
-      }),
+      await extractTextForAttachmentRow(
+        {
+          id,
+          filename_display: 'weg.txt',
+          content_type: 'text/plain',
+          size_bytes: 10,
+          storage_path: path.join(tmpDir, 'gibt-es-nicht.txt'),
+        },
+        { attachmentsRoot: tmpDir },
+      ),
     ).toBe(false);
     expect(rowById(id).text_extracted_at).not.toBeNull();
+  });
+
+  test('paths outside the attachments root are rejected (confinement)', async () => {
+    const outside = path.join(os.tmpdir(), `scm-outside-${Date.now()}.txt`);
+    fs.writeFileSync(outside, 'geheimes Systemfile');
+    try {
+      const id = seedAttachment({ filename: 'evil.txt', sizeBytes: 20, storagePath: outside });
+      expect(
+        await extractTextForAttachmentRow(
+          {
+            id,
+            filename_display: 'evil.txt',
+            content_type: 'text/plain',
+            size_bytes: 20,
+            storage_path: outside,
+          },
+          { attachmentsRoot: tmpDir },
+        ),
+      ).toBe(false);
+      expect(rowById(id).text_content).toBeNull();
+      expect(rowById(id).text_extracted_at).not.toBeNull();
+      // Traversal-Variante wird ebenfalls abgelehnt.
+      const traversal = path.join(tmpDir, '..', path.basename(outside));
+      const id2 = seedAttachment({ filename: 'evil2.txt', sizeBytes: 20, storagePath: traversal });
+      expect(
+        await extractTextForAttachmentRow(
+          {
+            id: id2,
+            filename_display: 'evil2.txt',
+            content_type: 'text/plain',
+            size_bytes: 20,
+            storage_path: traversal,
+          },
+          { attachmentsRoot: tmpDir },
+        ),
+      ).toBe(false);
+      expect(rowById(id2).text_content).toBeNull();
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
   });
 
   test('backfill batch processes remaining candidates and then stops', async () => {
     const file = path.join(tmpDir, 'faq.html');
     fs.writeFileSync(file, '<p>Antworten auf alles</p>');
     const id = seedAttachment({ filename: 'faq.html', sizeBytes: 26, storagePath: file });
-    const processed = await runAttachmentTextBackfillBatch(10);
+    const processed = await runAttachmentTextBackfillBatch(10, { attachmentsRoot: tmpDir });
     expect(processed).toBeGreaterThanOrEqual(1);
     expect(rowById(id).text_content).toBe('Antworten auf alles');
-    expect(await runAttachmentTextBackfillBatch(10)).toBe(0);
+    expect(await runAttachmentTextBackfillBatch(10, { attachmentsRoot: tmpDir })).toBe(0);
   });
 
   test('extracted text is searchable via the attachments FTS index', () => {
