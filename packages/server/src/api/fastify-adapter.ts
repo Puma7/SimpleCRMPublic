@@ -40,7 +40,32 @@ export type FastifyServerOptions = Readonly<{
   resolvePrincipal?: FastifyPrincipalResolver;
   accessTokenSigner?: AccessTokenSigner;
   corsAllowedOrigins?: readonly string[];
+  /**
+   * Which peers' `X-Forwarded-For` to trust so `request.ip` is the real client
+   * instead of the proxy's container IP (without it every user behind the Caddy
+   * proxy collapses to one per-IP rate-limit bucket). Passed straight to Fastify.
+   *
+   * Defaults to `false` (trust nobody) — the safe choice for a directly-exposed
+   * API, where trusting any peer's XFF would let a client spoof it to escape the
+   * per-IP buckets. The bundled Docker deployment sets `TRUST_PROXY=1` (trust
+   * exactly the one Caddy hop) via its env; other values accepted are `true`
+   * (trust all hops), a hop count, or a proxy-addr subnet/preset string.
+   */
+  trustProxy?: boolean | number | string;
 }>;
+
+/**
+ * Read `request.ip` without letting it throw. With trustProxy enabled it runs
+ * proxy-addr over the socket, which can throw on sockets that lack a remote
+ * address (e.g. the websocket inject test harness). Fall back to a stable key.
+ */
+function safeRequestIp(request: FastifyRequest): string {
+  try {
+    return request.ip || '0.0.0.0';
+  } catch {
+    return '0.0.0.0';
+  }
+}
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
@@ -48,6 +73,10 @@ const SERVER_JSON_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
 const CORS_ALLOWED_METHODS = [...SUPPORTED_METHODS, 'OPTIONS'].join(', ');
 const CORS_ALLOWED_HEADERS = ['Accept', 'Authorization', 'Content-Type', 'Sec-WebSocket-Protocol'].join(', ');
 const CORS_MAX_AGE_SECONDS = '600';
+// Response headers a cross-origin renderer's Fetch may read. `Retry-After` on a
+// 429 is non-safelisted, so without exposing it `response.headers.get()` returns
+// null cross-origin and the transport's 429 backoff never triggers.
+const CORS_EXPOSED_HEADERS = 'Retry-After';
 
 type EventWebSocket = {
   readyState: number;
@@ -60,6 +89,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: SERVER_JSON_BODY_LIMIT_BYTES,
+    trustProxy: options.trustProxy ?? false,
   });
   const api = createServerApi(options.ports);
   const corsAllowedOrigins = new Set(options.corsAllowedOrigins ?? []);
@@ -84,15 +114,25 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     const path = request.url.split('?')[0] ?? request.url;
     if (path.startsWith('/api/v1/')) {
       const rate = checkApiRateLimit({
-        ip: request.ip ?? '0.0.0.0',
+        ip: safeRequestIp(request),
         path,
+        method: request.method,
       });
       if (!rate.allowed) {
+        // Attach CORS headers BEFORE returning: on a cross-origin server-client
+        // install the browser hides a header-less 429 as a CORS failure, so the
+        // HTTP transport would never see the 429 / Retry-After and its backoff
+        // path would be bypassed exactly when the limiter trips.
+        applyCorsHeaders(request, reply, corsAllowedOrigins);
+        // Retry-After (whole seconds, min 1) lets the client back off exactly
+        // until the window resets instead of guessing.
+        const retryAfterSec = Math.max(1, Math.ceil(rate.retryAfterMs / 1000));
+        reply.header('Retry-After', String(retryAfterSec));
         reply.code(429).send({
           error: {
             code: 'rate_limited',
             message: 'Zu viele Anfragen',
-            details: { limit: rate.limit, bucket: rate.bucket },
+            details: { limit: rate.limit, bucket: rate.bucket, retryAfterMs: rate.retryAfterMs },
           },
         });
         return;
@@ -153,6 +193,7 @@ function applyCorsHeaders(
   reply.header('Access-Control-Allow-Origin', origin);
   reply.header('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
   reply.header('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
+  reply.header('Access-Control-Expose-Headers', CORS_EXPOSED_HEADERS);
   reply.header('Access-Control-Max-Age', CORS_MAX_AGE_SECONDS);
   return true;
 }
@@ -276,7 +317,7 @@ async function dispatchFastifyRequest(
     query: extractQuery(request.url),
     body: request.body,
     headers: normalizeHeaders(request.headers),
-    ip: request.ip,
+    ip: safeRequestIp(request),
     principal: await resolvePrincipal(request),
   } satisfies ApiRequest);
 

@@ -195,6 +195,21 @@ export type ServerListenOptions = Readonly<{
   createEventNotifications?: (options: { databaseUrl: string }) => Promise<PostgresServerEventNotificationChannel>;
 }>;
 
+/**
+ * Parse TRUST_PROXY into a Fastify `trustProxy` value. Unset → undefined (the
+ * adapter default = trust nobody). `true`/`false` → boolean; a bare integer → a
+ * hop count (e.g. `1` trusts only the Caddy hop); anything else → a proxy-addr
+ * subnet/preset string passed through verbatim.
+ */
+function parseTrustProxyEnv(raw: string | undefined): boolean | number | string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value;
+}
+
 export function createAppServer(
   ports: ServerApiPorts = createSmokePorts(),
   accessTokenSigner?: AccessTokenSigner,
@@ -288,6 +303,13 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       ? { level: env.LOG_LEVEL?.trim() || 'info', stream: createPinoLogCaptureStream(serverLogStore) }
       : (options.logger ?? false),
     corsAllowedOrigins,
+    // Unset → the adapter's safe default (trust nobody). TRUST_PROXY accepts
+    // true/false, a hop count (e.g. 1 = trust only the Caddy hop), or a
+    // proxy-addr subnet/preset string.
+    ...(() => {
+      const trustProxy = parseTrustProxyEnv(env.TRUST_PROXY);
+      return trustProxy === undefined ? {} : { trustProxy };
+    })(),
   });
 
   app.addHook('onClose', async () => {

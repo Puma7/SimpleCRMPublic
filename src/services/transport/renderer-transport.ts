@@ -16,6 +16,38 @@ type ElectronInvokeApi = {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+/** How many times a 429 is transparently retried before the error surfaces. */
+const MAX_RATE_LIMIT_RETRIES = 2
+/** Longest we're willing to wait for a 429 window to reset before we stop
+ *  retrying and surface the error instead. */
+const RATE_LIMIT_RETRY_CAP_MS = 2000
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * How long to back off before replaying a 429, or `null` = don't retry.
+ *
+ * Only the global pre-handler limiter sets `Retry-After`, and its 429s are safe
+ * to replay: the request is rejected before the handler runs (no side effect)
+ * and the fixed window reopens on a timer. Route-level limiters (e.g. the public
+ * returns-portal limiter) return a 429 WITHOUT the header; replaying those just
+ * hammers a bucket that won't reopen inside our short window, so we require the
+ * header's presence before retrying. When it says the window won't reset within
+ * the cap, we also surface the 429 rather than amplify a sustained overload.
+ */
+function rateLimitBackoffMs(response: Response, _attempt: number): number | null {
+  const rawHeader = response.headers?.get?.("Retry-After")
+  if (rawHeader == null || rawHeader === "") return null
+  const headerSeconds = Number(rawHeader)
+  if (!Number.isFinite(headerSeconds) || headerSeconds <= 0) return null
+  const serverMs = headerSeconds * 1000
+  if (serverMs > RATE_LIMIT_RETRY_CAP_MS) return null
+  const base = Math.min(serverMs, RATE_LIMIT_RETRY_CAP_MS)
+  return base + Math.floor(Math.random() * 250)
+}
+
 export type RendererTransportKind = "ipc" | "http"
 
 export type RendererTransport = {
@@ -235,6 +267,7 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
     const fetchHttp = async (
       requestSpec: HttpRequestSpec,
       retriedAfterRefresh = false,
+      rateRetries = 0,
     ): Promise<{ body: unknown; response: Response }> => {
       const url = buildUrl(baseUrl, requestSpec.path, requestSpec.query)
       const headers: Record<string, string> = {
@@ -254,6 +287,21 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       }
 
       const response = await fetchImpl(url, init)
+
+      // A 429 is rejected by the rate limiter BEFORE the handler runs, so no
+      // side effect happened and any method is safe to replay. Back off briefly
+      // (honoring Retry-After, capped) and retry a couple times so a transient
+      // burst — e.g. the chatty mailbox fan-out or rapid spam-marking — self-
+      // heals instead of surfacing an error or degrading the viewer to its
+      // snippet. A sustained overload still surfaces after the retries.
+      if (response.status === 429 && rateRetries < MAX_RATE_LIMIT_RETRIES) {
+        const backoff = rateLimitBackoffMs(response, rateRetries)
+        if (backoff !== null) {
+          await delay(backoff)
+          return fetchHttp(requestSpec, retriedAfterRefresh, rateRetries + 1)
+        }
+      }
+
       const body = response.ok && requestSpec.responseType === "blob"
         ? await response.blob()
         : await parseResponseBody(response)

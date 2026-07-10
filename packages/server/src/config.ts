@@ -5,6 +5,7 @@ export type ServerEditionEnv = {
   ACCESS_TOKEN_KEY_ID?: string;
   PUBLIC_BASE_URL?: string;
   CORS_ALLOWED_ORIGINS?: string;
+  TRUST_PROXY?: string;
   AUTH_INVITE_FROM?: string;
   AUTH_INVITE_SMTP_HOST?: string;
   AUTH_INVITE_SMTP_PORT?: string;
@@ -247,7 +248,7 @@ export function parseServerJobWorkerConfig(env: ServerEditionEnv): ServerJobWork
   };
 }
 
-function parseBooleanEnv(value: string | undefined, fallback: boolean, key: string): boolean {
+export function parseBooleanEnv(value: string | undefined, fallback: boolean, key: string): boolean {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return fallback;
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
