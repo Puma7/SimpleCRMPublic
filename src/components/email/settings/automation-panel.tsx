@@ -41,7 +41,9 @@ export function AutomationPanel() {
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)
-  const [autoReplyMaxPerDay, setAutoReplyMaxPerDay] = useState("1")
+  // null = Backend bietet das Tageslimit nicht an (die Server-Edition setzt
+  // es noch nicht durch) → Feld ausblenden und beim Speichern weglassen.
+  const [autoReplyMaxPerDay, setAutoReplyMaxPerDay] = useState<string | null>("1")
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
   const [apiEnabled, setApiEnabled] = useState(false)
   const [apiPort, setApiPort] = useState("3847")
@@ -66,12 +68,16 @@ export function AutomationPanel() {
         imapDeleteOptIn: boolean
         httpAllowlist: string
         autoReplyEnabled: boolean
-        autoReplyMaxPerSenderPerDay: number
+        autoReplyMaxPerSenderPerDay?: number
       }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
       setHttpAllowlist(wf.httpAllowlist)
       setAutoReplyEnabled(wf.autoReplyEnabled === true)
-      setAutoReplyMaxPerDay(String(wf.autoReplyMaxPerSenderPerDay ?? 1))
+      setAutoReplyMaxPerDay(
+        typeof wf.autoReplyMaxPerSenderPerDay === "number"
+          ? String(wf.autoReplyMaxPerSenderPerDay)
+          : null,
+      )
 
       if (serverClientMode) {
         const api = await invokeRenderer(
@@ -114,14 +120,18 @@ export function AutomationPanel() {
 
   const saveWorkflowOpts = async () => {
     if (!serverClientMode && !hasLocalIpc()) return
-    const maxPerDay = Math.min(50, Math.max(1, parseInt(autoReplyMaxPerDay, 10) || 1))
-    await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, {
-      imapDeleteOptIn,
-      httpAllowlist,
-      autoReplyEnabled,
-      autoReplyMaxPerSenderPerDay: maxPerDay,
-    })
-    setAutoReplyMaxPerDay(String(maxPerDay))
+    const payload: {
+      imapDeleteOptIn: boolean
+      httpAllowlist: string
+      autoReplyEnabled: boolean
+      autoReplyMaxPerSenderPerDay?: number
+    } = { imapDeleteOptIn, httpAllowlist, autoReplyEnabled }
+    if (autoReplyMaxPerDay !== null) {
+      const maxPerDay = Math.min(50, Math.max(1, parseInt(autoReplyMaxPerDay, 10) || 1))
+      payload.autoReplyMaxPerSenderPerDay = maxPerDay
+      setAutoReplyMaxPerDay(String(maxPerDay))
+    }
+    await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, payload)
     toast.success("Workflow-Optionen gespeichert.")
   }
 

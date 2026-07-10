@@ -16,6 +16,7 @@ const mockSetDraftApprovalPending = jest.fn();
 const mockMarkDraftAutoSubmitted = jest.fn();
 const mockMarkAutoReplySent = jest.fn();
 const mockIsAutoReplyRateLimited = jest.fn(() => false);
+const mockTryReserveAutoReplySlot = jest.fn(() => true);
 const mockGetSyncInfo = jest.fn((key: string) =>
   key === 'auto_reply_enabled' ? '1' : null,
 );
@@ -89,6 +90,7 @@ jest.mock('../../electron/email/email-draft-approval', () => ({
 jest.mock('../../electron/workflow/auto-reply-guard', () => ({
   isAutoReplyRateLimited: (...args: unknown[]) => mockIsAutoReplyRateLimited(...args),
   markAutoReplySent: (...args: unknown[]) => mockMarkAutoReplySent(...args),
+  tryReserveAutoReplySlot: (...args: unknown[]) => mockTryReserveAutoReplySlot(...args),
 }));
 
 jest.mock('../../electron/workflow/draft-send-prep', () => ({
@@ -150,6 +152,7 @@ beforeEach(() => {
     key === 'auto_reply_enabled' ? '1' : null,
   );
   mockIsAutoReplyRateLimited.mockReturnValue(false);
+  mockTryReserveAutoReplySlot.mockReturnValue(true);
   mockCreateComposeDraft.mockReturnValue(42);
   mockPrepareDraftForWorkflowSend.mockReturnValue({ ok: true });
   mockDbRun.mockReturnValue({ lastInsertRowid: 99 });
@@ -185,7 +188,7 @@ describe('Vorlage "KI-Antwort mit Gegenprüfung" (inbound-ai-two-stage-reply)', 
       runOutboundReview: false,
       dryRun: false,
     });
-    expect(mockMarkAutoReplySent).toHaveBeenCalledWith(1, 'kunde@firma.de', 7);
+    expect(mockTryReserveAutoReplySlot).toHaveBeenCalledWith(1, 'kunde@firma.de', 7);
     expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
   });
 
@@ -208,6 +211,20 @@ describe('Vorlage "KI-Antwort mit Gegenprüfung" (inbound-ai-two-stage-reply)', 
     // crm.create_task schreibt per SQL: (customer_id, title, …)
     const taskArgs = mockDbRun.mock.calls.find((c) => String(c[0]).includes('INSERT INTO'));
     expect(taskArgs?.[2]).toBe('KI-Entwurf prüfen: Frage zu Bestellung 1234');
+  });
+
+  test('unvollständiges Prüf-Urteil (SEND ohne ANSWERED): fail-safe in den hold-Pfad', async () => {
+    mockRunChatCompletion
+      .mockResolvedValueOnce('Bestellstatus|92')
+      .mockResolvedValueOnce('Ihre Bestellung 1234 ist unterwegs.')
+      // Kaputte/teilweise KI-Antwort — darf NICHT automatisch senden.
+      .mockResolvedValueOnce('STATUS: SEND');
+
+    const r = await runTemplate('inbound-ai-two-stage-reply');
+    expect(r.status).toBe('ok');
+    expect(mockPrepareDraftForWorkflowSend).not.toHaveBeenCalled();
+    expect(mockSetDraftApprovalPending).toHaveBeenCalled();
+    expect(mockAddMessageTag).toHaveBeenCalledWith(7, 'ki-freigabe');
   });
 
   test('blocked-Pfad (KI unsicher): kein Entwurf, Tag ki-manuell', async () => {

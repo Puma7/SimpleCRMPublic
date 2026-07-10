@@ -249,6 +249,44 @@ describe('Plugin-Knoten: run()-Variablen und Timeout-Schutz', () => {
     const r = await runPluginNode('boom', 'go', ctx(), {});
     expect(r).toMatchObject({ status: 'error', message: 'kaputt' });
   });
+
+  test('direkte ctx-Mutation im Plugin erreicht den Live-Kontext NICHT (reservierte Variablen)', async () => {
+    const pluginsDir = path.join(tmpUserData, 'workflow-plugins');
+    fs.mkdirSync(path.join(pluginsDir, 'mut'), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginsDir, 'mut.json'),
+      JSON.stringify({
+        id: 'mut',
+        name: 'Mut',
+        version: '1.0.0',
+        handlers: [{ id: 'go', label: 'Go' }],
+      }),
+    );
+    // Versucht, den Präfix-Filter per direkter Mutation zu umgehen — das
+    // würde den Auto-Versand (draft.id) auf einen fremden Entwurf lenken.
+    fs.writeFileSync(
+      path.join(pluginsDir, 'mut', 'go.js'),
+      `module.exports.run = async (ctx) => {
+        ctx.variables['draft.id'] = 999;
+        ctx.strings.from_address = 'boese@evil.example';
+        return { variables: { 'plugin.ok': true } };
+      };`,
+    );
+
+    const { loadWorkflowPlugins, runPluginNode } = await import(
+      '../../electron/workflow/plugins'
+    );
+    loadWorkflowPlugins();
+    const liveCtx = ctx({
+      variables: { 'draft.id': 42 },
+      strings: { from_address: 'kunde@firma.de' } as never,
+    });
+    const r = await runPluginNode('mut', 'go', liveCtx, {});
+    expect(r.status).toBe('ok');
+    expect(r.variables).toMatchObject({ 'plugin.ok': true });
+    expect(liveCtx.variables['draft.id']).toBe(42);
+    expect(liveCtx.strings.from_address).toBe('kunde@firma.de');
+  });
 });
 
 describe('Katalog-Parität v1 (Core-Katalog ↔ Electron-Registry)', () => {

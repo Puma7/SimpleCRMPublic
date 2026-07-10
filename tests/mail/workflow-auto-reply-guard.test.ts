@@ -18,6 +18,7 @@ import {
   autoReplyCountToday,
   isAutoReplyRateLimited,
   markAutoReplySent,
+  tryReserveAutoReplySlot,
 } from '../../electron/workflow/auto-reply-guard';
 
 beforeAll(() => {
@@ -57,5 +58,31 @@ describe('auto-reply-guard', () => {
     expect(isAutoReplyRateLimited(2, 'kunde@firma.de')).toBe(false);
     expect(isAutoReplyRateLimited(1, 'andere@firma.de')).toBe(false);
     expect(isAutoReplyRateLimited(1, '')).toBe(true);
+  });
+
+  test('tryReserveAutoReplySlot: atomar — genau limit Reservierungen gehen durch', () => {
+    mockedLimit = '2';
+    expect(tryReserveAutoReplySlot(1, 'kunde@firma.de', 7)).toBe(true);
+    expect(tryReserveAutoReplySlot(1, 'kunde@firma.de', 8)).toBe(true);
+    // Dritte Reservierung scheitert UND erhöht den Zähler nicht weiter.
+    expect(tryReserveAutoReplySlot(1, 'kunde@firma.de', 9)).toBe(false);
+    expect(autoReplyCountToday(1, 'kunde@firma.de')).toBe(2);
+    // Anderes Konto/anderer Empfänger unberührt.
+    expect(tryReserveAutoReplySlot(2, 'kunde@firma.de', 9)).toBe(true);
+  });
+
+  test('tryReserveAutoReplySlot: normalisiert (Plus-Tag) und sperrt leere Adressen', () => {
+    expect(tryReserveAutoReplySlot(1, 'Kunde+tag@Firma.DE', 7)).toBe(true);
+    // Limit 1 (Default): gleiche normalisierte Adresse ist verbraucht.
+    expect(tryReserveAutoReplySlot(1, 'kunde@firma.de', 8)).toBe(false);
+    expect(tryReserveAutoReplySlot(1, '', 9)).toBe(false);
+  });
+
+  test('markAutoReplySent (menschliche Freigabe) zählt über das Limit hinaus, blockt aber Folge-Automatik', () => {
+    tryReserveAutoReplySlot(1, 'kunde@firma.de', 7);
+    // Mensch gibt zusätzlich frei — wird gezählt, nie blockiert.
+    markAutoReplySent(1, 'kunde@firma.de', 8);
+    expect(autoReplyCountToday(1, 'kunde@firma.de')).toBe(2);
+    expect(tryReserveAutoReplySlot(1, 'kunde@firma.de', 9)).toBe(false);
   });
 });

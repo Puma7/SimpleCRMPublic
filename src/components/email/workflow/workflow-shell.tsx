@@ -162,6 +162,9 @@ export function WorkflowShell() {
   const [accounts, setAccounts] = useState<AccountOpt[]>([])
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
+  // "Jetzt ausführen" startet einen ECHTEN Lauf (inkl. möglichem Versand) —
+  // Doppelklick darf keine zweite Ausführung anstoßen.
+  const [executingNow, setExecutingNow] = useState(false)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
   const [templatesOpen, setTemplatesOpen] = useState(false)
   const [referenceOpen, setReferenceOpen] = useState(false)
@@ -841,40 +844,45 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="default"
-                        disabled={selectedId == null || !msgOk}
+                        disabled={selectedId == null || !msgOk || executingNow}
                         onClick={async () => {
-                          if (selectedId == null) return
-                          const r = await invokeRenderer(IPCChannels.Email.ExecuteWorkflowNow, {
-                            workflowId: selectedId,
-                            messageId: needsMsg ? parsedId : undefined,
-                            dryRun: false,
-                          }) as {
-                            success: boolean
-                            status?: string
-                            queued?: boolean
-                            blocked?: boolean
-                            blockReason?: string | null
-                            log?: string[]
-                            error?: string
-                          }
-                          if (!r.success) {
-                            toast.error(r.error ?? "Ausführung fehlgeschlagen")
-                            return
-                          }
-                          if (r.queued) {
-                            toast.success("Workflow-Job eingereiht.")
-                            return
-                          }
-                          if (r.blocked) {
-                            toast.warning(r.blockReason ?? "Workflow blockiert")
-                          } else {
-                            toast.success(
-                              `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
-                            )
+                          if (selectedId == null || executingNow) return
+                          setExecutingNow(true)
+                          try {
+                            const r = await invokeRenderer(IPCChannels.Email.ExecuteWorkflowNow, {
+                              workflowId: selectedId,
+                              messageId: needsMsg ? parsedId : undefined,
+                              dryRun: false,
+                            }) as {
+                              success: boolean
+                              status?: string
+                              queued?: boolean
+                              blocked?: boolean
+                              blockReason?: string | null
+                              log?: string[]
+                              error?: string
+                            }
+                            if (!r.success) {
+                              toast.error(r.error ?? "Ausführung fehlgeschlagen")
+                              return
+                            }
+                            if (r.queued) {
+                              toast.success("Workflow-Job eingereiht.")
+                              return
+                            }
+                            if (r.blocked) {
+                              toast.warning(r.blockReason ?? "Workflow blockiert")
+                            } else {
+                              toast.success(
+                                `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
+                              )
+                            }
+                          } finally {
+                            setExecutingNow(false)
                           }
                         }}
                       >
-                        Jetzt ausführen
+                        {executingNow ? "Läuft …" : "Jetzt ausführen"}
                       </Button>
                     )
                   })()}

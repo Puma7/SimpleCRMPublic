@@ -50,22 +50,25 @@ export function listPluginManifests(): WorkflowPluginManifest[] {
   return [...loaded.values()];
 }
 
-function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown) => Promise<unknown>) | null {
+function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown) => unknown) | null {
   const code = fs.readFileSync(modPath, 'utf8');
   // module/exports dürfen NICHT eingefroren werden — sonst kann kein Plugin
   // `module.exports.run` setzen und jeder Plugin-Knoten meldet "keine run()".
   const sandbox: {
     module: { exports: Record<string, unknown> };
     exports: Record<string, unknown>;
+    __pluginCtx?: unknown;
+    __pluginConfig?: unknown;
   } = {
     module: { exports: {} },
     exports: {},
   };
   sandbox.exports = sandbox.module.exports;
+  const context = vm.createContext(sandbox);
   try {
-    vm.runInNewContext(
+    vm.runInContext(
       `${code}\n//# sourceURL=${modPath}`,
-      sandbox,
+      context,
       { filename: modPath, timeout: PLUGIN_TIMEOUT_MS, displayErrors: true },
     );
   } catch (e) {
@@ -73,9 +76,26 @@ function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown
     return null;
   }
   const run = sandbox.module.exports.run ?? sandbox.exports.run;
-  return typeof run === 'function'
-    ? (run as (ctx: unknown, config: unknown) => Promise<unknown>)
-    : null;
+  if (typeof run !== 'function') return null;
+  // run() wird DURCH die vm aufgerufen (nicht direkt): so unterliegt auch der
+  // synchrone Teil dem vm-Timeout — eine synchrone Endlosschleife im Plugin
+  // wirft nach PLUGIN_TIMEOUT_MS, statt den Electron-Main-Thread für immer
+  // einzufrieren. (Grenze: sync-Schleifen in späteren Promise-Callbacks kann
+  // nur ein worker_thread präemptieren — bewusst nicht Teil dieser Stufe.)
+  return (pluginCtx: unknown, config: unknown) => {
+    sandbox.__pluginCtx = pluginCtx;
+    sandbox.__pluginConfig = config;
+    try {
+      return vm.runInContext(
+        '(module.exports.run ?? exports.run)(__pluginCtx, __pluginConfig)',
+        context,
+        { timeout: PLUGIN_TIMEOUT_MS },
+      );
+    } finally {
+      delete sandbox.__pluginCtx;
+      delete sandbox.__pluginConfig;
+    }
+  };
 }
 
 export async function runPluginNode(
@@ -97,7 +117,8 @@ export async function runPluginNode(
   if (!run) {
     return { status: 'error', message: 'Plugin exportiert keine run()-Funktion' };
   }
-  // vm-timeout deckt nur den Modul-Load ab; async run() braucht ein eigenes Limit.
+  // Der sync-Teil von run() läuft mit vm-Timeout (siehe loadPluginRunFunction);
+  // async hängende Promises braucht zusätzlich dieses Race-Limit.
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -107,8 +128,16 @@ export async function runPluginNode(
   });
   let out: unknown;
   try {
+    // Kopien statt Referenzen: ein Plugin, das ctx.variables direkt mutiert,
+    // würde sonst den Präfix-Filter (PLUGIN_RESERVED_VARIABLE_PREFIXES)
+    // umgehen und z. B. draft.id für den Auto-Versand umbiegen.
+    const pluginCtx = {
+      strings: { ...ctx.strings },
+      variables: { ...ctx.variables },
+      messageId: ctx.messageId,
+    };
     out = await Promise.race([
-      run({ strings: ctx.strings, variables: ctx.variables, messageId: ctx.messageId }, config),
+      Promise.resolve(run(pluginCtx, { ...config })),
       timeout,
     ]);
   } catch (e) {

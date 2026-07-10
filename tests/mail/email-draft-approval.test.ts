@@ -9,6 +9,7 @@ jest.mock('../../electron/sqlite-service', () => ({
 
 import {
   clearDraftApproval,
+  clearDraftAutoSubmitted,
   markDraftAutoSubmitted,
   setDraftApprovalPending,
 } from '../../electron/email/email-draft-approval';
@@ -65,5 +66,13 @@ describe('email-draft-approval', () => {
     markDraftAutoSubmitted(42);
     expect(row(42).auto_submitted).toBe(1);
     expect(row(43).auto_submitted).toBe(0);
+  });
+
+  test('clearDraftAutoSubmitted nimmt den Marker zurück ("Als Entwurf behalten")', () => {
+    markDraftAutoSubmitted(42);
+    markDraftAutoSubmitted(43);
+    clearDraftAutoSubmitted(42);
+    expect(row(42).auto_submitted).toBe(0);
+    expect(row(43).auto_submitted).toBe(1);
   });
 });

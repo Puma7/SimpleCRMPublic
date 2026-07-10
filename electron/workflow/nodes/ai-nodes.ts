@@ -52,7 +52,7 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from '../../../shared/signature-template';
-import { markDraftAutoSubmitted, setDraftApprovalPending } from '../../email/email-draft-approval';
+import { setDraftApprovalPending } from '../../email/email-draft-approval';
 import { parseDraftReviewResponse } from '../draft-review-parse';
 import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
@@ -67,6 +67,11 @@ import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
+
+// Obergrenze für ai.draft_reply-Antworttexte: großzügig für echte Antworten,
+// aber ein harter Riegel gegen entartete LLM-Ausgaben (Wiederholungsschleifen),
+// die sonst ungedeckelt in DB und SMTP-Versand landen würden.
+const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
 
 function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
   return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
@@ -597,6 +602,15 @@ export function registerAiNodes(register: Reg): void {
       }
       ctx.ai.lastResponse = aiText;
       if (!aiText) return { status: 'error', message: 'KI lieferte keinen Antworttext' };
+      // Entartete KI-Ausgaben (Wiederholungsschleifen) hart abfangen: Fehler
+      // statt stillem Abschneiden — sonst ginge ein kaputter, nur teilweise
+      // gegengelesener Text an echte Kunden. Der Branch endet fail-safe.
+      if (aiText.length > MAX_AI_DRAFT_REPLY_CHARS) {
+        return {
+          status: 'error',
+          message: `KI-Antwort unplausibel lang (${aiText.length} Zeichen, Limit ${MAX_AI_DRAFT_REPLY_CHARS}) — kein Entwurf angelegt`,
+        };
+      }
 
       // Anrede: automatisch, außer die KI hat schon eine geschrieben.
       const parts: string[] = [];
@@ -662,7 +676,10 @@ export function registerAiNodes(register: Reg): void {
         toJson: recipientJsonFromField(replyTo),
       });
       updateComposeDraft(draftId, { replyParentMessageId: ctx.messageId });
-      markDraftAutoSubmitted(draftId);
+      // Bewusst KEIN markDraftAutoSubmitted hier: der RFC-3834-Marker gehört
+      // an den tatsächlichen Versand (email.send_draft / ApproveDraftSend).
+      // Ein liegen gebliebener Entwurf, den ein Mensch später unbearbeitet
+      // sendet, ist keine automatische Antwort.
 
       return {
         status: 'ok',

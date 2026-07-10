@@ -87,6 +87,7 @@ jest.mock('../../electron/email/email-draft-approval', () => ({
 jest.mock('../../electron/workflow/auto-reply-guard', () => ({
   isAutoReplyRateLimited: jest.fn(() => false),
   markAutoReplySent: jest.fn(),
+  tryReserveAutoReplySlot: jest.fn(() => true),
 }));
 
 jest.mock('../../electron/workflow/draft-send-prep', () => ({

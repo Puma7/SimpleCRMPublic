@@ -183,6 +183,7 @@ import {
   createPostgresWorkflowHttpRequestPort,
   listServerWorkflowNodeCatalog,
   isServerWorkflowNodeTypeSupported,
+  listServerWorkflowTemplates,
   createEmailReadReceiptResponderPort,
   createPostgresReadReceiptOutboundReviewPort,
   createScheduledSendJobPort,
@@ -485,6 +486,27 @@ describe('server edition foundation', () => {
     for (const type of desktopOnlyTypes) {
       expect(serverTypes).not.toContain(type);
       expect(isServerWorkflowNodeTypeSupported(type)).toBe(false);
+    }
+  });
+
+  test('server template list omits templates with server-unsupported nodes', () => {
+    const templateIds = listServerWorkflowTemplates().map((template) => template.id);
+    // Die Zwei-Stufen-Vorlage nutzt ai.draft_reply/ai.review_draft
+    // (desktop-only) und bliebe im Server-Modus zur Laufzeit stecken.
+    expect(templateIds).not.toContain('inbound-ai-two-stage-reply');
+    // Die klassische Auto-Antwort-Vorlage besteht nur aus Server-fähigen
+    // Knoten und bleibt anwählbar.
+    expect(templateIds).toContain('inbound-ai-auto-reply');
+
+    // Generisch: keine angebotene Vorlage enthält einen Registry-Knoten,
+    // den der Server nicht ausführen kann.
+    for (const template of listServerWorkflowTemplates()) {
+      for (const node of template.graph.nodes) {
+        const nodeType = node.data.nodeType;
+        if (typeof nodeType === 'string') {
+          expect(isServerWorkflowNodeTypeSupported(nodeType)).toBe(true);
+        }
+      }
     }
   });
 
@@ -26690,6 +26712,9 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(workflow.status).toBe(200);
+    // Kein autoReplyMaxPerSenderPerDay: die Server-Ausführung setzt das
+    // Tageslimit (noch) nicht durch, also wird es auch nicht angeboten —
+    // selbst wenn der sync_info-Key (z. B. aus einem Desktop-Sync) existiert.
     expect((workflow.body as any).data).toEqual({
       imapDeleteOptIn: true,
       httpAllowlist: ' api.example.com ',
@@ -26697,7 +26722,6 @@ describe('server edition foundation', () => {
       senderBlacklist: '',
       spamScoreThreshold: '82',
       autoReplyEnabled: true,
-      autoReplyMaxPerSenderPerDay: 3,
     });
 
     const misc = await api.handle({
@@ -26726,6 +26750,16 @@ describe('server edition foundation', () => {
       localLearningEnabled: true,
     });
 
+    // Das nicht durchgesetzte Tageslimit wird als unbekanntes Feld abgelehnt
+    // (Clients blenden es aus, weil es in der GET-Antwort fehlt).
+    const workflowPatchRejected = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow/settings/automation',
+      body: { autoReplyMaxPerSenderPerDay: 3 },
+      principal,
+    });
+    expect(workflowPatchRejected.status).toBe(400);
+
     const workflowPatch = await api.handle({
       method: 'PATCH',
       path: '/api/v1/workflow/settings/automation',
@@ -26734,7 +26768,6 @@ describe('server edition foundation', () => {
         httpAllowlist: ' hooks.example.com ',
         spamScoreThreshold: '101',
         autoReplyEnabled: false,
-        autoReplyMaxPerSenderPerDay: 120,
       },
       principal,
     });
@@ -26746,7 +26779,6 @@ describe('server edition foundation', () => {
         workflow_http_allowlist: 'hooks.example.com',
         workflow_spam_score_threshold: '100',
         auto_reply_enabled: '0',
-        auto_reply_max_per_sender_per_day: '50',
       },
     });
 

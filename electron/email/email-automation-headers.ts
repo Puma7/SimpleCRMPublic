@@ -5,16 +5,32 @@
  * vom Auto-Antwort-Gate (email.auto_reply).
  */
 
+/**
+ * Header-Wert extrahieren (erste Vorkommnis), Parameter/Kommentare nach
+ * ';' bzw. '(' abgeschnitten. Erwartet bereits lowercased Roh-Header.
+ */
+function headerValue(headers: string, name: string): string | null {
+  const m = new RegExp(`(?:^|\\r?\\n)${name}\\s*:\\s*([^\\r\\n]*)`).exec(headers);
+  if (!m) return null;
+  return m[1]!.split(';')[0]!.split('(')[0]!.trim();
+}
+
 /** True, wenn die Roh-Header die Mail als automatisch erzeugt ausweisen. */
 export function isAutomatedInboundMessage(rawHeaders: string | null | undefined): boolean {
   const headers = (rawHeaders ?? '').toLowerCase();
   if (!headers) return false;
-  return (
-    headers.includes('auto-submitted:') ||
-    headers.includes('x-auto-response-suppress:') ||
-    headers.includes('precedence: bulk') ||
-    headers.includes('precedence: junk')
-  );
+  // RFC 3834: "Auto-Submitted: no" markiert explizit eine MANUELL erzeugte
+  // Mail — nur andere Werte (auto-generated, auto-replied, …) zählen als
+  // Automat. Analog Microsoft: "X-Auto-Response-Suppress: None" unterdrückt
+  // nichts und darf nicht blocken.
+  const autoSubmitted = headerValue(headers, 'auto-submitted');
+  if (autoSubmitted !== null && autoSubmitted !== '' && autoSubmitted !== 'no') return true;
+  const suppress = headerValue(headers, 'x-auto-response-suppress');
+  if (suppress !== null && suppress !== '' && suppress !== 'none') return true;
+  // Wert-basiert (nicht Substring): tolerant gegen "Precedence:bulk" ohne
+  // Leerzeichen; nur bulk/junk zählen, "Precedence: list" o. Ä. nicht.
+  const precedence = headerValue(headers, 'precedence');
+  return precedence === 'bulk' || precedence === 'junk';
 }
 
 /**

@@ -18,6 +18,8 @@ const EXACT_CODES = [
   'send_draft_queued_with_review',
   'auto_reply_disabled',
   'noreply_sender_blocked',
+  'automated_sender_blocked',
+  'auto_reply_rate_limited',
   'outbound_hold_cleared',
   'outbound_hold_released',
   'outbound_hold_released_auto_send',

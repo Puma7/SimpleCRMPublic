@@ -8,8 +8,12 @@ import { Switch } from "@/components/ui/switch"
 type Props = {
   enabled: boolean
   onEnabledChange: (enabled: boolean) => void
-  /** Als String, damit das Feld beim Tippen leer sein darf — geparst wird beim Speichern. */
-  maxPerDay: string
+  /**
+   * Als String, damit das Feld beim Tippen leer sein darf — geparst wird beim
+   * Speichern. null = Backend bietet das Limit nicht an (Server-Edition setzt
+   * es noch nicht durch) → Feld wird ausgeblendet.
+   */
+  maxPerDay: string | null
   onMaxPerDayChange: (value: string) => void
   disabled?: boolean
 }
@@ -48,26 +52,32 @@ export function AutoReplySettingsSection({
         />
       </div>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="auto-reply-max-per-day">
-          Max. automatische Antworten pro Absender und Tag
-        </Label>
+      {maxPerDay !== null ? (
+        <div className="space-y-1.5">
+          <Label htmlFor="auto-reply-max-per-day">
+            Max. automatische Antworten pro Absender und Tag
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Schutz vor Antwort-Schleifen: Erhält dieselbe Absenderadresse an einem Tag schon so
+            viele automatische Antworten, wird keine weitere verschickt — sonst könnten sich zwei
+            automatische Systeme endlos gegenseitig antworten. Erlaubt sind 1 bis 50, Standard ist 1.
+          </p>
+          <Input
+            id="auto-reply-max-per-day"
+            type="number"
+            min={1}
+            max={50}
+            className="w-32"
+            value={maxPerDay}
+            disabled={disabled}
+            onChange={(e) => onMaxPerDayChange(e.target.value)}
+          />
+        </div>
+      ) : (
         <p className="text-xs text-muted-foreground">
-          Schutz vor Antwort-Schleifen: Erhält dieselbe Absenderadresse an einem Tag schon so
-          viele automatische Antworten, wird keine weitere verschickt — sonst könnten sich zwei
-          automatische Systeme endlos gegenseitig antworten. Erlaubt sind 1 bis 50, Standard ist 1.
+          Das Tageslimit pro Absender ist in der Server-Edition noch nicht verfügbar.
         </p>
-        <Input
-          id="auto-reply-max-per-day"
-          type="number"
-          min={1}
-          max={50}
-          className="w-32"
-          value={maxPerDay}
-          disabled={disabled}
-          onChange={(e) => onMaxPerDayChange(e.target.value)}
-        />
-      </div>
+      )}
 
       {enabled ? (
         <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">

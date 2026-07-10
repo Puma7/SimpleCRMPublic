@@ -2798,7 +2798,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       senderBlacklist: string
       spamScoreThreshold: string
       autoReplyEnabled: boolean
-      autoReplyMaxPerSenderPerDay: number
+      // Fehlt serverseitig, solange das Tageslimit dort nicht durchgesetzt
+      // wird — das Automatisierungs-Panel blendet das Feld dann aus.
+      autoReplyMaxPerSenderPerDay?: number
     }>(body),
   })],
   [IPCChannels.Email.SetWorkflowAutomationSettings, ([payload]) => ({

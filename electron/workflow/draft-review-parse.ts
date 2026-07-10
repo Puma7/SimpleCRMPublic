@@ -47,8 +47,19 @@ export function parseDraftReviewResponse(raw: string): DraftReviewVerdict {
   const answeredRaw = (answeredMatch?.[1] ?? '').toLowerCase();
   const answered = answeredRaw === 'yes' || answeredRaw === 'ja';
 
+  // SEND nur mit explizitem ANSWERED: yes — eine fehlende ANSWERED-Zeile ist
+  // eine unvollständige Antwort und darf nicht fail-open Richtung Senden kippen.
+  if (send && !answeredMatch) {
+    return {
+      verdict: 'hold',
+      answered: false,
+      reason: reason || 'Antwort der Prüf-KI unvollständig (ANSWERED fehlt)',
+      parsed: false,
+    };
+  }
+
   // SEND ohne beantwortete Kundenfrage ist widersprüchlich → fail-safe hold.
-  if (send && answeredMatch && !answered) {
+  if (send && !answered) {
     return {
       verdict: 'hold',
       answered: false,

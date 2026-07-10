@@ -36,6 +36,10 @@ const EXACT_MESSAGES: Record<string, string> = {
     'Versand übersprungen: Automatische Antworten sind ausgeschaltet (Einstellungen → Automatisierung).',
   noreply_sender_blocked:
     'Versand übersprungen: Der Absender ist eine No-Reply-Adresse – eine Antwort würde niemanden erreichen.',
+  automated_sender_blocked:
+    'Versand übersprungen: Die eingehende Mail stammt von einem automatischen System oder Newsletter – eine Antwort könnte eine Endlos-Schleife auslösen.',
+  auto_reply_rate_limited:
+    'Versand übersprungen: Diese Absenderadresse hat heute schon die maximale Zahl automatischer Antworten erhalten (Einstellungen → Automatisierung).',
 
   // email.release_outbound
   outbound_hold_cleared: 'Ausgangssperre entfernt – der Versand kann normal fortgesetzt werden.',

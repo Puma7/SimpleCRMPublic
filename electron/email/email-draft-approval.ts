@@ -43,3 +43,14 @@ export function markDraftAutoSubmitted(messageId: number): void {
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET auto_submitted = 1 WHERE id = ?`)
     .run(messageId);
 }
+
+/**
+ * Marker zurücknehmen: wenn der Mensch sich gegen den Auto-Versand
+ * entscheidet ("Als Entwurf behalten"), ist ein späterer manueller Versand
+ * keine automatische Antwort mehr und darf den RFC-3834-Header nicht tragen.
+ */
+export function clearDraftAutoSubmitted(messageId: number): void {
+  getDb()
+    .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET auto_submitted = 0 WHERE id = ?`)
+    .run(messageId);
+}

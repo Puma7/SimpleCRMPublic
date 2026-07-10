@@ -260,6 +260,9 @@ export function MessageViewer(props: Props) {
   const [translateResult, setTranslateResult] = useState<string | null>(null)
   const [translateLoading, setTranslateLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
+  // Freigabe-Banner ("Jetzt senden"/"Als Entwurf behalten"): ein Klick plant
+  // einen echten Versand — Doppelklick darf keinen zweiten Aufruf auslösen.
+  const [approvalBusy, setApprovalBusy] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [readReceiptRequested, setReadReceiptRequested] = useState(false)
@@ -598,6 +601,8 @@ export function MessageViewer(props: Props) {
   }
 
   const handleApproveDraftSend = async () => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
     try {
       const result = await invokeRenderer(IPCChannels.Email.ApproveDraftSend, {
         draftId: selectedMessage.id,
@@ -606,16 +611,19 @@ export function MessageViewer(props: Props) {
         toast.error(result.error ?? "Freigabe fehlgeschlagen.")
         return
       }
+      toast.success("Freigegeben — Antwort wird gesendet.")
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Freigabe fehlgeschlagen.")
-      return
+    } finally {
+      setApprovalBusy(false)
     }
-    toast.success("Freigegeben — Antwort wird gesendet.")
-    await refreshCurrentMessage()
-    await refreshList({ preserveSelection: true })
   }
 
   const handleDismissDraftApproval = async () => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
     try {
       const result = await invokeRenderer(IPCChannels.Email.DismissDraftApproval, {
         draftId: selectedMessage.id,
@@ -624,13 +632,14 @@ export function MessageViewer(props: Props) {
         toast.error(result.error ?? "Aktion fehlgeschlagen.")
         return
       }
+      toast.success("Als Entwurf behalten.")
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Aktion fehlgeschlagen.")
-      return
+    } finally {
+      setApprovalBusy(false)
     }
-    toast.success("Als Entwurf behalten.")
-    await refreshCurrentMessage()
-    await refreshList({ preserveSelection: true })
   }
 
   const handleArchive = async () => {
@@ -1217,15 +1226,17 @@ export function MessageViewer(props: Props) {
                           type="button"
                           size="sm"
                           className="h-7 text-xs"
+                          disabled={approvalBusy}
                           onClick={() => void handleApproveDraftSend()}
                         >
-                          Jetzt senden
+                          {approvalBusy ? "Wird verarbeitet …" : "Jetzt senden"}
                         </Button>
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
                           className="h-7 text-xs"
+                          disabled={approvalBusy}
                           onClick={() => void handleDismissDraftApproval()}
                         >
                           Als Entwurf behalten

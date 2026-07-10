@@ -216,12 +216,15 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         key: 'systemPrompt',
         type: 'textarea',
         label: 'Auftrag an die KI (System-Prompt)',
+        // Bewusst NICHT required: der Knoten läuft auch mit leerem Feld —
+        // dann mit generischem Standard-Auftrag. Ein Pflicht-Flag würde beim
+        // Speichern fälschlich „wird übersprungen" warnen.
         help:
           'Beschreibt, WIE die KI antworten soll: Rolle, Tonfall, was erlaubt ist und was nicht. ' +
-          'Anrede und Grußformel/Signatur werden automatisch ergänzt — die KI soll nur den Antworttext schreiben.',
+          'Anrede und Grußformel/Signatur werden automatisch ergänzt — die KI soll nur den Antworttext schreiben. ' +
+          'Leer = generischer Standard-Auftrag („Beantworte die Kundenmail freundlich auf Deutsch“) — für den Echtbetrieb bitte einen eigenen Auftrag formulieren.',
         example:
           'Du bist der Kundenservice von Muster GmbH. Antworte freundlich und knapp. Bei Retouren immer auf das Retourenportal verweisen.',
-        required: true,
         interpolate: true,
       },
       {
@@ -445,13 +448,16 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         key: 'systemPrompt',
         type: 'textarea',
         label: 'Anweisung an die KI (System-Prompt)',
+        // Bewusst NICHT required: der Knoten läuft auch mit leerem Feld
+        // weiter (dann ohne Rollen-Anweisung). Ein Pflicht-Flag würde beim
+        // Speichern fälschlich „wird übersprungen" warnen.
         help:
           'Beschreibt Rolle und Verhalten des Agenten — z. B. wie er antworten soll, in welchem Ton, ' +
           'was er auf keinen Fall zusagen darf. Platzhalter wie {{customer.name}} oder {{subject}} werden gefüllt. ' +
-          'Die Mail und die gefundenen Wissensbasis-Auszüge bekommt die KI automatisch dazu.',
+          'Die Mail und die gefundenen Wissensbasis-Auszüge bekommt die KI automatisch dazu. ' +
+          'Leer = KI läuft ohne Rollen-Anweisung — für den Echtbetrieb bitte ausfüllen.',
         example: 'Du bist der Support-Assistent der Firma Muster GmbH. Antworte freundlich, kurz und per Sie. Nutze die Wissensbasis.',
         interpolate: true,
-        required: true,
       },
       {
         key: 'knowledgeBaseId',

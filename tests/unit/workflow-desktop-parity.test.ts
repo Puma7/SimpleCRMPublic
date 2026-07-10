@@ -32,6 +32,7 @@ jest.mock('../../electron/sqlite-service', () => ({
 jest.mock('../../electron/workflow/auto-reply-guard', () => ({
   isAutoReplyRateLimited: jest.fn(() => false),
   markAutoReplySent: jest.fn(),
+  tryReserveAutoReplySlot: jest.fn(() => true),
 }));
 
 function collect(registerNodes: (register: (def: RegisteredWorkflowNode) => void) => void) {

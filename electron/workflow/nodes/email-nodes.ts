@@ -10,6 +10,7 @@ import {
   getEmailAccountById,
 } from '../../email/email-store';
 import { evaluateSenderFilter } from '../sender-filter';
+import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
 import { AUTO_REPLY_NOREPLY_RE, loadAutoReplyEnabled } from '../auto-reply-settings';
 import { prepareDraftForWorkflowSend, releaseOutboundHoldForDraft } from '../draft-send-prep';
 import { assignCategoryPathToMessage } from '../../email/email-crm-store';
@@ -430,11 +431,14 @@ export function registerEmailNodes(register: Reg): void {
       if (!loadAutoReplyEnabled()) return block('disabled');
       if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
       // Anti-Loop: automatisch erzeugte Mails (RFC 3834, Newsletter) nie
-      // beantworten; Tageslimit pro Absender (Dedup-Tabelle).
+      // beantworten; Tageslimit pro EMPFÄNGER der Antwort (Reply-To vor
+      // From) — Ticket-Systeme wechseln From pro Mail bei konstantem
+      // Reply-To und würden ein From-Keying unterlaufen.
       const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
       if (isUnsafeAutoReplyTarget(ctx.message.raw_headers)) return block('automated_sender');
       const { isAutoReplyRateLimited } = await import('../auto-reply-guard');
-      if (isAutoReplyRateLimited(ctx.message.account_id, sender)) return block('rate_limited');
+      const replyTarget = primaryReplyRecipient(ctx.message) || sender;
+      if (isAutoReplyRateLimited(ctx.message.account_id, replyTarget)) return block('rate_limited');
       if (confidenceValue < minConfidence) return block('low_confidence');
 
       return {
@@ -515,6 +519,32 @@ export function registerEmailNodes(register: Reg): void {
         if (!ctx.dryRun && (!sender || AUTO_REPLY_NOREPLY_RE.test(sender))) {
           return { status: 'skipped', message: 'noreply_sender_blocked' };
         }
+        // Gleiche Anti-Loop-Guards wie im Gate (email.auto_reply): auch ein
+        // Workflow OHNE Gate davor darf weder Automaten/Newslettern antworten
+        // noch das Tageslimit überschreiten.
+        if (!ctx.dryRun) {
+          const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
+          if (isUnsafeAutoReplyTarget(ctx.message?.raw_headers)) {
+            return { status: 'skipped', message: 'automated_sender_blocked' };
+          }
+          // Tageslimit pro EMPFÄNGER der Antwort (Reply-To vor From), ATOMAR
+          // reserviert — check-then-mark hätte ein Race-Fenster zwischen
+          // parallelen Läufen (Backfill neben Live-Sync). Bewusst VOR dem
+          // Einplanen und beim EINPLANEN gezählt (nicht erst bei
+          // SMTP-Erfolg): fail-safe in Richtung "lieber eine Antwort zu
+          // wenig als ein Loop" — auch fehlgeschlagene Zustellversuche
+          // verbrauchen das Tageslimit; gescheiterte Sends bleiben als
+          // Entwurf sichtbar.
+          const accountId = ctx.message?.account_id;
+          if (accountId != null) {
+            const replyTarget =
+              (ctx.message ? primaryReplyRecipient(ctx.message) : '') || sender;
+            const { tryReserveAutoReplySlot } = await import('../auto-reply-guard');
+            if (!tryReserveAutoReplySlot(accountId, replyTarget, ctx.messageId)) {
+              return { status: 'skipped', message: 'auto_reply_rate_limited' };
+            }
+          }
+        }
       }
 
       const runOutboundReview = config.runOutboundReview === true;
@@ -525,17 +555,8 @@ export function registerEmailNodes(register: Reg): void {
       if (!prep.ok) return { status: 'error', message: prep.message };
 
       if (ctx.direction === 'inbound' && !ctx.dryRun) {
-        // Anti-Loop-Buchhaltung + RFC-3834-Marker für den SMTP-Versand.
-        // Bewusst beim EINPLANEN gezählt (nicht erst bei SMTP-Erfolg):
-        // fail-safe in Richtung "lieber eine Antwort zu wenig als ein Loop" —
-        // auch fehlgeschlagene Zustellversuche verbrauchen das Tageslimit.
-        // Endgültig gescheiterte Sends bleiben als Entwurf sichtbar.
-        const sender = ctx.strings.from_address?.split(',')[0]?.trim() ?? '';
-        const accountId = ctx.message?.account_id;
-        if (sender && accountId != null) {
-          const { markAutoReplySent } = await import('../auto-reply-guard');
-          markAutoReplySent(accountId, sender, ctx.messageId);
-        }
+        // RFC-3834-Marker NACH prep stempeln: prep normalisiert per
+        // updateComposeDraft und setzt auto_submitted dabei zurück.
         const { markDraftAutoSubmitted } = await import('../../email/email-draft-approval');
         markDraftAutoSubmitted(draftId);
       }
