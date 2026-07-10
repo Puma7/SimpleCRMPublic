@@ -29,7 +29,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 011 | Render email HTML in a sandboxed iframe | P2 | M | security | — | DONE |
 | 012 | Standardize on pnpm; remove the second lockfile | P2 | S | dx | — | DONE |
 | 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | DONE |
-| 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | TODO |
+| 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | DONE |
 | 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | TODO |
 | 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | DONE |
 | 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | DONE |
