@@ -1,4 +1,4 @@
-import type { Kysely, Transaction } from 'kysely';
+import { sql as kyselySql, type Kysely, type Transaction } from 'kysely';
 
 import type { ServerDatabase } from './schema';
 
@@ -59,7 +59,6 @@ async function applyWorkspaceSessionCommand(
   trx: WorkspaceTransaction,
   command: WorkspaceSessionCommand,
 ): Promise<void> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   await kyselySql`
     SELECT
       set_config('app.workspace_id', ${command.params[0]}, true),

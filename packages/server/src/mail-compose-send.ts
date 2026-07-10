@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { Kysely, RawBuilder } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder } from 'kysely';
 import {
   addressJson,
   buildComposeRfc822,
@@ -2373,6 +2373,5 @@ function snippetFromText(text: string): string | null {
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`'{"origin":"server_api"}'::jsonb`;
 }

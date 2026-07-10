@@ -22,7 +22,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 004 | Reject invalid productId/reasonId in return items | P1 | S | bug | — | DONE |
 | 005 | Guard the email list load against stale/racing responses | P2 | S | bug | — | DONE |
 | 006 | Remove dead deps + committed junk; fix phantom server dep | P2 | S | tech-debt | — | DONE |
-| 007 | Replace 87 inline `require('kysely')` with static imports | P3 | S | tech-debt | — | TODO |
+| 007 | Replace 87 inline `require('kysely')` with static imports | P3 | S | tech-debt | — | DONE |
 | 008 | Virtualize and memoize the email message list | P2 | M | perf | — | TODO |
 | 009 | Set-based `backfillCustomerLinks` (drop per-row UPDATE loop) | P3 | S | perf | — | DONE |
 | 010 | Make scheduled-send state transitions atomic | P2 | M | bug | — | TODO |

@@ -576,8 +576,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
-  return kyselySql`'{"origin":"server_api"}'::jsonb`;
+  return sql`'{"origin":"server_api"}'::jsonb`;
 }
 
 const DEFAULT_SCHEDULED_SEND_TICKER_MS = 30_000;

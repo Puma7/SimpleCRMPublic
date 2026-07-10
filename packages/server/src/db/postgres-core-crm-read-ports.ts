@@ -1,4 +1,4 @@
-import type { Expression, ExpressionBuilder, Kysely, RawBuilder, Selectable, SqlBool, Updateable } from 'kysely';
+import { sql as kyselySql, type Expression, type ExpressionBuilder, type Kysely, type RawBuilder, type Selectable, type SqlBool, type Updateable } from 'kysely';
 
 import type {
   DealApiPort,
@@ -458,7 +458,6 @@ export function createPostgresDealProductPort(options: PostgresCoreCrmReadPortOp
           if (!product) return { ok: false, code: 'product_not_found' };
 
           const now = new Date();
-          const { sql: kyselySql } = require('kysely') as typeof import('kysely');
           const existing = await trx
             .updateTable('deal_products')
             .set({
@@ -925,12 +924,10 @@ function mutationToProductPatch(values: ProductMutationInput): Partial<Updateabl
 }
 
 function serverCreatedProductSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('products', 'id'))`;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`jsonb_build_object('origin', 'server_api')`;
 }
 
@@ -1214,17 +1211,14 @@ async function resolveProductReference(
 }
 
 function serverCreatedDealSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('deals', 'id'))`;
 }
 
 function serverCreatedDealProductSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('deal_products', 'id'))`;
 }
 
 function serverCreatedTaskSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('tasks', 'id'))`;
 }
 
@@ -1245,7 +1239,6 @@ async function updateDealValueFromProductsIfDynamic(
     .executeTakeFirst();
   if (!deal || deal.value_calculation_method !== 'dynamic') return;
 
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const total = await trx
     .selectFrom('deal_products')
     .select(kyselySql<string>`coalesce(sum(quantity * price_at_time_of_adding), 0)::numeric(14,2)`.as('value'))
