@@ -2,6 +2,13 @@ import { MAX_EMAIL_CATEGORY_DEPTH } from '../../shared/email-constants';
 import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
+import type { MessageSearchScope } from '../../shared/email-search-scope';
+import {
+  buildFtsMatchExpression,
+  MAX_SEARCH_TEXT_TOKENS,
+  parseMailSearchQuery,
+  type ParsedMailSearchQuery,
+} from '../../packages/core/src/email';
 import { getDb } from '../sqlite-service';
 import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
 import { accountAccessSql } from './mail-scope-access';
@@ -631,12 +638,16 @@ export function backfillCustomerLinksForMessages(opts?: {
 
 export type MessageSearchMode = 'fts' | 'like' | 'regex';
 
+export type { MessageSearchScope } from '../../shared/email-search-scope';
+
 export type MessageSearchOpts = {
   limit?: number;
   offset?: number;
   view?: import('./email-store').AccountMailView;
   categoryId?: number | null;
   doneFilter?: MessageDoneFilter;
+  /** 'broad' searches across all folders/views; absent or 'view' keeps per-view filtering. */
+  scope?: MessageSearchScope;
 };
 
 function categoryJoinSql(categoryId: number | null | undefined): { sql: string; param?: number } {
@@ -653,6 +664,7 @@ const LIKE_SEARCH_FIELDS = `(
          m.subject LIKE ? ESCAPE '\\' OR m.snippet LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\'
          OR m.from_json LIKE ? ESCAPE '\\' OR m.to_json LIKE ? ESCAPE '\\' OR m.cc_json LIKE ? ESCAPE '\\'
          OR m.bcc_json LIKE ? ESCAPE '\\' OR m.ticket_code LIKE ? ESCAPE '\\'
+         OR m.attachments_json LIKE ? ESCAPE '\\'
          OR EXISTS (
            SELECT 1 FROM ${CUSTOMERS_TABLE} c
            WHERE c.id = m.customer_id
@@ -665,9 +677,169 @@ const LIKE_SEARCH_FIELDS = `(
          )
        )`;
 
-/** One search term per placeholder in LIKE_SEARCH_FIELDS (12). */
+/** Placeholder count in LIKE_SEARCH_FIELDS. */
+const LIKE_SEARCH_FIELD_COUNT = 13;
+
+/** One search term per placeholder in LIKE_SEARCH_FIELDS. */
 function pushLikeSearchTerms(params: (string | number)[], term: string): void {
-  for (let i = 0; i < 12; i++) params.push(term);
+  for (let i = 0; i < LIKE_SEARCH_FIELD_COUNT; i++) params.push(term);
+}
+
+function escapeLikeValue(v: string): string {
+  return v.replace(/[%_\\]/g, (ch) => `\\${ch}`);
+}
+
+/** `foo@bar.de` → exact-address JSON match; anything else → substring match. */
+function addressLikePattern(value: string): string {
+  const escaped = escapeLikeValue(value);
+  return value.includes('@') ? `%"address":"${escaped}"%` : `%${escaped}%`;
+}
+
+/** SQL conditions for parsed operators (from:/to:/subject:/has:attachment). */
+function operatorSearchSql(parsed: ParsedMailSearchQuery): { sql: string; params: string[] } {
+  const conds: string[] = [];
+  const params: string[] = [];
+  for (const value of parsed.from) {
+    conds.push(`m.from_json LIKE ? ESCAPE '\\'`);
+    params.push(addressLikePattern(value));
+  }
+  for (const value of parsed.to) {
+    conds.push(
+      `(m.to_json LIKE ? ESCAPE '\\' OR m.cc_json LIKE ? ESCAPE '\\' OR m.bcc_json LIKE ? ESCAPE '\\')`,
+    );
+    const pattern = addressLikePattern(value);
+    params.push(pattern, pattern, pattern);
+  }
+  for (const value of parsed.subject) {
+    conds.push(`m.subject LIKE ? ESCAPE '\\'`);
+    params.push(`%${escapeLikeValue(value)}%`);
+  }
+  if (parsed.hasAttachment) conds.push('m.has_attachments = 1');
+  return { sql: conds.length > 0 ? ` AND ${conds.join(' AND ')}` : '', params };
+}
+
+/** One AND'ed LIKE fields block per phrase/term (capped like the FTS tokens). */
+function likeTextSearchSql(parsed: ParsedMailSearchQuery): { sql: string; params: string[] } {
+  const needles = [...parsed.phrases, ...parsed.terms].slice(0, MAX_SEARCH_TEXT_TOKENS);
+  const blocks: string[] = [];
+  const params: string[] = [];
+  for (const needle of needles) {
+    blocks.push(LIKE_SEARCH_FIELDS);
+    pushLikeSearchTerms(params, `%${escapeLikeValue(needle)}%`);
+  }
+  return { sql: blocks.length > 0 ? ` AND ${blocks.join(' AND ')}` : '', params };
+}
+
+/** Non-draft or draft mail that belongs in search results at all. */
+const SEARCHABLE_MAIL_SQL = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')`;
+
+/** WHERE fragment for the search scope: broad (cross-view) or per-view. */
+function searchScopeSql(opts: MessageSearchOpts): { sql: string; broad: boolean } {
+  const scope = opts.scope;
+  if (scope && scope.mode === 'broad') {
+    const parts = [SEARCHABLE_MAIL_SQL];
+    if (!scope.includeTrash) parts.push('m.soft_deleted = 0');
+    if (!scope.includeSpam) {
+      // spam_status 'review' mail lives in the inbox and stays searchable.
+      parts.push(`m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') <> 'spam'`);
+    }
+    return { sql: parts.join(' AND '), broad: true };
+  }
+  const viewSql = opts.view ? viewFilterClause(opts.view) : 'm.soft_deleted = 0';
+  return { sql: `${viewSql} AND ${SEARCHABLE_MAIL_SQL}`, broad: false };
+}
+
+function ftsTableExists(): boolean {
+  return Boolean(
+    getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(EMAIL_MESSAGES_FTS_TABLE),
+  );
+}
+
+type MessageSearchTarget = {
+  accountId?: number;
+  access?: import('./email-store').MailScopeSession;
+  /** Historical quirk kept for view mode: snooze filter only on the per-account meta FTS query. */
+  snoozeFilterInFts?: boolean;
+};
+
+/**
+ * Shared search engine for all non-regex paths. Dispatch: FTS5 (phrases exact,
+ * terms as prefix) → LIKE fallback. FTS falling back to LIKE happens when FTS
+ * is unavailable, throws, or succeeds with 0 rows on the first page (tolerant
+ * substring matching then still finds mid-word/umlaut hits). Operator-only
+ * queries (e.g. `von:max@test.de`) skip text matching and run a plain
+ * filtered SELECT.
+ */
+function runMessageSearch(
+  trimmed: string,
+  opts: MessageSearchOpts,
+  target: MessageSearchTarget,
+  limit: number,
+  offset: number,
+): { rows: import('./email-store').EmailMessageRow[]; searchMode: 'fts' | 'like' } {
+  const parsed = parseMailSearchQuery(trimmed);
+  const { sql: scopeSql, broad } = searchScopeSql(opts);
+  const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
+  const cat = categoryJoinSql(opts.categoryId);
+  const ops = operatorSearchSql(parsed);
+  const access =
+    target.accountId == null
+      ? accountAccessSql(getDb(), target.access)
+      : { sql: '', params: [] as number[] };
+  const accountSql = target.accountId != null ? 'm.account_id = ? AND ' : '';
+  const fts = buildFtsMatchExpression(parsed);
+  if (!fts && ops.sql.length === 0) {
+    // Nothing searchable parsed out of the query (e.g. `""`): never return the
+    // unfiltered view.
+    return { rows: [], searchMode: 'like' };
+  }
+  if (fts && ftsTableExists()) {
+    try {
+      const snoozeSql = !broad && target.snoozeFilterInFts ? ` AND ${SNOOZE_FILTER_SQL}` : '';
+      // NB: the MATCH column must be alias-qualified with the *table* name
+      // (`fts.email_messages_fts`); a bare `fts MATCH ?` is "no such column".
+      const params: (string | number)[] = [];
+      if (cat.param != null) params.push(cat.param);
+      if (target.accountId != null) params.push(target.accountId);
+      params.push(...access.params, ...ops.params, fts, limit, offset);
+      const rows = getDb()
+        .prepare(
+          `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+           ${cat.sql}
+           INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
+           WHERE ${accountSql}${scopeSql}${snoozeSql}
+           ${doneSql}${access.sql}${ops.sql}
+           AND fts.${EMAIL_MESSAGES_FTS_TABLE} MATCH ?
+           ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...params) as import('./email-store').EmailMessageRow[];
+      if (rows.length > 0 || offset > 0) {
+        return { rows, searchMode: 'fts' };
+      }
+      // FTS ok but empty on the first page — fall through to LIKE.
+    } catch {
+      /* FTS nicht verfuegbar oder ungueltige Syntax — LIKE-Fallback */
+    }
+  }
+  const text = fts ? likeTextSearchSql(parsed) : { sql: '', params: [] as string[] };
+  const params: (string | number)[] = [];
+  if (cat.param != null) params.push(cat.param);
+  if (target.accountId != null) params.push(target.accountId);
+  params.push(...access.params, ...ops.params, ...text.params, limit, offset);
+  const rows = getDb()
+    .prepare(
+      `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+       ${cat.sql}
+       WHERE ${accountSql}${scopeSql}
+       ${doneSql}${access.sql}${ops.sql}${text.sql}
+       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...params) as import('./email-store').EmailMessageRow[];
+  return { rows, searchMode: 'like' };
 }
 
 export function searchMessagesForAccountWithMeta(
@@ -715,6 +887,7 @@ export function searchMessagesForAccountWithMeta(
           m.cc_json,
           m.bcc_json,
           m.ticket_code,
+          m.attachments_json,
         ]
           .filter(Boolean)
           .join('\n');
@@ -723,47 +896,8 @@ export function searchMessagesForAccountWithMeta(
       .slice(offset, offset + limit);
     return { rows, searchMode: 'regex', hasMore: rows.length >= limit };
   }
-  const fts = ftsMatchExpression(trimmed);
-  if (fts) {
-    const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
-    const doneSql = doneFilterSql(opts.doneFilter, view ?? 'inbox');
-    const cat = categoryJoinSql(opts.categoryId);
-    const ftsTable = getDb()
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-      .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
-    if (ftsTable) {
-      try {
-        const params: (string | number)[] = [accountId];
-        if (cat.param != null) params.push(cat.param);
-        params.push(fts, limit + 1, offset);
-        const rows = getDb()
-          .prepare(
-            `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-             ${cat.sql}
-             INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-             WHERE m.account_id = ? AND ${viewSql} AND ${SNOOZE_FILTER_SQL}
-               AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-               ${doneSql}
-               AND fts MATCH ?
-             ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-             LIMIT ? OFFSET ?`,
-          )
-          .all(...params) as import('./email-store').EmailMessageRow[];
-        const hasMore = rows.length > limit;
-        return { rows: rows.slice(0, limit), searchMode: 'fts', hasMore };
-      } catch {
-        /* LIKE fallback */
-      }
-    }
-  }
-  const rows = searchMessagesForAccount(accountId, trimmed, {
-    limit: limit + 1,
-    offset,
-    view,
-    categoryId: opts.categoryId,
-    doneFilter: opts.doneFilter,
-  });
-  return { rows: rows.slice(0, limit), searchMode: 'like', hasMore: rows.length > limit };
+  const r = runMessageSearch(trimmed, opts, { accountId, snoozeFilterInFts: true }, limit + 1, offset);
+  return { rows: r.rows.slice(0, limit), searchMode: r.searchMode, hasMore: r.rows.length > limit };
 }
 
 function messageMatchesDoneFilter(
@@ -782,32 +916,21 @@ export function searchMessagesForMailScopeWithMeta(
   q: string,
   opts: MessageSearchOpts = {},
   access?: import('./email-store').MailScopeSession,
-): { rows: import('./email-store').EmailMessageRow[]; hasMore: boolean } {
-  const limit = opts.limit ?? 80;
+): {
+  rows: import('./email-store').EmailMessageRow[];
+  searchMode: MessageSearchMode;
+  hasMore: boolean;
+} {
   if (accountScope !== 'all') {
-    const r = searchMessagesForAccountWithMeta(accountScope, q, opts);
-    return { rows: r.rows, hasMore: r.hasMore };
+    return searchMessagesForAccountWithMeta(accountScope, q, opts);
   }
-  const rows = searchMessagesForAllAccounts(q, { ...opts, limit: (opts.limit ?? 80) + 1 }, access);
-  const hasMore = rows.length > limit;
-  return { rows: rows.slice(0, limit), hasMore };
+  return searchMessagesForAllAccountsWithMeta(q, opts, access);
 }
 
 export function setMessageCustomerId(messageId: number, customerId: number | null): void {
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET customer_id = ? WHERE id = ?`)
     .run(customerId, messageId);
-}
-
-function ftsMatchExpression(raw: string): string | null {
-  const tokens = raw
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 12)
-    .map((t) => `"${t.replace(/"/g, '""')}"`);
-  if (tokens.length === 0) return null;
-  return tokens.join(' AND ');
 }
 
 function viewFilterClause(view: import('./email-store').AccountMailView): string {
@@ -849,62 +972,29 @@ export function searchMessagesForMailScope(
   return searchMessagesForMailScopeWithMeta(accountScope, q, { limit, view }).rows;
 }
 
+export function searchMessagesForAllAccountsWithMeta(
+  q: string,
+  opts: MessageSearchOpts = {},
+  access?: import('./email-store').MailScopeSession,
+): {
+  rows: import('./email-store').EmailMessageRow[];
+  searchMode: MessageSearchMode;
+  hasMore: boolean;
+} {
+  const trimmed = q.trim();
+  if (!trimmed) return { rows: [], searchMode: 'like', hasMore: false };
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+  const r = runMessageSearch(trimmed, opts, { access }, limit + 1, offset);
+  return { rows: r.rows.slice(0, limit), searchMode: r.searchMode, hasMore: r.rows.length > limit };
+}
+
 export function searchMessagesForAllAccounts(
   q: string,
   opts: MessageSearchOpts = {},
   access?: import('./email-store').MailScopeSession,
 ): import('./email-store').EmailMessageRow[] {
-  if (!q.trim()) return [];
-  const limit = opts.limit ?? 100;
-  const offset = opts.offset ?? 0;
-  const view = opts.view;
-  const viewSql = view ? viewFilterClause(view) : 'm.soft_deleted = 0';
-  const doneSql = doneFilterSql(opts.doneFilter, view ?? 'inbox');
-  const cat = categoryJoinSql(opts.categoryId);
-  const { sql: accessSql, params: accessParams } = accountAccessSql(getDb(), access);
-  const fts = ftsMatchExpression(q);
-  if (fts) {
-    const ftsTable = getDb()
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-      .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
-    if (ftsTable) {
-      try {
-        const params: (string | number)[] = [];
-        if (cat.param != null) params.push(cat.param);
-        params.push(...accessParams, fts, limit, offset);
-        return getDb()
-          .prepare(
-            `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-             ${cat.sql}
-             INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-             WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-             ${doneSql}${accessSql}
-             AND fts MATCH ?
-             ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-             LIMIT ? OFFSET ?`,
-          )
-          .all(...params) as import('./email-store').EmailMessageRow[];
-      } catch {
-        /* FTS fallback */
-      }
-    }
-  }
-  const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
-  const params: (string | number)[] = [];
-  if (cat.param != null) params.push(cat.param);
-  pushLikeSearchTerms(params, term);
-  params.push(...accessParams, limit, offset);
-  return getDb()
-    .prepare(
-      `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-       ${cat.sql}
-       WHERE ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-       ${doneSql}${accessSql}
-       AND ${LIKE_SEARCH_FIELDS}
-       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-       LIMIT ? OFFSET ?`,
-    )
-    .all(...params) as import('./email-store').EmailMessageRow[];
+  return searchMessagesForAllAccountsWithMeta(q, opts, access).rows;
 }
 
 export function searchMessagesForAccount(
@@ -918,50 +1008,5 @@ export function searchMessagesForAccount(
   if (!q.trim()) return [];
   const limit = resolved.limit ?? 100;
   const offset = resolved.offset ?? 0;
-  const viewSql = resolved.view ? viewFilterClause(resolved.view) : 'm.soft_deleted = 0';
-  const doneSql = doneFilterSql(resolved.doneFilter, resolved.view ?? 'inbox');
-  const cat = categoryJoinSql(resolved.categoryId);
-  const fts = ftsMatchExpression(q);
-  if (fts) {
-    const ftsTable = getDb()
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-      .get(EMAIL_MESSAGES_FTS_TABLE) as { name: string } | undefined;
-    if (ftsTable) {
-      try {
-        const params: (string | number)[] = [accountId];
-        if (cat.param != null) params.push(cat.param);
-        params.push(fts, limit, offset);
-        return getDb()
-          .prepare(
-            `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-             ${cat.sql}
-             INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-             WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-             ${doneSql}
-             AND fts MATCH ?
-             ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-             LIMIT ? OFFSET ?`,
-          )
-          .all(...params) as import('./email-store').EmailMessageRow[];
-      } catch {
-        /* FTS nicht verfügbar oder ungültige Syntax — LIKE-Fallback */
-      }
-    }
-  }
-  const term = `%${q.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
-  const params: (string | number)[] = [accountId];
-  if (cat.param != null) params.push(cat.param);
-  pushLikeSearchTerms(params, term);
-  params.push(limit, offset);
-  return getDb()
-    .prepare(
-      `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-       ${cat.sql}
-       WHERE m.account_id = ? AND ${viewSql} AND (m.uid >= 0 OR m.pop3_uidl IS NOT NULL OR m.folder_kind = 'draft')
-       ${doneSql}
-       AND ${LIKE_SEARCH_FIELDS}
-       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-       LIMIT ? OFFSET ?`,
-    )
-    .all(...params) as import('./email-store').EmailMessageRow[];
+  return runMessageSearch(q.trim(), resolved, { accountId }, limit, offset).rows;
 }
