@@ -185,7 +185,7 @@ honor its STOP conditions, and update your row when done.
 | 001  | ...   | P1       | S      | —          | TODO   |
 | 002  | ...   | P1       | M      | 001        | TODO   |
 
-Status values: TODO | IN PROGRESS | APPROVED (reviewed & approved in an unmerged worktree — code not yet on this branch) | DONE (merged / present on HEAD) | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
+Status values: TODO | IN PROGRESS | APPROVED (reviewed & approved in an unmerged worktree — code not yet on this branch; record the approved commit SHA and branch in the cell, e.g. `APPROVED — commit abc1234, branch advisor/002-slug`, so `reconcile` can later confirm the merge) | DONE (merged / present on HEAD) | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
 
 A dependency only unblocks a dependent plan once it is **DONE** (its code is on
 the branch the executor builds from), not merely **APPROVED** in an unmerged worktree.
