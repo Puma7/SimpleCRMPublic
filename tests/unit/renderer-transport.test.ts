@@ -4729,6 +4729,67 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps search scope, relevance sort and search snippet (Suche Phase 3)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        items: [
+          {
+            id: 703,
+            accountId: 101,
+            folderId: 201,
+            uid: 9003,
+            subject: 'Scoped hit',
+            from: null,
+            to: null,
+            cc: null,
+            dateReceived: null,
+            snippet: 'Kontext',
+            searchSnippet: 'Kontext \uE000Treffer\uE001 Ende',
+            seenLocal: false,
+            doneLocal: false,
+            archived: false,
+            folderKind: 'inbox',
+            threadId: null,
+            ticketCode: null,
+            customerId: null,
+            hasAttachments: false,
+            assignedTo: null,
+            assignedToUserId: null,
+            isSpam: false,
+            spamStatus: 'clean',
+            pgpStatus: null,
+            remoteContentPolicy: 'ask',
+            readReceiptRequested: false,
+            snoozedUntil: null,
+            updatedAt: '2026-06-03T10:05:00.000Z',
+          },
+        ],
+        nextCursor: null,
+        searchMode: 'fts',
+      },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Email.SearchMessages, {
+      accountId: 101,
+      query: 'Treffer',
+      limit: 50,
+      offset: 0,
+      view: 'inbox',
+      sort: 'relevance',
+      scope: { mode: 'broad', includeSpam: true, includeTrash: false },
+    }) as { messages: Array<{ search_snippet?: string | null }>; searchMode: string };
+    expect(result.searchMode).toBe('fts');
+    expect(result.messages[0]?.search_snippet).toBe('Kontext \uE000Treffer\uE001 Ende');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages?accountId=101&search=Treffer&limit=50&offset=0&view=inbox&sort=relevance&scopeMode=broad&scopeIncludeSpam=true',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps message spam status mutation to server mail route', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

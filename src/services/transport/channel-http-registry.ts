@@ -339,6 +339,7 @@ type EmailMessageRecord = {
   bcc?: unknown
   dateReceived?: string | null
   snippet?: string | null
+  searchSnippet?: string | null
   seenLocal?: boolean | number | null
   doneLocal?: boolean | number | null
   archived?: boolean | number | null
@@ -2473,9 +2474,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.SearchMessages, ([payload]) => {
     const input = objectPayload(payload, "email message search payload")
-    // Suchbereich (broad/view) wird flach durchgereicht; der Server ignoriert
-    // die Parameter bis zur Server-Edition-Umsetzung (Suche Phase 2) und
-    // durchsucht weiterhin nur die aktuelle Ansicht.
+    // Suchbereich (broad/view) wird flach durchgereicht und serverseitig
+    // umgesetzt (Suche Phase 3: broad-Scope, Relevanz, search_snippet).
     const scope = input.scope as
       | { mode?: string; includeSpam?: boolean; includeTrash?: boolean }
       | undefined
@@ -2491,6 +2491,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         view: optionalMessageViewValue(input.view),
         categoryId: optionalPositiveQueryId(input.categoryId, "email category id"),
         doneFilter: optionalMessageDoneFilterValue(input.doneFilter),
+        sort: input.sort === "relevance" ? "relevance" : undefined,
         scopeMode,
         scopeIncludeSpam: scopeMode === "broad" && scope?.includeSpam === true ? true : undefined,
         scopeIncludeTrash: scopeMode === "broad" && scope?.includeTrash === true ? true : undefined,
@@ -5124,6 +5125,7 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     message_id: record.messageId ?? null,
     subject: record.subject ?? null,
     snippet: record.snippet ?? null,
+    search_snippet: record.searchSnippet ?? null,
     date_received: record.dateReceived ?? null,
     from_json: addressJsonString(record.from),
     to_json: addressJsonString(record.to),

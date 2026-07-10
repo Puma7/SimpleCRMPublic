@@ -50,7 +50,6 @@ import { isAllAccountsScope } from "./account-scope"
 import {
   formatFrom,
   formatMessageFrom,
-  hasLocalIpc,
   type EmailAccount,
   type EmailMessage,
   type MailView,
@@ -194,12 +193,8 @@ export function MessageList({
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
-  // Server-Edition (HTTP-Transport) unterstützt den Suchbereich noch nicht —
-  // Scope-UI dort ausblenden; die Suche bleibt auf die aktuelle Ansicht begrenzt.
-  const scopeUiAvailable = hasLocalIpc()
-  const broadSearchActive =
-    scopeUiAvailable && searchScope.allFolders && searchQuery.trim().length > 0
   const searchActive = searchQuery.trim().length > 0
+  const broadSearchActive = searchScope.allFolders && searchActive
   const searchNeedles = useMemo(
     () => (searchActive ? searchNeedlesFromQuery(searchQuery) : []),
     [searchActive, searchQuery],
@@ -568,7 +563,6 @@ export function MessageList({
             onChange={(e) => setSearchQuery(e.target.value)}
             disabled={bulkBusy}
           />
-          {scopeUiAvailable ? (
           <Popover>
             <PopoverTrigger asChild>
               <Button
@@ -629,7 +623,6 @@ export function MessageList({
               </div>
             </PopoverContent>
           </Popover>
-          ) : null}
         </div>
         {broadSearchActive ? (
           <p className="text-[11px] leading-tight text-muted-foreground">

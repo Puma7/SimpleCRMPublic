@@ -7,7 +7,7 @@ import type { MessageListSortMode } from "@shared/email-list-options"
 import type { MessageListFilter } from "@shared/email-list-filters"
 import { formatEmailSyncError } from "@shared/email-sync-error-hint"
 import type { MailAccountScope } from "../account-scope"
-import { hasLocalIpc, type EmailMessage, type MailView } from "../types"
+import type { EmailMessage, MailView } from "../types"
 import { logError } from "../log"
 import { pickAdjacentMessageId } from "../select-adjacent-message"
 import { useMailWorkspace } from "../workspace-context"
@@ -204,9 +204,7 @@ export function useEmailMessages() {
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
         if (query.trim()) {
           const scopePrefs = searchScopeRef.current
-          // Server-Edition (HTTP-Transport) unterstützt den Suchbereich noch
-          // nicht — dort bleibt die Suche auf die aktuelle Ansicht beschränkt.
-          const broadSearch = scopePrefs.allFolders && hasLocalIpc()
+          const broadSearch = scopePrefs.allFolders
           // Spam-/Papierkorb-Ansichten müssen sich selbst immer durchsuchen
           // können, auch wenn der Nutzer sie global ausgeschlossen hat.
           const scope = broadSearch
