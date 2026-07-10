@@ -689,10 +689,23 @@ function escapeLikeValue(v: string): string {
   return v.replace(/[%_\\]/g, (ch) => `\\${ch}`);
 }
 
-/** `foo@bar.de` → exact-address JSON match; anything else → substring match. */
+/**
+ * LIKE pattern for from:/to: operator values against the stored address JSON:
+ * `@bar.de` → domain suffix, `foo@bar.de` → exact address, `foo@bar` →
+ * address prefix, anything without `@` → plain substring (matches names too).
+ */
 function addressLikePattern(value: string): string {
   const escaped = escapeLikeValue(value);
-  return value.includes('@') ? `%"address":"${escaped}"%` : `%${escaped}%`;
+  if (value.startsWith('@')) {
+    return `%"address":"%${escaped}"%`;
+  }
+  if (/^\S+@\S+\.\S{2,}$/.test(value)) {
+    return `%"address":"${escaped}"%`;
+  }
+  if (value.includes('@')) {
+    return `%"address":"${escaped}%`;
+  }
+  return `%${escaped}%`;
 }
 
 /** SQL conditions for parsed operators (from:/to:/subject:/has:attachment). */
@@ -760,17 +773,17 @@ function ftsTableExists(): boolean {
 type MessageSearchTarget = {
   accountId?: number;
   access?: import('./email-store').MailScopeSession;
-  /** Historical quirk kept for view mode: snooze filter only on the per-account meta FTS query. */
-  snoozeFilterInFts?: boolean;
+  /** View mode only: hide snoozed mail from search (per-account meta path). */
+  applySnoozeFilter?: boolean;
 };
 
 /**
  * Shared search engine for all non-regex paths. Dispatch: FTS5 (phrases exact,
- * terms as prefix) → LIKE fallback. FTS falling back to LIKE happens when FTS
- * is unavailable, throws, or succeeds with 0 rows on the first page (tolerant
- * substring matching then still finds mid-word/umlaut hits). Operator-only
- * queries (e.g. `von:max@test.de`) skip text matching and run a plain
- * filtered SELECT.
+ * terms as prefix) → LIKE fallback. The mode is deterministic per query, not
+ * per page: page 1 decides (FTS hit → fts, otherwise LIKE); later pages probe
+ * FTS page 1 so a LIKE-served result list stays LIKE across its pagination.
+ * Operator-only queries (e.g. `von:max@test.de`) skip text matching and run a
+ * plain filtered SELECT.
  */
 function runMessageSearch(
   trimmed: string,
@@ -782,6 +795,7 @@ function runMessageSearch(
   const parsed = parseMailSearchQuery(trimmed);
   const { sql: scopeSql, broad } = searchScopeSql(opts);
   const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
+  const snoozeSql = !broad && target.applySnoozeFilter ? ` AND ${SNOOZE_FILTER_SQL}` : '';
   const cat = categoryJoinSql(opts.categoryId);
   const ops = operatorSearchSql(parsed);
   const access =
@@ -797,29 +811,36 @@ function runMessageSearch(
   }
   if (fts && ftsTableExists()) {
     try {
-      const snoozeSql = !broad && target.snoozeFilterInFts ? ` AND ${SNOOZE_FILTER_SQL}` : '';
       // NB: the MATCH column must be alias-qualified with the *table* name
       // (`fts.email_messages_fts`); a bare `fts MATCH ?` is "no such column".
       const params: (string | number)[] = [];
       if (cat.param != null) params.push(cat.param);
       if (target.accountId != null) params.push(target.accountId);
-      params.push(...access.params, ...ops.params, fts, limit, offset);
-      const rows = getDb()
-        .prepare(
-          `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-           ${cat.sql}
-           INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-           WHERE ${accountSql}${scopeSql}${snoozeSql}
-           ${doneSql}${access.sql}${ops.sql}
-           AND fts.${EMAIL_MESSAGES_FTS_TABLE} MATCH ?
-           ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-           LIMIT ? OFFSET ?`,
-        )
-        .all(...params) as import('./email-store').EmailMessageRow[];
-      if (rows.length > 0 || offset > 0) {
+      params.push(...access.params, ...ops.params, fts);
+      const stmt = getDb().prepare(
+        `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+         ${cat.sql}
+         INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
+         WHERE ${accountSql}${scopeSql}${snoozeSql}
+         ${doneSql}${access.sql}${ops.sql}
+         AND fts.${EMAIL_MESSAGES_FTS_TABLE} MATCH ?
+         ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+         LIMIT ? OFFSET ?`,
+      );
+      const rows = stmt.all(...params, limit, offset) as import('./email-store').EmailMessageRow[];
+      if (rows.length > 0) {
         return { rows, searchMode: 'fts' };
       }
-      // FTS ok but empty on the first page — fall through to LIKE.
+      if (offset > 0) {
+        // Empty page beyond page 1: probe page 1 to tell "genuine end of FTS
+        // results" from "this query has been LIKE mode all along" — otherwise
+        // pages after the first would be unreachable for LIKE-only queries.
+        const probe = stmt.all(...params, 1, 0) as import('./email-store').EmailMessageRow[];
+        if (probe.length > 0) {
+          return { rows: [], searchMode: 'fts' };
+        }
+      }
+      // FTS ok but has no hits for this query — fall through to LIKE.
     } catch {
       /* FTS nicht verfuegbar oder ungueltige Syntax — LIKE-Fallback */
     }
@@ -833,13 +854,40 @@ function runMessageSearch(
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
        ${cat.sql}
-       WHERE ${accountSql}${scopeSql}
+       WHERE ${accountSql}${scopeSql}${snoozeSql}
        ${doneSql}${access.sql}${ops.sql}${text.sql}
        ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
        LIMIT ? OFFSET ?`,
     )
     .all(...params) as import('./email-store').EmailMessageRow[];
   return { rows, searchMode: 'like' };
+}
+
+/**
+ * Candidate rows for the regex search (regex matching happens in JS): plain
+ * scope/view-filtered SELECT, newest first, capped by the caller.
+ */
+function listRegexSearchCandidates(
+  accountId: number,
+  opts: MessageSearchOpts,
+  limit: number,
+): import('./email-store').EmailMessageRow[] {
+  const { sql: scopeSql, broad } = searchScopeSql(opts);
+  const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
+  const cat = categoryJoinSql(opts.categoryId);
+  const params: (string | number)[] = [];
+  if (cat.param != null) params.push(cat.param);
+  params.push(accountId, limit);
+  return getDb()
+    .prepare(
+      `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+       ${cat.sql}
+       WHERE m.account_id = ? AND ${scopeSql}
+       ${doneSql}
+       ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+       LIMIT ?`,
+    )
+    .all(...params) as import('./email-store').EmailMessageRow[];
 }
 
 export function searchMessagesForAccountWithMeta(
@@ -866,15 +914,17 @@ export function searchMessagesForAccountWithMeta(
     try {
       re = new RegExp(pattern, flags.replace(/[^ims]/g, ''));
     } catch {
-      const rows = searchMessagesForAccount(accountId, trimmed, { limit, offset, view, categoryId: opts.categoryId });
+      const rows = searchMessagesForAccount(accountId, trimmed, {
+        limit,
+        offset,
+        view,
+        categoryId: opts.categoryId,
+        doneFilter: opts.doneFilter,
+        scope: opts.scope,
+      });
       return { rows, searchMode: 'like', hasMore: rows.length >= limit };
     }
-    const all = searchMessagesForAccount(accountId, '', {
-      limit: Math.min((limit + offset) * 3, 500),
-      view,
-      categoryId: opts.categoryId,
-      doneFilter: opts.doneFilter,
-    });
+    const all = listRegexSearchCandidates(accountId, opts, Math.min((limit + offset) * 3, 500));
     const rows = all
       .filter((m) => messageMatchesDoneFilter(m, opts.doneFilter, view))
       .filter((m) => {
@@ -896,7 +946,7 @@ export function searchMessagesForAccountWithMeta(
       .slice(offset, offset + limit);
     return { rows, searchMode: 'regex', hasMore: rows.length >= limit };
   }
-  const r = runMessageSearch(trimmed, opts, { accountId, snoozeFilterInFts: true }, limit + 1, offset);
+  const r = runMessageSearch(trimmed, opts, { accountId, applySnoozeFilter: true }, limit + 1, offset);
   return { rows: r.rows.slice(0, limit), searchMode: r.searchMode, hasMore: r.rows.length > limit };
 }
 

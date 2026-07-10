@@ -274,11 +274,15 @@ describe('email-crm-store', () => {
       expect(r).toEqual({ rows: [], searchMode: 'like', hasMore: false });
     });
 
-    test('regex search filters rows', () => {
+    test('regex search matches candidate rows (fix: candidates were always empty)', () => {
       mock.setFtsTableExists(false);
-      const r = searchMessagesForAccountWithMeta(1, '/^Test subject$/i', { limit: 10 });
+      const r = searchMessagesForAccountWithMeta(1, '/^Test subject$/im', { limit: 10 });
       expect(r.searchMode).toBe('regex');
-      expect(r.rows).toEqual([]);
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]).toMatchObject({ subject: 'Test subject' });
+      const miss = searchMessagesForAccountWithMeta(1, '/^No such subject$/im', { limit: 10 });
+      expect(miss.searchMode).toBe('regex');
+      expect(miss.rows).toEqual([]);
     });
 
     test('fts hasMore when extra row returned', () => {
@@ -370,7 +374,23 @@ describe('email-crm-store', () => {
       expect(sql).not.toContain('fts MATCH');
     });
 
-    test('fts with zero rows keeps fts mode when paginating (offset > 0)', () => {
+    test('paginating past a genuine fts end keeps fts mode (probe finds page-1 hit)', () => {
+      mock.setFtsTableExists(true);
+      const origAll = mock.stmt.all.getMockImplementation();
+      mock.stmt.all.mockImplementation((...args: unknown[]) => {
+        const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+        if (sql.includes('fts MATCH')) {
+          const offset = args[args.length - 1] as number;
+          return offset === 0 ? [{ id: 1 }] : [];
+        }
+        return origAll?.(...args) ?? [];
+      });
+      const r = searchMessagesForAccountWithMeta(1, 'hello', { limit: 10, offset: 10 });
+      expect(r.searchMode).toBe('fts');
+      expect(r.rows).toEqual([]);
+    });
+
+    test('paginating a like-mode query stays like (probe empty too)', () => {
       mock.setFtsTableExists(true);
       const origAll = mock.stmt.all.getMockImplementation();
       mock.stmt.all.mockImplementation((...args: unknown[]) => {
@@ -379,8 +399,10 @@ describe('email-crm-store', () => {
         return origAll?.(...args) ?? [];
       });
       const r = searchMessagesForAccountWithMeta(1, 'hello', { limit: 10, offset: 10 });
-      expect(r.searchMode).toBe('fts');
-      expect(r.rows).toEqual([]);
+      expect(r.searchMode).toBe('like');
+      const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+      expect(sql).toContain('SELECT m.*');
+      expect(sql).not.toContain('fts MATCH');
     });
 
     test('fts terms use prefix queries and phrases stay exact', () => {
