@@ -133,4 +133,117 @@ export function registerIntegrationNodes(register: Reg): void {
       };
     },
   });
+
+  // --- SPIKE (plan 023): desktop port of jtl.order_context ---
+  // Read-only resolver: sender-email/order-no -> erste JTL-Zeile -> jtl.*-Variablen.
+  // Portiert von packages/server/src/workflow-execution.ts (executeWorkflowJtlOrderContext).
+  const JTL_CTX_EMAIL_RE = /^[^\s@'";\\]+@[^\s@'";\\]+\.[^\s@'";\\]+$/;
+  const JTL_CTX_ORDER_NO_RE = /^[A-Za-z0-9._\-/]{1,64}$/;
+  const sqlLiteral = (v: string) => `'${v.replace(/'/g, "''")}'`;
+
+  const scalar = (value: unknown): string | number | boolean | null => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (value instanceof Date) return value.toISOString();
+    return String(value).slice(0, 2_000);
+  };
+
+  const parseMapping = (value: unknown): Record<string, string> => {
+    const mapping: Record<string, string> = {};
+    if (typeof value !== 'string' || !value.trim()) return mapping;
+    for (const pair of value.split(',')) {
+      const [col, target] = pair.split(':').map((p) => p.trim());
+      if (col && target) mapping[col.toLowerCase()] = target;
+    }
+    return mapping;
+  };
+
+  register({
+    type: 'jtl.order_context',
+    label: 'JTL Bestell-Kontext',
+    category: 'integration',
+    canvasType: 'registry',
+    defaultConfig: {
+      query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}',
+      mapping: '',
+    },
+    execute: async (ctx, config) => {
+      const template = String(config.query ?? '').trim();
+      if (!template) return { status: 'skipped', message: 'Keine Query' };
+
+      // Absender-E-Mail aus dem Nachrichtenkontext (erste Adresse).
+      const email = (ctx.strings.from_address ?? '').split(',')[0]?.trim() ?? '';
+      const orderNo = String(ctx.variables['jtl.order_no'] ?? config.orderNo ?? '').trim();
+
+      // Platzhalter binden + SQL-escapen (skip -> no_match, wenn Pflichtwert ungültig).
+      let query = template;
+      if (query.includes('{{email}}')) {
+        if (!email || !JTL_CTX_EMAIL_RE.test(email)) {
+          return {
+            status: 'skipped',
+            port: 'no_match',
+            message: 'Ungültige Absender-E-Mail',
+            variables: { 'jtl.context_found': false },
+          };
+        }
+        query = query.replace(/\{\{email\}\}/g, sqlLiteral(email));
+      }
+      if (query.includes('{{orderNo}}')) {
+        if (!orderNo || !JTL_CTX_ORDER_NO_RE.test(orderNo)) {
+          return {
+            status: 'skipped',
+            port: 'no_match',
+            message: 'Ungültige Bestellnummer',
+            variables: { 'jtl.context_found': false },
+          };
+        }
+        query = query.replace(/\{\{orderNo\}\}/g, sqlLiteral(orderNo));
+      }
+
+      // SELECT-only-Guard (executeReadOnlyMssqlQuery kappt nur die Länge; hier prüfen).
+      const upper = query.toUpperCase();
+      if (
+        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE)\b/.test(upper)
+      ) {
+        return { status: 'error', port: 'error', message: 'Nur SELECT erlaubt' };
+      }
+      if (!upper.startsWith('SELECT')) {
+        return { status: 'error', port: 'error', message: 'Query muss mit SELECT beginnen' };
+      }
+
+      if (ctx.dryRun) {
+        return {
+          status: 'ok',
+          message: 'dry-run jtl.order_context',
+          variables: { 'jtl.context_found': false },
+        };
+      }
+
+      const { executeReadOnlyMssqlQuery } = await import('../../mssql-keytar-service');
+      const r = await executeReadOnlyMssqlQuery(query);
+      if (!r.success) return { status: 'error', port: 'error', message: r.error ?? 'MSSQL-Fehler' };
+
+      const rows = r.rows ?? [];
+      const first = rows[0];
+      if (!first || typeof first !== 'object') {
+        return {
+          status: 'ok',
+          port: 'no_match',
+          message: 'Keine JTL-Daten gefunden',
+          variables: { 'jtl.context_found': false },
+        };
+      }
+
+      const mapping = parseMapping(config.mapping);
+      const variables: Record<string, string | number | boolean | null> = {
+        'jtl.context_found': true,
+        'jtl.match_count': rows.length,
+      };
+      for (const [column, value] of Object.entries(first as Record<string, unknown>)) {
+        const key = column.toLowerCase();
+        variables[mapping[key] ?? `jtl.${key}`] = scalar(value);
+      }
+      return { status: 'ok', port: 'default', variables };
+    },
+  });
 }

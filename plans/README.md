@@ -38,7 +38,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | 001 | DONE (spike: prototype + design doc) |
 | 021 | SPIKE: AI budget gates on existing usage tracking (D2) | P2 | M | direction | — | DONE (spike: prototype + design doc) |
 | 022 | SPIKE: GDPR erasure/anonymization counterpart (D3) | P2 | L | direction | — | DONE (spike: prototype + design doc) |
-| 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | TODO |
+| 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | DONE (spike: prototype + design doc) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 

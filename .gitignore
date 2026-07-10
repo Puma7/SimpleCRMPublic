@@ -96,6 +96,7 @@ src/.DS_Store
 !docs/LOGIN_SECURITY.md
 !docs/LEARNINGS_AUTH.md
 !docs/design/gdpr-erasure-spike.md
+!docs/SPIKE_JTL_CONTEXT_INJECTION.md
 !AGENTS.md
 
 coverage/
