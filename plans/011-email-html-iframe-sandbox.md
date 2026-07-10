@@ -234,10 +234,15 @@ type Props = {
 // Defense-in-depth CSP applied *inside* the sandboxed document. `style-src
 // 'unsafe-inline'` is required because email HTML relies on inline styles; that
 // is safe here because the iframe is an isolated, script-less, opaque-origin box.
+// `navigate-to 'none'` blocks the sandboxed frame from navigating itself on a
+// link click (an empty `sandbox` still lets `<a href>` navigate the frame's own
+// browsing context, which would fetch the remote URL and leak the click). Anchors
+// are ALSO neutralized during sanitization (Step 2), so this is defense-in-depth
+// for the case where a browser ignores `navigate-to`.
 const CSP_BLOCKED =
-  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:;"
+  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; navigate-to 'none';"
 const CSP_REMOTE =
-  "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'; font-src data: https:; media-src data: https:;"
+  "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'; font-src data: https:; media-src data: https:; navigate-to 'none';"
 
 // Emails render on white (like every standalone mail client) regardless of app
 // theme, so dark-mode chrome does not bleed through transparent regions.
@@ -283,13 +288,39 @@ export function EmailHtmlFrame({ html, allowRemote, className, title = "E-Mail-I
    import { EmailHtmlFrame } from "./email-html-frame"
    ```
 
-2. At `message-viewer.tsx:278`, drop the now-unused `handleBodyLinkClick`:
+2. **Neutralize in-frame anchors so a link click cannot navigate the frame.**
+   This is the required security step, and it must be done BEFORE removing the
+   old click guard. An empty `sandbox` blocks scripts and top-navigation but does
+   **not** make `<a href>` inert — a click navigates the iframe's own browsing
+   context to the remote URL, fetching it and leaking the click (and bypassing
+   the "remote content blocked" toggle) even though the parent's
+   `handleBodyLinkClick` confirmation no longer runs inside the frame. Strip
+   `href`/`target` from every anchor during sanitization so links render as inert
+   styled text. In the DOMPurify call that produces `sanitizedHtml` (around
+   `message-viewer.tsx:399-416`), register and then remove a hook:
+
+   ```tsx
+   DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+     if (node.tagName === "A") { node.removeAttribute("href"); node.removeAttribute("target") }
+   })
+   // ...run DOMPurify.sanitize(...) as today, then:
+   DOMPurify.removeHook("afterSanitizeAttributes")
+   ```
+
+   With this + the `navigate-to 'none'` CSP, body links become non-navigating —
+   consistent with this plan's stated outcome that body links no longer route
+   through the confirm dialog. (Re-providing clickable links via an app-chrome
+   "Links in dieser Nachricht" list wired through `useExternalLinkConfirm` is a
+   reasonable follow-up, but is OUT OF SCOPE here — do not add it in this plan.)
+
+3. At `message-viewer.tsx:278`, drop the now-unused `handleBodyLinkClick` from the
+   destructure (keep `dialog: externalLinkDialog`, which other actions still use):
 
    ```tsx
    const { dialog: externalLinkDialog } = useExternalLinkConfirm()
    ```
 
-3. Replace the body `<div>` at `message-viewer.tsx:1443-1448` with:
+4. Replace the body `<div>` at `message-viewer.tsx:1443-1448` with:
 
    ```tsx
                     <EmailHtmlFrame
@@ -300,8 +331,8 @@ export function EmailHtmlFrame({ html, allowRemote, className, title = "E-Mail-I
                     />
    ```
 
-4. Update the helper text at `message-viewer.tsx:1349-1352` so it no longer
-   claims links open after confirmation:
+5. Update the helper text at `message-viewer.tsx:1349-1352` so it no longer
+   claims links open after confirmation (they are now inert in the body):
 
    ```tsx
                     <p className="text-[10px] text-muted-foreground">

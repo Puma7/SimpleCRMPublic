@@ -7,11 +7,12 @@
 > in the `README.md` of the directory this plan lives in (`plans/README.md`),
 > unless a reviewer dispatched you and told you they maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat f24fb27..HEAD -- tests/unit/message-addresses-block.test.tsx tests/unit/message-filter-chips.test.tsx tests/unit/external-link-confirm-dialog.test.tsx tests/unit/compose-quill-editor.test.tsx jest.server.config.cjs server-coverage-baseline.json`
-> The four `tests/unit/*.test.tsx` files do **not** exist at `f24fb27` (this plan
-> creates them) — no output for them is normal. `jest.server.config.cjs` and
-> `server-coverage-baseline.json` are created by **plan 003** (this plan depends
-> on it): they will show as added in the diff once 003 has landed. That is the
+> **Drift check (run first)**: `git diff --stat f24fb27..HEAD -- tests/unit/message-addresses-block.test.tsx tests/unit/message-filter-chips.test.tsx tests/unit/external-link-confirm-dialog.test.tsx tests/unit/compose-quill-editor.test.tsx jest.server.config.cjs`
+> The four `tests/unit/*.test.tsx` files and this plan's new `jest.ui.config.cjs`
+> do **not** exist at `f24fb27` (this plan creates them) — no output for them is
+> normal. `jest.server.config.cjs` is created by **plan 003** (this plan depends
+> on it as the copy template): it will show as added in the diff once 003 has
+> landed, and this plan leaves it unchanged. That is the
 > expected dependency, not drift.
 >
 > **Secondary drift check (code under test)**: this plan hand-writes tests
@@ -45,9 +46,10 @@ regressions in the most security- and workflow-critical email UI go completely
 unmeasured. This plan adds render/interaction tests for the highest-value
 components — the compose editor, a message-viewer sub-component that drives fraud
 detection, the message-list filter control, and the external-link security gate —
-following the exact pattern of the existing passing email `.tsx` tests, and folds
-`src/components/email/**` into the ratcheted coverage floor that plan 003
-introduces so this area can no longer silently erode. It deliberately covers a
+following the exact pattern of the existing passing email `.tsx` tests, and puts
+`src/components/email/**` under its own ratcheted coverage floor (a separate UI
+ratchet mirroring plan 003's server one — kept independent so untested UI files
+never dilute the server floor) so this area can no longer silently erode. It deliberately covers a
 **top handful** of components, not all 96 — the coverage ratchet then lets that
 floor rise as more tests are added later.
 
@@ -60,12 +62,16 @@ floor rise as more tests are added later.
 - `tests/unit/external-link-confirm-dialog.test.tsx`
 - `tests/unit/compose-quill-editor.test.tsx`
 
-### Files this plan modifies (both created by plan 003 — must be present)
+### Files this plan adds (plan 003's ratchet files must be present as the template)
 
-- `jest.server.config.cjs` — plan 003's dedicated coverage config; this plan
-  appends `src/components/email/**` to its `collectCoverageFrom`.
-- `server-coverage-baseline.json` — plan 003's committed ratchet baseline; this
-  plan regenerates it so it reflects the widened coverage scope.
+- `jest.ui.config.cjs` — NEW, a copy of plan 003's `jest.server.config.cjs`
+  scoped to `src/components/email/**` (jsdom). Plan 003's server config is left
+  **unchanged**.
+- `ui-coverage-baseline.json` — NEW, the UI ratchet's own committed baseline.
+- `scripts/check-ui-coverage-ratchet.mjs` — NEW, a copy of
+  `scripts/check-server-coverage-ratchet.mjs` repointed at the UI config/baseline.
+- `package.json` — add `test:ui:coverage` + `test:ui:coverage:update-baseline`.
+- `.github/workflows/ci.yml` — add a UI-ratchet step alongside the server one.
 
 ### The test conventions to match — exemplar files (read but do not modify)
 
@@ -284,9 +290,10 @@ toolbar), that `text-change` forwards `root.innerHTML` to `onChange` (empty
 mock's `root.innerHTML`. This is the correct unit boundary and does not depend on
 Quill actually rendering in jsdom.
 
-### Plan 003's coverage config this plan extends (`jest.server.config.cjs`)
+### Plan 003's coverage config this plan MIRRORS (`jest.server.config.cjs`)
 
-Plan 003 creates this file with (see plans/003, Step 1):
+You copy this file's shape into a new `jest.ui.config.cjs` (Step 5) — you do NOT
+edit the server config. Plan 003 creates it with (see plans/003, Step 1):
 
 ```
 collectCoverageFrom: [
@@ -340,10 +347,16 @@ filters to a file across the `unit`/`integration` projects.
 - `tests/unit/message-filter-chips.test.tsx` (create)
 - `tests/unit/external-link-confirm-dialog.test.tsx` (create)
 - `tests/unit/compose-quill-editor.test.tsx` (create)
-- `jest.server.config.cjs` (edit — append two globs; created by plan 003)
-- `server-coverage-baseline.json` (regenerate + commit; created by plan 003)
+- `jest.ui.config.cjs` (create — copy of plan 003's `jest.server.config.cjs`, UI-scoped)
+- `scripts/check-ui-coverage-ratchet.mjs` (create — copy of the server ratchet script)
+- `ui-coverage-baseline.json` (create + commit)
+- `package.json` (edit — add the two `test:ui:coverage*` scripts)
+- `.github/workflows/ci.yml` (edit — add the UI-ratchet step)
 
 **Out of scope** (do NOT touch, even though they look related):
+
+- `jest.server.config.cjs` and `server-coverage-baseline.json` — plan 003's
+  server floor stays **unchanged**; keeping the UI ratchet separate is the point.
 
 - Any file under `src/components/email/**` — you are testing these components, not
   changing them. If a test only passes after editing the component, STOP (the
@@ -719,50 +732,65 @@ passes (3 tests). If the default import of the mocked `quill` module comes throu
 as `undefined` (esModule interop edge), confirm the mock returns
 `{ __esModule: true, default: MockQuill }` exactly as above before retrying.
 
-### Step 5: Fold `src/components/email/**` into plan 003's coverage ratchet
+### Step 5: Add a SEPARATE email-UI coverage ratchet (do NOT dilute the server floor)
 
-**Precondition**: `jest.server.config.cjs` and `server-coverage-baseline.json`
-exist (plan 003 has landed). If not, STOP (see STOP conditions).
+**Precondition**: plan 003 has landed — `jest.server.config.cjs`,
+`server-coverage-baseline.json`, `scripts/check-server-coverage-ratchet.mjs`, and
+the `test:server:coverage:update-baseline` script exist. If not, STOP (see STOP
+conditions).
 
-In `jest.server.config.cjs`, extend the `collectCoverageFrom` array so it also
-covers the email components. Change:
+**Why a second ratchet, not one merged scope:** folding
+`src/components/email/**` into `jest.server.config.cjs`'s single
+`collectCoverageFrom` + one baseline would pull the **server** floor down (~96
+mostly-untested UI files drag the aggregate number), so a real
+`packages/server/src/**` coverage regression could later slip in under the
+lowered combined baseline — defeating exactly what plan 003 exists to catch. Keep
+the two floors independent: leave `jest.server.config.cjs` and
+`server-coverage-baseline.json` **unchanged**, and add a parallel UI ratchet.
 
-```js
-  collectCoverageFrom: [
-    'packages/server/src/**/*.ts',
-    '!packages/server/src/**/*.d.ts',
-  ],
-```
+1. **Create `jest.ui.config.cjs`** by copying `jest.server.config.cjs` and
+   changing only the coverage scope + project selection to the email UI:
 
-to:
+   ```js
+     collectCoverageFrom: [
+       'src/components/email/**/*.{ts,tsx}',
+       '!src/components/email/**/*.d.ts',
+     ],
+   ```
 
-```js
-  collectCoverageFrom: [
-    'packages/server/src/**/*.ts',
-    '!packages/server/src/**/*.d.ts',
-    'src/components/email/**/*.tsx',
-    '!src/components/email/**/*.d.ts',
-  ],
-```
+   Point its `testMatch`/`roots` at the UI tests you added in Steps 1–4 (jsdom
+   env), mirroring how `jest.server.config.cjs` scopes to the server suite.
 
-Then regenerate and commit the baseline (its numbers will **drop**, because ~96
-mostly-untested email files are now counted — this is expected and correct; the
-ratchet only ever moves the floor **up** from here):
+2. **Create `scripts/check-ui-coverage-ratchet.mjs`** by copying
+   `scripts/check-server-coverage-ratchet.mjs` and repointing it at
+   `jest.ui.config.cjs` and a new `ui-coverage-baseline.json` (same ratchet
+   logic: fail if any tracked metric drops below baseline).
 
-```
-pnpm run test:server:coverage:update-baseline
-git add jest.server.config.cjs server-coverage-baseline.json
-```
+3. **Add scripts** to `package.json` mirroring the server ones:
+   `"test:ui:coverage": "jest --config jest.ui.config.cjs --coverage"` and
+   `"test:ui:coverage:update-baseline": "node scripts/check-ui-coverage-ratchet.mjs --update-baseline"`.
+
+4. **Generate + commit the UI baseline** (this is a fresh floor, so it does not
+   touch the server number at all):
+
+   ```
+   pnpm run test:ui:coverage:update-baseline
+   git add jest.ui.config.cjs scripts/check-ui-coverage-ratchet.mjs package.json ui-coverage-baseline.json
+   ```
+
+5. **Wire the UI ratchet into CI** in `.github/workflows/ci.yml` as its own step,
+   right after the server-ratchet step plan 003 added:
+   `- name: Email UI coverage ratchet` → `run: node scripts/check-ui-coverage-ratchet.mjs`.
 
 **Verify**:
-- `node -e "const c=require('./jest.server.config.cjs'); process.exit(c.collectCoverageFrom.includes('src/components/email/**/*.tsx') ? 0 : 1)"`
-  → exit 0 (the glob is present).
-- `node scripts/check-server-coverage-ratchet.mjs` → exit 0, prints
-  `Server coverage meets baseline: { … }` (the just-regenerated baseline equals
-  the current snapshot).
-- `git status --porcelain server-coverage-baseline.json` → shows it staged;
+- `git status --porcelain jest.server.config.cjs server-coverage-baseline.json`
+  → shows **nothing** (the server floor is untouched).
+- `node scripts/check-ui-coverage-ratchet.mjs` → exit 0, meets the just-generated
+  UI baseline.
+- `git status --porcelain ui-coverage-baseline.json` → shows it staged;
   `git status --porcelain coverage/` → shows nothing (coverage output is
   `.gitignore`d).
+- `grep -q "check-ui-coverage-ratchet" .github/workflows/ci.yml` → exit 0.
 
 ### Step 6: Full local gate
 
@@ -821,10 +849,11 @@ Machine-checkable. ALL must hold:
 - [ ] `pnpm test` exits 0 with all suites passing (the four new suites among them)
 - [ ] `pnpm run lint` exits 0 (no eslint warnings — `--max-warnings 0`)
 - [ ] `npx tsc -p tsconfig.json --noEmit` exits 0
-- [ ] `jest.server.config.cjs` `collectCoverageFrom` includes `'src/components/email/**/*.tsx'` and `'!src/components/email/**/*.d.ts'`
-- [ ] `node scripts/check-server-coverage-ratchet.mjs` exits 0 and prints `Server coverage meets baseline`
-- [ ] `server-coverage-baseline.json` regenerated and staged; `coverage/` is not staged (`git status --porcelain coverage/` empty)
-- [ ] No files outside the six in-scope paths are modified (`git status`); in particular no file under `src/components/email/**` and not `jest.config.cjs`
+- [ ] A NEW `jest.ui.config.cjs` exists whose `collectCoverageFrom` includes `'src/components/email/**/*.{ts,tsx}'` and `'!src/components/email/**/*.d.ts'`; `jest.server.config.cjs` and `server-coverage-baseline.json` are **unchanged** (`git status --porcelain jest.server.config.cjs server-coverage-baseline.json` prints nothing)
+- [ ] `node scripts/check-ui-coverage-ratchet.mjs` exits 0 and meets the UI baseline
+- [ ] `ui-coverage-baseline.json` generated and staged; `coverage/` is not staged (`git status --porcelain coverage/` empty)
+- [ ] `.github/workflows/ci.yml` has a `check-ui-coverage-ratchet` step (`grep -q "check-ui-coverage-ratchet" .github/workflows/ci.yml`)
+- [ ] Only the intended files are modified (`git status`): the four new test files + `jest.ui.config.cjs`, `scripts/check-ui-coverage-ratchet.mjs`, `ui-coverage-baseline.json`, `package.json`, `.github/workflows/ci.yml`; in particular **no** file under `src/components/email/**`, not `jest.config.cjs`, and not `jest.server.config.cjs`
 - [ ] `plans/README.md` status row for plan 017 updated (unless a reviewer owns the index)
 
 ## STOP conditions
@@ -841,12 +870,13 @@ Stop and report back (do not improvise) if:
 - A test only passes after editing a file under `src/components/email/**` (or any
   out-of-scope source). Either your test is wrong (fix the test) or you found a
   real component bug — report it; do not patch the component to make a test green.
-- **Step 5 precondition unmet**: `jest.server.config.cjs` or
-  `server-coverage-baseline.json` does not exist (plan 003 has not landed).
+- **Step 5 precondition unmet**: plan 003's ratchet files (`jest.server.config.cjs`,
+  `server-coverage-baseline.json`, `scripts/check-server-coverage-ratchet.mjs`)
+  do not exist (plan 003 has not landed) — you need them as the copy template.
   Complete Steps 1–4, commit them, then STOP and report that Step 5 needs plan 003.
-- The regenerated `server-coverage-baseline.json` has every metric `0`/`null`, or
-  the ratchet reports the summary has no `total` — that signals mis-instrumentation
-  (the email glob didn't match or the config didn't load the base projects), not
+- The generated `ui-coverage-baseline.json` has every metric `0`/`null`, or the
+  ratchet reports the summary has no `total` — that signals mis-instrumentation
+  (the email glob didn't match or the config didn't load the jsdom env), not
   genuine zero coverage. Do not commit it; report it.
 - Any single verification command fails twice after one honest fix attempt (for
   the Radix dialog specifically, the fallback mock in Step 3 counts as that
@@ -857,15 +887,15 @@ Stop and report back (do not improvise) if:
 For the human/agent who owns this after it lands:
 
 - **Raising the floor**: as more email component tests are added, run
-  `pnpm run test:server:coverage:update-baseline` and commit the higher
-  `server-coverage-baseline.json`. The baseline should only ever move up; a PR
-  that lowers it means coverage regressed and should be scrutinized.
-- **Scope of plan 003's config**: after this plan, `jest.server.config.cjs` is no
-  longer server-only — its `collectCoverageFrom` also covers
-  `src/components/email/**`. Its `text-summary`/`json-summary` numbers are the
-  union of `packages/server/src` and the email components. Keep that in mind when
-  reading the ratchet output; the config name still says "server" for continuity
-  with plan 003.
+  `pnpm run test:ui:coverage:update-baseline` and commit the higher
+  `ui-coverage-baseline.json`. The baseline should only ever move up; a PR that
+  lowers it means UI coverage regressed and should be scrutinized.
+- **Two independent floors, on purpose**: the server ratchet
+  (`jest.server.config.cjs` / `server-coverage-baseline.json`, from plan 003) and
+  this UI ratchet (`jest.ui.config.cjs` / `ui-coverage-baseline.json`) are kept
+  separate so ~96 mostly-untested UI files never drag the server floor down and
+  mask a real `packages/server/src/**` regression. Do NOT merge the two coverage
+  scopes into one config/baseline.
 - **Reviewer focus**: confirm no file under `src/components/email/**` was modified
   (these tests must characterize existing behavior, not change it); confirm
   `jest.config.cjs`'s 90% allowlist/threshold was **not** touched; confirm the

@@ -278,14 +278,21 @@ using the repo's `CREATE TABLE IF NOT EXISTS` idiom and `getDb()` from
 frozen):
 
 ```ts
-import { getDb } from '../sqlite-service';
-
 export const WEBHOOK_SUBSCRIPTIONS_TABLE = 'webhook_subscriptions';
 export const WEBHOOK_DELIVERIES_TABLE = 'webhook_deliveries';
 
+// Lazy DB access — do NOT `import { getDb } from '../sqlite-service'` at module
+// top level. That would load electron/sqlite-service (and its native
+// better-sqlite3 / electron deps) the instant this module is imported, so even a
+// pure unit test that only touches `signWebhookBody` or the injected dispatcher
+// would drag in native modules and fail (or need an electron/sqlite mock). Only
+// the DB functions resolve it, on demand:
+function db() {
+  return (require('../sqlite-service') as typeof import('../sqlite-service')).getDb();
+}
+
 export function ensureWebhookSpikeTables(): void {
-  const db = getDb();
-  db.exec(`
+  db().exec(`
     CREATE TABLE IF NOT EXISTS ${WEBHOOK_SUBSCRIPTIONS_TABLE} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       url TEXT NOT NULL,
@@ -310,7 +317,9 @@ export function ensureWebhookSpikeTables(): void {
 
 Add minimal prototype store helpers (`insertSubscription`,
 `listSubscriptionsForEvent`, `recordDelivery`) over these tables. Keep them thin
-— this is a spike, not a hardened DAL.
+— this is a spike, not a hardened DAL. They too must reach the DB through the
+lazy `db()` helper above, never a top-level `getDb` import, so the module stays
+importable without native modules.
 
 **Verify**: `npx tsc -p tsconfig.electron.json --noEmit` → exit 0 (file type-checks).
 
@@ -395,7 +404,12 @@ live path in this spike.
 
 Create `tests/unit/automation-webhooks-spike.test.ts`. Model structure after the
 existing `tests/unit/automation-api.test.ts` (same directory; `describe`/`test`/
-`expect`, fakes injected — no DB, no network, no keytar). Cover:
+`expect`, fakes injected — no DB, no network, no keytar). Pass the store
+functions (`recordDelivery`, `listSubscriptionsForEvent`) as **fakes/spies via
+`WebhookDeps`**, never the real DB-backed ones — so the dispatcher never reaches
+`db()`. That, together with the lazy `db()` seam from Step 1 (no top-level
+`sqlite-service` import), is what keeps this suite from loading
+`better-sqlite3`/`electron`; no `jest.mock('../sqlite-service')` is needed. Cover:
 
 1. **Signature determinism + verification** — `signWebhookBody(body, secret)`
    equals a value an independent `createHmac('sha256', secret)` reproduces, and

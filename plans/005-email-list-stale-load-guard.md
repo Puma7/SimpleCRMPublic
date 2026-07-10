@@ -365,6 +365,29 @@ Leave every other branch (`append` merge, `silent && keepId` reconcile, the
 `setMessages(list)` else, and the selection bookkeeping) exactly as-is — the two
 new `return` guards sit *before* them, so they only ever run for the current call.
 
+**1f. Invalidate in-flight loads when the account scope is cleared.** The effect
+(`use-email-messages.ts:155-168`) clears the list in its `else` branch **without**
+starting a `loadMessages` call, so it never advances `loadSeqRef`. A prior
+account's request still in flight therefore keeps the current sequence number,
+passes the guards from 1c/1d, and repopulates the just-cleared view with stale
+messages. Bump the counter in that branch so any in-flight load is treated as
+stale. Change (`use-email-messages.ts:166-168`):
+
+```ts
+    } else {
+      setMessages([])
+    }
+```
+
+to:
+
+```ts
+    } else {
+      loadSeqRef.current += 1
+      setMessages([])
+    }
+```
+
 **Verify**: `npx tsc -p tsconfig.json --noEmit` → exit 0, no errors. Then
 `pnpm run lint` → exit 0.
 
@@ -518,8 +541,14 @@ it.)
      2's `[20]`, never `[10]`.
   2. **Happy path:** a single account-1 load populates `[1, 2]` and clears
      `loadingMessages`.
+  3. **Cleared-scope race (from 1f):** an account-1 load starts, then
+     `selectedAccountId` becomes `null` (the effect clears the list and bumps
+     `loadSeqRef`), then the in-flight account-1 request resolves — assert the
+     list stays **empty** (the stale resolve is dropped, not repopulated). Model
+     the scope change by re-rendering the hook's host with `selectedAccountId =
+     null` before resolving the deferred account-1 request.
 - Verification: `pnpm test -- tests/unit/use-email-messages-stale-load.test.tsx`
-  → all pass (2 new tests). Then the full suite `pnpm test` → all pass.
+  → all pass (3 new tests). Then the full suite `pnpm test` → all pass.
 
 ## Done criteria
 
@@ -528,7 +557,7 @@ Machine-checkable. ALL must hold:
 - [ ] `npx tsc -p tsconfig.json --noEmit` exits 0 (no type errors).
 - [ ] `pnpm run lint` exits 0 (eslint, `--max-warnings 0`).
 - [ ] `pnpm test -- tests/unit/use-email-messages-stale-load.test.tsx` passes; the
-      two new tests exist and pass.
+      three new tests exist and pass (out-of-order race, happy path, cleared-scope race).
 - [ ] `pnpm test` exits 0 (no existing suite regressed).
 - [ ] `pnpm run build` exits 0.
 - [ ] `git grep -n "loadSeqRef" src/components/email/hooks/use-email-messages.ts`
