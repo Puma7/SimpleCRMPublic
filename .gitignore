@@ -17,6 +17,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# scratch / backup junk (never commit)
+*.bak
+tmp_*
+
 # env files
 .env*
 !docker/.env.example

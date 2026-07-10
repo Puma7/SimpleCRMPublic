@@ -13,6 +13,7 @@
     "@simplecrm/core": "0.1.0",
     "archiver": "^7.0.1",
     "fastify": "^5.8.5",
+    "google-auth-library": "^10.7.0",
     "graphile-worker": "^0.16.6",
     "imapflow": "^1.3.6",
     "kysely": "^0.29.2",
