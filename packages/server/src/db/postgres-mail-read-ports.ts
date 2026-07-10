@@ -730,7 +730,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)
               : undefined;
 
-          const buildQuery = (page: { limit: number; offset: number | undefined }) => {
+          const buildQuery = (page: { limit: number; offset: number | undefined; withCursor?: boolean }) => {
             let query = trx
               .selectFrom('email_messages')
               .select(emailMessageSummaryColumns)
@@ -761,14 +761,16 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             if (input.done !== undefined) query = query.where('done_local', '=', input.done);
             if (input.spam !== undefined) query = query.where('is_spam', '=', input.spam);
             if (parsed) query = applyMessageOperatorFilter(query, parsed);
-            query = applyMessageCursor(
-              query,
-              input.workspaceId,
-              effectiveCursor,
-              input.sort,
-              input.view,
-              priorityCursor,
-            );
+            if (page.withCursor !== false) {
+              query = applyMessageCursor(
+                query,
+                input.workspaceId,
+                effectiveCursor,
+                input.sort,
+                input.view,
+                priorityCursor,
+              );
+            }
             return query;
           };
 
@@ -794,7 +796,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
 
           const runQuery = async (
             mode: 'fts' | 'like' | 'regex' | undefined,
-            page: { limit: number; offset: number | undefined },
+            page: { limit: number; offset: number | undefined; withCursor?: boolean },
           ) => {
             let query = buildQuery(page);
             if (mode === 'fts' && tsQueryTokens && tsQueryTokens.length > 0) {
@@ -851,7 +853,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 if (rows.length > 0) {
                   ftsServed = true;
                 } else if ((input.offset ?? 0) > 0 || input.cursor !== undefined) {
-                  const probe = await runQuery('fts', { limit: 1, offset: 0 });
+                  // Probe ausdruecklich OHNE Cursor: reine Frage "matcht FTS
+                  // diese Query+Filter ueberhaupt?" — eine Cursor-Seite hinter
+                  // dem letzten FTS-Treffer darf den Modus nicht auf ILIKE
+                  // kippen.
+                  const probe = await runQuery('fts', { limit: 1, offset: 0, withCursor: false });
                   if (probe.length > 0) {
                     ftsServed = true;
                     rows = [];
@@ -890,7 +896,10 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               : rows.length > limit
                 ? pageRows[pageRows.length - 1]?.id ?? null
                 : null,
-            ...(searchMode === undefined ? {} : { searchMode }),
+            // Suchpfad: hasMore explizit — sort=relevance liefert bewusst
+            // keinen nextCursor (Offset-Pagination), der Renderer braucht
+            // trotzdem ein "Weitere laden"-Signal.
+            ...(searchMode === undefined ? {} : { searchMode, hasMore: rows.length > limit }),
           };
         },
         { applySession: options.applyWorkspaceSession },

@@ -4766,6 +4766,7 @@ describe('renderer transport', () => {
         ],
         nextCursor: null,
         searchMode: 'fts',
+        hasMore: true,
       },
     }));
     const transport = createHttpRendererTransport({
@@ -4781,8 +4782,11 @@ describe('renderer transport', () => {
       view: 'inbox',
       sort: 'relevance',
       scope: { mode: 'broad', includeSpam: true, includeTrash: false },
-    }) as { messages: Array<{ search_snippet?: string | null }>; searchMode: string };
+    }) as { messages: Array<{ search_snippet?: string | null }>; searchMode: string; hasMore: boolean };
     expect(result.searchMode).toBe('fts');
+    // Explizites hasMore gewinnt: Relevanz liefert bewusst nextCursor null,
+    // hat aber Folgeseiten — abgeleitet aus nextCursor waere das false.
+    expect(result.hasMore).toBe(true);
     expect(result.messages[0]?.search_snippet).toBe('Kontext \uE000Treffer\uE001 Ende');
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://crm.example.com/api/v1/email/messages?accountId=101&search=Treffer&limit=50&offset=0&view=inbox&sort=relevance&scopeMode=broad&scopeIncludeSpam=true',

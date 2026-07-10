@@ -2592,6 +2592,7 @@ function sanitizeEmailMessageList(result: EmailMessageListResult): EmailMessageL
     items: result.items.map((message) => sanitizeEmailMessage(message, false)),
     nextCursor: result.nextCursor,
     ...(result.searchMode === undefined ? {} : { searchMode: result.searchMode }),
+    ...(result.hasMore === undefined ? {} : { hasMore: result.hasMore }),
   };
 }
 

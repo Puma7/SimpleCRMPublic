@@ -13986,6 +13986,10 @@ describe('server edition foundation', () => {
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
     expect(listSection.indexOf('query = applyMessageCursor('))
       .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, broadScope ? undefined : input.view);'));
+    // Die Modus-Probe muss cursor-frei laufen: eine Cursor-Seite hinter dem
+    // letzten FTS-Treffer darf den Modus nicht auf ILIKE kippen.
+    expect(listSection).toContain("runQuery('fts', { limit: 1, offset: 0, withCursor: false })");
+    expect(listSection).toContain('if (page.withCursor !== false) {');
   });
 
   test('postgres mail folder badge counts exclude done archived messages', () => {
@@ -18058,7 +18062,9 @@ describe('server edition foundation', () => {
               ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
             })],
             nextCursor: 11,
-            ...((input as { search?: string }).search ? { searchMode: 'fts' as const } : {}),
+            ...((input as { search?: string }).search
+              ? { searchMode: 'fts' as const, hasMore: true }
+              : {}),
           };
         },
         async get(input) {
@@ -18235,6 +18241,7 @@ describe('server edition foundation', () => {
       limit: 10,
     }]);
     expect((messages.body as any).data.searchMode).toBe('fts');
+    expect((messages.body as any).data.hasMore).toBe(true);
     expect((messages.body as any).data.items[0].searchSnippet).toBe('Treffer: \uE000Hello\uE001');
 
     // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.

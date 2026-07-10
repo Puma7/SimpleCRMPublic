@@ -1705,6 +1705,8 @@ export type EmailMessageListResult = {
   items: readonly EmailMessageRecord[];
   nextCursor: number | null;
   searchMode?: 'fts' | 'like' | 'regex';
+  /** Suchpfad: explizit, weil sort=relevance keinen nextCursor liefert. */
+  hasMore?: boolean;
 };
 
 export type EmailReplySuggestionStatus = 'none' | 'pending' | 'ready' | 'failed' | 'skipped';

@@ -2497,11 +2497,17 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         scopeIncludeTrash: scopeMode === "broad" && scope?.includeTrash === true ? true : undefined,
       }),
       transform: (body) => {
-        const result = dataBody<ListResult<EmailMessageRecord> & { searchMode?: "fts" | "like" | "regex" }>(body)
+        const result = dataBody<ListResult<EmailMessageRecord> & { searchMode?: "fts" | "like" | "regex"; hasMore?: boolean }>(body)
         return {
           messages: (Array.isArray(result) ? result : result.items ?? []).map(mapEmailMessageRecord),
           searchMode: Array.isArray(result) ? "like" : result.searchMode ?? "like",
-          hasMore: Array.isArray(result) ? false : result.nextCursor != null,
+          // Explizites hasMore bevorzugen: sort=relevance liefert bewusst
+          // keinen nextCursor (Offset-Pagination), hat aber Folgeseiten.
+          hasMore: Array.isArray(result)
+            ? false
+            : typeof result.hasMore === "boolean"
+              ? result.hasMore
+              : result.nextCursor != null,
         }
       },
     }
