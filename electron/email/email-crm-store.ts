@@ -4,6 +4,11 @@ import { SNOOZE_FILTER_SQL } from './email-message-features';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import type { MessageSearchScope } from '../../shared/email-search-scope';
 import {
+  buildLikeSearchSnippet,
+  SEARCH_MARK_END,
+  SEARCH_MARK_START,
+} from '../../shared/email-search-highlight';
+import {
   buildFtsMatchExpression,
   MAX_SEARCH_TEXT_TOKENS,
   parseMailSearchQuery,
@@ -22,6 +27,8 @@ import {
   EMAIL_MESSAGES_TABLE,
   EMAIL_FOLDERS_TABLE,
   EMAIL_MESSAGES_FTS_TABLE,
+  EMAIL_ATTACHMENTS_FTS_TABLE,
+  EMAIL_MESSAGE_ATTACHMENTS_TABLE,
 } from '../database-schema';
 
 export type EmailCategoryRow = {
@@ -638,6 +645,8 @@ export function backfillCustomerLinksForMessages(opts?: {
 
 export type MessageSearchMode = 'fts' | 'like' | 'regex';
 
+export type MessageSearchSort = 'date' | 'relevance';
+
 export type { MessageSearchScope } from '../../shared/email-search-scope';
 
 export type MessageSearchOpts = {
@@ -648,6 +657,8 @@ export type MessageSearchOpts = {
   doneFilter?: MessageDoneFilter;
   /** 'broad' searches across all folders/views; absent or 'view' keeps per-view filtering. */
   scope?: MessageSearchScope;
+  /** 'relevance' ranks FTS results via bm25; LIKE/regex fall back to date. */
+  sort?: MessageSearchSort;
 };
 
 function categoryJoinSql(categoryId: number | null | undefined): { sql: string; param?: number } {
@@ -666,6 +677,14 @@ const LIKE_SEARCH_FIELDS = `(
          OR m.bcc_json LIKE ? ESCAPE '\\' OR m.ticket_code LIKE ? ESCAPE '\\'
          OR m.attachments_json LIKE ? ESCAPE '\\'
          OR EXISTS (
+           SELECT 1 FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} att
+           WHERE att.message_id = m.id
+             AND (
+               att.filename_display LIKE ? ESCAPE '\\'
+               OR COALESCE(att.text_content, '') LIKE ? ESCAPE '\\'
+             )
+         )
+         OR EXISTS (
            SELECT 1 FROM ${CUSTOMERS_TABLE} c
            WHERE c.id = m.customer_id
              AND (
@@ -678,7 +697,7 @@ const LIKE_SEARCH_FIELDS = `(
        )`;
 
 /** Placeholder count in LIKE_SEARCH_FIELDS. */
-const LIKE_SEARCH_FIELD_COUNT = 13;
+const LIKE_SEARCH_FIELD_COUNT = 15;
 
 /** One search term per placeholder in LIKE_SEARCH_FIELDS. */
 function pushLikeSearchTerms(params: (string | number)[], term: string): void {
@@ -770,6 +789,83 @@ function ftsTableExists(): boolean {
   );
 }
 
+function attachmentsFtsTableExists(): boolean {
+  return Boolean(
+    getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(EMAIL_ATTACHMENTS_FTS_TABLE),
+  );
+}
+
+/** bm25 weights per email_messages_fts column (subject/snippet weighted up). */
+const FTS_BM25_WEIGHTS = '3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0';
+
+/**
+ * Attach highlighted search_snippet values (sentinel-marked, no HTML) to FTS
+ * result rows: message-level snippet() first, attachment snippet as fallback
+ * for attachment-only hits. Cosmetic — never fails the search.
+ */
+function attachFtsSearchSnippets(
+  rows: import('./email-store').EmailMessageRow[],
+  match: string,
+  withAttachments: boolean,
+): void {
+  if (rows.length === 0) return;
+  try {
+    const ids = rows.map((r) => r.id);
+    const ph = ids.map(() => '?').join(',');
+    const snippetArgs = `-1, '${SEARCH_MARK_START}', '${SEARCH_MARK_END}', ' … ', 12`;
+    const byId = new Map<number, string>();
+    const msgSnips = getDb()
+      .prepare(
+        `SELECT rowid AS id, snippet(${EMAIL_MESSAGES_FTS_TABLE}, ${snippetArgs}) AS s
+         FROM ${EMAIL_MESSAGES_FTS_TABLE}
+         WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ? AND rowid IN (${ph})`,
+      )
+      .all(match, ...ids) as { id: number; s: string | null }[];
+    for (const r of msgSnips) {
+      if (r.s && r.s.includes(SEARCH_MARK_START)) byId.set(r.id, r.s);
+    }
+    const missing = ids.filter((id) => !byId.has(id));
+    if (missing.length > 0 && withAttachments) {
+      const ph2 = missing.map(() => '?').join(',');
+      const attSnips = getDb()
+        .prepare(
+          `SELECT a.message_id AS id, snippet(${EMAIL_ATTACHMENTS_FTS_TABLE}, ${snippetArgs}) AS s
+           FROM ${EMAIL_ATTACHMENTS_FTS_TABLE}
+           JOIN ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} a ON a.id = ${EMAIL_ATTACHMENTS_FTS_TABLE}.rowid
+           WHERE ${EMAIL_ATTACHMENTS_FTS_TABLE} MATCH ? AND a.message_id IN (${ph2})`,
+        )
+        .all(match, ...missing) as { id: number; s: string | null }[];
+      for (const r of attSnips) {
+        if (r.s && r.s.includes(SEARCH_MARK_START) && !byId.has(r.id)) byId.set(r.id, r.s);
+      }
+    }
+    for (const row of rows) {
+      const s = byId.get(row.id);
+      if (s) row.search_snippet = s;
+    }
+  } catch {
+    /* Highlighting ist Kosmetik — Suche nie daran scheitern lassen. */
+  }
+}
+
+/** JS-side highlighted snippet for LIKE-mode rows (same sentinel format). */
+function attachLikeSearchSnippets(
+  rows: import('./email-store').EmailMessageRow[],
+  parsed: ParsedMailSearchQuery,
+): void {
+  const needles = [...parsed.phrases, ...parsed.terms];
+  if (needles.length === 0) return;
+  for (const row of rows) {
+    const snip =
+      buildLikeSearchSnippet(row.body_text, needles) ??
+      buildLikeSearchSnippet(row.snippet, needles) ??
+      buildLikeSearchSnippet(row.subject, needles);
+    if (snip) row.search_snippet = snip;
+  }
+}
+
 type MessageSearchTarget = {
   accountId?: number;
   access?: import('./email-store').MailScopeSession;
@@ -779,11 +875,13 @@ type MessageSearchTarget = {
 
 /**
  * Shared search engine for all non-regex paths. Dispatch: FTS5 (phrases exact,
- * terms as prefix) → LIKE fallback. The mode is deterministic per query, not
- * per page: page 1 decides (FTS hit → fts, otherwise LIKE); later pages probe
- * FTS page 1 so a LIKE-served result list stays LIKE across its pagination.
- * Operator-only queries (e.g. `von:max@test.de`) skip text matching and run a
- * plain filtered SELECT.
+ * terms as prefix; message index OR attachment filename/content index) → LIKE
+ * fallback. The mode is deterministic per query, not per page: page 1 decides
+ * (FTS hit → fts, otherwise LIKE); later pages probe FTS page 1 so a
+ * LIKE-served result list stays LIKE across its pagination. Operator-only
+ * queries (e.g. `von:max@test.de`) skip text matching and run a plain
+ * filtered SELECT. sort 'relevance' ranks by bm25 over the message index
+ * (attachment-only hits appear only in date order); LIKE stays date-sorted.
  */
 function runMessageSearch(
   trimmed: string,
@@ -811,24 +909,45 @@ function runMessageSearch(
   }
   if (fts && ftsTableExists()) {
     try {
-      // NB: the MATCH column must be alias-qualified with the *table* name
-      // (`fts.email_messages_fts`); a bare `fts MATCH ?` is "no such column".
+      const relevance = opts.sort === 'relevance';
+      const withAttachments = attachmentsFtsTableExists();
       const params: (string | number)[] = [];
       if (cat.param != null) params.push(cat.param);
       if (target.accountId != null) params.push(target.accountId);
       params.push(...access.params, ...ops.params, fts);
-      const stmt = getDb().prepare(
-        `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-         ${cat.sql}
-         INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
-         WHERE ${accountSql}${scopeSql}${snoozeSql}
-         ${doneSql}${access.sql}${ops.sql}
-         AND fts.${EMAIL_MESSAGES_FTS_TABLE} MATCH ?
-         ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
-         LIMIT ? OFFSET ?`,
-      );
+      let sql: string;
+      if (relevance) {
+        // NB: MATCH/bm25 need the alias-qualified *table* name
+        // (`fts.email_messages_fts`); a bare `fts MATCH ?` is "no such column".
+        sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+           ${cat.sql}
+           INNER JOIN ${EMAIL_MESSAGES_FTS_TABLE} fts ON fts.rowid = m.id
+           WHERE ${accountSql}${scopeSql}${snoozeSql}
+           ${doneSql}${access.sql}${ops.sql}
+           AND fts.${EMAIL_MESSAGES_FTS_TABLE} MATCH ?
+           ORDER BY bm25(fts.${EMAIL_MESSAGES_FTS_TABLE}, ${FTS_BM25_WEIGHTS}),
+                    datetime(COALESCE(m.date_received, m.created_at)) DESC
+           LIMIT ? OFFSET ?`;
+      } else {
+        const attachmentMatch = withAttachments
+          ? ` OR m.id IN (
+               SELECT a.message_id FROM ${EMAIL_ATTACHMENTS_FTS_TABLE} f
+               JOIN ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} a ON a.id = f.rowid
+               WHERE f.${EMAIL_ATTACHMENTS_FTS_TABLE} MATCH ?)`
+          : '';
+        if (withAttachments) params.push(fts);
+        sql = `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
+           ${cat.sql}
+           WHERE ${accountSql}${scopeSql}${snoozeSql}
+           ${doneSql}${access.sql}${ops.sql}
+           AND (m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)${attachmentMatch})
+           ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
+           LIMIT ? OFFSET ?`;
+      }
+      const stmt = getDb().prepare(sql);
       const rows = stmt.all(...params, limit, offset) as import('./email-store').EmailMessageRow[];
       if (rows.length > 0) {
+        attachFtsSearchSnippets(rows, fts, withAttachments);
         return { rows, searchMode: 'fts' };
       }
       if (offset > 0) {
@@ -860,7 +979,35 @@ function runMessageSearch(
        LIMIT ? OFFSET ?`,
     )
     .all(...params) as import('./email-store').EmailMessageRow[];
+  attachLikeSearchSnippets(rows, parsed);
   return { rows, searchMode: 'like' };
+}
+
+/** ±60-char window around the first regex hit, marked with the sentinels. */
+function buildRegexSearchSnippet(
+  m: import('./email-store').EmailMessageRow,
+  re: RegExp,
+): string | null {
+  for (const field of [m.subject, m.snippet, m.body_text]) {
+    if (!field) continue;
+    const clean = field.replace(/[\uE000\uE001]/g, '').replace(/\s+/g, ' ').trim();
+    const match = re.exec(clean);
+    if (!match || match[0].length === 0) continue;
+    const start = Math.max(0, match.index - 60);
+    const end = Math.min(clean.length, match.index + match[0].length + 60);
+    const prefix = start > 0 ? '… ' : '';
+    const suffix = end < clean.length ? ' …' : '';
+    return (
+      prefix +
+      clean.slice(start, match.index) +
+      SEARCH_MARK_START +
+      match[0] +
+      SEARCH_MARK_END +
+      clean.slice(match.index + match[0].length, end) +
+      suffix
+    );
+  }
+  return null;
 }
 
 /**
@@ -944,6 +1091,9 @@ export function searchMessagesForAccountWithMeta(
         return re.test(hay);
       })
       .slice(offset, offset + limit);
+    for (const m of rows) {
+      m.search_snippet = buildRegexSearchSnippet(m, re);
+    }
     return { rows, searchMode: 'regex', hasMore: rows.length >= limit };
   }
   const r = runMessageSearch(trimmed, opts, { accountId, applySnoozeFilter: true }, limit + 1, offset);

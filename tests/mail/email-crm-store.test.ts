@@ -442,9 +442,10 @@ describe('email-crm-store', () => {
       const sql = lastSearchSql();
       expect(sql.match(/m\.subject LIKE \? ESCAPE/g)).toHaveLength(2);
       expect(sql).toContain('m.attachments_json LIKE ?');
+      expect(sql).toContain('att.filename_display LIKE ?');
       const args = mock.stmt.all.mock.calls.at(-1) as unknown[];
-      expect(args.filter((a) => a === '%foo%')).toHaveLength(13);
-      expect(args.filter((a) => a === '%bar%')).toHaveLength(13);
+      expect(args.filter((a) => a === '%foo%')).toHaveLength(15);
+      expect(args.filter((a) => a === '%bar%')).toHaveLength(15);
     });
 
     test('broad scope drops view filter and can include spam/trash', () => {

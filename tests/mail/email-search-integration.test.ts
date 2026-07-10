@@ -27,6 +27,7 @@ import {
   searchMessagesForAccountWithMeta,
   searchMessagesForAllAccountsWithMeta,
 } from '../../electron/email/email-crm-store';
+import { SEARCH_MARK_END, SEARCH_MARK_START } from '../../shared/email-search-highlight';
 
 type SeedMessage = {
   uid: number;
@@ -139,6 +140,35 @@ describe('email search integration (real sqlite)', () => {
       subject: 'Zahlungsplan',
       bodyText: 'Bitte um Zahlung morgen frueh.',
       snoozedUntil: '2099-01-01T00:00:00.000Z',
+    });
+    // Anhang-Inhalte: Nachricht nur ueber extrahierten Anhangstext auffindbar.
+    seedMessage({
+      uid: 30,
+      subject: 'Unterlagen anbei',
+      bodyText: 'siehe Anhang',
+      hasAttachments: 1,
+    });
+    const msg30 = db
+      .prepare(`SELECT id FROM ${EMAIL_MESSAGES_TABLE} WHERE uid = 30`)
+      .get() as { id: number };
+    db.prepare(
+      `INSERT INTO email_message_attachments
+         (message_id, filename_display, content_type, size_bytes, storage_path, text_content, text_extracted_at)
+       VALUES (?, 'jahresbilanz.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+               10, '/tmp/x', 'Umsatzprognose Quartalszahlen intern', datetime('now'))`,
+    ).run(msg30.id);
+    // Relevanz: Treffer im Betreff soll vor Nur-Body-Treffer ranken.
+    seedMessage({
+      uid: 40,
+      subject: 'Sonderkondition Vorschlag',
+      bodyText: 'Details siehe unten.',
+      dateReceived: '2026-06-01T10:00:00.000Z',
+    });
+    seedMessage({
+      uid: 41,
+      subject: 'Newsletter Juni',
+      bodyText: 'Am Rande erwaehnt: eine Sonderkondition gibt es nicht.',
+      dateReceived: '2026-06-30T10:00:00.000Z',
     });
   });
 
@@ -298,5 +328,50 @@ describe('email search integration (real sqlite)', () => {
     expect(trash.rows.map((m) => m.uid)).toEqual([4]);
     const inboxMiss = searchMessagesForAccountWithMeta(1, '/papierkorb/i', { view: 'inbox' });
     expect(inboxMiss.rows).toHaveLength(0);
+  });
+
+  test('attachment text content is searchable (fts + like fallback)', () => {
+    const fts = searchMessagesForAccountWithMeta(1, 'quartalszahlen', { view: 'inbox' });
+    expect(fts.searchMode).toBe('fts');
+    expect(fts.rows.map((m) => m.uid)).toEqual([30]);
+    // Mid-word substring hit inside the attachment text -> LIKE branch.
+    const like = searchMessagesForAccountWithMeta(1, 'satzprognose', { view: 'inbox' });
+    expect(like.searchMode).toBe('like');
+    expect(like.rows.map((m) => m.uid)).toEqual([30]);
+  });
+
+  test('attachment filenames from the attachment rows are searchable', () => {
+    const r = searchMessagesForAccountWithMeta(1, 'jahresbilanz', { view: 'inbox' });
+    expect(r.rows.map((m) => m.uid)).toEqual([30]);
+  });
+
+  test('relevance sort ranks subject hits first, date sort ranks newest first', () => {
+    const byDate = searchMessagesForAccountWithMeta(1, 'sonderkondition', { view: 'inbox' });
+    expect(byDate.searchMode).toBe('fts');
+    expect(byDate.rows.map((m) => m.uid)).toEqual([41, 40]);
+    const byRelevance = searchMessagesForAccountWithMeta(1, 'sonderkondition', {
+      view: 'inbox',
+      sort: 'relevance',
+    });
+    expect(byRelevance.searchMode).toBe('fts');
+    expect(byRelevance.rows.map((m) => m.uid)).toEqual([40, 41]);
+  });
+
+  test('search_snippet carries sentinel-marked highlights (fts, like, attachment-only)', () => {
+    const fts = searchMessagesForAccountWithMeta(1, 'zahlung', { view: 'inbox' });
+    expect(fts.searchMode).toBe('fts');
+    const hit = fts.rows.find((m) => m.uid === 1);
+    expect(hit?.search_snippet).toContain(`${SEARCH_MARK_START}Zahlung${SEARCH_MARK_END}`);
+    expect(hit?.search_snippet).not.toContain('<');
+
+    const like = searchMessagesForAccountWithMeta(1, 'ahlung', { view: 'inbox' });
+    expect(like.searchMode).toBe('like');
+    expect(like.rows[0]?.search_snippet).toContain(SEARCH_MARK_START);
+
+    const attachmentOnly = searchMessagesForAccountWithMeta(1, 'quartalszahlen', { view: 'inbox' });
+    expect(attachmentOnly.rows[0]?.search_snippet).toContain(`${SEARCH_MARK_START}Quartalszahlen${SEARCH_MARK_END}`);
+
+    const regex = searchMessagesForAccountWithMeta(1, '/Zahlung/', { view: 'inbox' });
+    expect(regex.rows[0]?.search_snippet).toContain(`${SEARCH_MARK_START}Zahlung${SEARCH_MARK_END}`);
   });
 });

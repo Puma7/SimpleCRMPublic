@@ -116,6 +116,8 @@ export type EmailMessageRow = {
   attachments_json: string | null;
   assigned_to: string | null;
   is_spam: number;
+  /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
+  search_snippet?: string | null;
   spam_status?: string | null;
   spam_score?: number | null;
   spam_score_label?: string | null;

@@ -486,6 +486,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       categoryId: z.number().int().positive().nullable().optional(),
       doneFilter: messageDoneFilterSchema.optional(),
       scope: messageSearchScopeSchema.optional(),
+      sort: z.enum(['date', 'relevance']).optional(),
     }),
     result: z.object({
       messages: recordArray,
