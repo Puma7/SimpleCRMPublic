@@ -2473,6 +2473,13 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.SearchMessages, ([payload]) => {
     const input = objectPayload(payload, "email message search payload")
+    // Suchbereich (broad/view) wird flach durchgereicht; der Server ignoriert
+    // die Parameter bis zur Server-Edition-Umsetzung (Suche Phase 2) und
+    // durchsucht weiterhin nur die aktuelle Ansicht.
+    const scope = input.scope as
+      | { mode?: string; includeSpam?: boolean; includeTrash?: boolean }
+      | undefined
+    const scopeMode = scope?.mode === "broad" || scope?.mode === "view" ? scope.mode : undefined
     return {
       method: "GET",
       path: "/api/v1/email/messages",
@@ -2484,6 +2491,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         view: optionalMessageViewValue(input.view),
         categoryId: optionalPositiveQueryId(input.categoryId, "email category id"),
         doneFilter: optionalMessageDoneFilterValue(input.doneFilter),
+        scopeMode,
+        scopeIncludeSpam: scopeMode === "broad" && scope?.includeSpam === true ? true : undefined,
+        scopeIncludeTrash: scopeMode === "broad" && scope?.includeTrash === true ? true : undefined,
       }),
       transform: (body) => {
         const result = dataBody<ListResult<EmailMessageRecord> & { searchMode?: "fts" | "like" | "regex" }>(body)

@@ -45,6 +45,7 @@ import { isAllAccountsScope } from "./account-scope"
 import {
   formatFrom,
   formatMessageFrom,
+  hasLocalIpc,
   type EmailAccount,
   type EmailMessage,
   type MailView,
@@ -169,6 +170,11 @@ export function MessageList({
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
+  // Server-Edition (HTTP-Transport) unterstützt den Suchbereich noch nicht —
+  // Scope-UI dort ausblenden; die Suche bleibt auf die aktuelle Ansicht begrenzt.
+  const scopeUiAvailable = hasLocalIpc()
+  const broadSearchActive =
+    scopeUiAvailable && searchScope.allFolders && searchQuery.trim().length > 0
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -533,6 +539,7 @@ export function MessageList({
             onChange={(e) => setSearchQuery(e.target.value)}
             disabled={bulkBusy}
           />
+          {scopeUiAvailable ? (
           <Popover>
             <PopoverTrigger asChild>
               <Button
@@ -593,16 +600,24 @@ export function MessageList({
               </div>
             </PopoverContent>
           </Popover>
+          ) : null}
         </div>
-        {searchQuery.trim() && searchScope.allFolders ? (
+        {broadSearchActive ? (
           <p className="text-[11px] leading-tight text-muted-foreground">
             Ergebnisse aus allen Ordnern
-            {searchScope.includeSpam ? " · inkl. Spam" : ""}
-            {searchScope.includeTrash ? " · inkl. Papierkorb" : ""}
+            {searchScope.includeSpam || mailView === "spam" || mailView === "spam_review"
+              ? " · inkl. Spam"
+              : ""}
+            {searchScope.includeTrash || mailView === "trash" ? " · inkl. Papierkorb" : ""}
           </p>
         ) : null}
         <div className="space-y-2">
-          {mailView === "inbox" ? <MessageDoneFilterChips /> : null}
+          {mailView === "inbox" ? (
+            <MessageDoneFilterChips
+              disabled={broadSearchActive}
+              disabledTitle="Bei Suche über alle Ordner nicht verfügbar"
+            />
+          ) : null}
           <MessageFilterChips />
         </div>
         <div className="flex flex-wrap gap-2">
