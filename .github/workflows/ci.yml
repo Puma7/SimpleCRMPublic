@@ -66,6 +66,9 @@ jobs:
       - name: Mail module tests
         run: pnpm run test:mail
 
+      - name: Typecheck
+        run: pnpm run typecheck
+
       - name: Build (renderer)
         run: pnpm run build
 
