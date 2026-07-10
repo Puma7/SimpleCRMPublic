@@ -14,6 +14,7 @@ import {
   useCommandPaletteShortcut,
 } from "@/components/theme/command-palette"
 import { cn } from "@/lib/utils"
+import { isElectron } from "@/lib/electron-utils"
 import { AuthProvider } from "@/components/auth/auth-context"
 import { AuthGate } from "@/components/auth/auth-gate"
 
@@ -53,7 +54,9 @@ function AppChrome({ openPalette }: { openPalette: () => void }) {
   }
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden font-sans antialiased">
-      <Titlebar />
+      {/* The custom titlebar only carries Electron window controls (min/max/close);
+          in a plain browser those are dead buttons, so render it only in Electron. */}
+      {isElectron() && <Titlebar />}
       <MainNav onOpenCommandPalette={openPalette} />
       <UpdateStatusDisplay />
       <AppMain />
