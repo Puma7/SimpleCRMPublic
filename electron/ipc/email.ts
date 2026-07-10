@@ -864,6 +864,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           view?: import('../email/email-store').AccountMailView;
           categoryId?: number | null;
           doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
+          scope?: import('../../shared/email-search-scope').MessageSearchScope;
         }) => {
         if (payload.accountId !== 'all') {
           const { rows, searchMode, hasMore } = searchMessagesForAccountWithMeta(
@@ -875,12 +876,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               view: payload.view,
               categoryId: payload.categoryId,
               doneFilter: payload.doneFilter,
+              scope: payload.scope,
             },
           );
           return { messages: rows, searchMode, hasMore };
         }
         const access = mailScopeSessionFromEvent(event);
-        const { rows, hasMore } = searchMessagesForMailScopeWithMeta(
+        const { rows, searchMode, hasMore } = searchMessagesForMailScopeWithMeta(
           payload.accountId,
           payload.query,
           {
@@ -889,10 +891,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             view: payload.view,
             categoryId: payload.categoryId,
             doneFilter: payload.doneFilter,
+            scope: payload.scope,
           },
           access,
         );
-        return { messages: rows, searchMode: 'like' as const, hasMore };
+        return { messages: rows, searchMode, hasMore };
       },
       { logger },
     ),
