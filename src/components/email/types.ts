@@ -102,6 +102,7 @@ export type EmailMessage = {
   spam_score_breakdown_json?: string | null
   spam_decided_at?: string | null
   archived?: number
+  soft_deleted?: number
   outbound_hold?: number
   outbound_block_reason?: string | null
   ticket_code?: string | null
@@ -248,6 +249,27 @@ export function formatMessageFrom(
     }
   }
   return formatFrom(message.from_json)
+}
+
+/**
+ * Message-basierte Draft-Erkennung (statt View-basiert), damit Compose-/
+ * Scheduled-Drafts auch als Treffer der Broad-Suche (ausserhalb der
+ * drafts/scheduled_send-Views) Bearbeiten-/Loeschen-Controls bekommen.
+ * Spiegelt die View-Mitgliedschaft der Store-Logik: lokale Drafts (uid < 0)
+ * liegen in folder_kind 'draft'; die drafts/scheduled_send-Views verlangen
+ * soft_deleted = 0, deshalb zeigen soft-geloeschte Drafts weiterhin
+ * Papierkorb-Controls. Outbound-held bleibt wie die bisherige Viewer-Logik
+ * view- und loesch-unabhaengig (Inbox-Verhalten unveraendert).
+ */
+export function isEditableDraftMessage(
+  message:
+    | Pick<EmailMessage, "uid" | "folder_kind" | "soft_deleted" | "outbound_hold">
+    | null
+    | undefined,
+): boolean {
+  if (!message || message.uid >= 0) return false
+  if ((message.outbound_hold ?? 0) > 0) return true
+  return message.folder_kind === "draft" && (message.soft_deleted ?? 0) === 0
 }
 
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {

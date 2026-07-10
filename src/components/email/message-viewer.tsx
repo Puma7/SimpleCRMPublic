@@ -69,6 +69,7 @@ import {
   formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  isEditableDraftMessage,
   needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
@@ -525,10 +526,9 @@ export function MessageViewer(props: Props) {
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
     (selectedMessage.outbound_hold ?? 0) > 0
-  const isDraft =
-    selectedMessage != null &&
-    selectedMessage.uid < 0 &&
-    (mailView === "drafts" || mailView === "scheduled_send" || isOutboundHeld)
+  // Message-basiert statt view-basiert: Drafts aus der Broad-Suche (Treffer
+  // ausserhalb der drafts/scheduled_send-Views) sind sonst nicht editierbar.
+  const isDraft = isEditableDraftMessage(selectedMessage)
 
   const inTrash = mailView === "trash"
   const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"

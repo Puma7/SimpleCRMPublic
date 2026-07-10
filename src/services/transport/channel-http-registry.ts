@@ -5144,6 +5144,9 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     is_spam: record.isSpam ? 1 : 0,
     spam_status: record.spamStatus ?? null,
     archived: record.archived ? 1 : 0,
+    // Draft-Erkennung im Viewer (isEditableDraftMessage) braucht den
+    // Loesch-Status, damit soft-geloeschte Drafts Papierkorb-Controls zeigen.
+    soft_deleted: record.softDeleted ? 1 : 0,
     ticket_code: record.ticketCode ?? null,
     thread_id: record.threadId ?? null,
     imap_thread_id: record.imapThreadId ?? null,
