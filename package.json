@@ -59,6 +59,9 @@
     "test:mail:coverage:update-baseline": "npm run test:mail:coverage && node scripts/check-mail-coverage-ratchet.mjs --update-baseline",
     "test:server:coverage": "jest --config jest.server.config.cjs",
     "test:server:coverage:update-baseline": "npm run test:server:coverage && node scripts/check-server-coverage-ratchet.mjs --update-baseline",
+    "test:ui:coverage": "jest --config jest.ui.config.cjs",
+    "test:ui:coverage:update-baseline": "npm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs --update-baseline",
+    "test:ui:coverage:check": "npm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs",
     "test:server-edition": "jest --runTestsByPath tests/unit/server-edition-foundation.test.ts tests/integration/server-edition-foundation.test.ts --runInBand",
     "test:electron": "jest --testMatch='**/__tests__/electron/**/*.test.ts'",
     "test:frontend": "jest --testMatch='**/__tests__/frontend/**/*.test.tsx'"
