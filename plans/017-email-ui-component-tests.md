@@ -70,7 +70,7 @@ floor rise as more tests are added later.
 - `ui-coverage-baseline.json` — NEW, the UI ratchet's own committed baseline.
 - `scripts/check-ui-coverage-ratchet.mjs` — NEW, a copy of
   `scripts/check-server-coverage-ratchet.mjs` repointed at the UI config/baseline.
-- `package.json` — add `test:ui:coverage` + `test:ui:coverage:update-baseline`.
+- `package.json` — add the `test:ui:coverage`, `:update-baseline`, and `:check` scripts.
 - `.github/workflows/ci.yml` — add a UI-ratchet step alongside the server one.
 
 ### The test conventions to match — exemplar files (read but do not modify)
@@ -322,7 +322,7 @@ in the `unit` (jsdom) project, so the files they exercise are instrumented.
 | Lint      | `pnpm run lint`                                     | exit 0 (eslint, `--max-warnings 0`) |
 | UI coverage (this plan)       | `pnpm run test:ui:coverage` | Jest passes; writes the UI coverage summary |
 | Generate UI baseline          | `pnpm run test:ui:coverage:update-baseline` | writes `ui-coverage-baseline.json`, exit 0 |
-| UI ratchet check              | `node scripts/check-ui-coverage-ratchet.mjs` | meets the UI baseline, exit 0 |
+| UI ratchet check              | `pnpm run test:ui:coverage:check` | meets the UI baseline, exit 0 |
 | Typecheck | `npx tsc -p tsconfig.json --noEmit`                 | exit 0, no errors   |
 
 Package manager is **pnpm** (see `.github/workflows/ci.yml`). Do not substitute
@@ -766,9 +766,13 @@ the two floors independent: leave `jest.server.config.cjs` and
    `jest.ui.config.cjs` and a new `ui-coverage-baseline.json` (same ratchet
    logic: fail if any tracked metric drops below baseline).
 
-3. **Add scripts** to `package.json` mirroring the server ones:
-   `"test:ui:coverage": "jest --config jest.ui.config.cjs --coverage"` and
-   `"test:ui:coverage:update-baseline": "node scripts/check-ui-coverage-ratchet.mjs --update-baseline"`.
+3. **Add scripts** to `package.json` mirroring the server ones. The ratchet
+   checker reads the freshly-generated `coverage/.../coverage-summary.json`, so
+   the coverage Jest run must come **first** in both the update and the CI check
+   (exactly as plan 003's server scripts do):
+   - `"test:ui:coverage": "jest --config jest.ui.config.cjs --coverage"`
+   - `"test:ui:coverage:update-baseline": "pnpm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs --update-baseline"`
+   - `"test:ui:coverage:check": "pnpm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs"`
 
 4. **Generate + commit the UI baseline** (this is a fresh floor, so it does not
    touch the server number at all):
@@ -779,18 +783,19 @@ the two floors independent: leave `jest.server.config.cjs` and
    ```
 
 5. **Wire the UI ratchet into CI** in `.github/workflows/ci.yml` as its own step,
-   right after the server-ratchet step plan 003 added:
-   `- name: Email UI coverage ratchet` → `run: node scripts/check-ui-coverage-ratchet.mjs`.
+   right after the server-ratchet step plan 003 added. It must run the coverage
+   Jest command before the checker (so `coverage-summary.json` exists):
+   `- name: Email UI coverage ratchet` → `run: pnpm run test:ui:coverage:check`.
 
 **Verify**:
 - `git status --porcelain jest.server.config.cjs server-coverage-baseline.json`
   → shows **nothing** (the server floor is untouched).
-- `node scripts/check-ui-coverage-ratchet.mjs` → exit 0, meets the just-generated
-  UI baseline.
+- `pnpm run test:ui:coverage:check` → exit 0 (runs UI coverage, then meets the
+  just-generated UI baseline).
 - `git status --porcelain ui-coverage-baseline.json` → shows it staged;
   `git status --porcelain coverage/` → shows nothing (coverage output is
   `.gitignore`d).
-- `grep -q "check-ui-coverage-ratchet" .github/workflows/ci.yml` → exit 0.
+- `grep -q "test:ui:coverage:check" .github/workflows/ci.yml` → exit 0.
 
 ### Step 6: Full local gate
 
@@ -850,9 +855,9 @@ Machine-checkable. ALL must hold:
 - [ ] `pnpm run lint` exits 0 (no eslint warnings — `--max-warnings 0`)
 - [ ] `npx tsc -p tsconfig.json --noEmit` exits 0
 - [ ] A NEW `jest.ui.config.cjs` exists whose `collectCoverageFrom` includes `'src/components/email/**/*.{ts,tsx}'` and `'!src/components/email/**/*.d.ts'`; `jest.server.config.cjs` and `server-coverage-baseline.json` are **unchanged** (`git status --porcelain jest.server.config.cjs server-coverage-baseline.json` prints nothing)
-- [ ] `node scripts/check-ui-coverage-ratchet.mjs` exits 0 and meets the UI baseline
+- [ ] `pnpm run test:ui:coverage:check` exits 0 (generates coverage, then meets the UI baseline)
 - [ ] `ui-coverage-baseline.json` generated and staged; `coverage/` is not staged (`git status --porcelain coverage/` empty)
-- [ ] `.github/workflows/ci.yml` has a `check-ui-coverage-ratchet` step (`grep -q "check-ui-coverage-ratchet" .github/workflows/ci.yml`)
+- [ ] `.github/workflows/ci.yml` runs the UI ratchet (`grep -q "test:ui:coverage:check" .github/workflows/ci.yml`)
 - [ ] Only the intended files are modified (`git status`): the four new test files + `jest.ui.config.cjs`, `scripts/check-ui-coverage-ratchet.mjs`, `ui-coverage-baseline.json`, `package.json`, `.github/workflows/ci.yml`; in particular **no** file under `src/components/email/**`, not `jest.config.cjs`, and not `jest.server.config.cjs`
 - [ ] `plans/README.md` status row for plan 017 updated (unless a reviewer owns the index)
 

@@ -357,8 +357,13 @@ the core loop — everything the test needs is injectable.
 export type WebhookHttpResult = { status: number; ok: boolean };
 export type WebhookDeps = {
   listSubscriptionsForEvent: (event: string) => { id: number; url: string; secret: string }[];
-  assertUrlAllowed: (url: string) => Promise<void>;              // wraps assertWorkflowHttpUrlAllowed
-  fetchImpl: (url: string, init: { method: 'POST'; headers: Record<string, string>; body: string; redirect: 'manual' }) => Promise<WebhookHttpResult>;
+  // Returns the resolved+validated addresses so the fetch can be PINNED to them,
+  // closing the DNS-rebinding gap plan 001 hardens (validate → the host re-resolves
+  // to a private IP at connect time). Throws if the host/addresses are blocked.
+  assertUrlAllowed: (url: string) => Promise<{ addresses: string[] }>;   // reuse plan 001's guarded resolver
+  // MUST pin the connection to `pinnedAddresses` (custom lookup/agent) rather than
+  // re-resolving `url` — i.e. plan 001's pinned transport, not raw globalThis.fetch.
+  fetchImpl: (url: string, init: { method: 'POST'; headers: Record<string, string>; body: string; redirect: 'manual'; pinnedAddresses: string[] }) => Promise<WebhookHttpResult>;
   recordDelivery: (row: { subscriptionId: number; event: string; payload: string; status: string; attempts: number; lastError?: string }) => void;
   now: () => number;
   maxAttempts?: number;      // default 3
@@ -375,12 +380,13 @@ export async function dispatchWebhookEvent(event: string, data: Record<string, u
     while (attempts < maxAttempts) {
       attempts += 1;
       try {
-        await deps.assertUrlAllowed(sub.url);                    // re-validate every attempt (SSRF)
+        const { addresses } = await deps.assertUrlAllowed(sub.url);  // re-validate every attempt (SSRF)
         const res = await deps.fetchImpl(sub.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json', [SIGNATURE_HEADER]: signWebhookBody(rawBody, sub.secret) },
           body: rawBody,
           redirect: 'manual',                                    // do NOT auto-follow (SSRF; see plan 001)
+          pinnedAddresses: addresses,                            // pin the socket to the validated IP (no DNS re-resolve)
         });
         if (res.ok) { delivered = true; break; }
         lastError = `status ${res.status}`;
@@ -394,9 +400,13 @@ export async function dispatchWebhookEvent(event: string, data: Record<string, u
 
 Also add the (unwired) production seam that the design doc references — an
 `emitWebhookEvent(event, data)` that builds `WebhookDeps` from the real store +
-`assertWorkflowHttpUrlAllowed(url, getSyncInfo('workflow_http_allowlist') ?? '')`
-+ a real `fetchImpl`. It must exist and type-check but is **not called** from any
-live path in this spike.
+plan 001's hardened resolver (returning validated addresses) + plan 001's
+**pinned, redirect-guarded** `fetchImpl` (the same seam that pins to the
+validated IP and blocks 3xx). Do NOT build `fetchImpl` from a raw
+`globalThis.fetch`: that would re-resolve DNS at connect time and reopen the
+rebinding hole even though `assertUrlAllowed` passed. It must exist and
+type-check but is **not called** from any live path in this spike. (This is why
+the plan index lists 001 as a hard prerequisite for 020.)
 
 **Verify**: `npx tsc -p tsconfig.electron.json --noEmit` → exit 0.
 
@@ -414,10 +424,12 @@ functions (`recordDelivery`, `listSubscriptionsForEvent`) as **fakes/spies via
 1. **Signature determinism + verification** — `signWebhookBody(body, secret)`
    equals a value an independent `createHmac('sha256', secret)` reproduces, and
    is stable across calls; a different secret or body changes it.
-2. **Happy path** — one subscription, `fetchImpl` returns `{ ok: true, status: 200 }`.
+2. **Happy path** — one subscription; the fake `assertUrlAllowed` resolves
+   `{ addresses: ['93.184.216.34'] }` and `fetchImpl` returns `{ ok: true, status: 200 }`.
    Assert `recordDelivery` was called once with `status: 'delivered'`,
-   `attempts: 1`, and that the `fetchImpl` init carried `redirect: 'manual'` and
-   a `X-SimpleCRM-Signature` header matching `signWebhookBody(body, secret)`.
+   `attempts: 1`, and that the `fetchImpl` init carried `redirect: 'manual'`, the
+   `pinnedAddresses` from `assertUrlAllowed`, and a `X-SimpleCRM-Signature` header
+   matching `signWebhookBody(body, secret)`.
 3. **Retry then dead-letter** — `fetchImpl` always returns `{ ok: false, status: 500 }`.
    Assert it was called `maxAttempts` (3) times for the subscription and
    `recordDelivery` recorded `status: 'dead_letter'`, `attempts: 3`, and a

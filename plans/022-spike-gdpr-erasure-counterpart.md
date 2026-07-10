@@ -360,11 +360,18 @@ Create `docs/design/gdpr-erasure-spike.md`. It MUST contain these sections
 4. **Operation shape** — a proposed API mirroring the export:
    `planSubjectErasure(input) → ErasurePlan` (pure preview) and
    `eraseSubject(input, { dryRun }) → ErasureResult` where **`dryRun` defaults
-   to `true`**. Describe transactional execution (wrap the apply in one DB
-   transaction — Electron `BEGIN/COMMIT/ROLLBACK`, Server
-   `withWorkspaceTransaction`), and an **audit record** (who/when/subject
-   selector/affected counts) as a requirement — note where it would be stored
-   (open question: new audit table vs append-only log file).
+   to `true`**. Describe execution in **two phases**: (a) the DB anonymization is
+   transactional (Electron `BEGIN/COMMIT/ROLLBACK`, Server
+   `withWorkspaceTransaction`) and clears each attachment row's metadata /
+   `storage_path`; (b) file deletion is a **separate post-commit cleanup step**,
+   NOT inside the transaction — a filesystem `unlink` is not rollback-safe (a
+   `ROLLBACK` restores the rows but cannot un-delete files, leaving rows pointing
+   at missing storage). So unlink the collected paths only **after** the DB
+   transaction commits; a failed unlink then leaks an orphaned file (log it /
+   queue for cleanup) but does not corrupt the erasure, because the committed rows
+   no longer reference it. Also require an **audit record** (who/when/subject
+   selector/affected counts) — note where it would be stored (open question: new
+   audit table vs append-only log file).
 5. **Reuse** — call out that the message/notes batching constants
    (`MESSAGE_BATCH=2000`, `NOTES_BATCH=5000`) and the attachment walk are lifted
    from the export.
@@ -415,8 +422,12 @@ constants and `getDb` the export uses. It exports:
   explicitly `false` does it open a transaction (`db.prepare('BEGIN
   TRANSACTION').run()` … `COMMIT` / `ROLLBACK`, per
   `electron/sqlite-service.ts:1711-1743`) and anonymize in place per the
-  table→action mapping. Keep the apply path minimal — this is a prototype, not
-  the shipped feature. Add a top-of-file comment: `// SPIKE PROTOTYPE — not
+  table→action mapping. **Unlink the attachment files only AFTER that transaction
+  commits** — not inside it (a `ROLLBACK` cannot un-delete files). Collect the
+  `storage_path`s during the transaction, `COMMIT`, then unlink; wrap each unlink
+  so a failure logs an orphaned-file warning instead of throwing (the row is
+  already anonymized, so a leaked file is not a data-integrity problem). Keep the
+  apply path minimal — this is a prototype, not the shipped feature. Add a top-of-file comment: `// SPIKE PROTOTYPE — not
   wired into IPC. Preview is the supported path; apply is dry-run by default.`
 
 Do **not** import this module from `electron/ipc/email.ts` or register any
@@ -440,10 +451,14 @@ Create `tests/mail/email-gdpr-erase.test.ts`, modeled structurally on
   **only `SELECT`** statements (no `UPDATE`/`DELETE`, no `BEGIN`).
 - **`eraseSubject` defaults to dry-run**: calling it without `options` returns
   `{ dryRun: true, ... }` and performs no write statements and no `fs.unlink`.
-- **Explicit apply is transactional**: calling with `{ dryRun: false }` issues a
-  `BEGIN TRANSACTION` and a matching `COMMIT` (assert via the mock's recorded
-  statements), and unlinks the collected attachment files (mock `fs.unlink` /
-  `fs.rmSync`). Assert `ROLLBACK` on a thrown error.
+- **Explicit apply commits, then unlinks**: calling with `{ dryRun: false }`
+  issues a `BEGIN TRANSACTION` and a matching `COMMIT` (assert via the mock's
+  recorded statements), and unlinks the collected attachment files (mock
+  `fs.unlink` / `fs.rmSync`) **after** the `COMMIT`, not before or inside the
+  transaction (assert the unlink calls occur after the recorded `COMMIT`).
+- **Rollback leaves files untouched**: on a thrown SQL error mid-apply, assert
+  `ROLLBACK` is issued AND `fs.unlink`/`fs.rmSync` was **never** called (file
+  deletion is post-commit, so a rolled-back apply deletes nothing).
 
 **Verify**: `pnpm run test:mail` → all pass, including the new
 `tests/mail/email-gdpr-erase.test.ts` cases.
@@ -464,7 +479,8 @@ three in-scope files created.
 - Cases (list): (1) preview enumerates counts + attachment files; (2) preview
   issues only SELECTs — **no mutation**; (3) `eraseSubject` default is dry-run
   and mutates nothing; (4) explicit `{ dryRun: false }` wraps writes in
-  `BEGIN`/`COMMIT` and unlinks files; (5) error path issues `ROLLBACK`.
+  `BEGIN`/`COMMIT` and unlinks files **after** the commit; (5) error path issues
+  `ROLLBACK` and unlinks **nothing**.
 - Verification: `pnpm run test:mail` → all pass, including the ≥ 5 new cases.
 - This is a spike: test coverage proves the **preview is non-destructive**, not
   that a full feature is production-ready.

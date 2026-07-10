@@ -385,8 +385,16 @@ to:
     } else {
       loadSeqRef.current += 1
       setMessages([])
+      setLoadingMessages(false)
+      setLoadingMore(false)
     }
 ```
+
+Reset the loading flags here too: bumping the sequence makes any in-flight
+request's `finally` (guarded in 1e on `requestSeq === loadSeqRef.current`) skip
+its own `setLoadingMessages(false)`/`setLoadingMore(false)`, so without resetting
+them in this branch the list could stay stuck in a loading state until the next
+load starts. This branch runs no load, so clearing them here is correct.
 
 **Verify**: `npx tsc -p tsconfig.json --noEmit` → exit 0, no errors. Then
 `pnpm run lint` → exit 0.
