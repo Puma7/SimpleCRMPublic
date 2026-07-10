@@ -145,16 +145,17 @@ export function createWorkflowContext(input: {
   };
 }
 
+// Single-Pass: kein Re-Scan bereits eingesetzter Werte, Keys mit mehreren
+// Punkten werden exakt aufgelöst. Unbekannte Platzhalter bleiben stehen.
 export function interpolateTemplate(template: string, ctx: WorkflowContext): string {
-  let out = template;
-  for (const [k, v] of Object.entries(ctx.strings)) {
-    out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v);
-  }
-  out = out.replace(/\{\{text\}\}/g, ctx.strings.combined_text ?? '');
-  out = out.replace(/\{\{customer\.name\}\}/g, String(ctx.variables['customer.name'] ?? ''));
-  out = out.replace(/\{\{customer\.email\}\}/g, String(ctx.variables['customer.email'] ?? ''));
-  for (const [k, v] of Object.entries(ctx.variables)) {
-    out = out.replace(new RegExp(`\\{\\{${k.replace('.', '\\.')}\\}\\}`, 'g'), String(v ?? ''));
-  }
-  return out;
+  return template.replace(/\{\{\s*([\w.$:-]+)\s*\}\}/g, (match, key: string) => {
+    if (key === 'text') return ctx.strings.combined_text ?? '';
+    if (Object.prototype.hasOwnProperty.call(ctx.strings, key)) {
+      return (ctx.strings as Record<string, string>)[key] ?? '';
+    }
+    if (Object.prototype.hasOwnProperty.call(ctx.variables, key)) {
+      return String(ctx.variables[key] ?? '');
+    }
+    return match;
+  });
 }

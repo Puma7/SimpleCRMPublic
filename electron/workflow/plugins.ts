@@ -52,6 +52,8 @@ export function listPluginManifests(): WorkflowPluginManifest[] {
 
 function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown) => Promise<unknown>) | null {
   const code = fs.readFileSync(modPath, 'utf8');
+  // module/exports dürfen NICHT eingefroren werden — sonst kann kein Plugin
+  // `module.exports.run` setzen und jeder Plugin-Knoten meldet "keine run()".
   const sandbox: {
     module: { exports: Record<string, unknown> };
     exports: Record<string, unknown>;
@@ -60,9 +62,6 @@ function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown
     exports: {},
   };
   sandbox.exports = sandbox.module.exports;
-  Object.freeze(sandbox.module);
-  Object.freeze(sandbox.module.exports);
-  Object.freeze(sandbox.exports);
   try {
     vm.runInNewContext(
       `${code}\n//# sourceURL=${modPath}`,
@@ -98,9 +97,54 @@ export async function runPluginNode(
   if (!run) {
     return { status: 'error', message: 'Plugin exportiert keine run()-Funktion' };
   }
-  const out = await run(
-    { strings: ctx.strings, variables: ctx.variables, messageId: ctx.messageId },
-    config,
-  );
-  return { status: 'ok', message: typeof out === 'string' ? out : JSON.stringify(out).slice(0, 500) };
+  // vm-timeout deckt nur den Modul-Load ab; async run() braucht ein eigenes Limit.
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Plugin-Timeout nach ${PLUGIN_TIMEOUT_MS / 1000}s`)),
+      PLUGIN_TIMEOUT_MS,
+    );
+  });
+  let out: unknown;
+  try {
+    out = await Promise.race([
+      run({ strings: ctx.strings, variables: ctx.variables, messageId: ctx.messageId }, config),
+      timeout,
+    ]);
+  } catch (e) {
+    // Fehler aus dem vm-Kontext sind kein `instanceof Error` des Hauptkontexts.
+    const message =
+      typeof (e as { message?: unknown })?.message === 'string'
+        ? (e as { message: string }).message
+        : String(e);
+    return { status: 'error', message };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return {
+    status: 'ok',
+    message: typeof out === 'string' ? out : JSON.stringify(out ?? null).slice(0, 500),
+    variables: pluginResultVariables(out),
+  };
+}
+
+/** `run()` darf { variables: { name: wert } } zurückgeben — landet als Workflow-Variablen. */
+function pluginResultVariables(
+  out: unknown,
+): Record<string, string | number | boolean | null> | undefined {
+  if (out == null || typeof out !== 'object') return undefined;
+  const raw = (out as { variables?: unknown }).variables;
+  if (raw == null || typeof raw !== 'object') return undefined;
+  const vars: Record<string, string | number | boolean | null> = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^[\w.$:-]{1,100}$/.test(key)) continue;
+    if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+      vars[key] = value as string | number | boolean | null;
+    } else {
+      vars[key] = JSON.stringify(value).slice(0, 4000);
+    }
+    if (++count >= 50) break;
+  }
+  return count > 0 ? vars : undefined;
 }

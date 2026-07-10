@@ -65,8 +65,12 @@ export function registerEmailNodes(register: Reg): void {
             const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
             await syncSeenFlagToServer(row, true);
             clearMessageSeenSyncPending(messageId);
-          } catch {
-            /* best-effort */
+          } catch (e) {
+            // Lokal gelesen; Server-Flag folgt über den Sync (seen_sync_pending bleibt gesetzt).
+            return {
+              status: 'ok',
+              message: `imap_seen_sync_deferred: ${e instanceof Error ? e.message : String(e)}`,
+            };
           }
         }
       }
@@ -101,24 +105,6 @@ export function registerEmailNodes(register: Reg): void {
     },
   });
 
-  // Counterpart to hold_outbound, mainly for shared server templates. Standalone
-  // Electron is run-then-block (the draft is never held up front), so "release"
-  // just clears any hold and lets the compose-send proceed — returning ok
-  // (not blocked) allows the send. Without this the node would be unknown and
-  // the run would error → block the clean draft.
-  register({
-    type: 'email.release_outbound',
-    label: 'Versand freigeben',
-    category: 'email',
-    canvasType: 'action',
-    defaultConfig: { autoSend: true },
-    execute: async (ctx) => {
-      const id = ctx.messageId ?? ctx.outbound?.messageId;
-      if (id != null && !ctx.dryRun) setOutboundHold(id, false, null);
-      return { status: 'ok' };
-    },
-  });
-
   register({
     type: 'email.set_category',
     label: 'Kategorie setzen',
@@ -139,7 +125,7 @@ export function registerEmailNodes(register: Reg): void {
     label: 'Kopie weiterleiten',
     category: 'email',
     canvasType: 'action',
-    defaultConfig: { to: '' },
+    defaultConfig: { to: '', includeAttachments: false, runOutboundReview: false },
     execute: async (ctx, config) => {
       const { row, messageId } = requireMessage(ctx);
       const to = String(config.to ?? '').trim();
@@ -466,20 +452,28 @@ export function registerEmailNodes(register: Reg): void {
     },
   });
 
+  // Counterpart to hold_outbound. Outbound: releases the hold and (autoSend)
+  // schedules the draft for delivery. Other directions (standalone Electron is
+  // run-then-block, shared server templates call this on the OK path): just
+  // clear any hold so the compose-send proceeds — returning ok allows the send.
   register({
     type: 'email.release_outbound',
     label: 'Versand freigeben',
     category: 'email',
     canvasType: 'registry',
     description:
-      'Hebt die Ausgangssperre auf. Mit autoSend=true wird der Entwurf zur sofortigen Zustellung eingeplant.',
+      'Hebt die Ausgangssperre auf. Mit autoSend=true wird der Entwurf zur sofortigen Zustellung eingeplant (nur Outbound-Trigger); bei anderen Triggern wird nur die Sperre entfernt.',
     defaultConfig: { autoSend: true },
     execute: async (ctx, config) => {
-      if (ctx.direction !== 'outbound') {
-        return { status: 'skipped', message: 'Nur für ausgehende Nachrichten' };
-      }
       const id = ctx.messageId ?? ctx.outbound?.messageId;
       if (id == null) return { status: 'error', message: 'Keine Nachricht im Kontext' };
+      if (ctx.direction !== 'outbound') {
+        if (!ctx.dryRun) setOutboundHold(id, false, null);
+        const variables: Record<string, string | number | boolean | null> = {
+          'email.outbound_hold': false,
+        };
+        return { status: 'ok', message: 'outbound_hold_cleared', variables };
+      }
       const autoSend = config.autoSend === true;
       const r = releaseOutboundHoldForDraft(id, autoSend, ctx.dryRun);
       if (!r.ok) return { status: 'error', message: r.message };

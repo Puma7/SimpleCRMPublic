@@ -73,6 +73,16 @@ async function executeNode(
     const def = getWorkflowNode(type);
     if (!def) {
       log.push(`unknown_node:${type}`);
+      const { getBuiltinWorkflowNodeCatalogEntry } = await import(
+        '../../packages/core/src/workflow/node-catalog'
+      );
+      const catalogEntry = getBuiltinWorkflowNodeCatalogEntry(type);
+      if (catalogEntry?.runtime === 'server') {
+        return {
+          status: 'error',
+          message: `Knoten "${catalogEntry.label}" (${type}) ist nur in der Server-Edition verfügbar`,
+        };
+      }
       return { status: 'error', message: `Unbekannter Knoten: ${type}` };
     }
     return def.execute(ctx, config, node.id);

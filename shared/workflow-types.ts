@@ -33,6 +33,8 @@ export type WorkflowNodeCatalogEntry = {
   /** Canvas node type: legacy action uses `action` + actionType mapping */
   canvasType: 'trigger' | 'condition' | 'action' | 'registry';
   defaultConfig?: Record<string, unknown>;
+  /** Wo der Knoten ausführbar ist (fehlend = überall). Spiegel von packages/core node-catalog. */
+  runtime?: 'both' | 'desktop' | 'server';
 };
 
 export type WorkflowRunStepDto = {

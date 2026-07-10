@@ -3,15 +3,21 @@
 import { useEffect, useMemo, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { WorkflowNodeCatalogEntry } from "@shared/workflow-types"
-import { invokeRenderer } from "@/services/transport"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
 
 export function useWorkflowNodeCatalog() {
   const [catalog, setCatalog] = useState<WorkflowNodeCatalogEntry[]>([])
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
+    const serverClientMode = getRendererTransport().kind === "http"
     void invokeRenderer(IPCChannels.Email.ListWorkflowNodeCatalog)
-      .then((entries) => setCatalog(entries as WorkflowNodeCatalogEntry[]))
+      .then((entries) => {
+        const all = entries as WorkflowNodeCatalogEntry[]
+        // Server-only-Knoten (returns.*, jtl.order_context, …) laufen im
+        // Desktop-Interpreter nicht — dort aus Palette/Auswahl fernhalten.
+        setCatalog(serverClientMode ? all : all.filter((e) => e.runtime !== "server"))
+      })
       .catch(() => setCatalog([]))
       .finally(() => setLoaded(true))
   }, [])

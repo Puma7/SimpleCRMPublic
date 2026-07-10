@@ -1212,6 +1212,9 @@ function RegistryFields({ node, patch, labelByType, descriptionByType }: Registr
       {d.nodeType === "ai.agent_tool" ? (
         <AgentToolFields config={config} patch={patch} />
       ) : null}
+      {d.nodeType === "ai.reply_suggestion" ? (
+        <ReplySuggestionFields config={config} patch={patch} />
+      ) : null}
       {d.nodeType === "crm.log_activity" ? (
         <CrmLogActivityFields config={config} patch={patch} />
       ) : null}
@@ -1237,12 +1240,60 @@ function RegistryFields({ node, patch, labelByType, descriptionByType }: Registr
           }}
           height="220px"
         />
+        {expertJsonError(d.expertJson) ? (
+          <p className="text-[11px] text-destructive">
+            Ungültiges JSON — Änderungen werden erst übernommen, wenn die Syntax stimmt:{" "}
+            {expertJsonError(d.expertJson)}
+          </p>
+        ) : null}
       </details>
     </>
   )
 }
 
 type FieldFnProps = { config: Record<string, unknown>; patch: (p: Record<string, unknown>) => void }
+
+function expertJsonError(expertJson: string | undefined): string | null {
+  if (expertJson == null || expertJson.trim() === "") return null
+  try {
+    JSON.parse(expertJson)
+    return null
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e)
+  }
+}
+
+function ReplySuggestionFields({ config, patch }: FieldFnProps) {
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Prompt-ID</Label>
+        <Input
+          type="number"
+          min={0}
+          className="h-9"
+          value={Number(config.promptId ?? 0)}
+          onChange={(e) => patchConfig(patch, config, "promptId", parseInt(e.target.value, 10) || 0)}
+        />
+        <p className="text-[11px] text-muted-foreground">0 = Standard-Prompt für Antwortvorschläge verwenden.</p>
+      </div>
+      <div className="flex items-start gap-2">
+        <Switch
+          checked={config.skipIfReady !== false}
+          onCheckedChange={(v) => patchConfig(patch, config, "skipIfReady", v)}
+        />
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Überspringen, wenn schon ein Vorschlag existiert</Label>
+          <p className="text-[11px] text-muted-foreground">
+            Ergebnis erscheint als Vorschlag im Lesebereich (Variable{" "}
+            <code>reply_suggestion.text</code>). Legt KEINEN Entwurf an — zum automatischen
+            Versenden „KI: Textbaustein wählen“ oder „Antwort-Entwurf erstellen“ nutzen.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function ForwardCopyFields({ config, patch }: FieldFnProps) {
   return (
@@ -1298,8 +1349,9 @@ function SendDraftFields({ config, patch }: FieldFnProps) {
           onChange={(e) => patchConfig(patch, config, "draftIdVariable", e.target.value)}
         />
         <p className="text-[11px] text-muted-foreground">
-          Typische Quellen: <code>draft.id</code> (von email.create_draft) oder{" "}
-          <code>ai.reply_suggestion.draft_id</code>.
+          Die Variable <code>draft.id</code> wird von „Antwort-Entwurf erstellen“, „KI-Agent“
+          und „KI: Textbaustein wählen“ gesetzt. „Antwortvorschlag erzeugen“ legt KEINEN
+          Entwurf an und funktioniert hier nicht.
         </p>
       </div>
       <div className="flex items-start gap-2">
@@ -1349,17 +1401,29 @@ function AutoReplyFields({ config, patch }: FieldFnProps) {
           value={String(config.confidenceVar ?? "ai.class_confidence")}
           onChange={(e) => patchConfig(patch, config, "confidenceVar", e.target.value)}
         />
+        <p className="text-[11px] text-muted-foreground">
+          Woher die Sicherheit kommt: <code>ai.class_confidence</code> setzt der Knoten
+          „KI-Klassifizierung“ (Selbsteinschätzung der KI, 0–100).
+        </p>
       </div>
       <div className="space-y-1.5">
-        <Label className="text-xs">Mindest-Confidence (0–100)</Label>
+        <Label className="text-xs">Mindest-Sicherheit der KI (0–100)</Label>
         <Input
           type="number"
           min={0}
           max={100}
           className="h-9"
           value={Number(config.minConfidence ?? 70)}
-          onChange={(e) => patchConfig(patch, config, "minConfidence", parseInt(e.target.value, 10) || 0)}
+          onChange={(e) => {
+            const parsed = parseInt(e.target.value, 10)
+            const clamped = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0
+            patchConfig(patch, config, "minConfidence", clamped)
+          }}
         />
+        <p className="text-[11px] text-muted-foreground">
+          Nur wenn die KI sich mindestens so sicher ist, geht es am Ausgang „approved“ weiter —
+          sonst „blocked“.
+        </p>
       </div>
     </div>
   )
@@ -1372,12 +1436,20 @@ function PickCannedFields({ config, patch }: FieldFnProps) {
   // scheduleAiPickCannedJob → selectCannedResponses.
   return (
     <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField config={config} patch={patch} />
       <div className="flex items-start gap-2">
         <Switch
           checked={config.createDraft !== false}
           onCheckedChange={(v) => patchConfig(patch, config, "createDraft", v)}
         />
-        <Label className="text-xs font-normal">Entwurf direkt anlegen</Label>
+        <div className="space-y-0.5">
+          <Label className="text-xs font-normal">Entwurf direkt anlegen</Label>
+          <p className="text-[11px] text-muted-foreground">
+            Legt eine adressierte Antwort mit dem gewählten Textbaustein an und setzt{" "}
+            <code>draft.id</code>. Voraussetzung: mindestens ein Textbaustein unter
+            Einstellungen → E-Mail → Textbausteine.
+          </p>
+        </div>
       </div>
     </div>
   )
@@ -1775,6 +1847,11 @@ function AuthCheckFields({ config, patch }: FieldFnProps) {
 function AiReviewFields({ config, patch }: FieldFnProps) {
   return (
     <div className="space-y-2 rounded-md border p-3">
+      <AiProfileConfigField
+        config={config}
+        patch={patch}
+        hint="Knoten-Profil hat Vorrang vor dem Profil des gewählten Prompts."
+      />
       <div className="space-y-1.5">
         <Label className="text-xs">Prompt-ID</Label>
         <Input

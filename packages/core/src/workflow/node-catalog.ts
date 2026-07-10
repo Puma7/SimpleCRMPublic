@@ -9,6 +9,9 @@ export type WorkflowNodeCategory =
 
 export type WorkflowNodeCanvasType = 'trigger' | 'condition' | 'action' | 'registry';
 
+/** Wo der Knoten ausführbar ist. Fehlend = 'both'. */
+export type WorkflowNodeRuntime = 'both' | 'desktop' | 'server';
+
 export type WorkflowNodeCatalogEntry = {
   type: string;
   label: string;
@@ -16,6 +19,7 @@ export type WorkflowNodeCatalogEntry = {
   description?: string;
   canvasType: WorkflowNodeCanvasType;
   defaultConfig?: Record<string, unknown>;
+  runtime?: WorkflowNodeRuntime;
 };
 
 const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
@@ -59,7 +63,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
   },
   {
     type: 'email.forward_copy',
-    label: 'Weiterleiten (Empfänger, optional Anhänge)',
+    label: 'Kopie weiterleiten',
     category: 'email',
     canvasType: 'action',
     description:
@@ -79,7 +83,8 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Antwort-Entwurf erstellen',
     category: 'email',
     canvasType: 'registry',
-    description: 'Legt einen Antwort-Entwurf auf die aktuelle Nachricht an (optional mit Body-Präfix oder Vorlage).',
+    description:
+      'Legt einen Antwort-Entwurf auf die aktuelle Nachricht an (optional mit Text-Präfix vor dem zitierten Original). Setzt die Variable draft.id.',
     defaultConfig: { bodyPrefix: '' },
   },
   {
@@ -218,7 +223,6 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
       'Bewertet Spam 1-100 (nur Metadaten, kein E-Mail-Volltext). Antwort der KI muss eine Zahl sein.',
     defaultConfig: {
       contextMode: 'metadata',
-      thresholdHint: 70,
     },
   },
   {
@@ -379,6 +383,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'JTL Bestell-Kontext',
     category: 'integration',
     canvasType: 'registry',
+    runtime: 'server',
     description:
       'Read-only-Query (MSSQL) mit {{email}}/{{orderNo}}; mappt die erste Zeile auf jtl.*-Variablen für KI-Nodes.',
     defaultConfig: { query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}', mapping: '' },
@@ -388,6 +393,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'JTL Aktion vorbereiten',
     category: 'integration',
     canvasType: 'registry',
+    runtime: 'server',
     description:
       'Baut einen Aktions-Vorschlag (resend_invoice/create_return/send_tracking/refund_status/custom) — führt nichts aus.',
     defaultConfig: { kind: 'send_tracking', requireApproval: true },
@@ -397,6 +403,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Retoure bewerten',
     category: 'crm',
     canvasType: 'registry',
+    runtime: 'server',
     description:
       'Read-only-Entscheidung: schlägt aus Positionen/Gründen ein Outcome vor und verzweigt nach refund/exchange/credit/keep/needs_review (no_return, wenn keine Retoure gefunden). Schreibt nichts.',
     defaultConfig: {
@@ -411,6 +418,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Retoure: Umtausch',
     category: 'crm',
     canvasType: 'action',
+    runtime: 'server',
     description:
       'Setzt das Outcome der verknüpften Retoure auf „exchange" (optional Status via config.status). Idempotent. Schreibt nur in die eigene Retouren-Tabelle, nicht in JTL.',
     defaultConfig: {},
@@ -420,6 +428,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Retoure: Gutschrift',
     category: 'crm',
     canvasType: 'action',
+    runtime: 'server',
     description:
       'Setzt das Outcome der verknüpften Retoure auf „credit" (optional Status via config.status). Idempotent. Schreibt nur in die eigene Retouren-Tabelle, nicht in JTL.',
     defaultConfig: {},
@@ -479,7 +488,15 @@ export function cloneWorkflowNodeCatalogEntry(
     ...(entry.description === undefined ? {} : { description: entry.description }),
     canvasType: entry.canvasType,
     ...(entry.defaultConfig === undefined ? {} : { defaultConfig: { ...entry.defaultConfig } }),
+    ...(entry.runtime === undefined ? {} : { runtime: entry.runtime }),
   };
+}
+
+export function getBuiltinWorkflowNodeCatalogEntry(
+  type: string,
+): WorkflowNodeCatalogEntry | undefined {
+  const entry = BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES.find((e) => e.type === type);
+  return entry ? cloneWorkflowNodeCatalogEntry(entry) : undefined;
 }
 
 export function sortWorkflowNodeCatalog(

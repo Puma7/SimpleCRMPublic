@@ -1,9 +1,13 @@
 import type { RegisteredWorkflowNode } from './types';
 import type { WorkflowNodeCatalogEntry } from '../../shared/workflow-types';
+import { getBuiltinWorkflowNodeCatalogEntry } from '../../packages/core/src/workflow/node-catalog';
 
 const nodes = new Map<string, RegisteredWorkflowNode>();
 
 export function registerWorkflowNode(def: RegisteredWorkflowNode): void {
+  if (nodes.has(def.type)) {
+    throw new Error(`Workflow-Knoten doppelt registriert: ${def.type}`);
+  }
   nodes.set(def.type, def);
 }
 
@@ -11,16 +15,25 @@ export function getWorkflowNode(type: string): RegisteredWorkflowNode | undefine
   return nodes.get(type);
 }
 
+// Der Core-Katalog pflegt die reichhaltigen deutschen Beschreibungen/Defaults;
+// Registrierungen liefern nur, was dort fehlt oder abweicht.
 export function listWorkflowNodeCatalog(): WorkflowNodeCatalogEntry[] {
   return [...nodes.values()]
-    .map((n) => ({
-      type: n.type,
-      label: n.label,
-      category: n.category,
-      description: n.description,
-      canvasType: n.canvasType,
-      defaultConfig: n.defaultConfig,
-    }))
+    .map((n) => {
+      const core = getBuiltinWorkflowNodeCatalogEntry(n.type);
+      return {
+        type: n.type,
+        label: n.label,
+        category: n.category,
+        description: n.description ?? core?.description,
+        canvasType: n.canvasType,
+        defaultConfig:
+          core?.defaultConfig || n.defaultConfig
+            ? { ...core?.defaultConfig, ...n.defaultConfig }
+            : undefined,
+        ...(core?.runtime === undefined ? {} : { runtime: core.runtime }),
+      };
+    })
     .sort((a, b) => a.label.localeCompare(b.label, 'de'));
 }
 

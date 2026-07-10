@@ -240,7 +240,6 @@ export function registerAiNodes(register: Reg): void {
       'Bewertet Spam 1–100 (nur Metadaten, kein E-Mail-Volltext). Antwort der KI muss eine Zahl sein.',
     defaultConfig: {
       contextMode: 'metadata',
-      thresholdHint: 70,
     },
     execute: async (ctx, config) => {
       if (!ctx.message) return { status: 'skipped', message: 'Keine Nachricht' };
