@@ -65,6 +65,18 @@ import type { ComposeSessionSnapshot } from "@shared/compose-session"
 
 export type { ComposeSessionSnapshot } from "@shared/compose-session"
 
+export type MailSearchScopeState = {
+  allFolders: boolean
+  includeSpam: boolean
+  includeTrash: boolean
+}
+
+const DEFAULT_SEARCH_SCOPE: MailSearchScopeState = {
+  allFolders: true,
+  includeSpam: false,
+  includeTrash: false,
+}
+
 type MailWorkspaceState = {
   /** Ein Konto oder `all` für Shared Inbox über alle Konten. */
   selectedAccountScope: MailAccountScope | null
@@ -84,6 +96,9 @@ type MailWorkspaceState = {
   removeConversationLock: (messageId: number) => void
   searchQuery: string
   setSearchQuery: Dispatch<SetStateAction<string>>
+  /** Suchbereich: alle Ordner (Standard) oder nur aktuelle Ansicht; Spam/Papierkorb optional. */
+  searchScope: MailSearchScopeState
+  setSearchScope: Dispatch<SetStateAction<MailSearchScopeState>>
   messageListFilter: MessageListFilter
   setMessageListFilter: Dispatch<SetStateAction<MessageListFilter>>
   /** Posteingang Zero: offen / erledigt / alle (nur Posteingang). */
@@ -153,6 +168,7 @@ const LS_KEYS = {
   settingsTab: "email:settingsTab",
   settingsAccountId: "email:settingsAccountId",
   messageDoneFilter: "email:messageDoneFilter",
+  searchScope: "mail-search-scope-v1",
 } as const
 
 function readLS<T>(key: string, parse: (raw: string) => T | null, fallback: T): T {
@@ -244,6 +260,25 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null)
   const [conversationLocks, setConversationLocks] = useState<Record<number, ConversationLockRecord>>({})
   const [searchQuery, setSearchQuery] = useState("")
+  const [searchScope, setSearchScope] = useState<MailSearchScopeState>(() =>
+    readLS<MailSearchScopeState>(
+      LS_KEYS.searchScope,
+      (raw) => {
+        try {
+          const parsed = JSON.parse(raw) as Partial<MailSearchScopeState> | null
+          if (!parsed || typeof parsed !== "object") return null
+          return {
+            allFolders: parsed.allFolders !== false,
+            includeSpam: parsed.includeSpam === true,
+            includeTrash: parsed.includeTrash === true,
+          }
+        } catch {
+          return null
+        }
+      },
+      DEFAULT_SEARCH_SCOPE,
+    ),
+  )
   const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
   const [messageDoneFilter, setMessageDoneFilter] = useState<MessageDoneFilter>(() =>
     readLS<MessageDoneFilter>(
@@ -345,6 +380,9 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writeLS(LS_KEYS.messageDoneFilter, messageDoneFilter)
   }, [messageDoneFilter])
+  useEffect(() => {
+    writeLS(LS_KEYS.searchScope, JSON.stringify(searchScope))
+  }, [searchScope])
 
   // R-9: Erledigt-Filter gilt nur im Posteingang — beim View-Wechsel zurücksetzen.
   useEffect(() => {
@@ -371,6 +409,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       removeConversationLock,
       searchQuery,
       setSearchQuery,
+      searchScope,
+      setSearchScope,
       messageListFilter,
       setMessageListFilter,
       messageDoneFilter,
@@ -410,6 +450,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       upsertConversationLock,
       removeConversationLock,
       searchQuery,
+      searchScope,
       messageListFilter,
       messageDoneFilter,
       listSortMode,

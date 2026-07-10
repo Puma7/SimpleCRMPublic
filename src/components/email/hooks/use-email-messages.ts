@@ -48,6 +48,7 @@ export function useEmailMessages() {
     mailView,
     categoryFilterId,
     searchQuery,
+    searchScope,
     selectedMessage,
     setSelectedMessage,
     listSortMode,
@@ -188,7 +189,17 @@ export function useEmailMessages() {
       try {
         let list: EmailMessage[]
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
-        if (query.trim() && view !== "trash") {
+        if (query.trim()) {
+          // Spam-/Papierkorb-Ansichten müssen sich selbst immer durchsuchen
+          // können, auch wenn der Nutzer sie global ausgeschlossen hat.
+          const scope = searchScope.allFolders
+            ? {
+                mode: "broad" as const,
+                includeSpam:
+                  searchScope.includeSpam || view === "spam" || view === "spam_review",
+                includeTrash: searchScope.includeTrash || view === "trash",
+              }
+            : { mode: "view" as const }
           const res = await invokeRenderer(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
@@ -197,6 +208,7 @@ export function useEmailMessages() {
             view,
             categoryId: view === "inbox" ? catId : null,
             doneFilter,
+            scope,
           }) as {
             messages: EmailMessage[]
             searchMode: "fts" | "like" | "regex"
@@ -282,7 +294,14 @@ export function useEmailMessages() {
         setLoadingMore(false)
       }
     },
-    [setSelectedMessage, messageDoneFilter, selectMessageById],
+    [
+      setSelectedMessage,
+      messageDoneFilter,
+      selectMessageById,
+      searchScope.allFolders,
+      searchScope.includeSpam,
+      searchScope.includeTrash,
+    ],
   )
 
   useEffect(() => {
@@ -311,6 +330,9 @@ export function useEmailMessages() {
     listSortMode,
     messageListFilter,
     messageDoneFilter,
+    searchScope.allFolders,
+    searchScope.includeSpam,
+    searchScope.includeTrash,
     loadMessages,
   ])
 

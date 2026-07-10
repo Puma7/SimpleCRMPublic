@@ -3,11 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
-import { ChevronDown, Loader2, Lock, Paperclip, Search } from "lucide-react"
+import { ChevronDown, Loader2, Lock, Paperclip, Search, SlidersHorizontal } from "lucide-react"
 import { toast } from "sonner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Switch } from "@/components/ui/switch"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -118,6 +125,8 @@ export function MessageList({
   const {
     searchQuery,
     setSearchQuery,
+    searchScope,
+    setSearchScope,
     selectedMessage,
     selectedAccountId,
     messageListFilter,
@@ -518,13 +527,80 @@ export function MessageList({
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             ref={searchInputRef}
-            className="h-9 pl-8"
+            className="h-9 pl-8 pr-9"
             placeholder="Nachrichten durchsuchen… (/)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             disabled={bulkBusy}
           />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1 h-7 w-7 text-muted-foreground"
+                title="Suchoptionen"
+                aria-label="Suchoptionen"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="search-scope-all-folders" className="text-xs">
+                  Alle Ordner durchsuchen
+                </Label>
+                <Switch
+                  id="search-scope-all-folders"
+                  checked={searchScope.allFolders}
+                  onCheckedChange={(v) =>
+                    setSearchScope((prev) => ({ ...prev, allFolders: v === true }))
+                  }
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="search-scope-include-spam"
+                  disabled={!searchScope.allFolders}
+                  checked={searchScope.includeSpam}
+                  onCheckedChange={(v) =>
+                    setSearchScope((prev) => ({ ...prev, includeSpam: v === true }))
+                  }
+                />
+                <Label
+                  htmlFor="search-scope-include-spam"
+                  className={cn("text-xs", !searchScope.allFolders && "text-muted-foreground")}
+                >
+                  Spam einbeziehen
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="search-scope-include-trash"
+                  disabled={!searchScope.allFolders}
+                  checked={searchScope.includeTrash}
+                  onCheckedChange={(v) =>
+                    setSearchScope((prev) => ({ ...prev, includeTrash: v === true }))
+                  }
+                />
+                <Label
+                  htmlFor="search-scope-include-trash"
+                  className={cn("text-xs", !searchScope.allFolders && "text-muted-foreground")}
+                >
+                  Papierkorb einbeziehen
+                </Label>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
+        {searchQuery.trim() && searchScope.allFolders ? (
+          <p className="text-[11px] leading-tight text-muted-foreground">
+            Ergebnisse aus allen Ordnern
+            {searchScope.includeSpam ? " · inkl. Spam" : ""}
+            {searchScope.includeTrash ? " · inkl. Papierkorb" : ""}
+          </p>
+        ) : null}
         <div className="space-y-2">
           {mailView === "inbox" ? <MessageDoneFilterChips /> : null}
           <MessageFilterChips />
