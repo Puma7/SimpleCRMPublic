@@ -83,6 +83,8 @@ export type EmailMessage = {
   pop3_uidl?: string | null
   subject: string | null
   snippet: string | null
+  /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
+  search_snippet?: string | null
   date_received: string | null
   from_json: string | null
   to_json?: string | null

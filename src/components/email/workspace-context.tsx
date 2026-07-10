@@ -71,6 +71,9 @@ export type MailSearchScopeState = {
   includeTrash: boolean
 }
 
+/** Sortierung der Suchergebnisse: Datum (Standard) oder Relevanz (bm25/FTS). */
+export type MailSearchSortMode = "date" | "relevance"
+
 const DEFAULT_SEARCH_SCOPE: MailSearchScopeState = {
   allFolders: true,
   includeSpam: false,
@@ -99,6 +102,8 @@ type MailWorkspaceState = {
   /** Suchbereich: alle Ordner (Standard) oder nur aktuelle Ansicht; Spam/Papierkorb optional. */
   searchScope: MailSearchScopeState
   setSearchScope: Dispatch<SetStateAction<MailSearchScopeState>>
+  searchSortMode: MailSearchSortMode
+  setSearchSortMode: Dispatch<SetStateAction<MailSearchSortMode>>
   messageListFilter: MessageListFilter
   setMessageListFilter: Dispatch<SetStateAction<MessageListFilter>>
   /** Posteingang Zero: offen / erledigt / alle (nur Posteingang). */
@@ -279,6 +284,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       DEFAULT_SEARCH_SCOPE,
     ),
   )
+  const [searchSortMode, setSearchSortMode] = useState<MailSearchSortMode>("date")
   const [messageListFilter, setMessageListFilter] = useState<MessageListFilter>("all")
   const [messageDoneFilter, setMessageDoneFilter] = useState<MessageDoneFilter>(() =>
     readLS<MessageDoneFilter>(
@@ -411,6 +417,8 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       setSearchQuery,
       searchScope,
       setSearchScope,
+      searchSortMode,
+      setSearchSortMode,
       messageListFilter,
       setMessageListFilter,
       messageDoneFilter,
@@ -451,6 +459,7 @@ export function MailWorkspaceProvider({ children }: { children: ReactNode }) {
       removeConversationLock,
       searchQuery,
       searchScope,
+      searchSortMode,
       messageListFilter,
       messageDoneFilter,
       listSortMode,

@@ -49,6 +49,7 @@ export function useEmailMessages() {
     categoryFilterId,
     searchQuery,
     searchScope,
+    searchSortMode,
     selectedMessage,
     setSelectedMessage,
     listSortMode,
@@ -66,6 +67,7 @@ export function useEmailMessages() {
   // Ref statt Callback-Dependency: Scope-Umschalten ohne aktive Suche darf
   // keinen Refetch auslösen (der Reload-Effekt hängt am query-gated Key).
   const searchScopeRef = useRef(searchScope)
+  const searchSortRef = useRef(searchSortMode)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
   const messagesRef = useRef<EmailMessage[]>([])
@@ -88,6 +90,10 @@ export function useEmailMessages() {
   useEffect(() => {
     searchScopeRef.current = searchScope
   }, [searchScope])
+
+  useEffect(() => {
+    searchSortRef.current = searchSortMode
+  }, [searchSortMode])
 
   useEffect(() => {
     selectedMessageIdRef.current = selectedMessage?.id ?? null
@@ -222,6 +228,7 @@ export function useEmailMessages() {
             // damit UI (deaktivierte Chips) und Verhalten übereinstimmen.
             doneFilter: broadSearch ? undefined : doneFilter,
             scope,
+            sort: searchSortRef.current,
           }) as {
             messages: EmailMessage[]
             searchMode: "fts" | "like" | "regex"
@@ -310,7 +317,7 @@ export function useEmailMessages() {
   // Scope-Änderungen lösen nur bei aktiver Suche einen Reload aus; ohne Query
   // bleibt der Toggle folgenlos (die Auswahl gilt ab der nächsten Suche).
   const searchScopeKey = debouncedSearchQ.trim()
-    ? `${searchScope.allFolders}:${searchScope.includeSpam}:${searchScope.includeTrash}`
+    ? `${searchScope.allFolders}:${searchScope.includeSpam}:${searchScope.includeTrash}:${searchSortMode}`
     : ""
 
   useEffect(() => {

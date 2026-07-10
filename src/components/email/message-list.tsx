@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
 import { ChevronDown, Loader2, Lock, Paperclip, Search, SlidersHorizontal } from "lucide-react"
@@ -39,6 +39,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { MessageListSortMode } from "@shared/email-list-options"
+import {
+  highlightNeedlesInText,
+  searchNeedlesFromQuery,
+  splitHighlighted,
+} from "@shared/email-search-highlight"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
@@ -110,6 +115,23 @@ function formatListDateTime(iso: string | null): string {
   })
 }
 
+/** Sentinel-markierten Text als React-Knoten mit <mark> rendern (kein HTML-Parsing). */
+function renderHighlighted(sentinelText: string): ReactNode {
+  const parts = splitHighlighted(sentinelText)
+  return parts.map((part, i) =>
+    part.marked ? (
+      <mark
+        key={i}
+        className="rounded-sm bg-yellow-200/80 px-0.5 text-inherit dark:bg-yellow-500/30"
+      >
+        {part.text}
+      </mark>
+    ) : (
+      <span key={i}>{part.text}</span>
+    ),
+  )
+}
+
 export function MessageList({
   messages,
   accounts,
@@ -128,6 +150,8 @@ export function MessageList({
     setSearchQuery,
     searchScope,
     setSearchScope,
+    searchSortMode,
+    setSearchSortMode,
     selectedMessage,
     selectedAccountId,
     messageListFilter,
@@ -175,6 +199,11 @@ export function MessageList({
   const scopeUiAvailable = hasLocalIpc()
   const broadSearchActive =
     scopeUiAvailable && searchScope.allFolders && searchQuery.trim().length > 0
+  const searchActive = searchQuery.trim().length > 0
+  const searchNeedles = useMemo(
+    () => (searchActive ? searchNeedlesFromQuery(searchQuery) : []),
+    [searchActive, searchQuery],
+  )
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -622,8 +651,15 @@ export function MessageList({
         </div>
         <div className="flex flex-wrap gap-2">
           <Select
-            value={listSortMode}
-            onValueChange={(v) => setListSortMode(v as MessageListSortMode)}
+            value={searchActive && searchSortMode === "relevance" ? "relevance" : listSortMode}
+            onValueChange={(v) => {
+              if (v === "relevance") {
+                setSearchSortMode("relevance")
+                return
+              }
+              setSearchSortMode("date")
+              setListSortMode(v as MessageListSortMode)
+            }}
           >
             <SelectTrigger className="h-8 w-[130px] text-xs">
               <SelectValue />
@@ -632,6 +668,7 @@ export function MessageList({
               <SelectItem value="date_desc">Neueste zuerst</SelectItem>
               <SelectItem value="date_asc">Älteste zuerst</SelectItem>
               <SelectItem value="priority">Priorität</SelectItem>
+              {searchActive ? <SelectItem value="relevance">Relevanz</SelectItem> : null}
             </SelectContent>
           </Select>
           <Select
@@ -897,8 +934,20 @@ export function MessageList({
                               unread && "font-medium",
                             )}
                           >
-                            {m.subject?.trim() || "(Ohne Betreff)"}
+                            {searchActive && searchNeedles.length > 0
+                              ? renderHighlighted(
+                                  highlightNeedlesInText(
+                                    m.subject?.trim() || "(Ohne Betreff)",
+                                    searchNeedles,
+                                  ),
+                                )
+                              : m.subject?.trim() || "(Ohne Betreff)"}
                           </span>
+                          {searchActive && m.search_snippet ? (
+                            <span className="col-span-2 truncate text-[11px] text-muted-foreground">
+                              {renderHighlighted(m.search_snippet)}
+                            </span>
+                          ) : null}
                           {mailView === "snoozed" && m.snoozed_until ? (
                             <span className="col-span-2 truncate text-[10px] text-amber-700 dark:text-amber-300">
                               Bis {formatListDateTime(m.snoozed_until)}
@@ -936,7 +985,7 @@ export function MessageList({
             })}
           </ul>
         )}
-        {hasMore && !loading && !searchQuery.trim() ? (
+        {hasMore && !loading ? (
           <div className="border-t p-2">
             <Button
               type="button"
