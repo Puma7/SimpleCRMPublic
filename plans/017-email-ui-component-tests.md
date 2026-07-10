@@ -320,9 +320,9 @@ in the `unit` (jsdom) project, so the files they exercise are instrumented.
 | Targeted test | `pnpm test -- tests/unit/<file>.test.tsx`       | that suite passes   |
 | All tests | `pnpm test`                                         | all suites pass     |
 | Lint      | `pnpm run lint`                                     | exit 0 (eslint, `--max-warnings 0`) |
-| Server+email coverage (plan 003) | `pnpm run test:server:coverage` | Jest passes; writes `coverage/server/coverage-summary.json` |
-| Regenerate baseline (plan 003)   | `pnpm run test:server:coverage:update-baseline` | writes `server-coverage-baseline.json`, exit 0 |
-| Ratchet check (plan 003)         | `node scripts/check-server-coverage-ratchet.mjs` | prints "Server coverage meets baseline", exit 0 |
+| UI coverage (this plan)       | `pnpm run test:ui:coverage` | Jest passes; writes the UI coverage summary |
+| Generate UI baseline          | `pnpm run test:ui:coverage:update-baseline` | writes `ui-coverage-baseline.json`, exit 0 |
+| UI ratchet check              | `node scripts/check-ui-coverage-ratchet.mjs` | meets the UI baseline, exit 0 |
 | Typecheck | `npx tsc -p tsconfig.json --noEmit`                 | exit 0, no errors   |
 
 Package manager is **pnpm** (see `.github/workflows/ci.yml`). Do not substitute
@@ -380,9 +380,9 @@ filters to a file across the `unit`/`integration` projects.
   Suggested messages:
   - `test(mail): render tests for message addresses block and filter chips`
   - `test(mail): interaction tests for external-link gate and compose editor`
-  - `test(mail): fold src/components/email into the server coverage ratchet`
-  One commit per step or a single squashed commit is fine, **except** the
-  regenerated `server-coverage-baseline.json` (Step 5) must be committed.
+  - `test(mail): add a separate email-UI coverage ratchet`
+  One commit per step or a single squashed commit is fine, **except** the new
+  `ui-coverage-baseline.json` (Step 5) must be committed.
 - Do NOT push or open a PR unless the operator explicitly instructs it.
 
 ## Steps
