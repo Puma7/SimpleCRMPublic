@@ -1226,7 +1226,10 @@ export function searchMessagesForAllAccountsWithMeta(
   if (!trimmed) return { rows: [], searchMode: 'like', hasMore: false };
   const limit = opts.limit ?? 100;
   const offset = opts.offset ?? 0;
-  const r = runMessageSearch(trimmed, opts, { access }, limit + 1, offset);
+  // View-scoped search hides actively snoozed mail exactly like the
+  // per-account path — without the flag, searchSnoozeSql emits no predicate
+  // and snoozed inbox mail resurfaces in the shared all-accounts search.
+  const r = runMessageSearch(trimmed, opts, { access, applySnoozeFilter: true }, limit + 1, offset);
   return { rows: r.rows.slice(0, limit), searchMode: r.searchMode, hasMore: r.rows.length > limit };
 }
 

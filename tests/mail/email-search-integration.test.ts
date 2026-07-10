@@ -334,6 +334,17 @@ describe('email search integration (real sqlite)', () => {
     expect(r.rows.map((m) => m.uid)).toEqual([20]);
   });
 
+  test('all-accounts view search hides snoozed mail like the per-account path', () => {
+    // Regression: der All-Accounts-Pfad übergab applySnoozeFilter nicht —
+    // gesnoozte Mails tauchten in der kontenübergreifenden Inbox-Suche auf.
+    const inbox = searchMessagesForAllAccountsWithMeta('ahlung', { view: 'inbox' });
+    expect(inbox.rows.map((m) => m.uid)).toEqual([1]);
+    const snoozedView = searchMessagesForAllAccountsWithMeta('zahlungsplan', { view: 'snoozed' });
+    expect(snoozedView.rows.map((m) => m.uid)).toEqual([20]);
+    const broad = searchMessagesForAllAccountsWithMeta('ahlung', { scope: { mode: 'broad' } });
+    expect(broad.rows.map((m) => m.uid).sort((a, b) => a - b)).toEqual([1, 20]);
+  });
+
   test('regex search finds matching rows and respects the view', () => {
     const r = searchMessagesForAccountWithMeta(1, '/^Rechnung \\d+$/m', { view: 'inbox' });
     expect(r.searchMode).toBe('regex');
