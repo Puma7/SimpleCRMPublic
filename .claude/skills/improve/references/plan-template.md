@@ -66,14 +66,18 @@ The facts the executor needs, inlined — never "as discussed" or "see audit":
 
 ## Commands you will need
 
-| Purpose   | Command                  | Expected on success |
-|-----------|--------------------------|---------------------|
-| Install   | `pnpm install`           | exit 0              |
-| Typecheck | `pnpm typecheck`         | exit 0, no errors   |
-| Tests     | `pnpm test -- <filter>`  | all pass            |
-| Lint      | `pnpm lint`              | exit 0              |
+| Purpose   | Command                          | Expected on success |
+|-----------|----------------------------------|---------------------|
+| Install   | `<install cmd from this repo>`   | exit 0              |
+| Typecheck | `<typecheck cmd, or omit row if the repo has none>` | exit 0, no errors |
+| Tests     | `<test cmd + filter>`            | all pass            |
+| Lint      | `<lint cmd>`                     | exit 0              |
 
-(Exact commands from this repo — verified during recon, not guessed.)
+**Fill these in from recon — do not leave the placeholders and do not guess a
+package manager.** Use the audited repo's actual commands (its README / AGENTS.md
+/ CLAUDE.md / package.json scripts, e.g. `npm ci` vs `pnpm install`, and only a
+typecheck row if that script exists). A generated plan that ships the wrong
+package-manager command or a missing script fails on the executor's first step.
 
 ## Suggested executor toolkit
 
