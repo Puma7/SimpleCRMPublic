@@ -993,7 +993,6 @@ function runMigrations() {
         if (!attTable) {
             console.log('Creating email_message_attachments table...');
             db.exec(createEmailMessageAttachmentsTable);
-            db.exec(`CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`);
         } else {
             const attCols = db.prepare(`PRAGMA table_info(${EMAIL_MESSAGE_ATTACHMENTS_TABLE})`).all() as { name: string }[];
             const acn = new Set(attCols.map((c) => c.name));
@@ -1005,6 +1004,10 @@ function runMigrations() {
                 `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_att_msg_sha ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id, content_sha256) WHERE content_sha256 IS NOT NULL AND content_sha256 != ''`,
             );
         }
+        // Unconditional (also for upgraded DBs whose attachments table predates
+        // the index list): the message_id index serves the correlated
+        // hasAttachment/LIKE probe in the mail search (EXISTS per message row).
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_email_attach_message ON ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}(message_id);`);
 
         db.exec(
             `CREATE UNIQUE INDEX IF NOT EXISTS idx_email_msg_pop3_uidl ON ${EMAIL_MESSAGES_TABLE}(account_id, folder_id, pop3_uidl) WHERE pop3_uidl IS NOT NULL AND pop3_uidl != ''`,

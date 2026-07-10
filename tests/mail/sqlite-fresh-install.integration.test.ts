@@ -1,6 +1,15 @@
 /**
  * @jest-environment node
  */
+// Overrides the global mail electron mock: the upgrade-path test below points
+// initializeDatabase() at a per-test temp dir via env var.
+jest.mock('electron', () => ({
+  app: {
+    getPath: () => process.env.SIMPLECRM_MAIL_TEST_USERDATA ?? '/tmp/simplecrm-mail-test',
+    getName: () => 'simplecrm-test',
+  },
+}));
+
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -11,7 +20,12 @@ import {
   EMAIL_MESSAGES_TABLE,
   SYNC_INFO_TABLE,
 } from '../../electron/database-schema';
-import { bootstrapFreshDatabaseSchema } from '../../electron/sqlite-service';
+import {
+  bootstrapFreshDatabaseSchema,
+  closeDatabase,
+  getDb,
+  initializeDatabase,
+} from '../../electron/sqlite-service';
 
 describe('sqlite fresh install integration', () => {
   let tmpDir: string;
@@ -45,6 +59,13 @@ describe('sqlite fresh install integration', () => {
     return cols.some((c) => c.name === column);
   }
 
+  function indexExists(name: string): boolean {
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?")
+      .get(name) as { name: string } | undefined;
+    return row != null;
+  }
+
   test('creates email_ai_profiles before dependent mail tables are usable', () => {
     expect(tableExists(EMAIL_AI_PROFILES_TABLE)).toBe(true);
     expect(tableExists(EMAIL_MESSAGES_TABLE)).toBe(true);
@@ -69,6 +90,35 @@ describe('sqlite fresh install integration', () => {
     expect(columnExists('email_message_attachments', 'text_extracted_at')).toBe(true);
     expect(tableExists('email_attachments_fts')).toBe(true);
     expect(columnExists('email_attachments_fts', 'text_content')).toBe(true);
+  });
+
+  test('attachments message_id index exists and is re-created on upgraded DBs', () => {
+    // Fresh install: Index dient der korrelierten EXISTS-/LIKE-Probe der Suche.
+    expect(indexExists('idx_email_attach_message')).toBe(true);
+
+    // Upgrade-Simulation ueber den ECHTEN Bestands-DB-Pfad von
+    // initializeDatabase(): ensureTableExists legt Indizes nur bei Tabellen-
+    // Neuanlage an — eine Bestands-DB, deren Attachments-Tabelle den Index
+    // nie bekommen hat, muss ihn durch runMigrations unconditional nachziehen.
+    db.exec('DROP INDEX idx_email_attach_message');
+    expect(indexExists('idx_email_attach_message')).toBe(false);
+    db.close();
+
+    process.env.SIMPLECRM_MAIL_TEST_USERDATA = tmpDir;
+    try {
+      initializeDatabase();
+      const upgraded = getDb();
+      const row = upgraded
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?")
+        .get('idx_email_attach_message');
+      expect(row).toBeTruthy();
+    } finally {
+      closeDatabase();
+      delete process.env.SIMPLECRM_MAIL_TEST_USERDATA;
+    }
+
+    // afterEach schliesst `db` — auf eine frische Verbindung zeigen lassen.
+    db = new Database(path.join(tmpDir, 'database.sqlite'));
   });
 
   test('seeds initial sync status rows', () => {
