@@ -13985,7 +13985,18 @@ describe('server edition foundation', () => {
     expect(source).toContain('email_messages.id < cursor_message.id');
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
     expect(listSection.indexOf('query = applyMessageCursor('))
-      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, broadScope ? undefined : input.view);'));
+      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, effectiveListView);'));
+    // Order und Cursor muessen DIESELBE effektive View nutzen (broad =>
+    // undefined): bekaeme der Cursor input.view, wuerde z. B. view=snoozed
+    // Seite 2 per snoozed_until-Keyset filtern, waehrend Seite 1
+    // datums-geordnet war.
+    expect(listSection).toContain('const effectiveListView = broadScope ? undefined : input.view;');
+    const cursorCall = listSection.slice(
+      listSection.indexOf('query = applyMessageCursor('),
+      listSection.indexOf('priorityCursor,'),
+    );
+    expect(cursorCall).toContain('effectiveListView');
+    expect(cursorCall).not.toContain('input.view');
     // Die Modus-Probe muss cursor-frei laufen: eine Cursor-Seite hinter dem
     // letzten FTS-Treffer darf den Modus nicht auf ILIKE kippen.
     expect(listSection).toContain("runQuery('fts', { limit: 1, offset: 0, withCursor: false })");
@@ -14021,6 +14032,11 @@ describe('server edition foundation', () => {
     expect(ftsSection).toContain(
       "OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\\\'",
     );
+    // Kundenfelder stehen in keinem Vector — ohne das per-Token
+    // Customer-EXISTS gingen kundenverknuepfte Treffer verloren, sobald
+    // irgendeine Zeile FTS matcht (R11).
+    expect(ftsSection).toContain('SELECT 1 FROM customers c');
+    expect(ftsSection).toContain("c.first_name ILIKE ${tokenPattern} ESCAPE '\\\\'");
     // Der fts-Zweig bekommt die index-alignten ILIKE-Patterns aus dem Parser.
     expect(source).toContain('parsed ? ilikeTextNeedles(parsed) : []');
   });
