@@ -223,6 +223,20 @@ export function MessageList({
     setSelectedIds(new Set())
   }, [mailView, selectedAccountId, categoryFilterId, messageListFilter, messageDoneFilter])
 
+  // Selektionen ueberleben keinen Suchkontext-Wechsel: Broad-Treffer aus
+  // fremden Ordnern (sent/archived) blieben sonst ausgewaehlt, wenn die
+  // Query geleert oder "Alle Ordner" umgeschaltet wird — Inbox-Bulk-Aktionen
+  // (Spam/Erledigt) wuerden auf ordnerfremde IDs anwendbar. Truth-Table:
+  // - Query leeren:        trimmedSearchQuery aendert sich -> Auswahl leer
+  //   (broadSearchActive kippt dabei ggf. ebenfalls auf false)
+  // - Scope-Toggle:        broadSearchActive kippt            -> Auswahl leer
+  // - Query tippen/aendern: Ergebnismenge wechselt            -> Auswahl leer
+  // - View-/Konto-Wechsel: Effect oben (mailView/... Deps)    -> Auswahl leer
+  const trimmedSearchQuery = searchQuery.trim()
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [broadSearchActive, trimmedSearchQuery])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && selectedIds.size > 0 && !bulkBusy) {
