@@ -944,23 +944,45 @@ function runMessageSearch(
       if (cat.param != null) params.push(cat.param);
       if (target.accountId != null) params.push(target.accountId);
       params.push(...access.params, ...ops.params);
-      // Pro Token: Treffer in der Nachricht ODER in einem Anhang; Tokens
-      // AND-verknuepft — so matcht auch eine Mail, deren Begriffe sich auf
-      // Body und Anhang verteilen.
+      // Pro Token: Treffer in der Nachricht ODER in einem Anhang ODER in den
+      // Feldern des verknuepften CRM-Kunden; Tokens AND-verknuepft — so
+      // matcht auch eine Mail, deren Begriffe sich auf Body und Anhang
+      // verteilen. Kundenfelder stehen in keinem FTS-Index — ohne den
+      // EXISTS-LIKE-Fallback (exakt die Feldliste des LIKE-Zweigs) gingen
+      // kundenverknuepfte Treffer verloren, sobald irgendeine Zeile FTS
+      // matcht. needles sind index-aligned zu den Token-Expressions (beide
+      // phrases-then-terms mit identischer Kappung).
+      const likeNeedles = [...parsed.phrases, ...parsed.terms].slice(0, MAX_SEARCH_TEXT_TOKENS);
+      const customerExistsSql = `OR EXISTS (
+               SELECT 1 FROM ${CUSTOMERS_TABLE} c
+               WHERE c.id = m.customer_id
+                 AND (
+                   COALESCE(c.name, '') LIKE ? ESCAPE '\\'
+                   OR COALESCE(c.firstName, '') LIKE ? ESCAPE '\\'
+                   OR COALESCE(c.company, '') LIKE ? ESCAPE '\\'
+                   OR COALESCE(c.email, '') LIKE ? ESCAPE '\\'
+                 )
+             )`;
       const tokenConds: string[] = [];
-      for (const token of tokens) {
+      tokens.forEach((token, index) => {
+        const needle = likeNeedles[index];
+        const custSql = needle !== undefined ? ` ${customerExistsSql}` : '';
         if (withAttachments) {
           tokenConds.push(`(m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)
              OR m.id IN (
                SELECT a.message_id FROM ${EMAIL_ATTACHMENTS_FTS_TABLE} f
                JOIN ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} a ON a.id = f.rowid
-               WHERE f.${EMAIL_ATTACHMENTS_FTS_TABLE} MATCH ?))`);
+               WHERE f.${EMAIL_ATTACHMENTS_FTS_TABLE} MATCH ?)${custSql})`);
           params.push(token, token);
         } else {
-          tokenConds.push(`m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)`);
+          tokenConds.push(`(m.id IN (SELECT rowid FROM ${EMAIL_MESSAGES_FTS_TABLE} WHERE ${EMAIL_MESSAGES_FTS_TABLE} MATCH ?)${custSql})`);
           params.push(token);
         }
-      }
+        if (needle !== undefined) {
+          const pattern = `%${escapeLikeValue(needle)}%`;
+          params.push(pattern, pattern, pattern, pattern);
+        }
+      });
       // Relevanz: korrelierte bm25-Subquery statt INNER JOIN, damit Anhang-
       // only-/Teiltreffer in der Ergebnismenge bleiben. bm25 ist negativ
       // (kleiner = besser); Zeilen ohne Voll-MATCH der Nachricht bekommen 0

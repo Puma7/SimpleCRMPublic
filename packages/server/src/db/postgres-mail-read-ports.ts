@@ -719,6 +719,12 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             parsed !== null && parsed.phrases.length + parsed.terms.length > 0;
           const broadScope =
             search && input.scope?.mode === 'broad' ? input.scope : null;
+          // GEMEINSAME effektive View fuer Order UND Cursor: broad ordnet
+          // immer neutral (view undefined) — bekaeme der Cursor weiterhin
+          // input.view, wuerde z. B. view=snoozed Seite 2 per
+          // snoozed_until-Keyset filtern, waehrend Seite 1 datums-geordnet
+          // war. Eine Variable, damit beide nie divergieren koennen.
+          const effectiveListView = broadScope ? undefined : input.view;
 
           // sort=relevance: Keyset-Cursor passt nicht zur Rank-Order —
           // eingehender Cursor wird ignoriert, nextCursor bleibt null
@@ -770,7 +776,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 input.workspaceId,
                 effectiveCursor,
                 input.sort,
-                input.view,
+                effectiveListView,
                 priorityCursor,
               );
             }
@@ -792,8 +798,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             }
             // Broad-Suche sortiert IMMER neutral (Datum bzw. Relevanz) — nie
             // view-spezifisch (snoozed/scheduled_send-Order ueber ein
-            // ordneruebergreifendes Ergebnis waere sinnlos).
-            query = applyMessageListOrder(query, input.sort, broadScope ? undefined : input.view);
+            // ordneruebergreifendes Ergebnis waere sinnlos). effectiveListView
+            // ist dieselbe Variable wie im Cursor (buildQuery).
+            query = applyMessageListOrder(query, input.sort, effectiveListView);
             return query;
           };
 
@@ -3117,6 +3124,10 @@ function applyMessageOperatorFilter(query: any, parsed: ParsedMailSearchQuery): 
  * - bcc_json: der 0007-Vector enthielt bcc_json noch, die Neudefinition in
  *   0010 (extendedSearchVector) liess es fallen — Bcc-only-Treffer wuerden
  *   sonst im fts-Modus verschwinden (like/regex decken Bcc bereits ab).
+ * - Kundenfelder (customers.name/first_name/company/email): stehen in
+ *   keinem Vector — ohne den EXISTS-ILIKE-Fallback (exakt die Feldliste des
+ *   ilike-Zweigs) gingen kundenverknuepfte Treffer verloren, sobald
+ *   irgendeine Zeile FTS matcht.
  * Performance: bewusst ohne eigene Indizes — die Ausdruecke filtern nur die
  * bereits durch Workspace-/View-/Vektor-Bedingungen eingeschraenkte Menge.
  * Tokens AND-verknuepft — so matcht auch eine Mail, deren Begriffe sich auf
@@ -3143,6 +3154,17 @@ function applyMessageFtsFilter(
       )
       OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1 FROM customers c
+        WHERE c.workspace_id = email_messages.workspace_id
+          AND c.id = email_messages.customer_id
+          AND (
+            c.name ILIKE ${tokenPattern} ESCAPE '\\'
+            OR c.first_name ILIKE ${tokenPattern} ESCAPE '\\'
+            OR c.company ILIKE ${tokenPattern} ESCAPE '\\'
+            OR c.email ILIKE ${tokenPattern} ESCAPE '\\'
+          )
+      )
     )`);
   });
   return query;
@@ -3150,9 +3172,9 @@ function applyMessageFtsFilter(
 
 /**
  * ILIKE-Fallback: ein AND-verknuepfter Feldblock pro Phrase/Term (Desktop-
- * Paritaet). Customer-EXISTS bleibt bewusst nur in diesem Zweig.
- * attachments_json::text deckt Metadaten-only-Anhangnamen ab (keine
- * email_message_attachments-Zeile, s. applyMessageFtsFilter).
+ * Paritaet). attachments_json::text deckt Metadaten-only-Anhangnamen ab
+ * (keine email_message_attachments-Zeile, s. applyMessageFtsFilter); das
+ * Customer-EXISTS existiert seit R11 auch im fts-Zweig.
  */
 function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');

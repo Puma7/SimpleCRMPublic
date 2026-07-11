@@ -170,6 +170,25 @@ describe('email search integration (real sqlite)', () => {
       bodyText: 'Am Rande erwaehnt: eine Sonderkondition gibt es nicht.',
       dateReceived: '2026-06-30T10:00:00.000Z',
     });
+    // CRM-Kunde: Suchbegriff steht NUR im Kundennamen der verknuepften Mail,
+    // waehrend eine zweite Zeile den FTS-Match haelt (Codex R11).
+    db.prepare(
+      `INSERT INTO customers (id, name, firstName, company, email)
+       VALUES (500, 'Zimmermann Sanitaer GmbH', 'Zieglinde', 'Zimmermann Sanitaer GmbH', 'kontakt@zimmermann-sanitaer.example')`,
+    ).run();
+    seedMessage({
+      uid: 60,
+      subject: 'Anfrage offen',
+      bodyText: 'bitte kurz melden',
+      dateReceived: '2026-05-01T10:00:00.000Z',
+    });
+    db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET customer_id = 500 WHERE uid = 60`).run();
+    seedMessage({
+      uid: 61,
+      subject: 'Protokoll',
+      bodyText: 'Herr Zimmermann hat zugesagt.',
+      dateReceived: '2026-05-02T10:00:00.000Z',
+    });
   });
 
   afterAll(() => {
@@ -376,6 +395,20 @@ describe('email search integration (real sqlite)', () => {
     const r = searchMessagesForAccountWithMeta(1, 'anhang quartalszahlen', { view: 'inbox' });
     expect(r.searchMode).toBe('fts');
     expect(r.rows.map((m) => m.uid)).toEqual([30]);
+  });
+
+  test('customer-linked hit surfaces in fts mode (per-token customer fallback)', () => {
+    // 'zimmermann' steht im Body von uid 61 (haelt den FTS-Match) und NUR im
+    // Kundennamen der mit uid 60 verknuepften CRM-Kundin — ohne den
+    // Kunden-Fallback im FTS-Zweig ginge uid 60 verloren.
+    const r = searchMessagesForAccountWithMeta(1, 'zimmermann', { view: 'inbox' });
+    expect(r.searchMode).toBe('fts');
+    expect(r.rows.map((m) => m.uid).sort((a, b) => a - b)).toEqual([60, 61]);
+    // Kunden-only-Query (kein FTS-Treffer irgendwo): der Fallback traegt den
+    // fts-Modus allein und findet nur die verknuepfte Mail.
+    const only = searchMessagesForAccountWithMeta(1, 'zieglinde', { view: 'inbox' });
+    expect(only.searchMode).toBe('fts');
+    expect(only.rows.map((m) => m.uid)).toEqual([60]);
   });
 
   test('relevance sort keeps attachment-only hits in the result set', () => {
