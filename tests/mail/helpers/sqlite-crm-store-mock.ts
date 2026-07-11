@@ -108,13 +108,9 @@ export function createSqliteCrmStoreMock() {
     if (lastSql.includes('email_ai_prompts') && lastSql.includes('SELECT *')) {
       return [...aiPrompts].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
     }
-    if (lastSql.includes('customers') || lastSql.includes('CUSTOMERS')) return customers;
-    if (lastSql.includes('GROUP BY mc.category_id')) {
-      return [{ categoryId: 1, count: 3 }];
-    }
-    if (lastSql.includes('SELECT id FROM') && lastSql.includes('email_messages')) {
-      return [{ id: 50 }, { id: 51 }];
-    }
+    // Nachrichten-Suche VOR der generischen customers-Route: FTS-/LIKE-
+    // Queries enthalten seit dem Kunden-EXISTS-Fallback das Wort
+    // 'customers', sind aber Nachrichten-SELECTs (SELECT m.*).
     if (lastSql.includes('email_messages') && lastSql.includes('SELECT m.*')) {
       if (ftsThrows && lastSql.includes('fts MATCH')) throw new Error('fts fail');
       return [
@@ -129,6 +125,13 @@ export function createSqliteCrmStoreMock() {
           ticket_code: null,
         },
       ];
+    }
+    if (lastSql.includes('customers') || lastSql.includes('CUSTOMERS')) return customers;
+    if (lastSql.includes('GROUP BY mc.category_id')) {
+      return [{ categoryId: 1, count: 3 }];
+    }
+    if (lastSql.includes('SELECT id FROM') && lastSql.includes('email_messages')) {
+      return [{ id: 50 }, { id: 51 }];
     }
     return [];
   }

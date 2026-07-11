@@ -69,6 +69,11 @@ import {
   formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  isActivelySnoozedMessage,
+  isDraftFolderMessage,
+  isEditableDraftMessage,
+  isInboxMessage,
+  isTrashedMessage,
   needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
@@ -525,14 +530,23 @@ export function MessageViewer(props: Props) {
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
     (selectedMessage.outbound_hold ?? 0) > 0
-  const isDraft =
-    selectedMessage != null &&
-    selectedMessage.uid < 0 &&
-    (mailView === "drafts" || mailView === "scheduled_send" || isOutboundHeld)
+  // Message-basiert statt view-basiert: Drafts aus der Broad-Suche (Treffer
+  // ausserhalb der drafts/scheduled_send-Views) sind sonst nicht editierbar.
+  const isDraft = isEditableDraftMessage(selectedMessage)
 
-  const inTrash = mailView === "trash"
-  const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"
+  // Message-basiert statt view-basiert: soft-geloeschte Treffer der Broad-
+  // Suche ("Papierkorb einbeziehen") brauchen Wiederherstellen- statt der
+  // normalen destruktiven Controls; in der Trash-View selbst ist jede Zeile
+  // soft-geloescht, dort aendert sich nichts.
+  const inTrash = isTrashedMessage(selectedMessage)
+  // Message-basiert statt view-basiert: Draft-Zeilen aus der Broad-Suche
+  // (auch uid >= 0-IMAP-Drafts) verhalten sich wie in der Drafts-View —
+  // keine Antworten-/Spam-Controls, dafuer der IMAP-Draft-Loeschen-Button.
+  const inDraftFolder = isDraftFolderMessage(selectedMessage)
   const inSnoozed = mailView === "snoozed"
+  // Message-basiert statt view-basiert: aktiv gesnoozte Broad-Treffer
+  // brauchen Unsnooze/"Snooze ändern" auch ausserhalb der snoozed-View.
+  const isSnoozedRow = isActivelySnoozedMessage(selectedMessage)
 
   const handleSnoozeMessage = async (until: string | null) => {
     if (!selectedMessage) return
@@ -545,6 +559,10 @@ export function MessageViewer(props: Props) {
     } else {
       toast.success("Wieder im Posteingang")
     }
+    // Bewusst view-basiert (nicht zeilenbasiert): entscheidet nur, ob nach
+    // dem Snooze/Unsnooze die Auswahl weiterspringt oder die Liste
+    // refresht — fuer Broad-Suche-Treffer schlimmstenfalls ein Refresh
+    // statt Weiterspringen; rein kosmetisch.
     const leavesCurrentView =
       (until != null && mailView === "inbox") || (until == null && inSnoozed)
     if (leavesCurrentView) {
@@ -802,7 +820,7 @@ export function MessageViewer(props: Props) {
                 />
               </>
             ) : null}
-            {inDraftsView && !inTrash && selectedMessage.uid >= 0 ? (
+            {inDraftFolder && !inTrash && selectedMessage.uid >= 0 ? (
               <Button
                 type="button"
                 size="sm"
@@ -814,7 +832,7 @@ export function MessageViewer(props: Props) {
                 Löschen
               </Button>
             ) : null}
-            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView ? (
+            {selectedMessage.uid >= 0 && !inTrash && !inDraftFolder ? (
               <>
                 <Button
                   type="button"
@@ -924,7 +942,7 @@ export function MessageViewer(props: Props) {
                     {selectedMessage.seen_local ? "Ungelesen" : "Gelesen"}
                   </span>
                 </Button>
-                {mailView === "inbox" && selectedMessage.uid >= 0 ? (
+                {isInboxMessage(selectedMessage) ? (
                   <Button
                     type="button"
                     size="sm"
@@ -999,7 +1017,7 @@ export function MessageViewer(props: Props) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            {isSyncableMail && !inTrash && !inDraftsView && !isDraft ? (
+            {isSyncableMail && !inTrash && !inDraftFolder && !isDraft ? (
               <>
                 {selectedMessage.spam_status === "review" || selectedMessage.spam_status === "spam" || selectedMessage.is_spam ? (
                   <Button
@@ -1231,7 +1249,7 @@ export function MessageViewer(props: Props) {
                         Als .eml
                       </Button>
                       <SnoozePopover
-                        showUnsnooze={inSnoozed}
+                        showUnsnooze={isSnoozedRow}
                         onUnsnooze={() => void handleSnoozeMessage(null)}
                         onSnooze={(until) => void handleSnoozeMessage(until)}
                       >
@@ -1242,7 +1260,7 @@ export function MessageViewer(props: Props) {
                           className="h-8 gap-1.5 text-xs"
                         >
                           <Clock className="h-3.5 w-3.5" />
-                          {inSnoozed ? "Snooze ändern" : "Zurückstellen"}
+                          {isSnoozedRow ? "Snooze ändern" : "Zurückstellen"}
                         </Button>
                       </SnoozePopover>
                     </>

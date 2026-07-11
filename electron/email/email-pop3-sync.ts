@@ -32,6 +32,7 @@ import {
   addressJson,
   formatDate,
   parseAttachmentsMeta,
+  plainTextFromHtml,
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
@@ -119,8 +120,10 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
         ? parsed.references.join(' ')
         : String(parsed.references)
       : null;
-    const textBody = parsed.text?.trim() || null;
     const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
+    // HTML-only mail: derive body_text from the HTML so search can see it.
+    const textBody =
+      parsed.text?.trim() || (htmlBody ? plainTextFromHtml(htmlBody) || null : null);
     const snippet = snippetFromParsed(textBody, htmlBody);
     const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
 

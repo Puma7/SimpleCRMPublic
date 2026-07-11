@@ -334,6 +334,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0023_account_scope_overrides',
   '0024_settings_kb_context_imap',
   '0025_email_message_thread_lookup',
+  '0026_mail_search_overhaul',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -13969,7 +13970,7 @@ describe('server edition foundation', () => {
     );
 
     expect(listSection).toContain('const priorityCursor =');
-    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, input.cursor)');
+    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)');
     expect(listSection).toContain('query = applyMessageCursor(');
     expect(source).toContain("if (view === 'snoozed')");
     expect(source).toContain("if (sort === 'date_asc')");
@@ -13984,7 +13985,77 @@ describe('server edition foundation', () => {
     expect(source).toContain('email_messages.id < cursor_message.id');
     expect(source).toContain('email_messages.snoozed_until > cursor_message.snoozed_until');
     expect(listSection.indexOf('query = applyMessageCursor('))
-      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, input.view);'));
+      .toBeLessThan(listSection.indexOf('query = applyMessageListOrder(query, input.sort, effectiveListView);'));
+    // Order und Cursor muessen DIESELBE effektive View nutzen (broad =>
+    // undefined): bekaeme der Cursor input.view, wuerde z. B. view=snoozed
+    // Seite 2 per snoozed_until-Keyset filtern, waehrend Seite 1
+    // datums-geordnet war.
+    expect(listSection).toContain('const effectiveListView = broadScope ? undefined : input.view;');
+    const cursorCall = listSection.slice(
+      listSection.indexOf('query = applyMessageCursor('),
+      listSection.indexOf('priorityCursor,'),
+    );
+    expect(cursorCall).toContain('effectiveListView');
+    expect(cursorCall).not.toContain('input.view');
+    // Die Modus-Probe muss cursor-frei laufen: eine Cursor-Seite hinter dem
+    // letzten FTS-Treffer darf den Modus nicht auf ILIKE kippen.
+    expect(listSection).toContain("runQuery('fts', { limit: 1, offset: 0, withCursor: false })");
+    expect(listSection).toContain('if (page.withCursor !== false) {');
+    // sort=relevance ist nur bei aktiver Suche wirksam: ohne search muss der
+    // normale Cursor greifen (sonst haengt die Liste dauerhaft auf Seite 1,
+    // weil der Cursor ignoriert wird und nextCursor null bleibt).
+    expect(listSection).toContain("const relevanceSort = input.sort === 'relevance' && Boolean(search);");
+    expect(listSection).toContain('const effectiveCursor = relevanceSort ? undefined : input.cursor;');
+  });
+
+  test('postgres mail search matches metadata-only attachment names via attachments_json', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const ftsSection = source.slice(
+      source.indexOf('function applyMessageFtsFilter('),
+      source.indexOf('function applyMessageIlikeFilter('),
+    );
+    const ilikeSection = source.slice(
+      source.indexOf('function applyMessageIlikeFilter('),
+      source.indexOf('const TS_HEADLINE_OPTIONS'),
+    );
+    // Anhaenge ueber der Groessen-/Gesamt-Cap haben KEINE
+    // email_message_attachments-Zeile — der Dateiname steht nur in
+    // attachments_json auf der Message und muss in BEIDEN Suchzweigen
+    // matchen (Desktop-Paritaet: SQLite-FTS v3 indexiert attachments_json).
+    expect(ftsSection).toContain(
+      "OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\\\'",
+    );
+    expect(ilikeSection).toContain("OR attachments_json::text ILIKE ${pattern} ESCAPE '\\\\'");
+    // bcc_json fehlt im deployten search_vector (die 0010-Neudefinition liess
+    // das bcc aus dem 0007-Vector fallen) — Bcc-only-Treffer brauchen im
+    // fts-Zweig die ILIKE-OR-Bedingung (like/regex decken Bcc bereits ab).
+    expect(ftsSection).toContain(
+      "OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\\\'",
+    );
+    // Kundenfelder stehen in keinem Vector — ohne das per-Token
+    // Customer-EXISTS gingen kundenverknuepfte Treffer verloren, sobald
+    // irgendeine Zeile FTS matcht (R11).
+    expect(ftsSection).toContain('SELECT 1 FROM customers c');
+    expect(ftsSection).toContain("c.first_name ILIKE ${tokenPattern} ESCAPE '\\\\'");
+    // Der fts-Zweig bekommt die index-alignten ILIKE-Patterns aus dem Parser.
+    expect(source).toContain('parsed ? ilikeTextNeedles(parsed) : []');
+  });
+
+  test('postgres mail regex search haystack includes attachments (names + extracted text)', () => {
+    const source = readFileSync(join(process.cwd(), 'packages', 'server', 'src', 'db', 'postgres-mail-read-ports.ts'), 'utf8');
+    const regexSection = source.slice(
+      source.indexOf('function applyMessageSearchFilter('),
+      source.indexOf('function applyMessageListOrder('),
+    );
+    // /invoice\.pdf/i-Treffer duerfen im Regex-Modus nicht verschwinden:
+    // attachments_json (Metadaten-only-Namen) plus aggregierte
+    // filename_display/content_text der Attachment-Zeilen (gedeckelt) muessen
+    // Teil des Heuhaufens sein; bcc_json ergaenzt die Desktop-Feldliste.
+    expect(regexSection).toContain("coalesce(attachments_json::text, '')");
+    expect(regexSection).toContain('SELECT string_agg(');
+    expect(regexSection).toContain("coalesce(left(a.content_text, 20000), '')");
+    expect(regexSection).toContain("coalesce(a.filename_display, '')");
+    expect(regexSection).toContain("coalesce(bcc_json::text, '')");
   });
 
   test('postgres mail folder badge counts exclude done archived messages', () => {
@@ -18052,8 +18123,14 @@ describe('server edition foundation', () => {
         async list(input) {
           messageListCalls.push(input);
           return {
-            items: [withRuntimeLeaks(makeEmailMessageRecord(11, true))],
+            items: [withRuntimeLeaks({
+              ...makeEmailMessageRecord(11, true),
+              ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
+            })],
             nextCursor: 11,
+            ...((input as { search?: string }).search
+              ? { searchMode: 'fts' as const, hasMore: true }
+              : {}),
           };
         },
         async get(input) {
@@ -18229,6 +18306,41 @@ describe('server edition foundation', () => {
       cursor: 20,
       limit: 10,
     }]);
+    expect((messages.body as any).data.searchMode).toBe('fts');
+    expect((messages.body as any).data.hasMore).toBe(true);
+    expect((messages.body as any).data.items[0].searchSnippet).toBe('Treffer: \uE000Hello\uE001');
+
+    // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.
+    const broadSearch = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages',
+      query: {
+        view: 'inbox',
+        search: 'Hello',
+        sort: 'relevance',
+        scopeMode: 'broad',
+        scopeIncludeSpam: 'true',
+        scopeIncludeTrash: 'false',
+        limit: '10',
+      },
+      principal,
+    });
+    expect(broadSearch.status).toBe(200);
+    expect(messageListCalls[1]).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      view: 'inbox',
+      search: 'Hello',
+      sort: 'relevance',
+      scope: { mode: 'broad', includeSpam: true, includeTrash: false },
+      limit: 10,
+    });
+    const invalidScope = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages',
+      query: { scopeMode: 'weird', limit: '10' },
+      principal,
+    });
+    expect(invalidScope.status).toBe(400);
 
     const folderCounts = await api.handle({
       method: 'GET',

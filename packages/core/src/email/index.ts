@@ -1,3 +1,4 @@
+export * from './attachment-text';
 export * from './imap-sync-cursor';
 export * from './email-address-normalize';
 export * from './imap-mailbox-names';
@@ -13,6 +14,8 @@ export * from './pop3-uidl-cache';
 export * from './read-receipt';
 export * from './reference-threading';
 export * from './scheduled-send-state';
+export * from './search-highlight';
+export * from './search-query';
 export * from './spam-engine';
 export * from './spam-features';
 export * from './ticket';

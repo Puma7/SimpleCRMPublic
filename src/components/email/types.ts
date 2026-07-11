@@ -83,6 +83,8 @@ export type EmailMessage = {
   pop3_uidl?: string | null
   subject: string | null
   snippet: string | null
+  /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
+  search_snippet?: string | null
   date_received: string | null
   from_json: string | null
   to_json?: string | null
@@ -100,6 +102,7 @@ export type EmailMessage = {
   spam_score_breakdown_json?: string | null
   spam_decided_at?: string | null
   archived?: number
+  soft_deleted?: number
   outbound_hold?: number
   outbound_block_reason?: string | null
   ticket_code?: string | null
@@ -246,6 +249,101 @@ export function formatMessageFrom(
     }
   }
   return formatFrom(message.from_json)
+}
+
+/**
+ * Message-basierte Draft-Erkennung (statt View-basiert), damit Compose-/
+ * Scheduled-Drafts auch als Treffer der Broad-Suche (ausserhalb der
+ * drafts/scheduled_send-Views) Bearbeiten-/Loeschen-Controls bekommen.
+ * Spiegelt die View-Mitgliedschaft der Store-Logik: lokale Drafts (uid < 0)
+ * liegen in folder_kind 'draft'; die drafts/scheduled_send-Views verlangen
+ * soft_deleted = 0, deshalb zeigen soft-geloeschte Drafts weiterhin
+ * Papierkorb-Controls. Outbound-held bleibt wie die bisherige Viewer-Logik
+ * view- und loesch-unabhaengig (Inbox-Verhalten unveraendert).
+ */
+export function isEditableDraftMessage(
+  message:
+    | Pick<EmailMessage, "uid" | "folder_kind" | "soft_deleted" | "outbound_hold">
+    | null
+    | undefined,
+): boolean {
+  if (!message || message.uid >= 0) return false
+  if ((message.outbound_hold ?? 0) > 0) return true
+  return message.folder_kind === "draft" && (message.soft_deleted ?? 0) === 0
+}
+
+/**
+ * Papierkorb-Erkennung an der Nachricht statt an der View: Die Broad-Suche
+ * mit "Papierkorb einbeziehen" liefert soft-geloeschte Treffer, waehrend die
+ * aktive View z. B. 'inbox' ist — solche Zeilen brauchen Wiederherstellen-
+ * statt der normalen destruktiven Controls. In der Trash-View selbst sind
+ * alle Zeilen soft-geloescht (View-Filter), das Verhalten dort bleibt
+ * identisch.
+ */
+export function isTrashedMessage(
+  message: Pick<EmailMessage, "soft_deleted"> | null | undefined,
+): boolean {
+  return (message?.soft_deleted ?? 0) !== 0
+}
+
+/**
+ * Draft-Ordner-Zugehoerigkeit der Zeile (statt drafts/scheduled_send-View):
+ * gated im Viewer die Controls, die fuer JEDE Draft-Zeile gelten — auch fuer
+ * uid >= 0-IMAP-Drafts, die isEditableDraftMessage bewusst nicht abdeckt
+ * (Antworten/Weiterleiten ausblenden, IMAP-Draft-Loeschen, Spam-Buttons).
+ * In den drafts/scheduled_send-Views hat per View-Filter jede Zeile
+ * folder_kind 'draft', dort aendert sich nichts.
+ */
+export function isDraftFolderMessage(
+  message: Pick<EmailMessage, "folder_kind"> | null | undefined,
+): boolean {
+  return message?.folder_kind === "draft"
+}
+
+/**
+ * Inbox-Zugehoerigkeit der Zeile — exakt die Inbox-View-Praedikat-Semantik
+ * der Store-Logik (viewFilterClause 'inbox'): nicht geloescht, folder_kind
+ * inbox/NULL/leer, nicht archiviert, kein Spam (inkl. spam_status 'review',
+ * das in der spam_review-View lebt). uid >= 0 entspricht dem bisherigen
+ * Toggle-Gating (outbound-held- und POP3-Zeilen mit synthetischer uid
+ * behalten ihr Verhalten). Gated Controls, die nur fuer Inbox-Mails gelten
+ * (Erledigt-Toggle), unabhaengig von der aktiven View: Broad-Treffer aus
+ * sent/archived zeigen sie nicht mehr, Inbox-Treffer aus jeder View schon.
+ */
+export function isInboxMessage(
+  message:
+    | Pick<
+        EmailMessage,
+        "uid" | "folder_kind" | "soft_deleted" | "archived" | "is_spam" | "spam_status"
+      >
+    | null
+    | undefined,
+): boolean {
+  if (!message || message.uid < 0) return false
+  if ((message.soft_deleted ?? 0) !== 0) return false
+  const kind = message.folder_kind ?? ""
+  if (kind !== "" && kind !== "inbox") return false
+  if ((message.archived ?? 0) !== 0) return false
+  if ((message.is_spam ?? 0) !== 0) return false
+  return (message.spam_status ?? "clean") === "clean"
+}
+
+/**
+ * Aktiver Snooze der Zeile (statt snoozed-View): ein gesnoozter Broad-
+ * Treffer braucht die Unsnooze-Aktion auch ausserhalb der snoozed-View,
+ * sonst laesst er sich aus dem Viewer nicht zurueckholen. Spiegelt das
+ * View-Praedikat der Store-Logik (snoozed_until gesetzt und in der
+ * Zukunft); clientseitiger Zeitvergleich genuegt. In der snoozed-View
+ * selbst ist jede Zeile aktiv gesnoozt — Verhalten dort identisch.
+ */
+export function isActivelySnoozedMessage(
+  message: Pick<EmailMessage, "snoozed_until"> | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  const until = message?.snoozed_until
+  if (!until) return false
+  const ts = new Date(until).getTime()
+  return Number.isFinite(ts) && ts > now.getTime()
 }
 
 export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
