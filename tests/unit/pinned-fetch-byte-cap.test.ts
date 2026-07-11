@@ -67,4 +67,40 @@ describe('pinned fetch response byte cap', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  test('sets Content-Length (byte length) for a string POST body the caller did not', async () => {
+    let receivedContentLength: string | undefined;
+    let receivedBody = '';
+    const server = http.createServer((req, res) => {
+      receivedContentLength = req.headers['content-length'];
+      req.on('data', (c: Buffer) => {
+        receivedBody += c.toString('utf8');
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const body = 'héllo wörld'; // multi-byte: byteLength (13) != length (11)
+      const fetchImpl = createPinnedFetch();
+      const response = await fetchImpl(`http://127.0.0.1:${port}/hook`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+        redirect: 'manual',
+        pinnedAddresses: ['127.0.0.1'],
+      });
+
+      expect(response.status).toBe(200);
+      expect(receivedBody).toBe(body);
+      expect(receivedContentLength).toBe(String(Buffer.byteLength(body)));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

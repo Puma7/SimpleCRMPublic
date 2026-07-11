@@ -57,9 +57,20 @@ export function createPinnedFetch(): GuardedFetch {
         }
       }) as unknown as http.RequestOptions['lookup'];
 
+      // Without an explicit Content-Length, Node sends a string body with
+      // chunked transfer-encoding, which some endpoints reject (411/400). Set it
+      // for string bodies (callers can't: content-length is disallowed for
+      // webhook headers and workflow requests never set it).
+      const reqHeaders: Record<string, string> = { ...init.headers };
+      if (
+        init.body !== undefined &&
+        !Object.keys(reqHeaders).some((k) => k.toLowerCase() === 'content-length')
+      ) {
+        reqHeaders['content-length'] = String(Buffer.byteLength(init.body));
+      }
       const req = transport.request(
         url,
-        { method: init.method, headers: init.headers, ...(init.signal ? { signal: init.signal } : {}), lookup },
+        { method: init.method, headers: reqHeaders, ...(init.signal ? { signal: init.signal } : {}), lookup },
         (res) => {
           const chunks: Buffer[] = [];
           let total = 0;

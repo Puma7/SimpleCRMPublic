@@ -140,7 +140,20 @@ export async function guardedFetch(args: {
       if (!location) {
         throw new Error('webhook redirect response is missing a Location header');
       }
-      currentUrl = new URL(location, currentUrl).toString();
+      const previousOrigin = new URL(currentUrl).origin;
+      const nextUrl = new URL(location, currentUrl);
+      currentUrl = nextUrl.toString();
+      // On a cross-origin redirect, drop credential headers so an allowlisted
+      // endpoint can't bounce the webhook's Authorization/Cookie to a different
+      // (also-allowlisted) host (matches fetch's cross-origin credential strip).
+      if (nextUrl.origin !== previousOrigin) {
+        headers = Object.fromEntries(
+          Object.entries(headers).filter(([k]) => {
+            const lower = k.toLowerCase();
+            return lower !== 'authorization' && lower !== 'cookie' && lower !== 'proxy-authorization';
+          }),
+        );
+      }
       // Match fetch redirect method handling: a 303 (and a POST on 301/302) is
       // replayed as a bodyless GET; 307/308 preserve method + body. Without this
       // the original POST payload would be re-submitted to the redirect target
@@ -322,6 +335,26 @@ function isBlockedWebhookHostname(hostname: string): boolean {
   return false;
 }
 
+// Decode an IPv4-mapped IPv6 address (::ffff:a.b.c.d, its hex form
+// ::ffff:hhhh:hhhh, and the fully-expanded 0:0:0:0:0:ffff:... variant) to dotted
+// IPv4, or null when it isn't a decodable mapped address. Needed so the hex form
+// (e.g. ::ffff:7f00:1 == 127.0.0.1) can't slip past the v4 private-range check.
+function ipv4FromMappedV6(value: string): string | null {
+  let rest: string | null = null;
+  if (value.startsWith('::ffff:')) rest = value.slice('::ffff:'.length);
+  else if (value.startsWith('0:0:0:0:0:ffff:')) rest = value.slice('0:0:0:0:0:ffff:'.length);
+  if (rest === null) return null;
+  if (rest.includes('.')) return isIP(rest) === 4 ? rest : null;
+  const groups = rest.split(':');
+  if (groups.length < 1 || groups.length > 2 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) {
+    return null;
+  }
+  const nums = groups.map((g) => Number.parseInt(g, 16));
+  const [hi, lo] = nums.length === 2 ? nums : [0, nums[0]];
+  const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  return isIP(v4) === 4 ? v4 : null;
+}
+
 function isPrivateOrReservedWebhookIp(host: string): boolean {
   const value = host.replace(/^\[|\]$/g, '').toLowerCase();
   const kind = isIP(value);
@@ -337,9 +370,10 @@ function isPrivateOrReservedWebhookIp(host: string): boolean {
   if (kind === 6) {
     if (value === '::1' || value === '::') return true;
     if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
-    if (value.startsWith('::ffff:')) {
-      return isPrivateOrReservedWebhookIp(value.slice('::ffff:'.length));
-    }
+    const mapped = ipv4FromMappedV6(value);
+    if (mapped !== null) return isPrivateOrReservedWebhookIp(mapped);
+    // A mapped-looking (::ffff:) address we couldn't decode → fail safe (block).
+    if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) return true;
   }
   return false;
 }

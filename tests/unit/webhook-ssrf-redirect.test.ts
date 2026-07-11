@@ -132,4 +132,56 @@ describe('webhook SSRF redirect + DNS-rebind hardening', () => {
     expect(calls[0]).toMatchObject({ method: 'POST', body: 'payload', contentType: 'application/json' });
     expect(calls[1]).toEqual({ method: 'GET', body: undefined, contentType: undefined });
   });
+
+  test('blocks an allowlisted host resolving to a hex IPv4-mapped loopback (::ffff:7f00:1)', async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => 'x',
+    }));
+
+    const port = createFetchWebhookDispatchPort({
+      allowlist: 'example.com',
+      fetch: fetchImpl,
+      // ::ffff:7f00:1 is 127.0.0.1 written in mapped-hex form.
+      lookup: async () => [{ address: '::ffff:7f00:1' }],
+    });
+
+    await expect(port.dispatch(basePlan)).rejects.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('strips Authorization/Cookie on a cross-origin redirect', async () => {
+    const seenAuth: Array<string | undefined> = [];
+    const fetchImpl = jest.fn(async (url: string, init: { headers: Record<string, string> }) => {
+      seenAuth.push(init.headers['authorization']);
+      if (url.includes('a.example.com')) {
+        return {
+          ok: false,
+          status: 307, // 307 preserves method/body; isolates the credential-strip behavior
+          headers: {
+            get: (n: string) =>
+              n.toLowerCase() === 'location' ? 'https://b.example.com/next' : null,
+          },
+          text: async () => '',
+        };
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => 'ok' };
+    });
+
+    const port = createFetchWebhookDispatchPort({
+      allowlist: 'example.com',
+      fetch: fetchImpl,
+      lookup: async () => [{ address: '93.184.216.34' }],
+    });
+
+    await port.dispatch({
+      ...basePlan,
+      url: 'https://a.example.com/hook',
+      headers: { authorization: 'Bearer secret', cookie: 'sid=1' },
+    });
+    expect(seenAuth[0]).toBe('Bearer secret'); // sent to the original origin
+    expect(seenAuth[1]).toBeUndefined(); // dropped on the cross-origin hop
+  });
 });
