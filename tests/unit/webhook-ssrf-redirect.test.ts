@@ -93,4 +93,43 @@ describe('webhook SSRF redirect + DNS-rebind hardening', () => {
     await expect(port.dispatch(basePlan)).resolves.toEqual({ status: 200, bodyPreview: 'pong' });
     expect(capturedRedirect).toBe('manual');
   });
+
+  test('replays a POST 303 redirect as a bodyless GET (fetch method semantics)', async () => {
+    const calls: Array<{ method: string; body?: string; contentType: string | undefined }> = [];
+    const fetchImpl = jest.fn(
+      async (
+        url: string,
+        init: { method: string; body?: string; headers: Record<string, string> },
+      ) => {
+        calls.push({ method: init.method, body: init.body, contentType: init.headers['content-type'] });
+        if (url.endsWith('/hook')) {
+          return {
+            ok: false,
+            status: 303,
+            headers: {
+              get: (n: string) =>
+                n.toLowerCase() === 'location' ? 'https://api.example.com/landing' : null,
+            },
+            text: async () => '',
+          };
+        }
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => 'done' };
+      },
+    );
+
+    const port = createFetchWebhookDispatchPort({
+      allowlist: 'example.com',
+      fetch: fetchImpl,
+      lookup: async () => [{ address: '93.184.216.34' }],
+    });
+
+    await expect(port.dispatch({ ...basePlan, body: 'payload' })).resolves.toEqual({
+      status: 200,
+      bodyPreview: 'done',
+    });
+    // First hop is the original POST with body + content-type; the 303 target is
+    // fetched as a GET with no body and the content-type header stripped.
+    expect(calls[0]).toMatchObject({ method: 'POST', body: 'payload', contentType: 'application/json' });
+    expect(calls[1]).toEqual({ method: 'GET', body: undefined, contentType: undefined });
+  });
 });

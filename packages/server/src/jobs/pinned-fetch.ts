@@ -63,13 +63,11 @@ export function createPinnedFetch(): GuardedFetch {
         (res) => {
           const chunks: Buffer[] = [];
           let total = 0;
-          res.on('data', (c: Buffer) => {
-            total += c.length;
-            if (total <= MAX_RESPONSE_BYTES) chunks.push(c);
-          });
-          res.on('end', () => {
+          let settled = false;
+          const resolveWith = (text: string): void => {
+            if (settled) return;
+            settled = true;
             const status = res.statusCode ?? 0;
-            const text = Buffer.concat(chunks).toString('utf8');
             resolve({
               ok: status >= 200 && status < 300,
               status,
@@ -82,8 +80,30 @@ export function createPinnedFetch(): GuardedFetch {
               },
               text: async () => text,
             });
+          };
+          res.on('data', (c: Buffer) => {
+            if (settled) return;
+            total += c.length;
+            if (total <= MAX_RESPONSE_BYTES) {
+              chunks.push(c);
+              return;
+            }
+            // Over the cap: keep only the first MAX_RESPONSE_BYTES bytes, then
+            // tear down the socket so we stop reading instead of draining the
+            // rest of a (possibly huge) response body into the void.
+            chunks.push(c);
+            const text = Buffer.concat(chunks).subarray(0, MAX_RESPONSE_BYTES).toString('utf8');
+            res.destroy();
+            resolveWith(text);
           });
-          res.on('error', reject);
+          res.on('end', () => {
+            resolveWith(Buffer.concat(chunks).toString('utf8'));
+          });
+          res.on('error', (err) => {
+            if (settled) return;
+            settled = true;
+            reject(err);
+          });
         },
       );
       req.on('error', reject);

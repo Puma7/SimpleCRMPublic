@@ -105,17 +105,29 @@ export async function guardedFetch(args: {
   maxRedirects?: number;
 }): Promise<{ ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> }> {
   const maxRedirects = args.maxRedirects ?? 3;
+  // One shared deadline for the whole redirect chain: each hop gets only the
+  // remaining budget, so a slow multi-hop chain can't multiply the timeout by
+  // the number of hops. Date.now() is available in the server runtime.
+  const deadline = Date.now() + args.init.timeoutMs;
   let currentUrl = args.url;
+  // Method/body/headers can change across hops per fetch redirect semantics.
+  let method = args.init.method;
+  let body = args.init.body;
+  let headers: Record<string, string> = { ...args.init.headers };
   for (let hop = 0; ; hop += 1) {
+    const remainingMs = Math.max(0, deadline - Date.now());
+    if (remainingMs <= 0) {
+      throw new Error('webhook request exceeded its total timeout');
+    }
     const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup);
     const signal =
       typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-        ? AbortSignal.timeout(args.init.timeoutMs)
+        ? AbortSignal.timeout(remainingMs)
         : undefined;
     const response = await args.fetchImpl(currentUrl, {
-      method: args.init.method,
-      headers: args.init.headers,
-      ...(args.init.body !== undefined ? { body: args.init.body } : {}),
+      method,
+      headers,
+      ...(body !== undefined ? { body } : {}),
       ...(signal ? { signal } : {}),
       redirect: 'manual',
       pinnedAddresses: addresses,
@@ -129,6 +141,23 @@ export async function guardedFetch(args: {
         throw new Error('webhook redirect response is missing a Location header');
       }
       currentUrl = new URL(location, currentUrl).toString();
+      // Match fetch redirect method handling: a 303 (and a POST on 301/302) is
+      // replayed as a bodyless GET; 307/308 preserve method + body. Without this
+      // the original POST payload would be re-submitted to the redirect target
+      // (double-submit, or a 405 on a GET-only landing URL).
+      if (
+        response.status === 303 ||
+        ((response.status === 301 || response.status === 302) && method === 'POST')
+      ) {
+        method = 'GET';
+        body = undefined;
+        headers = Object.fromEntries(
+          Object.entries(headers).filter(([k]) => {
+            const lower = k.toLowerCase();
+            return lower !== 'content-type' && lower !== 'content-length';
+          }),
+        );
+      }
       continue; // re-runs assertWebhookUrlAllowed on the new URL → blocks private/off-allowlist hops
     }
     return response;
