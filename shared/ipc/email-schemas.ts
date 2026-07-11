@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { IPCChannels, InvokeChannel } from './channels';
 import { messageListFilterSchema } from '../email-list-filters';
 import { messageDoneFilterSchema } from '../email-done-filter';
+import { messageSearchScopeSchema } from '../email-search-scope';
 import { compileWorkflowGraphPayloadSchema } from './workflow-graph-schema';
 
 type SchemaEntry = {
@@ -484,6 +485,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       view: accountMailViewSchema.optional(),
       categoryId: z.number().int().positive().nullable().optional(),
       doneFilter: messageDoneFilterSchema.optional(),
+      scope: messageSearchScopeSchema.optional(),
+      sort: z.enum(['date', 'relevance']).optional(),
     }),
     result: z.object({
       messages: recordArray,

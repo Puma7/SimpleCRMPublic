@@ -162,6 +162,8 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     if (swept.removed > 0) {
       logger.debug(`[sync_info] boot sweep removed ${swept.removed} stale keys`);
     }
+    const { startAttachmentTextBackfill } = await import('./attachment-text-extract');
+    startAttachmentTextBackfill(logger);
   } catch (e) {
     logger.warn('[email] startup recovery', e);
   }
@@ -237,6 +239,9 @@ export function isEmailBackgroundSyncBusy(): boolean {
 export function stopEmailBackgroundServices(): void {
   globalCronTickInFlight = false;
   scheduledSendTickInFlight = false;
+  void import('./attachment-text-extract')
+    .then((m) => m.stopAttachmentTextBackfill())
+    .catch(() => undefined);
   if (scheduledSendInterval) {
     clearInterval(scheduledSendInterval);
     scheduledSendInterval = null;

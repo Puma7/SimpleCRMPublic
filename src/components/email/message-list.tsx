@@ -1,13 +1,20 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { MessageListDisplayMode } from "@shared/email-list-options"
 import { IPCChannels } from "@shared/ipc/channels"
-import { ChevronDown, Loader2, Lock, Paperclip, Search } from "lucide-react"
+import { ChevronDown, Loader2, Lock, Paperclip, Search, SlidersHorizontal } from "lucide-react"
 import { toast } from "sonner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Switch } from "@/components/ui/switch"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,6 +39,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { MessageListSortMode } from "@shared/email-list-options"
+import {
+  highlightNeedlesInText,
+  searchNeedlesFromQuery,
+  splitHighlighted,
+} from "@shared/email-search-highlight"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { isAllAccountsScope } from "./account-scope"
@@ -102,6 +114,23 @@ function formatListDateTime(iso: string | null): string {
   })
 }
 
+/** Sentinel-markierten Text als React-Knoten mit <mark> rendern (kein HTML-Parsing). */
+function renderHighlighted(sentinelText: string): ReactNode {
+  const parts = splitHighlighted(sentinelText)
+  return parts.map((part, i) =>
+    part.marked ? (
+      <mark
+        key={i}
+        className="rounded-sm bg-yellow-200/80 px-0.5 text-inherit dark:bg-yellow-500/30"
+      >
+        {part.text}
+      </mark>
+    ) : (
+      <span key={i}>{part.text}</span>
+    ),
+  )
+}
+
 export function MessageList({
   messages,
   accounts,
@@ -118,6 +147,10 @@ export function MessageList({
   const {
     searchQuery,
     setSearchQuery,
+    searchScope,
+    setSearchScope,
+    searchSortMode,
+    setSearchSortMode,
     selectedMessage,
     selectedAccountId,
     messageListFilter,
@@ -160,6 +193,12 @@ export function MessageList({
   const showAccount = isAllAccountsScope(selectedAccountId)
   const accountLabel = (id: number) =>
     accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
+  const searchActive = searchQuery.trim().length > 0
+  const broadSearchActive = searchScope.allFolders && searchActive
+  const searchNeedles = useMemo(
+    () => (searchActive ? searchNeedlesFromQuery(searchQuery) : []),
+    [searchActive, searchQuery],
+  )
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -183,6 +222,20 @@ export function MessageList({
   useEffect(() => {
     setSelectedIds(new Set())
   }, [mailView, selectedAccountId, categoryFilterId, messageListFilter, messageDoneFilter])
+
+  // Selektionen ueberleben keinen Suchkontext-Wechsel: Broad-Treffer aus
+  // fremden Ordnern (sent/archived) blieben sonst ausgewaehlt, wenn die
+  // Query geleert oder "Alle Ordner" umgeschaltet wird — Inbox-Bulk-Aktionen
+  // (Spam/Erledigt) wuerden auf ordnerfremde IDs anwendbar. Truth-Table:
+  // - Query leeren:        trimmedSearchQuery aendert sich -> Auswahl leer
+  //   (broadSearchActive kippt dabei ggf. ebenfalls auf false)
+  // - Scope-Toggle:        broadSearchActive kippt            -> Auswahl leer
+  // - Query tippen/aendern: Ergebnismenge wechselt            -> Auswahl leer
+  // - View-/Konto-Wechsel: Effect oben (mailView/... Deps)    -> Auswahl leer
+  const trimmedSearchQuery = searchQuery.trim()
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [broadSearchActive, trimmedSearchQuery])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -518,29 +571,120 @@ export function MessageList({
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             ref={searchInputRef}
-            className="h-9 pl-8"
+            className="h-9 pl-8 pr-9"
             placeholder="Nachrichten durchsuchen… (/)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             disabled={bulkBusy}
           />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1 h-7 w-7 text-muted-foreground"
+                title="Suchoptionen"
+                aria-label="Suchoptionen"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="search-scope-all-folders" className="text-xs">
+                  Alle Ordner durchsuchen
+                </Label>
+                <Switch
+                  id="search-scope-all-folders"
+                  checked={searchScope.allFolders}
+                  onCheckedChange={(v) =>
+                    setSearchScope((prev) => ({ ...prev, allFolders: v === true }))
+                  }
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="search-scope-include-spam"
+                  disabled={!searchScope.allFolders}
+                  checked={searchScope.includeSpam}
+                  onCheckedChange={(v) =>
+                    setSearchScope((prev) => ({ ...prev, includeSpam: v === true }))
+                  }
+                />
+                <Label
+                  htmlFor="search-scope-include-spam"
+                  className={cn("text-xs", !searchScope.allFolders && "text-muted-foreground")}
+                >
+                  Spam einbeziehen
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="search-scope-include-trash"
+                  disabled={!searchScope.allFolders}
+                  checked={searchScope.includeTrash}
+                  onCheckedChange={(v) =>
+                    setSearchScope((prev) => ({ ...prev, includeTrash: v === true }))
+                  }
+                />
+                <Label
+                  htmlFor="search-scope-include-trash"
+                  className={cn("text-xs", !searchScope.allFolders && "text-muted-foreground")}
+                >
+                  Papierkorb einbeziehen
+                </Label>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
+        {broadSearchActive ? (
+          <p className="text-[11px] leading-tight text-muted-foreground">
+            Ergebnisse aus allen Ordnern
+            {searchScope.includeSpam || mailView === "spam" || mailView === "spam_review"
+              ? " · inkl. Spam"
+              : ""}
+            {searchScope.includeTrash || mailView === "trash" ? " · inkl. Papierkorb" : ""}
+          </p>
+        ) : null}
         <div className="space-y-2">
-          {mailView === "inbox" ? <MessageDoneFilterChips /> : null}
+          {mailView === "inbox" ? (
+            <MessageDoneFilterChips
+              disabled={broadSearchActive}
+              disabledTitle="Bei Suche über alle Ordner nicht verfügbar"
+            />
+          ) : null}
           <MessageFilterChips />
         </div>
         <div className="flex flex-wrap gap-2">
           <Select
-            value={listSortMode}
-            onValueChange={(v) => setListSortMode(v as MessageListSortMode)}
+            // Während aktiver Suche zeigt das Select den EFFEKTIVEN Zustand:
+            // die Suche unterstützt nur "Neueste zuerst" und "Relevanz" —
+            // eine andere Listen-Sortierung (Älteste/Priorität) bleibt
+            // erhalten und greift wieder, sobald die Suche verlassen wird.
+            value={
+              searchActive
+                ? searchSortMode === "relevance"
+                  ? "relevance"
+                  : "date_desc"
+                : listSortMode
+            }
+            onValueChange={(v) => {
+              if (searchActive) {
+                setSearchSortMode(v === "relevance" ? "relevance" : "date")
+                return
+              }
+              setListSortMode(v as MessageListSortMode)
+            }}
           >
             <SelectTrigger className="h-8 w-[130px] text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="date_desc">Neueste zuerst</SelectItem>
-              <SelectItem value="date_asc">Älteste zuerst</SelectItem>
-              <SelectItem value="priority">Priorität</SelectItem>
+              {searchActive ? null : <SelectItem value="date_asc">Älteste zuerst</SelectItem>}
+              {searchActive ? null : <SelectItem value="priority">Priorität</SelectItem>}
+              {searchActive ? <SelectItem value="relevance">Relevanz</SelectItem> : null}
             </SelectContent>
           </Select>
           <Select
@@ -569,7 +713,15 @@ export function MessageList({
                 size="sm"
                 variant={variant ?? "outline"}
                 className="h-7 text-xs"
-                disabled={bulkBusy}
+                // Broad-Suche: Auswahl kann Mails aus fremden Ordnern enthalten
+                // (Gesendet/Archiv) — view-spezifische Aktionen wie Spam/Erledigt
+                // waeren dort Datenmurks (Muster wie die Erledigt-Chips).
+                disabled={bulkBusy || broadSearchActive}
+                title={
+                  broadSearchActive
+                    ? "Bei Suche über alle Ordner nicht verfügbar"
+                    : undefined
+                }
                 onClick={() => void runBulk(action)}
               >
                 {label}
@@ -814,8 +966,20 @@ export function MessageList({
                               unread && "font-medium",
                             )}
                           >
-                            {m.subject?.trim() || "(Ohne Betreff)"}
+                            {searchActive && searchNeedles.length > 0
+                              ? renderHighlighted(
+                                  highlightNeedlesInText(
+                                    m.subject?.trim() || "(Ohne Betreff)",
+                                    searchNeedles,
+                                  ),
+                                )
+                              : m.subject?.trim() || "(Ohne Betreff)"}
                           </span>
+                          {searchActive && m.search_snippet ? (
+                            <span className="col-span-2 truncate text-[11px] text-muted-foreground">
+                              {renderHighlighted(m.search_snippet)}
+                            </span>
+                          ) : null}
                           {mailView === "snoozed" && m.snoozed_until ? (
                             <span className="col-span-2 truncate text-[10px] text-amber-700 dark:text-amber-300">
                               Bis {formatListDateTime(m.snoozed_until)}
@@ -853,7 +1017,7 @@ export function MessageList({
             })}
           </ul>
         )}
-        {hasMore && !loading && !searchQuery.trim() ? (
+        {hasMore && !loading ? (
           <div className="border-t p-2">
             <Button
               type="button"

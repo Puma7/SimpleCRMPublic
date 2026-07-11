@@ -8,6 +8,7 @@ This document describes the Docker-based server foundation in `docker/`.
 - A DNS name pointing to the host for TLS, or `localhost` for local smoke tests.
 - Open ports 80 and 443 when using Caddy TLS.
 - Node.js 22 locally only if you want to generate secrets with the commands below.
+- PostgreSQL needs the trusted extensions `pgcrypto` and `pg_trgm` (mail search). The bundled `docker/postgres-init/001-create-app-role.sh` creates both on fresh containers; migration `0026_mail_search_overhaul` also runs `CREATE EXTENSION IF NOT EXISTS pg_trgm` for existing databases (trusted on `postgres:18`, so the non-superuser app role may install it).
 
 ## Configure Environment
 

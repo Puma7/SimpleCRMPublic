@@ -13,6 +13,7 @@ import {
   addressJson,
   formatDate,
   parseAttachmentsMeta,
+  plainTextFromHtml,
   rawHeadersFromParsed,
   snippetFromParsed,
 } from '@simplecrm/core';
@@ -135,8 +136,11 @@ export async function parseMailSource(source: Buffer): Promise<ServerMailSyncPar
       ? parsed.references.join(' ')
       : String(parsed.references)
     : null;
-  const textBody = parsed.text?.trim() || null;
   const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
+  // HTML-only mail: derive body_text from the HTML so search (search_vector)
+  // can see it — parity with the desktop ingest.
+  const textBody =
+    parsed.text?.trim() || (htmlBody ? plainTextFromHtml(htmlBody) || null : null);
   const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
   return {
     messageId: parsed.messageId ?? null,

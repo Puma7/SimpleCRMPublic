@@ -286,10 +286,91 @@ describe('email spam decision engine', () => {
     expect(decision.reasons.some((r) => r.code === 'auth.dmarc.pass')).toBe(true);
   });
 
-  test('isSpamLearningFeatureKey excludes auth pass but keeps auth fail', () => {
+  test('isSpamLearningFeatureKey excludes auth pass/none/neutral and neutral content keys', () => {
     expect(isSpamLearningFeatureKey('auth:dkim:pass')).toBe(false);
+    expect(isSpamLearningFeatureKey('auth:arc:none')).toBe(false);
+    expect(isSpamLearningFeatureKey('auth:spf:neutral')).toBe(false);
+    expect(isSpamLearningFeatureKey('content:has_url')).toBe(false);
+    expect(isSpamLearningFeatureKey('content:many_urls')).toBe(false);
     expect(isSpamLearningFeatureKey('auth:spf:fail')).toBe(true);
+    expect(isSpamLearningFeatureKey('auth:dmarc:softfail')).toBe(true);
     expect(isSpamLearningFeatureKey('sender:domain:example.com')).toBe(true);
+    expect(isSpamLearningFeatureKey('content:suspicious_terms')).toBe(true);
+    expect(isSpamLearningFeatureKey('attachment:risky_type')).toBe(true);
+  });
+
+  test('objectively authenticated mail is immune to poisoned learning stats', () => {
+    // Real-world regression: SPF/DKIM/DMARC all pass, ARC none (normal for
+    // direct mail), many links. Learned spam weight on auth:arc:none,
+    // content:has_url and the sender domain used to push this to 46/100
+    // (review) with source local+learning.
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        stats.set(key, { feature_key: key, spam_count: 20, ham_count: 0 });
+      }
+      return stats;
+    });
+
+    const decision = buildSpamDecision(
+      message({
+        auth_spf: 'pass',
+        auth_dkim: 'pass',
+        auth_dmarc: 'pass',
+        auth_arc: 'none',
+        from_json: JSON.stringify({ value: [{ address: 'newsletter@legit.example' }] }),
+        subject: 'Neuigkeiten',
+        body_text: Array.from({ length: 6 }, (_, i) => `https://legit.example/article/${i}`).join(' '),
+      }),
+    );
+
+    expect(decision.status).toBe('clean');
+    expect(decision.source).toBe('local');
+    expect(decision.reasons.some((r) => r.code.startsWith('learning.'))).toBe(false);
+    expect(decision.reasons.some((r) => r.code === 'auth.aligned')).toBe(true);
+  });
+
+  test('full auth pass is a learning bypass, not blind trust in static signals', () => {
+    const decision = buildSpamDecision(
+      message({
+        auth_spf: 'pass',
+        auth_dkim: 'pass',
+        auth_dmarc: 'pass',
+        subject: 'Urgent bitcoin password',
+        body_text: Array.from({ length: 8 }, (_, i) => `https://bad.example/${i}`).join(' '),
+        body_html: '<script>bad()</script><form action="https://bad.example"></form>',
+        has_attachments: 1,
+        attachments_json: JSON.stringify([{ filename: 'invoice.exe', contentType: 'application/x-msdownload' }]),
+      }),
+    );
+
+    // Static heuristics still escalate authenticated-but-hostile content.
+    expect(decision.status).not.toBe('clean');
+    expect(decision.reasons.some((r) => r.code === 'html.script')).toBe(true);
+  });
+
+  test('learning still applies when authentication is incomplete', () => {
+    mockLoadSpamFeatureStats.mockImplementation((featureKeys: string[]) => {
+      const stats = new Map();
+      for (const key of featureKeys) {
+        if (key === 'sender:domain:spammy.test') {
+          stats.set(key, { feature_key: key, spam_count: 20, ham_count: 0 });
+        }
+      }
+      return stats;
+    });
+
+    const decision = buildSpamDecision(
+      message({
+        auth_spf: 'pass',
+        auth_dkim: null,
+        auth_dmarc: 'pass',
+        from_json: JSON.stringify({ value: [{ address: 'offer@spammy.test' }] }),
+      }),
+    );
+
+    expect(decision.source).toBe('local+learning');
+    expect(decision.reasons.some((r) => r.code === 'learning.sender:domain:spammy.test')).toBe(true);
   });
 
   test('shouldAutoApplySpamStatus keeps handled mail out of automated review/spam moves', () => {
