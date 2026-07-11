@@ -37,6 +37,7 @@ export const EMAIL_MESSAGE_ATTACHMENTS_TABLE = 'email_message_attachments';
 export const EMAIL_MESSAGES_FTS_TABLE = 'email_messages_fts';
 export const EMAIL_ATTACHMENTS_FTS_TABLE = 'email_attachments_fts';
 export const EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE = 'email_workflow_forward_dedup';
+export const EMAIL_AUTO_REPLY_DEDUP_TABLE = 'email_auto_reply_dedup';
 export const EMAIL_WORKFLOW_RUN_STEPS_TABLE = 'email_workflow_run_steps';
 export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
 export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
@@ -396,6 +397,20 @@ export const createEmailWorkflowForwardDedupTable = `
     PRIMARY KEY (message_id, workflow_id, dest),
     FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+// Anti-Loop für automatische KI-Antworten: max. N Antworten pro Absender/Tag
+// (Muster: email_vacation_reply_dedup). sender ist die normalisierte Adresse.
+export const createEmailAutoReplyDedupTable = `
+  CREATE TABLE IF NOT EXISTS ${EMAIL_AUTO_REPLY_DEDUP_TABLE} (
+    account_id INTEGER NOT NULL,
+    sender TEXT NOT NULL,
+    day TEXT NOT NULL,
+    reply_count INTEGER NOT NULL DEFAULT 0,
+    last_message_id INTEGER,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (account_id, sender, day)
   );
 `;
 

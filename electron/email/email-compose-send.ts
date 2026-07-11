@@ -569,6 +569,9 @@ export async function sendComposeDraft(input: {
 
     try {
       const { sendSmtpForAccount } = await import('./email-smtp');
+      // RFC 3834: automatische Antworten (Workflow-KI) als solche kennzeichnen,
+      // damit fremde Automaten nicht zurück-antworten (Loop-Schutz).
+      const autoSubmitted = draft.auto_submitted === 1;
       await sendSmtpForAccount(input.accountId, {
         from: acc.email_address,
         to: smtpTo,
@@ -582,11 +585,17 @@ export async function sendComposeDraft(input: {
         inReplyTo: threadHeaders.inReplyTo,
         references: threadHeaders.references,
         requestReadReceipt: requestReceipt,
+        ...(autoSubmitted ? { headers: { 'Auto-Submitted': 'auto-replied' } } : {}),
       });
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
     markSmtpCommitted(input.draftMessageId);
+    // Erfolgreich versendet — ein evtl. offener Freigabe-Zustand ist erledigt.
+    {
+      const { clearDraftApproval } = await import('./email-draft-approval');
+      clearDraftApproval(input.draftMessageId);
+    }
 
     const fin = await finalizeSentDraft({
       accountId: input.accountId,

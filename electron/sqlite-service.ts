@@ -57,6 +57,8 @@ import {
     createEmailMessageAttachmentsTable,
     createEmailMessagesFtsTable,
     createEmailWorkflowForwardDedupTable,
+    createEmailAutoReplyDedupTable,
+    EMAIL_AUTO_REPLY_DEDUP_TABLE,
     createEmailWorkflowRunStepsTable,
     createWorkflowKnowledgeBasesTable,
     createWorkflowKnowledgeChunksTable,
@@ -175,6 +177,7 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailAccountMailSettingsTable);
         connection.exec(createEmailMessageAttachmentsTable);
         connection.exec(createEmailWorkflowForwardDedupTable);
+        connection.exec(createEmailAutoReplyDedupTable);
         connection.exec(createEmailWorkflowRunStepsTable);
         connection.exec(createWorkflowKnowledgeBasesTable);
         connection.exec(createWorkflowKnowledgeChunksTable);
@@ -762,6 +765,11 @@ function runMigrations() {
                 { name: 'ticket_code', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN ticket_code TEXT` },
                 { name: 'customer_id', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN customer_id INTEGER` },
                 { name: 'folder_kind', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN folder_kind TEXT NOT NULL DEFAULT 'inbox'` },
+                // Zwei-Stufen-KI-Antwort: neutraler "Wartet auf Freigabe"-Zustand
+                // (bewusst getrennt vom fail-closed outbound_hold) + RFC-3834-Marker.
+                { name: 'approval_state', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN approval_state TEXT` },
+                { name: 'approval_reason', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN approval_reason TEXT` },
+                { name: 'auto_submitted', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auto_submitted INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of emailMsgCols) {
                 if (!msgColNames.has(col.name)) {
@@ -1071,6 +1079,11 @@ function runMigrations() {
         if (!fwdDedup) {
             console.log('Creating email_workflow_forward_dedup table...');
             db.exec(createEmailWorkflowForwardDedupTable);
+        }
+        const autoReplyDedup = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_AUTO_REPLY_DEDUP_TABLE);
+        if (!autoReplyDedup) {
+            console.log('Creating email_auto_reply_dedup table...');
+            db.exec(createEmailAutoReplyDedupTable);
         }
 
         runMailRoadmapMigrations(conn);

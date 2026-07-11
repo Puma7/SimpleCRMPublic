@@ -182,6 +182,8 @@ import {
   createPostgresWorkflowForwardCopyPort,
   createPostgresWorkflowHttpRequestPort,
   listServerWorkflowNodeCatalog,
+  isServerWorkflowNodeTypeSupported,
+  listServerWorkflowTemplates,
   createEmailReadReceiptResponderPort,
   createPostgresReadReceiptOutboundReviewPort,
   createScheduledSendJobPort,
@@ -451,12 +453,15 @@ describe('server edition foundation', () => {
     expect(syncInfoStoreSource).toMatch(/\bsetSyncInfo\b/);
   });
 
-  test('server workflow node catalog hides local code and plugin nodes', () => {
-    const builtinTypes = listBuiltinWorkflowNodeCatalog().map((entry) => entry.type);
+  test('server workflow node catalog hides local code, plugin and desktop-only nodes', () => {
+    const builtin = listBuiltinWorkflowNodeCatalog();
+    const builtinTypes = builtin.map((entry) => entry.type);
     expect(builtinTypes).toEqual(expect.arrayContaining([
       'code.javascript',
       'code.python',
       'plugin.custom',
+      'ai.draft_reply',
+      'ai.review_draft',
     ]));
 
     const serverTypes = listServerWorkflowNodeCatalog().map((entry) => entry.type);
@@ -471,6 +476,57 @@ describe('server edition foundation', () => {
       'code.python',
       'plugin.custom',
     ]));
+
+    // Generisch: JEDER runtime:'desktop'-Eintrag des Core-Katalogs fehlt im
+    // Server-Katalog — auch künftige Desktop-only-Nodes ohne Pflege der
+    // SERVER_UNSUPPORTED-Liste (aktuell ai.draft_reply / ai.review_draft).
+    const desktopOnlyTypes = builtin
+      .filter((entry) => entry.runtime === 'desktop')
+      .map((entry) => entry.type);
+    expect(desktopOnlyTypes).toEqual(expect.arrayContaining(['ai.draft_reply', 'ai.review_draft']));
+    for (const type of desktopOnlyTypes) {
+      expect(serverTypes).not.toContain(type);
+      expect(isServerWorkflowNodeTypeSupported(type)).toBe(false);
+    }
+
+    // Feld-Ebene: Desktop-only-Felder (der Server-Executor wertet sie nicht
+    // aus) verschwinden aus dem Server-Katalog — z. B. bewirbt ai.spam_score
+    // dort weder KI-Profil noch eigenen Prompt (Server nutzt die lokale
+    // Spam-Engine, keine KI).
+    const serverSpamScore = listServerWorkflowNodeCatalog().find((e) => e.type === 'ai.spam_score');
+    expect(serverSpamScore).toBeDefined();
+    expect((serverSpamScore?.fields ?? []).map((f) => f.key)).toEqual([]);
+    const builtinSpamScore = builtin.find((e) => e.type === 'ai.spam_score');
+    expect((builtinSpamScore?.fields ?? []).map((f) => f.key)).toEqual(
+      expect.arrayContaining(['contextMode', 'profileId', 'customPrompt']),
+    );
+    // Generisch: KEIN angebotenes Server-Katalog-Feld trägt runtime 'desktop'.
+    for (const entry of listServerWorkflowNodeCatalog()) {
+      for (const field of entry.fields ?? []) {
+        expect(field.runtime).not.toBe('desktop');
+      }
+    }
+  });
+
+  test('server template list omits templates with server-unsupported nodes', () => {
+    const templateIds = listServerWorkflowTemplates().map((template) => template.id);
+    // Die Zwei-Stufen-Vorlage nutzt ai.draft_reply/ai.review_draft
+    // (desktop-only) und bliebe im Server-Modus zur Laufzeit stecken.
+    expect(templateIds).not.toContain('inbound-ai-two-stage-reply');
+    // Die klassische Auto-Antwort-Vorlage besteht nur aus Server-fähigen
+    // Knoten und bleibt anwählbar.
+    expect(templateIds).toContain('inbound-ai-auto-reply');
+
+    // Generisch: keine angebotene Vorlage enthält einen Registry-Knoten,
+    // den der Server nicht ausführen kann.
+    for (const template of listServerWorkflowTemplates()) {
+      for (const node of template.graph.nodes) {
+        const nodeType = node.data.nodeType;
+        if (typeof nodeType === 'string') {
+          expect(isServerWorkflowNodeTypeSupported(nodeType)).toBe(true);
+        }
+      }
+    }
   });
 
   test('desktop setup config persists AP-10 deploy-mode choices in userData config.json', async () => {
@@ -10515,6 +10571,279 @@ describe('server edition foundation', () => {
     expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:95')).toBeUndefined();
     expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
       ['email.send_draft', 'default', 'noreply_sender_blocked'],
+    ]);
+  });
+
+  // Parität zur Desktop-Runtime: ein getroffener switch-Fall (nicht default)
+  // öffnet das Inbound-Gate — sonst bliebe der blocked→switch(low_confidence)
+  // →tag-Pfad der Auto-Antwort-Vorlagen im Server-Modus als
+  // no_prior_condition hängen.
+  test('inbound gate: matched logic.switch case authorises downstream nodes; default does not', async () => {
+    const now = new Date('2026-08-15T12:00:00.000Z');
+    const blockedPathGraph = (caseValue: string) => ({
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'gate', type: 'registry', data: { nodeType: 'email.auto_reply', config: { minConfidence: 80 } } },
+        { id: 'switch', type: 'registry', data: { nodeType: 'logic.switch', config: { field: 'auto_reply.blocked_reason', cases: caseValue } } },
+        { id: 'tag', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'ki-manuell' } } },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'gate' },
+        { id: 'e2', source: 'gate', target: 'switch', label: 'blocked' },
+        { id: 'e3', source: 'switch', target: 'tag', label: caseValue },
+      ],
+    });
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [
+        {
+          id: 61,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 610,
+          trigger_name: 'inbound',
+          enabled: true,
+          priority: 1,
+          graph_json: blockedPathGraph('low_confidence'),
+          execution_mode: 'graph',
+        },
+        {
+          // Kontrolle: switch trifft KEINEN Fall → default → Gate bleibt zu.
+          id: 62,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 620,
+          trigger_name: 'inbound',
+          enabled: true,
+          priority: 1,
+          graph_json: {
+            ...blockedPathGraph('anderer_grund'),
+            edges: [
+              { id: 'e1', source: 'trigger-1', target: 'gate' },
+              { id: 'e2', source: 'gate', target: 'switch', label: 'blocked' },
+              // Unbeschriftete Kante fängt den default-Port (pickEdge-Fallback).
+              { id: 'e3', source: 'switch', target: 'tag' },
+            ],
+          },
+          execution_mode: 'graph',
+        },
+      ],
+      messages: [{
+        id: 96,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 960,
+        subject: 'Unklare Anfrage',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+      }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    // Confidence 40 < minConfidence 80 → auto_reply blockt mit low_confidence.
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 61,
+      messageId: 96,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'ai.class_confidence': 40 } },
+    });
+    expect(rows.tags.map((t) => t.tag)).toEqual(['ki-manuell']);
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.port])).toEqual([
+      ['email.auto_reply', 'ok', 'blocked'],
+      ['logic.switch', 'ok', 'low_confidence'],
+      ['email.tag', 'ok', 'default'],
+    ]);
+
+    rows.tags.length = 0;
+    rows.steps.length = 0;
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 62,
+      messageId: 96,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'ai.class_confidence': 40 } },
+    });
+    expect(rows.tags).toEqual([]);
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.port])).toEqual([
+      ['email.auto_reply', 'ok', 'blocked'],
+      ['logic.switch', 'ok', 'default'],
+      ['email.tag', 'skipped', 'blocked'],
+    ]);
+  });
+
+  // Parität zur Desktop-Runtime: schema-markierte interpolate-Felder lösen
+  // {{Platzhalter}} vor der Ausführung auf — sonst landen wörtliche
+  // "{{subject}}"-Tags/-Aufgaben beim Kunden.
+  test('interpolates schema-flagged config fields before executing inline nodes', async () => {
+    const now = new Date('2026-08-15T12:30:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 63,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 630,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'cond-1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'Bestellung' } },
+            { id: 'tag-1', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'betreff:{{subject}} ({{gibt.es.nicht}})' } } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger-1', target: 'cond-1' },
+            { id: 'e2', source: 'cond-1', target: 'tag-1', label: 'yes' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 97,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 970,
+        subject: 'Bestellung 4711 fehlt',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 63,
+      messageId: 97,
+      triggerName: 'inbound',
+      context: {},
+    });
+
+    // Bekannte Platzhalter aufgelöst, unbekannte bleiben stehen (Desktop-Semantik).
+    expect(rows.tags.map((t) => t.tag)).toEqual(['betreff:Bestellung 4711 fehlt ({{gibt.es.nicht}})']);
+  });
+
+  // Anti-Loop-Parität zum Desktop: das Server-Gate blockt automatisch
+  // erzeugte Mails (RFC 3834) und Newsletter — "Auto-Submitted: no"
+  // (explizit manuell) blockt NICHT.
+  test('email.auto_reply gate blocks automated senders and newsletters via raw headers', async () => {
+    const now = new Date('2026-08-15T13:00:00.000Z');
+    const gateGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'gate', type: 'registry', data: { nodeType: 'email.auto_reply', config: { minConfidence: 10 } } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'gate' }],
+    };
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 64,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 640,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: gateGraph,
+        execution_mode: 'graph',
+      }],
+      messages: [
+        {
+          id: 101,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1010,
+          subject: 'Abwesenheit',
+          from_json: { value: [{ address: 'kollegin@example.com' }] },
+          raw_headers: 'Auto-Submitted: auto-replied\nFrom: kollegin@example.com',
+        },
+        {
+          id: 102,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1020,
+          subject: 'Newsletter',
+          from_json: { value: [{ address: 'news@example.com' }] },
+          raw_headers: 'List-Unsubscribe: <mailto:leave@example.com>\nFrom: news@example.com',
+        },
+        {
+          id: 103,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1030,
+          subject: 'Echte Kundenmail',
+          from_json: { value: [{ address: 'kunde@example.com' }] },
+          // RFC 3834: "no" markiert explizit MANUELL erzeugte Mail.
+          raw_headers: 'Auto-Submitted: no\nFrom: kunde@example.com',
+        },
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    const runFor = async (messageId: number) => {
+      rows.steps.length = 0;
+      await port.execute({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 64,
+        messageId,
+        triggerName: 'inbound',
+        context: { eventVariables: { 'ai.class_confidence': 95 } },
+      });
+      return rows.steps.map((s) => [s.node_type, s.port, s.message]);
+    };
+
+    expect(await runFor(101)).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:automated_sender'],
+    ]);
+    expect(await runFor(102)).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:automated_sender'],
+    ]);
+    expect(await runFor(103)).toEqual([
+      ['email.auto_reply', 'approved', 'auto_reply:approved'],
+    ]);
+  });
+
+  test('email.send_draft inbound bypass skips for automated senders (belt-and-braces)', async () => {
+    const now = new Date('2026-08-15T13:30:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 65,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 650,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        {
+          id: 104,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1040,
+          subject: 'Verteiler-Mail',
+          from_json: { value: [{ address: 'liste@example.com' }] },
+          raw_headers: 'List-Id: <alle.example.com>\nFrom: liste@example.com',
+        },
+        { id: 105, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1050, uid: -1, folder_kind: 'draft', subject: 'Re: Verteiler-Mail', body_text: 'reply', body_html: null, to_json: { value: [{ address: 'liste@example.com' }] } },
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 65,
+      messageId: 104,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 104 }, eventVariables: { 'draft.id': 105 } },
+    });
+
+    // Draft NICHT zum Versand vorbereitet.
+    const draftAfter = rows.messages.find((m) => m.id === 105);
+    expect(draftAfter?.scheduled_send_at).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'automated_sender_blocked'],
     ]);
   });
 
@@ -26703,6 +27032,8 @@ describe('server edition foundation', () => {
       ['workflow_imap_delete_opt_in', 'yes'],
       ['workflow_http_allowlist', ' api.example.com '],
       ['workflow_spam_score_threshold', '82'],
+      ['auto_reply_enabled', '1'],
+      ['auto_reply_max_per_sender_per_day', '3'],
       ['email_webhook_secret', 'secret-1'],
       ['email_max_attachment_mb', '30'],
       ['mail_security_rspamd_enabled', '1'],
@@ -26784,12 +27115,16 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(workflow.status).toBe(200);
+    // Kein autoReplyMaxPerSenderPerDay: die Server-Ausführung setzt das
+    // Tageslimit (noch) nicht durch, also wird es auch nicht angeboten —
+    // selbst wenn der sync_info-Key (z. B. aus einem Desktop-Sync) existiert.
     expect((workflow.body as any).data).toEqual({
       imapDeleteOptIn: true,
       httpAllowlist: ' api.example.com ',
       senderWhitelist: '',
       senderBlacklist: '',
       spamScoreThreshold: '82',
+      autoReplyEnabled: true,
     });
 
     const misc = await api.handle({
@@ -26818,6 +27153,16 @@ describe('server edition foundation', () => {
       localLearningEnabled: true,
     });
 
+    // Das nicht durchgesetzte Tageslimit wird als unbekanntes Feld abgelehnt
+    // (Clients blenden es aus, weil es in der GET-Antwort fehlt).
+    const workflowPatchRejected = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow/settings/automation',
+      body: { autoReplyMaxPerSenderPerDay: 3 },
+      principal,
+    });
+    expect(workflowPatchRejected.status).toBe(400);
+
     const workflowPatch = await api.handle({
       method: 'PATCH',
       path: '/api/v1/workflow/settings/automation',
@@ -26825,6 +27170,7 @@ describe('server edition foundation', () => {
         imapDeleteOptIn: false,
         httpAllowlist: ' hooks.example.com ',
         spamScoreThreshold: '101',
+        autoReplyEnabled: false,
       },
       principal,
     });
@@ -26835,6 +27181,7 @@ describe('server edition foundation', () => {
         workflow_imap_delete_opt_in: 'false',
         workflow_http_allowlist: 'hooks.example.com',
         workflow_spam_score_threshold: '100',
+        auto_reply_enabled: '0',
       },
     });
 
@@ -27787,11 +28134,43 @@ describe('server edition foundation', () => {
               execute: 'should-not-leak',
             } as any,
             {
+              type: 'email.tag',
+              label: 'Tag setzen',
+              category: 'email',
+              canvasType: 'action',
+              runtime: 'both',
+              defaultConfig: { tag: '' },
+              fields: [{
+                key: 'tag',
+                type: 'text',
+                label: 'Tag',
+                required: true,
+                resolve: 'should-not-leak',
+              }],
+              ports: [{ id: 'ok', label: 'Weiter', kind: 'success' }],
+              outputs: [{ name: 'tag.value', label: 'Tag', type: 'string' }],
+              docs: { longHelp: 'Setzt einen Tag.', seeAlso: ['email.categorize'] },
+              customWidget: 'tagPicker',
+            } as any,
+            {
               type: 'code.javascript',
               label: 'JavaScript',
               category: 'code',
               canvasType: 'registry',
               defaultConfig: { code: 'should-not-run' },
+            } as any,
+            {
+              type: 'custom.desktop_only',
+              label: 'Desktop-only',
+              category: 'ai',
+              canvasType: 'registry',
+              runtime: 'desktop',
+            } as any,
+            {
+              type: 'ai.draft_reply',
+              label: 'KI-Antwort entwerfen',
+              category: 'ai',
+              canvasType: 'registry',
             } as any,
           ];
         },
@@ -27818,14 +28197,33 @@ describe('server edition foundation', () => {
       principal,
     });
     expect(nodeCatalog.status).toBe(200);
-    expect((nodeCatalog.body as any).data).toEqual([{
-      type: 'logic.stop',
-      label: 'Stopp',
-      category: 'logic',
-      canvasType: 'action',
-    }]);
+    expect((nodeCatalog.body as any).data).toEqual([
+      {
+        type: 'logic.stop',
+        label: 'Stopp',
+        category: 'logic',
+        canvasType: 'action',
+      },
+      {
+        type: 'email.tag',
+        label: 'Tag setzen',
+        category: 'email',
+        canvasType: 'action',
+        runtime: 'both',
+        defaultConfig: { tag: '' },
+        fields: [{ key: 'tag', type: 'text', label: 'Tag', required: true }],
+        ports: [{ id: 'ok', label: 'Weiter', kind: 'success' }],
+        outputs: [{ name: 'tag.value', label: 'Tag', type: 'string' }],
+        docs: { longHelp: 'Setzt einen Tag.', seeAlso: ['email.categorize'] },
+        customWidget: 'tagPicker',
+      },
+    ]);
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('should-not-leak');
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('code.javascript');
+    // runtime:'desktop' am Eintrag selbst UND desktop-only-Typen aus dem
+    // Core-Katalog (ai.draft_reply) werden serverseitig gefiltert.
+    expect(JSON.stringify(nodeCatalog.body)).not.toContain('custom.desktop_only');
+    expect(JSON.stringify(nodeCatalog.body)).not.toContain('ai.draft_reply');
     expect(workflowNodeCatalogCalls).toEqual([{ workspaceId: WORKSPACE_A_ID }]);
 
     const templates = await api.handle({

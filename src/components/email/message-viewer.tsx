@@ -265,6 +265,9 @@ export function MessageViewer(props: Props) {
   const [translateResult, setTranslateResult] = useState<string | null>(null)
   const [translateLoading, setTranslateLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
+  // Freigabe-Banner ("Jetzt senden"/"Als Entwurf behalten"): ein Klick plant
+  // einen echten Versand — Doppelklick darf keinen zweiten Aufruf auslösen.
+  const [approvalBusy, setApprovalBusy] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [readReceiptRequested, setReadReceiptRequested] = useState(false)
@@ -530,6 +533,14 @@ export function MessageViewer(props: Props) {
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
     (selectedMessage.outbound_hold ?? 0) > 0
+  // Neutraler Zustand (kein Fehler): Die Gegenlese-KI hat den KI-Entwurf zur
+  // menschlichen Freigabe vorgelegt (gesetzt vom Workflow-Knoten ai.review_draft).
+  // Message-basiert wie die übrigen Controls — Freigabe-Entwürfe erscheinen
+  // auch in der Inbox-View und in der Broad-Suche.
+  const isAwaitingApproval =
+    selectedMessage != null &&
+    selectedMessage.uid < 0 &&
+    selectedMessage.approval_state === "pending"
   // Message-basiert statt view-basiert: Drafts aus der Broad-Suche (Treffer
   // ausserhalb der drafts/scheduled_send-Views) sind sonst nicht editierbar.
   const isDraft = isEditableDraftMessage(selectedMessage)
@@ -607,6 +618,48 @@ export function MessageViewer(props: Props) {
     toast.success("Wiederhergestellt (vorheriger Ordner)")
     await refreshCurrentMessage()
     await refreshList({ preserveSelection: true })
+  }
+
+  const handleApproveDraftSend = async () => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.ApproveDraftSend, {
+        draftId: selectedMessage.id,
+      }) as { success: boolean; error?: string }
+      if (!result.success) {
+        toast.error(result.error ?? "Freigabe fehlgeschlagen.")
+        return
+      }
+      toast.success("Freigegeben — Antwort wird gesendet.")
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Freigabe fehlgeschlagen.")
+    } finally {
+      setApprovalBusy(false)
+    }
+  }
+
+  const handleDismissDraftApproval = async () => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.DismissDraftApproval, {
+        draftId: selectedMessage.id,
+      }) as { success: boolean; error?: string }
+      if (!result.success) {
+        toast.error(result.error ?? "Aktion fehlgeschlagen.")
+        return
+      }
+      toast.success("Als Entwurf behalten.")
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Aktion fehlgeschlagen.")
+    } finally {
+      setApprovalBusy(false)
+    }
   }
 
   const handleArchive = async () => {
@@ -1175,6 +1228,40 @@ export function MessageViewer(props: Props) {
                       >
                         Workflow-Details ansehen
                       </Button>
+                    </div>
+                  ) : null}
+                  {isAwaitingApproval ? (
+                    <div
+                      role="status"
+                      className="rounded-md border border-sky-500/50 bg-sky-500/10 px-3 py-2 text-sm text-sky-900 dark:text-sky-200"
+                    >
+                      <p className="font-semibold">Wartet auf Freigabe</p>
+                      <p className="mt-1 text-[13px] leading-snug">
+                        {selectedMessage.approval_reason ||
+                          "Die Gegenlese-KI empfiehlt eine menschliche Prüfung."}{" "}
+                        Diese Antwort wurde von der KI entworfen und gegengelesen.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={approvalBusy}
+                          onClick={() => void handleApproveDraftSend()}
+                        >
+                          {approvalBusy ? "Wird verarbeitet …" : "Jetzt senden"}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          disabled={approvalBusy}
+                          onClick={() => void handleDismissDraftApproval()}
+                        >
+                          Als Entwurf behalten
+                        </Button>
+                      </div>
                     </div>
                   ) : null}
                   {selectedMessage.archived ? (

@@ -5,6 +5,7 @@ export * from './graph-presets';
 export * from './graph-validate';
 export * from './graph-types';
 export * from './graph-walk-utils';
+export * from './interpolate';
 export * from './node-catalog';
 export * from './sender-filter';
 export * from './templates';

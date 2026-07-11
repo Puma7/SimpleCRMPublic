@@ -7,6 +7,7 @@ import { attachmentContextFromJson } from '../email/email-workflow-types';
 import { securityVariablesFromRow } from '../email/mail-security-store';
 import type { WorkflowContext, WorkflowStringContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
+import { interpolateWorkflowPlaceholders } from '../../packages/core/src/workflow/interpolate';
 
 /** Metadata-only context for GDPR-conscious KI nodes (no body_text). */
 export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
@@ -145,16 +146,12 @@ export function createWorkflowContext(input: {
   };
 }
 
+// Delegiert an den Core-Helfer — EINE Semantik für Desktop und Server
+// (Single-Pass, unbekannte Platzhalter bleiben stehen; Details siehe
+// packages/core/src/workflow/interpolate.ts).
 export function interpolateTemplate(template: string, ctx: WorkflowContext): string {
-  let out = template;
-  for (const [k, v] of Object.entries(ctx.strings)) {
-    out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v);
-  }
-  out = out.replace(/\{\{text\}\}/g, ctx.strings.combined_text ?? '');
-  out = out.replace(/\{\{customer\.name\}\}/g, String(ctx.variables['customer.name'] ?? ''));
-  out = out.replace(/\{\{customer\.email\}\}/g, String(ctx.variables['customer.email'] ?? ''));
-  for (const [k, v] of Object.entries(ctx.variables)) {
-    out = out.replace(new RegExp(`\\{\\{${k.replace('.', '\\.')}\\}\\}`, 'g'), String(v ?? ''));
-  }
-  return out;
+  return interpolateWorkflowPlaceholders(template, {
+    strings: ctx.strings as Record<string, string | undefined>,
+    variables: ctx.variables,
+  });
 }

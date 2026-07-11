@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import {
+  humanizeWorkflowPort,
+  humanizeWorkflowStepMessage,
+  stepTone,
+} from "@shared/workflow-run-humanize"
+import { TONE_BORDER, TONE_TEXT } from "./run-tone-styles"
 import { resolveRegistryNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import {
@@ -14,7 +20,10 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { toast } from "sonner"
 import { invokeRenderer } from "@/services/transport"
-import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import {
+  getCachedWorkflowNodeCatalogEntry,
+  useWorkflowNodeCatalog,
+} from "./use-workflow-node-catalog"
 
 type StepRow = {
   id: number
@@ -32,6 +41,7 @@ type Props = {
   onOpenChange: (open: boolean) => void
   title?: string
 }
+
 
 export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Props) {
   const { labelByType } = useWorkflowNodeCatalog()
@@ -93,20 +103,46 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
             ) : null}
             {steps.length > 0 ? (
               <ul className="space-y-2 text-xs">
-                {steps.map((s) => (
-                  <li key={s.id} className="rounded-md border bg-muted/30 px-3 py-2">
-                    <div className="font-medium">
-                      {resolveRegistryNodeLabel(s.node_type, labelByType)}
-                      <span className="ml-2 text-muted-foreground">({s.status})</span>
-                    </div>
-                    {s.message ? (
-                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{s.message}</p>
-                    ) : null}
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {s.duration_ms} ms{s.port ? ` · Port ${s.port}` : ""}
-                    </p>
-                  </li>
-                ))}
+                {steps.map((s) => {
+                  const tone = stepTone(s.status, s.port)
+                  const humanMessage = humanizeWorkflowStepMessage(s.message)
+                  // Port-Label bevorzugt aus dem Knoten-Schema (z. B. „Erlaubt“/„Prüfen“),
+                  // generische Übersetzung nur als Fallback.
+                  const schemaPortLabel = getCachedWorkflowNodeCatalogEntry(s.node_type)?.ports?.find(
+                    (p) => p.id === s.port,
+                  )?.label
+                  const portLabel = schemaPortLabel ?? humanizeWorkflowPort(s.port)
+                  return (
+                    <li
+                      key={s.id}
+                      className={`rounded-md border bg-muted/30 px-3 py-2 ${TONE_BORDER[tone]}`}
+                    >
+                      <div className="font-medium">
+                        {resolveRegistryNodeLabel(s.node_type, labelByType)}
+                        <span className={`ml-2 ${TONE_TEXT[tone]}`}>({s.status})</span>
+                      </div>
+                      {humanMessage ? (
+                        <p
+                          className={`mt-1 whitespace-pre-wrap ${TONE_TEXT[tone]}`}
+                          title={s.message ?? undefined}
+                        >
+                          {humanMessage}
+                        </p>
+                      ) : null}
+                      {humanMessage && s.message && humanMessage !== s.message ? (
+                        <p className="mt-0.5 break-all font-mono text-[10px] text-muted-foreground/70">
+                          {s.message}
+                        </p>
+                      ) : null}
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                        {s.duration_ms} ms
+                        {portLabel ? (
+                          <span title={s.port ?? undefined}> · Ergebnis: {portLabel}</span>
+                        ) : null}
+                      </p>
+                    </li>
+                  )
+                })}
               </ul>
             ) : null}
           </ScrollArea>

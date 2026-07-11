@@ -2814,6 +2814,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       senderWhitelist: string
       senderBlacklist: string
       spamScoreThreshold: string
+      autoReplyEnabled: boolean
+      // Fehlt serverseitig, solange das Tageslimit dort nicht durchgesetzt
+      // wird — das Automatisierungs-Panel blendet das Feld dann aus.
+      autoReplyMaxPerSenderPerDay?: number
     }>(body),
   })],
   [IPCChannels.Email.SetWorkflowAutomationSettings, ([payload]) => ({
@@ -6345,6 +6349,8 @@ function mapWorkflowAutomationSettingsPayload(value: unknown): Record<string, un
     senderWhitelist: input.senderWhitelist === undefined ? undefined : optionalTrimmedText(input.senderWhitelist, "workflow sender whitelist", 10000),
     senderBlacklist: input.senderBlacklist === undefined ? undefined : optionalTrimmedText(input.senderBlacklist, "workflow sender blacklist", 10000),
     spamScoreThreshold: input.spamScoreThreshold === undefined ? undefined : boundedNumberText(input.spamScoreThreshold, "workflow spam score threshold", 1, 100, true),
+    autoReplyEnabled: optionalBoolean(input.autoReplyEnabled, "workflow auto reply enabled"),
+    autoReplyMaxPerSenderPerDay: input.autoReplyMaxPerSenderPerDay === undefined ? undefined : boundedNumber(input.autoReplyMaxPerSenderPerDay, "workflow auto reply max per sender per day", 1, 50, true),
   })
 }
 

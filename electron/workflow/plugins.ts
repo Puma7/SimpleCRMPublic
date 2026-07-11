@@ -50,23 +50,25 @@ export function listPluginManifests(): WorkflowPluginManifest[] {
   return [...loaded.values()];
 }
 
-function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown) => Promise<unknown>) | null {
+function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown) => unknown) | null {
   const code = fs.readFileSync(modPath, 'utf8');
+  // module/exports dürfen NICHT eingefroren werden — sonst kann kein Plugin
+  // `module.exports.run` setzen und jeder Plugin-Knoten meldet "keine run()".
   const sandbox: {
     module: { exports: Record<string, unknown> };
     exports: Record<string, unknown>;
+    __pluginCtx?: unknown;
+    __pluginConfig?: unknown;
   } = {
     module: { exports: {} },
     exports: {},
   };
   sandbox.exports = sandbox.module.exports;
-  Object.freeze(sandbox.module);
-  Object.freeze(sandbox.module.exports);
-  Object.freeze(sandbox.exports);
+  const context = vm.createContext(sandbox);
   try {
-    vm.runInNewContext(
+    vm.runInContext(
       `${code}\n//# sourceURL=${modPath}`,
-      sandbox,
+      context,
       { filename: modPath, timeout: PLUGIN_TIMEOUT_MS, displayErrors: true },
     );
   } catch (e) {
@@ -74,9 +76,26 @@ function loadPluginRunFunction(modPath: string): ((ctx: unknown, config: unknown
     return null;
   }
   const run = sandbox.module.exports.run ?? sandbox.exports.run;
-  return typeof run === 'function'
-    ? (run as (ctx: unknown, config: unknown) => Promise<unknown>)
-    : null;
+  if (typeof run !== 'function') return null;
+  // run() wird DURCH die vm aufgerufen (nicht direkt): so unterliegt auch der
+  // synchrone Teil dem vm-Timeout — eine synchrone Endlosschleife im Plugin
+  // wirft nach PLUGIN_TIMEOUT_MS, statt den Electron-Main-Thread für immer
+  // einzufrieren. (Grenze: sync-Schleifen in späteren Promise-Callbacks kann
+  // nur ein worker_thread präemptieren — bewusst nicht Teil dieser Stufe.)
+  return (pluginCtx: unknown, config: unknown) => {
+    sandbox.__pluginCtx = pluginCtx;
+    sandbox.__pluginConfig = config;
+    try {
+      return vm.runInContext(
+        '(module.exports.run ?? exports.run)(__pluginCtx, __pluginConfig)',
+        context,
+        { timeout: PLUGIN_TIMEOUT_MS },
+      );
+    } finally {
+      delete sandbox.__pluginCtx;
+      delete sandbox.__pluginConfig;
+    }
+  };
 }
 
 export async function runPluginNode(
@@ -98,9 +117,74 @@ export async function runPluginNode(
   if (!run) {
     return { status: 'error', message: 'Plugin exportiert keine run()-Funktion' };
   }
-  const out = await run(
-    { strings: ctx.strings, variables: ctx.variables, messageId: ctx.messageId },
-    config,
-  );
-  return { status: 'ok', message: typeof out === 'string' ? out : JSON.stringify(out).slice(0, 500) };
+  // Der sync-Teil von run() läuft mit vm-Timeout (siehe loadPluginRunFunction);
+  // async hängende Promises braucht zusätzlich dieses Race-Limit.
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Plugin-Timeout nach ${PLUGIN_TIMEOUT_MS / 1000}s`)),
+      PLUGIN_TIMEOUT_MS,
+    );
+  });
+  let out: unknown;
+  try {
+    // Kopien statt Referenzen: ein Plugin, das ctx.variables direkt mutiert,
+    // würde sonst den Präfix-Filter (PLUGIN_RESERVED_VARIABLE_PREFIXES)
+    // umgehen und z. B. draft.id für den Auto-Versand umbiegen.
+    const pluginCtx = {
+      strings: { ...ctx.strings },
+      variables: { ...ctx.variables },
+      messageId: ctx.messageId,
+    };
+    out = await Promise.race([
+      Promise.resolve(run(pluginCtx, { ...config })),
+      timeout,
+    ]);
+  } catch (e) {
+    // Fehler aus dem vm-Kontext sind kein `instanceof Error` des Hauptkontexts.
+    const message =
+      typeof (e as { message?: unknown })?.message === 'string'
+        ? (e as { message: string }).message
+        : String(e);
+    return { status: 'error', message };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return {
+    status: 'ok',
+    message: typeof out === 'string' ? out : JSON.stringify(out ?? null).slice(0, 500),
+    variables: pluginResultVariables(out),
+  };
+}
+
+// Sicherheitsrelevante Variablen, die Plugins NICHT überschreiben dürfen —
+// sonst könnte ein Plugin z. B. draft.id umbiegen und den Auto-Versand
+// (email.send_draft) auf einen fremden Entwurf lenken.
+const PLUGIN_RESERVED_VARIABLE_PREFIXES = [
+  'draft.',
+  'auto_reply.',
+  'ai.review.',
+  'send_draft.',
+];
+
+/** `run()` darf { variables: { name: wert } } zurückgeben — landet als Workflow-Variablen. */
+function pluginResultVariables(
+  out: unknown,
+): Record<string, string | number | boolean | null> | undefined {
+  if (out == null || typeof out !== 'object') return undefined;
+  const raw = (out as { variables?: unknown }).variables;
+  if (raw == null || typeof raw !== 'object') return undefined;
+  const vars: Record<string, string | number | boolean | null> = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^[\w.$:-]{1,100}$/.test(key)) continue;
+    if (PLUGIN_RESERVED_VARIABLE_PREFIXES.some((p) => key.startsWith(p))) continue;
+    if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+      vars[key] = value as string | number | boolean | null;
+    } else {
+      vars[key] = JSON.stringify(value).slice(0, 4000);
+    }
+    if (++count >= 50) break;
+  }
+  return count > 0 ? vars : undefined;
 }

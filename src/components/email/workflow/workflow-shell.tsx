@@ -81,6 +81,7 @@ import { WorkflowRunHistory } from "./workflow-run-history"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import { validateWorkflowGraphConfigs } from "@shared/workflow-config-validate"
 import {
   enrichRegistryFlowNodes,
   enrichRegistryGraphDocument,
@@ -161,6 +162,9 @@ export function WorkflowShell() {
   const [accounts, setAccounts] = useState<AccountOpt[]>([])
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
+  // "Jetzt ausführen" startet einen ECHTEN Lauf (inkl. möglichem Versand) —
+  // Doppelklick darf keine zweite Ausführung anstoßen.
+  const [executingNow, setExecutingNow] = useState(false)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
   const [templatesOpen, setTemplatesOpen] = useState(false)
   const [referenceOpen, setReferenceOpen] = useState(false)
@@ -174,7 +178,7 @@ export function WorkflowShell() {
   const [accountScope, setAccountScope] = useState<AccountScopeValue>("all")
   const browserImportInputRef = useRef<HTMLInputElement | null>(null)
 
-  const { labelByType, catalogLoaded } = useWorkflowNodeCatalog()
+  const { catalog, labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
 
   const filteredRows = useMemo(() => {
@@ -321,6 +325,50 @@ export function WorkflowShell() {
           "Aktionen hängen direkt am Trigger ohne Bedingung — sie würden auf jede Mail angewendet. Bitte Trigger → Bedingung → (Ja) → Aktion verbinden.",
           { duration: 8000 },
         )
+      }
+      // Schema-Validierung: Pflichtfelder/Wertebereiche blockieren das
+      // Speichern (Knoten wird markiert); Kanten-Probleme an Mehrfach-Port-
+      // Knoten werden als Warnung gezeigt.
+      {
+        const state = useWorkflowEditorStore.getState()
+        const catalogByType = new Map(catalog.map((entry) => [entry.type, entry]))
+        const validationNodes = state.nodes.map((n) => {
+          const data = n.data as {
+            nodeType?: string
+            label?: string
+            config?: Record<string, unknown>
+          }
+          const nodeType = typeof data.nodeType === "string" ? data.nodeType : null
+          return {
+            id: n.id,
+            nodeType,
+            title:
+              data.label?.trim() ||
+              (nodeType ? labelByType.get(nodeType) ?? nodeType : n.id),
+            config: data.config ?? {},
+          }
+        })
+        const validationEdges = state.edges.map((e) => ({
+          source: e.source,
+          label: typeof e.label === "string" ? e.label : null,
+        }))
+        const issues = validateWorkflowGraphConfigs(validationNodes, validationEdges, catalogByType)
+        const errors = issues.filter((i) => i.severity === "error")
+        const warnings = issues.filter((i) => i.severity === "warning")
+        for (const w of warnings.slice(0, 3)) {
+          toast.warning(w.message, { duration: 8000 })
+        }
+        if (errors.length > 0) {
+          setSelectedNodeId(errors[0]!.nodeId)
+          setSelectedEdgeId(null)
+          throw new Error(
+            `Nicht gespeichert — ${errors.length === 1 ? "ein Knoten ist" : `${errors.length} Knoten sind`} unvollständig: ` +
+              errors
+                .slice(0, 3)
+                .map((i) => `„${i.nodeTitle}“: ${i.message}`)
+                .join(" · "),
+          )
+        }
       }
       // Server-client only: there the outbound review holds EVERY draft up front
       // and only sends it when a path reaches a release node, so a graph that
@@ -796,40 +844,45 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="default"
-                        disabled={selectedId == null || !msgOk}
+                        disabled={selectedId == null || !msgOk || executingNow}
                         onClick={async () => {
-                          if (selectedId == null) return
-                          const r = await invokeRenderer(IPCChannels.Email.ExecuteWorkflowNow, {
-                            workflowId: selectedId,
-                            messageId: needsMsg ? parsedId : undefined,
-                            dryRun: false,
-                          }) as {
-                            success: boolean
-                            status?: string
-                            queued?: boolean
-                            blocked?: boolean
-                            blockReason?: string | null
-                            log?: string[]
-                            error?: string
-                          }
-                          if (!r.success) {
-                            toast.error(r.error ?? "Ausführung fehlgeschlagen")
-                            return
-                          }
-                          if (r.queued) {
-                            toast.success("Workflow-Job eingereiht.")
-                            return
-                          }
-                          if (r.blocked) {
-                            toast.warning(r.blockReason ?? "Workflow blockiert")
-                          } else {
-                            toast.success(
-                              `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
-                            )
+                          if (selectedId == null || executingNow) return
+                          setExecutingNow(true)
+                          try {
+                            const r = await invokeRenderer(IPCChannels.Email.ExecuteWorkflowNow, {
+                              workflowId: selectedId,
+                              messageId: needsMsg ? parsedId : undefined,
+                              dryRun: false,
+                            }) as {
+                              success: boolean
+                              status?: string
+                              queued?: boolean
+                              blocked?: boolean
+                              blockReason?: string | null
+                              log?: string[]
+                              error?: string
+                            }
+                            if (!r.success) {
+                              toast.error(r.error ?? "Ausführung fehlgeschlagen")
+                              return
+                            }
+                            if (r.queued) {
+                              toast.success("Workflow-Job eingereiht.")
+                              return
+                            }
+                            if (r.blocked) {
+                              toast.warning(r.blockReason ?? "Workflow blockiert")
+                            } else {
+                              toast.success(
+                                `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
+                              )
+                            }
+                          } finally {
+                            setExecutingNow(false)
                           }
                         }}
                       >
-                        Jetzt ausführen
+                        {executingNow ? "Läuft …" : "Jetzt ausführen"}
                       </Button>
                     )
                   })()}
@@ -986,6 +1039,16 @@ export function WorkflowShell() {
           open={templatesOpen}
           onOpenChange={setTemplatesOpen}
           onPick={(t: WorkflowTemplateDto) => {
+            // Eine Vorlage ERSETZT den aktuellen Canvas — nie ohne Rückfrage
+            // über bestehende Arbeit bügeln (mehr als nur der Trigger-Knoten).
+            const currentNodes = useWorkflowEditorStore.getState().nodes
+            if (currentNodes.length > 1) {
+              const confirmed = window.confirm(
+                `Vorlage „${t.name}" laden?\n\nDer aktuelle Graph dieses Workflows wird dabei ersetzt. ` +
+                  'Über „Versionen" lässt sich der vorherige Stand wiederherstellen, sobald er gespeichert war.',
+              )
+              if (!confirmed) return
+            }
             useWorkflowEditorStore.getState().resetFromGraph(t.graph)
             setSelectedNodeId(null)
             setSelectedEdgeId(null)

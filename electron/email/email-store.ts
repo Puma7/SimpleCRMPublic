@@ -107,6 +107,11 @@ export type EmailMessageRow = {
   soft_deleted: number;
   outbound_hold: number;
   outbound_block_reason: string | null;
+  /** Zwei-Stufen-KI-Antwort: 'pending' = wartet auf menschliche Freigabe. */
+  approval_state?: string | null;
+  approval_reason?: string | null;
+  /** RFC-3834-Marker: Entwurf ist eine automatische Antwort. */
+  auto_submitted?: number;
   thread_id: string | null;
   ticket_code: string | null;
   customer_id: number | null;
@@ -707,6 +712,10 @@ export function listMessagesForAccountView(
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND ${NOT_SCHEDULED_SEND_SQL})`;
+  // Zwei-Stufen-KI: Entwürfe, die auf menschliche Freigabe warten, gehören
+  // in den Posteingang ("der Mensch entscheidet im Postfach") — sonst wäre
+  // das Freigabe-Banner nur über den Entwürfe-Ordner erreichbar.
+  const approvalPendingInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.approval_state = 'pending' AND ${NOT_SCHEDULED_SEND_SQL})`;
   if (view === 'trash') {
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
@@ -729,6 +738,7 @@ export function listMessagesForAccountView(
     sql += ` AND (
       (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
       OR ${outboundHeldInInbox}
+      OR ${approvalPendingInInbox}
     )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
@@ -785,6 +795,7 @@ export function listMessagesForAllAccountsView(
   }
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND ${NOT_SCHEDULED_SEND_SQL})`;
+  const approvalPendingInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.approval_state = 'pending' AND ${NOT_SCHEDULED_SEND_SQL})`;
   if (view === 'trash') {
     sql += accessSql;
     params.push(...accessParams);
@@ -813,6 +824,7 @@ export function listMessagesForAllAccountsView(
     sql += ` AND (
       (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
       OR ${outboundHeldInInbox}
+      OR ${approvalPendingInInbox}
     )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
@@ -949,10 +961,12 @@ export type MailFolderCounts = {
 export function getMailFolderCountsForAccount(accountId: number): MailFolderCounts {
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1 AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
+  const approvalPendingInInbox = `(uid < 0 AND folder_kind = 'draft' AND approval_state = 'pending' AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
   const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean')
     OR ${outboundHeldInInbox}
+    OR ${approvalPendingInInbox}
   )`;
   const inboxOpen = `${inboxBase} AND COALESCE(done_local, 0) = 0`;
   const row = getDb()
@@ -1009,10 +1023,12 @@ export function getMailFolderCountsForAllAccounts(
   );
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1 AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
+  const approvalPendingInInbox = `(uid < 0 AND folder_kind = 'draft' AND approval_state = 'pending' AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
   const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean')
     OR ${outboundHeldInInbox}
+    OR ${approvalPendingInInbox}
   )`;
   const inboxOpen = `${inboxBase} AND COALESCE(done_local, 0) = 0`;
   const row = getDb()
@@ -2087,6 +2103,21 @@ export function updateComposeDraft(
   if (input.replyParentMessageId !== undefined) {
     sets.push('reply_parent_message_id = ?');
     vals.push(input.replyParentMessageId);
+  }
+  // Inhaltliche Änderung entwertet die KI-Freigabe-Empfehlung — der
+  // "Wartet auf Freigabe"-Zustand bezieht sich auf den geprüften Stand.
+  // Auch der RFC-3834-Marker fällt: eine vom Menschen umgeschriebene Antwort
+  // ist keine automatische Antwort mehr und darf nicht als solche gestempelt
+  // versendet werden.
+  const contentEdited =
+    input.subject !== undefined ||
+    input.bodyText !== undefined ||
+    input.bodyHtml !== undefined ||
+    input.toJson !== undefined ||
+    input.ccJson !== undefined ||
+    input.bccJson !== undefined;
+  if (contentEdited) {
+    sets.push('approval_state = NULL', 'approval_reason = NULL', 'auto_submitted = 0');
   }
   vals.push(messageId);
   getDb()

@@ -45,3 +45,4 @@ export * from './workflow-forward-copy';
 export * from './workflow-http-request';
 export * from './workflow-imap-actions';
 export * from './workflow-node-catalog';
+export * from './workflow-templates';

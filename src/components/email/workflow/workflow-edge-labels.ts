@@ -1,6 +1,48 @@
+import type { WorkflowNodePortSchema } from "@shared/workflow-node-schema"
+import { getCachedWorkflowNodeCatalogEntry } from "./use-workflow-node-catalog"
+
 type EdgeSourceNode = {
   type?: string
   data?: unknown
+}
+
+// Fallback, solange der Katalog (IPC) noch nicht geladen ist oder der Fetch
+// fehlschlug: der Canvas rendert diese Handles (sonst würden bestehende
+// Kanten mit benannten sourceHandles detachen) — und die Label-Helfer unten
+// MÜSSEN dieselben Ports kennen, sonst bekommt eine neue Kante aus einem
+// Fallback-Handle kein Label und der Zweig läuft nie (pickEdge matcht Labels).
+export const FALLBACK_PORTS: Record<string, WorkflowNodePortSchema[]> = {
+  "email.sender_filter": [
+    { id: "whitelist", label: "Vertrauenswürdig", kind: "branch" },
+    { id: "blacklist", label: "Blockiert", kind: "branch" },
+    { id: "default", label: "Unbekannt", kind: "branch" },
+  ],
+  "logic.threshold": [
+    { id: "yes", label: "Ja", kind: "branch" },
+    { id: "no", label: "Nein", kind: "branch" },
+  ],
+  "email.auto_reply": [
+    { id: "approved", label: "Erlaubt", kind: "branch" },
+    { id: "blocked", label: "Blockiert", kind: "branch" },
+  ],
+  "email.auth_check": [
+    { id: "pass", label: "Bestanden", kind: "branch" },
+    { id: "fail", label: "Nicht bestanden", kind: "branch" },
+    { id: "none", label: "Keine Prüfung", kind: "branch" },
+    { id: "default", label: "Sonstiges", kind: "branch" },
+  ],
+  "ai.review_draft": [
+    { id: "send", label: "Senden", kind: "branch" },
+    { id: "hold", label: "Prüfen", kind: "branch" },
+  ],
+}
+
+/** Deklarierte Schema-Ports, sonst die Canvas-Fallback-Ports (vor Katalog-Fetch). */
+function portsForSource(nt: string | undefined): WorkflowNodePortSchema[] | undefined {
+  const fromCatalog = getCachedWorkflowNodeCatalogEntry(nt)?.ports
+  if (fromCatalog?.length) return fromCatalog
+  const fallback = nt ? FALLBACK_PORTS[nt] : undefined
+  return fallback?.length ? fallback : undefined
 }
 
 type EdgeLike = {
@@ -48,12 +90,20 @@ export function edgeLabelOptionsForSource(
     return { restricted: true, labels: ["ja", "nein"] }
   }
   const nt = registryTypeOf(source)
-  if (nt === "logic.loop") {
-    return { restricted: true, labels: ["each", "done"] }
-  }
   if (nt === "logic.switch") {
+    // Dynamische Cases — kommen aus der Config, nicht aus dem Schema.
     const config = (source?.data as { config?: Record<string, unknown> } | undefined)?.config
     return { restricted: true, labels: switchCaseHandles(config) }
+  }
+  // Deklarierte Schema-Ports haben Vorrang (Quelle der Wahrheit inkl.
+  // Synonyme); vor dem ersten Katalog-Fetch decken die FALLBACK_PORTS
+  // exakt die Handles ab, die der Canvas als Fallback rendert.
+  const ports = portsForSource(nt)
+  if (ports?.length) {
+    return { restricted: true, labels: ports.map((p) => p.id) }
+  }
+  if (nt === "logic.loop") {
+    return { restricted: true, labels: ["each", "done"] }
   }
   if (nt === "email.sender_filter") {
     return { restricted: true, labels: ["whitelist", "blacklist", "default"] }
@@ -86,6 +136,19 @@ export function normalizeEdgeLabelForSource(
   }
   const nt = registryTypeOf(source)
   const l = raw.toLowerCase()
+  if (nt === "logic.switch") return l
+  // Schema-Ports zuerst (Quelle der Wahrheit inkl. Synonyme); vor dem
+  // Katalog-Fetch die Canvas-Fallback-Ports.
+  const ports = portsForSource(nt)
+  if (ports?.length) {
+    // Synonyme (de/en) und Labels auf die Port-ID normalisieren.
+    for (const port of ports) {
+      if (port.id.toLowerCase() === l) return port.id
+      if (port.label.toLowerCase() === l) return port.id
+      if ((port.synonyms ?? []).some((s) => s.toLowerCase() === l)) return port.id
+    }
+    return l
+  }
   if (nt === "logic.loop") {
     if (["done", "fertig", "end"].includes(l)) return "done"
     if (["each", "je", "loop"].includes(l)) return "each"
@@ -96,7 +159,7 @@ export function normalizeEdgeLabelForSource(
     if (["yes", "ja", "true"].includes(l)) return "yes"
     return l
   }
-  if (nt === "email.sender_filter" || nt === "logic.switch" || nt === "returns.evaluate") return l
+  if (nt === "email.sender_filter" || nt === "returns.evaluate") return l
   return raw
 }
 
@@ -120,16 +183,22 @@ export function edgeSourceHandleFromLabel(
     if (normalized === "nein") return "no"
     if (normalized === "ja") return "yes"
   }
-  if (registryTypeOf(source) === "logic.loop") {
+  const nt = registryTypeOf(source)
+  // Schema-Ports zuerst — vor dem Katalog-Fetch die Canvas-Fallback-Ports.
+  const ports = portsForSource(nt)
+  if (nt !== "logic.switch" && ports?.length) {
+    return ports.some((p) => p.id === normalized) ? normalized : undefined
+  }
+  if (nt === "logic.loop") {
     if (normalized === "done") return "done"
     if (normalized === "each") return "each"
   }
-  if (registryTypeOf(source) === "logic.threshold") {
+  if (nt === "logic.threshold") {
     if (normalized === "no") return "no"
     if (normalized === "yes") return "yes"
   }
-  if (registryTypeOf(source) === "email.sender_filter") return normalized
-  if (registryTypeOf(source) === "logic.switch" || registryTypeOf(source) === "returns.evaluate") {
+  if (nt === "email.sender_filter") return normalized
+  if (nt === "logic.switch" || nt === "returns.evaluate") {
     return isEdgeLabelValidForSource(source, normalized) ? normalized : undefined
   }
   return undefined

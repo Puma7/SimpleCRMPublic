@@ -15,21 +15,67 @@ export function registerIntegrationNodes(register: Reg): void {
     category: 'integration',
     canvasType: 'registry',
     defaultConfig: {},
-    execute: async (ctx) => {
-      const accountId = Number(ctx.message?.account_id ?? 0);
+    execute: async (ctx, config) => {
+      const syncOne = async (accountId: number): Promise<number | null> => {
+        const { getEmailAccountById } = await import('../../email/email-store');
+        const acc = getEmailAccountById(accountId);
+        if (!acc) return null;
+        if ((acc.protocol || 'imap') === 'pop3') {
+          const { syncInboxPop3 } = await import('../../email/email-pop3-sync');
+          return (await syncInboxPop3(accountId)).fetched;
+        }
+        const { syncInboxImap } = await import('../../email/email-imap-sync');
+        return (await syncInboxImap(accountId)).fetched;
+      };
+
+      const rawConfigId = config.accountId;
+      const configId =
+        rawConfigId == null || rawConfigId === '' ? null : Number(rawConfigId);
+      if (configId != null && !Number.isFinite(configId)) {
+        return { status: 'error', message: 'Ungültige Konto-ID' };
+      }
+
+      // accountId=0 (explizit) = alle Konten; sonst Config-Konto, sonst Konto der Nachricht.
+      if (configId === 0) {
+        if (ctx.dryRun) return { status: 'ok', message: 'dry-run sync (alle Konten)' };
+        const { listEmailAccounts } = await import('../../email/email-store');
+        const accounts = listEmailAccounts();
+        if (accounts.length === 0) return { status: 'skipped', message: 'Kein Konto' };
+        let fetched = 0;
+        let failed = 0;
+        for (const acc of accounts) {
+          try {
+            fetched += (await syncOne(acc.id)) ?? 0;
+          } catch {
+            failed += 1;
+          }
+        }
+        const variables: Record<string, string | number | boolean | null> = {
+          'sync.fetched': fetched,
+          'sync.failed_accounts': failed,
+        };
+        if (failed === accounts.length) {
+          return { status: 'error', message: 'Alle Konten fehlgeschlagen', variables };
+        }
+        if (failed > 0) {
+          return {
+            status: 'ok',
+            message: `${failed} von ${accounts.length} Konten fehlgeschlagen`,
+            variables,
+          };
+        }
+        return { status: 'ok', variables };
+      }
+
+      const accountId = configId ?? Number(ctx.message?.account_id ?? 0);
       if (!accountId) return { status: 'skipped', message: 'Kein Konto' };
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run sync' };
-      const { getEmailAccountById } = await import('../../email/email-store');
-      const acc = getEmailAccountById(accountId);
-      if (!acc) return { status: 'error', message: 'Konto nicht gefunden' };
-      if ((acc.protocol || 'imap') === 'pop3') {
-        const { syncInboxPop3 } = await import('../../email/email-pop3-sync');
-        const r = await syncInboxPop3(accountId);
-        return { status: 'ok', variables: { 'sync.fetched': r.fetched } };
-      }
-      const { syncInboxImap } = await import('../../email/email-imap-sync');
-      const r = await syncInboxImap(accountId);
-      return { status: 'ok', variables: { 'sync.fetched': r.fetched } };
+      const fetched = await syncOne(accountId);
+      if (fetched == null) return { status: 'error', message: 'Konto nicht gefunden' };
+      const variables: Record<string, string | number | boolean | null> = {
+        'sync.fetched': fetched,
+      };
+      return { status: 'ok', variables };
     },
   });
 

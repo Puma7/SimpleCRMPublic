@@ -1,4 +1,5 @@
 export * from './attachment-text';
+export * from './automation-headers';
 export * from './imap-sync-cursor';
 export * from './email-address-normalize';
 export * from './imap-mailbox-names';

@@ -58,6 +58,35 @@ describe('workflow editor edge label helpers', () => {
     expect(edgeSourceHandleFromLabel('fertig', source)).toBe('done');
   });
 
+  test('fallback handles (vor dem Katalog-Fetch) sind beschriftbar — jeder Canvas-Fallback-Port hat Label-Optionen', () => {
+    // Katalog-Cache ist im Test leer — genau die Situation vor dem ersten
+    // IPC-Fetch. Ohne FALLBACK_PORTS in den Label-Helfern blieben Kanten aus
+    // diesen Handles unbeschriftet und der Zweig liefe nie (pickEdge matcht
+    // Labels).
+    const autoReply = { type: 'registry', data: { nodeType: 'email.auto_reply' } };
+    expect(edgeLabelOptionsForSource(autoReply)).toEqual({
+      restricted: true,
+      labels: ['approved', 'blocked'],
+    });
+    expect(defaultLabelForConnection(autoReply, 'approved', [], 'g1')).toBe('approved');
+    expect(edgeSourceHandleFromLabel('blocked', autoReply)).toBe('blocked');
+    // Auch Port-LABELS werden auf die ID normalisiert (wie mit Katalog).
+    expect(normalizeEdgeLabelForSource(autoReply, 'Erlaubt')).toBe('approved');
+
+    const reviewDraft = { type: 'registry', data: { nodeType: 'ai.review_draft' } };
+    expect(edgeLabelOptionsForSource(reviewDraft).labels).toEqual(['send', 'hold']);
+    expect(defaultLabelForConnection(reviewDraft, 'hold', [], 'r1')).toBe('hold');
+
+    const authCheck = { type: 'registry', data: { nodeType: 'email.auth_check' } };
+    expect(edgeLabelOptionsForSource(authCheck).labels).toEqual([
+      'pass',
+      'fail',
+      'none',
+      'default',
+    ]);
+    expect(edgeSourceHandleFromLabel('pass', authCheck)).toBe('pass');
+  });
+
   test('every port the returns.evaluate engine can emit is wireable in the editor', () => {
     const source = { type: 'registry', data: { nodeType: 'returns.evaluate' } };
     // Drive the real server-side decision function through every defaultOutcome

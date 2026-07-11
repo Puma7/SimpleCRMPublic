@@ -49,6 +49,16 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | Editor-UX: editierbare Kanten-Labels, Switch-/Loop-Felder, Monaco-Codefelder, Snap-to-grid | ✅ |
 | Trigger `webhook.incoming` über E-Mail-IPC/Automation-API | ✅ |
 
+## Überarbeitung 2026-07 — Masterplan Phasen 1–3 (✅ umgesetzt)
+
+Systemaudit-Overhaul in drei Commits (`f93354e`, `65966ef`, `8dc8298`). Endanwender-Doku dazu: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md).
+
+| Phase | Lieferung (Kern in einer Zeile) |
+|-------|--------------------------------|
+| **1 — Funktionale Fixes** | `email.release_outbound`-Doppelregistrierung beseitigt (ein Executor, Registry wirft bei Duplikat); `interpolateTemplate` Single-Pass (mehr-Punkt-Keys, keine Re-Interpolation); Plugin-Nodes können `run()` exportieren und `{ variables }` zurückgeben (Freeze-Bug); `returns.*`, `jtl.order_context`, `jtl.prepare_action` per `runtime`-Flag als server-only markiert — Desktop filtert sie aus der Palette und meldet beim Lauf einen klaren Fehler statt „Unbekannter Knoten“ |
+| **2 — Deklaratives Node-Schema** | Eine Quelle der Wahrheit für ~52 Knoten (`packages/core/src/workflow/node-schema.ts` + `schema/`): Felder (Typ, DE-Label, Hilfe, Beispiel, Pflicht, Wertebereich), Ports und Output-Variablen treiben generischen Form-Renderer (`schema-fields.tsx`), Speichern-Validierung (Pflichtfelder blockieren, Knoten wird markiert), Variablen-Picker mit graph-sensitiven Vorschlägen, Canvas-Port-Handles und Kantenlabel-Auswahl statt Freitext; zentraler Interpolations-Pre-Pass: `{{Platzhalter}}` wirken in allen als `interpolate` markierten Feldern |
+| **3 — Zwei-Stufen-KI-Antwort** | `ai.draft_reply` (Agent 1: Entwurf mit Wissensbasis, Anrede, Signatur, korrekt adressiert) + `ai.review_draft` (Agent 2: Gegenprüfung, Ports `send`/`hold`, fail-safe immer Richtung Mensch); neutraler Freigabe-Zustand `approval_state` mit „Wartet auf Freigabe“-Banner (Jetzt senden / Als Entwurf behalten); Auto-Antwort-Master-Schalter jetzt mit UI (Einstellungen → Automatisierung) + Tageslimit pro Absender (`email_auto_reply_dedup`); Anti-Loop am Gate (RFC-3834-/List-*-Header eingehend, `Auto-Submitted: auto-replied` ausgehend); Vorlage „Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)“; Vorlagen-Dialog mit Live-Voraussetzungs-Checkliste |
+
 ## Smoke-Check 2026-06-01
 
 Automatisierte Stichprobe (CI-äquivalent, lokal):
@@ -70,4 +80,6 @@ Manuell empfohlen: Vorlage pro Trigger aktivieren → Lauf-Historie; „Jetzt au
 - `draft_created` nur bei neuem Entwurf, nicht bei jedem Update.
 - Externe Outbound-Webhook-Subscriptions bleiben API-Roadmap; der interne Trigger `webhook.incoming` ist angebunden.
 
-*Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle, Auto-Send ohne Freigabe.
+*Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle.
+
+*Nicht mehr ausgeschlossen:* **Auto-Send** existiert seit 2026-07 — aber mehrfach abgesichert statt „ohne Freigabe“: Master-Schalter (Default aus, UI in Einstellungen → Automatisierung) + `email.auto_reply`-Gate (Confidence, No-Reply-/Automaten-Filter) + KI-Gegenprüfung (`ai.review_draft`, fail-safe: im Zweifel wartet der Entwurf auf menschliche Freigabe) + Anti-Loop (RFC 3834, Tageslimit pro Absender).

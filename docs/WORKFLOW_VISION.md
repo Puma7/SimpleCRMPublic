@@ -25,7 +25,7 @@ SimpleCRM ist **kein Cloud-n8n**: Daten liegen lokal (SQLite), Secrets im OS-Key
 ### Designprinzipien
 
 1. **Flow-first** — Automatisierung ist Standardweg, nicht Sonderfall.
-2. **Zwei Bedienmodi** — „Einfach“ (GUI/WYSIWYG) und „Experte“ (Code, Roh-JSON, eigene Knoten).
+2. **Zwei Bedienmodi** — „Einfach“ (GUI/WYSIWYG) und „Experte“ (Code, Roh-JSON, eigene Knoten). *(✅ geliefert — siehe Kap. 5.2)*
 3. **Fail-closed bei Risiko** — Ausgehende Mails, KI-Freigaben, Löschungen: lieber blockieren als still falsch handeln.
 4. **Revisionssicherheit** — Kein hartes Löschen von Mail-Inhalten ohne explizite Nutzerentscheidung; Agenten erzeugen eher **Entwürfe** als Auto-Send.
 5. **Erweiterbarkeit ohne Fork** — Neue Knoten über Registry/Plugins, nicht nur durch App-Releases.
@@ -203,6 +203,8 @@ Platzhalter in Prompts und Code: `{{message.subject}}`, `{{customer.name}}`, `{{
 | `ai.classify` | Kategorie/Tag aus Inhalt | ✅ |
 | `ai.agent` | Agent mit System-Prompt + optional RAG | ✅ (Keyword-RAG) |
 | `ai.agent_tool` | Sub-Tool-Aufruf (intern) | ✅ |
+| `ai.draft_reply` | Antwort-Entwurf mit Wissensbasis, Anrede + Signatur (Agent 1) | ✅ (2026-07) |
+| `ai.review_draft` | Gegenprüfung des Entwurfs, Ports `send`/`hold` (Agent 2, fail-safe) | ✅ (2026-07) |
 
 **KI-Agent-Knoten (Ziel-Detail):**
 
@@ -219,7 +221,7 @@ flowchart LR
 
 - **Wissensbasis (RAG):** lokale Quellen — CRM-Texte, Notizen, hochgeladene FAQ-Dateien, optional indexiert (Embeddings in SQLite oder Sidecar).
 - **Tools:** typisierte Funktionen, keine freie Shell.
-- **Human-in-the-loop:** Standard = Entwurf + Toast; Auto-Send nur mit explizitem Workflow-Schalter + Warnung.
+- **Human-in-the-loop:** Standard = Entwurf + Toast; Auto-Send nur mit explizitem Workflow-Schalter + Warnung. *(✅ geliefert: Master-Schalter mit UI und Warnhinweis, `email.auto_reply`-Gate, Zwei-Stufen-Gegenprüfung mit „Wartet auf Freigabe“ — Kap. 9)*
 
 ### 4.6 Integrations-Knoten
 
@@ -279,13 +281,16 @@ type WorkflowNodeDefinition = {
 
 - **Builtin-Registry:** `electron/workflow/nodes/*.ts` — mit App ausgeliefert.
 - **Plugin-Registry:** Ordner `~/.config/simplecrm/workflow-plugins/` oder konfigurierbarer Pfad; Manifest `simplecrm.workflow-plugin.json`.
+- ✅ **Umgesetzt statt JSONSchema (2026-07):** `configSchema` existiert als **deklaratives Node-Schema** in `packages/core/src/workflow/node-schema.ts` (+ Kategorie-Dateien unter `schema/`) — Felder, Ports, Output-Variablen und Doku pro Knoten; eine Quelle für Formular-Renderer, Speichern-Validierung, Variablen-Picker und Canvas-Ports. Zusätzlich `runtime`-Flag (`both`/`desktop`/`server`): server-only-Knoten (`returns.*`, `jtl.order_context`, `jtl.prepare_action`) verschwinden aus der Desktop-Palette und melden zur Laufzeit einen klaren Fehler.
 
 ### 5.2 UI: Einfach vs. Experte
 
+> ✅ **Umgesetzt (2026-07, Masterplan Phase 2):** Das Ziel „Zwei Bedienmodi“ ist geliefert. Der Einfach-Modus wird aus dem **deklarativen Node-Schema** generiert (`packages/core/src/workflow/node-schema.ts` + `schema/`): deutsche Labels, Hilfetexte, Beispiele, Pflichtfeld-Validierung beim Speichern, Variablen-Picker mit graph-sensitiven Vorschlägen und `{{Platzhalter}}` in allen schema-markierten Feldern. Dasselbe Schema treibt Canvas-Ports und Kantenlabel-Auswahl. Der Experten-Modus (Monaco für Code-Knoten, Experten-JSON pro Knoten) bestand bereits.
+
 | Modus | Zielgruppe | UI |
 |-------|------------|-----|
-| **Einfach** | Laien | React-Form aus `configSchema`; Labels auf Deutsch; Vorschau-Beispiele |
-| **Experte** | Profis | Monaco-Editor für `code.javascript`; Roh-JSON pro Knoten; Diff beim Speichern |
+| **Einfach** | Laien | React-Form aus dem Node-Schema (`schema-fields.tsx`); Labels auf Deutsch; Hilfe + Beispiele; Inline-Validierung ✅ |
+| **Experte** | Profis | Monaco-Editor für `code.javascript`; Roh-JSON pro Knoten ✅ |
 
 Der JSON-Drawer heute wird zum **Experten-Panel pro Workflow oder pro Knoten** — editierbar, validiert, **nicht** still überschrieben (außer „Aus Graph neu generieren“ explizit).
 
@@ -423,7 +428,7 @@ gantt
 | Multi-User-Echtzeit-Kollaboration am Graph | Desktop-first, kein Shared Server |
 | Vollständige n8n-Kompatibilität / Import | Eigenes Schema, ggf. später Export-Subset |
 | Beliebige Shell-Befehle in Flows | Sicherheitsrisiko auf Desktop |
-| Vollautomatischer Mail-Versand ohne User | Rechtlich/operativ selten gewünscht |
+| ~~Vollautomatischer Mail-Versand ohne User~~ | **Nicht mehr out of scope** — seit 2026-07 fail-safe umgesetzt: Master-Schalter (Default aus) + `email.auto_reply`-Gate + Zwei-Stufen-Gegenprüfung (`ai.draft_reply`/`ai.review_draft`, im Zweifel „Wartet auf Freigabe“ durch einen Menschen) + Anti-Loop (RFC 3834, Tageslimit). Human-in-the-loop bleibt der Default. Siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) „Überarbeitung 2026-07“ |
 
 ---
 
@@ -465,4 +470,4 @@ gantt
 
 **Ist-Stand detailliert:** [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) · **E-Mail-Phasen:** [`EMAIL_PHASES.md`](EMAIL_PHASES.md)
 
-*Letzte Aktualisierung: 2026-06-02 nach Workflow-Editor-Roadmap (WF-1–WF-6).*
+*Letzte Aktualisierung: 2026-07-10 nach Masterplan Phasen 1–3 (deklaratives Node-Schema, Zwei-Stufen-KI-Antwort, abgesicherter Auto-Send) — vgl. [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).*
