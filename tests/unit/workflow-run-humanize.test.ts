@@ -20,6 +20,7 @@ const EXACT_CODES = [
   'noreply_sender_blocked',
   'automated_sender_blocked',
   'auto_reply_rate_limited',
+  'forward_copy:attachments_skipped_desktop',
   'outbound_hold_cleared',
   'outbound_hold_released',
   'outbound_hold_released_auto_send',

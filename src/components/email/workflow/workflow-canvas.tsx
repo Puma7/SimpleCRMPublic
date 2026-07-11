@@ -21,7 +21,6 @@ import {
 import { cn } from "@/lib/utils"
 import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
 import { validateNodeConfig } from "@shared/workflow-config-validate"
-import type { WorkflowNodePortSchema } from "@shared/workflow-node-schema"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { workflowTriggerLabel } from "./trigger-labels"
@@ -30,6 +29,7 @@ import {
   useWorkflowNodeCatalog,
 } from "./use-workflow-node-catalog"
 import {
+  FALLBACK_PORTS,
   defaultLabelForConnection,
   switchCaseHandles,
 } from "./workflow-edge-labels"
@@ -162,34 +162,10 @@ const PORT_HANDLE_COLORS: Record<string, string> = {
   sky: "!bg-sky-500",
 }
 
-// Fallback, solange der Katalog (IPC) noch nicht geladen ist oder der Fetch
-// fehlschlug: ohne diese Handles würden bestehende Kanten mit benannten
-// sourceHandles (whitelist/yes/approved/…) vom Canvas detachen.
-const FALLBACK_PORTS: Record<string, WorkflowNodePortSchema[]> = {
-  "email.sender_filter": [
-    { id: "whitelist", label: "Vertrauenswürdig", kind: "branch" },
-    { id: "blacklist", label: "Blockiert", kind: "branch" },
-    { id: "default", label: "Unbekannt", kind: "branch" },
-  ],
-  "logic.threshold": [
-    { id: "yes", label: "Ja", kind: "branch" },
-    { id: "no", label: "Nein", kind: "branch" },
-  ],
-  "email.auto_reply": [
-    { id: "approved", label: "Erlaubt", kind: "branch" },
-    { id: "blocked", label: "Blockiert", kind: "branch" },
-  ],
-  "email.auth_check": [
-    { id: "pass", label: "Bestanden", kind: "branch" },
-    { id: "fail", label: "Nicht bestanden", kind: "branch" },
-    { id: "none", label: "Keine Prüfung", kind: "branch" },
-    { id: "default", label: "Sonstiges", kind: "branch" },
-  ],
-  "ai.review_draft": [
-    { id: "send", label: "Senden", kind: "branch" },
-    { id: "hold", label: "Prüfen", kind: "branch" },
-  ],
-}
+// FALLBACK_PORTS (Handles vor dem ersten Katalog-Fetch) lebt in
+// workflow-edge-labels.ts — Canvas-Handles und Kanten-Label-Helfer MÜSSEN
+// dieselben Fallback-Ports kennen, sonst bekommen neue Kanten aus
+// Fallback-Handles kein Label und der Zweig läuft nie.
 
 function RegistryNodeCard({ data, selected }: NodeProps) {
   const d = data as {

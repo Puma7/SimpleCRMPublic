@@ -323,7 +323,8 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Original-Anhänge mitschicken',
         help:
           'Ein: die Anhänge der Original-Mail werden angehängt (insgesamt max. 25 MB, unlesbare Dateien werden übersprungen). ' +
-          'Aus (Standard): nur der Text wird weitergeleitet.',
+          'Aus (Standard): nur der Text wird weitergeleitet. ' +
+          'Desktop-Edition: Anhänge werden noch nicht unterstützt — dort wird nur der Text weitergeleitet (Hinweis im Verlauf).',
       },
       {
         key: 'runOutboundReview',

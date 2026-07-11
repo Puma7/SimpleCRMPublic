@@ -273,33 +273,8 @@ export function registerWorkflowHandlers(options: {
         if (!Number.isFinite(draftId) || draftId <= 0) {
           return { success: false as const, error: 'Ungültige Entwurfs-ID' };
         }
-        const { clearDraftApproval, markDraftAutoSubmitted } = await import(
-          '../email/email-draft-approval'
-        );
-        const { prepareDraftForWorkflowSend } = await import('../workflow/draft-send-prep');
-        // Erst einplanen, dann Freigabe-Zustand löschen: schlägt das Einplanen
-        // fehl, bleiben Banner und KI-Begründung erhalten (nichts wurde gesendet).
-        const prep = prepareDraftForWorkflowSend(draftId, { runOutboundReview: false });
-        if (!prep.ok) return { success: false as const, error: prep.message };
-        // Antwort stammt aus der automatischen Pipeline → RFC-3834-Marker
-        // NACH prep stempeln (prep normalisiert per updateComposeDraft und
-        // setzt auto_submitted dabei zurück) — wie email.send_draft.
-        markDraftAutoSubmitted(draftId);
-        // Auch die menschlich freigegebene Antwort verbraucht das
-        // Tagesbudget des Empfängers: der Mensch wird nie blockiert, aber
-        // nachfolgende AUTOMATISCHE Antworten respektieren das Limit.
-        const { markAutoReplySent } = await import('../workflow/auto-reply-guard');
-        const { getEmailMessageById } = await import('../email/email-store');
-        const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
-        const draft = getEmailMessageById(draftId);
-        const recipient = draft
-          ? recipientFieldFromJson(draft.to_json).split(',')[0]?.trim() ?? ''
-          : '';
-        if (draft && recipient) {
-          markAutoReplySent(draft.account_id, recipient, draft.reply_parent_message_id ?? null);
-        }
-        clearDraftApproval(draftId);
-        return { success: true as const };
+        const { approveDraftSend } = await import('../workflow/draft-approval-actions');
+        return approveDraftSend(draftId);
       },
       { logger },
     ),
@@ -313,14 +288,8 @@ export function registerWorkflowHandlers(options: {
         if (!Number.isFinite(draftId) || draftId <= 0) {
           return { success: false as const, error: 'Ungültige Entwurfs-ID' };
         }
-        const { clearDraftApproval, clearDraftAutoSubmitted } = await import(
-          '../email/email-draft-approval'
-        );
-        clearDraftApproval(draftId);
-        // "Als Entwurf behalten" = Mensch übernimmt: ein späterer manueller
-        // Versand ist keine automatische Antwort mehr.
-        clearDraftAutoSubmitted(draftId);
-        return { success: true as const };
+        const { dismissDraftApproval } = await import('../workflow/draft-approval-actions');
+        return dismissDraftApproval(draftId);
       },
       { logger },
     ),

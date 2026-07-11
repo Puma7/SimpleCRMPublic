@@ -135,6 +135,11 @@ export function registerEmailNodes(register: Reg): void {
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');
       const { sendWorkflowForwardCopy } = await import('../../email/email-forward-copy');
+      // Anhang-Weiterleitung kann die Desktop-Edition noch nicht (nur die
+      // Server-Edition): SICHTBAR degradieren statt hart fehlschlagen —
+      // sonst bräche z. B. die Rechnungs-Vorlage komplett ab, obwohl die
+      // Text-Weiterleitung möglich ist. Der Lauf-Verlauf meldet den Verzicht.
+      const wantsAttachments = config.includeAttachments === true;
       const sent = await sendWorkflowForwardCopy({
         accountId: row.account_id,
         sourceMessageId: messageId,
@@ -143,13 +148,16 @@ export function registerEmailNodes(register: Reg): void {
         subject: subj,
         bodyText: body,
         originalFromLine: ctx.strings.from_address,
-        includeAttachments: config.includeAttachments === true,
+        includeAttachments: false,
         runOutboundReview: config.runOutboundReview === true,
       });
       if (!sent.ok) {
         return { status: 'error', message: sent.reason };
       }
-      return { status: 'ok' };
+      return {
+        status: 'ok',
+        ...(wantsAttachments ? { message: 'forward_copy:attachments_skipped_desktop' } : {}),
+      };
     },
   });
 
@@ -436,8 +444,12 @@ export function registerEmailNodes(register: Reg): void {
       // Reply-To und würden ein From-Keying unterlaufen.
       const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
       if (isUnsafeAutoReplyTarget(ctx.message.raw_headers)) return block('automated_sender');
-      const { isAutoReplyRateLimited } = await import('../auto-reply-guard');
+      // Die Antwort GEHT an replyTarget (Reply-To vor From) — auch dieses
+      // Ziel darf keine No-Reply-Adresse sein (From=mensch@ + Reply-To=
+      // no-reply@ würde sonst durchrutschen).
       const replyTarget = primaryReplyRecipient(ctx.message) || sender;
+      if (AUTO_REPLY_NOREPLY_RE.test(replyTarget)) return block('noreply_sender');
+      const { isAutoReplyRateLimited } = await import('../auto-reply-guard');
       if (isAutoReplyRateLimited(ctx.message.account_id, replyTarget)) return block('rate_limited');
       if (confidenceValue < minConfidence) return block('low_confidence');
 
@@ -527,18 +539,23 @@ export function registerEmailNodes(register: Reg): void {
           if (isUnsafeAutoReplyTarget(ctx.message?.raw_headers)) {
             return { status: 'skipped', message: 'automated_sender_blocked' };
           }
-          // Tageslimit pro EMPFÄNGER der Antwort (Reply-To vor From), ATOMAR
-          // reserviert — check-then-mark hätte ein Race-Fenster zwischen
-          // parallelen Läufen (Backfill neben Live-Sync). Bewusst VOR dem
-          // Einplanen und beim EINPLANEN gezählt (nicht erst bei
-          // SMTP-Erfolg): fail-safe in Richtung "lieber eine Antwort zu
-          // wenig als ein Loop" — auch fehlgeschlagene Zustellversuche
-          // verbrauchen das Tageslimit; gescheiterte Sends bleiben als
-          // Entwurf sichtbar.
+          // Die Antwort GEHT an replyTarget (Reply-To vor From) — auch dieses
+          // Ziel darf keine No-Reply-Adresse sein (From=mensch@ + Reply-To=
+          // no-reply@ würde sonst durchrutschen).
+          const replyTarget =
+            (ctx.message ? primaryReplyRecipient(ctx.message) : '') || sender;
+          if (AUTO_REPLY_NOREPLY_RE.test(replyTarget)) {
+            return { status: 'skipped', message: 'noreply_sender_blocked' };
+          }
+          // Tageslimit pro EMPFÄNGER der Antwort, ATOMAR reserviert —
+          // check-then-mark hätte ein Race-Fenster zwischen parallelen
+          // Läufen (Backfill neben Live-Sync). Bewusst VOR dem Einplanen
+          // und beim EINPLANEN gezählt (nicht erst bei SMTP-Erfolg):
+          // fail-safe in Richtung "lieber eine Antwort zu wenig als ein
+          // Loop" — auch fehlgeschlagene Zustellversuche verbrauchen das
+          // Tageslimit; gescheiterte Sends bleiben als Entwurf sichtbar.
           const accountId = ctx.message?.account_id;
           if (accountId != null) {
-            const replyTarget =
-              (ctx.message ? primaryReplyRecipient(ctx.message) : '') || sender;
             const { tryReserveAutoReplySlot } = await import('../auto-reply-guard');
             if (!tryReserveAutoReplySlot(accountId, replyTarget, ctx.messageId)) {
               return { status: 'skipped', message: 'auto_reply_rate_limited' };

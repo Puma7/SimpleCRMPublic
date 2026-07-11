@@ -19,19 +19,30 @@ function isEmpty(value: unknown): boolean {
   return value == null || (typeof value === 'string' && value.trim() === '');
 }
 
-/** showIf auswerten — versteckte Felder werden nicht validiert. */
-function isFieldVisible(field: WorkflowNodeFieldSchema, config: Record<string, unknown>): boolean {
+/**
+ * showIf auswerten — versteckte Felder werden nicht validiert.
+ * Mit defaultConfig-Fallback (wie das UI in schema-fields.tsx): frisch
+ * gezogene Knoten haben eine leere Config, das steuernde Select zeigt aber
+ * den Default — Sichtbarkeit und Validierung müssen dieselbe Sicht haben.
+ */
+function isFieldVisible(
+  field: WorkflowNodeFieldSchema,
+  config: Record<string, unknown>,
+  defaultConfig?: Record<string, unknown>,
+): boolean {
   if (!field.showIf) return true;
-  return config[field.showIf.field] === field.showIf.equals;
+  const raw = config[field.showIf.field];
+  const value = raw !== undefined ? raw : defaultConfig?.[field.showIf.field];
+  return value === field.showIf.equals;
 }
 
 export function validateNodeConfig(
-  entry: Pick<WorkflowNodeCatalogEntry, 'fields'>,
+  entry: Pick<WorkflowNodeCatalogEntry, 'fields' | 'defaultConfig'>,
   config: Record<string, unknown>,
 ): WorkflowConfigIssue[] {
   const issues: WorkflowConfigIssue[] = [];
   for (const field of entry.fields ?? []) {
-    if (!isFieldVisible(field, config)) continue;
+    if (!isFieldVisible(field, config, entry.defaultConfig)) continue;
     const value = config[field.key];
 
     if (isEmpty(value)) {

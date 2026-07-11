@@ -40,9 +40,19 @@ function setConfig(patch: PatchFn, config: Record<string, unknown>, key: string,
   patch({ config: { ...config, [key]: value } })
 }
 
-function fieldVisible(field: WorkflowNodeFieldSchema, config: Record<string, unknown>): boolean {
+// defaultConfig-Fallback: frisch gezogene Knoten haben eine leere Config —
+// das steuernde Select ZEIGT aber den Default (z. B. ai.agent_tool → Tool
+// „search_knowledge"). Ohne Fallback blieben abhängige Felder
+// (knowledgeBaseId) unsichtbar, bis man den Wert einmal hin- und herschaltet.
+export function fieldVisible(
+  field: WorkflowNodeFieldSchema,
+  config: Record<string, unknown>,
+  defaultConfig?: Record<string, unknown>,
+): boolean {
   if (!field.showIf) return true
-  return config[field.showIf.field] === field.showIf.equals
+  const raw = config[field.showIf.field]
+  const value = raw !== undefined ? raw : defaultConfig?.[field.showIf.field]
+  return value === field.showIf.equals
 }
 
 function FieldShell({
@@ -515,7 +525,7 @@ export function SchemaFields({ entry, config, patch, variables }: Props) {
     return map
   }, [issues])
 
-  const visible = fields.filter((f) => fieldVisible(f, config))
+  const visible = fields.filter((f) => fieldVisible(f, config, entry.defaultConfig))
   const basic = visible.filter((f) => !f.advanced)
   const advanced = visible.filter((f) => f.advanced)
 

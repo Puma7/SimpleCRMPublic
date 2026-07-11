@@ -31,6 +31,10 @@ jest.mock('../../electron/email/email-crm-store', () => ({
   assignCategoryPathToMessage: jest.fn(),
 }));
 
+jest.mock('../../electron/email/email-forward-copy', () => ({
+  sendWorkflowForwardCopy: jest.fn(async () => ({ ok: true })),
+}));
+
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: jest.fn(() => null),
 }));
@@ -190,6 +194,42 @@ describe('sync.run (Konto aus Config)', () => {
     ).resolves.toMatchObject({ status: 'ok' });
     expect(syncInboxImap).toHaveBeenCalledWith(2);
     await expect(def.execute(ctx(), {}, 'n1')).resolves.toMatchObject({ status: 'skipped' });
+  });
+});
+
+describe('email.forward_copy — Desktop degradiert Anhang-Wunsch SICHTBAR', () => {
+  const defs = collect(registerEmailNodes);
+  const node = defs.get('email.forward_copy')!;
+  const message = { id: 7, account_id: 1, subject: 'Rechnung 42', body_text: 'Anbei.' };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  test('includeAttachments=true → ok mit Hinweis-Code, Sender OHNE Anhänge aufgerufen (Vorlage bleibt lauffähig)', async () => {
+    const { sendWorkflowForwardCopy } = jest.requireMock('../../electron/email/email-forward-copy');
+    const c = ctx({
+      message: message as never,
+      messageId: 7,
+      strings: { from_address: 'kunde@firma.de' } as never,
+    });
+    const r = await node.execute(c, { to: 'buchhaltung@firma.de', includeAttachments: true }, 'f');
+    expect(r).toMatchObject({
+      status: 'ok',
+      message: 'forward_copy:attachments_skipped_desktop',
+    });
+    expect(sendWorkflowForwardCopy).toHaveBeenCalledWith(
+      expect.objectContaining({ includeAttachments: false }),
+    );
+  });
+
+  test('ohne Anhang-Wunsch: ok ohne Hinweis', async () => {
+    const c = ctx({
+      message: message as never,
+      messageId: 7,
+      strings: { from_address: 'kunde@firma.de' } as never,
+    });
+    const r = await node.execute(c, { to: 'buchhaltung@firma.de' }, 'f');
+    expect(r.status).toBe('ok');
+    expect(r.message).toBeUndefined();
   });
 });
 

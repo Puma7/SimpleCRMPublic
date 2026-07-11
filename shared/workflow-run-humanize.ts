@@ -41,6 +41,10 @@ const EXACT_MESSAGES: Record<string, string> = {
   auto_reply_rate_limited:
     'Versand übersprungen: Diese Absenderadresse hat heute schon die maximale Zahl automatischer Antworten erhalten (Einstellungen → Automatisierung).',
 
+  // email.forward_copy
+  'forward_copy:attachments_skipped_desktop':
+    'Weitergeleitet ohne Anhänge: Die Desktop-Edition unterstützt Anhang-Weiterleitung noch nicht — nur der Text wurde gesendet.',
+
   // email.release_outbound
   outbound_hold_cleared: 'Ausgangssperre entfernt – der Versand kann normal fortgesetzt werden.',
   outbound_hold_released: 'Ausgangssperre aufgehoben – der Entwurf kann jetzt gesendet werden.',

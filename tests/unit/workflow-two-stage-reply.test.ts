@@ -196,6 +196,20 @@ describe('email.auto_reply Gate — Anti-Loop', () => {
     const r = await gate.execute(ctx(), { minConfidence: 50 }, 'g');
     expect(r).toMatchObject({ port: 'approved' });
   });
+
+  test('blockt, wenn das ANTWORT-Ziel (Reply-To) eine No-Reply-Adresse ist', async () => {
+    // From ist ein Mensch, aber die Antwort GEHT an Reply-To = no-reply@ —
+    // ohne Prüfung des Ziels würde eine sinnlose Auto-Antwort geplant.
+    const c = ctx({
+      message: {
+        ...baseMessage,
+        raw_headers: 'Reply-To: no-reply@vendor.com\nFrom: kunde@firma.de',
+      } as never,
+    });
+    const r = await gate.execute(c, { minConfidence: 50 }, 'g');
+    expect(r).toMatchObject({ port: 'blocked' });
+    expect(r.variables?.['auto_reply.blocked_reason']).toBe('noreply_sender');
+  });
 });
 
 describe('ai.draft_reply (Agent 1)', () => {
@@ -360,6 +374,21 @@ describe('email.send_draft — Anti-Loop-Buchhaltung', () => {
     expect(r).toMatchObject({ status: 'skipped', message: 'auto_reply_rate_limited' });
     expect(prepareDraftForWorkflowSend).not.toHaveBeenCalled();
     expect(markDraftAutoSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('inbound: skippt, wenn das ANTWORT-Ziel (Reply-To) eine No-Reply-Adresse ist', async () => {
+    const { prepareDraftForWorkflowSend } = jest.requireMock('../../electron/workflow/draft-send-prep');
+    const c = ctx({
+      variables: { 'draft.id': 42 },
+      message: {
+        ...baseMessage,
+        raw_headers: 'Reply-To: no-reply@vendor.com\nFrom: kunde@firma.de',
+      } as never,
+    });
+    const r = await node.execute(c, {}, 's');
+    expect(r).toMatchObject({ status: 'skipped', message: 'noreply_sender_blocked' });
+    expect(prepareDraftForWorkflowSend).not.toHaveBeenCalled();
+    expect(tryReserveAutoReplySlot).not.toHaveBeenCalled();
   });
 
   test('inbound: Reply-To gewinnt als Limit-Schlüssel über wechselnde From-Adressen', async () => {
