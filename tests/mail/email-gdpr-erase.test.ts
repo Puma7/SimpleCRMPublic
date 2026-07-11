@@ -68,6 +68,21 @@ describe('email-gdpr-erase (spike prototype)', () => {
     expect(unlinkSpy).not.toHaveBeenCalled();
   });
 
+  test('escapes LIKE wildcards in the selector so `_` is literal, not a wildcard', () => {
+    stmt.all.mockReturnValue([]);
+    stmt.get.mockReturnValue({ c: 0 });
+
+    planSubjectErasure({ emails: ['first_last@x.de'] });
+
+    // The predicate opts into ESCAPE and the bound value backslash-escapes the
+    // underscore, so it can't also match e.g. `firstXlast@x.de`.
+    const sqls = preparedSql();
+    expect(sqls.some((s) => s.includes("LIKE ? ESCAPE '\\'"))).toBe(true);
+    const boundParams = (stmt.all as jest.Mock).mock.calls.flat();
+    expect(boundParams).toContain('%first\\_last@x.de%');
+    expect(boundParams).not.toContain('%first_last@x.de%');
+  });
+
   test('eraseSubject defaults to dry-run and mutates nothing', () => {
     stmt.all
       .mockReturnValueOnce([{ id: 1 }])
@@ -210,5 +225,53 @@ describe('email-gdpr-erase (spike prototype)', () => {
       expect(result.audit.orphanedFiles).toBe(1);
     }
     expect(preparedSql()).toContain('COMMIT');
+  });
+
+  test('bcc-only subject: bcc_json is in the match predicate and bound once per address column', () => {
+    stmt.all
+      .mockReturnValueOnce([{ id: 1 }]) // message walk (matched via bcc)
+      .mockReturnValueOnce([]); // attachments (none)
+    stmt.get.mockReturnValueOnce({ c: 0 }).mockReturnValueOnce({ c: 0 });
+
+    planSubjectErasure({ emails: ['bcc@x.de'] });
+
+    // The predicate now covers bcc_json alongside from/to/cc.
+    const walkSql = preparedSql().find((s) => /SELECT id FROM email_messages/i.test(s)) ?? '';
+    expect(walkSql).toMatch(/bcc_json LIKE \?/i);
+
+    // The address is bound once per address column (4×), proving a bcc-only data
+    // subject is actually reached by the walk.
+    const walkParams = stmt.all.mock.calls[0];
+    expect(walkParams.filter((v: unknown) => v === '%bcc@x.de%')).toHaveLength(4);
+  });
+
+  test('apply anonymizes bcc_json and writes VALID JSON to every address column', () => {
+    stmt.all
+      .mockReturnValueOnce([{ id: 1 }])
+      .mockReturnValueOnce([]); // no attachments
+    stmt.get.mockReturnValueOnce({ c: 0 }).mockReturnValueOnce({ c: 0 });
+
+    eraseSubject({ emails: ['bcc@x.de'] }, { dryRun: false });
+
+    // The message UPDATE now sets bcc_json.
+    const msgUpdateSql = preparedSql().find((s) => /^\s*UPDATE\s+email_messages/i.test(s)) ?? '';
+    expect(msgUpdateSql).toMatch(/bcc_json\s*=\s*\?/i);
+
+    // The message-anonymize run is the only 9-arg .run() call:
+    // [subject, from_json, to_json, cc_json, bcc_json, snippet, body_text, body_html, id].
+    const msgRun = stmt.run.mock.calls.find((c) => c.length === 9);
+    expect(msgRun).toBeDefined();
+
+    // (ii) Every address column parses as JSON — no SyntaxError downstream.
+    for (const col of [1, 2, 3, 4]) {
+      expect(() => JSON.parse(String(msgRun![col]))).not.toThrow();
+    }
+    // bcc_json specifically carries the valid-JSON tombstone (a JSON string), not
+    // the raw '[erased]' that would blow up JSON.parse in ai-nodes/email-crm-store.
+    expect(msgRun![4]).toBe('"[erased]"');
+    // Non-JSON text columns keep the raw sentinel.
+    expect(msgRun![0]).toBe('[erased]'); // subject
+    expect(msgRun![5]).toBe('[erased]'); // snippet
+    expect(msgRun![6]).toBe('[erased]'); // body_text
   });
 });

@@ -168,6 +168,19 @@ export function registerIntegrationNodes(register: Reg): void {
       mapping: '',
     },
     execute: async (ctx, config) => {
+      // Safe-by-default: this node runs operator SQL against production JTL/MSSQL
+      // and is registered unconditionally (reachable from any inbound-triggered
+      // workflow), so it stays OFF unless explicitly opted in via env flag. The
+      // gate runs before dry-run and before any SQL so nothing executes when off.
+      const flag = process.env.SIMPLECRM_JTL_CONTEXT_NODE;
+      if (flag !== '1' && flag !== 'true') {
+        return {
+          status: 'error',
+          port: 'error',
+          message: 'jtl.order_context ist deaktiviert (SIMPLECRM_JTL_CONTEXT_NODE nicht gesetzt)',
+        };
+      }
+
       const template = String(config.query ?? '').trim();
       if (!template) return { status: 'skipped', message: 'Keine Query' };
 
@@ -201,9 +214,11 @@ export function registerIntegrationNodes(register: Reg): void {
       }
 
       // SELECT-only-Guard (executeReadOnlyMssqlQuery kappt nur die Länge; hier prüfen).
+      // INTO is blocked too: `SELECT ... INTO newtable ...` begins with SELECT and
+      // clears the blacklist yet writes a table.
       const upper = query.toUpperCase();
       if (
-        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE)\b/.test(upper)
+        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE|INTO)\b/.test(upper)
       ) {
         return { status: 'error', port: 'error', message: 'Nur SELECT erlaubt' };
       }

@@ -26,6 +26,13 @@ const MESSAGE_BATCH = 2000;
 // sentinel after the real on-disk path has been captured for post-commit unlink.
 const ERASED = '[erased]';
 
+// The address columns (from_json/to_json/cc_json/bcc_json) are read back with
+// JSON.parse downstream (e.g. ai-nodes.ts, email-crm-store.ts). A raw '[erased]'
+// string is NOT valid JSON and would throw SyntaxError there, so those columns
+// get a valid-JSON tombstone instead. Non-JSON text columns (subject/snippet/
+// body_text/body_html) keep the raw ERASED sentinel.
+const ERASED_JSON = JSON.stringify(ERASED); // → "[erased]" (a valid JSON string)
+
 export type ErasureSelectorInput = {
   emails?: string[];
   customerId?: number;
@@ -72,13 +79,24 @@ type MatchClause = { where: string; params: unknown[] };
  * shortcut — production must parse the address JSON; see design open questions),
  * and/or by `customer_id`.
  */
+// Escape the LIKE metacharacters (\ % _) in a selector so a literal address is
+// matched literally: without this, `first_last@x.com` (the `_` is a LIKE
+// single-char wildcard) would also match `firstXlast@x.com` and anonymize the
+// wrong person on the dryRun:false path. Paired with `ESCAPE '\'` on each LIKE.
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 function buildMatch(input: ErasureSelectorInput): MatchClause {
   const clauses: string[] = [];
   const params: unknown[] = [];
   for (const email of input.emails ?? []) {
-    clauses.push('(from_json LIKE ? OR to_json LIKE ? OR cc_json LIKE ?)');
-    const like = `%${email}%`;
-    params.push(like, like, like);
+    clauses.push(
+      "(from_json LIKE ? ESCAPE '\\' OR to_json LIKE ? ESCAPE '\\' " +
+        "OR cc_json LIKE ? ESCAPE '\\' OR bcc_json LIKE ? ESCAPE '\\')",
+    );
+    const like = `%${escapeLike(email)}%`;
+    params.push(like, like, like, like);
   }
   if (typeof input.customerId === 'number') {
     clauses.push('customer_id = ?');
@@ -205,7 +223,7 @@ export function eraseSubject(
   try {
     const updateMessage = db.prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
-       SET subject = ?, from_json = ?, to_json = ?, cc_json = ?, snippet = ?,
+       SET subject = ?, from_json = ?, to_json = ?, cc_json = ?, bcc_json = ?, snippet = ?,
            body_text = ?, body_html = ?, attachments_json = NULL,
            raw_headers = NULL, raw_rfc822_b64 = NULL
        WHERE id = ?`,
@@ -223,7 +241,19 @@ export function eraseSubject(
     );
 
     for (const id of plan.messageIds) {
-      updateMessage.run(ERASED, ERASED, ERASED, ERASED, ERASED, ERASED, ERASED, id);
+      // Address columns get the valid-JSON tombstone; text columns keep raw ERASED.
+      // Order: subject, from_json, to_json, cc_json, bcc_json, snippet, body_text, body_html, id.
+      updateMessage.run(
+        ERASED,
+        ERASED_JSON,
+        ERASED_JSON,
+        ERASED_JSON,
+        ERASED_JSON,
+        ERASED,
+        ERASED,
+        ERASED,
+        id,
+      );
       updateNote.run(ERASED, id);
       // storage_path is set to the NON-NULL sentinel (column is TEXT NOT NULL).
       updateAttachment.run(ERASED, ERASED, id);

@@ -54,6 +54,13 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 
 These four are **design/spike plans**, not build-everything plans: each produces a prototype + a written design doc with open questions for the maintainer to decide scope, not a finished feature. `021` also records a **doc drift** finding (the feature request doc claims AI token tracking is missing; `packages/server/src/ai-usage.ts` already implements it — only budget gates are absent).
 
+Their wiring status is **not** uniform — the earlier blanket "unwired/safe" characterization was inaccurate, so per spike:
+
+- **020** (outbound webhooks) — truly unwired: no imports outside its own tests, no IPC channel; `emitWebhookEvent` is a typed-but-unwired stub.
+- **021** (AI budget gates) — wired into **both** AI entry points (`ai-reply-suggestion.ts`, `ai-classification.ts`) but **default-off** (env-gated). Carries a known **check-then-act race** under concurrency: when a hard limit is set, two in-flight calls can each read spend below the limit and both proceed (best-effort — not a reservation/lock model).
+- **022** (GDPR erasure) — truly unwired: prototype only, registered on no IPC channel; the apply path is dry-run by default.
+- **023** (JTL order-context) — **reachable** via inbound-triggered workflows (the node is registered unconditionally); now gated **off-by-default** behind `SIMPLECRM_JTL_CONTEXT_NODE`.
+
 ## Findings considered and rejected (so nobody re-audits them)
 
 - **`node-pop3@0.11` on the POP3 sync path (DEPS-06)**: pre-1.0 dep on a mail-ingestion path, but well-isolated behind a single wrapper (`electron/email/email-pop3-sync.ts`) and no urgent issue — monitor for abandonment; no plan now.

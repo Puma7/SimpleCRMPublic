@@ -51,6 +51,13 @@ function jtlNode() {
 describe('spike: jtl.order_context resolver (desktop port)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // The node is off-by-default (see FIX 3 / SIMPLECRM_JTL_CONTEXT_NODE gate).
+    // Opt in so the existing tests still exercise the resolver logic.
+    process.env.SIMPLECRM_JTL_CONTEXT_NODE = '1';
+  });
+
+  afterEach(() => {
+    delete process.env.SIMPLECRM_JTL_CONTEXT_NODE;
   });
 
   test('registration exists on desktop', () => {
@@ -143,6 +150,34 @@ describe('spike: jtl.order_context resolver (desktop port)', () => {
 
     expect(result.status).toBe('error');
     expect(result.message).toContain('Nur SELECT erlaubt');
+    expect(mockMssql).not.toHaveBeenCalled();
+  });
+
+  test('SELECT-only guard rejects SELECT ... INTO ... (writes a table) without running it', async () => {
+    const result = await jtlNode().execute(
+      ctx({ strings: { from_address: 'kunde@example.com' }, dryRun: false }),
+      // Begins with SELECT and clears the mutating-keyword blacklist, yet writes
+      // a new table — must be rejected by the INTO guard.
+      { query: 'SELECT * INTO tShadow FROM tBestellung' },
+      'jtl',
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.message).toContain('Nur SELECT erlaubt');
+    expect(mockMssql).not.toHaveBeenCalled();
+  });
+
+  test('disabled without SIMPLECRM_JTL_CONTEXT_NODE: returns error and runs no query', async () => {
+    delete process.env.SIMPLECRM_JTL_CONTEXT_NODE;
+
+    const result = await jtlNode().execute(
+      ctx({ strings: { from_address: 'kunde@example.com' }, dryRun: false }),
+      { query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}' },
+      'jtl',
+    );
+
+    expect(result).toMatchObject({ status: 'error', port: 'error' });
+    expect(result.message).toContain('SIMPLECRM_JTL_CONTEXT_NODE');
     expect(mockMssql).not.toHaveBeenCalled();
   });
 

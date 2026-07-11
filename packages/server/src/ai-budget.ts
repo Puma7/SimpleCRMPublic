@@ -102,6 +102,10 @@ export function readAiBudgetLimitsFromEnv(env: NodeJS.ProcessEnv = process.env):
 /**
  * Loads spend and applies the pure decision. Short-circuits to `allow` (no DB
  * read) when no limits are configured, and fails OPEN on any read error.
+ *
+ * NOTE: best-effort / not concurrency-safe — this reads spend then decides, so
+ * concurrent calls can both pass a hard limit (a reservation/lock model is a
+ * separate design decision, tracked in the spike doc; not implemented here).
  */
 export async function evaluateAiBudgetSafe(
   deps: AiBudgetLoaderDeps,
