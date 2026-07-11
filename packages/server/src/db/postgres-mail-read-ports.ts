@@ -3107,28 +3107,32 @@ function applyMessageOperatorFilter(query: any, parsed: ParsedMailSearchQuery): 
 
 /**
  * FTS-Match pro Token: Nachrichten-search_vector ODER Anhang-search_vector
- * (0026) ODER Dateiname in attachments_json (Metadaten-only-Anhaenge ueber
- * der Groessen-/Gesamt-Cap haben KEINE email_message_attachments-Zeile —
- * der Name steht nur im attachments_json der Message; Desktop-Paritaet:
- * SQLite-FTS v3 indexiert attachments_json). ILIKE statt tsvector, weil die
- * generierte search_vector-Spalte aus 0007 produktiv appliziert und nicht
- * erweiterbar ist. Performance: bewusst ohne eigenen Index — der Ausdruck
- * filtert nur die bereits durch Workspace-/View-/Vektor-Bedingungen
- * eingeschraenkte Menge nach.
+ * (0026) ODER ILIKE-Fallbacks fuer Spalten, die der generierte Vector nicht
+ * abdeckt — per ILIKE, weil die produktiv applizierte generierte Spalte
+ * nicht erweiterbar ist:
+ * - attachments_json: Metadaten-only-Anhaenge ueber der Groessen-/Gesamt-Cap
+ *   haben KEINE email_message_attachments-Zeile, der Dateiname steht nur im
+ *   attachments_json der Message (Desktop-Paritaet: SQLite-FTS v3 indexiert
+ *   attachments_json).
+ * - bcc_json: der 0007-Vector enthielt bcc_json noch, die Neudefinition in
+ *   0010 (extendedSearchVector) liess es fallen — Bcc-only-Treffer wuerden
+ *   sonst im fts-Modus verschwinden (like/regex decken Bcc bereits ab).
+ * Performance: bewusst ohne eigene Indizes — die Ausdruecke filtern nur die
+ * bereits durch Workspace-/View-/Vektor-Bedingungen eingeschraenkte Menge.
  * Tokens AND-verknuepft — so matcht auch eine Mail, deren Begriffe sich auf
- * Body und Anhang verteilen. attachmentNamePatterns ist index-aligned zu
+ * Body und Anhang verteilen. tokenIlikePatterns ist index-aligned zu
  * tsQueryTokens (beide phrases-then-terms mit identischer Kappung; der
  * Parser liefert keine leeren Phrasen/Terme).
  */
 function applyMessageFtsFilter(
   query: any,
   tsQueryTokens: readonly string[],
-  attachmentNamePatterns: readonly string[],
+  tokenIlikePatterns: readonly string[],
 ): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   tsQueryTokens.forEach((token, index) => {
     // Leerer Fallback matcht nichts (ILIKE '' trifft nur den Leerstring).
-    const namePattern = attachmentNamePatterns[index] ?? '';
+    const tokenPattern = tokenIlikePatterns[index] ?? '';
     query = query.where(rawSql<boolean>`(
       email_messages.search_vector @@ to_tsquery('simple', ${token})
       OR EXISTS (
@@ -3137,7 +3141,8 @@ function applyMessageFtsFilter(
           AND a.message_id = email_messages.id
           AND a.search_vector @@ to_tsquery('simple', ${token})
       )
-      OR email_messages.attachments_json::text ILIKE ${namePattern} ESCAPE '\\'
+      OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+      OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
     )`);
   });
   return query;

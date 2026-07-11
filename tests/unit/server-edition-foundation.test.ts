@@ -14012,9 +14012,15 @@ describe('server edition foundation', () => {
     // attachments_json auf der Message und muss in BEIDEN Suchzweigen
     // matchen (Desktop-Paritaet: SQLite-FTS v3 indexiert attachments_json).
     expect(ftsSection).toContain(
-      "OR email_messages.attachments_json::text ILIKE ${namePattern} ESCAPE '\\\\'",
+      "OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\\\'",
     );
     expect(ilikeSection).toContain("OR attachments_json::text ILIKE ${pattern} ESCAPE '\\\\'");
+    // bcc_json fehlt im deployten search_vector (die 0010-Neudefinition liess
+    // das bcc aus dem 0007-Vector fallen) — Bcc-only-Treffer brauchen im
+    // fts-Zweig die ILIKE-OR-Bedingung (like/regex decken Bcc bereits ab).
+    expect(ftsSection).toContain(
+      "OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\\\'",
+    );
     // Der fts-Zweig bekommt die index-alignten ILIKE-Patterns aus dem Parser.
     expect(source).toContain('parsed ? ilikeTextNeedles(parsed) : []');
   });
