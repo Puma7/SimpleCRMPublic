@@ -54,6 +54,13 @@ let failed = false;
 for (const m of metrics) {
   const current = snapshot[m];
   const floor = baseline[m];
+  // A missing/invalid floor makes `current + TOLERANCE < floor` compare against
+  // undefined/NaN → always false → a silent pass. Fail loud instead.
+  if (typeof floor !== 'number' || Number.isNaN(floor)) {
+    console.error(`Baseline missing/invalid metric ${m}`);
+    failed = true;
+    continue;
+  }
   if (current + TOLERANCE < floor) {
     console.error(`Coverage regressed for ${m}: ${current}% < baseline ${floor}%`);
     failed = true;
