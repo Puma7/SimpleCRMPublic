@@ -1247,6 +1247,10 @@ export function setMessageCustomerId(messageId: number, customerId: number | nul
 function viewFilterClause(view: import('./email-store').AccountMailView): string {
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = ''))`;
+  // Spiegel der Inbox-View-Semantik in email-store.ts: Entwürfe im Zustand
+  // "Wartet auf Freigabe" sind im Posteingang sichtbar — die view-gebundene
+  // Suche muss sie dort auch finden.
+  const approvalPendingInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.approval_state = 'pending' AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = ''))`;
   switch (view) {
     case 'trash':
       return 'm.soft_deleted = 1';
@@ -1268,6 +1272,7 @@ function viewFilterClause(view: import('./email-store').AccountMailView): string
       return `m.soft_deleted = 0 AND (
         (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
         OR ${outboundHeldInInbox}
+        OR ${approvalPendingInInbox}
       )`;
     default:
       return 'm.soft_deleted = 0';
