@@ -36,10 +36,24 @@ export function isAutomatedInboundMessage(rawHeaders: string | null | undefined)
 
 /**
  * Strengere Variante für vollautomatische KI-Antworten: zusätzlich
- * Newsletter/Verteiler (List-Unsubscribe/List-Id) ausschließen.
+ * Newsletter/Verteiler ausschließen — die KOMPLETTE RFC-2369-Familie plus
+ * List-Id. Besonders kritisch ist List-Post: replyAddressesFromRawHeaders
+ * (shared/email-reply-addresses.ts) parst es als Antwort-Adresse, d. h. der
+ * Entwurf würde DIREKT an die Listen-Adresse adressiert. Normale Direktmail
+ * trägt keinen dieser Header — fail-safe ohne False-Positive-Risiko.
  */
+const MAILING_LIST_HEADER_PREFIXES = [
+  'list-id:',
+  'list-post:',
+  'list-unsubscribe:',
+  'list-subscribe:',
+  'list-help:',
+  'list-owner:',
+  'list-archive:',
+];
+
 export function isUnsafeAutoReplyTarget(rawHeaders: string | null | undefined): boolean {
   if (isAutomatedInboundMessage(rawHeaders)) return true;
   const headers = (rawHeaders ?? '').toLowerCase();
-  return headers.includes('list-unsubscribe:') || headers.includes('list-id:');
+  return MAILING_LIST_HEADER_PREFIXES.some((prefix) => headers.includes(prefix));
 }

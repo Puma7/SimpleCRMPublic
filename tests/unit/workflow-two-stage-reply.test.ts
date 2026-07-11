@@ -186,6 +186,17 @@ describe('email.auto_reply Gate — Anti-Loop', () => {
     expect(r.variables?.['auto_reply.blocked_reason']).toBe('automated_sender');
   });
 
+  test('blockt Verteiler mit NUR List-Post (wird sogar als Antwort-Adresse geparst)', async () => {
+    const c = ctx({
+      message: {
+        ...baseMessage,
+        raw_headers: 'List-Post: <mailto:alle@liste.example.com>\nFrom: kollege@firma.de',
+      } as never,
+    });
+    const r = await gate.execute(c, { minConfidence: 50 }, 'g');
+    expect(r.variables?.['auto_reply.blocked_reason']).toBe('automated_sender');
+  });
+
   test('blockt bei erreichtem Tageslimit', async () => {
     (isAutoReplyRateLimited as jest.Mock).mockReturnValueOnce(true);
     const r = await gate.execute(ctx(), { minConfidence: 50 }, 'g');
@@ -374,6 +385,20 @@ describe('email.send_draft — Anti-Loop-Buchhaltung', () => {
     expect(r).toMatchObject({ status: 'skipped', message: 'auto_reply_rate_limited' });
     expect(prepareDraftForWorkflowSend).not.toHaveBeenCalled();
     expect(markDraftAutoSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('inbound: skippt Verteiler mit NUR List-Post auch ohne Gate davor', async () => {
+    const { prepareDraftForWorkflowSend } = jest.requireMock('../../electron/workflow/draft-send-prep');
+    const c = ctx({
+      variables: { 'draft.id': 42 },
+      message: {
+        ...baseMessage,
+        raw_headers: 'List-Post: <mailto:alle@liste.example.com>\nFrom: kollege@firma.de',
+      } as never,
+    });
+    const r = await node.execute(c, {}, 's');
+    expect(r).toMatchObject({ status: 'skipped', message: 'automated_sender_blocked' });
+    expect(prepareDraftForWorkflowSend).not.toHaveBeenCalled();
   });
 
   test('inbound: skippt, wenn das ANTWORT-Ziel (Reply-To) eine No-Reply-Adresse ist', async () => {
