@@ -13,9 +13,9 @@ export const INTEGRATION_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtensio
         label: 'E-Mail-Konto',
         help:
           'Dieses Konto wird abgerufen (neue Mails vom Mail-Server holen). ' +
-          '0 = ALLE eingerichteten Konten nacheinander abrufen. ' +
-          'Leer = das Konto der Nachricht, die den Workflow ausgelöst hat.',
-        example: '0',
+          '„Automatisch“ = das Konto der Nachricht, die den Workflow ausgelöst hat. ' +
+          '„Alle Konten nacheinander“ ruft jedes eingerichtete Postfach ab — nur wählen, wenn das wirklich gewollt ist.',
+        example: 'Automatisch (Konto der Nachricht)',
       },
     ],
     outputs: [

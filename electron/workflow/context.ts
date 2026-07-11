@@ -7,6 +7,7 @@ import { attachmentContextFromJson } from '../email/email-workflow-types';
 import { securityVariablesFromRow } from '../email/mail-security-store';
 import type { WorkflowContext, WorkflowStringContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
+import { interpolateWorkflowPlaceholders } from '../../packages/core/src/workflow/interpolate';
 
 /** Metadata-only context for GDPR-conscious KI nodes (no body_text). */
 export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
@@ -145,19 +146,12 @@ export function createWorkflowContext(input: {
   };
 }
 
-// Single-Pass: kein Re-Scan bereits eingesetzter Werte, Keys mit mehreren
-// Punkten werden exakt aufgelöst. Unbekannte Platzhalter bleiben stehen.
-// Key = alles außer geschweiften Klammern (Variablennamen dürfen Umlaute,
-// Leerzeichen etc. enthalten — logic.set_variable erlaubt freie Namen).
+// Delegiert an den Core-Helfer — EINE Semantik für Desktop und Server
+// (Single-Pass, unbekannte Platzhalter bleiben stehen; Details siehe
+// packages/core/src/workflow/interpolate.ts).
 export function interpolateTemplate(template: string, ctx: WorkflowContext): string {
-  return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (match, key: string) => {
-    if (key === 'text') return ctx.strings.combined_text ?? '';
-    if (Object.prototype.hasOwnProperty.call(ctx.strings, key)) {
-      return (ctx.strings as Record<string, string>)[key] ?? '';
-    }
-    if (Object.prototype.hasOwnProperty.call(ctx.variables, key)) {
-      return String(ctx.variables[key] ?? '');
-    }
-    return match;
+  return interpolateWorkflowPlaceholders(template, {
+    strings: ctx.strings as Record<string, string | undefined>,
+    variables: ctx.variables,
   });
 }

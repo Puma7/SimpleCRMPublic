@@ -8,6 +8,8 @@ import {
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
   generateTicketCode,
+  interpolateWorkflowPlaceholders,
+  listBuiltinWorkflowNodeCatalog,
   normalizeMailboxName,
   normalizeEmailAddress,
   outboundDraftFingerprint,
@@ -1172,14 +1174,22 @@ async function walkGraph(
     }
 
     if (result.variables) Object.assign(input.context.variables, result.variables);
-    // Inbound gate: condition.yes OR auto_reply.approved authorise downstream
-    // side-effect nodes. auto_reply IS a gate semantically (Schalter +
-    // Confidence + No-Reply-Schutz) so its OK port should free the chain.
+    // Inbound gate: condition.yes, auto_reply.approved, threshold.yes oder
+    // ein getroffener switch-Fall autorisieren nachgelagerte Side-Effect-
+    // Knoten — gleiche harte (nodeType, port)-Liste wie die Desktop-Runtime
+    // (electron/workflow/runtime.ts), bewusst KEINE Schema-Ableitung: welcher
+    // Ausgang als "bestandene Bedingung" zählt, ist ein Sicherheitsmechanismus.
+    // Ohne den switch-Fall bliebe z. B. der blocked→switch(low_confidence)→tag-
+    // Pfad der Auto-Antwort-Vorlagen im Server-Modus als no_prior_condition
+    // hängen.
+    const gateRegistryType = node.type === 'registry' ? nodeRuntimeType(node) : null;
     const trippedInboundGate =
       (node.type === 'condition' && result.port === 'yes')
-      || (node.type === 'registry'
-        && nodeRuntimeType(node) === 'email.auto_reply'
-        && result.port === 'approved');
+      || (gateRegistryType === 'email.auto_reply' && result.port === 'approved')
+      || (gateRegistryType === 'logic.threshold' && result.port === 'yes')
+      || (gateRegistryType === 'logic.switch'
+        && typeof result.port === 'string'
+        && result.port !== 'default');
     if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
@@ -1330,7 +1340,7 @@ async function executeServerNode(
   }
 
   const type = nodeRuntimeType(node);
-  const config = nodeConfig(node);
+  const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
   if (type === 'logic.stop' || type === 'stop') {
     return { status: 'ok', port: 'default', stop: true };
   }
@@ -5820,6 +5830,57 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
     return node.data.config as Record<string, unknown>;
   }
   return node.data;
+}
+
+/**
+ * Zentraler Interpolations-Pre-Pass (Parität zur Desktop-Runtime,
+ * electron/workflow/runtime.ts): Felder, die das Knoten-Schema mit
+ * `interpolate: true` markiert, bekommen {{Platzhalter}} VOR der Ausführung
+ * aufgelöst — auf einer Kopie, nie persistiert. Ohne den Pass würden
+ * email.tag/crm.create_task/http.request die Platzhalter aus dem
+ * Variablen-Picker wörtlich übernehmen.
+ *
+ * `ai.*`-Knoten werden bewusst ÜBERSPRUNGEN: deren Prompts interpoliert die
+ * Job-Schicht (ai-classification.ts) zur Ausführungszeit mit frischeren
+ * Variablen — ein Pre-Pass davor würde doppelt interpolieren und über
+ * Mail-Inhalte eingeschleuste Platzhalter auflösbar machen.
+ */
+const serverInterpolateFieldKeysByType = new Map<string, readonly string[]>();
+
+function serverInterpolateFieldKeysFor(type: string): readonly string[] {
+  let keys = serverInterpolateFieldKeysByType.get(type);
+  if (!keys) {
+    if (type.startsWith('ai.')) {
+      keys = [];
+    } else {
+      const entry = listBuiltinWorkflowNodeCatalog().find((e) => e.type === type);
+      keys = (entry?.fields ?? [])
+        .filter((f) => f.interpolate === true)
+        .map((f) => f.key);
+    }
+    serverInterpolateFieldKeysByType.set(type, keys);
+  }
+  return keys;
+}
+
+function interpolateServerSchemaFields(
+  type: string,
+  config: Record<string, unknown>,
+  context: ServerWorkflowContext,
+): Record<string, unknown> {
+  const keys = serverInterpolateFieldKeysFor(type);
+  if (keys.length === 0) return config;
+  let copy: Record<string, unknown> | null = null;
+  for (const key of keys) {
+    const value = config[key];
+    if (typeof value !== 'string' || !value.includes('{{')) continue;
+    if (!copy) copy = { ...config };
+    copy[key] = interpolateWorkflowPlaceholders(value, {
+      strings: context.strings,
+      variables: context.variables,
+    });
+  }
+  return copy ?? config;
 }
 
 function normalizeWorkflowTrigger(value: string | undefined): WorkflowTriggerKind {

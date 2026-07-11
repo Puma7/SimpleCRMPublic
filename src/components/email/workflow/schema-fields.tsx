@@ -341,6 +341,10 @@ function SchemaField({
       )
 
     case "account":
+      // Zwei GETRENNTE Sonderfälle (Executor: integration-nodes.ts):
+      // leer/null = Konto der auslösenden Nachricht, 0 = ALLE Konten.
+      // Eine kombinierte Option würde beim Speichern still auf 0 kippen und
+      // aus "dieses Postfach abrufen" ein "jedes Postfach abrufen" machen.
       return (
         <FieldShell field={field} issue={issue}>
           <AsyncOptionsSelect
@@ -350,15 +354,20 @@ function SchemaField({
                 label?: string | null
                 email?: string | null
               }[]
-              return rows.map((a) => ({
-                value: String(a.id),
-                label: a.label ?? a.email ?? `Konto #${a.id}`,
-              }))
+              return [
+                { value: "0", label: "Alle Konten nacheinander" },
+                ...rows.map((a) => ({
+                  value: String(a.id),
+                  label: a.label ?? a.email ?? `Konto #${a.id}`,
+                })),
+              ]
             }}
-            value={String(Number(value ?? 0) || 0)}
-            onChange={(v) => setConfig(patch, config, field.key, parseInt(v, 10) || 0)}
+            value={value == null || value === "" ? "__auto__" : String(Number(value) || 0)}
+            onChange={(v) =>
+              setConfig(patch, config, field.key, v === "__auto__" ? null : parseInt(v, 10) || 0)
+            }
             emptyLabel="Keine E-Mail-Konten eingerichtet"
-            noneOption={{ value: "0", label: "Alle Konten / Konto der Nachricht" }}
+            noneOption={{ value: "__auto__", label: "Automatisch (Konto der Nachricht)" }}
           />
         </FieldShell>
       )

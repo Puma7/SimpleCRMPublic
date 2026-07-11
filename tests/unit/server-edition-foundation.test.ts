@@ -10555,6 +10555,150 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // Parität zur Desktop-Runtime: ein getroffener switch-Fall (nicht default)
+  // öffnet das Inbound-Gate — sonst bliebe der blocked→switch(low_confidence)
+  // →tag-Pfad der Auto-Antwort-Vorlagen im Server-Modus als
+  // no_prior_condition hängen.
+  test('inbound gate: matched logic.switch case authorises downstream nodes; default does not', async () => {
+    const now = new Date('2026-08-15T12:00:00.000Z');
+    const blockedPathGraph = (caseValue: string) => ({
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'gate', type: 'registry', data: { nodeType: 'email.auto_reply', config: { minConfidence: 80 } } },
+        { id: 'switch', type: 'registry', data: { nodeType: 'logic.switch', config: { field: 'auto_reply.blocked_reason', cases: caseValue } } },
+        { id: 'tag', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'ki-manuell' } } },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'gate' },
+        { id: 'e2', source: 'gate', target: 'switch', label: 'blocked' },
+        { id: 'e3', source: 'switch', target: 'tag', label: caseValue },
+      ],
+    });
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [
+        {
+          id: 61,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 610,
+          trigger_name: 'inbound',
+          enabled: true,
+          priority: 1,
+          graph_json: blockedPathGraph('low_confidence'),
+          execution_mode: 'graph',
+        },
+        {
+          // Kontrolle: switch trifft KEINEN Fall → default → Gate bleibt zu.
+          id: 62,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 620,
+          trigger_name: 'inbound',
+          enabled: true,
+          priority: 1,
+          graph_json: {
+            ...blockedPathGraph('anderer_grund'),
+            edges: [
+              { id: 'e1', source: 'trigger-1', target: 'gate' },
+              { id: 'e2', source: 'gate', target: 'switch', label: 'blocked' },
+              // Unbeschriftete Kante fängt den default-Port (pickEdge-Fallback).
+              { id: 'e3', source: 'switch', target: 'tag' },
+            ],
+          },
+          execution_mode: 'graph',
+        },
+      ],
+      messages: [{
+        id: 96,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 960,
+        subject: 'Unklare Anfrage',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+      }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    // Confidence 40 < minConfidence 80 → auto_reply blockt mit low_confidence.
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 61,
+      messageId: 96,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'ai.class_confidence': 40 } },
+    });
+    expect(rows.tags.map((t) => t.tag)).toEqual(['ki-manuell']);
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.port])).toEqual([
+      ['email.auto_reply', 'ok', 'blocked'],
+      ['logic.switch', 'ok', 'low_confidence'],
+      ['email.tag', 'ok', 'default'],
+    ]);
+
+    rows.tags.length = 0;
+    rows.steps.length = 0;
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 62,
+      messageId: 96,
+      triggerName: 'inbound',
+      context: { eventVariables: { 'ai.class_confidence': 40 } },
+    });
+    expect(rows.tags).toEqual([]);
+    expect(rows.steps.map((s) => [s.node_type, s.status, s.port])).toEqual([
+      ['email.auto_reply', 'ok', 'blocked'],
+      ['logic.switch', 'ok', 'default'],
+      ['email.tag', 'skipped', 'blocked'],
+    ]);
+  });
+
+  // Parität zur Desktop-Runtime: schema-markierte interpolate-Felder lösen
+  // {{Platzhalter}} vor der Ausführung auf — sonst landen wörtliche
+  // "{{subject}}"-Tags/-Aufgaben beim Kunden.
+  test('interpolates schema-flagged config fields before executing inline nodes', async () => {
+    const now = new Date('2026-08-15T12:30:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 63,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 630,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'cond-1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'Bestellung' } },
+            { id: 'tag-1', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'betreff:{{subject}} ({{gibt.es.nicht}})' } } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger-1', target: 'cond-1' },
+            { id: 'e2', source: 'cond-1', target: 'tag-1', label: 'yes' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 97,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 970,
+        subject: 'Bestellung 4711 fehlt',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 63,
+      messageId: 97,
+      triggerName: 'inbound',
+      context: {},
+    });
+
+    // Bekannte Platzhalter aufgelöst, unbekannte bleiben stehen (Desktop-Semantik).
+    expect(rows.tags.map((t) => t.tag)).toEqual(['betreff:Bestellung 4711 fehlt ({{gibt.es.nicht}})']);
+  });
+
   test('postgres workflow execution job port routes auto-reply through outbound review when runOutboundReview=true', async () => {
     const now = new Date('2026-08-15T10:05:00.000Z');
     const { db, rows } = makeWorkflowExecutionDb({

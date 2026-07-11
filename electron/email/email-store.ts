@@ -710,6 +710,10 @@ export function listMessagesForAccountView(
   params.push(accountId);
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND ${NOT_SCHEDULED_SEND_SQL})`;
+  // Zwei-Stufen-KI: Entwürfe, die auf menschliche Freigabe warten, gehören
+  // in den Posteingang ("der Mensch entscheidet im Postfach") — sonst wäre
+  // das Freigabe-Banner nur über den Entwürfe-Ordner erreichbar.
+  const approvalPendingInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.approval_state = 'pending' AND ${NOT_SCHEDULED_SEND_SQL})`;
   if (view === 'trash') {
     sql += ` ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
@@ -732,6 +736,7 @@ export function listMessagesForAccountView(
     sql += ` AND (
       (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
       OR ${outboundHeldInInbox}
+      OR ${approvalPendingInInbox}
     )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
@@ -788,6 +793,7 @@ export function listMessagesForAllAccountsView(
   }
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND ${NOT_SCHEDULED_SEND_SQL})`;
+  const approvalPendingInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.approval_state = 'pending' AND ${NOT_SCHEDULED_SEND_SQL})`;
   if (view === 'trash') {
     sql += accessSql;
     params.push(...accessParams);
@@ -816,6 +822,7 @@ export function listMessagesForAllAccountsView(
     sql += ` AND (
       (${nonDraftMail} AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = 0 AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean')
       OR ${outboundHeldInInbox}
+      OR ${approvalPendingInInbox}
     )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
@@ -952,10 +959,12 @@ export type MailFolderCounts = {
 export function getMailFolderCountsForAccount(accountId: number): MailFolderCounts {
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1 AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
+  const approvalPendingInInbox = `(uid < 0 AND folder_kind = 'draft' AND approval_state = 'pending' AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
   const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean')
     OR ${outboundHeldInInbox}
+    OR ${approvalPendingInInbox}
   )`;
   const inboxOpen = `${inboxBase} AND COALESCE(done_local, 0) = 0`;
   const row = getDb()
@@ -1012,10 +1021,12 @@ export function getMailFolderCountsForAllAccounts(
   );
   const nonDraftMail = `(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(uid < 0 AND folder_kind = 'draft' AND outbound_hold = 1 AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
+  const approvalPendingInInbox = `(uid < 0 AND folder_kind = 'draft' AND approval_state = 'pending' AND (scheduled_send_at IS NULL OR scheduled_send_at = ''))`;
   const notSnoozed = SNOOZE_FILTER_SQL_BARE;
   const inboxBase = `soft_deleted = 0 AND ${notSnoozed} AND (
     (${nonDraftMail} AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = 0 AND is_spam = 0 AND COALESCE(spam_status, 'clean') = 'clean')
     OR ${outboundHeldInInbox}
+    OR ${approvalPendingInInbox}
   )`;
   const inboxOpen = `${inboxBase} AND COALESCE(done_local, 0) = 0`;
   const row = getDb()
