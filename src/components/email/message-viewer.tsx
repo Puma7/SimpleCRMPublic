@@ -87,7 +87,6 @@ import { EmailHtmlFrame } from "./email-html-frame"
 import { formatSnoozeWakeLabel } from "@shared/snooze-datetime"
 import { SnoozePopover } from "@/components/snooze/snooze-popover"
 import { ApplyWorkflowMenu } from "./apply-workflow-menu"
-import { useExternalLinkConfirm } from "./external-link-confirm-dialog"
 import {
   decryptServerPgpAttachment,
   getRendererTransport,
@@ -276,7 +275,6 @@ export function MessageViewer(props: Props) {
   // "error" = fetch failed or returned no body.
   const [bodyLoadState, setBodyLoadState] = useState<"idle" | "loading" | "error">("idle")
   const [bodyRetryKey, setBodyRetryKey] = useState(0)
-  const { dialog: externalLinkDialog } = useExternalLinkConfirm()
   const localIpcAvailable = !serverClientMode && hasLocalIpc()
   const selectedLock = selectedMessage ? conversationLocks[selectedMessage.id] : undefined
   const selectedLockOwner = selectedLock ? lockOwnerLabel(selectedLock) : ""
@@ -1780,8 +1778,6 @@ export function MessageViewer(props: Props) {
         open={workflowRunDetailOpen}
         onOpenChange={setWorkflowRunDetailOpen}
       />
-
-      {externalLinkDialog}
     </TooltipProvider>
   )
 }

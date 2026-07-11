@@ -37,7 +37,13 @@ type ChannelHttpRegistryModule = typeof import("./channel-http-registry")
 let channelHttpRegistryPromise: Promise<ChannelHttpRegistryModule> | null = null
 function loadChannelHttpRegistry(): Promise<ChannelHttpRegistryModule> {
   if (!channelHttpRegistryPromise) {
-    channelHttpRegistryPromise = import("./channel-http-registry")
+    // Clear the cached promise if the dynamic import() REJECTS, so a single
+    // failed chunk load (e.g. a transient network error) does not permanently
+    // poison every later HTTP invocation — the next call retries the import.
+    channelHttpRegistryPromise = import("./channel-http-registry").catch((err) => {
+      channelHttpRegistryPromise = null
+      throw err
+    })
   }
   return channelHttpRegistryPromise
 }
