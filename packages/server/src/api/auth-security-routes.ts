@@ -5,7 +5,7 @@ import {
   getStringField,
   requireAdmin,
   requirePrincipal,
-} from './types';
+} from './http';
 
 export async function handleAuthSecurityRoute(
   req: ApiRequest,

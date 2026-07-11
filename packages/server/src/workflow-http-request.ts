@@ -8,7 +8,8 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './db/workspace-context';
-import { assertWebhookUrlAllowed } from './jobs/webhook-handlers';
+import { createPinnedFetch, type GuardedFetch } from './jobs/pinned-fetch';
+import { assertWebhookUrlAllowed, guardedFetch } from './jobs/webhook-handlers';
 import type { JobPayload } from './jobs/types';
 
 export type WorkflowHttpMethod = 'GET' | 'POST';
@@ -38,19 +39,7 @@ export type WorkflowHttpRequestJobPort = Readonly<{
   request(input: WorkflowHttpRequestJobPlan): Promise<void>;
 }>;
 
-export type WorkflowHttpRequestFetch = (
-  url: string,
-  init: {
-    method: WorkflowHttpMethod;
-    headers: Record<string, string>;
-    body?: string;
-    signal?: AbortSignal;
-  },
-) => Promise<{
-  ok: boolean;
-  status: number;
-  text(): Promise<string>;
-}>;
+export type WorkflowHttpRequestFetch = GuardedFetch;
 
 export type WorkflowHttpRequestLookup = (
   hostname: string,
@@ -71,12 +60,8 @@ export function createPostgresWorkflowHttpRequestPort(
   options: PostgresWorkflowHttpRequestPortOptions,
 ): WorkflowHttpRequestJobPort {
   const now = () => options.now?.() ?? new Date();
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = options.fetchImpl ?? createPinnedFetch();
   const lookup = options.lookup ?? ((hostname: string) => dnsLookup(hostname, { all: true, verbatim: true }));
-
-  if (!fetchImpl) {
-    throw new Error('global fetch is not available for workflow HTTP requests');
-  }
 
   return {
     async request(input): Promise<void> {
@@ -87,12 +72,17 @@ export function createPostgresWorkflowHttpRequestPort(
         { applySession: options.applyWorkspaceSession },
       );
 
-      await assertWebhookUrlAllowed(input.url, allowlist, lookup);
-      const response = await fetchImpl(input.url, {
-        method: input.method,
-        headers: input.method === 'GET' ? {} : { 'Content-Type': 'application/json' },
-        ...(input.method === 'GET' || input.body === undefined ? {} : { body: input.body }),
-        signal: AbortSignal.timeout(input.timeoutMs),
+      const response = await guardedFetch({
+        url: input.url,
+        allowlist,
+        lookup,
+        fetchImpl,
+        init: {
+          method: input.method,
+          headers: input.method === 'GET' ? {} : { 'Content-Type': 'application/json' },
+          ...(input.method === 'GET' || input.body === undefined ? {} : { body: input.body }),
+          timeoutMs: input.timeoutMs,
+        },
       });
       const body = (await response.text()).slice(0, HTTP_RESPONSE_BODY_MAX);
       if (!response.ok) {

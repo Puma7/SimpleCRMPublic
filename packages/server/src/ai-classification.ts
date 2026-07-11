@@ -12,6 +12,7 @@ import type {
 } from './db/schema';
 import type { AiTextTransformApiPort } from './api/types';
 import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { evaluateAiBudgetSafe, readAiBudgetLimitsFromEnv } from './ai-budget';
 import { callAiChat } from './ai-providers';
 import {
   withWorkspaceTransaction,
@@ -1372,6 +1373,22 @@ async function runTrackedChatCompletion(
   input: ChatCompletionInput,
 ): Promise<string> {
   const chat = options.chatCompletion ?? defaultChatCompletion(options);
+  // PROTOTYPE budget gate (default-off). No env limits configured => no-op.
+  const budgetLimits = readAiBudgetLimitsFromEnv();
+  if (budgetLimits.hardLimitMicroUsd != null || budgetLimits.softLimitMicroUsd != null) {
+    const budget = await evaluateAiBudgetSafe(
+      { db: options.db, applyWorkspaceSession: options.applyWorkspaceSession, now: options.now },
+      attribution.workspaceId,
+      budgetLimits,
+    );
+    if (budget.decision === 'block') {
+      throw new Error(
+        `AI budget exceeded for workspace ${attribution.workspaceId} ` +
+        `(node ${attribution.nodeType}): spent ${budget.spentMicroUsd} µ$ ` +
+        `>= hard limit ${budget.hardLimitMicroUsd} µ$`,
+      );
+    }
+  }
   const started = Date.now();
   let usage: AiTokenUsage | null = null;
   const output = await chat({ ...input, captureUsage: (value) => { usage = value; } });

@@ -9,7 +9,7 @@ import {
   data,
   error,
   requirePrincipal,
-} from './types';
+} from './http';
 
 type LoadedSyncInfoRows =
   | { principal: { userId: string; workspaceId: string }; rows: readonly SyncInfoRecord[] }

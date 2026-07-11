@@ -13,6 +13,7 @@ module.exports = {
     '^@simplecrm/core$': '<rootDir>/packages/core/src',
     '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
+    '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
   },
   testMatch: [
     '<rootDir>/tests/mail/**/*.test.ts',

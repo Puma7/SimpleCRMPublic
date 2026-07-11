@@ -5,7 +5,6 @@ import {
   buildServerEventProtocols,
   buildServerEventWebSocketUrl,
   invokeRenderer,
-  hasHttpInvocation,
   decryptServerPgpAttachment,
   isAutomationApiKeyRefreshEvent,
   isCalendarEventRefreshEvent,
@@ -36,6 +35,7 @@ import {
   buildServerAuthSession,
   saveServerAuthSession,
 } from '@/services/transport';
+import { hasHttpInvocation } from '@/services/transport/channel-http-registry';
 
 describe('renderer transport', () => {
   const ipcInvoke = jest.fn();
@@ -8289,6 +8289,46 @@ describe('renderer transport', () => {
       message: 'Payload invalid',
       details: { field: 'name' },
     });
+  });
+
+  test('a rejected channel-http-registry import does not poison later HTTP invocations', async () => {
+    // Reproduce a failed async-chunk load: the first dynamic import() of the HTTP
+    // route registry rejects, a later one succeeds. Before the fix the rejected
+    // promise stayed cached in `channelHttpRegistryPromise`, permanently breaking
+    // every subsequent HTTP invocation. Fresh module instance so the internal
+    // registry cache starts empty and the doMock governs the dynamic import.
+    jest.resetModules();
+    let shouldFail = true;
+    jest.doMock('@/services/transport/channel-http-registry', () => {
+      if (shouldFail) throw new Error('chunk load failed');
+      return {
+        buildHttpInvocation: () => ({
+          method: 'GET',
+          path: '/api/v1/ping',
+          responseType: 'json',
+        }),
+      };
+    });
+    try {
+      const { createHttpRendererTransport: freshCreate } =
+        require('@/services/transport/renderer-transport') as typeof import('@/services/transport/renderer-transport');
+      const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { ok: true } }));
+      const transport = freshCreate({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+      // First invocation: the registry chunk fails to load → the call rejects and
+      // no request is made.
+      await expect(transport.invoke(IPCChannels.Sync.GetStatus)).rejects.toThrow('chunk load failed');
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      // The failed load must NOT poison the cache: a later call retries the import
+      // and — now that the chunk resolves — succeeds instead of staying broken.
+      shouldFail = false;
+      await expect(transport.invoke(IPCChannels.Sync.GetStatus)).resolves.toEqual({ ok: true });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.dontMock('@/services/transport/channel-http-registry');
+      jest.resetModules();
+    }
   });
 });
 

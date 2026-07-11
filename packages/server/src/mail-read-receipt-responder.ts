@@ -1,4 +1,4 @@
-import type { Kysely, RawBuilder } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder } from 'kysely';
 
 import {
   dispositionNotificationMatchesSender,
@@ -680,12 +680,10 @@ function emailAccountSecretIdentifier(
 }
 
 function serverCreatedEmailReadReceiptSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_read_receipt_log', 'id'))`;
 }
 
 function emailMessageSourceSqliteId(workspaceId: string, messageId: number): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`(
     SELECT source_sqlite_id FROM email_messages
     WHERE workspace_id = ${workspaceId} AND id = ${messageId}

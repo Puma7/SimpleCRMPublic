@@ -1,5 +1,5 @@
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
-import { data, error, requireAdmin, requirePrincipal } from './types';
+import { data, error, requireAdmin, requirePrincipal } from './http';
 
 const MAX_LOG_LIMIT = 5000;
 const DEFAULT_LOG_LIMIT = 1000;

@@ -1,4 +1,4 @@
-import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import type {
   ActivityLogApiPort,
@@ -1204,12 +1204,10 @@ async function resolveTaskReference(
 }
 
 function serverCreatedCalendarEventSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('calendar_events', 'id'))`;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`jsonb_build_object('origin', 'server_api')`;
 }
 
@@ -1398,12 +1396,10 @@ async function resolveCustomFieldReference(
 }
 
 function serverCreatedCustomFieldSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('customer_custom_fields', 'id'))`;
 }
 
 function serverCreatedCustomFieldValueSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('customer_custom_field_values', 'id'))`;
 }
 
@@ -1443,12 +1439,10 @@ function mutationToSavedViewPatch(values: SavedViewMutationInput): Partial<Updat
 }
 
 function serverCreatedSavedViewSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('saved_views', 'id'))`;
 }
 
 function serverCreatedActivityLogSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('activity_log', 'id'))`;
 }
 
@@ -1480,7 +1474,6 @@ function mutationToJtlReferencePatch(values: JtlReferenceMutationInput): Partial
 }
 
 function serverCreatedJtlReferenceSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval('jtl_references_server_source_sqlite_id_seq')`;
 }
 

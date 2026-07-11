@@ -16,29 +16,29 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 
 | Plan | Title | Priority | Effort | Category | Depends on | Status |
 |------|-------|----------|--------|----------|------------|--------|
-| 001 | Harden webhook/workflow HTTP against redirect + DNS-rebind SSRF | P1 | M | security | — | TODO |
-| 002 | CI test gate fails on empty discovery + fast `typecheck` script | P1 | S | dx | — | TODO |
-| 003 | Ratcheted coverage floor for the server edition in CI | P2 | M | tests | 002 | TODO |
-| 004 | Reject invalid productId/reasonId in return items | P1 | S | bug | — | TODO |
-| 005 | Guard the email list load against stale/racing responses | P2 | S | bug | — | TODO |
-| 006 | Remove dead deps + committed junk; fix phantom server dep | P2 | S | tech-debt | — | TODO |
-| 007 | Replace 87 inline `require('kysely')` with static imports | P3 | S | tech-debt | — | TODO |
-| 008 | Virtualize and memoize the email message list | P2 | M | perf | — | TODO |
-| 009 | Set-based `backfillCustomerLinks` (drop per-row UPDATE loop) | P3 | S | perf | — | TODO |
-| 010 | Make scheduled-send state transitions atomic | P2 | M | bug | — | TODO |
-| 011 | Render email HTML in a sandboxed iframe | P2 | M | security | — | TODO |
-| 012 | Standardize on pnpm; remove the second lockfile | P2 | S | dx | — | TODO |
-| 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | TODO |
-| 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | TODO |
-| 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | TODO |
-| 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | TODO |
-| 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | TODO |
-| 018 | Lazy-load the HTTP route registry out of the desktop bundle | P3 | M | perf | — | TODO |
-| 019 | Separate runtime helpers from types in `api/types.ts` | P3 | L | tech-debt | — | TODO |
-| 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | 001 | TODO |
-| 021 | SPIKE: AI budget gates on existing usage tracking (D2) | P2 | M | direction | — | TODO |
-| 022 | SPIKE: GDPR erasure/anonymization counterpart (D3) | P2 | L | direction | — | TODO |
-| 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | TODO |
+| 001 | Harden webhook/workflow HTTP against redirect + DNS-rebind SSRF | P1 | M | security | — | DONE |
+| 002 | CI test gate fails on empty discovery + fast `typecheck` script | P1 | S | dx | — | DONE |
+| 003 | Ratcheted coverage floor for the server edition in CI | P2 | M | tests | 002 | DONE |
+| 004 | Reject invalid productId/reasonId in return items | P1 | S | bug | — | DONE |
+| 005 | Guard the email list load against stale/racing responses | P2 | S | bug | — | DONE |
+| 006 | Remove dead deps + committed junk; fix phantom server dep | P2 | S | tech-debt | — | DONE |
+| 007 | Replace 87 inline `require('kysely')` with static imports | P3 | S | tech-debt | — | DONE |
+| 008 | Virtualize and memoize the email message list | P2 | M | perf | — | BLOCKED (needs new dep @tanstack/react-virtual; installs proxy-blocked in this env — apply + verify where `pnpm install` works) |
+| 009 | Set-based `backfillCustomerLinks` (drop per-row UPDATE loop) | P3 | S | perf | — | DONE |
+| 010 | Make scheduled-send state transitions atomic | P2 | M | bug | — | DONE |
+| 011 | Render email HTML in a sandboxed iframe | P2 | M | security | — | DONE |
+| 012 | Standardize on pnpm; remove the second lockfile | P2 | S | dx | — | DONE |
+| 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | DONE |
+| 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | DONE |
+| 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | DROPPED (on merge with #145/#146: both heavily modified the monolith, so a split frozen at the old revision held stale tests that failed against the merged code; reverted to the up-to-date monolith with plan 010's scheduled-send tests re-applied) |
+| 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | DONE |
+| 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | DONE |
+| 018 | Lazy-load the HTTP route registry out of the desktop bundle | P3 | M | perf | — | DONE |
+| 019 | Separate runtime helpers from types in `api/types.ts` | P3 | L | tech-debt | — | DONE |
+| 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | 001 | DONE (spike: prototype + design doc) |
+| 021 | SPIKE: AI budget gates on existing usage tracking (D2) | P2 | M | direction | — | DONE (spike: prototype + design doc) |
+| 022 | SPIKE: GDPR erasure/anonymization counterpart (D3) | P2 | L | direction | — | DONE (spike: prototype + design doc) |
+| 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | DROPPED (superseded by #146: `jtl.order_context` now lives in the core node-schema as a server-only node; #147's desktop-executor spike is removed to avoid conflicting with #146 and its catalog-sync test) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
@@ -53,6 +53,40 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 ## Direction spikes (020–023)
 
 These four are **design/spike plans**, not build-everything plans: each produces a prototype + a written design doc with open questions for the maintainer to decide scope, not a finished feature. `021` also records a **doc drift** finding (the feature request doc claims AI token tracking is missing; `packages/server/src/ai-usage.ts` already implements it — only budget gates are absent).
+
+Their wiring status is **not** uniform — the earlier blanket "unwired/safe" characterization was inaccurate, so per spike:
+
+- **020** (outbound webhooks) — truly unwired: no imports outside its own tests, no IPC channel; `emitWebhookEvent` is a typed-but-unwired stub.
+- **021** (AI budget gates) — wired into **both** AI entry points (`ai-reply-suggestion.ts`, `ai-classification.ts`) but **default-off** (env-gated). Carries a known **check-then-act race** under concurrency: when a hard limit is set, two in-flight calls can each read spend below the limit and both proceed (best-effort — not a reservation/lock model).
+- **022** (GDPR erasure) — truly unwired: prototype only, registered on no IPC channel; the apply path is dry-run by default.
+- **023** (JTL order-context) — **DROPPED on the merge with #146.** #146 rebuilt the workflow node system and already ships `jtl.order_context` in the core node-schema/catalog as a `runtime: 'server'` (server-only) node. #147's desktop-executor spike contradicted that (and would fail #146's `workflow-node-catalog-sync` test, which forbids a desktop executor for a server node), so the spike executor + its test were removed. The design doc `docs/SPIKE_JTL_CONTEXT_INJECTION.md` remains as background.
+
+## Deferred follow-ups (raised in the PR #147 review, out of that PR's scope)
+
+GitHub Issues are disabled on this repo, so these are tracked here:
+
+- **Desktop `http.request` workflow-node SSRF** (pre-existing, not introduced by
+  #147). The desktop node (`electron/workflow/nodes/integration-nodes.ts` via
+  `electron/workflow/http-request-guard.ts`) validates the URL but then issues a
+  raw `fetch()` that re-resolves DNS at connect and follows redirects unguarded —
+  the SSRF class plan 001 closed only for the **server** edition. Route it
+  through the shared pinned/redirect-guarded transport (the `electron/automation/
+  webhooks.ts` lazy-require seam already reuses the server's `guardedFetch`), and
+  audit `http-request-guard.ts`'s private-IP check for the IPv4-mapped hex bypass
+  fixed server-side in this PR (`ipv4FromMappedV6`).
+- **Complete GDPR erasure (schema audit)** — the plan-022 prototype tombstones
+  only the mapped columns; `email_read_receipt_log.recipient`, the
+  `normalized_subject` / thread `subject_normalized` caches, and
+  `email_workflow_run_steps.message` are known-uncovered. See "Known coverage
+  gaps" + open question 10 in `docs/design/gdpr-erasure-spike.md`. (Prototype is
+  dry-run-default and reachable from no live path, so no live leak today.)
+- **AI-budget reservation model** — the plan-021 gate is default-off and carries
+  a documented check-then-act race; a shipped hard limit needs an atomic
+  reservation (per-workspace advisory lock / `SELECT … FOR UPDATE`). See §8 in
+  `docs/AI_BUDGET_GATES_SPIKE.md`.
+- **Plan 008 (virtualize message list)** — BLOCKED in the exec environment
+  (needs the new dep `@tanstack/react-virtual`; installs are proxy-blocked
+  there). Apply + verify where `pnpm install` works.
 
 ## Findings considered and rejected (so nobody re-audits them)
 

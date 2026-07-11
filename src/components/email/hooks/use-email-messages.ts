@@ -239,13 +239,20 @@ export function useEmailMessages() {
           }
           if (generation !== loadGenerationRef.current) return
           list = res.messages
-          if (!silent && res.searchMode === "regex") {
-            // Hinweis auf den Scan-Deckel: Regex durchsucht die neuesten
-            // Nachrichten (Desktop: 5000-Kandidaten-Fenster).
-            toast.info("Regex-Suche aktiv (/muster/flags) – durchsucht die neuesten Nachrichten.", {
-              id: "search-regex",
-              duration: 3000,
-            })
+          if (!silent) {
+            if (res.searchMode === "like") {
+              toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
+                id: "search-like-fallback",
+                duration: 4000,
+              })
+            } else if (res.searchMode === "regex") {
+              // Hinweis auf den Scan-Deckel: Regex durchsucht die neuesten
+              // Nachrichten (Desktop: 5000-Kandidaten-Fenster).
+              toast.info("Regex-Suche aktiv (/muster/flags) – durchsucht die neuesten Nachrichten.", {
+                id: "search-regex",
+                duration: 3000,
+              })
+            }
           }
           setHasMore(Boolean(res.hasMore))
         } else {
@@ -311,10 +318,14 @@ export function useEmailMessages() {
         }
       } catch (e) {
         logError("use-email-messages: load", e)
-        if (!silent) toast.error("Nachrichten konnten nicht geladen werden.")
+        if (!silent && generation === loadGenerationRef.current) {
+          toast.error("Nachrichten konnten nicht geladen werden.")
+        }
       } finally {
-        setLoadingMessages(false)
-        setLoadingMore(false)
+        if (generation === loadGenerationRef.current) {
+          setLoadingMessages(false)
+          setLoadingMore(false)
+        }
       }
     },
     [setSelectedMessage, messageDoneFilter, selectMessageById],
@@ -342,7 +353,10 @@ export function useEmailMessages() {
         messageListFilter,
       )
     } else {
+      loadGenerationRef.current += 1
       setMessages([])
+      setLoadingMessages(false)
+      setLoadingMore(false)
     }
   }, [
     selectedAccountId,

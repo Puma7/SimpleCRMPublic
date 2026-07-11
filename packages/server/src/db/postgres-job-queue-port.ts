@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Kysely, RawBuilder } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder } from 'kysely';
 
 import {
   assertValidJobType,
@@ -226,7 +226,6 @@ async function deletePendingScheduledSendJobs(
   draftId: number,
 ): Promise<void> {
   if (!Number.isFinite(draftId) || draftId <= 0) return;
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   await db
     .deleteFrom('job_queue')
     .where('workspace_id', '=', workspaceId)
@@ -285,7 +284,6 @@ function normalizePayload(value: unknown): Record<string, unknown> {
 }
 
 function accountSyncJobPayloadPredicate(accountId: number): RawBuilder<boolean> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<boolean>`payload->>'accountId' = ${String(accountId)}`;
 }
 

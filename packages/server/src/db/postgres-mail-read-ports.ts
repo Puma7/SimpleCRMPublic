@@ -1275,7 +1275,6 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const threadId = input.threadId.trim();
           if (!threadId) return { items: [], nextCursor: null };
           const canonicalThreadId = await resolveCanonicalThreadId(trx, input.workspaceId, threadId);
-          const { sql: kyselySql } = require('kysely') as typeof import('kysely');
           const rows = await trx
             .selectFrom('email_messages')
             .select(emailMessageSummaryColumns)
@@ -2104,7 +2103,6 @@ async function selectConversationMessages(
   input: Parameters<NonNullable<EmailMessageApiPort['listConversation']>>[0],
   limit: number,
 ): Promise<EmailMessageApiRow[]> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const correspondentEmail = normalizeCorrespondentEmail(input.correspondentEmail);
   let query = trx
     .selectFrom('email_messages')
@@ -2186,7 +2184,6 @@ async function updateMessageRows(
 ): Promise<{ count: number }> {
   const ids = normalizeMessageIdList(input.messageIds);
   if (ids.length === 0) return { count: 0 };
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = trx
     .updateTable('email_messages')
     .set(values)
@@ -2380,7 +2377,6 @@ async function backfillMessageCustomerLinks(
   if (input.accountId !== undefined && (!Number.isSafeInteger(input.accountId) || input.accountId <= 0)) {
     throw new Error('account id muss eine positive Ganzzahl sein');
   }
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
 
   let messageQuery = trx
     .selectFrom('email_messages')
@@ -2418,27 +2414,45 @@ async function backfillMessageCustomerLinks(
   if (customerByEmail.size === 0) return { count: 0 };
 
   const now = new Date();
-  let count = 0;
+  const targets: Array<{ id: number; customerId: number; sourceSqliteId: number }> = [];
   for (const message of messages) {
     const sender = firstAddressFromRecipientJson(message.from_json);
     if (!sender) continue;
     const customer = customerByEmail.get(normalizeEmailAddress(sender));
     if (!customer) continue;
-    const updated = await trx
-      .updateTable('email_messages')
-      .set({
-        customer_id: customer.id,
-        customer_source_sqlite_id: customer.sourceSqliteId,
-        updated_at: now,
-      })
-      .where('workspace_id', '=', input.workspaceId)
-      .where('id', '=', Number(message.id))
-      .where('customer_id', 'is', null)
-      .returning('id')
-      .executeTakeFirst();
-    if (updated) count += 1;
+    targets.push({
+      id: Number(message.id),
+      customerId: customer.id,
+      sourceSqliteId: customer.sourceSqliteId,
+    });
   }
-  return { count };
+  if (targets.length === 0) return { count: 0 };
+
+  // Single set-based UPDATE joining email_messages against an in-memory
+  // (id, customer_id, customer_source_sqlite_id) VALUES list — replaces the
+  // former one-UPDATE-per-row loop. The `customer_id IS NULL` guard stays in
+  // the WHERE so a row linked concurrently is left untouched. Built by chaining
+  // sql template tags (not kyselySql.join) so it also works under the unit-test
+  // kysely mock, which provides only the tag and sql.ref.
+  let linkRows = kyselySql`(${targets[0].id}::bigint, ${targets[0].customerId}::bigint, ${targets[0].sourceSqliteId}::bigint)`;
+  for (let i = 1; i < targets.length; i += 1) {
+    const t = targets[i];
+    linkRows = kyselySql`${linkRows}, (${t.id}::bigint, ${t.customerId}::bigint, ${t.sourceSqliteId}::bigint)`;
+  }
+  const updatedRows = await trx
+    .updateTable('email_messages')
+    .from(kyselySql`(values ${linkRows}) as backfill_links(id, customer_id, customer_source_sqlite_id)`)
+    .set({
+      customer_id: kyselySql.ref('backfill_links.customer_id'),
+      customer_source_sqlite_id: kyselySql.ref('backfill_links.customer_source_sqlite_id'),
+      updated_at: now,
+    })
+    .whereRef('email_messages.id', '=', 'backfill_links.id')
+    .where('email_messages.workspace_id', '=', input.workspaceId)
+    .where('email_messages.customer_id', 'is', null)
+    .returning('email_messages.id')
+    .execute();
+  return { count: updatedRows.length };
 }
 
 function normalizeBackfillCustomerLinkLimit(value: number | undefined): number {
@@ -2568,7 +2582,6 @@ async function restoreInboxMessagesFromArchiveRows(
     };
   }
 
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const updated = await trx
     .updateTable('email_messages')
     .set({
@@ -2620,7 +2633,6 @@ async function countRestorableInboxArchiveMessages(
   workspaceId: string,
   accountId: number,
 ): Promise<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const row = await trx
     .selectFrom('email_messages')
     .select((eb) => eb.fn.countAll<number>().as('count'))
@@ -2653,7 +2665,6 @@ async function softDeleteMessageRows(
 ): Promise<{ count: number }> {
   const ids = normalizeMessageIdList(input.messageIds);
   if (ids.length === 0) return { count: 0 };
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = trx
     .updateTable('email_messages')
     .set((eb: any) => ({
@@ -2730,7 +2741,6 @@ async function selectMailFolderCounts(
     accountId?: number;
   },
 ): Promise<EmailMailFolderCounts> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = trx
     .selectFrom('email_messages')
     .select([
@@ -2836,7 +2846,6 @@ function normalizeMessageIdList(messageIds: readonly number[]): number[] {
 
 function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort['list']>[0]['view']): any {
   if (view === undefined) return query;
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const nonDraftMail = kyselySql<boolean>`(uid >= 0 OR pop3_uidl IS NOT NULL)`;
   const activeSnooze = kyselySql<boolean>`(snoozed_until IS NOT NULL AND snoozed_until > now())`;
   const inactiveSnooze = kyselySql<boolean>`(snoozed_until IS NULL OR snoozed_until <= now())`;
@@ -2898,7 +2907,6 @@ function applyMessageCategoryFilter(
   view: Parameters<EmailMessageApiPort['list']>[0]['view'],
 ): any {
   if (categoryId === undefined || view === 'trash' || view === 'snoozed') return query;
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return query.where(kyselySql<boolean>`exists (
     select 1
     from email_message_categories mc
@@ -2913,7 +2921,6 @@ function applyMessageListFilter(
   filter: Parameters<EmailMessageApiPort['list']>[0]['listFilter'],
 ): any {
   if (filter === undefined || filter === 'all') return query;
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   if (filter === 'unread') {
     return query
       .where('seen_local', '=', false)
@@ -3217,7 +3224,6 @@ function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any
 const TS_HEADLINE_OPTIONS = `StartSel=${SEARCH_MARK_START}, StopSel=${SEARCH_MARK_END}, MaxWords=12, MinWords=6`;
 
 function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'like' | 'regex'): any {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   if (mode === 'regex') {
     const parsed = parseRegexSearch(search);
     if (parsed) {
@@ -3832,7 +3838,6 @@ async function pruneSpamDecisionsForMessage(
   workspaceId: string,
   messageId: number,
 ): Promise<void> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   await kyselySql`
     DELETE FROM email_spam_decisions
     WHERE workspace_id = ${workspaceId}::uuid
@@ -4338,7 +4343,6 @@ async function isRemoteContentAllowlisted(
     .where('workspace_id', '=', workspaceId)
     .where('scope', '=', scope)
     .where(({ eb }) => {
-      const { sql: kyselySql } = require('kysely') as typeof import('kysely');
       return eb(kyselySql<string>`lower(value)`, '=', value.toLowerCase());
     })
     .executeTakeFirst();

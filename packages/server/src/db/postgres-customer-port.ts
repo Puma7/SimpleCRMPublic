@@ -1,4 +1,4 @@
-import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import type {
   CustomerApiPort,
@@ -60,7 +60,6 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
           }
           const search = input.search?.trim();
           if (search) {
-            const { sql: kyselySql } = require('kysely') as typeof import('kysely');
             const pattern = `%${search}%`;
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
@@ -307,12 +306,10 @@ function mutationToCustomerPatch(values: CustomerMutationInput): Partial<Updatea
 }
 
 function serverCreatedSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('customers', 'id'))`;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`jsonb_build_object('origin', 'server_api')`;
 }
 

@@ -1,6 +1,6 @@
 import type { InvokeChannel } from "@shared/ipc/channels"
 import type { InferPayload, InferResult } from "@shared/ipc/types"
-import { buildHttpInvocation, type HttpRequestSpec } from "./channel-http-registry"
+import type { HttpRequestSpec } from "./channel-http-registry"
 import { createServerAuthClient } from "./server-auth-client"
 import { getServerAccessToken } from "./server-auth-session"
 
@@ -24,6 +24,28 @@ const RATE_LIMIT_RETRY_CAP_MS = 2000
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * The HTTP route registry (`channel-http-registry`, ~6.6k LOC) is only needed
+ * by the HTTP transport. The desktop/Electron edition uses the IPC transport
+ * and never touches it, so we load the registry lazily via dynamic import() —
+ * this keeps it out of the renderer's entry bundle as its own async chunk,
+ * fetched once on the first HTTP invocation. See plans/018.
+ */
+type ChannelHttpRegistryModule = typeof import("./channel-http-registry")
+let channelHttpRegistryPromise: Promise<ChannelHttpRegistryModule> | null = null
+function loadChannelHttpRegistry(): Promise<ChannelHttpRegistryModule> {
+  if (!channelHttpRegistryPromise) {
+    // Clear the cached promise if the dynamic import() REJECTS, so a single
+    // failed chunk load (e.g. a transient network error) does not permanently
+    // poison every later HTTP invocation — the next call retries the import.
+    channelHttpRegistryPromise = import("./channel-http-registry").catch((err) => {
+      channelHttpRegistryPromise = null
+      throw err
+    })
+  }
+  return channelHttpRegistryPromise
 }
 
 /**
@@ -325,6 +347,7 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       return (await fetchHttp(requestSpec)).body
     }
 
+    const { buildHttpInvocation } = await loadChannelHttpRegistry()
     const spec = buildHttpInvocation(channel, args)
     const { body, response } = await fetchHttp(spec)
 

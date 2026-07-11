@@ -11299,18 +11299,26 @@ describe('server edition foundation', () => {
           storeCalls.push(['claimDueDrafts', input]);
           return drafts;
         },
-        async setDraftScheduledAt(input) {
-          storeCalls.push(['setDraftScheduledAt', input]);
+        async finalizeSentDraft(input) {
+          storeCalls.push(['finalizeSentDraft', input]);
         },
-        async getSyncInfo(input) {
-          return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+        async releaseClaimedDraft(input) {
+          storeCalls.push(['releaseClaimedDraft', input]);
         },
-        async setSyncInfo(input) {
-          storeCalls.push(['setSyncInfo', input]);
-          for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        async restoreClaimedDraft(input) {
+          storeCalls.push(['restoreClaimedDraft', input]);
         },
-        async deleteSyncInfo(input) {
-          storeCalls.push(['deleteSyncInfo', input]);
+        async giveUpDraft(input) {
+          storeCalls.push(['giveUpDraft', input]);
+        },
+        async recordFailedAttempt(input) {
+          storeCalls.push(['recordFailedAttempt', input]);
+          const key = `scheduled_send_failures:${input.draftId}`;
+          const prev = Number.parseInt(syncInfo.get(key) ?? '0', 10);
+          const failures = (Number.isFinite(prev) && prev >= 0 ? prev : 0) + 1;
+          const gaveUp = failures >= input.maxFailures;
+          syncInfo.set(key, gaveUp ? '0' : String(failures));
+          return { failures, gaveUp };
         },
       },
     });
@@ -11368,59 +11376,26 @@ describe('server edition foundation', () => {
         dueBefore: new Date('2026-06-03T12:00:00.000Z'),
         limit: 10,
       }],
-      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 101, sendAt: null }],
-      ['deleteSyncInfo', {
+      ['finalizeSentDraft', { workspaceId: WORKSPACE_A_ID, draftId: 101 }],
+      ['releaseClaimedDraft', { workspaceId: WORKSPACE_A_ID, draftId: 102 }],
+      ['recordFailedAttempt', {
         workspaceId: WORKSPACE_A_ID,
-        keys: ['scheduled_send_claimed_at:101'],
+        draftId: 103,
+        error: 'Lokale Dateianhaenge muessen vor dem Server-Client Versand hochgeladen werden',
+        claimedSendAt,
+        maxFailures: 5,
       }],
-      ['setSyncInfo', {
+      ['recordFailedAttempt', {
         workspaceId: WORKSPACE_A_ID,
-        values: {
-          'scheduled_send_failures:101': '0',
-          'scheduled_send_last_error:101': '',
-          'scheduled_send_status:101': '',
-        },
-      }],
-      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 102, sendAt: null }],
-      ['deleteSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        keys: ['scheduled_send_claimed_at:102'],
-      }],
-      ['setSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        values: {
-          'scheduled_send_failures:103': '1',
-          'scheduled_send_last_error:103': 'Lokale Dateianhaenge muessen vor dem Server-Client Versand hochgeladen werden',
-          'scheduled_send_status:103': 'pending',
-        },
-      }],
-      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 103, sendAt: claimedSendAt }],
-      ['deleteSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        keys: ['scheduled_send_claimed_at:103'],
-      }],
-      ['setSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        values: {
-          'scheduled_send_failures:104': '5',
-          'scheduled_send_last_error:104': 'SMTP down',
-          'scheduled_send_status:104': 'pending',
-        },
-      }],
-      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 104, sendAt: null }],
-      ['deleteSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        keys: ['scheduled_send_claimed_at:104'],
-      }],
-      ['setSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        values: {
-          'scheduled_send_failures:104': '0',
-          'scheduled_send_last_error:104': 'SMTP down',
-          'scheduled_send_status:104': 'failed',
-        },
+        draftId: 104,
+        error: 'SMTP down',
+        claimedSendAt,
+        maxFailures: 5,
       }],
     ]);
+    // Draft 103 backs off (1 failure); draft 104 (seeded at 4) hits the give-up threshold and resets to 0.
+    expect(syncInfo.get('scheduled_send_failures:103')).toBe('1');
+    expect(syncInfo.get('scheduled_send_failures:104')).toBe('0');
   });
 
   test('scheduled-send Postgres store atomically claims due drafts with SKIP LOCKED', () => {
@@ -11484,17 +11459,21 @@ describe('server edition foundation', () => {
             claimedSendAt,
           }];
         },
-        async setDraftScheduledAt(input) {
-          storeCalls.push(['setDraftScheduledAt', input]);
+        async finalizeSentDraft(input) {
+          storeCalls.push(['finalizeSentDraft', input]);
         },
-        async getSyncInfo(input) {
-          return new Map(input.keys.map((key) => [key, null]));
+        async releaseClaimedDraft(input) {
+          storeCalls.push(['releaseClaimedDraft', input]);
         },
-        async setSyncInfo(input) {
-          storeCalls.push(['setSyncInfo', input]);
+        async restoreClaimedDraft(input) {
+          storeCalls.push(['restoreClaimedDraft', input]);
         },
-        async deleteSyncInfo(input) {
-          storeCalls.push(['deleteSyncInfo', input]);
+        async giveUpDraft(input) {
+          storeCalls.push(['giveUpDraft', input]);
+        },
+        async recordFailedAttempt(input) {
+          storeCalls.push(['recordFailedAttempt', input]);
+          return { failures: 1, gaveUp: false };
         },
       },
     });
@@ -11506,11 +11485,7 @@ describe('server edition foundation', () => {
     });
 
     expect(storeCalls).toEqual([
-      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 201, sendAt: claimedSendAt }],
-      ['deleteSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        keys: ['scheduled_send_claimed_at:201'],
-      }],
+      ['restoreClaimedDraft', { workspaceId: WORKSPACE_A_ID, draftId: 201, claimedSendAt }],
     ]);
   });
 
@@ -11542,17 +11517,21 @@ describe('server edition foundation', () => {
             claimedSendAt,
           }];
         },
-        async setDraftScheduledAt(input) {
-          storeCalls.push(['setDraftScheduledAt', input]);
+        async finalizeSentDraft(input) {
+          storeCalls.push(['finalizeSentDraft', input]);
         },
-        async getSyncInfo(input) {
-          return new Map(input.keys.map((key) => [key, null]));
+        async releaseClaimedDraft(input) {
+          storeCalls.push(['releaseClaimedDraft', input]);
         },
-        async setSyncInfo(input) {
-          storeCalls.push(['setSyncInfo', input]);
+        async restoreClaimedDraft(input) {
+          storeCalls.push(['restoreClaimedDraft', input]);
         },
-        async deleteSyncInfo(input) {
-          storeCalls.push(['deleteSyncInfo', input]);
+        async giveUpDraft(input) {
+          storeCalls.push(['giveUpDraft', input]);
+        },
+        async recordFailedAttempt(input) {
+          storeCalls.push(['recordFailedAttempt', input]);
+          return { failures: 1, gaveUp: false };
         },
       },
     });
@@ -11564,12 +11543,81 @@ describe('server edition foundation', () => {
     });
 
     expect(storeCalls).toEqual([
-      ['setDraftScheduledAt', { workspaceId: WORKSPACE_A_ID, draftId: 202, sendAt: claimedSendAt }],
-      ['deleteSyncInfo', {
-        workspaceId: WORKSPACE_A_ID,
-        keys: ['scheduled_send_claimed_at:202'],
-      }],
+      ['restoreClaimedDraft', { workspaceId: WORKSPACE_A_ID, draftId: 202, claimedSendAt }],
     ]);
+  });
+
+  test('scheduled-send failure is delegated to one atomic transition (no partial bookkeeping)', async () => {
+    const backing = new Map<string, string | null>(); // stand-in for persisted schedule + markers
+    let recordCalls = 0;
+    const claimedSendAt = new Date('2026-06-03T11:45:00.000Z');
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send() {
+          return { ok: false as const, error: 'SMTP down' };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 301,
+            accountId: 7,
+            subject: 'Crash mid-transition',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'crash@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            claimedSendAt,
+          }];
+        },
+        async finalizeSentDraft() {},
+        async releaseClaimedDraft() {},
+        async restoreClaimedDraft() {},
+        async giveUpDraft() {},
+        async recordFailedAttempt() {
+          recordCalls += 1;
+          // The real Postgres store runs this whole transition in ONE
+          // withWorkspaceTransaction, so a mid-transition failure rolls back
+          // every write. Simulate that failure here.
+          throw new Error('db connection lost mid-transition');
+        },
+      },
+    });
+
+    await expect(port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    })).rejects.toThrow('db connection lost mid-transition');
+
+    // Exactly one transition was attempted, and no marker was written piecemeal
+    // by the orchestrator: the failure counter can never be bumped independently
+    // of the schedule restore.
+    expect(recordCalls).toBe(1);
+    expect(backing.size).toBe(0);
+  });
+
+  test('scheduled-send Postgres store commits each transition in a single transaction', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'),
+      'utf8',
+    );
+    for (const method of [
+      'finalizeSentDraft',
+      'releaseClaimedDraft',
+      'restoreClaimedDraft',
+      'giveUpDraft',
+      'recordFailedAttempt',
+    ]) {
+      expect(source).toMatch(new RegExp(`${method}\\(input`));
+    }
+    // The old per-write transition helpers (each its own transaction) are removed.
+    expect(source).not.toMatch(/restoreClaimedScheduledSendAt/);
+    expect(source).not.toMatch(/recordScheduledAttemptFailure/);
+    expect(source).not.toMatch(/clearScheduledDraftMeta/);
   });
 
   test('reviewOutbound.review returns dry-run block without queuing async review', async () => {

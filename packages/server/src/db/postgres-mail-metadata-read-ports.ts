@@ -6,7 +6,7 @@ import {
 } from '@simplecrm/core';
 import { randomBytes } from 'crypto';
 
-import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import type {
   EmailAccountMailSettingsApiPort,
@@ -610,7 +610,6 @@ function threadMessageExistsPredicate(
   accountId: number | undefined,
   view: Parameters<EmailThreadApiPort['list']>[0]['view'],
 ): RawBuilder<boolean> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const accountPredicate = accountId === undefined
     ? kyselySql<boolean>`true`
     : kyselySql<boolean>`m.account_id = ${accountId}`;
@@ -627,7 +626,6 @@ function threadMessageExistsPredicate(
 function threadMessageViewPredicate(
   view: Parameters<EmailThreadApiPort['list']>[0]['view'],
 ): RawBuilder<boolean> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const nonDraftMail = kyselySql<boolean>`(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const activeSnooze = kyselySql<boolean>`(m.snoozed_until IS NOT NULL AND m.snoozed_until > now())`;
   const inactiveSnooze = kyselySql<boolean>`(m.snoozed_until IS NULL OR m.snoozed_until <= now())`;
@@ -991,7 +989,6 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const { sql: kyselySql } = require('kysely') as typeof import('kysely');
           let query = trx
             .selectFrom('email_message_categories as mc')
             .innerJoin('email_messages as m', (join) => join
@@ -2960,7 +2957,6 @@ export async function resolveReferenceThreadForSync(
     subjectTicket = extractTicketFromSubject(args.subject, { allowedPrefixes });
   }
 
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
 
   let siblings: { id: number; thread_id: string | null }[] = [];
   if (related.length > 0) {
@@ -3367,57 +3363,46 @@ async function resolveThreadAliasConflict(
 }
 
 function serverCreatedEmailMessageTagSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_message_tags', 'id'))`;
 }
 
 function serverCreatedEmailCategorySourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_categories', 'id'))`;
 }
 
 function serverCreatedEmailMessageCategorySourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_message_categories', 'id'))`;
 }
 
 function serverCreatedEmailCannedResponseSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_canned_responses', 'id'))`;
 }
 
 function serverCreatedEmailRemoteContentAllowlistSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_remote_content_allowlist', 'id'))`;
 }
 
 function serverCreatedEmailThreadEdgeSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_thread_edges', 'id'))`;
 }
 
 function serverCreatedEmailThreadAliasSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_thread_aliases', 'id'))`;
 }
 
 function serverCreatedEmailAccountSignatureSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval('email_account_signatures_server_source_sqlite_id_seq')`;
 }
 
 function serverCreatedEmailReadReceiptSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_read_receipt_log', 'id'))`;
 }
 
 function serverCreatedEmailInternalNoteSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_internal_notes', 'id'))`;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`jsonb_build_object('origin', 'server_api')`;
 }
 

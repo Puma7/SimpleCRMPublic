@@ -104,7 +104,6 @@ import {
     createSavedViewsTable,
 } from './database-schema';
 import { Product, DealProduct } from './types';
-// Optional: import Knex from 'knex';
 
 function getDatabasePath(): string {
   try {
@@ -119,7 +118,6 @@ function getDatabasePath(): string {
   return path.join(base, 'database.sqlite');
 }
 let db: Database.Database | undefined;
-// Optional: let knex: Knex.Knex;
 const isDevelopment = process.env.NODE_ENV === 'development';
 
 const sqliteVerboseLogger = (...args: unknown[]) => {
@@ -356,13 +354,6 @@ export function initializeDatabase() {
         // Run migrations for schema updates
         runMigrations();
     }
-
-    // Optional Knex initialization
-    // knex = Knex({
-    //   client: 'better-sqlite3',
-    //   connection: { filename: dbPath },
-    //   useNullAsDefault: true
-    // });
 
     console.log(`Database connection established: ${dbPath}`);
     setupPragmas();
@@ -3572,9 +3563,4 @@ export function reopenDatabaseConnection(): void {
         }
     }
     initializeDatabase();
-    // Optional Knex cleanup
-    // if (knex) {
-    //   await knex.destroy();
-    //   console.log('Knex connection destroyed.');
-    // }
 }

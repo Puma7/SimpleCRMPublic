@@ -9,6 +9,7 @@ import type {
 } from './api/types';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { evaluateAiBudgetSafe, readAiBudgetLimitsFromEnv } from './ai-budget';
 import { callAiChat } from './ai-providers';
 import type {
   CustomersTable,
@@ -510,6 +511,25 @@ async function generateReplyDraftText(
       if (kbBlock) user = `${user}${kbBlock}`;
     } catch {
       // KB lookup must not block reply generation.
+    }
+  }
+
+  // PROTOTYPE budget gate (default-off), second AI entry point. No env limits => no-op.
+  const budgetLimits = readAiBudgetLimitsFromEnv();
+  if (budgetLimits.hardLimitMicroUsd != null || budgetLimits.softLimitMicroUsd != null) {
+    const budget = await evaluateAiBudgetSafe(
+      { db: options.db, applyWorkspaceSession: options.applyWorkspaceSession, now: options.now },
+      context.message.workspace_id,
+      budgetLimits,
+    );
+    if (budget.decision === 'block') {
+      return {
+        success: false,
+        error:
+          `KI-Budget erschöpft (Workspace ${context.message.workspace_id}, ` +
+          `Node ai.reply_suggestion): ${budget.spentMicroUsd} µ$ >= ` +
+          `Hard-Limit ${budget.hardLimitMicroUsd} µ$`,
+      };
     }
   }
 

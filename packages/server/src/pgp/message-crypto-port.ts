@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
   PgpAttachmentDecryptPortResult,
@@ -691,7 +691,6 @@ async function loadRecipientPeerKeys(
   workspaceId: string,
   recipientEmails: readonly string[],
 ): Promise<Map<string, string>> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const result = new Map<string, string>();
   await withWorkspaceTransaction(
     options.db,
@@ -731,7 +730,6 @@ async function loadSenderPeerKeys(
   publicKeyArmor: string;
   trustLevel: string;
 }>> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return withWorkspaceTransaction(
     options.db,
     { workspaceId, role: 'system' },

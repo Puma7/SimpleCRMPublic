@@ -2,7 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 
-import type { Kysely } from 'kysely';
+import { sql as kyselySql, type Kysely } from 'kysely';
 
 import {
   findOutboundGraphTraps,
@@ -159,7 +159,6 @@ async function selectMessageStats(
   trx: WorkspaceTransaction,
   workspaceId: string,
 ): Promise<MessageStatsRow | undefined> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return trx
     .selectFrom('email_messages')
     .select([
@@ -179,7 +178,6 @@ async function selectFolderKindCounts(
   trx: WorkspaceTransaction,
   workspaceId: string,
 ): Promise<Record<string, number>> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const folderKind = kyselySql<string>`coalesce(nullif(folder_kind, ''), 'inbox')`;
   const rows = await trx
     .selectFrom('email_messages')
@@ -204,7 +202,6 @@ async function selectWorkflowStats(
   workspaceId: string,
   now: Date,
 ): Promise<WorkflowStatsRow | undefined> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   return trx
     .selectFrom('email_workflow_runs')
@@ -283,7 +280,6 @@ async function selectAiUsageTotals(
   workspaceId: string,
   since: Date,
 ): Promise<AiUsageStatsRow | undefined> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return trx
     .selectFrom('ai_usage_events')
     .select([
@@ -302,7 +298,6 @@ async function selectAiUsageByNodeType(
   workspaceId: string,
   since: Date,
 ): Promise<Record<string, number>> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const rows = await trx
     .selectFrom('ai_usage_events')
     .select(['node_type', kyselySql<CountValue>`count(*)`.as('cnt')])
@@ -330,7 +325,6 @@ async function selectAccounts(
   trx: WorkspaceTransaction,
   workspaceId: string,
 ): Promise<EmailDiagnosticsReport['accounts']> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const rows = await trx
     .selectFrom('email_accounts as a')
     .leftJoin('email_folders as f', (join) => join
@@ -464,7 +458,6 @@ async function selectJobQueueStats(
   workspaceId: string,
   now: Date,
 ): Promise<NonNullable<EmailDiagnosticsReport['jobQueue']>> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const stats = await trx
     .selectFrom('job_queue')
     .select([

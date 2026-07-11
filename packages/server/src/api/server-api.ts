@@ -19,7 +19,7 @@ import { handleUserGroupRoute } from './user-group-routes';
 import { handleWorkflowReadRoute } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
-import { data, error } from './types';
+import { data, error } from './http';
 
 export type ServerApi = {
   handle(req: ApiRequest): Promise<ApiResponse>;

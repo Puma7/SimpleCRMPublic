@@ -18,11 +18,9 @@ export {
   type ServerPgpAttachmentVerifyResult,
 } from "./renderer-transport"
 
-export {
-  buildHttpInvocation,
-  hasHttpInvocation,
-  type HttpInvocationSpec,
-  type HttpMethod,
+export type {
+  HttpInvocationSpec,
+  HttpMethod,
 } from "./channel-http-registry"
 
 export {

@@ -2,6 +2,7 @@ export * from './api';
 export * from './ai-classification';
 export * from './ai-reply-suggestion';
 export * from './ai-usage';
+export * from './ai-budget';
 export * from './ai-providers';
 export * from './ai-feedback';
 export * from './auth';

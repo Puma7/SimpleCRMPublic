@@ -1,4 +1,4 @@
-import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import type {
   WorkflowDelayedJobApiPort,
@@ -1409,27 +1409,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function serverCreatedWorkflowVersionSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('email_workflow_versions', 'id'))`;
 }
 
 function serverCreatedKnowledgeBaseSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('workflow_knowledge_bases', 'id'))`;
 }
 
 function serverCreatedKnowledgeChunkSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('workflow_knowledge_chunks', 'id'))`;
 }
 
 function serverCreatedWorkflowDelayedJobSourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('workflow_delayed_jobs', 'id'))`;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`jsonb_build_object('origin', 'server_api')`;
 }
 

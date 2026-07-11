@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
   EmailReportingApiPort,
@@ -89,7 +89,6 @@ async function selectReportingAccounts(
   workspaceId: string,
   accountId: number | undefined,
 ): Promise<EmailReportingSnapshot['accounts']> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = trx
     .selectFrom('email_accounts')
     .select([
@@ -116,7 +115,6 @@ async function selectReportingTotals(
   workspaceId: string,
   accountId: number | undefined,
 ): Promise<EmailReportingSnapshot['totals']> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = trx
     .selectFrom('email_messages')
     .select([
@@ -157,7 +155,6 @@ async function selectReportingPerAccount(
   workspaceId: string,
   accountId: number | undefined,
 ): Promise<EmailReportingSnapshot['perAccount']> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = trx
     .selectFrom('email_messages')
     .select([
@@ -191,7 +188,6 @@ async function selectReportingWorkflowRuns24h(
   workspaceId: string,
   now: Date,
 ): Promise<EmailReportingSnapshot['workflowRuns24h']> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const workflowId = kyselySql<CountValue>`coalesce(workflow_source_sqlite_id, workflow_id, 0)`;
   const rows = await trx

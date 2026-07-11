@@ -7,7 +7,7 @@ import {
   data,
   error,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;

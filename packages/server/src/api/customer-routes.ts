@@ -12,7 +12,7 @@ import {
   error,
   positiveIntFromPath,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const DEFAULT_CUSTOMER_LIMIT = 50;
 const MAX_CUSTOMER_LIMIT = 100;

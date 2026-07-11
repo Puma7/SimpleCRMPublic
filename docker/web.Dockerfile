@@ -9,7 +9,8 @@ FROM node:24 AS build
 WORKDIR /app
 # Full context; .dockerignore keeps node_modules/.git/build output out.
 COPY . .
-RUN npm ci --legacy-peer-deps --ignore-scripts
+RUN npm install -g pnpm@9
+RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
 # The bundle is large (Monaco). Raise the V8 heap so the build does not hit the
 # ~2 GB default limit on small (e.g. 4 GB) hosts. The host still needs enough
 # RAM+swap to back this; see docs/SETUP_SERVER.md.

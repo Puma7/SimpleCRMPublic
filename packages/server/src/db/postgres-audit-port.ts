@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-import type { Kysely } from 'kysely';
+import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type { AuditApiPort } from '../api';
 import type { ServerDatabase } from './schema';
@@ -143,7 +143,6 @@ export function createPostgresAuditPort(options: PostgresAuditPortOptions): Audi
 }
 
 async function lockAuditHashChain(db: WorkspaceTransaction, workspaceId: string): Promise<void> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${'audit:' + workspaceId}))`.execute(db);
 }
 

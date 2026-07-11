@@ -42,7 +42,7 @@ import {
   error,
   positiveIntFromPath,
   requirePrincipal,
-} from './types';
+} from './http';
 import { JOB_STALE_LOCK_SECONDS } from '../jobs';
 import { handleMailMetadataReadRoute } from './mail-metadata-routes';
 
@@ -205,321 +205,104 @@ type MailConnectionTestParseResult =
   | { ok: true; values: Omit<MailConnectionTestInput, 'workspaceId'> }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
+type MailRouteHandler = (
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  params: string[],
+) => Promise<ApiResponse>;
+
+type MailRouteEntry =
+  | { kind: 'route'; pattern: RegExp; handler: MailRouteHandler }
+  | { kind: 'delegate'; delegate: (req: ApiRequest, ports: ServerApiPorts) => Promise<ApiResponse | null> };
+
+// Ordered mail read-route table. The array order IS the dispatch order: the
+// first matching `route` wins, a `delegate` returns its result if truthy and
+// otherwise falls through, and if nothing matches `handleMailReadRoute` returns
+// null. This is a faithful, order-preserving transcription of the former
+// if-cascade — see plan 014. Any exact-string or more-specific route that could
+// be shadowed by a broad `([^/]+)` capture (notably the generic
+// `…/messages/:id` at the end) MUST stay above it.
+const MAIL_ROUTES: readonly MailRouteEntry[] = [
+  { kind: 'route', pattern: /^\/api\/v1\/email\/oauth\/(google|microsoft)\/app$/, handler: (req, ports, params) => handleEmailOAuthApp(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/oauth\/(google|microsoft)\/authorize-url$/, handler: (req, ports, params) => handleEmailOAuthAuthorizeUrl(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/oauth\/(google|microsoft)\/finish$/, handler: (req, ports, params) => handleEmailOAuthFinish(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts$/, handler: (req, ports) => handleEmailAccountsCollection(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/test-imap$/, handler: (req, ports) => handleMailConnectionTest(req, ports, 'imap') },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/test-pop3$/, handler: (req, ports) => handleMailConnectionTest(req, ports, 'pop3') },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/test-smtp$/, handler: (req, ports) => handleMailConnectionTest(req, ports, 'smtp') },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/sync$/, handler: (req, ports, params) => handleEmailAccountSync(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/sync-lock$/, handler: (req, ports, params) => handleEmailAccountSyncLockClear(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/vacation-test$/, handler: (req, ports, params) => handleEmailAccountVacationTest(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/inbox-archive-recovery$/, handler: (req, ports, params) => handleEmailAccountInboxArchiveRecovery(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)$/, handler: (req, ports, params) => handleEmailAccountItem(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/folder-counts$/, handler: (req, ports) => handleMailFolderCounts(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/diagnostics$/, handler: (req, ports) => handleMailDiagnostics(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/reporting$/, handler: (req, ports) => handleEmailReporting(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/gdpr-export$/, handler: (req, ports) => handleEmailGdprExport(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/backfill$/, handler: (req, ports) => handleMailThreadBackfill(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/backfill-customer-links$/, handler: (req, ports) => handleMessageCustomerLinkBackfill(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages$/, handler: (req, ports) => handleMessageList(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/conversation$/, handler: (req, ports) => handleConversationMessageList(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/soft-delete$/, handler: (req, ports) => handleMessageBulkSoftDelete(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/archive$/, handler: (req, ports) => handleMessageBulkSetArchived(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/done$/, handler: (req, ports) => handleMessageBulkSetDone(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/spam-status$/, handler: (req, ports) => handleMessageBulkSetSpamStatus(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/local-drafts$/, handler: (req, ports) => handleMessageBulkDeleteLocalDrafts(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/compose-drafts$/, handler: (req, ports) => handleComposeDraftCreate(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/compose\/send$/, handler: (req, ports) => handleComposeSend(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/compose\/validate-outbound$/, handler: (req, ports) => handleComposeValidateOutbound(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-attachments$/, handler: (req, ports, params) => handleComposeAttachmentUpload(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft$/, handler: (req, ports, params) => handleComposeDraftUpdate(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-state$/, handler: (req, ports, params) => handleScheduledSendDraftState(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft-recovery-state$/, handler: (req, ports, params) => handleComposeDraftRecoveryState(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-failure$/, handler: (req, ports, params) => handleScheduledSendDraftFailureClear(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send\/retry$/, handler: (req, ports, params) => handleScheduledSendDraftRetry(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/, handler: (req, ports, params) => handleScheduledSendDraftSchedule(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/, handler: (req, ports, params) => handleThreadMessageList(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/, handler: (req, ports, params) => handleMessageSpamDecisionMutation(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/spam-status$/, handler: (req, ports, params) => handleMessageSpamStatusMutation(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/security\/check$/, handler: (req, ports, params) => handleMessageSecurityCheck(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/security$/, handler: (req, ports, params) => handleMessageSecurityGet(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/raw-headers$/, handler: (req, ports, params) => handleMessageRawHeadersGet(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-response$/, handler: (req, ports, params) => handleMessageReadReceiptResponse(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-state$/, handler: (req, ports, params) => handleMessageReadReceiptStateGet(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy\/consume$/, handler: (req, ports, params) => handleMessageRemoteContentPolicyConsume(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy$/, handler: (req, ports, params) => handleMessageRemoteContentPolicySet(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/snooze$/, handler: (req, ports, params) => handleMessageSnooze(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/soft-delete$/, handler: (req, ports, params) => handleMessageSoftDelete(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/restore$/, handler: (req, ports, params) => handleMessageRestore(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/local-draft$/, handler: (req, ports, params) => handleMessageDeleteLocalDraft(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/customer-link$/, handler: (req, ports, params) => handleMessageLinkCustomer(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/assignment$/, handler: (req, ports, params) => handleMessageAssign(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/archive$/, handler: (req, ports, params) => handleMessageSetArchived(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/seen$/, handler: (req, ports, params) => handleMessageSetSeen(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/done$/, handler: (req, ports, params) => handleMessageSetDone(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/move$/, handler: (req, ports, params) => handleMessageMove(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/actions$/, handler: (req, ports, params) => handleMessageAction(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/attachments$/, handler: (req, ports, params) => handleMessageAttachmentList(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion$/, handler: (req, ports, params) => handleMessageReplySuggestionGet(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion\/ensure$/, handler: (req, ports, params) => handleMessageReplySuggestionEnsure(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/reply-draft$/, handler: (req, ports, params) => handleMessageReplyDraftGenerate(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/attachments\/([^/]+)\/content$/, handler: (req, ports, params) => handleAttachmentContentGet(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/attachments\/([^/]+)$/, handler: (req, ports, params) => handleAttachmentGet(req, ports, params[0]) },
+  { kind: 'delegate', delegate: (req, ports) => handleMailMetadataReadRoute(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)$/, handler: (req, ports, params) => handleMessageGet(req, ports, params[0]) },
+];
+
 export async function handleMailReadRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  const oauthAppMatch = /^\/api\/v1\/email\/oauth\/(google|microsoft)\/app$/.exec(req.path);
-  if (oauthAppMatch) {
-    return handleEmailOAuthApp(req, ports, oauthAppMatch[1]);
+  for (const entry of MAIL_ROUTES) {
+    if (entry.kind === 'delegate') {
+      const result = await entry.delegate(req, ports);
+      if (result) return result;
+      continue;
+    }
+    const match = entry.pattern.exec(req.path);
+    if (match) return entry.handler(req, ports, match.slice(1));
   }
-
-  const oauthAuthorizeUrlMatch = /^\/api\/v1\/email\/oauth\/(google|microsoft)\/authorize-url$/.exec(req.path);
-  if (oauthAuthorizeUrlMatch) {
-    return handleEmailOAuthAuthorizeUrl(req, ports, oauthAuthorizeUrlMatch[1]);
-  }
-
-  const oauthFinishMatch = /^\/api\/v1\/email\/oauth\/(google|microsoft)\/finish$/.exec(req.path);
-  if (oauthFinishMatch) {
-    return handleEmailOAuthFinish(req, ports, oauthFinishMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/accounts') {
-    const principal = requirePrincipal(req);
-    if ('status' in principal) return principal;
-    if (!ports.emailAccounts) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
-    if (req.method === 'POST') return handleEmailAccountCreate(req, ports, principal);
-    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const result = await ports.emailAccounts.list({ workspaceId: principal.workspaceId });
-    return data(200, sanitizeEmailAccountList(result));
-  }
-
-  if (req.path === '/api/v1/email/accounts/test-imap') {
-    return handleMailConnectionTest(req, ports, 'imap');
-  }
-
-  if (req.path === '/api/v1/email/accounts/test-pop3') {
-    return handleMailConnectionTest(req, ports, 'pop3');
-  }
-
-  if (req.path === '/api/v1/email/accounts/test-smtp') {
-    return handleMailConnectionTest(req, ports, 'smtp');
-  }
-
-  const accountSyncMatch = /^\/api\/v1\/email\/accounts\/([^/]+)\/sync$/.exec(req.path);
-  if (accountSyncMatch) {
-    return handleEmailAccountSync(req, ports, accountSyncMatch[1]);
-  }
-
-  const accountSyncLockMatch = /^\/api\/v1\/email\/accounts\/([^/]+)\/sync-lock$/.exec(req.path);
-  if (accountSyncLockMatch) {
-    return handleEmailAccountSyncLockClear(req, ports, accountSyncLockMatch[1]);
-  }
-
-  const accountVacationTestMatch = /^\/api\/v1\/email\/accounts\/([^/]+)\/vacation-test$/.exec(req.path);
-  if (accountVacationTestMatch) {
-    return handleEmailAccountVacationTest(req, ports, accountVacationTestMatch[1]);
-  }
-
-  const accountInboxArchiveRecoveryMatch = /^\/api\/v1\/email\/accounts\/([^/]+)\/inbox-archive-recovery$/.exec(req.path);
-  if (accountInboxArchiveRecoveryMatch) {
-    return handleEmailAccountInboxArchiveRecovery(req, ports, accountInboxArchiveRecoveryMatch[1]);
-  }
-
-  const accountMatch = /^\/api\/v1\/email\/accounts\/([^/]+)$/.exec(req.path);
-  if (accountMatch) {
-    const principal = requirePrincipal(req);
-    if ('status' in principal) return principal;
-    const id = positiveIntFromPath(accountMatch[1]);
-    if (id === null) return error(400, 'invalid_email_account_id', 'email account id muss eine positive Ganzzahl sein');
-    if (!ports.emailAccounts) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
-    if (req.method === 'PATCH') return handleEmailAccountUpdate(req, ports, principal, id);
-    if (req.method === 'DELETE') return handleEmailAccountDelete(ports, principal, id);
-    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const account = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id });
-    return account ? data(200, sanitizeEmailAccount(account)) : error(404, 'email_account_not_found', 'Email account nicht gefunden');
-  }
-
-  if (req.path === '/api/v1/email/folder-counts') {
-    return handleMailFolderCounts(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/diagnostics') {
-    return handleMailDiagnostics(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/reporting') {
-    return handleEmailReporting(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/gdpr-export') {
-    return handleEmailGdprExport(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/threads/backfill') {
-    return handleMailThreadBackfill(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/backfill-customer-links') {
-    return handleMessageCustomerLinkBackfill(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages') {
-    return handleMessageList(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/conversation') {
-    return handleConversationMessageList(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/bulk/soft-delete') {
-    return handleMessageBulkSoftDelete(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/bulk/archive') {
-    return handleMessageBulkSetArchived(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/bulk/done') {
-    return handleMessageBulkSetDone(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/bulk/spam-status') {
-    return handleMessageBulkSetSpamStatus(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/messages/bulk/local-drafts') {
-    return handleMessageBulkDeleteLocalDrafts(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/compose-drafts') {
-    return handleComposeDraftCreate(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/compose/send') {
-    return handleComposeSend(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/compose/validate-outbound') {
-    return handleComposeValidateOutbound(req, ports);
-  }
-
-  const composeAttachmentMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/compose-attachments$/.exec(req.path);
-  if (composeAttachmentMatch) {
-    return handleComposeAttachmentUpload(req, ports, composeAttachmentMatch[1]);
-  }
-
-  const composeDraftMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft$/.exec(req.path);
-  if (composeDraftMatch) {
-    return handleComposeDraftUpdate(req, ports, composeDraftMatch[1]);
-  }
-
-  const scheduledSendStateMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-state$/.exec(req.path);
-  if (scheduledSendStateMatch) {
-    return handleScheduledSendDraftState(req, ports, scheduledSendStateMatch[1]);
-  }
-
-  const composeDraftRecoveryStateMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft-recovery-state$/.exec(req.path);
-  if (composeDraftRecoveryStateMatch) {
-    return handleComposeDraftRecoveryState(req, ports, composeDraftRecoveryStateMatch[1]);
-  }
-
-  const scheduledSendFailureMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-failure$/.exec(req.path);
-  if (scheduledSendFailureMatch) {
-    return handleScheduledSendDraftFailureClear(req, ports, scheduledSendFailureMatch[1]);
-  }
-
-  const scheduledSendRetryMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send\/retry$/.exec(req.path);
-  if (scheduledSendRetryMatch) {
-    return handleScheduledSendDraftRetry(req, ports, scheduledSendRetryMatch[1]);
-  }
-
-  const scheduledSendMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/.exec(req.path);
-  if (scheduledSendMatch) {
-    return handleScheduledSendDraftSchedule(req, ports, scheduledSendMatch[1]);
-  }
-
-  const threadMessagesMatch = /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/.exec(req.path);
-  if (threadMessagesMatch) {
-    return handleThreadMessageList(req, ports, threadMessagesMatch[1]);
-  }
-
-  const messageSpamDecisionMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/.exec(req.path);
-  if (messageSpamDecisionMatch) {
-    return handleMessageSpamDecisionMutation(req, ports, messageSpamDecisionMatch[1]);
-  }
-
-  const messageSpamStatusMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/spam-status$/.exec(req.path);
-  if (messageSpamStatusMatch) {
-    return handleMessageSpamStatusMutation(req, ports, messageSpamStatusMatch[1]);
-  }
-
-  const messageSecurityCheckMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/security\/check$/.exec(req.path);
-  if (messageSecurityCheckMatch) {
-    return handleMessageSecurityCheck(req, ports, messageSecurityCheckMatch[1]);
-  }
-
-  const messageSecurityMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/security$/.exec(req.path);
-  if (messageSecurityMatch) {
-    return handleMessageSecurityGet(req, ports, messageSecurityMatch[1]);
-  }
-
-  const messageRawHeadersMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/raw-headers$/.exec(req.path);
-  if (messageRawHeadersMatch) {
-    return handleMessageRawHeadersGet(req, ports, messageRawHeadersMatch[1]);
-  }
-
-  const messageReadReceiptResponseMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-response$/.exec(req.path);
-  if (messageReadReceiptResponseMatch) {
-    return handleMessageReadReceiptResponse(req, ports, messageReadReceiptResponseMatch[1]);
-  }
-
-  const messageReadReceiptStateMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-state$/.exec(req.path);
-  if (messageReadReceiptStateMatch) {
-    return handleMessageReadReceiptStateGet(req, ports, messageReadReceiptStateMatch[1]);
-  }
-
-  const messageRemoteContentConsumeMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy\/consume$/.exec(req.path);
-  if (messageRemoteContentConsumeMatch) {
-    return handleMessageRemoteContentPolicyConsume(req, ports, messageRemoteContentConsumeMatch[1]);
-  }
-
-  const messageRemoteContentMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy$/.exec(req.path);
-  if (messageRemoteContentMatch) {
-    return handleMessageRemoteContentPolicySet(req, ports, messageRemoteContentMatch[1]);
-  }
-
-  const messageSnoozeMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/snooze$/.exec(req.path);
-  if (messageSnoozeMatch) {
-    return handleMessageSnooze(req, ports, messageSnoozeMatch[1]);
-  }
-
-  const messageSoftDeleteMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/soft-delete$/.exec(req.path);
-  if (messageSoftDeleteMatch) {
-    return handleMessageSoftDelete(req, ports, messageSoftDeleteMatch[1]);
-  }
-
-  const messageRestoreMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/restore$/.exec(req.path);
-  if (messageRestoreMatch) {
-    return handleMessageRestore(req, ports, messageRestoreMatch[1]);
-  }
-
-  const messageLocalDraftMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/local-draft$/.exec(req.path);
-  if (messageLocalDraftMatch) {
-    return handleMessageDeleteLocalDraft(req, ports, messageLocalDraftMatch[1]);
-  }
-
-  const messageCustomerLinkMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/customer-link$/.exec(req.path);
-  if (messageCustomerLinkMatch) {
-    return handleMessageLinkCustomer(req, ports, messageCustomerLinkMatch[1]);
-  }
-
-  const messageAssignmentMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/assignment$/.exec(req.path);
-  if (messageAssignmentMatch) {
-    return handleMessageAssign(req, ports, messageAssignmentMatch[1]);
-  }
-
-  const messageArchiveMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/archive$/.exec(req.path);
-  if (messageArchiveMatch) {
-    return handleMessageSetArchived(req, ports, messageArchiveMatch[1]);
-  }
-
-  const messageSeenMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/seen$/.exec(req.path);
-  if (messageSeenMatch) {
-    return handleMessageSetSeen(req, ports, messageSeenMatch[1]);
-  }
-
-  const messageDoneMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/done$/.exec(req.path);
-  if (messageDoneMatch) {
-    return handleMessageSetDone(req, ports, messageDoneMatch[1]);
-  }
-
-  const messageMoveMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/move$/.exec(req.path);
-  if (messageMoveMatch) {
-    return handleMessageMove(req, ports, messageMoveMatch[1]);
-  }
-
-  const messageActionMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/actions$/.exec(req.path);
-  if (messageActionMatch) {
-    return handleMessageAction(req, ports, messageActionMatch[1]);
-  }
-
-  const messageAttachmentsMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/attachments$/.exec(req.path);
-  if (messageAttachmentsMatch) {
-    return handleMessageAttachmentList(req, ports, messageAttachmentsMatch[1]);
-  }
-
-  const messageReplySuggestionMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion$/.exec(req.path);
-  if (messageReplySuggestionMatch) {
-    return handleMessageReplySuggestionGet(req, ports, messageReplySuggestionMatch[1]);
-  }
-
-  const messageReplySuggestionEnsureMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion\/ensure$/.exec(req.path);
-  if (messageReplySuggestionEnsureMatch) {
-    return handleMessageReplySuggestionEnsure(req, ports, messageReplySuggestionEnsureMatch[1]);
-  }
-
-  const messageReplyDraftGenerateMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/reply-draft$/.exec(req.path);
-  if (messageReplyDraftGenerateMatch) {
-    return handleMessageReplyDraftGenerate(req, ports, messageReplyDraftGenerateMatch[1]);
-  }
-
-  const attachmentContentMatch = /^\/api\/v1\/email\/attachments\/([^/]+)\/content$/.exec(req.path);
-  if (attachmentContentMatch) {
-    return handleAttachmentContentGet(req, ports, attachmentContentMatch[1]);
-  }
-
-  const attachmentMatch = /^\/api\/v1\/email\/attachments\/([^/]+)$/.exec(req.path);
-  if (attachmentMatch) {
-    return handleAttachmentGet(req, ports, attachmentMatch[1]);
-  }
-
-  const metadata = await handleMailMetadataReadRoute(req, ports);
-  if (metadata) return metadata;
-
-  const messageMatch = /^\/api\/v1\/email\/messages\/([^/]+)$/.exec(req.path);
-  if (!messageMatch) return null;
-  return handleMessageGet(req, ports, messageMatch[1]);
+  return null;
 }
 
 async function handleEmailAccountVacationTest(
@@ -1178,6 +961,36 @@ function composeDraftMutationError(
     return error(409, 'email_message_not_local_draft', 'Nur lokale Entwuerfe koennen hier bearbeitet werden');
   }
   return error(404, 'email_message_not_found', 'Email message nicht gefunden');
+}
+
+async function handleEmailAccountsCollection(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.emailAccounts) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
+  if (req.method === 'POST') return handleEmailAccountCreate(req, ports, principal);
+  if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const result = await ports.emailAccounts.list({ workspaceId: principal.workspaceId });
+  return data(200, sanitizeEmailAccountList(result));
+}
+
+async function handleEmailAccountItem(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const id = positiveIntFromPath(rawId);
+  if (id === null) return error(400, 'invalid_email_account_id', 'email account id muss eine positive Ganzzahl sein');
+  if (!ports.emailAccounts) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
+  if (req.method === 'PATCH') return handleEmailAccountUpdate(req, ports, principal, id);
+  if (req.method === 'DELETE') return handleEmailAccountDelete(ports, principal, id);
+  if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const account = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id });
+  return account ? data(200, sanitizeEmailAccount(account)) : error(404, 'email_account_not_found', 'Email account nicht gefunden');
 }
 
 async function handleEmailAccountCreate(

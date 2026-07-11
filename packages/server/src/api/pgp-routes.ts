@@ -22,7 +22,7 @@ import {
   error,
   positiveIntFromPath,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;

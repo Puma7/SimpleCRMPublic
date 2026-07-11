@@ -33,7 +33,7 @@ import {
   positiveIntFromPath,
   requireAdmin,
   requirePrincipal,
-} from './types';
+} from './http';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
 

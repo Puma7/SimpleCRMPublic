@@ -1,4 +1,4 @@
-import type { Kysely, RawBuilder, Selectable, Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import type {
   PgpIdentityApiPort,
@@ -839,17 +839,14 @@ async function deletePgpIdentityRow(
 }
 
 function serverCreatedPgpIdentitySourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('pgp_identities', 'id'))`;
 }
 
 function serverCreatedPgpPeerKeySourceSqliteId(): RawBuilder<number> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql<number>`-nextval(pg_get_serial_sequence('pgp_peer_keys', 'id'))`;
 }
 
 function serverApiSourceRow(): RawBuilder<unknown> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   return kyselySql`jsonb_build_object('origin', 'server_api')`;
 }
 

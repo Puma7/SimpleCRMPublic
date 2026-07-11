@@ -14,7 +14,7 @@ import {
   error,
   requireAdmin,
   requirePrincipal,
-} from './types';
+} from './http';
 
 const WORKFLOW_AUTOMATION_KEYS = [
   'workflow_imap_delete_opt_in',

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 
-import type { Kysely, Transaction } from 'kysely';
+import { sql as kyselySql, type Kysely, type Transaction } from 'kysely';
 
 import { calculateLoginPenalty } from '../auth';
 import {
@@ -295,7 +295,6 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           const existingUser = await selectUserByEmail(trx, input.workspaceId, input.email);
           if (existingUser) return { ok: false as const, code: 'duplicate_email' as const };
 
-          const { sql: kyselySql } = require('kysely') as typeof import('kysely');
           const openInvite = await trx
             .selectFrom('auth_invitations')
             .select(['id'])
@@ -806,7 +805,6 @@ async function selectAnyUser(db: Kysely<ServerDatabase> | Transaction<ServerData
 }
 
 async function acquireInitialSetupLock(db: Transaction<ServerDatabase>): Promise<void> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${INITIAL_OWNER_SETUP_LOCK_KEY}))`.execute(db);
 }
 
@@ -815,7 +813,6 @@ async function acquireInvitationEmailLock(
   workspaceId: string,
   email: string,
 ): Promise<void> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${invitationEmailLockKey(workspaceId, email)}))`.execute(db);
 }
 
@@ -917,7 +914,6 @@ async function selectUserByEmail(
   email: string,
   exceptId?: string,
 ): Promise<{ id: string } | undefined> {
-  const { sql: kyselySql } = require('kysely') as typeof import('kysely');
   let query = db
     .selectFrom('users')
     .select(['id'])
