@@ -8,6 +8,9 @@ import {
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
   generateTicketCode,
+  interpolateWorkflowPlaceholders,
+  isUnsafeAutoReplyTarget,
+  listBuiltinWorkflowNodeCatalog,
   normalizeMailboxName,
   normalizeEmailAddress,
   outboundDraftFingerprint,
@@ -115,6 +118,7 @@ type MessageRow = Pick<
   | 'spam_score_label'
   | 'spam_decision_source'
   | 'spam_score_breakdown_json'
+  | 'raw_headers'
 >;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
@@ -753,6 +757,9 @@ async function loadMessage(
       'spam_score_label',
       'spam_decision_source',
       'spam_score_breakdown_json',
+      // Anti-Loop-Guards (email.auto_reply / email.send_draft) prüfen
+      // Auto-Submitted/X-Auto-Response-Suppress/Precedence/List-Header.
+      'raw_headers',
     ])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
@@ -1172,14 +1179,22 @@ async function walkGraph(
     }
 
     if (result.variables) Object.assign(input.context.variables, result.variables);
-    // Inbound gate: condition.yes OR auto_reply.approved authorise downstream
-    // side-effect nodes. auto_reply IS a gate semantically (Schalter +
-    // Confidence + No-Reply-Schutz) so its OK port should free the chain.
+    // Inbound gate: condition.yes, auto_reply.approved, threshold.yes oder
+    // ein getroffener switch-Fall autorisieren nachgelagerte Side-Effect-
+    // Knoten — gleiche harte (nodeType, port)-Liste wie die Desktop-Runtime
+    // (electron/workflow/runtime.ts), bewusst KEINE Schema-Ableitung: welcher
+    // Ausgang als "bestandene Bedingung" zählt, ist ein Sicherheitsmechanismus.
+    // Ohne den switch-Fall bliebe z. B. der blocked→switch(low_confidence)→tag-
+    // Pfad der Auto-Antwort-Vorlagen im Server-Modus als no_prior_condition
+    // hängen.
+    const gateRegistryType = node.type === 'registry' ? nodeRuntimeType(node) : null;
     const trippedInboundGate =
       (node.type === 'condition' && result.port === 'yes')
-      || (node.type === 'registry'
-        && nodeRuntimeType(node) === 'email.auto_reply'
-        && result.port === 'approved');
+      || (gateRegistryType === 'email.auto_reply' && result.port === 'approved')
+      || (gateRegistryType === 'logic.threshold' && result.port === 'yes')
+      || (gateRegistryType === 'logic.switch'
+        && typeof result.port === 'string'
+        && result.port !== 'default');
     if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
@@ -1330,7 +1345,7 @@ async function executeServerNode(
   }
 
   const type = nodeRuntimeType(node);
-  const config = nodeConfig(node);
+  const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
   if (type === 'logic.stop' || type === 'stop') {
     return { status: 'ok', port: 'default', stop: true };
   }
@@ -3439,6 +3454,12 @@ async function evaluateWorkflowAutoReply(
   if (!context.message) return block('no_message');
   if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) return block('disabled');
   if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+  // Anti-Loop wie im Desktop-Gate: automatisch erzeugte Mails (RFC 3834:
+  // Auto-Submitted/X-Auto-Response-Suppress/Precedence) und Newsletter
+  // (List-Header) nie automatisch beantworten. (Das Tageslimit pro Empfänger
+  // bleibt serverseitig bewusst nicht durchgesetzt — dokumentiertes
+  // Follow-up; die Einstellung wird im Server-Modus nicht angeboten.)
+  if (isUnsafeAutoReplyTarget(context.message.raw_headers)) return block('automated_sender');
   if (confidenceValue < minConfidence) return block('low_confidence');
 
   return {
@@ -4290,6 +4311,11 @@ async function sendWorkflowDraft(
     const sender = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
     if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) {
       return { status: 'skipped', port: 'default', message: 'noreply_sender_blocked' };
+    }
+    // Anti-Loop wie im Desktop-send_draft: auch ein Workflow OHNE
+    // email.auto_reply-Gate davor darf Automaten/Newslettern nie antworten.
+    if (isUnsafeAutoReplyTarget(context.message?.raw_headers)) {
+      return { status: 'skipped', port: 'default', message: 'automated_sender_blocked' };
     }
   }
   const draftRow = await trx
@@ -5820,6 +5846,57 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
     return node.data.config as Record<string, unknown>;
   }
   return node.data;
+}
+
+/**
+ * Zentraler Interpolations-Pre-Pass (Parität zur Desktop-Runtime,
+ * electron/workflow/runtime.ts): Felder, die das Knoten-Schema mit
+ * `interpolate: true` markiert, bekommen {{Platzhalter}} VOR der Ausführung
+ * aufgelöst — auf einer Kopie, nie persistiert. Ohne den Pass würden
+ * email.tag/crm.create_task/http.request die Platzhalter aus dem
+ * Variablen-Picker wörtlich übernehmen.
+ *
+ * `ai.*`-Knoten werden bewusst ÜBERSPRUNGEN: deren Prompts interpoliert die
+ * Job-Schicht (ai-classification.ts) zur Ausführungszeit mit frischeren
+ * Variablen — ein Pre-Pass davor würde doppelt interpolieren und über
+ * Mail-Inhalte eingeschleuste Platzhalter auflösbar machen.
+ */
+const serverInterpolateFieldKeysByType = new Map<string, readonly string[]>();
+
+function serverInterpolateFieldKeysFor(type: string): readonly string[] {
+  let keys = serverInterpolateFieldKeysByType.get(type);
+  if (!keys) {
+    if (type.startsWith('ai.')) {
+      keys = [];
+    } else {
+      const entry = listBuiltinWorkflowNodeCatalog().find((e) => e.type === type);
+      keys = (entry?.fields ?? [])
+        .filter((f) => f.interpolate === true)
+        .map((f) => f.key);
+    }
+    serverInterpolateFieldKeysByType.set(type, keys);
+  }
+  return keys;
+}
+
+function interpolateServerSchemaFields(
+  type: string,
+  config: Record<string, unknown>,
+  context: ServerWorkflowContext,
+): Record<string, unknown> {
+  const keys = serverInterpolateFieldKeysFor(type);
+  if (keys.length === 0) return config;
+  let copy: Record<string, unknown> | null = null;
+  for (const key of keys) {
+    const value = config[key];
+    if (typeof value !== 'string' || !value.includes('{{')) continue;
+    if (!copy) copy = { ...config };
+    copy[key] = interpolateWorkflowPlaceholders(value, {
+      strings: context.strings,
+      variables: context.variables,
+    });
+  }
+  return copy ?? config;
 }
 
 function normalizeWorkflowTrigger(value: string | undefined): WorkflowTriggerKind {

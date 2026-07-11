@@ -1,6 +1,7 @@
 import { createActivityLog, getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { EMAIL_ACCOUNTS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getEmailAccountById, getEmailMessageById } from './email-store';
+import { isAutomatedInboundMessage } from './email-automation-headers';
 import { sendSmtpForAccount } from './email-smtp';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 
@@ -78,15 +79,7 @@ export async function maybeSendVacationAutoReply(
   const enabled = (acc as { vacation_enabled?: number }).vacation_enabled === 1;
   if (!enabled) return;
 
-  const headers = (row.raw_headers ?? '').toLowerCase();
-  if (
-    headers.includes('auto-submitted:') ||
-    headers.includes('x-auto-response-suppress:') ||
-    headers.includes('precedence: bulk') ||
-    headers.includes('precedence: junk')
-  ) {
-    return;
-  }
+  if (isAutomatedInboundMessage(row.raw_headers)) return;
 
   const sender = extractSenderEmail(row.from_json);
   if (!sender || sender === acc.email_address.toLowerCase()) return;

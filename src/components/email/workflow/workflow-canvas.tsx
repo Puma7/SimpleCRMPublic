@@ -1,7 +1,7 @@
 "use client"
 
 import "@xyflow/react/dist/style.css"
-import { useCallback } from "react"
+import { useCallback, useMemo } from "react"
 import {
   ReactFlow,
   Background,
@@ -20,10 +20,16 @@ import {
 } from "@xyflow/react"
 import { cn } from "@/lib/utils"
 import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
+import { validateNodeConfig } from "@shared/workflow-config-validate"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { workflowTriggerLabel } from "./trigger-labels"
 import {
+  getCachedWorkflowNodeCatalogEntry,
+  useWorkflowNodeCatalog,
+} from "./use-workflow-node-catalog"
+import {
+  FALLBACK_PORTS,
   defaultLabelForConnection,
   switchCaseHandles,
 } from "./workflow-edge-labels"
@@ -148,19 +154,53 @@ function ActionNodeCard({ data, selected }: NodeProps) {
   )
 }
 
+const PORT_HANDLE_COLORS: Record<string, string> = {
+  emerald: "!bg-emerald-600",
+  amber: "!bg-amber-500",
+  red: "!bg-rose-600",
+  violet: "!bg-violet-500",
+  sky: "!bg-sky-500",
+}
+
+// FALLBACK_PORTS (Handles vor dem ersten Katalog-Fetch) lebt in
+// workflow-edge-labels.ts — Canvas-Handles und Kanten-Label-Helfer MÜSSEN
+// dieselben Fallback-Ports kennen, sonst bekommen neue Kanten aus
+// Fallback-Handles kein Label und der Zweig läuft nie.
+
 function RegistryNodeCard({ data, selected }: NodeProps) {
   const d = data as {
     nodeType?: string
     label?: string
     config?: Record<string, unknown>
   }
-  const title = d.label?.trim() || d.nodeType || "Erweiterter Knoten"
-  const isLoop = d.nodeType === "logic.loop"
-  const isSwitch = d.nodeType === "logic.switch"
-  const isSenderFilter = d.nodeType === "email.sender_filter"
-  const isThreshold = d.nodeType === "logic.threshold"
-  const switchPorts = isSwitch ? switchCaseHandles(d.config) : []
-  const filterPorts = ["whitelist", "blacklist", "default"] as const
+  const { catalog } = useWorkflowNodeCatalog()
+  // ReactFlow rendert Karten bei jedem Drag-Frame neu — Katalog-Lookup,
+  // Validierung und Port-Ableitung nur bei echten Datenänderungen rechnen.
+  const derived = useMemo(() => {
+    const entry = getCachedWorkflowNodeCatalogEntry(d.nodeType)
+    const isLoop = d.nodeType === "logic.loop"
+    const isSwitch = d.nodeType === "logic.switch"
+    return {
+      entry,
+      isLoop,
+      isSwitch,
+      switchPorts: isSwitch ? switchCaseHandles(d.config) : [],
+      // Ausgänge aus dem deklarativen Schema (auto_reply, auth_check,
+      // sender_filter, threshold, …) — sichtbar beschriftet, damit niemand
+      // „unsichtbare" Ports hat.
+      schemaPorts:
+        !isLoop && !isSwitch
+          ? (entry?.ports ?? (d.nodeType ? FALLBACK_PORTS[d.nodeType] : undefined) ?? [])
+          : [],
+      configIssues: entry ? validateNodeConfig(entry, d.config ?? {}) : [],
+    }
+    // catalog als Dep: nach dem (einmaligen) Laden neu ableiten.
+  }, [catalog, d.nodeType, d.config])
+  const { entry, isLoop, isSwitch, switchPorts, schemaPorts, configIssues } = derived
+  const title = d.label?.trim() || entry?.label || d.nodeType || "Erweiterter Knoten"
+  // Badge bei jedem Problem (auch leere Pflichtfelder = Warnung) — nur echte
+  // Fehler blockieren das Speichern, aber sichtbar sein sollen beide.
+  const hasError = configIssues.length > 0
 
   return (
     <div
@@ -168,11 +208,25 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
         "min-w-[200px] rounded-lg border-2 bg-violet-50 p-3 shadow-sm transition-all dark:bg-violet-950/40",
         selected ? "border-violet-500" : "border-violet-300 dark:border-violet-800",
         isSwitch && "min-w-[240px]",
+        hasError && !selected && "border-dashed border-rose-400 dark:border-rose-600",
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-violet-500" />
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-400">
-        Erweitert
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-400">
+          Erweitert
+        </span>
+        {hasError ? (
+          <span
+            className="rounded bg-rose-100 px-1 text-[9px] font-semibold text-rose-700 dark:bg-rose-900/60 dark:text-rose-300"
+            title={configIssues
+              .filter((i) => i.severity === "error")
+              .map((i) => i.message)
+              .join("\n")}
+          >
+            Unvollständig
+          </span>
+        ) : null}
       </div>
       <div className="text-sm font-medium">{title}</div>
       {isLoop ? (
@@ -218,47 +272,29 @@ function RegistryNodeCard({ data, selected }: NodeProps) {
             )
           })}
         </>
-      ) : isSenderFilter ? (
+      ) : schemaPorts.length > 0 ? (
         <>
-          <div className="relative mt-2 flex justify-between px-1 text-[9px] font-medium text-violet-800 dark:text-violet-300">
-            <span>Whitelist</span>
-            <span>Blacklist</span>
-            <span>Default</span>
+          <div className="mt-2 flex flex-wrap justify-center gap-x-2 gap-y-0.5 px-1 text-[9px] font-medium text-violet-800 dark:text-violet-300">
+            {schemaPorts.map((p) => (
+              <span key={p.id} title={p.description}>
+                {p.label}
+              </span>
+            ))}
           </div>
-          {filterPorts.map((port, i) => {
-            const left = 18 + i * 32
+          {schemaPorts.map((port, i) => {
+            const n = schemaPorts.length
+            const left = n === 1 ? 50 : 12 + (i / Math.max(1, n - 1)) * 76
             return (
               <Handle
-                key={port}
-                id={port}
+                key={port.id}
+                id={port.id}
                 type="source"
                 position={Position.Bottom}
                 style={{ left: `${left}%` }}
-                className="!bg-violet-500"
+                className={PORT_HANDLE_COLORS[port.color ?? "violet"] ?? "!bg-violet-500"}
               />
             )
           })}
-        </>
-      ) : isThreshold ? (
-        <>
-          <div className="relative mt-2 flex justify-between px-4 text-[9px] font-medium text-violet-800 dark:text-violet-300">
-            <span>Ja</span>
-            <span>Nein</span>
-          </div>
-          <Handle
-            id="yes"
-            type="source"
-            position={Position.Bottom}
-            style={{ left: "30%" }}
-            className="!bg-violet-500"
-          />
-          <Handle
-            id="no"
-            type="source"
-            position={Position.Bottom}
-            style={{ left: "70%" }}
-            className="!bg-violet-500"
-          />
         </>
       ) : (
         <Handle type="source" position={Position.Bottom} className="!bg-violet-500" />

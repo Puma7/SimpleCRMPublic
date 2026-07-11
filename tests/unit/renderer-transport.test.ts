@@ -4729,6 +4729,71 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps search scope, relevance sort and search snippet (Suche Phase 3)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        items: [
+          {
+            id: 703,
+            accountId: 101,
+            folderId: 201,
+            uid: 9003,
+            subject: 'Scoped hit',
+            from: null,
+            to: null,
+            cc: null,
+            dateReceived: null,
+            snippet: 'Kontext',
+            searchSnippet: 'Kontext \uE000Treffer\uE001 Ende',
+            seenLocal: false,
+            doneLocal: false,
+            archived: false,
+            folderKind: 'inbox',
+            threadId: null,
+            ticketCode: null,
+            customerId: null,
+            hasAttachments: false,
+            assignedTo: null,
+            assignedToUserId: null,
+            isSpam: false,
+            spamStatus: 'clean',
+            pgpStatus: null,
+            remoteContentPolicy: 'ask',
+            readReceiptRequested: false,
+            snoozedUntil: null,
+            updatedAt: '2026-06-03T10:05:00.000Z',
+          },
+        ],
+        nextCursor: null,
+        searchMode: 'fts',
+        hasMore: true,
+      },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Email.SearchMessages, {
+      accountId: 101,
+      query: 'Treffer',
+      limit: 50,
+      offset: 0,
+      view: 'inbox',
+      sort: 'relevance',
+      scope: { mode: 'broad', includeSpam: true, includeTrash: false },
+    }) as { messages: Array<{ search_snippet?: string | null }>; searchMode: string; hasMore: boolean };
+    expect(result.searchMode).toBe('fts');
+    // Explizites hasMore gewinnt: Relevanz liefert bewusst nextCursor null,
+    // hat aber Folgeseiten — abgeleitet aus nextCursor waere das false.
+    expect(result.hasMore).toBe(true);
+    expect(result.messages[0]?.search_snippet).toBe('Kontext \uE000Treffer\uE001 Ende');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages?accountId=101&search=Treffer&limit=50&offset=0&view=inbox&sort=relevance&scopeMode=broad&scopeIncludeSpam=true',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps message spam status mutation to server mail route', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
@@ -4854,6 +4919,8 @@ describe('renderer transport', () => {
           senderWhitelist: '',
           senderBlacklist: '',
           spamScoreThreshold: '82',
+          autoReplyEnabled: true,
+          autoReplyMaxPerSenderPerDay: 3,
         },
       }))
       .mockResolvedValueOnce(jsonResponse({ data: { success: true } }))
@@ -4940,11 +5007,15 @@ describe('renderer transport', () => {
       senderWhitelist: '',
       senderBlacklist: '',
       spamScoreThreshold: '82',
+      autoReplyEnabled: true,
+      autoReplyMaxPerSenderPerDay: 3,
     });
     await expect(transport.invoke(IPCChannels.Email.SetWorkflowAutomationSettings, {
       imapDeleteOptIn: false,
       httpAllowlist: ' hooks.example.com ',
       spamScoreThreshold: '101',
+      autoReplyEnabled: true,
+      autoReplyMaxPerSenderPerDay: 120,
     })).resolves.toEqual({ success: true });
     await expect(transport.invoke(IPCChannels.Email.GetEmailMiscSettings)).resolves.toEqual({
       webhookSecret: 'secret-1',
@@ -5043,6 +5114,8 @@ describe('renderer transport', () => {
           imapDeleteOptIn: false,
           httpAllowlist: 'hooks.example.com',
           spamScoreThreshold: '100',
+          autoReplyEnabled: true,
+          autoReplyMaxPerSenderPerDay: 50,
         }),
       }),
     );
@@ -8130,6 +8203,11 @@ describe('renderer transport', () => {
       IPCChannels.Email.ImportWorkflowBundleFromFile,
       IPCChannels.Email.ExportKnowledgeBaseDocument,
       IPCChannels.Email.ImportKnowledgeFile,
+
+      // Zwei-Stufen-KI-Antwort (ai.draft_reply/ai.review_draft) ist Desktop-only;
+      // die Server-Edition implementiert die Knoten nicht, daher kein HTTP-Mapping.
+      IPCChannels.Email.ApproveDraftSend,
+      IPCChannels.Email.DismissDraftApproval,
     ]);
     const missing = AllowedInvokeChannels
       .filter((channel) => !hasHttpInvocation(channel))

@@ -15,21 +15,67 @@ export function registerIntegrationNodes(register: Reg): void {
     category: 'integration',
     canvasType: 'registry',
     defaultConfig: {},
-    execute: async (ctx) => {
-      const accountId = Number(ctx.message?.account_id ?? 0);
+    execute: async (ctx, config) => {
+      const syncOne = async (accountId: number): Promise<number | null> => {
+        const { getEmailAccountById } = await import('../../email/email-store');
+        const acc = getEmailAccountById(accountId);
+        if (!acc) return null;
+        if ((acc.protocol || 'imap') === 'pop3') {
+          const { syncInboxPop3 } = await import('../../email/email-pop3-sync');
+          return (await syncInboxPop3(accountId)).fetched;
+        }
+        const { syncInboxImap } = await import('../../email/email-imap-sync');
+        return (await syncInboxImap(accountId)).fetched;
+      };
+
+      const rawConfigId = config.accountId;
+      const configId =
+        rawConfigId == null || rawConfigId === '' ? null : Number(rawConfigId);
+      if (configId != null && !Number.isFinite(configId)) {
+        return { status: 'error', message: 'Ungültige Konto-ID' };
+      }
+
+      // accountId=0 (explizit) = alle Konten; sonst Config-Konto, sonst Konto der Nachricht.
+      if (configId === 0) {
+        if (ctx.dryRun) return { status: 'ok', message: 'dry-run sync (alle Konten)' };
+        const { listEmailAccounts } = await import('../../email/email-store');
+        const accounts = listEmailAccounts();
+        if (accounts.length === 0) return { status: 'skipped', message: 'Kein Konto' };
+        let fetched = 0;
+        let failed = 0;
+        for (const acc of accounts) {
+          try {
+            fetched += (await syncOne(acc.id)) ?? 0;
+          } catch {
+            failed += 1;
+          }
+        }
+        const variables: Record<string, string | number | boolean | null> = {
+          'sync.fetched': fetched,
+          'sync.failed_accounts': failed,
+        };
+        if (failed === accounts.length) {
+          return { status: 'error', message: 'Alle Konten fehlgeschlagen', variables };
+        }
+        if (failed > 0) {
+          return {
+            status: 'ok',
+            message: `${failed} von ${accounts.length} Konten fehlgeschlagen`,
+            variables,
+          };
+        }
+        return { status: 'ok', variables };
+      }
+
+      const accountId = configId ?? Number(ctx.message?.account_id ?? 0);
       if (!accountId) return { status: 'skipped', message: 'Kein Konto' };
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run sync' };
-      const { getEmailAccountById } = await import('../../email/email-store');
-      const acc = getEmailAccountById(accountId);
-      if (!acc) return { status: 'error', message: 'Konto nicht gefunden' };
-      if ((acc.protocol || 'imap') === 'pop3') {
-        const { syncInboxPop3 } = await import('../../email/email-pop3-sync');
-        const r = await syncInboxPop3(accountId);
-        return { status: 'ok', variables: { 'sync.fetched': r.fetched } };
-      }
-      const { syncInboxImap } = await import('../../email/email-imap-sync');
-      const r = await syncInboxImap(accountId);
-      return { status: 'ok', variables: { 'sync.fetched': r.fetched } };
+      const fetched = await syncOne(accountId);
+      if (fetched == null) return { status: 'error', message: 'Konto nicht gefunden' };
+      const variables: Record<string, string | number | boolean | null> = {
+        'sync.fetched': fetched,
+      };
+      return { status: 'ok', variables };
     },
   });
 
@@ -131,134 +177,6 @@ export function registerIntegrationNodes(register: Reg): void {
         status: 'ok',
         variables: { 'jtl.data': JSON.stringify(rows).slice(0, 8000) },
       };
-    },
-  });
-
-  // --- SPIKE (plan 023): desktop port of jtl.order_context ---
-  // Read-only resolver: sender-email/order-no -> erste JTL-Zeile -> jtl.*-Variablen.
-  // Portiert von packages/server/src/workflow-execution.ts (executeWorkflowJtlOrderContext).
-  const JTL_CTX_EMAIL_RE = /^[^\s@'";\\]+@[^\s@'";\\]+\.[^\s@'";\\]+$/;
-  const JTL_CTX_ORDER_NO_RE = /^[A-Za-z0-9._\-/]{1,64}$/;
-  const sqlLiteral = (v: string) => `'${v.replace(/'/g, "''")}'`;
-
-  const scalar = (value: unknown): string | number | boolean | null => {
-    if (value === null || value === undefined) return '';
-    if (typeof value === 'number' || typeof value === 'boolean') return value;
-    if (value instanceof Date) return value.toISOString();
-    return String(value).slice(0, 2_000);
-  };
-
-  const parseMapping = (value: unknown): Record<string, string> => {
-    const mapping: Record<string, string> = {};
-    if (typeof value !== 'string' || !value.trim()) return mapping;
-    for (const pair of value.split(',')) {
-      const [col, target] = pair.split(':').map((p) => p.trim());
-      if (col && target) mapping[col.toLowerCase()] = target;
-    }
-    return mapping;
-  };
-
-  register({
-    type: 'jtl.order_context',
-    label: 'JTL Bestell-Kontext',
-    category: 'integration',
-    canvasType: 'registry',
-    defaultConfig: {
-      query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}',
-      mapping: '',
-    },
-    execute: async (ctx, config) => {
-      // Safe-by-default: this node runs operator SQL against production JTL/MSSQL
-      // and is registered unconditionally (reachable from any inbound-triggered
-      // workflow), so it stays OFF unless explicitly opted in via env flag. The
-      // gate runs before dry-run and before any SQL so nothing executes when off.
-      const flag = process.env.SIMPLECRM_JTL_CONTEXT_NODE;
-      if (flag !== '1' && flag !== 'true') {
-        return {
-          status: 'error',
-          port: 'error',
-          message: 'jtl.order_context ist deaktiviert (SIMPLECRM_JTL_CONTEXT_NODE nicht gesetzt)',
-        };
-      }
-
-      const template = String(config.query ?? '').trim();
-      if (!template) return { status: 'skipped', message: 'Keine Query' };
-
-      // Absender-E-Mail aus dem Nachrichtenkontext (erste Adresse).
-      const email = (ctx.strings.from_address ?? '').split(',')[0]?.trim() ?? '';
-      const orderNo = String(ctx.variables['jtl.order_no'] ?? config.orderNo ?? '').trim();
-
-      // Platzhalter binden + SQL-escapen (skip -> no_match, wenn Pflichtwert ungültig).
-      let query = template;
-      if (query.includes('{{email}}')) {
-        if (!email || !JTL_CTX_EMAIL_RE.test(email)) {
-          return {
-            status: 'skipped',
-            port: 'no_match',
-            message: 'Ungültige Absender-E-Mail',
-            variables: { 'jtl.context_found': false },
-          };
-        }
-        query = query.replace(/\{\{email\}\}/g, sqlLiteral(email));
-      }
-      if (query.includes('{{orderNo}}')) {
-        if (!orderNo || !JTL_CTX_ORDER_NO_RE.test(orderNo)) {
-          return {
-            status: 'skipped',
-            port: 'no_match',
-            message: 'Ungültige Bestellnummer',
-            variables: { 'jtl.context_found': false },
-          };
-        }
-        query = query.replace(/\{\{orderNo\}\}/g, sqlLiteral(orderNo));
-      }
-
-      // SELECT-only-Guard (executeReadOnlyMssqlQuery kappt nur die Länge; hier prüfen).
-      // INTO is blocked too: `SELECT ... INTO newtable ...` begins with SELECT and
-      // clears the blacklist yet writes a table.
-      const upper = query.toUpperCase();
-      if (
-        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE|INTO)\b/.test(upper)
-      ) {
-        return { status: 'error', port: 'error', message: 'Nur SELECT erlaubt' };
-      }
-      if (!upper.startsWith('SELECT')) {
-        return { status: 'error', port: 'error', message: 'Query muss mit SELECT beginnen' };
-      }
-
-      if (ctx.dryRun) {
-        return {
-          status: 'ok',
-          message: 'dry-run jtl.order_context',
-          variables: { 'jtl.context_found': false },
-        };
-      }
-
-      const { executeReadOnlyMssqlQuery } = await import('../../mssql-keytar-service');
-      const r = await executeReadOnlyMssqlQuery(query);
-      if (!r.success) return { status: 'error', port: 'error', message: r.error ?? 'MSSQL-Fehler' };
-
-      const rows = r.rows ?? [];
-      const first = rows[0];
-      if (!first || typeof first !== 'object') {
-        return {
-          status: 'ok',
-          port: 'no_match',
-          message: 'Keine JTL-Daten gefunden',
-          variables: { 'jtl.context_found': false },
-        };
-      }
-
-      const mapping = parseMapping(config.mapping);
-      const variables: Record<string, string | number | boolean | null> = {
-        'jtl.context_found': true,
-        'jtl.match_count': rows.length,
-      };
-      for (const [column, value] of Object.entries(first as Record<string, unknown>)) {
-        const key = column.toLowerCase();
-        variables[mapping[key] ?? `jtl.${key}`] = scalar(value);
-      }
-      return { status: 'ok', port: 'default', variables };
     },
   });
 }

@@ -10,6 +10,7 @@ import {
   getEmailAccountById,
 } from '../../email/email-store';
 import { evaluateSenderFilter } from '../sender-filter';
+import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
 import { AUTO_REPLY_NOREPLY_RE, loadAutoReplyEnabled } from '../auto-reply-settings';
 import { prepareDraftForWorkflowSend, releaseOutboundHoldForDraft } from '../draft-send-prep';
 import { assignCategoryPathToMessage } from '../../email/email-crm-store';
@@ -65,8 +66,12 @@ export function registerEmailNodes(register: Reg): void {
             const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
             await syncSeenFlagToServer(row, true);
             clearMessageSeenSyncPending(messageId);
-          } catch {
-            /* best-effort */
+          } catch (e) {
+            // Lokal gelesen; Server-Flag folgt über den Sync (seen_sync_pending bleibt gesetzt).
+            return {
+              status: 'ok',
+              message: `imap_seen_sync_deferred: ${e instanceof Error ? e.message : String(e)}`,
+            };
           }
         }
       }
@@ -101,24 +106,6 @@ export function registerEmailNodes(register: Reg): void {
     },
   });
 
-  // Counterpart to hold_outbound, mainly for shared server templates. Standalone
-  // Electron is run-then-block (the draft is never held up front), so "release"
-  // just clears any hold and lets the compose-send proceed — returning ok
-  // (not blocked) allows the send. Without this the node would be unknown and
-  // the run would error → block the clean draft.
-  register({
-    type: 'email.release_outbound',
-    label: 'Versand freigeben',
-    category: 'email',
-    canvasType: 'action',
-    defaultConfig: { autoSend: true },
-    execute: async (ctx) => {
-      const id = ctx.messageId ?? ctx.outbound?.messageId;
-      if (id != null && !ctx.dryRun) setOutboundHold(id, false, null);
-      return { status: 'ok' };
-    },
-  });
-
   register({
     type: 'email.set_category',
     label: 'Kategorie setzen',
@@ -139,7 +126,7 @@ export function registerEmailNodes(register: Reg): void {
     label: 'Kopie weiterleiten',
     category: 'email',
     canvasType: 'action',
-    defaultConfig: { to: '' },
+    defaultConfig: { to: '', includeAttachments: false, runOutboundReview: false },
     execute: async (ctx, config) => {
       const { row, messageId } = requireMessage(ctx);
       const to = String(config.to ?? '').trim();
@@ -148,6 +135,11 @@ export function registerEmailNodes(register: Reg): void {
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');
       const { sendWorkflowForwardCopy } = await import('../../email/email-forward-copy');
+      // Anhang-Weiterleitung kann die Desktop-Edition noch nicht (nur die
+      // Server-Edition): SICHTBAR degradieren statt hart fehlschlagen —
+      // sonst bräche z. B. die Rechnungs-Vorlage komplett ab, obwohl die
+      // Text-Weiterleitung möglich ist. Der Lauf-Verlauf meldet den Verzicht.
+      const wantsAttachments = config.includeAttachments === true;
       const sent = await sendWorkflowForwardCopy({
         accountId: row.account_id,
         sourceMessageId: messageId,
@@ -156,13 +148,16 @@ export function registerEmailNodes(register: Reg): void {
         subject: subj,
         bodyText: body,
         originalFromLine: ctx.strings.from_address,
-        includeAttachments: config.includeAttachments === true,
+        includeAttachments: false,
         runOutboundReview: config.runOutboundReview === true,
       });
       if (!sent.ok) {
         return { status: 'error', message: sent.reason };
       }
-      return { status: 'ok' };
+      return {
+        status: 'ok',
+        ...(wantsAttachments ? { message: 'forward_copy:attachments_skipped_desktop' } : {}),
+      };
     },
   });
 
@@ -438,20 +433,24 @@ export function registerEmailNodes(register: Reg): void {
       });
 
       if (!ctx.message) return block('no_message');
-      if (ctx.dryRun) {
-        return confidenceValue >= minConfidence
-          ? {
-              status: 'ok',
-              port: 'approved',
-              variables: {
-                'auto_reply.decision': 'approved',
-                'auto_reply.confidence': confidenceValue,
-              },
-            }
-          : block('low_confidence');
-      }
+      // Alle Guards sind rein lesend — sie laufen bewusst AUCH im Dry-Run.
+      // Sonst zeigte der Test „approved", obwohl der Schalter aus ist
+      // („funktioniert im Test, nicht in echt").
       if (!loadAutoReplyEnabled()) return block('disabled');
       if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+      // Anti-Loop: automatisch erzeugte Mails (RFC 3834, Newsletter) nie
+      // beantworten; Tageslimit pro EMPFÄNGER der Antwort (Reply-To vor
+      // From) — Ticket-Systeme wechseln From pro Mail bei konstantem
+      // Reply-To und würden ein From-Keying unterlaufen.
+      const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
+      if (isUnsafeAutoReplyTarget(ctx.message.raw_headers)) return block('automated_sender');
+      // Die Antwort GEHT an replyTarget (Reply-To vor From) — auch dieses
+      // Ziel darf keine No-Reply-Adresse sein (From=mensch@ + Reply-To=
+      // no-reply@ würde sonst durchrutschen).
+      const replyTarget = primaryReplyRecipient(ctx.message) || sender;
+      if (AUTO_REPLY_NOREPLY_RE.test(replyTarget)) return block('noreply_sender');
+      const { isAutoReplyRateLimited } = await import('../auto-reply-guard');
+      if (isAutoReplyRateLimited(ctx.message.account_id, replyTarget)) return block('rate_limited');
       if (confidenceValue < minConfidence) return block('low_confidence');
 
       return {
@@ -466,19 +465,30 @@ export function registerEmailNodes(register: Reg): void {
     },
   });
 
+  // Counterpart to hold_outbound. Outbound: releases the hold and (autoSend)
+  // schedules the draft for delivery. Other directions (standalone Electron is
+  // run-then-block, shared server templates call this on the OK path): just
+  // clear any hold so the compose-send proceeds — returning ok allows the send.
   register({
     type: 'email.release_outbound',
     label: 'Versand freigeben',
     category: 'email',
     canvasType: 'registry',
     description:
-      'Hebt die Ausgangssperre auf. Mit autoSend=true wird der Entwurf zur sofortigen Zustellung eingeplant.',
+      'Hebt die Ausgangssperre auf. Mit autoSend=true wird der Entwurf zur sofortigen Zustellung eingeplant (nur Outbound-Trigger); bei anderen Triggern wird nur die Sperre entfernt.',
     defaultConfig: { autoSend: true },
     execute: async (ctx, config) => {
-      if (ctx.direction !== 'outbound') {
-        return { status: 'skipped', message: 'Nur für ausgehende Nachrichten' };
-      }
       const id = ctx.messageId ?? ctx.outbound?.messageId;
+      if (ctx.direction !== 'outbound') {
+        // Gutmütig wie die alte Aktions-Variante: ohne Nachricht (z. B.
+        // Schedule-Trigger) einfach überspringen statt den Lauf abzubrechen.
+        if (id == null) return { status: 'skipped', message: 'Keine Nachricht im Kontext' };
+        if (!ctx.dryRun) setOutboundHold(id, false, null);
+        const variables: Record<string, string | number | boolean | null> = {
+          'email.outbound_hold': false,
+        };
+        return { status: 'ok', message: 'outbound_hold_cleared', variables };
+      }
       if (id == null) return { status: 'error', message: 'Keine Nachricht im Kontext' };
       const autoSend = config.autoSend === true;
       const r = releaseOutboundHoldForDraft(id, autoSend, ctx.dryRun);
@@ -521,6 +531,37 @@ export function registerEmailNodes(register: Reg): void {
         if (!ctx.dryRun && (!sender || AUTO_REPLY_NOREPLY_RE.test(sender))) {
           return { status: 'skipped', message: 'noreply_sender_blocked' };
         }
+        // Gleiche Anti-Loop-Guards wie im Gate (email.auto_reply): auch ein
+        // Workflow OHNE Gate davor darf weder Automaten/Newslettern antworten
+        // noch das Tageslimit überschreiten.
+        if (!ctx.dryRun) {
+          const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
+          if (isUnsafeAutoReplyTarget(ctx.message?.raw_headers)) {
+            return { status: 'skipped', message: 'automated_sender_blocked' };
+          }
+          // Die Antwort GEHT an replyTarget (Reply-To vor From) — auch dieses
+          // Ziel darf keine No-Reply-Adresse sein (From=mensch@ + Reply-To=
+          // no-reply@ würde sonst durchrutschen).
+          const replyTarget =
+            (ctx.message ? primaryReplyRecipient(ctx.message) : '') || sender;
+          if (AUTO_REPLY_NOREPLY_RE.test(replyTarget)) {
+            return { status: 'skipped', message: 'noreply_sender_blocked' };
+          }
+          // Tageslimit pro EMPFÄNGER der Antwort, ATOMAR reserviert —
+          // check-then-mark hätte ein Race-Fenster zwischen parallelen
+          // Läufen (Backfill neben Live-Sync). Bewusst VOR dem Einplanen
+          // und beim EINPLANEN gezählt (nicht erst bei SMTP-Erfolg):
+          // fail-safe in Richtung "lieber eine Antwort zu wenig als ein
+          // Loop" — auch fehlgeschlagene Zustellversuche verbrauchen das
+          // Tageslimit; gescheiterte Sends bleiben als Entwurf sichtbar.
+          const accountId = ctx.message?.account_id;
+          if (accountId != null) {
+            const { tryReserveAutoReplySlot } = await import('../auto-reply-guard');
+            if (!tryReserveAutoReplySlot(accountId, replyTarget, ctx.messageId)) {
+              return { status: 'skipped', message: 'auto_reply_rate_limited' };
+            }
+          }
+        }
       }
 
       const runOutboundReview = config.runOutboundReview === true;
@@ -529,6 +570,13 @@ export function registerEmailNodes(register: Reg): void {
         dryRun: ctx.dryRun,
       });
       if (!prep.ok) return { status: 'error', message: prep.message };
+
+      if (ctx.direction === 'inbound' && !ctx.dryRun) {
+        // RFC-3834-Marker NACH prep stempeln: prep normalisiert per
+        // updateComposeDraft und setzt auto_submitted dabei zurück.
+        const { markDraftAutoSubmitted } = await import('../../email/email-draft-approval');
+        markDraftAutoSubmitted(draftId);
+      }
 
       return {
         status: 'ok',

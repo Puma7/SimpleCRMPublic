@@ -21,12 +21,25 @@ import {
   shouldRunInitialSpamScoring,
   SPAM_ENGINE_MODEL_VERSION,
   addressesFromRecipientJson,
+  buildLikeSearchSnippet,
+  SEARCH_MARK_END,
+  SEARCH_MARK_START,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
   type SenderFilterResult,
 } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely, type Selectable, type Updateable } from 'kysely';
+
+import {
+  addressIlikePattern,
+  buildTsQueryTokenTexts,
+  escapeIlikePattern,
+  hasSearchOperators,
+  ilikeTextNeedles,
+  parseServerMailSearchQuery,
+  type ParsedMailSearchQuery,
+} from '../mail-search-sql';
 
 import type {
   EmailAttachmentContentApiPort,
@@ -281,7 +294,8 @@ const DEFAULT_RSPAMD_TIMEOUT_MS = 8000;
 
 type EmailMessageApiRow =
   & Pick<EmailMessageRow, typeof emailMessageSummaryColumns[number]>
-  & Partial<Pick<EmailMessageRow, 'body_text' | 'body_html'>>;
+  & Partial<Pick<EmailMessageRow, 'body_text' | 'body_html'>>
+  & { search_snippet?: string | null };
 
 type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
 
@@ -694,54 +708,212 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const search = input.search?.trim();
-          const searchMode = search ? messageSearchMode(search) : undefined;
-          let query = trx
-            .selectFrom('email_messages')
-            .select(emailMessageSummaryColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .limit(limit + 1);
+          const regex = search ? parseRegexSearch(search) : null;
+          const parsed = search && !regex ? parseServerMailSearchQuery(search) : null;
+          // null = Query enthaelt lexemlose Tokens (z. B. '&') — dann komplette
+          // ILIKE-Behandlung, damit die AND-Semantik keinen Term verliert.
+          const tsQueryTokens = parsed ? buildTsQueryTokenTexts(parsed) : [];
+          const tsQueryText =
+            tsQueryTokens && tsQueryTokens.length > 0 ? tsQueryTokens.join(' & ') : null;
+          const hasTextNeedles =
+            parsed !== null && parsed.phrases.length + parsed.terms.length > 0;
+          const broadScope =
+            search && input.scope?.mode === 'broad' ? input.scope : null;
+          // GEMEINSAME effektive View fuer Order UND Cursor: broad ordnet
+          // immer neutral (view undefined) — bekaeme der Cursor weiterhin
+          // input.view, wuerde z. B. view=snoozed Seite 2 per
+          // snoozed_until-Keyset filtern, waehrend Seite 1 datums-geordnet
+          // war. Eine Variable, damit beide nie divergieren koennen.
+          const effectiveListView = broadScope ? undefined : input.view;
 
-          if (input.offset !== undefined) query = query.offset(input.offset);
-          if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
-          if (input.folderPath !== undefined) {
-            query = query.where('folder_id', 'in', (eb) => eb
-              .selectFrom('email_folders')
-              .select('id')
-              .where('workspace_id', '=', input.workspaceId)
-              .where('path', '=', input.folderPath!)
-              .$if(input.accountId !== undefined, (folderQuery) => folderQuery.where('account_id', '=', input.accountId!)));
-          }
-          if (input.folderKind !== undefined) query = query.where('folder_kind', '=', input.folderKind);
-          query = applyMessageViewFilter(query, input.view);
-          query = applyMessageCategoryFilter(query, input.workspaceId, input.categoryId, input.view);
-          query = applyMessageListFilter(query, input.listFilter);
-          query = applyMessageDoneFilter(query, input.doneFilter, input.view);
-          if (input.seen !== undefined) query = query.where('seen_local', '=', input.seen);
-          if (input.done !== undefined) query = query.where('done_local', '=', input.done);
-          if (input.spam !== undefined) query = query.where('is_spam', '=', input.spam);
-          if (search) {
-            query = applyMessageSearchFilter(query, search, searchMode ?? 'like');
-          }
+          // sort=relevance: Keyset-Cursor passt nicht zur Rank-Order —
+          // eingehender Cursor wird ignoriert, nextCursor bleibt null
+          // (Offset-Pagination ist der unterstuetzte Weg). Nur bei aktiver
+          // Suche wirksam: ohne search gilt die Default-Sortierung samt
+          // normalem Cursor, sonst bliebe eine normale Liste auf Seite 1
+          // haengen (Cursor ignoriert + nextCursor null).
+          const relevanceSort = input.sort === 'relevance' && Boolean(search);
+          const effectiveCursor = relevanceSort ? undefined : input.cursor;
           const priorityCursor =
-            input.cursor !== undefined && input.sort === 'priority'
-              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, input.cursor)
+            effectiveCursor !== undefined && input.sort === 'priority'
+              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)
               : undefined;
-          query = applyMessageCursor(
-            query,
-            input.workspaceId,
-            input.cursor,
-            input.sort,
-            input.view,
-            priorityCursor,
-          );
-          query = applyMessageListOrder(query, input.sort, input.view);
 
-          const rows = await query.execute();
+          const buildQuery = (page: { limit: number; offset: number | undefined; withCursor?: boolean }) => {
+            let query = trx
+              .selectFrom('email_messages')
+              .select(emailMessageSummaryColumns)
+              .where('workspace_id', '=', input.workspaceId)
+              .limit(page.limit);
+
+            if (page.offset !== undefined) query = query.offset(page.offset);
+            if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
+            if (input.folderPath !== undefined) {
+              query = query.where('folder_id', 'in', (eb) => eb
+                .selectFrom('email_folders')
+                .select('id')
+                .where('workspace_id', '=', input.workspaceId)
+                .where('path', '=', input.folderPath!)
+                .$if(input.accountId !== undefined, (folderQuery) => folderQuery.where('account_id', '=', input.accountId!)));
+            }
+            if (input.folderKind !== undefined) query = query.where('folder_kind', '=', input.folderKind);
+            if (broadScope) {
+              // Broad-Suche: kein View-/Snooze-/Erledigt-Filter (Desktop-Paritaet).
+              query = applyMessageBroadScopeFilter(query, broadScope);
+            } else {
+              query = applyMessageViewFilter(query, input.view);
+              query = applyMessageDoneFilter(query, input.doneFilter, input.view);
+            }
+            query = applyMessageCategoryFilter(query, input.workspaceId, input.categoryId, input.view);
+            query = applyMessageListFilter(query, input.listFilter);
+            if (input.seen !== undefined) query = query.where('seen_local', '=', input.seen);
+            if (input.done !== undefined) query = query.where('done_local', '=', input.done);
+            if (input.spam !== undefined) query = query.where('is_spam', '=', input.spam);
+            if (parsed) query = applyMessageOperatorFilter(query, parsed);
+            if (page.withCursor !== false) {
+              query = applyMessageCursor(
+                query,
+                input.workspaceId,
+                effectiveCursor,
+                input.sort,
+                effectiveListView,
+                priorityCursor,
+              );
+            }
+            return query;
+          };
+
+          const orderQuery = (query: any, mode: 'fts' | 'like' | 'regex' | undefined) => {
+            if (mode === 'fts' && input.sort === 'relevance' && tsQueryText) {
+              // ts_rank_cd liefert 0 fuer Vektoren ohne Voll-Match — Anhang-
+              // only-/Teiltreffer bleiben in der Ergebnismenge (WHERE ist
+              // OR-basiert) und sortieren ans Ende, danach Datum.
+              return query
+                .orderBy(
+                  kyselySql`ts_rank_cd(email_messages.search_vector, to_tsquery('simple', ${tsQueryText}))`,
+                  'desc',
+                )
+                .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')
+                .orderBy('id', 'desc');
+            }
+            // Broad-Suche sortiert IMMER neutral (Datum bzw. Relevanz) — nie
+            // view-spezifisch (snoozed/scheduled_send-Order ueber ein
+            // ordneruebergreifendes Ergebnis waere sinnlos). effectiveListView
+            // ist dieselbe Variable wie im Cursor (buildQuery).
+            query = applyMessageListOrder(query, input.sort, effectiveListView);
+            return query;
+          };
+
+          const runQuery = async (
+            mode: 'fts' | 'like' | 'regex' | undefined,
+            page: { limit: number; offset: number | undefined; withCursor?: boolean },
+          ) => {
+            let query = buildQuery(page);
+            if (mode === 'fts' && tsQueryTokens && tsQueryTokens.length > 0) {
+              query = applyMessageFtsFilter(
+                query,
+                tsQueryTokens,
+                parsed ? ilikeTextNeedles(parsed) : [],
+              );
+              // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
+              // Sentinel-Codepoints werden aus dem Quelltext gestrippt, bevor
+              // ts_headline markiert — sonst waeren Marker aus Mail-Inhalten
+              // spoofbar.
+              const headlineQuery = tsQueryTokens.join(' | ');
+              query = query.select(
+                kyselySql<string | null>`ts_headline('simple', replace(replace(coalesce(email_messages.body_text, email_messages.snippet, ''), ${SEARCH_MARK_START}, ''), ${SEARCH_MARK_END}, ''), to_tsquery('simple', ${headlineQuery}), ${TS_HEADLINE_OPTIONS})`.as('search_snippet'),
+              );
+            } else if (mode === 'like' && parsed) {
+              // body_text mitselektieren, damit der JS-Snippet-Builder wie im
+              // Desktop auch Body-Treffer zeigen kann (Record bleibt body-frei).
+              query = query.select('body_text');
+              query = applyMessageIlikeFilter(query, parsed);
+            } else if (mode === 'regex' && search) {
+              // Regex-Modus liefert bewusst kein search_snippet (Paritaet zur
+              // Desktop-App ist hier nicht noetig; Highlight nur fuer fts/like).
+              query = applyMessageSearchFilter(query, search, 'regex');
+            }
+            query = orderQuery(query, mode);
+            return (await query.execute()) as EmailMessageApiRow[];
+          };
+
+          let searchMode: 'fts' | 'like' | 'regex' | undefined;
+          let rows: EmailMessageApiRow[];
+          const page = { limit: limit + 1, offset: input.offset };
+          if (!search) {
+            rows = await runQuery(undefined, page);
+          } else if (regex) {
+            searchMode = 'regex';
+            rows = await runQuery('regex', page);
+          } else if (!hasTextNeedles && parsed && !hasSearchOperators(parsed)) {
+            // Nichts Suchbares in der Query (z. B. nur Anfuehrungszeichen):
+            // nie die ungefilterte Ansicht zurueckgeben.
+            searchMode = 'like';
+            rows = [];
+          } else {
+            // Deterministischer Modus pro Query (Paritaet zur SQLite-Engine):
+            // Seite 1 entscheidet; Folgeseiten (offset ODER cursor) mit 0
+            // FTS-Zeilen fragen Seite 1 an, um "echtes FTS-Ende" von "Query
+            // ist ILIKE-Modus" zu unterscheiden. runQuery('fts') ist defensiv
+            // gecatcht: sollte to_tsquery trotz Escaping werfen, dispatchen
+            // wir deterministisch in den ILIKE-Modus statt den Request zu
+            // failen (Spiegel des SQLite-Pfads).
+            searchMode = 'like';
+            rows = [];
+            let ftsServed = false;
+            if (tsQueryText) {
+              try {
+                rows = await runQuery('fts', page);
+                if (rows.length > 0) {
+                  ftsServed = true;
+                } else if ((input.offset ?? 0) > 0 || input.cursor !== undefined) {
+                  // Probe ausdruecklich OHNE Cursor: reine Frage "matcht FTS
+                  // diese Query+Filter ueberhaupt?" — eine Cursor-Seite hinter
+                  // dem letzten FTS-Treffer darf den Modus nicht auf ILIKE
+                  // kippen.
+                  const probe = await runQuery('fts', { limit: 1, offset: 0, withCursor: false });
+                  if (probe.length > 0) {
+                    ftsServed = true;
+                    rows = [];
+                  }
+                }
+              } catch {
+                ftsServed = false;
+                rows = [];
+              }
+            }
+            if (ftsServed) {
+              searchMode = 'fts';
+            } else {
+              rows = await runQuery('like', page);
+            }
+          }
+
           const pageRows = rows.slice(0, limit);
+          const likeNeedles =
+            searchMode === 'like' && parsed ? [...parsed.phrases, ...parsed.terms] : [];
+          const items = pageRows.map((row) => {
+            const record = mapEmailMessageRow(row, false);
+            if (likeNeedles.length > 0 && record.searchSnippet === undefined) {
+              const snippet =
+                buildLikeSearchSnippet(row.body_text ?? null, likeNeedles) ??
+                buildLikeSearchSnippet(row.snippet, likeNeedles) ??
+                buildLikeSearchSnippet(row.subject, likeNeedles);
+              if (snippet) return { ...record, searchSnippet: snippet };
+            }
+            return record;
+          });
           return {
-            items: pageRows.map((row) => mapEmailMessageRow(row, false)),
-            nextCursor: rows.length > limit ? pageRows[pageRows.length - 1]?.id ?? null : null,
-            ...(searchMode === undefined ? {} : { searchMode }),
+            items,
+            nextCursor: relevanceSort
+              ? null
+              : rows.length > limit
+                ? pageRows[pageRows.length - 1]?.id ?? null
+                : null,
+            // Suchpfad: hasMore explizit — sort=relevance liefert bewusst
+            // keinen nextCursor (Offset-Pagination), der Renderer braucht
+            // trotzdem ein "Weitere laden"-Signal.
+            ...(searchMode === undefined ? {} : { searchMode, hasMore: rows.length > limit }),
           };
         },
         { applySession: options.applyWorkspaceSession },
@@ -2910,11 +3082,157 @@ function applyMessageDoneFilter(
   return query.where('done_local', '=', filter === 'done');
 }
 
+/** Desktop-broad-Semantik: alle Ordner, optional Spam/Papierkorb, kein Snooze-Filter. */
+function applyMessageBroadScopeFilter(
+  query: any,
+  scope: { includeSpam?: boolean; includeTrash?: boolean },
+): any {
+  const { sql: rawSql } = require('kysely') as typeof import('kysely');
+  query = query.where(rawSql<boolean>`(uid >= 0 OR pop3_uidl IS NOT NULL OR folder_kind = 'draft')`);
+  if (!scope.includeTrash) query = query.where('soft_deleted', '=', false);
+  if (!scope.includeSpam) {
+    query = query.where(rawSql<boolean>`(is_spam = false AND coalesce(spam_status, 'clean') <> 'spam')`);
+  }
+  return query;
+}
+
+/** Operator-Bedingungen (from:/an:/betreff:/hat:anhang) — Desktop-Semantik. */
+function applyMessageOperatorFilter(query: any, parsed: ParsedMailSearchQuery): any {
+  const { sql: rawSql } = require('kysely') as typeof import('kysely');
+  for (const value of parsed.from) {
+    const pattern = addressIlikePattern(value);
+    query = query.where(rawSql<boolean>`from_json::text ILIKE ${pattern} ESCAPE '\\'`);
+  }
+  for (const value of parsed.to) {
+    const pattern = addressIlikePattern(value);
+    query = query.where(rawSql<boolean>`(
+      to_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR bcc_json::text ILIKE ${pattern} ESCAPE '\\'
+    )`);
+  }
+  for (const value of parsed.subject) {
+    const pattern = `%${escapeIlikePattern(value)}%`;
+    query = query.where(rawSql<boolean>`subject ILIKE ${pattern} ESCAPE '\\'`);
+  }
+  if (parsed.hasAttachment) query = query.where('has_attachments', '=', true);
+  return query;
+}
+
+/**
+ * FTS-Match pro Token: Nachrichten-search_vector ODER Anhang-search_vector
+ * (0026) ODER ILIKE-Fallbacks fuer Spalten, die der generierte Vector nicht
+ * abdeckt — per ILIKE, weil die produktiv applizierte generierte Spalte
+ * nicht erweiterbar ist:
+ * - attachments_json: Metadaten-only-Anhaenge ueber der Groessen-/Gesamt-Cap
+ *   haben KEINE email_message_attachments-Zeile, der Dateiname steht nur im
+ *   attachments_json der Message (Desktop-Paritaet: SQLite-FTS v3 indexiert
+ *   attachments_json).
+ * - bcc_json: der 0007-Vector enthielt bcc_json noch, die Neudefinition in
+ *   0010 (extendedSearchVector) liess es fallen — Bcc-only-Treffer wuerden
+ *   sonst im fts-Modus verschwinden (like/regex decken Bcc bereits ab).
+ * - Kundenfelder (customers.name/first_name/company/email): stehen in
+ *   keinem Vector — ohne den EXISTS-ILIKE-Fallback (exakt die Feldliste des
+ *   ilike-Zweigs) gingen kundenverknuepfte Treffer verloren, sobald
+ *   irgendeine Zeile FTS matcht.
+ * Performance: bewusst ohne eigene Indizes — die Ausdruecke filtern nur die
+ * bereits durch Workspace-/View-/Vektor-Bedingungen eingeschraenkte Menge.
+ * Tokens AND-verknuepft — so matcht auch eine Mail, deren Begriffe sich auf
+ * Body und Anhang verteilen. tokenIlikePatterns ist index-aligned zu
+ * tsQueryTokens (beide phrases-then-terms mit identischer Kappung; der
+ * Parser liefert keine leeren Phrasen/Terme).
+ */
+function applyMessageFtsFilter(
+  query: any,
+  tsQueryTokens: readonly string[],
+  tokenIlikePatterns: readonly string[],
+): any {
+  const { sql: rawSql } = require('kysely') as typeof import('kysely');
+  tsQueryTokens.forEach((token, index) => {
+    // Leerer Fallback matcht nichts (ILIKE '' trifft nur den Leerstring).
+    const tokenPattern = tokenIlikePatterns[index] ?? '';
+    query = query.where(rawSql<boolean>`(
+      email_messages.search_vector @@ to_tsquery('simple', ${token})
+      OR EXISTS (
+        SELECT 1 FROM email_message_attachments a
+        WHERE a.workspace_id = email_messages.workspace_id
+          AND a.message_id = email_messages.id
+          AND a.search_vector @@ to_tsquery('simple', ${token})
+      )
+      OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+      OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1 FROM customers c
+        WHERE c.workspace_id = email_messages.workspace_id
+          AND c.id = email_messages.customer_id
+          AND (
+            c.name ILIKE ${tokenPattern} ESCAPE '\\'
+            OR c.first_name ILIKE ${tokenPattern} ESCAPE '\\'
+            OR c.company ILIKE ${tokenPattern} ESCAPE '\\'
+            OR c.email ILIKE ${tokenPattern} ESCAPE '\\'
+          )
+      )
+    )`);
+  });
+  return query;
+}
+
+/**
+ * ILIKE-Fallback: ein AND-verknuepfter Feldblock pro Phrase/Term (Desktop-
+ * Paritaet). attachments_json::text deckt Metadaten-only-Anhangnamen ab
+ * (keine email_message_attachments-Zeile, s. applyMessageFtsFilter); das
+ * Customer-EXISTS existiert seit R11 auch im fts-Zweig.
+ */
+function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any {
+  const { sql: rawSql } = require('kysely') as typeof import('kysely');
+  for (const pattern of ilikeTextNeedles(parsed)) {
+    query = query.where(rawSql<boolean>`(
+      subject ILIKE ${pattern} ESCAPE '\\'
+      OR snippet ILIKE ${pattern} ESCAPE '\\'
+      OR body_text ILIKE ${pattern} ESCAPE '\\'
+      OR from_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR to_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR bcc_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR ticket_code ILIKE ${pattern} ESCAPE '\\'
+      OR attachments_json::text ILIKE ${pattern} ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1 FROM email_message_attachments a
+        WHERE a.workspace_id = email_messages.workspace_id
+          AND a.message_id = email_messages.id
+          AND (
+            a.filename_display ILIKE ${pattern} ESCAPE '\\'
+            OR a.content_text ILIKE ${pattern} ESCAPE '\\'
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM customers c
+        WHERE c.workspace_id = email_messages.workspace_id
+          AND c.id = email_messages.customer_id
+          AND (
+            c.name ILIKE ${pattern} ESCAPE '\\'
+            OR c.first_name ILIKE ${pattern} ESCAPE '\\'
+            OR c.company ILIKE ${pattern} ESCAPE '\\'
+            OR c.email ILIKE ${pattern} ESCAPE '\\'
+          )
+      )
+    )`);
+  }
+  return query;
+}
+
+const TS_HEADLINE_OPTIONS = `StartSel=${SEARCH_MARK_START}, StopSel=${SEARCH_MARK_END}, MaxWords=12, MinWords=6`;
+
 function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'like' | 'regex'): any {
   if (mode === 'regex') {
     const parsed = parseRegexSearch(search);
     if (parsed) {
       const operator = parsed.caseInsensitive ? kyselySql`~*` : kyselySql`~`;
+      // Heuhaufen inkl. Anhaenge (Desktop-Paritaet): attachments_json deckt
+      // Metadaten-only-Anhangnamen ab, die string_agg-Subquery Dateinamen und
+      // extrahierten Text der Attachment-Zeilen (pro Anhang per left() auf
+      // 20k Zeichen gedeckelt) — sonst verschwinden /invoice\.pdf/i-Treffer
+      // im Regex-Modus. bcc_json ergaenzt die Desktop-Feldliste.
       return query.where(kyselySql<boolean>`(
         coalesce(subject, '') || E'\n' ||
         coalesce(snippet, '') || E'\n' ||
@@ -2922,7 +3240,18 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
         coalesce(from_json::text, '') || E'\n' ||
         coalesce(to_json::text, '') || E'\n' ||
         coalesce(cc_json::text, '') || E'\n' ||
-        coalesce(ticket_code, '')
+        coalesce(bcc_json::text, '') || E'\n' ||
+        coalesce(ticket_code, '') || E'\n' ||
+        coalesce(attachments_json::text, '') || E'\n' ||
+        coalesce((
+          SELECT string_agg(
+            coalesce(a.filename_display, '') || E'\n' || coalesce(left(a.content_text, 20000), ''),
+            E'\n'
+          )
+          FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+        ), '')
       ) ${operator} ${parsed.pattern}`);
     }
   }
@@ -2967,11 +3296,6 @@ function applyMessageListOrder(
   }
   if (sort === 'date_asc') return query.orderBy(kyselySql`coalesce(date_received, created_at)`, 'asc').orderBy('id', 'asc');
   return query.orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc').orderBy('id', 'desc');
-}
-
-function messageSearchMode(search: string): 'fts' | 'like' | 'regex' {
-  if (parseRegexSearch(search)) return 'regex';
-  return search.trim() ? 'fts' : 'like';
 }
 
 function parseRegexSearch(search: string): { pattern: string; caseInsensitive: boolean } | null {
@@ -4229,6 +4553,9 @@ function mapEmailMessageRow(
     snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
     draftAttachmentPathsJson: row.draft_attachment_paths_json,
     replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
+    ...(row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
+      ? { searchSnippet: String(row.search_snippet) }
+      : {}),
     ...(includeBody ? {
       bodyText: row.body_text,
       bodyHtml: row.body_html,

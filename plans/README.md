@@ -30,7 +30,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 012 | Standardize on pnpm; remove the second lockfile | P2 | S | dx | — | DONE |
 | 013 | Fix AGENTS.md/README architecture + package-manager claims | P1 | S | docs | 012 | DONE |
 | 014 | Decompose `mail-routes.ts` into a route table + handlers | P3 | L | tech-debt | — | DONE |
-| 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | DONE |
+| 015 | Split the 37k-line server-edition test file | P3 | L | tests | 002 | DROPPED (on merge with #145/#146: both heavily modified the monolith, so a split frozen at the old revision held stale tests that failed against the merged code; reverted to the up-to-date monolith with plan 010's scheduled-send tests re-applied) |
 | 016 | De-risk the `better-sqlite3` GitHub pin; fail-loud patch | P3 | M | migration | — | DONE |
 | 017 | Add component/interaction tests for the email UI | P3 | M | tests | 003 | DONE |
 | 018 | Lazy-load the HTTP route registry out of the desktop bundle | P3 | M | perf | — | DONE |
@@ -38,7 +38,7 @@ plans (`002`, `003`) before the riskier refactors (`014`, `015`, `019`).
 | 020 | SPIKE: outbound webhook subscriptions + HMAC emitter (D1) | P2 | L | direction | 001 | DONE (spike: prototype + design doc) |
 | 021 | SPIKE: AI budget gates on existing usage tracking (D2) | P2 | M | direction | — | DONE (spike: prototype + design doc) |
 | 022 | SPIKE: GDPR erasure/anonymization counterpart (D3) | P2 | L | direction | — | DONE (spike: prototype + design doc) |
-| 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | DONE (spike: prototype + design doc) |
+| 023 | SPIKE: auto-inject a JTL context block into inbound mail (D4) | P2 | M | direction | — | DROPPED (superseded by #146: `jtl.order_context` now lives in the core node-schema as a server-only node; #147's desktop-executor spike is removed to avoid conflicting with #146 and its catalog-sync test) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
@@ -59,7 +59,7 @@ Their wiring status is **not** uniform — the earlier blanket "unwired/safe" ch
 - **020** (outbound webhooks) — truly unwired: no imports outside its own tests, no IPC channel; `emitWebhookEvent` is a typed-but-unwired stub.
 - **021** (AI budget gates) — wired into **both** AI entry points (`ai-reply-suggestion.ts`, `ai-classification.ts`) but **default-off** (env-gated). Carries a known **check-then-act race** under concurrency: when a hard limit is set, two in-flight calls can each read spend below the limit and both proceed (best-effort — not a reservation/lock model).
 - **022** (GDPR erasure) — truly unwired: prototype only, registered on no IPC channel; the apply path is dry-run by default.
-- **023** (JTL order-context) — **reachable** via inbound-triggered workflows (the node is registered unconditionally); now gated **off-by-default** behind `SIMPLECRM_JTL_CONTEXT_NODE`.
+- **023** (JTL order-context) — **DROPPED on the merge with #146.** #146 rebuilt the workflow node system and already ships `jtl.order_context` in the core node-schema/catalog as a `runtime: 'server'` (server-only) node. #147's desktop-executor spike contradicted that (and would fail #146's `workflow-node-catalog-sync` test, which forbids a desktop executor for a server node), so the spike executor + its test were removed. The design doc `docs/SPIKE_JTL_CONTEXT_INJECTION.md` remains as background.
 
 ## Deferred follow-ups (raised in the PR #147 review, out of that PR's scope)
 

@@ -274,11 +274,15 @@ describe('email-crm-store', () => {
       expect(r).toEqual({ rows: [], searchMode: 'like', hasMore: false });
     });
 
-    test('regex search filters rows', () => {
+    test('regex search matches candidate rows (fix: candidates were always empty)', () => {
       mock.setFtsTableExists(false);
-      const r = searchMessagesForAccountWithMeta(1, '/^Test subject$/i', { limit: 10 });
+      const r = searchMessagesForAccountWithMeta(1, '/^Test subject$/im', { limit: 10 });
       expect(r.searchMode).toBe('regex');
-      expect(r.rows).toEqual([]);
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]).toMatchObject({ subject: 'Test subject' });
+      const miss = searchMessagesForAccountWithMeta(1, '/^No such subject$/im', { limit: 10 });
+      expect(miss.searchMode).toBe('regex');
+      expect(miss.rows).toEqual([]);
     });
 
     test('fts hasMore when extra row returned', () => {
@@ -341,8 +345,139 @@ describe('email-crm-store', () => {
       expect(scoped.rows).toBeDefined();
       const all = searchMessagesForMailScopeWithMeta('all', 'x', { limit: 5 });
       expect(all.hasMore).toBe(false);
+      expect(all.searchMode).toBe('like');
       expect(searchMessagesForMailScope('all', '   ', 5, 'inbox')).toEqual([]);
       searchMessagesForMailScope('all', 'hello', 5, 'inbox');
+    });
+
+    function lastSearchSql(): string {
+      const calls = mock.db.prepare.mock.calls as unknown as [string][];
+      for (let i = calls.length - 1; i >= 0; i--) {
+        const sql = calls[i]?.[0] ?? '';
+        if (sql.includes('SELECT m.*')) return sql;
+      }
+      return '';
+    }
+
+    test('fts with zero rows on first page falls back to like', () => {
+      mock.setFtsTableExists(true);
+      const origAll = mock.stmt.all.getMockImplementation();
+      mock.stmt.all.mockImplementation((...args: unknown[]) => {
+        const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+        if (sql.includes('fts MATCH')) return [];
+        return origAll?.(...args) ?? [];
+      });
+      const r = searchMessagesForAccountWithMeta(1, 'hello', { limit: 10 });
+      expect(r.searchMode).toBe('like');
+      const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+      expect(sql).toContain('SELECT m.*');
+      expect(sql).not.toContain('fts MATCH');
+    });
+
+    test('paginating past a genuine fts end keeps fts mode (probe finds page-1 hit)', () => {
+      mock.setFtsTableExists(true);
+      const origAll = mock.stmt.all.getMockImplementation();
+      mock.stmt.all.mockImplementation((...args: unknown[]) => {
+        const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+        if (sql.includes('fts MATCH')) {
+          const offset = args[args.length - 1] as number;
+          return offset === 0 ? [{ id: 1 }] : [];
+        }
+        return origAll?.(...args) ?? [];
+      });
+      const r = searchMessagesForAccountWithMeta(1, 'hello', { limit: 10, offset: 10 });
+      expect(r.searchMode).toBe('fts');
+      expect(r.rows).toEqual([]);
+    });
+
+    test('paginating a like-mode query stays like (probe empty too)', () => {
+      mock.setFtsTableExists(true);
+      const origAll = mock.stmt.all.getMockImplementation();
+      mock.stmt.all.mockImplementation((...args: unknown[]) => {
+        const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+        if (sql.includes('fts MATCH')) return [];
+        return origAll?.(...args) ?? [];
+      });
+      const r = searchMessagesForAccountWithMeta(1, 'hello', { limit: 10, offset: 10 });
+      expect(r.searchMode).toBe('like');
+      const sql = (mock.db.prepare.mock.calls.at(-1)?.[0] as string) ?? '';
+      expect(sql).toContain('SELECT m.*');
+      expect(sql).not.toContain('fts MATCH');
+    });
+
+    test('fts terms use prefix queries and phrases stay exact (per-token match)', () => {
+      mock.setFtsTableExists(true);
+      searchMessagesForAccountWithMeta(1, 'rechnung "Auftrag 4711"');
+      const args = mock.stmt.all.mock.calls.at(0) as unknown[];
+      // Pro Token eine eigene MATCH-Expression (Nachricht ODER Anhang).
+      expect(args).toContain('"Auftrag 4711"');
+      expect(args).toContain('"rechnung"*');
+      expect(args).not.toContain('"Auftrag 4711" AND "rechnung"*');
+    });
+
+    test('operator-only query runs plain filtered select', () => {
+      mock.setFtsTableExists(true);
+      const r = searchMessagesForAccountWithMeta(1, 'von:max@test.de has:attachment', { limit: 10 });
+      expect(r.searchMode).toBe('like');
+      const sql = lastSearchSql();
+      expect(sql).not.toContain('fts MATCH');
+      expect(sql).toContain(`m.from_json LIKE ? ESCAPE '\\'`);
+      expect(sql).toContain('m.has_attachments = 1');
+      const args = mock.stmt.all.mock.calls.at(-1) as unknown[];
+      expect(args).toContain('%"address":"max@test.de"%');
+    });
+
+    test('to: operator matches to/cc/bcc and non-address values stay substrings', () => {
+      searchMessagesForAccountWithMeta(1, 'an:Mustermann betreff:Angebot');
+      const sql = lastSearchSql();
+      expect(sql).toContain('m.to_json LIKE ?');
+      expect(sql).toContain('m.cc_json LIKE ?');
+      expect(sql).toContain('m.bcc_json LIKE ?');
+      expect(sql).toContain('m.subject LIKE ?');
+      const args = mock.stmt.all.mock.calls.at(-1) as unknown[];
+      expect(args).toContain('%Mustermann%');
+      expect(args).toContain('%Angebot%');
+    });
+
+    test('multi-term like query ANDs one fields block per term', () => {
+      mock.setFtsTableExists(false);
+      searchMessagesForAccount(1, 'foo bar', { limit: 5 });
+      const sql = lastSearchSql();
+      expect(sql.match(/m\.subject LIKE \? ESCAPE/g)).toHaveLength(2);
+      expect(sql).toContain('m.attachments_json LIKE ?');
+      expect(sql).toContain('att.filename_display LIKE ?');
+      const args = mock.stmt.all.mock.calls.at(-1) as unknown[];
+      expect(args.filter((a) => a === '%foo%')).toHaveLength(15);
+      expect(args.filter((a) => a === '%bar%')).toHaveLength(15);
+    });
+
+    test('broad scope drops view filter and can include spam/trash', () => {
+      mock.setFtsTableExists(false);
+      searchMessagesForAccount(1, 'x', {
+        limit: 5,
+        view: 'inbox',
+        scope: { mode: 'broad' },
+      });
+      let sql = lastSearchSql();
+      expect(sql).toContain('m.soft_deleted = 0');
+      expect(sql).toContain(`COALESCE(m.spam_status, 'clean') <> 'spam'`);
+      expect(sql).not.toContain(`m.folder_kind = 'inbox'`);
+      expect(sql).not.toContain('snoozed_until');
+      expect(sql).not.toContain('done_local');
+
+      searchMessagesForAccount(1, 'x', {
+        limit: 5,
+        scope: { mode: 'broad', includeSpam: true, includeTrash: true },
+      });
+      sql = lastSearchSql();
+      expect(sql).not.toContain('m.soft_deleted = 0');
+      expect(sql).not.toContain(`<> 'spam'`);
+    });
+
+    test('quoted garbage query returns empty instead of the whole view', () => {
+      const r = searchMessagesForAccountWithMeta(1, '""', { limit: 5 });
+      expect(r.rows).toEqual([]);
+      expect(r.searchMode).toBe('like');
     });
   });
 });

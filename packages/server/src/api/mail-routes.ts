@@ -1162,6 +1162,24 @@ async function handleMessageList(req: ApiRequest, ports: ServerApiPorts): Promis
   if (spam === null) return error(400, 'invalid_spam', 'spam muss true oder false sein');
   const search = normalizeTextFilter(req.query?.search, 200);
   if (search === null) return error(400, 'invalid_search', 'search darf maximal 200 Zeichen haben');
+  const scopeModeRaw = req.query?.scopeMode;
+  if (scopeModeRaw !== undefined && scopeModeRaw !== '' && !isOneOf(scopeModeRaw, ['view', 'broad'])) {
+    return error(400, 'invalid_scope_mode', 'scopeMode muss view oder broad sein');
+  }
+  const scopeIncludeSpam = parseOptionalBoolean(req.query?.scopeIncludeSpam);
+  if (scopeIncludeSpam === null) return error(400, 'invalid_scope_include_spam', 'scopeIncludeSpam muss true oder false sein');
+  const scopeIncludeTrash = parseOptionalBoolean(req.query?.scopeIncludeTrash);
+  if (scopeIncludeTrash === null) return error(400, 'invalid_scope_include_trash', 'scopeIncludeTrash muss true oder false sein');
+  const scope =
+    scopeModeRaw === 'broad'
+      ? {
+          mode: 'broad' as const,
+          ...(scopeIncludeSpam === undefined ? {} : { includeSpam: scopeIncludeSpam }),
+          ...(scopeIncludeTrash === undefined ? {} : { includeTrash: scopeIncludeTrash }),
+        }
+      : scopeModeRaw === 'view'
+        ? { mode: 'view' as const }
+        : undefined;
 
   if (!ports.emailMessages) return error(503, 'email_messages_unavailable', 'Email message API nicht konfiguriert');
   const result = await ports.emailMessages.list({
@@ -1181,6 +1199,7 @@ async function handleMessageList(req: ApiRequest, ports: ServerApiPorts): Promis
     ...(done === undefined ? {} : { done }),
     ...(spam === undefined ? {} : { spam }),
     ...(search === undefined ? {} : { search }),
+    ...(scope === undefined ? {} : { scope }),
   });
   return data(200, sanitizeEmailMessageList(result));
 }
@@ -2386,6 +2405,7 @@ function sanitizeEmailMessageList(result: EmailMessageListResult): EmailMessageL
     items: result.items.map((message) => sanitizeEmailMessage(message, false)),
     nextCursor: result.nextCursor,
     ...(result.searchMode === undefined ? {} : { searchMode: result.searchMode }),
+    ...(result.hasMore === undefined ? {} : { hasMore: result.hasMore }),
   };
 }
 
@@ -2424,6 +2444,7 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     snoozedUntil: message.snoozedUntil,
     draftAttachmentPathsJson: message.draftAttachmentPathsJson,
     replyParentMessageId: message.replyParentMessageId,
+    ...(message.searchSnippet === undefined ? {} : { searchSnippet: message.searchSnippet }),
     ...(includeBody ? {
       bodyText: message.bodyText,
       bodyHtml: message.bodyHtml,
@@ -4484,7 +4505,7 @@ function parseOptionalMessageView(value: string | undefined) {
 
 function parseOptionalMessageSort(value: string | undefined) {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['date_desc', 'date_asc', 'priority']) ? value : null;
+  return isOneOf(value, ['date_desc', 'date_asc', 'priority', 'relevance']) ? value : null;
 }
 
 function parseOptionalMessageListFilter(value: string | undefined) {

@@ -353,6 +353,8 @@ const EmailChannels = literal({
   ExportWorkflowBundleToFile: 'workflow:export-bundle-to-file',
   GetWorkflowAutomationSettings: 'workflow:get-automation-settings',
   SetWorkflowAutomationSettings: 'workflow:set-automation-settings',
+  ApproveDraftSend: 'workflow:approve-draft-send',
+  DismissDraftApproval: 'workflow:dismiss-draft-approval',
   ListKnowledgeBases: 'workflow:list-knowledge-bases',
   CreateKnowledgeBase: 'workflow:create-knowledge-base',
   UpdateKnowledgeBase: 'workflow:update-knowledge-base',

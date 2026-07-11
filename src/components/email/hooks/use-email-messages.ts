@@ -48,6 +48,8 @@ export function useEmailMessages() {
     mailView,
     categoryFilterId,
     searchQuery,
+    searchScope,
+    searchSortMode,
     selectedMessage,
     setSelectedMessage,
     listSortMode,
@@ -62,11 +64,18 @@ export function useEmailMessages() {
   const [syncing, setSyncing] = useState(false)
   const [scrollToMessageId, setScrollToMessageId] = useState<number | null>(null)
   const [debouncedSearchQ, setDebouncedSearchQ] = useState("")
+  // Ref statt Callback-Dependency: Scope-Umschalten ohne aktive Suche darf
+  // keinen Refetch auslösen (der Reload-Effekt hängt am query-gated Key).
+  const searchScopeRef = useRef(searchScope)
+  const searchSortRef = useRef(searchSortMode)
+  // Lade-Generation: volle Reloads starten eine neue Generation; Antworten
+  // aelterer Generationen (z. B. ein loadMore, waehrend Query/Scope/Sort
+  // wechselten) werden verworfen statt in die neue Liste zu mergen.
+  const loadGenerationRef = useRef(0)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
-  const loadSeqRef = useRef(0)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadMessagesRef = useRef<(
     accountScope: MailAccountScope,
@@ -81,6 +90,14 @@ export function useEmailMessages() {
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+
+  useEffect(() => {
+    searchScopeRef.current = searchScope
+  }, [searchScope])
+
+  useEffect(() => {
+    searchSortRef.current = searchSortMode
+  }, [searchSortMode])
 
   useEffect(() => {
     selectedMessageIdRef.current = selectedMessage?.id ?? null
@@ -182,15 +199,27 @@ export function useEmailMessages() {
     ) => {
       const append = opts?.append ?? false
       const silent = opts?.silent ?? false
+      const generation = append ? loadGenerationRef.current : ++loadGenerationRef.current
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
-      const requestSeq = ++loadSeqRef.current
       if (append) setLoadingMore(true)
       else if (!silent) setLoadingMessages(true)
       try {
         let list: EmailMessage[]
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
-        if (query.trim() && view !== "trash") {
+        if (query.trim()) {
+          const scopePrefs = searchScopeRef.current
+          const broadSearch = scopePrefs.allFolders
+          // Spam-/Papierkorb-Ansichten müssen sich selbst immer durchsuchen
+          // können, auch wenn der Nutzer sie global ausgeschlossen hat.
+          const scope = broadSearch
+            ? {
+                mode: "broad" as const,
+                includeSpam:
+                  scopePrefs.includeSpam || view === "spam" || view === "spam_review",
+                includeTrash: scopePrefs.includeTrash || view === "trash",
+              }
+            : { mode: "view" as const }
           const res = await invokeRenderer(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
@@ -198,14 +227,18 @@ export function useEmailMessages() {
             offset,
             view,
             categoryId: view === "inbox" ? catId : null,
-            doneFilter,
+            // Broad-Suche ignoriert den Erledigt-Filter — nicht mitsenden,
+            // damit UI (deaktivierte Chips) und Verhalten übereinstimmen.
+            doneFilter: broadSearch ? undefined : doneFilter,
+            scope,
+            sort: searchSortRef.current,
           }) as {
             messages: EmailMessage[]
             searchMode: "fts" | "like" | "regex"
             hasMore?: boolean
           }
+          if (generation !== loadGenerationRef.current) return
           list = res.messages
-          if (requestSeq !== loadSeqRef.current) return
           if (!silent) {
             if (res.searchMode === "like") {
               toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
@@ -213,7 +246,12 @@ export function useEmailMessages() {
                 duration: 4000,
               })
             } else if (res.searchMode === "regex") {
-              toast.info("Regex-Suche aktiv (/muster/flags).", { id: "search-regex", duration: 3000 })
+              // Hinweis auf den Scan-Deckel: Regex durchsucht die neuesten
+              // Nachrichten (Desktop: 5000-Kandidaten-Fenster).
+              toast.info("Regex-Suche aktiv (/muster/flags) – durchsucht die neuesten Nachrichten.", {
+                id: "search-regex",
+                duration: 3000,
+              })
             }
           }
           setHasMore(Boolean(res.hasMore))
@@ -228,7 +266,7 @@ export function useEmailMessages() {
             listFilter: listFilter === "all" ? undefined : listFilter,
             doneFilter,
           }) as EmailMessage[]
-          if (requestSeq !== loadSeqRef.current) return
+          if (generation !== loadGenerationRef.current) return
           setHasMore(list.length >= PAGE_SIZE)
         }
         if (append) {
@@ -280,11 +318,11 @@ export function useEmailMessages() {
         }
       } catch (e) {
         logError("use-email-messages: load", e)
-        if (!silent && requestSeq === loadSeqRef.current) {
+        if (!silent && generation === loadGenerationRef.current) {
           toast.error("Nachrichten konnten nicht geladen werden.")
         }
       } finally {
-        if (requestSeq === loadSeqRef.current) {
+        if (generation === loadGenerationRef.current) {
           setLoadingMessages(false)
           setLoadingMore(false)
         }
@@ -296,6 +334,12 @@ export function useEmailMessages() {
   useEffect(() => {
     loadMessagesRef.current = loadMessages
   }, [loadMessages])
+
+  // Scope-Änderungen lösen nur bei aktiver Suche einen Reload aus; ohne Query
+  // bleibt der Toggle folgenlos (die Auswahl gilt ab der nächsten Suche).
+  const searchScopeKey = debouncedSearchQ.trim()
+    ? `${searchScope.allFolders}:${searchScope.includeSpam}:${searchScope.includeTrash}:${searchSortMode}`
+    : ""
 
   useEffect(() => {
     offsetRef.current = 0
@@ -309,7 +353,7 @@ export function useEmailMessages() {
         messageListFilter,
       )
     } else {
-      loadSeqRef.current += 1
+      loadGenerationRef.current += 1
       setMessages([])
       setLoadingMessages(false)
       setLoadingMore(false)
@@ -322,6 +366,7 @@ export function useEmailMessages() {
     listSortMode,
     messageListFilter,
     messageDoneFilter,
+    searchScopeKey,
     loadMessages,
   ])
 

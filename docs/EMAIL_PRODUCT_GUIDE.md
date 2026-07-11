@@ -78,8 +78,11 @@ Dieses Dokument beschreibt das **Soll-Verhalten** des SimpleCRM-E-Mail-Moduls au
 - **Ausgehend:** Trigger `outbound` (Qualitätsprüfung vor SMTP)
 - Graph-Editor: modulare Knoten aus der Palette; Ausführung über `graph_json`.
 - **KI-Profil** pro KI-Knoten: Dropdown in den Knoten-Eigenschaften (oder Experten-JSON `profileId`). Reihenfolge bei Prompt-Knoten: Knoten-Profil → Prompt-Profil → Standard-Profil.
+- **Zwei-Stufen-KI-Antwort:** `ai.draft_reply` entwirft eine Antwort (Wissensbasis, Anrede, Konto-Signatur), `ai.review_draft` liest mit eigenem KI-Profil gegen und verzweigt in `send`/`hold`. Auf `hold` bekommt der Entwurf den Zustand **„Wartet auf Freigabe“**: neutrales Banner im Postfach mit KI-Begründung und den Buttons **Jetzt senden** / **Als Entwurf behalten**; Bearbeiten oder Versenden löscht den Zustand. Automatischer Versand nur bei aktivem Master-Schalter (**Einstellungen → Automatisierung**, Default aus) und innerhalb des Tageslimits pro Absender.
 
 Ausführung intern: `workflow-executor` → `runtime` → Registry-Knoten. Tests: `npm test` (Workflow-Integration).
+
+Endanwender-Anleitung: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md).
 
 ---
 
@@ -111,7 +114,7 @@ Ausführung intern: `workflow-executor` → `runtime` → Registry-Knoten. Tests
 | OAuth | Google/Microsoft (Implementierung im Main-Prozess) |
 | KI | Profile, Keys, Modelle |
 | Wissensbasis | RAG-Sammlungen |
-| Automatisierung | Absender-Listen, Spam-Schwelle, HTTP-Allowlist, externe API |
+| Automatisierung | Auto-Antwort-Schalter + Tageslimit, Absender-Listen, Spam-Schwelle, HTTP-Allowlist, externe API |
 | KI-Prompts | Vorlagen für Transform/KI-Knoten |
 | Team | Mitglieder, Signaturen, Zuweisung |
 | Textbausteine | CRM-Platzhalter |
@@ -123,7 +126,6 @@ Ausführung intern: `workflow-executor` → `runtime` → Registry-Knoten. Tests
 
 - Mehrbenutzer-Login mit Signatur pro angemeldetem User
 - Manuelle Kategorie-Zuweisung in der UI
-- KI-Profil-Dropdown im Workflow-Knoten-Panel (statt nur JSON)
 - Regex/erweiterte Suche, Pagination für Millionen Mails
 - IMAP-Ordner-Sync für Archiv/Spam auf dem Server
 

@@ -46,8 +46,9 @@
 
 | Document | Purpose |
 |----------|---------|
-| [WORKFLOW_PHASES.md](WORKFLOW_PHASES.md) | **Ist-stand** W0–W7 + post-inbox additions |
+| [WORKFLOW_PHASES.md](WORKFLOW_PHASES.md) | **Ist-stand** W0–W7 + post-inbox additions + 2026-07 overhaul |
 | [WORKFLOW_VISION.md](WORKFLOW_VISION.md) | Long-term target (not all 🔲 = todo) |
+| [USER_GUIDE_WORKFLOWS.md](USER_GUIDE_WORKFLOWS.md) | End-user oriented (Editor, Vorlagen, KI-Antwort mit Gegenprüfung, Freigabe) |
 
 ## External automation API
 

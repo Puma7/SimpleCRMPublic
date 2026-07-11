@@ -3,12 +3,21 @@
 import { useCallback, useEffect, useState } from "react"
 import type { Node } from "@xyflow/react"
 import { IPCChannels } from "@shared/ipc/channels"
+import {
+  humanizeWorkflowPort,
+  humanizeWorkflowStepMessage,
+  stepTone,
+} from "@shared/workflow-run-humanize"
+import { TONE_BORDER, TONE_TEXT } from "./run-tone-styles"
 import { resolveRunStepNodeLabel } from "@shared/workflow-ui-labels"
 import { Loader2 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { toast } from "sonner"
 import { invokeRenderer } from "@/services/transport"
-import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
+import {
+  getCachedWorkflowNodeCatalogEntry,
+  useWorkflowNodeCatalog,
+} from "./use-workflow-node-catalog"
 
 type RunRow = {
   id: number
@@ -32,6 +41,7 @@ type Props = {
   workflowId: number | null
   graphNodes: Node[]
 }
+
 
 export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
   const { labelByType } = useWorkflowNodeCatalog()
@@ -100,7 +110,7 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
                     onClick={() => void loadSteps(r.id)}
                   >
                     <div className="font-medium">Lauf #{r.id}</div>
-                    <div className="text-muted-foreground">
+                    <div className={TONE_TEXT[stepTone(r.status, null)]}>
                       {r.status} ·{" "}
                       {r.finished_at ? new Date(r.finished_at).toLocaleString("de-DE") : "—"}
                     </div>
@@ -125,17 +135,40 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
                     data: n.data as Record<string, unknown>,
                   })),
                 })
+                const tone = stepTone(s.status, s.port)
+                const humanMessage = humanizeWorkflowStepMessage(s.message)
+                // Port-Label bevorzugt aus dem Knoten-Schema (z. B. „Erlaubt“/„Prüfen“),
+                // generische Übersetzung nur als Fallback.
+                const schemaPortLabel = getCachedWorkflowNodeCatalogEntry(s.node_type)?.ports?.find(
+                  (p) => p.id === s.port,
+                )?.label
+                const portLabel = schemaPortLabel ?? humanizeWorkflowPort(s.port)
                 return (
-                  <li key={s.id} className="rounded border bg-background px-2 py-1.5">
+                  <li
+                    key={s.id}
+                    className={`rounded border bg-background px-2 py-1.5 ${TONE_BORDER[tone]}`}
+                  >
                     <div className="font-medium">{title}</div>
                     {subtitle ? (
                       <div className="font-mono text-[10px] text-muted-foreground">{subtitle}</div>
                     ) : null}
-                    <div className="text-muted-foreground">
+                    <div className={TONE_TEXT[tone]}>
                       {s.status}
-                      {s.port ? ` · ${s.port}` : ""} · {s.duration_ms} ms
+                      {portLabel ? (
+                        <span title={s.port ?? undefined}> · {portLabel}</span>
+                      ) : null}{" "}
+                      · {s.duration_ms} ms
                     </div>
-                    {s.message ? <div className="text-muted-foreground">{s.message}</div> : null}
+                    {humanMessage ? (
+                      <div className={TONE_TEXT[tone]} title={s.message ?? undefined}>
+                        {humanMessage}
+                      </div>
+                    ) : null}
+                    {humanMessage && s.message && humanMessage !== s.message ? (
+                      <div className="break-all font-mono text-[10px] text-muted-foreground/70">
+                        {s.message}
+                      </div>
+                    ) : null}
                   </li>
                 )
               })}

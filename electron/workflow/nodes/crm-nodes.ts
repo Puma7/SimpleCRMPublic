@@ -76,7 +76,10 @@ export function registerCrmNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { dealId: 0, stage: '' },
     execute: async (ctx, config) => {
-      const dealId = Number(config.dealId ?? ctx.variables['deal.id'] ?? 0);
+      // dealId 0 (Katalog-Default) heißt "nimm den verknüpften Deal" — der
+      // Fallback auf die deal.id-Variable darf nicht an 0 ?? scheitern.
+      const configuredId = Number(config.dealId ?? 0);
+      const dealId = configuredId > 0 ? configuredId : Number(ctx.variables['deal.id'] ?? 0);
       const stage = String(config.stage ?? '').trim();
       if (!dealId) return { status: 'skipped', message: 'Keine Deal-ID' };
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run deal update' };

@@ -191,7 +191,7 @@ async function handleWorkflowNodeCatalogList(
   }
   const catalog = await ports.workflowNodeCatalog.list({ workspaceId: principal.workspaceId });
   return data(200, catalog
-    .filter((entry) => isServerWorkflowNodeTypeSupported(entry.type))
+    .filter((entry) => entry.runtime !== 'desktop' && isServerWorkflowNodeTypeSupported(entry.type))
     .map(sanitizeWorkflowNodeCatalogEntry));
 }
 
@@ -1237,6 +1237,18 @@ function sanitizeWorkflowTemplate(template: WorkflowTemplate): WorkflowTemplate 
   };
 }
 
+type WorkflowNodeFieldSchema = NonNullable<WorkflowNodeCatalogEntry['fields']>[number];
+type WorkflowNodePortSchema = NonNullable<WorkflowNodeCatalogEntry['ports']>[number];
+type WorkflowNodeOutputSchema = NonNullable<WorkflowNodeCatalogEntry['outputs']>[number];
+type WorkflowNodeDocsSchema = NonNullable<WorkflowNodeCatalogEntry['docs']>;
+
+/**
+ * Whitelist-Klon eines Katalogeintrags fuer die API-Antwort: nur bekannte
+ * Keys, nur plain data (keine Funktionen wie execute-Handler). Die
+ * Schema-Erweiterungen (fields/ports/outputs/docs/customWidget) und der
+ * runtime-Flag MUESSEN durchgereicht werden — der Renderer baut daraus das
+ * Eigenschaften-Formular (SchemaFields), die Canvas-Ports und die Referenz.
+ */
 function sanitizeWorkflowNodeCatalogEntry(entry: WorkflowNodeCatalogEntry): WorkflowNodeCatalogEntry {
   return {
     type: entry.type,
@@ -1245,7 +1257,94 @@ function sanitizeWorkflowNodeCatalogEntry(entry: WorkflowNodeCatalogEntry): Work
     ...(entry.description === undefined ? {} : { description: entry.description }),
     canvasType: entry.canvasType,
     ...(entry.defaultConfig === undefined ? {} : { defaultConfig: { ...entry.defaultConfig } }),
+    ...(entry.runtime === undefined ? {} : { runtime: entry.runtime }),
+    ...(entry.fields === undefined ? {} : { fields: entry.fields.map(sanitizeWorkflowNodeFieldSchema) }),
+    ...(entry.ports === undefined ? {} : { ports: entry.ports.map(sanitizeWorkflowNodePortSchema) }),
+    ...(entry.outputs === undefined ? {} : { outputs: entry.outputs.map(sanitizeWorkflowNodeOutputSchema) }),
+    ...(entry.docs === undefined ? {} : { docs: sanitizeWorkflowNodeDocsSchema(entry.docs) }),
+    ...(entry.customWidget === undefined ? {} : { customWidget: entry.customWidget }),
   };
+}
+
+function sanitizeWorkflowNodeFieldSchema(field: WorkflowNodeFieldSchema): WorkflowNodeFieldSchema {
+  return {
+    key: field.key,
+    type: field.type,
+    label: field.label,
+    ...(field.help === undefined ? {} : { help: field.help }),
+    ...(field.example === undefined ? {} : { example: field.example }),
+    ...(field.placeholder === undefined ? {} : { placeholder: field.placeholder }),
+    ...(field.required === undefined ? {} : { required: field.required }),
+    ...(field.options === undefined ? {} : {
+      options: field.options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        ...(option.description === undefined ? {} : { description: option.description }),
+      })),
+    }),
+    ...(field.validation === undefined ? {} : {
+      validation: {
+        ...(field.validation.min === undefined ? {} : { min: field.validation.min }),
+        ...(field.validation.max === undefined ? {} : { max: field.validation.max }),
+        ...(field.validation.integer === undefined ? {} : { integer: field.validation.integer }),
+        ...(field.validation.pattern === undefined ? {} : { pattern: field.validation.pattern }),
+        ...(field.validation.patternHint === undefined ? {} : { patternHint: field.validation.patternHint }),
+        ...(field.validation.maxLength === undefined ? {} : { maxLength: field.validation.maxLength }),
+      },
+    }),
+    ...(field.interpolate === undefined ? {} : { interpolate: field.interpolate }),
+    ...(field.advanced === undefined ? {} : { advanced: field.advanced }),
+    ...(field.language === undefined ? {} : { language: field.language }),
+    ...(field.showIf === undefined ? {} : {
+      showIf: { field: field.showIf.field, equals: plainJsonValue(field.showIf.equals) },
+    }),
+  };
+}
+
+function sanitizeWorkflowNodePortSchema(port: WorkflowNodePortSchema): WorkflowNodePortSchema {
+  return {
+    id: port.id,
+    label: port.label,
+    ...(port.description === undefined ? {} : { description: port.description }),
+    kind: port.kind,
+    ...(port.color === undefined ? {} : { color: port.color }),
+    ...(port.synonyms === undefined ? {} : { synonyms: [...port.synonyms] }),
+  };
+}
+
+function sanitizeWorkflowNodeOutputSchema(output: WorkflowNodeOutputSchema): WorkflowNodeOutputSchema {
+  return {
+    name: output.name,
+    label: output.label,
+    ...(output.description === undefined ? {} : { description: output.description }),
+    ...(output.example === undefined ? {} : { example: output.example }),
+    type: output.type,
+    ...(output.dynamicFromField === undefined ? {} : { dynamicFromField: output.dynamicFromField }),
+  };
+}
+
+function sanitizeWorkflowNodeDocsSchema(docs: WorkflowNodeDocsSchema): WorkflowNodeDocsSchema {
+  return {
+    ...(docs.longHelp === undefined ? {} : { longHelp: docs.longHelp }),
+    ...(docs.prerequisites === undefined ? {} : { prerequisites: [...docs.prerequisites] }),
+    ...(docs.seeAlso === undefined ? {} : { seeAlso: [...docs.seeAlso] }),
+  };
+}
+
+/** showIf.equals ist typisiert `unknown` — nur JSON-taugliche Werte durchlassen. */
+function plainJsonValue(value: unknown): unknown {
+  if (value === null
+    || typeof value === 'string'
+    || typeof value === 'number'
+    || typeof value === 'boolean') {
+    return value;
+  }
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? undefined : JSON.parse(json);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseWorkflowGraphCompilePayload(body: unknown): WorkflowGraphDocument {

@@ -69,6 +69,11 @@ import {
   formatMessageFrom,
   hasLocalIpc,
   invokeIpc,
+  isActivelySnoozedMessage,
+  isDraftFolderMessage,
+  isEditableDraftMessage,
+  isInboxMessage,
+  isTrashedMessage,
   needsFullMessageBody,
   stripHtmlToText,
   type CategoryRow,
@@ -260,6 +265,9 @@ export function MessageViewer(props: Props) {
   const [translateResult, setTranslateResult] = useState<string | null>(null)
   const [translateLoading, setTranslateLoading] = useState(false)
   const [deleteDraftOpen, setDeleteDraftOpen] = useState(false)
+  // Freigabe-Banner ("Jetzt senden"/"Als Entwurf behalten"): ein Klick plant
+  // einen echten Versand — Doppelklick darf keinen zweiten Aufruf auslösen.
+  const [approvalBusy, setApprovalBusy] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [readReceiptRequested, setReadReceiptRequested] = useState(false)
@@ -535,14 +543,31 @@ export function MessageViewer(props: Props) {
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
     (selectedMessage.outbound_hold ?? 0) > 0
-  const isDraft =
+  // Neutraler Zustand (kein Fehler): Die Gegenlese-KI hat den KI-Entwurf zur
+  // menschlichen Freigabe vorgelegt (gesetzt vom Workflow-Knoten ai.review_draft).
+  // Message-basiert wie die übrigen Controls — Freigabe-Entwürfe erscheinen
+  // auch in der Inbox-View und in der Broad-Suche.
+  const isAwaitingApproval =
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
-    (mailView === "drafts" || mailView === "scheduled_send" || isOutboundHeld)
+    selectedMessage.approval_state === "pending"
+  // Message-basiert statt view-basiert: Drafts aus der Broad-Suche (Treffer
+  // ausserhalb der drafts/scheduled_send-Views) sind sonst nicht editierbar.
+  const isDraft = isEditableDraftMessage(selectedMessage)
 
-  const inTrash = mailView === "trash"
-  const inDraftsView = mailView === "drafts" || mailView === "scheduled_send"
+  // Message-basiert statt view-basiert: soft-geloeschte Treffer der Broad-
+  // Suche ("Papierkorb einbeziehen") brauchen Wiederherstellen- statt der
+  // normalen destruktiven Controls; in der Trash-View selbst ist jede Zeile
+  // soft-geloescht, dort aendert sich nichts.
+  const inTrash = isTrashedMessage(selectedMessage)
+  // Message-basiert statt view-basiert: Draft-Zeilen aus der Broad-Suche
+  // (auch uid >= 0-IMAP-Drafts) verhalten sich wie in der Drafts-View —
+  // keine Antworten-/Spam-Controls, dafuer der IMAP-Draft-Loeschen-Button.
+  const inDraftFolder = isDraftFolderMessage(selectedMessage)
   const inSnoozed = mailView === "snoozed"
+  // Message-basiert statt view-basiert: aktiv gesnoozte Broad-Treffer
+  // brauchen Unsnooze/"Snooze ändern" auch ausserhalb der snoozed-View.
+  const isSnoozedRow = isActivelySnoozedMessage(selectedMessage)
 
   const handleSnoozeMessage = async (until: string | null) => {
     if (!selectedMessage) return
@@ -555,6 +580,10 @@ export function MessageViewer(props: Props) {
     } else {
       toast.success("Wieder im Posteingang")
     }
+    // Bewusst view-basiert (nicht zeilenbasiert): entscheidet nur, ob nach
+    // dem Snooze/Unsnooze die Auswahl weiterspringt oder die Liste
+    // refresht — fuer Broad-Suche-Treffer schlimmstenfalls ein Refresh
+    // statt Weiterspringen; rein kosmetisch.
     const leavesCurrentView =
       (until != null && mailView === "inbox") || (until == null && inSnoozed)
     if (leavesCurrentView) {
@@ -599,6 +628,48 @@ export function MessageViewer(props: Props) {
     toast.success("Wiederhergestellt (vorheriger Ordner)")
     await refreshCurrentMessage()
     await refreshList({ preserveSelection: true })
+  }
+
+  const handleApproveDraftSend = async () => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.ApproveDraftSend, {
+        draftId: selectedMessage.id,
+      }) as { success: boolean; error?: string }
+      if (!result.success) {
+        toast.error(result.error ?? "Freigabe fehlgeschlagen.")
+        return
+      }
+      toast.success("Freigegeben — Antwort wird gesendet.")
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Freigabe fehlgeschlagen.")
+    } finally {
+      setApprovalBusy(false)
+    }
+  }
+
+  const handleDismissDraftApproval = async () => {
+    if (approvalBusy) return
+    setApprovalBusy(true)
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.DismissDraftApproval, {
+        draftId: selectedMessage.id,
+      }) as { success: boolean; error?: string }
+      if (!result.success) {
+        toast.error(result.error ?? "Aktion fehlgeschlagen.")
+        return
+      }
+      toast.success("Als Entwurf behalten.")
+      await refreshCurrentMessage()
+      await refreshList({ preserveSelection: true })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Aktion fehlgeschlagen.")
+    } finally {
+      setApprovalBusy(false)
+    }
   }
 
   const handleArchive = async () => {
@@ -812,7 +883,7 @@ export function MessageViewer(props: Props) {
                 />
               </>
             ) : null}
-            {inDraftsView && !inTrash && selectedMessage.uid >= 0 ? (
+            {inDraftFolder && !inTrash && selectedMessage.uid >= 0 ? (
               <Button
                 type="button"
                 size="sm"
@@ -824,7 +895,7 @@ export function MessageViewer(props: Props) {
                 Löschen
               </Button>
             ) : null}
-            {selectedMessage.uid >= 0 && !inTrash && !inDraftsView ? (
+            {selectedMessage.uid >= 0 && !inTrash && !inDraftFolder ? (
               <>
                 <Button
                   type="button"
@@ -934,7 +1005,7 @@ export function MessageViewer(props: Props) {
                     {selectedMessage.seen_local ? "Ungelesen" : "Gelesen"}
                   </span>
                 </Button>
-                {mailView === "inbox" && selectedMessage.uid >= 0 ? (
+                {isInboxMessage(selectedMessage) ? (
                   <Button
                     type="button"
                     size="sm"
@@ -1009,7 +1080,7 @@ export function MessageViewer(props: Props) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            {isSyncableMail && !inTrash && !inDraftsView && !isDraft ? (
+            {isSyncableMail && !inTrash && !inDraftFolder && !isDraft ? (
               <>
                 {selectedMessage.spam_status === "review" || selectedMessage.spam_status === "spam" || selectedMessage.is_spam ? (
                   <Button
@@ -1169,6 +1240,40 @@ export function MessageViewer(props: Props) {
                       </Button>
                     </div>
                   ) : null}
+                  {isAwaitingApproval ? (
+                    <div
+                      role="status"
+                      className="rounded-md border border-sky-500/50 bg-sky-500/10 px-3 py-2 text-sm text-sky-900 dark:text-sky-200"
+                    >
+                      <p className="font-semibold">Wartet auf Freigabe</p>
+                      <p className="mt-1 text-[13px] leading-snug">
+                        {selectedMessage.approval_reason ||
+                          "Die Gegenlese-KI empfiehlt eine menschliche Prüfung."}{" "}
+                        Diese Antwort wurde von der KI entworfen und gegengelesen.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={approvalBusy}
+                          onClick={() => void handleApproveDraftSend()}
+                        >
+                          {approvalBusy ? "Wird verarbeitet …" : "Jetzt senden"}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          disabled={approvalBusy}
+                          onClick={() => void handleDismissDraftApproval()}
+                        >
+                          Als Entwurf behalten
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                   {selectedMessage.archived ? (
                     <span className="inline-block rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-700 dark:text-amber-400">
                       Archiviert
@@ -1241,7 +1346,7 @@ export function MessageViewer(props: Props) {
                         Als .eml
                       </Button>
                       <SnoozePopover
-                        showUnsnooze={inSnoozed}
+                        showUnsnooze={isSnoozedRow}
                         onUnsnooze={() => void handleSnoozeMessage(null)}
                         onSnooze={(until) => void handleSnoozeMessage(until)}
                       >
@@ -1252,7 +1357,7 @@ export function MessageViewer(props: Props) {
                           className="h-8 gap-1.5 text-xs"
                         >
                           <Clock className="h-3.5 w-3.5" />
-                          {inSnoozed ? "Snooze ändern" : "Zurückstellen"}
+                          {isSnoozedRow ? "Snooze ändern" : "Zurückstellen"}
                         </Button>
                       </SnoozePopover>
                     </>

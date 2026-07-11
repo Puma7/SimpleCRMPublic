@@ -339,6 +339,7 @@ type EmailMessageRecord = {
   bcc?: unknown
   dateReceived?: string | null
   snippet?: string | null
+  searchSnippet?: string | null
   seenLocal?: boolean | number | null
   doneLocal?: boolean | number | null
   archived?: boolean | number | null
@@ -2473,6 +2474,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.SearchMessages, ([payload]) => {
     const input = objectPayload(payload, "email message search payload")
+    // Suchbereich (broad/view) wird flach durchgereicht und serverseitig
+    // umgesetzt (Suche Phase 3: broad-Scope, Relevanz, search_snippet).
+    const scope = input.scope as
+      | { mode?: string; includeSpam?: boolean; includeTrash?: boolean }
+      | undefined
+    const scopeMode = scope?.mode === "broad" || scope?.mode === "view" ? scope.mode : undefined
     return {
       method: "GET",
       path: "/api/v1/email/messages",
@@ -2484,13 +2491,23 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         view: optionalMessageViewValue(input.view),
         categoryId: optionalPositiveQueryId(input.categoryId, "email category id"),
         doneFilter: optionalMessageDoneFilterValue(input.doneFilter),
+        sort: input.sort === "relevance" ? "relevance" : undefined,
+        scopeMode,
+        scopeIncludeSpam: scopeMode === "broad" && scope?.includeSpam === true ? true : undefined,
+        scopeIncludeTrash: scopeMode === "broad" && scope?.includeTrash === true ? true : undefined,
       }),
       transform: (body) => {
-        const result = dataBody<ListResult<EmailMessageRecord> & { searchMode?: "fts" | "like" | "regex" }>(body)
+        const result = dataBody<ListResult<EmailMessageRecord> & { searchMode?: "fts" | "like" | "regex"; hasMore?: boolean }>(body)
         return {
           messages: (Array.isArray(result) ? result : result.items ?? []).map(mapEmailMessageRecord),
           searchMode: Array.isArray(result) ? "like" : result.searchMode ?? "like",
-          hasMore: Array.isArray(result) ? false : result.nextCursor != null,
+          // Explizites hasMore bevorzugen: sort=relevance liefert bewusst
+          // keinen nextCursor (Offset-Pagination), hat aber Folgeseiten.
+          hasMore: Array.isArray(result)
+            ? false
+            : typeof result.hasMore === "boolean"
+              ? result.hasMore
+              : result.nextCursor != null,
         }
       },
     }
@@ -2797,6 +2814,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       senderWhitelist: string
       senderBlacklist: string
       spamScoreThreshold: string
+      autoReplyEnabled: boolean
+      // Fehlt serverseitig, solange das Tageslimit dort nicht durchgesetzt
+      // wird — das Automatisierungs-Panel blendet das Feld dann aus.
+      autoReplyMaxPerSenderPerDay?: number
     }>(body),
   })],
   [IPCChannels.Email.SetWorkflowAutomationSettings, ([payload]) => ({
@@ -5114,6 +5135,7 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     message_id: record.messageId ?? null,
     subject: record.subject ?? null,
     snippet: record.snippet ?? null,
+    search_snippet: record.searchSnippet ?? null,
     date_received: record.dateReceived ?? null,
     from_json: addressJsonString(record.from),
     to_json: addressJsonString(record.to),
@@ -5126,6 +5148,9 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     is_spam: record.isSpam ? 1 : 0,
     spam_status: record.spamStatus ?? null,
     archived: record.archived ? 1 : 0,
+    // Draft-Erkennung im Viewer (isEditableDraftMessage) braucht den
+    // Loesch-Status, damit soft-geloeschte Drafts Papierkorb-Controls zeigen.
+    soft_deleted: record.softDeleted ? 1 : 0,
     ticket_code: record.ticketCode ?? null,
     thread_id: record.threadId ?? null,
     imap_thread_id: record.imapThreadId ?? null,
@@ -6324,6 +6349,8 @@ function mapWorkflowAutomationSettingsPayload(value: unknown): Record<string, un
     senderWhitelist: input.senderWhitelist === undefined ? undefined : optionalTrimmedText(input.senderWhitelist, "workflow sender whitelist", 10000),
     senderBlacklist: input.senderBlacklist === undefined ? undefined : optionalTrimmedText(input.senderBlacklist, "workflow sender blacklist", 10000),
     spamScoreThreshold: input.spamScoreThreshold === undefined ? undefined : boundedNumberText(input.spamScoreThreshold, "workflow spam score threshold", 1, 100, true),
+    autoReplyEnabled: optionalBoolean(input.autoReplyEnabled, "workflow auto reply enabled"),
+    autoReplyMaxPerSenderPerDay: input.autoReplyMaxPerSenderPerDay === undefined ? undefined : boundedNumber(input.autoReplyMaxPerSenderPerDay, "workflow auto reply max per sender per day", 1, 50, true),
   })
 }
 

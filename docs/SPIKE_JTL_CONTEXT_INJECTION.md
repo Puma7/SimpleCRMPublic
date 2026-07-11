@@ -1,5 +1,12 @@
 # Spike: Auto-inject a JTL context block into inbound mail for AI nodes
 
+> **SUPERSEDED (2026-07-11).** PR #146 rebuilt the workflow node system and now
+> ships `jtl.order_context` in the core node-schema/catalog as a `runtime: 'server'`
+> (server-only) node. The desktop-executor prototype this spike built was removed
+> on the merge (it contradicted #146's server-only classification and its
+> `workflow-node-catalog-sync` test). This doc is kept as background for the
+> design questions; the implementation now lives with #146.
+
 Status: COMPLETE (spike) — see recommendation · Planned at f24fb27
 
 ## Question

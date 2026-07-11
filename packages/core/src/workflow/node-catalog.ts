@@ -7,15 +7,22 @@ export type WorkflowNodeCategory =
   | 'integration'
   | 'code';
 
+import type { WorkflowNodeSchemaExtension } from './node-schema';
+import { WORKFLOW_NODE_SCHEMAS } from './schema';
+
 export type WorkflowNodeCanvasType = 'trigger' | 'condition' | 'action' | 'registry';
 
-export type WorkflowNodeCatalogEntry = {
+/** Wo der Knoten ausführbar ist. Fehlend = 'both'. */
+export type WorkflowNodeRuntime = 'both' | 'desktop' | 'server';
+
+export type WorkflowNodeCatalogEntry = WorkflowNodeSchemaExtension & {
   type: string;
   label: string;
   category: WorkflowNodeCategory;
   description?: string;
   canvasType: WorkflowNodeCanvasType;
   defaultConfig?: Record<string, unknown>;
+  runtime?: WorkflowNodeRuntime;
 };
 
 const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
@@ -46,7 +53,8 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Versand sperren',
     category: 'email',
     canvasType: 'action',
-    description: 'Setzt outbound_hold=true mit Grund (Banner in Liste + Editor). Beendet den Workflow am „blocked"-Port — Folgeknoten werden nicht ausgeführt. Freigabe nur über einen separaten Workflow (email.release_outbound) oder manuell.',
+    description:
+      'Hält den Versand an: setzt eine Sperre mit Grund (Banner in Liste + Editor) und beendet diesen Workflow-Zweig — Folgeknoten laufen nicht. Freigabe über „Versand freigeben" (separater Workflow) oder manuell.',
     defaultConfig: { reason: '' },
   },
   {
@@ -59,7 +67,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
   },
   {
     type: 'email.forward_copy',
-    label: 'Weiterleiten (Empfänger, optional Anhänge)',
+    label: 'Kopie weiterleiten',
     category: 'email',
     canvasType: 'action',
     description:
@@ -79,7 +87,8 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Antwort-Entwurf erstellen',
     category: 'email',
     canvasType: 'registry',
-    description: 'Legt einen Antwort-Entwurf auf die aktuelle Nachricht an (optional mit Body-Präfix oder Vorlage).',
+    description:
+      'Legt einen Antwort-Entwurf auf die aktuelle Nachricht an (optional mit Text-Präfix vor dem zitierten Original). Setzt die Variable draft.id.',
     defaultConfig: { bodyPrefix: '' },
   },
   {
@@ -189,7 +198,8 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Prüfung',
     category: 'ai',
     canvasType: 'action',
-    description: 'Generische KI-Prüfung mit Prompt; wenn die Antwort das Blockwort enthält, geht es auf "blocked".',
+    description:
+      'Generische KI-Prüfung mit eigenem Prompt. Enthält die KI-Antwort das Blockwort: ausgehend wird der Versand angehalten, eingehend bekommt die Mail den Tag ki-review-block (kein eigener Ausgang).',
     defaultConfig: { promptId: 0, blockKeyword: 'BLOCK' },
   },
   {
@@ -218,7 +228,6 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
       'Bewertet Spam 1-100 (nur Metadaten, kein E-Mail-Volltext). Antwort der KI muss eine Zahl sein.',
     defaultConfig: {
       contextMode: 'metadata',
-      thresholdHint: 70,
     },
   },
   {
@@ -379,6 +388,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'JTL Bestell-Kontext',
     category: 'integration',
     canvasType: 'registry',
+    runtime: 'server',
     description:
       'Read-only-Query (MSSQL) mit {{email}}/{{orderNo}}; mappt die erste Zeile auf jtl.*-Variablen für KI-Nodes.',
     defaultConfig: { query: 'SELECT TOP 1 cStatus FROM tBestellung WHERE cEmail = {{email}}', mapping: '' },
@@ -388,6 +398,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'JTL Aktion vorbereiten',
     category: 'integration',
     canvasType: 'registry',
+    runtime: 'server',
     description:
       'Baut einen Aktions-Vorschlag (resend_invoice/create_return/send_tracking/refund_status/custom) — führt nichts aus.',
     defaultConfig: { kind: 'send_tracking', requireApproval: true },
@@ -397,6 +408,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Retoure bewerten',
     category: 'crm',
     canvasType: 'registry',
+    runtime: 'server',
     description:
       'Read-only-Entscheidung: schlägt aus Positionen/Gründen ein Outcome vor und verzweigt nach refund/exchange/credit/keep/needs_review (no_return, wenn keine Retoure gefunden). Schreibt nichts.',
     defaultConfig: {
@@ -411,6 +423,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Retoure: Umtausch',
     category: 'crm',
     canvasType: 'action',
+    runtime: 'server',
     description:
       'Setzt das Outcome der verknüpften Retoure auf „exchange" (optional Status via config.status). Idempotent. Schreibt nur in die eigene Retouren-Tabelle, nicht in JTL.',
     defaultConfig: {},
@@ -420,9 +433,38 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'Retoure: Gutschrift',
     category: 'crm',
     canvasType: 'action',
+    runtime: 'server',
     description:
       'Setzt das Outcome der verknüpften Retoure auf „credit" (optional Status via config.status). Idempotent. Schreibt nur in die eigene Retouren-Tabelle, nicht in JTL.',
     defaultConfig: {},
+  },
+  {
+    type: 'ai.draft_reply',
+    label: 'KI-Antwort entwerfen',
+    category: 'ai',
+    canvasType: 'registry',
+    runtime: 'desktop',
+    description:
+      'Agent 1 der Zwei-Stufen-Antwort: schreibt mit System-Prompt und Wissensbasis eine Antwort, ergänzt Anrede und Konto-Signatur und legt einen fertig adressierten Entwurf an (setzt draft.id).',
+    defaultConfig: {
+      systemPrompt:
+        'Du bist ein freundlicher Kundenservice-Mitarbeiter. Beantworte die Kundenmail vollständig, korrekt und auf Deutsch. Nutze die Wissensbasis, wenn vorhanden. Schreibe NUR den Antworttext ohne Anrede und ohne Grußformel — beide werden automatisch ergänzt.',
+      knowledgeBaseId: null,
+      profileId: null,
+      includeCanned: false,
+      greeting: 'auto',
+      signature: 'account',
+    },
+  },
+  {
+    type: 'ai.review_draft',
+    label: 'KI-Gegenprüfung (Entwurf)',
+    category: 'ai',
+    canvasType: 'registry',
+    runtime: 'desktop',
+    description:
+      'Agent 2 der Zwei-Stufen-Antwort: liest den Entwurf gegen die Kundenmail gegen und entscheidet — Ausgang „senden" (Antwort darf raus) oder „prüfen" (Entwurf wartet auf menschliche Freigabe). Im Zweifel immer „prüfen".',
+    defaultConfig: { draftIdVariable: 'draft.id', reviewPrompt: '', profileId: null },
   },
   {
     type: 'ai.pick_canned',
@@ -479,7 +521,26 @@ export function cloneWorkflowNodeCatalogEntry(
     ...(entry.description === undefined ? {} : { description: entry.description }),
     canvasType: entry.canvasType,
     ...(entry.defaultConfig === undefined ? {} : { defaultConfig: { ...entry.defaultConfig } }),
+    ...(entry.runtime === undefined ? {} : { runtime: entry.runtime }),
+    ...(entry.fields === undefined ? {} : { fields: entry.fields.map((f) => ({ ...f })) }),
+    ...(entry.ports === undefined ? {} : { ports: entry.ports.map((p) => ({ ...p })) }),
+    ...(entry.outputs === undefined ? {} : { outputs: entry.outputs.map((o) => ({ ...o })) }),
+    ...(entry.docs === undefined ? {} : { docs: { ...entry.docs } }),
+    ...(entry.customWidget === undefined ? {} : { customWidget: entry.customWidget }),
   };
+}
+
+/** Katalogeintrag + Schema-Erweiterung (fields/ports/outputs/docs) zusammenführen. */
+function withSchemaExtension(entry: WorkflowNodeCatalogEntry): WorkflowNodeCatalogEntry {
+  const ext = WORKFLOW_NODE_SCHEMAS[entry.type];
+  return ext ? { ...ext, ...entry } : entry;
+}
+
+export function getBuiltinWorkflowNodeCatalogEntry(
+  type: string,
+): WorkflowNodeCatalogEntry | undefined {
+  const entry = BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES.find((e) => e.type === type);
+  return entry ? cloneWorkflowNodeCatalogEntry(withSchemaExtension(entry)) : undefined;
 }
 
 export function sortWorkflowNodeCatalog(
@@ -489,7 +550,7 @@ export function sortWorkflowNodeCatalog(
 }
 
 export const BUILTIN_WORKFLOW_NODE_CATALOG: readonly WorkflowNodeCatalogEntry[] = sortWorkflowNodeCatalog(
-  BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES,
+  BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES.map(withSchemaExtension),
 );
 
 export function listBuiltinWorkflowNodeCatalog(): WorkflowNodeCatalogEntry[] {
