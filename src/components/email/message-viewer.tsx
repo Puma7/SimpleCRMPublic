@@ -415,21 +415,28 @@ export function MessageViewer(props: Props) {
         node.removeAttribute("target")
       }
     })
-    const clean = DOMPurify.sanitize(selectedMessage.body_html, {
-      USE_PROFILES: { html: true },
-      FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "link"],
-      FORBID_ATTR: [
-        "onerror",
-        "onload",
-        "onclick",
-        "onmouseover",
-        "onfocus",
-        "onblur",
-        "onchange",
-        "onsubmit",
-      ],
-    })
-    DOMPurify.removeHook("afterSanitizeAttributes")
+    // try/finally so a sanitize throw can't leak the global hook into every
+    // subsequent DOMPurify.sanitize call process-wide (which would strip href
+    // from all later renders).
+    let clean = ""
+    try {
+      clean = DOMPurify.sanitize(selectedMessage.body_html, {
+        USE_PROFILES: { html: true },
+        FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "link"],
+        FORBID_ATTR: [
+          "onerror",
+          "onload",
+          "onclick",
+          "onmouseover",
+          "onfocus",
+          "onblur",
+          "onchange",
+          "onsubmit",
+        ],
+      })
+    } finally {
+      DOMPurify.removeHook("afterSanitizeAttributes")
+    }
     return loadRemoteImages ? clean : blockRemoteImagesInHtml(clean)
   }, [selectedMessage?.body_html, loadRemoteImages])
 
