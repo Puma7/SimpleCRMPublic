@@ -41,7 +41,19 @@ export function createStaticWorkflowNodeCatalogPort(): NonNullable<ServerApiPort
 export function listServerWorkflowNodeCatalog(): WorkflowNodeCatalogEntry[] {
   return listBuiltinWorkflowNodeCatalog()
     .filter((entry) => entry.runtime !== 'desktop'
-      && isServerWorkflowNodeTypeSupported(entry.type));
+      && isServerWorkflowNodeTypeSupported(entry.type))
+    // Feld-Ebene desselben Flags: Felder, die nur der Desktop-Executor
+    // auswertet (z. B. ai.spam_score profileId/customPrompt — der Server
+    // nutzt die lokale Spam-Engine statt einer KI), werden ausgeblendet
+    // statt eine wirkungslose Konfiguration zu bewerben. Kopie statt
+    // Mutation: die Katalog-Einträge sind geteilte Modul-Objekte.
+    .map((entry) => {
+      if (!entry.fields?.some((field) => field.runtime === 'desktop')) return entry;
+      return {
+        ...entry,
+        fields: entry.fields.filter((field) => field.runtime !== 'desktop'),
+      };
+    });
 }
 
 export function isServerWorkflowNodeTypeSupported(type: string): boolean {

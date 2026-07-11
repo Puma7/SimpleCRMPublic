@@ -488,6 +488,24 @@ describe('server edition foundation', () => {
       expect(serverTypes).not.toContain(type);
       expect(isServerWorkflowNodeTypeSupported(type)).toBe(false);
     }
+
+    // Feld-Ebene: Desktop-only-Felder (der Server-Executor wertet sie nicht
+    // aus) verschwinden aus dem Server-Katalog — z. B. bewirbt ai.spam_score
+    // dort weder KI-Profil noch eigenen Prompt (Server nutzt die lokale
+    // Spam-Engine, keine KI).
+    const serverSpamScore = listServerWorkflowNodeCatalog().find((e) => e.type === 'ai.spam_score');
+    expect(serverSpamScore).toBeDefined();
+    expect((serverSpamScore?.fields ?? []).map((f) => f.key)).toEqual([]);
+    const builtinSpamScore = builtin.find((e) => e.type === 'ai.spam_score');
+    expect((builtinSpamScore?.fields ?? []).map((f) => f.key)).toEqual(
+      expect.arrayContaining(['contextMode', 'profileId', 'customPrompt']),
+    );
+    // Generisch: KEIN angebotenes Server-Katalog-Feld trägt runtime 'desktop'.
+    for (const entry of listServerWorkflowNodeCatalog()) {
+      for (const field of entry.fields ?? []) {
+        expect(field.runtime).not.toBe('desktop');
+      }
+    }
   });
 
   test('server template list omits templates with server-unsupported nodes', () => {
@@ -10698,6 +10716,135 @@ describe('server edition foundation', () => {
 
     // Bekannte Platzhalter aufgelöst, unbekannte bleiben stehen (Desktop-Semantik).
     expect(rows.tags.map((t) => t.tag)).toEqual(['betreff:Bestellung 4711 fehlt ({{gibt.es.nicht}})']);
+  });
+
+  // Anti-Loop-Parität zum Desktop: das Server-Gate blockt automatisch
+  // erzeugte Mails (RFC 3834) und Newsletter — "Auto-Submitted: no"
+  // (explizit manuell) blockt NICHT.
+  test('email.auto_reply gate blocks automated senders and newsletters via raw headers', async () => {
+    const now = new Date('2026-08-15T13:00:00.000Z');
+    const gateGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'gate', type: 'registry', data: { nodeType: 'email.auto_reply', config: { minConfidence: 10 } } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'gate' }],
+    };
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 64,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 640,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: gateGraph,
+        execution_mode: 'graph',
+      }],
+      messages: [
+        {
+          id: 101,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1010,
+          subject: 'Abwesenheit',
+          from_json: { value: [{ address: 'kollegin@example.com' }] },
+          raw_headers: 'Auto-Submitted: auto-replied\nFrom: kollegin@example.com',
+        },
+        {
+          id: 102,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1020,
+          subject: 'Newsletter',
+          from_json: { value: [{ address: 'news@example.com' }] },
+          raw_headers: 'List-Unsubscribe: <mailto:leave@example.com>\nFrom: news@example.com',
+        },
+        {
+          id: 103,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1030,
+          subject: 'Echte Kundenmail',
+          from_json: { value: [{ address: 'kunde@example.com' }] },
+          // RFC 3834: "no" markiert explizit MANUELL erzeugte Mail.
+          raw_headers: 'Auto-Submitted: no\nFrom: kunde@example.com',
+        },
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    const runFor = async (messageId: number) => {
+      rows.steps.length = 0;
+      await port.execute({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 64,
+        messageId,
+        triggerName: 'inbound',
+        context: { eventVariables: { 'ai.class_confidence': 95 } },
+      });
+      return rows.steps.map((s) => [s.node_type, s.port, s.message]);
+    };
+
+    expect(await runFor(101)).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:automated_sender'],
+    ]);
+    expect(await runFor(102)).toEqual([
+      ['email.auto_reply', 'blocked', 'auto_reply:blocked:automated_sender'],
+    ]);
+    expect(await runFor(103)).toEqual([
+      ['email.auto_reply', 'approved', 'auto_reply:approved'],
+    ]);
+  });
+
+  test('email.send_draft inbound bypass skips for automated senders (belt-and-braces)', async () => {
+    const now = new Date('2026-08-15T13:30:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 65,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 650,
+        trigger_name: 'inbound',
+        enabled: true,
+        priority: 1,
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'send', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'send' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [
+        {
+          id: 104,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 1040,
+          subject: 'Verteiler-Mail',
+          from_json: { value: [{ address: 'liste@example.com' }] },
+          raw_headers: 'List-Id: <alle.example.com>\nFrom: liste@example.com',
+        },
+        { id: 105, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1050, uid: -1, folder_kind: 'draft', subject: 'Re: Verteiler-Mail', body_text: 'reply', body_html: null, to_json: { value: [{ address: 'liste@example.com' }] } },
+      ],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 65,
+      messageId: 104,
+      triggerName: 'inbound',
+      context: { inbound: { messageId: 104 }, eventVariables: { 'draft.id': 105 } },
+    });
+
+    // Draft NICHT zum Versand vorbereitet.
+    const draftAfter = rows.messages.find((m) => m.id === 105);
+    expect(draftAfter?.scheduled_send_at).toBeUndefined();
+    expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
+      ['email.send_draft', 'default', 'automated_sender_blocked'],
+    ]);
   });
 
   test('postgres workflow execution job port routes auto-reply through outbound review when runOutboundReview=true', async () => {

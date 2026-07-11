@@ -147,6 +147,10 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
   },
 
   'ai.spam_score': {
+    // Die drei Konfig-Felder sind runtime: 'desktop' — der Server-Executor
+    // ruft keine KI (er nutzt den gespeicherten spam.score bzw. die lokale
+    // Spam-Engine) und würde Profil/Prompt/Kontextwahl stillschweigend
+    // ignorieren. Der Server-Katalog blendet sie deshalb aus.
     fields: [
       {
         key: 'contextMode',
@@ -159,6 +163,7 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
           { value: 'metadata', label: 'Nur Kopfdaten (empfohlen)' },
           { value: 'full', label: 'Kompletten Text senden' },
         ],
+        runtime: 'desktop',
       },
       {
         key: 'profileId',
@@ -166,6 +171,7 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'KI-Profil (Anbieter & Modell)',
         help:
           'Welches KI-Modell die Spam-Wahrscheinlichkeit schätzen soll. Leer = Standard-Profil aus den Einstellungen.',
+        runtime: 'desktop',
       },
       {
         key: 'customPrompt',
@@ -180,6 +186,7 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         // metadaten-reduzierten Kontext (der zentrale Pre-Pass würde
         // {{body_text}} auch im "Nur Kopfdaten"-Modus füllen — Datenschutz).
         advanced: true,
+        runtime: 'desktop',
       },
     ],
     outputs: [

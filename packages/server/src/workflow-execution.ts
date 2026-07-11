@@ -9,6 +9,7 @@ import {
   extractDraftBodyForOutboundBlock,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
+  isUnsafeAutoReplyTarget,
   listBuiltinWorkflowNodeCatalog,
   normalizeMailboxName,
   normalizeEmailAddress,
@@ -117,6 +118,7 @@ type MessageRow = Pick<
   | 'spam_score_label'
   | 'spam_decision_source'
   | 'spam_score_breakdown_json'
+  | 'raw_headers'
 >;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
@@ -755,6 +757,9 @@ async function loadMessage(
       'spam_score_label',
       'spam_decision_source',
       'spam_score_breakdown_json',
+      // Anti-Loop-Guards (email.auto_reply / email.send_draft) prüfen
+      // Auto-Submitted/X-Auto-Response-Suppress/Precedence/List-Header.
+      'raw_headers',
     ])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
@@ -3449,6 +3454,12 @@ async function evaluateWorkflowAutoReply(
   if (!context.message) return block('no_message');
   if (!(await loadAutoReplyEnabled(trx, context.workspaceId))) return block('disabled');
   if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
+  // Anti-Loop wie im Desktop-Gate: automatisch erzeugte Mails (RFC 3834:
+  // Auto-Submitted/X-Auto-Response-Suppress/Precedence) und Newsletter
+  // (List-Header) nie automatisch beantworten. (Das Tageslimit pro Empfänger
+  // bleibt serverseitig bewusst nicht durchgesetzt — dokumentiertes
+  // Follow-up; die Einstellung wird im Server-Modus nicht angeboten.)
+  if (isUnsafeAutoReplyTarget(context.message.raw_headers)) return block('automated_sender');
   if (confidenceValue < minConfidence) return block('low_confidence');
 
   return {
@@ -4300,6 +4311,11 @@ async function sendWorkflowDraft(
     const sender = context.message ? extractWorkflowEmailAddress(context.message.from_json) : '';
     if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) {
       return { status: 'skipped', port: 'default', message: 'noreply_sender_blocked' };
+    }
+    // Anti-Loop wie im Desktop-send_draft: auch ein Workflow OHNE
+    // email.auto_reply-Gate davor darf Automaten/Newslettern nie antworten.
+    if (isUnsafeAutoReplyTarget(context.message?.raw_headers)) {
+      return { status: 'skipped', port: 'default', message: 'automated_sender_blocked' };
     }
   }
   const draftRow = await trx

@@ -81,6 +81,12 @@ export type WorkflowNodeFieldSchema = {
   language?: 'javascript' | 'python';
   /** Feld nur zeigen, wenn ein anderes Feld einen bestimmten Wert hat. */
   showIf?: { field: string; equals: unknown };
+  /**
+   * Feld-Ebene des Node-runtime-Flags: 'desktop' = nur der Desktop-Executor
+   * wertet dieses Feld aus — der Server-Katalog blendet es aus, statt eine
+   * Konfiguration zu bewerben, die die Server-Ausführung ignoriert.
+   */
+  runtime?: 'both' | 'desktop';
 };
 
 export type WorkflowNodePortSchema = {
