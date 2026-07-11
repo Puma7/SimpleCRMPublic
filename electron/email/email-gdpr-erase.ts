@@ -219,6 +219,12 @@ export function eraseSubject(
   const db = getDb();
 
   // Phase 1: transactional anonymize-in-place (per the table→action mapping).
+  // SPIKE SCOPE: tombstones only the mapped columns. Known-uncovered PII —
+  // email_read_receipt_log.recipient, the normalized_subject / thread
+  // subject_normalized caches, and email_workflow_run_steps.message — is left for
+  // the complete schema-audited erasure follow-up (see "Known coverage gaps" in
+  // docs/design/gdpr-erasure-spike.md, open question 10). This path is dry-run by
+  // default and reachable from no live code.
   db.prepare('BEGIN TRANSACTION').run();
   try {
     const updateMessage = db.prepare(

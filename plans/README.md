@@ -61,6 +61,33 @@ Their wiring status is **not** uniform — the earlier blanket "unwired/safe" ch
 - **022** (GDPR erasure) — truly unwired: prototype only, registered on no IPC channel; the apply path is dry-run by default.
 - **023** (JTL order-context) — **reachable** via inbound-triggered workflows (the node is registered unconditionally); now gated **off-by-default** behind `SIMPLECRM_JTL_CONTEXT_NODE`.
 
+## Deferred follow-ups (raised in the PR #147 review, out of that PR's scope)
+
+GitHub Issues are disabled on this repo, so these are tracked here:
+
+- **Desktop `http.request` workflow-node SSRF** (pre-existing, not introduced by
+  #147). The desktop node (`electron/workflow/nodes/integration-nodes.ts` via
+  `electron/workflow/http-request-guard.ts`) validates the URL but then issues a
+  raw `fetch()` that re-resolves DNS at connect and follows redirects unguarded —
+  the SSRF class plan 001 closed only for the **server** edition. Route it
+  through the shared pinned/redirect-guarded transport (the `electron/automation/
+  webhooks.ts` lazy-require seam already reuses the server's `guardedFetch`), and
+  audit `http-request-guard.ts`'s private-IP check for the IPv4-mapped hex bypass
+  fixed server-side in this PR (`ipv4FromMappedV6`).
+- **Complete GDPR erasure (schema audit)** — the plan-022 prototype tombstones
+  only the mapped columns; `email_read_receipt_log.recipient`, the
+  `normalized_subject` / thread `subject_normalized` caches, and
+  `email_workflow_run_steps.message` are known-uncovered. See "Known coverage
+  gaps" + open question 10 in `docs/design/gdpr-erasure-spike.md`. (Prototype is
+  dry-run-default and reachable from no live path, so no live leak today.)
+- **AI-budget reservation model** — the plan-021 gate is default-off and carries
+  a documented check-then-act race; a shipped hard limit needs an atomic
+  reservation (per-workspace advisory lock / `SELECT … FOR UPDATE`). See §8 in
+  `docs/AI_BUDGET_GATES_SPIKE.md`.
+- **Plan 008 (virtualize message list)** — BLOCKED in the exec environment
+  (needs the new dep `@tanstack/react-virtual`; installs are proxy-blocked
+  there). Apply + verify where `pnpm install` works.
+
 ## Findings considered and rejected (so nobody re-audits them)
 
 - **`node-pop3@0.11` on the POP3 sync path (DEPS-06)**: pre-1.0 dep on a mail-ingestion path, but well-isolated behind a single wrapper (`electron/email/email-pop3-sync.ts`) and no urgent issue — monitor for abandonment; no plan now.

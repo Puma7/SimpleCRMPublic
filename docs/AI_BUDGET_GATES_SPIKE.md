@@ -137,6 +137,13 @@ decision + cost logic to a shared package, adapters per edition). Implementing d
 - **Enforcement timing:** pre-call estimate uses *past* spend only — the in-flight call's cost isn't
   known until after it runs, so a single call can overshoot the hard cap. Acceptable, or reserve an
   estimate up front?
+- **Concurrency (check-then-act race).** The gate reads spend → decides → makes the paid call →
+  records usage, with no lock/reservation between read and spend. Under concurrent inbound mail
+  (parallel classification / reply-suggestion), several calls can each read spend below the hard limit
+  and all proceed, breaching the cap at load spikes. **Deliberately left as a prototype limitation**
+  (the gate is default-off, so no live impact today; flagged in code at `ai-budget.ts`). A shipped
+  hard limit needs a **reservation model** — an atomic per-workspace spend-counter increment (or
+  `SELECT … FOR UPDATE` / `pg_advisory_xact_lock`) taken *before* the AI call, not read-then-decide.
 - **Streaming usage:** streamed responses may report `usage` only at the end (or not at all). How does
   a pre-call gate + post-call record behave for streaming call sites?
 - **Record blocked attempts?** Should a blocked call write an `ai_usage_events` row (0 cost,

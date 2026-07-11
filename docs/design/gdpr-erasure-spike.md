@@ -52,11 +52,34 @@ anonymize-in-place**; the hard-delete alternative is shown for comparison.
 
 | Table / store | PII columns | Default (anonymize-in-place) | Alt (hard-delete) |
 |---|---|---|---|
-| `email_messages` | `subject, from_json, to_json, cc_json, snippet, body_text, body_html, attachments_json, raw_headers, raw_rfc822_b64` | overwrite each with a tombstone (`'[erased]'` for text/addresses; `NULL` for `attachments_json`, `raw_headers`, `raw_rfc822_b64`); **keep** `id, account_id, folder_id, thread_id, imap_thread_id, date_received, created_at` | delete row → **cascades** to notes/attachments/categories/tags/read-receipts |
+| `email_messages` | `subject, from_json, to_json, cc_json, bcc_json, snippet, body_text, body_html, attachments_json, raw_headers, raw_rfc822_b64` | overwrite each with a tombstone (`'[erased]'` for text columns; a **JSON-encoded** `"[erased]"` for the `*_json` address columns so downstream `JSON.parse` doesn't throw; `NULL` for `attachments_json`, `raw_headers`, `raw_rfc822_b64`); **keep** `id, account_id, folder_id, thread_id, imap_thread_id, date_received, created_at` | delete row → **cascades** to notes/attachments/categories/tags/read-receipts |
 | `email_internal_notes` | `body` (`TEXT NOT NULL`) | set `body = '[erased]'` | removed via `message_id ON DELETE CASCADE` |
 | `email_message_attachments` | file at `storage_path`; `filename_display`, `content_sha256`, `size_bytes` | **collect `storage_path` for post-commit unlink**, then tombstone the row: `filename_display = '[erased]'`, `content_sha256 = NULL`, `size_bytes = 0`, and `storage_path = '[erased]'` — a **non-null** tombstone, because the column is `TEXT NOT NULL`, so it must **never** be set to `NULL`; keep the row | removed via `message_id ON DELETE CASCADE` |
 | `email_workflow_runs` | `log_json` (may embed message bodies / addresses) | set `log_json = NULL` | keep row (`message_id` is `ON DELETE SET NULL`) |
 | `customers` (CRM contact) | name / email / phone / address etc. | **open question** — mail-PII-only vs. erasing the full contact record and its deals/orders | — |
+
+### Known coverage gaps (open scope — this prototype is NOT a complete erasure)
+
+The mapping above mirrors the **export** table set, which is deliberately **not**
+the full PII surface for *erasure*. A code review surfaced concrete columns the
+anonymize-in-place path does **not** yet clear (today they'd only disappear on a
+hard-delete cascade). They are left for the complete, schema-audited erasure
+follow-up (open question 10):
+
+- **`email_read_receipt_log.recipient`** — MDN/read-receipt rows retain the
+  subject's address after an anonymize-in-place erase.
+- **`email_messages.normalized_subject`** and **`email_threads.subject_normalized`**
+  — derived subject caches populated from `subject`; clearing `subject` alone
+  leaves the normalized copy searchable in thread/search metadata.
+- **`email_workflow_run_steps.message`** (and any future `detail_json`) — the
+  path nulls only the parent `email_workflow_runs.log_json`; per-step messages,
+  which can embed message-derived recipients / URLs / error text, are untouched.
+
+`bcc_json` **was** such a gap and is now covered (added to both the match
+predicate and the anonymize UPDATE); the rest remain. Until the follow-up audits
+the full schema, the prototype's success log means "the mapped columns were
+tombstoned," **not** "the subject is fully erased." The path is dry-run by
+default and reachable from no live code, so this is a spec gap, not a live leak.
 
 ### Why anonymize-in-place is the default
 
@@ -189,6 +212,12 @@ feature plan is written:
    destructive. What confirmation gate (typed confirmation, preview-then-apply,
    two-person approval) is required, and is the dry-run preview surfaced to the
    operator before apply?
+10. **Complete PII coverage (schema audit).** The prototype's table/column set is
+    the export set, which is incomplete for erasure — see "Known coverage gaps"
+    above (read receipts, normalized-subject caches, workflow run-step messages,
+    plus anything else a full `electron/database-schema.ts` audit surfaces). A
+    shipped feature must enumerate **every** message/subject-derived PII column
+    and tombstone them in one transaction. Tracked as the erasure follow-up.
 
 ## Recommendation
 
