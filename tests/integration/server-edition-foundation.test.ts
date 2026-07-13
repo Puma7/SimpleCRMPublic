@@ -100,6 +100,12 @@ describe('server edition repository boundaries', () => {
     expect(ci).not.toContain('uses: pnpm/action-setup@v6');
   });
 
+  test('pnpm permits the embedded PostgreSQL build used by Linux CI', () => {
+    const workspace = readFileSync(join(__dirname, '..', '..', 'pnpm-workspace.yaml'), 'utf8');
+
+    expect(workspace).toContain('  "@embedded-postgres/linux-x64": true');
+  });
+
   test.each(['api.Dockerfile', 'web.Dockerfile'])(
     '%s keeps pnpm lifecycle settings consistent after install',
     (dockerfileName) => {
