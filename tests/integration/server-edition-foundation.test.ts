@@ -342,10 +342,19 @@ describe('server edition repository boundaries', () => {
     const packageJson = JSON.parse(readFileSync(join(__dirname, '..', '..', 'packages', 'server', 'package.json'), 'utf8'));
     expect(packageJson.dependencies.fastify).toMatch(/^\^5\./);
     expect(packageJson.dependencies['@fastify/websocket']).toMatch(/^\^11\./);
-    expect(packageJson.dependencies['graphile-worker']).toMatch(/^\^0\.16\./);
+    expect(packageJson.dependencies['graphile-worker']).toMatch(/^\^0\.17\./);
     expect(packageJson.dependencies.kysely).toBeDefined();
     expect(packageJson.dependencies['libsodium-wrappers-sumo']).toBeDefined();
     expect(packageJson.dependencies.pino).toMatch(/^\^10\./);
+  });
+
+  test('production update drains old Graphile workers before the new API starts', () => {
+    const updateScript = readFileSync(join(__dirname, '..', '..', 'docker', 'update.sh'), 'utf8');
+    const stopIndex = updateScript.indexOf('compose stop api');
+    const startIndex = updateScript.indexOf('compose up -d api caddy');
+
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(stopIndex);
   });
 
   test('root scripts expose server migration, doctor, and live RLS checks', () => {

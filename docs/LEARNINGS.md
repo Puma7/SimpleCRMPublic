@@ -24,9 +24,10 @@ Short, durable facts discovered during implementation. **Read before refactoring
 3. **Native modules** — run `pnpm run postinstall` after Node/Electron version changes (`better-sqlite3`, `keytar`). The patch guard accepts both the legacy direct `HolderV2` patch and the upstream `PROPERTY_HOLDER` macro.
 4. **CommonJS to ESM dependencies** — load ESM-only packages such as `archiver`, `electron-store`, and `openpgp` with memoized dynamic imports from Electron/server CommonJS output.
 5. **Compatibility exceptions** — `@types/node` stays on the Node 24 major; Kysely stays at `0.28.8` until the CommonJS server is migrated because 0.29 is ESM-only.
-6. **Secrets** — Keytar / env, never commit API keys or mail passwords.
-7. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
-8. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
+6. **Graphile Worker 0.17 migration** — old API/worker replicas must be scaled to zero before the new version starts and migrates its lock schema; `docker/update.sh` enforces this ordering.
+7. **Secrets** — Keytar / env, never commit API keys or mail passwords.
+8. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
+9. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
 
 ---
 

@@ -10,6 +10,20 @@ const swcBase = {
   module: { type: 'commonjs' },
   sourceMaps: 'inline',
 };
+const swcJsTransform = [
+  '@swc/jest',
+  {
+    ...swcBase,
+    jsc: {
+      ...swcBase.jsc,
+      parser: { syntax: 'ecmascript' },
+    },
+  },
+];
+const esmDependencyTransformIgnore = [
+  '<rootDir>/node_modules/.pnpm/(?!(?:@scure\\+base|@noble\\+hashes|archiver|is-stream|zip-stream|compress-commons|crc32-stream)@)',
+  'node_modules/(?!.pnpm|@scure/base|@noble/hashes|archiver|is-stream|zip-stream|compress-commons|crc32-stream)',
+];
 
 /** @type {import('jest').Config} */
 module.exports = {
@@ -47,6 +61,7 @@ module.exports = {
   ],
   setupFiles: ['<rootDir>/tests/setup/jest.mail.electron-mock.ts'],
   setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
+  transformIgnorePatterns: esmDependencyTransformIgnore,
   transform: {
     '^.+\\.tsx$': [
       '@swc/jest',
@@ -59,6 +74,7 @@ module.exports = {
       },
     ],
     '^.+\\.ts$': ['@swc/jest', swcBase],
+    '^.+\\.m?js$': swcJsTransform,
   },
   collectCoverage: true,
   coverageProvider: 'v8',

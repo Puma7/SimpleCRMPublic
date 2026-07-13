@@ -7,7 +7,7 @@ This document describes the Docker-based server foundation in `docker/`.
 - Linux host with Docker Engine and Docker Compose v2.
 - A DNS name pointing to the host for TLS, or `localhost` for local smoke tests.
 - Open ports 80 and 443 when using Caddy TLS.
-- Node.js 22 locally only if you want to generate secrets with the commands below.
+- Node.js 24 LTS locally only if you want to generate secrets with the commands below.
 - PostgreSQL needs the trusted extensions `pgcrypto` and `pg_trgm` (mail search). The bundled `docker/postgres-init/001-create-app-role.sh` creates both on fresh containers; migration `0026_mail_search_overhaul` also runs `CREATE EXTENSION IF NOT EXISTS pg_trgm` for existing databases (trusted on `postgres:18`, so the non-superuser app role may install it).
 
 ## Configure Environment
@@ -159,7 +159,8 @@ sh docker/update.sh
 
 This does the whole safe sequence in order and stops on the first failure:
 pull `origin/main` → back up the database → rebuild images → apply pending
-migrations → restart `api` + `caddy` → verify. Useful flags / env:
+migrations → stop all old API/Graphile workers → restart `api` + `caddy` →
+verify. Useful flags / env:
 
 ```sh
 BRANCH=some-branch sh docker/update.sh   # update to a specific branch
@@ -168,6 +169,12 @@ SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recom
 FORCE_RESET=1 sh docker/update.sh        # discard local changes to tracked files
 REPAIR_CHECKSUMS=1 sh docker/update.sh   # opt into the checksum repair (see below)
 ```
+
+The scale-to-zero step is required when moving from Graphile Worker 0.16 to
+0.17 because that release changes worker lock ownership in its database schema.
+For deployments managed outside this Compose project, stop every old API/worker
+replica after the backup and before starting the first new replica. Do not run
+0.16 and 0.17 workers against the same database concurrently.
 
 The operator wrapper exposes the same thing as `sh docker/simplecrm update`
 (alias `upgrade`; accepts `--no-pull` / `--no-backup` / `--repair-checksums` /

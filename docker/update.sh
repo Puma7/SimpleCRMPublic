@@ -135,7 +135,10 @@ EOF
   fi
 fi
 
-say "[5/6] Restarting api + web"
+say "[5/6] Draining old workers and restarting api + web"
+# Graphile Worker migrations may change lock ownership semantics. Scale the old
+# API/worker generation to zero before a newly built API migrates its schema.
+compose stop api
 compose up -d api caddy
 
 say "[6/6] Verifying"
