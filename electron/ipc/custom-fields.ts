@@ -92,7 +92,7 @@ export function registerCustomFieldHandlers(options: CustomFieldHandlersOptions)
   disposers.push(registerIpcHandler(IPCChannels.CustomFields.SetValue, async (_event, payload: any) => {
     try {
       const { customerId, fieldId, value } = payload ?? {};
-      return setCustomFieldValue(customerId, fieldId, value);
+      return { success: setCustomFieldValue(customerId, fieldId, value) };
     } catch (error) {
       logger.error('IPC Error setting custom field value:', error);
       return { success: false, error: (error as Error).message };
@@ -102,7 +102,7 @@ export function registerCustomFieldHandlers(options: CustomFieldHandlersOptions)
   disposers.push(registerIpcHandler(IPCChannels.CustomFields.DeleteValue, async (_event, payload: any) => {
     try {
       const { customerId, fieldId } = payload ?? {};
-      return deleteCustomFieldValue(customerId, fieldId);
+      return { success: deleteCustomFieldValue(customerId, fieldId) };
     } catch (error) {
       logger.error('IPC Error deleting custom field value:', error);
       return { success: false, error: (error as Error).message };

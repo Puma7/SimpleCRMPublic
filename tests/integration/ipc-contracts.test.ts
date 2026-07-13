@@ -101,6 +101,29 @@ describe('IPC contracts', () => {
     expect(() => getPayloadSchema(IPCChannels.Products.Search).parse({ query: 'SKU', limit: 10 })).not.toThrow();
   });
 
+  test('validates destructive CRM results and custom-field value payloads', () => {
+    for (const channel of [
+      IPCChannels.Db.DeleteCustomer,
+      IPCChannels.Products.Delete,
+      IPCChannels.CustomFields.Delete,
+      IPCChannels.CustomFields.DeleteValue,
+    ]) {
+      expect(() => getResultSchema(channel).parse({ success: true })).not.toThrow();
+      expect(() => getResultSchema(channel).parse({ success: false, error: 'blocked' })).not.toThrow();
+    }
+
+    expect(() =>
+      getPayloadSchema(IPCChannels.CustomFields.SetValue).parse({
+        customerId: 1,
+        fieldId: 2,
+        value: 'gold',
+      })
+    ).not.toThrow();
+    expect(() =>
+      getPayloadSchema(IPCChannels.CustomFields.DeleteValue).parse({ customerId: 1, fieldId: 2 })
+    ).not.toThrow();
+  });
+
   test('marks deprecated channels and supports result schema', () => {
     expect(isDeprecatedChannel(IPCChannels.Deals.UpdateProductQuantityLegacy)).toBe(true);
     expect(() =>

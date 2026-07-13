@@ -163,7 +163,7 @@ describe('registerCustomFieldHandlers', () => {
 
   describe('CustomFields.SetValue', () => {
     test('sets field value and returns result', async () => {
-      sqliteMocks.setCustomFieldValue.mockReturnValue({ success: true });
+      sqliteMocks.setCustomFieldValue.mockReturnValue(true);
       const handler = handlers.get(IPCChannels.CustomFields.SetValue);
       const result = await handler({}, { customerId: 1, fieldId: 2, value: 'gold' });
       expect(result).toEqual({ success: true });
@@ -179,7 +179,7 @@ describe('registerCustomFieldHandlers', () => {
     });
 
     test('handles null payload gracefully', async () => {
-      sqliteMocks.setCustomFieldValue.mockReturnValue({ success: true });
+      sqliteMocks.setCustomFieldValue.mockReturnValue(true);
       const handler = handlers.get(IPCChannels.CustomFields.SetValue);
       await handler({}, null);
       expect(sqliteMocks.setCustomFieldValue).toHaveBeenCalledWith(undefined, undefined, undefined);
@@ -188,7 +188,7 @@ describe('registerCustomFieldHandlers', () => {
 
   describe('CustomFields.DeleteValue', () => {
     test('deletes field value and returns result', async () => {
-      sqliteMocks.deleteCustomFieldValue.mockReturnValue({ success: true });
+      sqliteMocks.deleteCustomFieldValue.mockReturnValue(true);
       const handler = handlers.get(IPCChannels.CustomFields.DeleteValue);
       const result = await handler({}, { customerId: 1, fieldId: 2 });
       expect(result).toEqual({ success: true });
@@ -204,7 +204,7 @@ describe('registerCustomFieldHandlers', () => {
     });
 
     test('handles null payload gracefully', async () => {
-      sqliteMocks.deleteCustomFieldValue.mockReturnValue({ success: true });
+      sqliteMocks.deleteCustomFieldValue.mockReturnValue(true);
       const handler = handlers.get(IPCChannels.CustomFields.DeleteValue);
       await handler({}, null);
       expect(sqliteMocks.deleteCustomFieldValue).toHaveBeenCalledWith(undefined, undefined);

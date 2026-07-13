@@ -227,7 +227,7 @@ baseSchemaMap.set(IPCChannels.Products.Update, {
 
 baseSchemaMap.set(IPCChannels.Products.Delete, {
   payload: z.number().int().positive(),
-  result: z.undefined(),
+  result: standardResult,
 });
 
 // --- MSSQL ---
@@ -352,7 +352,7 @@ baseSchemaMap.set(IPCChannels.CustomFields.Update, {
 
 baseSchemaMap.set(IPCChannels.CustomFields.Delete, {
   payload: z.number().int().positive(),
-  result: z.undefined(),
+  result: standardResult,
 });
 
 baseSchemaMap.set(IPCChannels.CustomFields.GetValuesForCustomer, {
@@ -362,19 +362,19 @@ baseSchemaMap.set(IPCChannels.CustomFields.GetValuesForCustomer, {
 
 baseSchemaMap.set(IPCChannels.CustomFields.SetValue, {
   payload: z.object({
-    customFieldId: z.number().int().positive(),
+    fieldId: z.number().int().positive(),
     customerId: z.number().int().positive(),
     value: z.string(),
   }),
-  result: z.any(),
+  result: standardResult,
 });
 
 baseSchemaMap.set(IPCChannels.CustomFields.DeleteValue, {
   payload: z.object({
-    customFieldId: z.number().int().positive(),
+    fieldId: z.number().int().positive(),
     customerId: z.number().int().positive(),
   }),
-  result: z.undefined(),
+  result: standardResult,
 });
 
 // --- Remaining DB channels ---
@@ -429,7 +429,7 @@ baseSchemaMap.set(IPCChannels.Db.UpdateCustomer, {
 
 baseSchemaMap.set(IPCChannels.Db.DeleteCustomer, {
   payload: z.number().int().positive(),
-  result: z.undefined(),
+  result: standardResult,
 });
 
 baseSchemaMap.set(IPCChannels.Db.GetDealsForCustomer, {
