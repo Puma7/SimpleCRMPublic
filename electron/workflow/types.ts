@@ -44,7 +44,7 @@ export type WorkflowNodeExecutor = (
 export type RegisteredWorkflowNode = {
   type: string;
   label: string;
-  category: import('../../shared/workflow-types').WorkflowNodeCategory;
+  category: import('../../shared/workflow-types.js').WorkflowNodeCategory;
   description?: string;
   canvasType: 'trigger' | 'condition' | 'action' | 'registry';
   defaultConfig?: Record<string, unknown>;

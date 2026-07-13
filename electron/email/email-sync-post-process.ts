@@ -56,9 +56,9 @@ export async function processNewMessagesAfterSync(
   }
   if (merged.length === 0) return;
 
-  const { persistParsedAttachments } = await import('./email-message-attachments-store');
-  const { assignJwzThreadAndTicket } = await import('./email-threading-jwz');
-  const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine');
+  const { persistParsedAttachments } = await import('./email-message-attachments-store.js');
+  const { assignJwzThreadAndTicket } = await import('./email-threading-jwz.js');
+  const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine.js');
 
   const customerByEmail = buildCustomerEmailMap();
 
@@ -73,13 +73,13 @@ export async function processNewMessagesAfterSync(
       tryLinkMessageToCustomer(item.localMsgId, customerByEmail);
       const row = getEmailMessageById(item.localMsgId);
       if (row?.raw_headers) {
-        const { getDb } = await import('../sqlite-service');
-        const { detectAndFlagReadReceiptRequest } = await import('./email-read-receipt');
+        const { getDb } = await import('../sqlite-service.js');
+        const { detectAndFlagReadReceiptRequest } = await import('./email-read-receipt.js');
         const db = getDb();
         if (db) detectAndFlagReadReceiptRequest(db, item.localMsgId, row.raw_headers);
-        const { detectPgpInbound } = await import('../pgp/pgp-service');
+        const { detectPgpInbound } = await import('../pgp/pgp-service.js');
         detectPgpInbound(item.localMsgId);
-        const { runCrossAccountThreadHeuristics } = await import('./email-thread-heuristics');
+        const { runCrossAccountThreadHeuristics } = await import('./email-thread-heuristics.js');
         runCrossAccountThreadHeuristics(item.localMsgId);
       }
     } catch (e) {

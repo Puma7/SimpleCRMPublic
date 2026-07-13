@@ -1,6 +1,6 @@
 import type { PgpKeyMaterialPort } from '../api';
 
-type OpenPgpModule = typeof import('openpgp');
+type OpenPgpModule = typeof import('openpgp', { with: { 'resolution-mode': 'import' } });
 
 const importOpenPgp = new Function('specifier', 'return import(specifier)') as (
   specifier: string,

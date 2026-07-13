@@ -63,7 +63,7 @@ export function registerEmailNodes(register: Reg): void {
         setMessageSeenLocal(messageId, true, syncToServer);
         if (syncToServer) {
           try {
-            const { syncSeenFlagToServer } = await import('../../email/email-imap-flags');
+            const { syncSeenFlagToServer } = await import('../../email/email-imap-flags.js');
             await syncSeenFlagToServer(row, true);
             clearMessageSeenSyncPending(messageId);
           } catch (e) {
@@ -134,7 +134,7 @@ export function registerEmailNodes(register: Reg): void {
       if (ctx.dryRun) return { status: 'ok', message: `dry-run forward ${to}` };
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');
-      const { sendWorkflowForwardCopy } = await import('../../email/email-forward-copy');
+      const { sendWorkflowForwardCopy } = await import('../../email/email-forward-copy.js');
       // Anhang-Weiterleitung kann die Desktop-Edition noch nicht (nur die
       // Server-Edition): SICHTBAR degradieren statt hart fehlschlagen —
       // sonst bräche z. B. die Rechnungs-Vorlage komplett ab, obwohl die
@@ -185,7 +185,7 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const { row } = requireMessage(ctx);
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run draft' };
-      const { createComposeDraft } = await import('../../email/email-store');
+      const { createComposeDraft } = await import('../../email/email-store.js');
       const prefix = String(config.bodyPrefix ?? '');
       const body = `${prefix}\n\n---\n${ctx.strings.combined_text}`.trim();
       const id = createComposeDraft({
@@ -326,7 +326,7 @@ export function registerEmailNodes(register: Reg): void {
         setMessageSpam(messageId, spam, { train: config.train === true, source: 'workflow' });
         if (tag) addMessageTag(messageId, tag);
         if (config.moveImap === true && spam) {
-          const { moveImapMessage } = await import('../../email/email-imap-move');
+          const { moveImapMessage } = await import('../../email/email-imap-move.js');
           await moveImapMessage(row, 'Spam');
         }
       }
@@ -372,7 +372,7 @@ export function registerEmailNodes(register: Reg): void {
       const folderPath = String(config.folderPath ?? 'Spam').trim();
       if (!folderPath) return { status: 'skipped', message: 'Zielordner leer' };
       if (ctx.dryRun) return { status: 'ok', message: `dry-run move ${folderPath}` };
-      const { moveImapMessage } = await import('../../email/email-imap-move');
+      const { moveImapMessage } = await import('../../email/email-imap-move.js');
       await moveImapMessage(row, folderPath);
       return { status: 'ok', variables: { 'imap.moved_to': folderPath, messageId } };
     },
@@ -388,7 +388,7 @@ export function registerEmailNodes(register: Reg): void {
       const { row } = requireMessage(ctx);
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run delete' };
       const { deleteImapMessageOnServer, isImapDeleteOptInEnabled } = await import(
-        '../../email/email-imap-move'
+        '../../email/email-imap-move.js'
       );
       if (!isImapDeleteOptInEnabled(row.account_id)) {
         return {
@@ -442,14 +442,14 @@ export function registerEmailNodes(register: Reg): void {
       // beantworten; Tageslimit pro EMPFÄNGER der Antwort (Reply-To vor
       // From) — Ticket-Systeme wechseln From pro Mail bei konstantem
       // Reply-To und würden ein From-Keying unterlaufen.
-      const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
+      const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers.js');
       if (isUnsafeAutoReplyTarget(ctx.message.raw_headers)) return block('automated_sender');
       // Die Antwort GEHT an replyTarget (Reply-To vor From) — auch dieses
       // Ziel darf keine No-Reply-Adresse sein (From=mensch@ + Reply-To=
       // no-reply@ würde sonst durchrutschen).
       const replyTarget = primaryReplyRecipient(ctx.message) || sender;
       if (AUTO_REPLY_NOREPLY_RE.test(replyTarget)) return block('noreply_sender');
-      const { isAutoReplyRateLimited } = await import('../auto-reply-guard');
+      const { isAutoReplyRateLimited } = await import('../auto-reply-guard.js');
       if (isAutoReplyRateLimited(ctx.message.account_id, replyTarget)) return block('rate_limited');
       if (confidenceValue < minConfidence) return block('low_confidence');
 
@@ -535,7 +535,7 @@ export function registerEmailNodes(register: Reg): void {
         // Workflow OHNE Gate davor darf weder Automaten/Newslettern antworten
         // noch das Tageslimit überschreiten.
         if (!ctx.dryRun) {
-          const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers');
+          const { isUnsafeAutoReplyTarget } = await import('../../email/email-automation-headers.js');
           if (isUnsafeAutoReplyTarget(ctx.message?.raw_headers)) {
             return { status: 'skipped', message: 'automated_sender_blocked' };
           }
@@ -556,7 +556,7 @@ export function registerEmailNodes(register: Reg): void {
           // Tageslimit; gescheiterte Sends bleiben als Entwurf sichtbar.
           const accountId = ctx.message?.account_id;
           if (accountId != null) {
-            const { tryReserveAutoReplySlot } = await import('../auto-reply-guard');
+            const { tryReserveAutoReplySlot } = await import('../auto-reply-guard.js');
             if (!tryReserveAutoReplySlot(accountId, replyTarget, ctx.messageId)) {
               return { status: 'skipped', message: 'auto_reply_rate_limited' };
             }
@@ -574,7 +574,7 @@ export function registerEmailNodes(register: Reg): void {
       if (ctx.direction === 'inbound' && !ctx.dryRun) {
         // RFC-3834-Marker NACH prep stempeln: prep normalisiert per
         // updateComposeDraft und setzt auto_submitted dabei zurück.
-        const { markDraftAutoSubmitted } = await import('../../email/email-draft-approval');
+        const { markDraftAutoSubmitted } = await import('../../email/email-draft-approval.js');
         markDraftAutoSubmitted(draftId);
       }
 

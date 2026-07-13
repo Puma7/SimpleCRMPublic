@@ -198,7 +198,7 @@ export function registerWorkflowHandlers(options: {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetWorkflowAutomationSettings, async () => {
-      const { loadAutoReplySettings } = await import('../workflow/auto-reply-settings');
+      const { loadAutoReplySettings } = await import('../workflow/auto-reply-settings.js');
       const autoReply = loadAutoReplySettings();
       return {
         imapDeleteOptIn: isImapDeleteOptInEnabled(),
@@ -234,7 +234,7 @@ export function registerWorkflowHandlers(options: {
           payload.autoReplyEnabled !== undefined ||
           payload.autoReplyMaxPerSenderPerDay !== undefined
         ) {
-          const { saveAutoReplySettings } = await import('../workflow/auto-reply-settings');
+          const { saveAutoReplySettings } = await import('../workflow/auto-reply-settings.js');
           saveAutoReplySettings({
             ...(payload.autoReplyEnabled === undefined
               ? {}
@@ -273,7 +273,7 @@ export function registerWorkflowHandlers(options: {
         if (!Number.isFinite(draftId) || draftId <= 0) {
           return { success: false as const, error: 'Ungültige Entwurfs-ID' };
         }
-        const { approveDraftSend } = await import('../workflow/draft-approval-actions');
+        const { approveDraftSend } = await import('../workflow/draft-approval-actions.js');
         return approveDraftSend(draftId);
       },
       { logger },
@@ -288,7 +288,7 @@ export function registerWorkflowHandlers(options: {
         if (!Number.isFinite(draftId) || draftId <= 0) {
           return { success: false as const, error: 'Ungültige Entwurfs-ID' };
         }
-        const { dismissDraftApproval } = await import('../workflow/draft-approval-actions');
+        const { dismissDraftApproval } = await import('../workflow/draft-approval-actions.js');
         return dismissDraftApproval(draftId);
       },
       { logger },

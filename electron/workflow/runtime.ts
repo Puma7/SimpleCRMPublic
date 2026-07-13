@@ -356,8 +356,8 @@ type GraphRunInput = {
   trigger: WorkflowTriggerKind;
   direction: WorkflowContext['direction'];
   runId: number;
-  message?: import('../email/email-store').EmailMessageRow | null;
-  outbound?: import('../email/email-workflow-engine').OutboundDraftPayload | null;
+  message?: import('../email/email-store.js').EmailMessageRow | null;
+  outbound?: import('../email/email-workflow-engine.js').OutboundDraftPayload | null;
   dryRun?: boolean;
   previewOutbound?: boolean;
   eventStrings?: Record<string, string>;

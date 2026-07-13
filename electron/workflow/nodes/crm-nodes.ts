@@ -84,7 +84,7 @@ export function registerCrmNodes(register: Reg): void {
       if (!dealId) return { status: 'skipped', message: 'Keine Deal-ID' };
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run deal update' };
       if (stage) {
-        const { updateDealStage } = await import('../../sqlite-service');
+        const { updateDealStage } = await import('../../sqlite-service.js');
         const r = updateDealStage(dealId, stage);
         if (!r.success) return { status: 'error', message: r.error ?? 'Deal-Update fehlgeschlagen' };
         const vars: Record<string, string | number | boolean | null> = {

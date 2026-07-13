@@ -251,7 +251,7 @@ export async function runSync(mainWindow: BrowserWindow | null, options?: { incr
                             | { id: number; name: string; email: string | null }
                             | undefined;
                         if (row?.id) {
-                            void import('./workflow/workflow-trigger-dispatch')
+                            void import('./workflow/workflow-trigger-dispatch.js')
                                 .then((m) =>
                                     m.dispatchCustomerCreatedWorkflow({
                                         customerId: row.id,

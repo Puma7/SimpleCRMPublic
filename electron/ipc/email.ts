@@ -657,7 +657,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           { dryRun: true },
         );
         if (result.allowed) {
-          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval');
+          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval.js');
           applyManualComposeOutboundApproval(payload.messageId, {
             subject: payload.subject,
             bodyText: payload.bodyText,
@@ -741,7 +741,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           replyParentMessageId: payload.replyParentMessageId,
         });
         if (payload.markReplyParentDone !== undefined) {
-          const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done');
+          const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done.js');
           setComposeMarkReplyParentDone(payload.messageId, payload.markReplyParentDone);
         }
         return { success: true as const };
@@ -783,7 +783,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.MoveMessageToView,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { messageId: number; view: import('../email/email-store').AccountMailView },
+        payload: { messageId: number; view: import('../email/email-store.js').AccountMailView },
       ) => {
         try {
           moveMessageToMailView(payload.messageId, payload.view);
@@ -808,9 +808,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           limit?: number;
           offset?: number;
           categoryId?: number | null;
-          sort?: import('../../shared/email-list-options').MessageListSortMode;
-          listFilter?: import('../../shared/email-list-filters').MessageListFilter;
-          doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
+          sort?: import('../../shared/email-list-options.js').MessageListSortMode;
+          listFilter?: import('../../shared/email-list-filters.js').MessageListFilter;
+          doneFilter?: import('../../shared/email-done-filter.js').MessageDoneFilter;
         }) => {
         const access =
           payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
@@ -836,8 +836,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           limit?: number;
           offset?: number;
           categoryId?: number | null;
-          listFilter?: import('../../shared/email-list-filters').MessageListFilter;
-          doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
+          listFilter?: import('../../shared/email-list-filters.js').MessageListFilter;
+          doneFilter?: import('../../shared/email-done-filter.js').MessageDoneFilter;
         }) => {
         const access =
           payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
@@ -861,11 +861,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           query: string;
           limit?: number;
           offset?: number;
-          view?: import('../email/email-store').AccountMailView;
+          view?: import('../email/email-store.js').AccountMailView;
           categoryId?: number | null;
-          doneFilter?: import('../../shared/email-done-filter').MessageDoneFilter;
-          scope?: import('../../shared/email-search-scope').MessageSearchScope;
-          sort?: import('../email/email-crm-store').MessageSearchSort;
+          doneFilter?: import('../../shared/email-done-filter.js').MessageDoneFilter;
+          scope?: import('../../shared/email-search-scope.js').MessageSearchScope;
+          sort?: import('../email/email-crm-store.js').MessageSearchSort;
         }) => {
         if (payload.accountId !== 'all') {
           const { rows, searchMode, hasMore } = searchMessagesForAccountWithMeta(
@@ -924,8 +924,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           if (!draft) {
             return { success: false as const, error: 'Entwurf nicht gefunden' };
           }
-          const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
-          const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments');
+          const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse.js');
+          const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments.js');
           const result = await evaluateOutboundWorkflows(
             {
               messageId: payload.messageId,
@@ -947,7 +947,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               error: result.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
             };
           }
-          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval');
+          const { applyManualComposeOutboundApproval } = await import('../email/outbound-approval.js');
           applyManualComposeOutboundApproval(payload.messageId, {
             subject: draft.subject ?? '',
             bodyText: draft.body_text ?? '',
@@ -960,7 +960,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         setDraftScheduledSendAt(payload.messageId, payload.sendAt);
         if (payload.sendAt) {
-          const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
+          const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
           clearScheduledSendDraftMeta(payload.messageId);
         }
         return { success: true as const };
@@ -973,7 +973,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.GetScheduledSendDraftState,
       async (_event: IpcMainInvokeEvent, messageId: number) => {
-        const { getScheduledSendDraftState } = await import('../email/email-scheduled-send-state');
+        const { getScheduledSendDraftState } = await import('../email/email-scheduled-send-state.js');
         const s = getScheduledSendDraftState(messageId);
         return {
           success: true as const,
@@ -990,7 +990,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.ClearScheduledSendDraftFailure,
       async (_event: IpcMainInvokeEvent, messageId: number) => {
-        const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
+        const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
         clearScheduledSendDraftMeta(messageId);
         return { success: true as const };
       },
@@ -1002,8 +1002,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.RetryScheduledSendDraft,
       async (_event: IpcMainInvokeEvent, messageId: number) => {
-        const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state');
-        const { setDraftScheduledSendAt } = await import('../email/email-message-features');
+        const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
+        const { setDraftScheduledSendAt } = await import('../email/email-message-features.js');
         clearScheduledSendDraftMeta(messageId);
         setDraftScheduledSendAt(messageId, new Date().toISOString());
         return { success: true as const };
@@ -1016,7 +1016,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.GetComposeDraftRecoveryState,
       async (_event: IpcMainInvokeEvent, draftMessageId: number) => {
-        const { getComposeDraftRecoveryState } = await import('../email/email-compose-send');
+        const { getComposeDraftRecoveryState } = await import('../email/email-compose-send.js');
         const s = getComposeDraftRecoveryState(draftMessageId);
         return { success: true as const, ...s };
       },
@@ -1028,7 +1028,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.TestVacationAutoReply,
       async (_event: IpcMainInvokeEvent, accountId: number) => {
-        const { sendVacationTestReply } = await import('../email/email-vacation');
+        const { sendVacationTestReply } = await import('../email/email-vacation.js');
         const r = await sendVacationTestReply(accountId);
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
@@ -1094,7 +1094,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListUidValidityNotices, async () => {
-      const { listUidValidityResetNotices } = await import('../email/email-uidvalidity-reset');
+      const { listUidValidityResetNotices } = await import('../email/email-uidvalidity-reset.js');
       return listUidValidityResetNotices();
     }, { logger }),
   );
@@ -1103,7 +1103,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.DismissUidValidityNotice,
       async (_event: IpcMainInvokeEvent, payload: { noticeId: string }) => {
-        const { dismissUidValidityResetNotice } = await import('../email/email-uidvalidity-reset');
+        const { dismissUidValidityResetNotice } = await import('../email/email-uidvalidity-reset.js');
         dismissUidValidityResetNotice(payload.noticeId);
         return { success: true as const };
       },
@@ -1115,7 +1115,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.GetLatestWorkflowRunForMessage,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
-        const { getLatestWorkflowRunForMessage } = await import('../workflow/run-steps');
+        const { getLatestWorkflowRunForMessage } = await import('../workflow/run-steps.js');
         return getLatestWorkflowRunForMessage(payload.messageId);
       },
       { logger },
@@ -1124,28 +1124,28 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMailDiagnostics, async () => {
-      const { collectMailDiagnostics } = await import('../email/email-diagnostics');
+      const { collectMailDiagnostics } = await import('../email/email-diagnostics.js');
       return collectMailDiagnostics();
     }, { logger }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ExportLocalMailBackup, async () => {
-      const { exportLocalMailBackup } = await import('../email/email-local-backup');
+      const { exportLocalMailBackup } = await import('../email/email-local-backup.js');
       return exportLocalMailBackup();
     }, { logger }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.VerifyLocalMailBackup, async () => {
-      const { verifyLocalMailBackup } = await import('../email/email-local-backup');
+      const { verifyLocalMailBackup } = await import('../email/email-local-backup.js');
       return verifyLocalMailBackup();
     }, { logger }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.PickLocalMailBackupZip, async () => {
-      const { pickLocalMailBackupZip } = await import('../email/email-local-restore');
+      const { pickLocalMailBackupZip } = await import('../email/email-local-restore.js');
       return pickLocalMailBackupZip();
     }, { logger }),
   );
@@ -1154,7 +1154,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.PreviewRestoreLocalMailBackup,
       async (_event, payload: { zipPath: string }) => {
-        const { previewRestoreLocalMailBackup } = await import('../email/email-local-restore');
+        const { previewRestoreLocalMailBackup } = await import('../email/email-local-restore.js');
         return previewRestoreLocalMailBackup(payload.zipPath);
       },
       { logger },
@@ -1173,7 +1173,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           createPreBackup: boolean;
         },
       ) => {
-        const { restoreLocalMailBackup } = await import('../email/email-local-restore');
+        const { restoreLocalMailBackup } = await import('../email/email-local-restore.js');
         return restoreLocalMailBackup(payload);
       },
       { logger },
@@ -1182,7 +1182,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListImapAuthNotices, async () => {
-      const { listImapAuthNotices } = await import('../email/email-imap-auth-notice');
+      const { listImapAuthNotices } = await import('../email/email-imap-auth-notice.js');
       return listImapAuthNotices();
     }, { logger }),
   );
@@ -1191,7 +1191,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.DismissImapAuthNotice,
       async (_event: IpcMainInvokeEvent, payload: { accountId: number }) => {
-        const { dismissImapAuthNotice } = await import('../email/email-imap-auth-notice');
+        const { dismissImapAuthNotice } = await import('../email/email-imap-auth-notice.js');
         dismissImapAuthNotice(payload.accountId);
         return { success: true as const };
       },
@@ -1277,7 +1277,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }) => {
         const access =
           payload.accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
-        const { normalizeEmailAddress } = await import('../../shared/email-address-normalize');
+        const { normalizeEmailAddress } = await import('../../shared/email-address-normalize.js');
         const raw = payload.correspondentEmail?.trim() ?? '';
         const email = raw.includes('@') ? normalizeEmailAddress(raw) : '';
         if (email) {
@@ -1371,7 +1371,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
           const useImap = payload.smtpUseImapAuth ?? Boolean(acc.smtp_use_imap_auth);
           if (useImap) {
-            const { resolveImapAuth } = await import('../email/email-imap-auth');
+            const { resolveImapAuth } = await import('../email/email-imap-auth.js');
             const auth = await resolveImapAuth(acc);
             if ('accessToken' in auth) {
               accessToken = auth.accessToken;
@@ -2313,8 +2313,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, messageId: number) => {
         const row = getEmailMessageById(messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        const { listAttachmentsForMessage } = await import('../email/email-message-attachments-store');
-        const { buildEmlForMessage, formatEmlDisplayAppendix } = await import('../email/mail-eml-build');
+        const { listAttachmentsForMessage } = await import('../email/email-message-attachments-store.js');
+        const { buildEmlForMessage, formatEmlDisplayAppendix } = await import('../email/mail-eml-build.js');
         const attachments = listAttachmentsForMessage(messageId);
         const { eml, meta } = buildEmlForMessage(row, attachments);
         const rawEml = eml + formatEmlDisplayAppendix(row, meta);
@@ -2990,7 +2990,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         if (payload.action === 'send') {
-          const { domainTrusted } = await import('../email/email-read-receipt');
+          const { domainTrusted } = await import('../email/email-read-receipt.js');
           const settings = getLocalReadReceiptSettings(row.account_id);
           if (settings.respond === 'never') {
             return { success: false as const, error: 'Lesebestätigungen sind deaktiviert' };
@@ -3007,7 +3007,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               return { success: false as const, error: 'Absender nicht verifizierbar' };
             }
           }
-          const { sendReadReceiptMdn } = await import('../email/email-read-receipt-mdn');
+          const { sendReadReceiptMdn } = await import('../email/email-read-receipt-mdn.js');
           const r = await sendReadReceiptMdn(payload.messageId);
           if (!r.ok) return { success: false as const, error: r.error };
           return { success: true as const };
@@ -3023,7 +3023,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.ListThreadMessages,
       async (_event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
-        const { listThreadMessages } = await import('../email/email-thread-aggregate');
+        const { listThreadMessages } = await import('../email/email-thread-aggregate.js');
         return listThreadMessages(payload.threadId, payload.limit ?? 50, payload.offset ?? 0);
       },
       { logger },
@@ -3040,7 +3040,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!canAccessEmailAccount(event, payload.accountId, 'rw')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
-        const { mergeThreads } = await import('../email/email-thread-admin');
+        const { mergeThreads } = await import('../email/email-thread-admin.js');
         const r = mergeThreads(
           payload.aliasThreadId,
           payload.canonicalThreadId,
@@ -3058,7 +3058,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.SplitMessageThread,
       async (event: IpcMainInvokeEvent, payload: { messageId: number }) => {
         requireRealAuthSession(event);
-        const { splitMessageToOwnThread } = await import('../email/email-thread-admin');
+        const { splitMessageToOwnThread } = await import('../email/email-thread-admin.js');
         const r = splitMessageToOwnThread(payload.messageId);
         if (!r.ok) return { success: false as const, error: r.error };
         return { success: true as const, threadId: r.threadId };
@@ -3071,7 +3071,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.ListThreadAliasWarnings,
       async () => {
-        const { listPendingThreadAliasWarnings } = await import('../email/email-thread-heuristics');
+        const { listPendingThreadAliasWarnings } = await import('../email/email-thread-heuristics.js');
         return listPendingThreadAliasWarnings(50);
       },
       { logger, requireAuth: true },
@@ -3089,10 +3089,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }) => {
         const access =
           payload.accountScope === 'all' ? mailScopeSessionFromEvent(event) : undefined;
-        const { listThreadsForMailScope } = await import('../email/email-thread-aggregate');
+        const { listThreadsForMailScope } = await import('../email/email-thread-aggregate.js');
         return listThreadsForMailScope(
           payload.accountScope as number | 'all',
-          payload.view as import('../email/email-store').AccountMailView,
+          payload.view as import('../email/email-store.js').AccountMailView,
           { limit: payload.limit, offset: payload.offset },
           access,
         );

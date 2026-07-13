@@ -220,7 +220,7 @@ async function finalizeSentDraft(input: {
   const rfc822 = builtRfc822;
 
   try {
-    const { appendSentToImap } = await import('./email-imap-append');
+    const { appendSentToImap } = await import('./email-imap-append.js');
     await appendSentToImap(appendInput, {
       source: rfc822,
       estimatedBytes: Math.max(estimatedBytes, rfc822.length),
@@ -396,8 +396,8 @@ export async function sendComposeDraft(input: {
       }
     }
     if (input.pgpEncrypt || input.pgpSign) {
-      const { prepareOutboundPgpBody } = await import('../pgp/pgp-service');
-      const { extractEmailAddressesFromRecipientField } = await import('../../shared/email-recipient-parse');
+      const { prepareOutboundPgpBody } = await import('../pgp/pgp-service.js');
+      const { extractEmailAddressesFromRecipientField } = await import('../../shared/email-recipient-parse.js');
       const recipients = [
         ...extractEmailAddressesFromRecipientField(input.to),
         ...(input.cc ? extractEmailAddressesFromRecipientField(input.cc) : []),
@@ -429,7 +429,7 @@ export async function sendComposeDraft(input: {
       draftAttachmentPaths: input.attachmentPaths,
     });
 
-    const { clearOutboundHoldForResend } = await import('./email-outbound-review');
+    const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
     clearOutboundHoldForResend(input.draftMessageId);
 
     if (isSmtpCommitted(input.draftMessageId)) {
@@ -568,7 +568,7 @@ export async function sendComposeDraft(input: {
     }
 
     try {
-      const { sendSmtpForAccount } = await import('./email-smtp');
+      const { sendSmtpForAccount } = await import('./email-smtp.js');
       // RFC 3834: automatische Antworten (Workflow-KI) als solche kennzeichnen,
       // damit fremde Automaten nicht zurück-antworten (Loop-Schutz).
       const autoSubmitted = draft.auto_submitted === 1;
@@ -593,7 +593,7 @@ export async function sendComposeDraft(input: {
     markSmtpCommitted(input.draftMessageId);
     // Erfolgreich versendet — ein evtl. offener Freigabe-Zustand ist erledigt.
     {
-      const { clearDraftApproval } = await import('./email-draft-approval');
+      const { clearDraftApproval } = await import('./email-draft-approval.js');
       clearDraftApproval(input.draftMessageId);
     }
 

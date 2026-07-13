@@ -21,9 +21,9 @@ import "monaco-editor/esm/vs/editor/editor.all.js"
 //  - json     → ExpertJsonEditor (rich service + worker)
 //  - javascript / python → workflow code nodes (CodeConfigFields)
 //  - markdown → knowledge base editor
-import "monaco-editor/esm/vs/language/json/monaco.contribution"
-import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"
-import "monaco-editor/esm/vs/basic-languages/python/python.contribution"
-import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution"
+import "monaco-editor/esm/vs/language/json/monaco.contribution.js"
+import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js"
+import "monaco-editor/esm/vs/basic-languages/python/python.contribution.js"
+import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js"
 
 export * from "monaco-editor/esm/vs/editor/editor.api.js"

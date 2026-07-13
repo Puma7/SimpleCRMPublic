@@ -22,7 +22,7 @@ import {
   pgpIdentityPrivateKeySecretIdentifier,
 } from './private-key-envelope';
 
-type OpenPgpModule = typeof import('openpgp');
+type OpenPgpModule = typeof import('openpgp', { with: { 'resolution-mode': 'import' } });
 
 type PgpDecryptInput = Parameters<PgpMessageCryptoApiPort['decryptMessage']>[0];
 type PgpDecryptAttachmentInput = Parameters<NonNullable<PgpMessageCryptoApiPort['decryptAttachment']>>[0];

@@ -82,7 +82,7 @@ export async function executeWorkflowForTrigger(input: {
     }
 
     if (mode === 'compiled') {
-      const { runCompiledWorkflow } = await import('./compiled-fallback');
+      const { runCompiledWorkflow } = await import('./compiled-fallback.js');
       const result = await runCompiledWorkflow({
         workflow: input.workflow,
         runId,
@@ -128,7 +128,7 @@ export async function executeWorkflowNow(
 
   let message: EmailMessageRow | null = null;
   if (options.messageId != null) {
-    const { getEmailMessageById } = await import('../email/email-store');
+    const { getEmailMessageById } = await import('../email/email-store.js');
     message = getEmailMessageById(options.messageId) ?? null;
     if (!message) return { success: false, error: 'Nachricht nicht gefunden' };
   } else if (workflowTriggerNeedsMessage(trigger)) {

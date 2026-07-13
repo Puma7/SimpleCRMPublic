@@ -232,7 +232,7 @@ export function getMessageCategoryId(messageId: number): number | null {
 
 export function listCategoryCountsForMailScope(
   accountScope: number | 'all',
-  access?: import('./email-store').MailScopeSession,
+  access?: import('./email-store.js').MailScopeSession,
 ): { categoryId: number; count: number }[] {
   if (accountScope === 'all') {
     return listCategoryCountsForAllAccounts(access);
@@ -249,7 +249,7 @@ const CATEGORY_INBOX_OPEN_WHERE = `m.soft_deleted = 0
 
 /** Inbox messages per category summed across all accounts (open / unerledigt only). */
 export function listCategoryCountsForAllAccounts(
-  access?: import('./email-store').MailScopeSession,
+  access?: import('./email-store.js').MailScopeSession,
 ): { categoryId: number; count: number }[] {
   const { sql: accessSql, params: accessParams } = accountAccessSql(getDb(), access);
   return getDb()
@@ -654,7 +654,7 @@ export type { MessageSearchScope } from '../../shared/email-search-scope';
 export type MessageSearchOpts = {
   limit?: number;
   offset?: number;
-  view?: import('./email-store').AccountMailView;
+  view?: import('./email-store.js').AccountMailView;
   categoryId?: number | null;
   doneFilter?: MessageDoneFilter;
   /** 'broad' searches across all folders/views; absent or 'view' keeps per-view filtering. */
@@ -824,7 +824,7 @@ const FTS_BM25_WEIGHTS = '3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0';
  * werden gestrippt, bevor die Nonce-Marker in Sentinels umgeschrieben werden.
  */
 function attachFtsSearchSnippets(
-  rows: import('./email-store').EmailMessageRow[],
+  rows: import('./email-store.js').EmailMessageRow[],
   match: string,
   withAttachments: boolean,
 ): void {
@@ -880,7 +880,7 @@ function attachFtsSearchSnippets(
 
 /** JS-side highlighted snippet for LIKE-mode rows (same sentinel format). */
 function attachLikeSearchSnippets(
-  rows: import('./email-store').EmailMessageRow[],
+  rows: import('./email-store.js').EmailMessageRow[],
   parsed: ParsedMailSearchQuery,
 ): void {
   const needles = [...parsed.phrases, ...parsed.terms];
@@ -896,7 +896,7 @@ function attachLikeSearchSnippets(
 
 type MessageSearchTarget = {
   accountId?: number;
-  access?: import('./email-store').MailScopeSession;
+  access?: import('./email-store.js').MailScopeSession;
   /** View mode only: hide snoozed mail from search (per-account meta path). */
   applySnoozeFilter?: boolean;
 };
@@ -917,7 +917,7 @@ function runMessageSearch(
   target: MessageSearchTarget,
   limit: number,
   offset: number,
-): { rows: import('./email-store').EmailMessageRow[]; searchMode: 'fts' | 'like' } {
+): { rows: import('./email-store.js').EmailMessageRow[]; searchMode: 'fts' | 'like' } {
   const parsed = parseMailSearchQuery(trimmed);
   const { sql: scopeSql, broad } = searchScopeSql(opts);
   const doneSql = broad ? '' : doneFilterSql(opts.doneFilter, opts.view ?? 'inbox');
@@ -1005,7 +1005,7 @@ function runMessageSearch(
            ${orderSql}
            LIMIT ? OFFSET ?`;
       const stmt = getDb().prepare(sql);
-      const rows = stmt.all(...params, limit, offset) as import('./email-store').EmailMessageRow[];
+      const rows = stmt.all(...params, limit, offset) as import('./email-store.js').EmailMessageRow[];
       if (rows.length > 0) {
         // Snippets: OR-Ausdruck, damit auch Teiltreffer markiert werden.
         attachFtsSearchSnippets(rows, tokens.join(' OR '), withAttachments);
@@ -1015,7 +1015,7 @@ function runMessageSearch(
         // Empty page beyond page 1: probe page 1 to tell "genuine end of FTS
         // results" from "this query has been LIKE mode all along" — otherwise
         // pages after the first would be unreachable for LIKE-only queries.
-        const probe = stmt.all(...params, 1, 0) as import('./email-store').EmailMessageRow[];
+        const probe = stmt.all(...params, 1, 0) as import('./email-store.js').EmailMessageRow[];
         if (probe.length > 0) {
           return { rows: [], searchMode: 'fts' };
         }
@@ -1039,14 +1039,14 @@ function runMessageSearch(
        ORDER BY datetime(COALESCE(m.date_received, m.created_at)) DESC
        LIMIT ? OFFSET ?`,
     )
-    .all(...params) as import('./email-store').EmailMessageRow[];
+    .all(...params) as import('./email-store.js').EmailMessageRow[];
   attachLikeSearchSnippets(rows, parsed);
   return { rows, searchMode: 'like' };
 }
 
 /** ±60-char window around the first regex hit, marked with the sentinels. */
 function buildRegexSearchSnippet(
-  m: import('./email-store').EmailMessageRow,
+  m: import('./email-store.js').EmailMessageRow,
   re: RegExp,
 ): string | null {
   for (const field of [m.subject, m.snippet, m.body_text]) {
@@ -1072,7 +1072,7 @@ function buildRegexSearchSnippet(
 }
 
 /** Candidate row incl. aggregated attachment text for the JS regex haystack. */
-type RegexSearchCandidate = import('./email-store').EmailMessageRow & {
+type RegexSearchCandidate = import('./email-store.js').EmailMessageRow & {
   attachment_search_text?: string | null;
 };
 
@@ -1123,7 +1123,7 @@ export function searchMessagesForAccountWithMeta(
   q: string,
   opts: MessageSearchOpts = {},
 ): {
-  rows: import('./email-store').EmailMessageRow[];
+  rows: import('./email-store.js').EmailMessageRow[];
   searchMode: MessageSearchMode;
   hasMore: boolean;
 } {
@@ -1163,7 +1163,7 @@ export function searchMessagesForAccountWithMeta(
     // Matches erfordern eine praezisere Query.
     const REGEX_SCAN_CAP = 5000;
     const wanted = offset + limit + 1;
-    const matches: import('./email-store').EmailMessageRow[] = [];
+    const matches: import('./email-store.js').EmailMessageRow[] = [];
     let scanned = 0;
     let exhausted = false;
     while (matches.length < wanted && scanned < REGEX_SCAN_CAP && !exhausted) {
@@ -1214,7 +1214,7 @@ export function searchMessagesForAccountWithMeta(
 function messageMatchesDoneFilter(
   m: { done_local?: number },
   filter: MessageDoneFilter | undefined,
-  view?: import('./email-store').AccountMailView,
+  view?: import('./email-store.js').AccountMailView,
 ): boolean {
   if (view && view !== 'inbox') return true;
   if (!filter || filter === 'all') return true;
@@ -1226,9 +1226,9 @@ export function searchMessagesForMailScopeWithMeta(
   accountScope: number | 'all',
   q: string,
   opts: MessageSearchOpts = {},
-  access?: import('./email-store').MailScopeSession,
+  access?: import('./email-store.js').MailScopeSession,
 ): {
-  rows: import('./email-store').EmailMessageRow[];
+  rows: import('./email-store.js').EmailMessageRow[];
   searchMode: MessageSearchMode;
   hasMore: boolean;
 } {
@@ -1244,7 +1244,7 @@ export function setMessageCustomerId(messageId: number, customerId: number | nul
     .run(customerId, messageId);
 }
 
-function viewFilterClause(view: import('./email-store').AccountMailView): string {
+function viewFilterClause(view: import('./email-store.js').AccountMailView): string {
   const nonDraftMail = `(m.uid >= 0 OR m.pop3_uidl IS NOT NULL)`;
   const outboundHeldInInbox = `(m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = 1 AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = ''))`;
   // Spiegel der Inbox-View-Semantik in email-store.ts: Entwürfe im Zustand
@@ -1283,17 +1283,17 @@ export function searchMessagesForMailScope(
   accountScope: number | 'all',
   q: string,
   limit = 100,
-  view?: import('./email-store').AccountMailView,
-): import('./email-store').EmailMessageRow[] {
+  view?: import('./email-store.js').AccountMailView,
+): import('./email-store.js').EmailMessageRow[] {
   return searchMessagesForMailScopeWithMeta(accountScope, q, { limit, view }).rows;
 }
 
 export function searchMessagesForAllAccountsWithMeta(
   q: string,
   opts: MessageSearchOpts = {},
-  access?: import('./email-store').MailScopeSession,
+  access?: import('./email-store.js').MailScopeSession,
 ): {
-  rows: import('./email-store').EmailMessageRow[];
+  rows: import('./email-store.js').EmailMessageRow[];
   searchMode: MessageSearchMode;
   hasMore: boolean;
 } {
@@ -1311,8 +1311,8 @@ export function searchMessagesForAllAccountsWithMeta(
 export function searchMessagesForAllAccounts(
   q: string,
   opts: MessageSearchOpts = {},
-  access?: import('./email-store').MailScopeSession,
-): import('./email-store').EmailMessageRow[] {
+  access?: import('./email-store.js').MailScopeSession,
+): import('./email-store.js').EmailMessageRow[] {
   return searchMessagesForAllAccountsWithMeta(q, opts, access).rows;
 }
 
@@ -1320,8 +1320,8 @@ export function searchMessagesForAccount(
   accountId: number,
   q: string,
   opts: MessageSearchOpts | number = 100,
-  view?: import('./email-store').AccountMailView,
-): import('./email-store').EmailMessageRow[] {
+  view?: import('./email-store.js').AccountMailView,
+): import('./email-store.js').EmailMessageRow[] {
   const resolved: MessageSearchOpts =
     typeof opts === 'number' ? { limit: opts, view } : opts;
   if (!q.trim()) return [];

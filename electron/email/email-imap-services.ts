@@ -23,7 +23,7 @@ function runScheduledSendTick(logger: Pick<typeof console, 'warn' | 'debug'>): v
   scheduledSendTickInFlight = true;
   void (async () => {
     try {
-      const { processDueScheduledSends } = await import('./email-scheduled-send');
+      const { processDueScheduledSends } = await import('./email-scheduled-send.js');
       await processDueScheduledSends(logger);
     } catch (e) {
       logger.warn('[email] scheduled send', e);
@@ -147,22 +147,22 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
   stopEmailBackgroundServices();
 
   try {
-    const { recoverStaleReplySuggestions } = await import('./email-reply-ai');
-    const { clearStaleComposeSendingLocks } = await import('./email-compose-send');
-    const { recoverStaleDelayedJobs } = await import('../workflow/delayed-jobs');
-    const { sweepStaleInlineImageTempFiles } = await import('./email-inline-images');
-    const { ensureVacationDedupTable } = await import('./email-vacation');
+    const { recoverStaleReplySuggestions } = await import('./email-reply-ai.js');
+    const { clearStaleComposeSendingLocks } = await import('./email-compose-send.js');
+    const { recoverStaleDelayedJobs } = await import('../workflow/delayed-jobs.js');
+    const { sweepStaleInlineImageTempFiles } = await import('./email-inline-images.js');
+    const { ensureVacationDedupTable } = await import('./email-vacation.js');
     ensureVacationDedupTable();
     recoverStaleReplySuggestions();
     clearStaleComposeSendingLocks();
     recoverStaleDelayedJobs();
     sweepStaleInlineImageTempFiles(undefined, logger);
-    const { sweepStaleSyncInfoKeys } = await import('../sync-info-maintenance');
+    const { sweepStaleSyncInfoKeys } = await import('../sync-info-maintenance.js');
     const swept = sweepStaleSyncInfoKeys();
     if (swept.removed > 0) {
       logger.debug(`[sync_info] boot sweep removed ${swept.removed} stale keys`);
     }
-    const { startAttachmentTextBackfill } = await import('./attachment-text-extract');
+    const { startAttachmentTextBackfill } = await import('./attachment-text-extract.js');
     startAttachmentTextBackfill(logger);
   } catch (e) {
     logger.warn('[email] startup recovery', e);
@@ -239,7 +239,7 @@ export function isEmailBackgroundSyncBusy(): boolean {
 export function stopEmailBackgroundServices(): void {
   globalCronTickInFlight = false;
   scheduledSendTickInFlight = false;
-  void import('./attachment-text-extract')
+  void import('./attachment-text-extract.js')
     .then((m) => m.stopAttachmentTextBackfill())
     .catch(() => undefined);
   if (scheduledSendInterval) {
