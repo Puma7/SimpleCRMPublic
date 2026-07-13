@@ -7,6 +7,8 @@
 FROM node:24 AS build
 
 WORKDIR /app
+ENV PNPM_CONFIG_NODE_LINKER=hoisted \
+    PNPM_CONFIG_IGNORE_SCRIPTS=true
 # Full context; .dockerignore keeps node_modules/.git/build output out.
 COPY . .
 RUN npm install -g pnpm@11.12.0

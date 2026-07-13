@@ -43,6 +43,8 @@ packages/*/dist/
 # Generated type artifacts
 src/types/index.js
 src/types/index.js.map
+# Stale output from the TypeScript MSSQL service; Electron builds into dist-electron.
+/electron/mssql-service.js
 src/.DS_Store
 .DS_Store
 

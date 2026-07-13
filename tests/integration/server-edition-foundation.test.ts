@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import http from 'http';
 import { join } from 'path';
 
@@ -91,6 +91,35 @@ describe('server edition repository boundaries', () => {
 
   test('packages/server does not import Electron-only runtime modules', () => {
     expectNoElectronRuntimeImports(join(__dirname, '..', '..', 'packages', 'server', 'src'));
+  });
+
+  test('CI installs the pinned pnpm release through the stable setup action', () => {
+    const ci = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+
+    expect(ci).toContain('uses: pnpm/action-setup@v5');
+    expect(ci).not.toContain('uses: pnpm/action-setup@v6');
+  });
+
+  test.each(['api.Dockerfile', 'web.Dockerfile'])(
+    '%s keeps pnpm lifecycle settings consistent after install',
+    (dockerfileName) => {
+      const dockerfile = readFileSync(join(__dirname, '..', '..', 'docker', dockerfileName), 'utf8');
+      const configIndex = dockerfile.indexOf('ENV PNPM_CONFIG_NODE_LINKER=hoisted');
+      const installIndex = dockerfile.indexOf('RUN pnpm install');
+
+      expect(configIndex).toBeGreaterThan(-1);
+      expect(dockerfile).toContain('PNPM_CONFIG_IGNORE_SCRIPTS=true');
+      expect(configIndex).toBeLessThan(installIndex);
+    },
+  );
+
+  test('generated MSSQL service JavaScript stays out of the source tree', () => {
+    const repositoryRoot = join(__dirname, '..', '..');
+    const gitignore = readFileSync(join(repositoryRoot, '.gitignore'), 'utf8');
+
+    expect(existsSync(join(repositoryRoot, 'electron', 'mssql-service.js'))).toBe(false);
+    expect(existsSync(join(repositoryRoot, 'electron', 'main.js'))).toBe(true);
+    expect(gitignore).toContain('/electron/mssql-service.js');
   });
 
   test('docker compose foundation uses PostgreSQL 18', () => {

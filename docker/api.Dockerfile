@@ -1,6 +1,8 @@
 FROM node:24-alpine AS build
 
 WORKDIR /app
+ENV PNPM_CONFIG_NODE_LINKER=hoisted \
+    PNPM_CONFIG_IGNORE_SCRIPTS=true
 RUN npm install -g pnpm@11.12.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY tsconfig.json tsconfig.electron.json ./
