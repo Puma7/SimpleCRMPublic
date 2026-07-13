@@ -63,13 +63,13 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
    The root workspace is pinned to **Node.js 24 LTS**, **pnpm 11.12.0**, and
    **TypeScript 7.0.2+**. pnpm resolves the root peer-dependency tree without
    `--legacy-peer-deps`.
-3. **Rebuild Native Modules:**
-   Electron apps sometimes need native modules rebuilt for your specific setup. The `postinstall` script should handle this, but if you encounter issues, run:
+3. **Prepare Native Modules:**
+   Node 24 and Electron 43 use different native ABIs. The `postinstall` script caches both `better-sqlite3` builds and leaves the workspace ready for Node-based tests. Electron commands select their cached ABI automatically and restore Node afterwards. If you encounter an ABI error, run:
    ```bash
-   pnpm run postinstall
-   # or force it with:
-   pnpm exec electron-rebuild -f -w better-sqlite3,keytar
+   pnpm run native:initialize
+   pnpm run native:status
    ```
+   Do not run `electron-rebuild` directly; that replaces the single active binary without preserving the other runtime.
 
 > **Windows users:** For a detailed step-by-step guide using PowerShell (including prerequisites like Visual Studio Build Tools, troubleshooting native module errors, and more), see **[docs/SETUP_WINDOWS.md](docs/SETUP_WINDOWS.md)**.
 

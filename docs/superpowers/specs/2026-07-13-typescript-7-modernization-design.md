@@ -53,6 +53,8 @@ Each group receives a clean install and its relevant test/build gate. API migrat
 
 The existing Electron development workflow remains visible and foreground-driven. No hidden process launcher is introduced. TypeScript 7 watch mode is tested explicitly; if it proves unreliable, an existing visible watcher (`nodemon`) may invoke one-shot TypeScript compilation rather than introducing a background service.
 
+Node 24 and Electron 43 use different native module ABIs. Postinstall therefore caches separate `better-sqlite3` binaries for Node and Electron. Every Electron-facing command selects the Electron cache before launch and restores the Node cache in a `finally` block, including failed builds and interrupted development runs. The Windows wrapper uses visible inherited process I/O and `npm.cmd`, so it does not depend on PowerShell execution-policy changes or hidden process launches.
+
 ## Compatibility Boundaries
 
 - No database migration or persisted application-data change is planned.

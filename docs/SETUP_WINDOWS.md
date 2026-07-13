@@ -83,13 +83,17 @@ corepack pnpm install --frozen-lockfile
 
 This will:
 1. Download all npm packages
-2. Automatically run `electron-rebuild` (postinstall hook) to compile native modules (`better-sqlite3`, `keytar`) for your Electron version
+2. Build and cache `better-sqlite3` for both Node ABI 137 and Electron ABI 148
+3. Restore the Node ABI so Jest and CLI scripts are ready immediately
 
-**If `electron-rebuild` fails**, run it manually:
+**If native preparation fails or an ABI error appears**, rebuild and inspect the managed caches:
 
 ```powershell
-corepack pnpm exec electron-rebuild -f -w better-sqlite3,keytar
+corepack pnpm run native:initialize
+corepack pnpm run native:status
 ```
+
+Do not invoke `electron-rebuild` directly. It replaces the active binary and can make either Node tests or Electron fail. The `electron:*` scripts select Electron automatically and restore Node when they exit.
 
 ---
 
@@ -194,7 +198,8 @@ If Git reports merge conflicts, resolve them in your editor, then `git add .` an
 Run these if install failed, native modules were upgraded, or Electron/Node versions changed:
 
 ```powershell
-corepack pnpm exec electron-rebuild -f -w better-sqlite3,keytar
+corepack pnpm run native:initialize
+corepack pnpm run native:status
 ```
 
 If the app still behaves oddly after a big pull, do a clean rebuild:
@@ -297,7 +302,7 @@ corepack pnpm run test:coverage
 
 ```powershell
 corepack pnpm install
-corepack pnpm exec electron-rebuild -f -w better-sqlite3,keytar
+corepack pnpm run native:initialize
 ```
 
 ### `keytar` errors
@@ -307,7 +312,8 @@ corepack pnpm exec electron-rebuild -f -w better-sqlite3,keytar
 **Fix:** Ensure Windows Credential Manager is running (it is enabled by default). Rebuild keytar:
 
 ```powershell
-corepack pnpm exec electron-rebuild -f -w keytar
+corepack pnpm rebuild keytar
+corepack pnpm run native:initialize
 ```
 
 ### PowerShell blocks `npm.ps1` or `pnpm.ps1`
@@ -394,7 +400,8 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | `corepack pnpm run seed-db:test` | Seed 100 customers + 50 products |
 | `corepack pnpm run cleanup-db` | Remove seed data |
 | `corepack pnpm test` | Run all tests |
-| `corepack pnpm exec electron-rebuild -f -w better-sqlite3,keytar` | Rebuild native modules |
+| `corepack pnpm run native:initialize` | Rebuild the Node/Electron native ABI caches |
+| `corepack pnpm run native:status` | Show the active and cached native ABIs |
 
 ---
 

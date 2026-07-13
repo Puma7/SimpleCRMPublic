@@ -354,6 +354,17 @@ describe('server edition repository boundaries', () => {
     expect(tsconfig.references).toContainEqual({ path: '../core' });
   });
 
+  test('Electron commands select the Electron native ABI and restore Node afterwards', () => {
+    const packageJson = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8'));
+    const scripts = packageJson.scripts as Record<string, string>;
+
+    expect(scripts.postinstall).toContain('native-runtime-manager.mjs initialize');
+    for (const script of ['electron:dev', 'electron:dev:main', 'electron:build', 'electron:publish', 'electron:start', 'electron:dev:debug', 'electron:test:devtools', 'test:e2e']) {
+      expect(scripts[script]).toBe(`node scripts/run-with-electron-native.mjs ${script}:runtime`);
+      expect(scripts[`${script}:runtime`]).toBeTruthy();
+    }
+  });
+
   test('production update drains old Graphile workers before the new API starts', () => {
     const updateScript = readFileSync(join(__dirname, '..', '..', 'docker', 'update.sh'), 'utf8');
     const stopIndex = updateScript.indexOf('compose stop api');

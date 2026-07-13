@@ -43,7 +43,7 @@ See `package.json` `scripts` for the full list.
 - **Toolchain:** Node.js 24 LTS, pnpm 11.12.0 and TypeScript 7.0.2+ are enforced by `package.json`, CI and `pnpm run check:typescript-toolchain`. Do not add a second root lockfile.
 - **Root package manager is pnpm.** It resolves the root peer tree without `--legacy-peer-deps`. The isolated `packages/svelte-lab` experiment intentionally keeps its own npm lock and uses `npm ci --legacy-peer-deps`.
 - **`@testing-library/dom` is an explicit dependency** because `@testing-library/react` requires that peer.
-- **Native modules** (`better-sqlite3`, `keytar`) are compiled by the `postinstall` script (`electron-rebuild`). If you see "module was compiled against a different Node.js version" errors, run `pnpm run postinstall` to rebuild.
+- **Native modules** use different ABIs under Node 24 and Electron 43. `postinstall` caches both `better-sqlite3` binaries and leaves the workspace on the Node ABI; all `electron:*` scripts switch to the Electron ABI and restore Node afterwards. Use `pnpm run native:status` to inspect or `pnpm run native:initialize` to rebuild the caches. Do not invoke `electron-rebuild` directly.
 - **Xvfb is required** on headless Linux to run the Electron app or E2E tests. Use `xvfb-run --auto-servernum` as a prefix.
 - **Dev mode** (`pnpm run electron:dev`) starts four concurrent processes: Vite build watcher, TypeScript compiler watcher, Electron main via nodemon, and Vite dev server on port 5173. DevTools open automatically in dev mode.
 - The SQLite database file is created at `~/.config/simplecrm/database.sqlite` (on Linux).
