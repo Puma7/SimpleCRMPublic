@@ -156,7 +156,6 @@
     "@babel/core": "^8.0.1",
     "@babel/eslint-parser": "^8.0.1",
     "@electron/rebuild": "^4.0.4",
-    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "@swc/core": "^1.15.43",
     "@swc/jest": "^0.2.39",
