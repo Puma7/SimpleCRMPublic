@@ -61,6 +61,12 @@ The existing Electron development workflow remains visible and foreground-driven
 - Generated dependency lockfiles are committed; generated application bundles and local Electron logs are not.
 - The isolated Svelte lab is upgraded and built, but remains isolated from the production React bundle.
 
+### Verified Dependency Constraints
+
+- `kysely` remains on `0.28.17`, the newest security-patched release that still publishes a CommonJS entry point. Kysely 0.29 is ESM-only and is incompatible with the current CommonJS server package boundary.
+- `quill` remains on the latest published release, `2.0.3`. GitHub advisory `GHSA-v3m3-f69x-jf25` has no patched release and applies to Quill's HTML export feature; SimpleCRM reads the editor DOM and does not call `getSemanticHTML`. The remaining low-severity audit finding must be revisited when Quill publishes a fixed version.
+- Transitive security fixes are constrained with pnpm workspace overrides so production dependencies resolve patched `xmldom`, DOMPurify, `fast-uri`, `js-yaml`, Nodemailer, Undici, and `ws` versions without changing application APIs.
+
 ## Error Handling and Rollback
 
 - Compiler diagnostics are fixed at their source or configuration boundary; they are not suppressed globally.
