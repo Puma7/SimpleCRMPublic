@@ -28,7 +28,7 @@ const mssqlMocks = {
 
 jest.mock('../../electron/mssql-keytar-service', () => mssqlMocks);
 
-import { runSync, getLastSyncStatus, initializeSyncService } from '../../electron/sync-service';
+const { runSync, getLastSyncStatus, initializeSyncService } = require('../../electron/sync-service') as typeof import('../../electron/sync-service');
 
 const mockWebContents = { send: jest.fn() };
 const mockWindow = {

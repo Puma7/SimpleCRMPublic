@@ -3,21 +3,24 @@
  * Replaces the Vite-specific syntax with a plain boolean before TypeScript
  * compilation so that Jest (which runs in CommonJS mode) can parse the file.
  */
-const ts = require('typescript');
+const { transformSync } = require('@swc/core');
 
 module.exports = {
   process(sourceText, sourcePath) {
     const patched = sourceText.replace(/\bimport\.meta\.env\.DEV\b/g, 'false');
-    const result = ts.transpileModule(patched, {
-      compilerOptions: {
-        module: ts.ModuleKind.CommonJS,
-        target: ts.ScriptTarget.ES2020,
-        esModuleInterop: true,
-        allowSyntheticDefaultImports: true,
-        moduleResolution: ts.ModuleResolutionKind.Bundler,
+    const result = transformSync(patched, {
+      filename: sourcePath,
+      jsc: {
+        target: 'es2022',
+        parser: {
+          syntax: 'typescript',
+          decorators: true,
+        },
       },
+      module: { type: 'commonjs' },
+      sourceMaps: 'inline',
     });
-    return { code: result.outputText };
+    return { code: result.code };
   },
 
   getCacheKey(fileData, filePath) {

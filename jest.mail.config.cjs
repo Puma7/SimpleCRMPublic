@@ -1,10 +1,19 @@
 /** Standalone Jest config: mail module tests + 100% coverage on electron/email. */
 const path = require('path');
 
+const swcBase = {
+  jsc: {
+    target: 'es2022',
+    parser: { syntax: 'typescript', decorators: true },
+    transform: { react: { runtime: 'automatic' } },
+  },
+  module: { type: 'commonjs' },
+  sourceMaps: 'inline',
+};
+
 /** @type {import('jest').Config} */
 module.exports = {
   displayName: 'mail',
-  preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/electron', '<rootDir>/shared', '<rootDir>/tests'],
   moduleNameMapper: {
@@ -12,6 +21,7 @@ module.exports = {
     '^@shared/(.*)$': '<rootDir>/shared/$1',
     '^@simplecrm/core$': '<rootDir>/packages/core/src',
     '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
+    '^(\\.{1,2}/.*)\\.js$': '$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
     '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
   },
@@ -38,11 +48,17 @@ module.exports = {
   setupFiles: ['<rootDir>/tests/setup/jest.mail.electron-mock.ts'],
   setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
   transform: {
-    '^.+\\.tsx?$': [
-      'ts-jest',
-      // isolatedModules is set in tsconfig.electron.json.
-      { tsconfig: '<rootDir>/tsconfig.electron.json' },
+    '^.+\\.tsx$': [
+      '@swc/jest',
+      {
+        ...swcBase,
+        jsc: {
+          ...swcBase.jsc,
+          parser: { ...swcBase.jsc.parser, tsx: true },
+        },
+      },
     ],
+    '^.+\\.ts$': ['@swc/jest', swcBase],
   },
   collectCoverage: true,
   coverageProvider: 'v8',

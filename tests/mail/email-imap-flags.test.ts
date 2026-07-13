@@ -15,7 +15,7 @@ jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: (...a: unknown[]) => mockResolveAuth(...a),
 }));
 
-import { syncSeenFlagToServer } from '../../electron/email/email-imap-flags';
+const { syncSeenFlagToServer } = require('../../electron/email/email-imap-flags') as typeof import('../../electron/email/email-imap-flags');
 
 describe('syncSeenFlagToServer', () => {
   beforeEach(() => {

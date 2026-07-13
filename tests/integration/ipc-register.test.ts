@@ -15,7 +15,7 @@ jest.mock('../../shared/ipc/schemas', () => ({
 }));
 
 import { IPCChannels } from '../../shared/ipc/channels';
-import { registerIpcHandler } from '../../electron/ipc/register';
+const { registerIpcHandler } = require('../../electron/ipc/register') as typeof import('../../electron/ipc/register');
 
 const schemasMock = jest.requireMock('../../shared/ipc/schemas') as {
   getPayloadSchema: jest.Mock;

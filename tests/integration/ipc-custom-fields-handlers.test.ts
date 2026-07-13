@@ -23,7 +23,7 @@ const sqliteMocks = {
 
 jest.mock('../../electron/sqlite-service', () => sqliteMocks);
 
-import { registerCustomFieldHandlers } from '../../electron/ipc/custom-fields';
+const { registerCustomFieldHandlers } = require('../../electron/ipc/custom-fields') as typeof import('../../electron/ipc/custom-fields');
 
 describe('registerCustomFieldHandlers', () => {
   beforeEach(() => {

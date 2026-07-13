@@ -59,7 +59,7 @@ jest.mock('@/components/ui/card', () => ({
   CardTitle: ({ children }: any) => <div>{children}</div>,
 }));
 
-import DashboardPage from '@/app/page';
+const DashboardPage = (require('@/app/page') as typeof import('@/app/page')).default;
 
 const mockStats = {
   totalCustomers: 10,

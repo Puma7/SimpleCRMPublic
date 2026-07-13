@@ -22,8 +22,8 @@ jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: jest.fn(async () => ({ user: 'u', pass: 'p' })),
 }));
 
-import { getEmailAccountById } from '../../electron/email/email-store';
-import { sendSmtpForAccount, testSmtpConnection } from '../../electron/email/email-smtp';
+const { getEmailAccountById } = require('../../electron/email/email-store') as typeof import('../../electron/email/email-store');
+const { sendSmtpForAccount, testSmtpConnection } = require('../../electron/email/email-smtp') as typeof import('../../electron/email/email-smtp');
 
 describe('email-smtp', () => {
   beforeEach(() => {

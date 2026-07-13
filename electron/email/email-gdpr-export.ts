@@ -1,5 +1,4 @@
 import fs from 'fs';
-import { createWriteStream } from 'fs';
 import { PassThrough } from 'stream';
 import archiver from 'archiver';
 import { dialog, type SaveDialogReturnValue } from 'electron';
@@ -53,7 +52,7 @@ export async function exportEmailGdprPackage(
   }
 
   return new Promise((resolve) => {
-    const out = createWriteStream(filePath);
+    const out = fs.createWriteStream(filePath);
     const archive = archiver('zip', { zlib: { level: 9 } });
 
     const fail = (err: Error | string) => {

@@ -1,5 +1,27 @@
 const path = require('path');
 
+const swcBase = {
+  jsc: {
+    target: 'es2022',
+    parser: { syntax: 'typescript', decorators: true },
+    transform: { react: { runtime: 'automatic' } },
+  },
+  module: { type: 'commonjs' },
+  sourceMaps: 'inline',
+};
+
+const swcTsTransform = ['@swc/jest', swcBase];
+const swcTsxTransform = [
+  '@swc/jest',
+  {
+    ...swcBase,
+    jsc: {
+      ...swcBase.jsc,
+      parser: { ...swcBase.jsc.parser, tsx: true },
+    },
+  },
+];
+
 /** @type {import('jest').Config} */
 module.exports = {
   collectCoverage: false,
@@ -67,13 +89,13 @@ module.exports = {
     '^@shared/(.*)$': '<rootDir>/shared/$1',
     '^@simplecrm/core$': '<rootDir>/packages/core/src',
     '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
+    '^(\\.{1,2}/.*)\\.js$': '$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
     '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
   },
   projects: [
     {
       displayName: 'unit',
-      preset: 'ts-jest',
       testEnvironment: 'jsdom',
       roots: ['<rootDir>/src', '<rootDir>/shared', '<rootDir>/tests'],
       moduleNameMapper: {
@@ -81,6 +103,7 @@ module.exports = {
         '^@shared/(.*)$': '<rootDir>/shared/$1',
         '^@simplecrm/core$': '<rootDir>/packages/core/src',
         '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
+        '^(\\.{1,2}/.*)\\.js$': '$1',
         '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
         '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
       },
@@ -89,14 +112,12 @@ module.exports = {
       transform: {
         // Use a custom transformer for files that contain import.meta.env (Vite-specific syntax)
         'localDataService\\.ts$': '<rootDir>/tests/setup/transform-import-meta.cjs',
-        // isolatedModules is set in tsconfig.json (ts-jest deprecates passing
-        // it via globals/transformer options; will be removed in ts-jest v30).
-        '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
+        '^.+\\.tsx$': swcTsxTransform,
+        '^.+\\.ts$': swcTsTransform,
       },
     },
     {
       displayName: 'integration',
-      preset: 'ts-jest',
       testEnvironment: 'node',
       roots: ['<rootDir>/src', '<rootDir>/shared', '<rootDir>/electron', '<rootDir>/tests'],
       moduleNameMapper: {
@@ -104,14 +125,15 @@ module.exports = {
         '^@shared/(.*)$': '<rootDir>/shared/$1',
         '^@simplecrm/core$': '<rootDir>/packages/core/src',
         '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
+        '^(\\.{1,2}/.*)\\.js$': '$1',
         '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
         '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
       },
       testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],
       setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
       transform: {
-        // isolatedModules is set in tsconfig.electron.json.
-        '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.electron.json' }],
+        '^.+\\.tsx$': swcTsxTransform,
+        '^.+\\.ts$': swcTsTransform,
       },
     },
   ],

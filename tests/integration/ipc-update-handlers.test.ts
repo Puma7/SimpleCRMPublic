@@ -17,7 +17,7 @@ const updateServiceMocks = {
 
 jest.mock('../../electron/update-service', () => updateServiceMocks);
 
-import { registerUpdateHandlers } from '../../electron/ipc/update';
+const { registerUpdateHandlers } = require('../../electron/ipc/update') as typeof import('../../electron/ipc/update');
 
 describe('registerUpdateHandlers', () => {
   beforeEach(() => {
