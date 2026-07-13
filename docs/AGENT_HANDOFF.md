@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-06-14 (Settings-Frontend-Backlog: Konten-IA, Scoped Overrides, KB-Kontext)  
-**Integration branch:** `main`  
+**Last updated:** 2026-07-13 (Node 24 / pnpm 11 / TypeScript 7 modernization)
+**Integration branch:** `codex/typescript-7-modernization`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 
 ---
@@ -12,7 +12,7 @@
 2. **E-Mail:** [`DEVELOPER_EMAIL.md`](DEVELOPER_EMAIL.md), [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
 3. **CRM:** [`DEVELOPER_CRM.md`](DEVELOPER_CRM.md), [`CRM_PRODUCT_GUIDE.md`](CRM_PRODUCT_GUIDE.md).
 4. **Backup/Restore:** [`MAIL_BETA_PHASE3_PLAN.md`](MAIL_BETA_PHASE3_PLAN.md), [`MAIL_TROUBLESHOOTING.md`](MAIL_TROUBLESHOOTING.md).
-5. Verify: `npm test`, `npm run build:electron:main`, `npx eslint . --ext ts,tsx --max-warnings 0`.
+5. Verify: `pnpm run check:typescript-toolchain`, `pnpm test`, `pnpm run build`, `pnpm run lint`.
 
 **UI language:** German (Posteingang = inbox, Aufgaben = tasks, Kunden = customers).
 
@@ -49,6 +49,8 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | External links | Confirm before `app:open-external-url` |
 | Mail categories | Manual assignment in UI (#71) |
 | Sent folder | IMAP append for outbound (#75) |
+| Toolchain | Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
+| ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
 
 ---
 
@@ -81,4 +83,4 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 
 ## 7. Commands
 
-See root [`AGENTS.md`](../AGENTS.md): `npm install --legacy-peer-deps`, `xvfb-run --auto-servernum npm run electron:dev`.
+See root [`AGENTS.md`](../AGENTS.md): `pnpm install`, `xvfb-run --auto-servernum pnpm run electron:dev`.

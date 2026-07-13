@@ -32,13 +32,13 @@ Hintergrund: `electron/email/email-imap-services.ts` (Cron, IDLE), `email-sync-m
 
 ## Build & IPC
 
-- Main-Prozess: `npm run build:electron:main` (`tsconfig.electron.json`).
-- Native/Peer-Hinweis: `npm install --legacy-peer-deps` (siehe README).
+- Main-Prozess: `pnpm run build:electron:main` (`tsconfig.electron.json`).
+- Toolchain: Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+; Root-Installation mit `pnpm install` (siehe README).
 
 ## Tests
 
 - **CI:** `pnpm run test:mail` läuft in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) nach der Haupt-Jest-Suite.
-- **Lokal:** `npm run test:mail` (ohne Coverage-Schwelle); `npm run test:mail:coverage` vor Mail-Merges (Ratchet, siehe [`MAIL_TESTING.md`](MAIL_TESTING.md)).
+- **Lokal:** `pnpm run test:mail` (ohne Coverage-Schwelle); `pnpm run test:mail:coverage` vor Mail-Merges (Ratchet, siehe [`MAIL_TESTING.md`](MAIL_TESTING.md)).
 - Fresh-Install-Schema: `bootstrapFreshDatabaseSchema()` in `sqlite-service.ts`; Integrationstest `tests/mail/sqlite-fresh-install.integration.test.ts`.
 
 ## Dateien, die bei Änderungen oft zusammenspielen

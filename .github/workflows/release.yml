@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Extract changelog entry for this version
         id: changelog
@@ -57,15 +57,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -73,11 +71,14 @@ jobs:
       - name: Install dependencies (skip postinstall to avoid electron-rebuild failure)
         run: pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
 
+      - name: Verify TypeScript 7 toolchain
+        run: pnpm run check:typescript-toolchain
+
       - name: Prepare build prerequisites
         run: |
           node node_modules/electron/install.js
           node scripts/patch-better-sqlite3.js
-          npx electron-rebuild -f -w better-sqlite3,keytar
+          pnpm exec electron-rebuild -f -w better-sqlite3,keytar
 
       - name: Ensure tag matches package.json version
         shell: bash
@@ -105,21 +106,22 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --node-linker=hoisted
+
+      - name: Verify TypeScript 7 toolchain
+        run: pnpm run check:typescript-toolchain
 
       - name: Fix binary permissions
         run: chmod +x node_modules/app-builder-bin/mac/app-builder_arm64 || true

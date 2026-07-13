@@ -19,11 +19,14 @@ Short, durable facts discovered during implementation. **Read before refactoring
 
 ## Cross-cutting (whole repo)
 
-1. **`npm install --legacy-peer-deps`** — required; peer tree conflicts otherwise.
-2. **Native modules** — run `npm run postinstall` after Node/Electron version changes (`better-sqlite3`, `keytar`).
-3. **Secrets** — Keytar / env, never commit API keys or mail passwords.
-4. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
-5. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
+1. **Pinned toolchain** — use Node.js 24 LTS and pnpm 11.12.0; `pnpm run check:typescript-toolchain` rejects TypeScript below 7.0.2 and legacy compiler integrations.
+2. **Package managers** — use `pnpm install` at the root. Only isolated `packages/svelte-lab` uses its own npm lock with `npm ci --legacy-peer-deps`.
+3. **Native modules** — run `pnpm run postinstall` after Node/Electron version changes (`better-sqlite3`, `keytar`). The patch guard accepts both the legacy direct `HolderV2` patch and the upstream `PROPERTY_HOLDER` macro.
+4. **CommonJS to ESM dependencies** — load ESM-only packages such as `archiver`, `electron-store`, and `openpgp` with memoized dynamic imports from Electron/server CommonJS output.
+5. **Compatibility exceptions** — `@types/node` stays on the Node 24 major; Kysely stays at `0.28.8` until the CommonJS server is migrated because 0.29 is ESM-only.
+6. **Secrets** — Keytar / env, never commit API keys or mail passwords.
+7. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
+8. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
 
 ---
 

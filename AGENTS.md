@@ -40,16 +40,17 @@ See `package.json` `scripts` for the full list.
 
 ### Gotchas
 
-- **Package manager is pnpm** (pinned to 9 in CI). pnpm resolves the peer-dependency conflicts automatically (`autoInstallPeers` in `pnpm-lock.yaml` settings), so no `--legacy-peer-deps` flag is needed. Do not add a second lockfile.
-- **`@testing-library/dom` is a missing peer dep** — `@testing-library/react` requires it but it is not listed in `package.json`. The update script installs it explicitly so tests pass.
-- **Native modules** (`better-sqlite3`, `keytar`) are compiled by the `postinstall` script (`electron-rebuild`). If you see "module was compiled against a different Node.js version" errors, run `npm run postinstall` to rebuild.
+- **Toolchain:** Node.js 24 LTS, pnpm 11.12.0 and TypeScript 7.0.2+ are enforced by `package.json`, CI and `pnpm run check:typescript-toolchain`. Do not add a second root lockfile.
+- **Root package manager is pnpm.** It resolves the root peer tree without `--legacy-peer-deps`. The isolated `packages/svelte-lab` experiment intentionally keeps its own npm lock and uses `npm ci --legacy-peer-deps`.
+- **`@testing-library/dom` is an explicit dependency** because `@testing-library/react` requires that peer.
+- **Native modules** (`better-sqlite3`, `keytar`) are compiled by the `postinstall` script (`electron-rebuild`). If you see "module was compiled against a different Node.js version" errors, run `pnpm run postinstall` to rebuild.
 - **Xvfb is required** on headless Linux to run the Electron app or E2E tests. Use `xvfb-run --auto-servernum` as a prefix.
-- **Dev mode** (`npm run electron:dev`) starts four concurrent processes: Vite build watcher, TypeScript compiler watcher, Electron main via nodemon, and Vite dev server on port 5173. DevTools open automatically in dev mode.
+- **Dev mode** (`pnpm run electron:dev`) starts four concurrent processes: Vite build watcher, TypeScript compiler watcher, Electron main via nodemon, and Vite dev server on port 5173. DevTools open automatically in dev mode.
 - The SQLite database file is created at `~/.config/simplecrm/database.sqlite` (on Linux).
 - **Mail tests in CI:** GitHub Actions runs `pnpm run test:mail` after the main Jest suite (see `.github/workflows/ci.yml`).
-- **Mail coverage:** `jest.mail.config.cjs` collects coverage from `electron/email/**/*.ts` with a **ratchet** threshold (~91% lines, ~80% branches). Run `npm run test:mail` while iterating (threshold disabled); use `npm run test:mail:coverage` before merging mail changes. See [`docs/MAIL_TESTING.md`](docs/MAIL_TESTING.md).
+- **Mail coverage:** `jest.mail.config.cjs` collects coverage from `electron/email/**/*.ts` with a **ratchet** threshold (~91% lines, ~80% branches). Run `pnpm run test:mail` while iterating (threshold disabled); use `pnpm run test:mail:coverage` before merging mail changes. See [`docs/MAIL_TESTING.md`](docs/MAIL_TESTING.md).
 - The app UI is in German (e.g., "Kunden" = Customers, "Aufgaben" = Tasks, "Kalender" = Calendar, "Einstellungen" = Settings).
-- **Workflow graph UI:** `@xyflow/react` v12 (`^12.10.1`). Optional isolated Svelte experiment: `packages/svelte-lab` (`@xyflow/svelte`), see `packages/svelte-lab/README.md` and `VITE_ENABLE_SVELTE_LAB`.
+- **Workflow graph UI:** `@xyflow/react` v12 (`^12.11.2`). Optional isolated Svelte experiment: `packages/svelte-lab` (`@xyflow/svelte`), see `packages/svelte-lab/README.md` and `VITE_ENABLE_SVELTE_LAB`.
 
 ## Hermes autonomous working mode
 

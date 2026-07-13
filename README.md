@@ -56,17 +56,19 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
    ```
 2. **Install Dependencies:**
    ```bash
+   corepack enable
+   corepack prepare pnpm@11.12.0 --activate
    pnpm install
    ```
-   (This project uses **pnpm**. pnpm resolves the peer-dependency tree
-   automatically — no `--legacy-peer-deps` flag is needed. Install pnpm 9+
-   first if you don't have it: `npm install -g pnpm@9`.)
+   The root workspace is pinned to **Node.js 24 LTS**, **pnpm 11.12.0**, and
+   **TypeScript 7.0.2+**. pnpm resolves the root peer-dependency tree without
+   `--legacy-peer-deps`.
 3. **Rebuild Native Modules:**
    Electron apps sometimes need native modules rebuilt for your specific setup. The `postinstall` script should handle this, but if you encounter issues, run:
    ```bash
-   npm run postinstall
+   pnpm run postinstall
    # or force it with:
-   npx electron-rebuild -f -w better-sqlite3,keytar
+   pnpm exec electron-rebuild -f -w better-sqlite3,keytar
    ```
 
 > **Windows users:** For a detailed step-by-step guide using PowerShell (including prerequisites like Visual Studio Build Tools, troubleshooting native module errors, and more), see **[docs/SETUP_WINDOWS.md](docs/SETUP_WINDOWS.md)**.
@@ -77,13 +79,13 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
   Starts the Vite dev server for instant UI updates and the Electron app.
   The `electron:dev` script compiles main-process TypeScript in watch mode so IPC handlers (including E-Mail) stay in sync with `dist-electron`.
   ```bash
-  npm run electron:dev
+  pnpm run electron:dev
   ```
   While this command is running, you should not need to manually rebuild after code changes.
 * **Production Mode:**
-  Runs the app as it would be packaged. Build the renderer with `npm run build:web`, compile the Electron main-process TypeScript with `npm run build:electron:main`, or run `npm run build` to do both.
+  Runs the app as it would be packaged. Build the renderer with `pnpm run build:web`, compile the Electron main-process TypeScript with `pnpm run build:electron:main`, or run `pnpm run build` to do both.
   ```bash
-  npm run electron:start
+  pnpm run electron:start
   ```
 
 ## Building the Application
@@ -92,12 +94,12 @@ To create an installer (`.exe`, `.dmg`, etc.):
 
 1. **Build the Frontend & Electron Code:**
    ```bash
-   npm run build
+   pnpm run build
    ```
-   This runs `build:web` (renderer) and `build:electron:main` (compiled IPC/services under `dist-electron/electron/`). The Vite Electron bundle step is included in `npm run build` via `vite build`.
+   This runs `build:web` (renderer) and `build:electron:main` (compiled IPC/services under `dist-electron/electron/`). The Vite Electron bundle step is included in `pnpm run build` via `vite build`.
 2. **Package with Electron Builder:**
    ```bash
-   npm run electron:build
+   pnpm run electron:build
    ```
    The installer will be created in the `dist-build` directory.
 
