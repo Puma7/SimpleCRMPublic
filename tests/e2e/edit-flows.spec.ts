@@ -1,27 +1,22 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
 
 const TS = Date.now();
 const CUSTOMER_LAST = `EditTest-${TS}`;
 const DEAL_NAME = `EditDeal-${TS}`;
 const DEAL_NAME_UPDATED = `EditDeal-Updated-${TS}`;
 
-let app: ElectronApplication;
+let session: ElectronTestSession;
 let page: Page;
 
 test.describe.serial('Customer and Deal edit flows', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('edit-flows');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   // ---------------------------------------------------------------------------
@@ -146,6 +141,7 @@ test.describe.serial('Customer and Deal edit flows', () => {
     const alert = page.getByRole('alertdialog');
     await expect(alert).toBeVisible();
     await alert.getByRole('button', { name: 'Löschen' }).click();
-    await expect(page.getByText(CUSTOMER_LAST)).not.toBeVisible();
+    await expect(alert).not.toBeVisible();
+    await expect(customerRow).toHaveCount(0);
   });
 });

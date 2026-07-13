@@ -51,6 +51,8 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Sent folder | IMAP append for outbound (#75) |
 | Toolchain | Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
+| Native ABI | Cached Node 137 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
+| Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
 
 ---
 
@@ -64,6 +66,8 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Workflow UI | `src/components/email/workflow/node-properties-panel.tsx` |
 | KI profile select | `src/components/email/ai-profile-select.tsx` |
 | Diagnostics | `src/components/email/settings/diagnostics-panel.tsx` |
+| Native ABI manager | `scripts/native-runtime-manager.mjs`, `scripts/run-with-electron-native.mjs` |
+| Electron E2E session | `tests/e2e/helpers/electron-session.ts` |
 
 ---
 

@@ -1,5 +1,5 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
 
 const TS = Date.now();
 const CUSTOMER_LAST = `TaskTest-${TS}`;
@@ -7,22 +7,17 @@ const TASK_TITLE = `E2E-Aufgabe-${TS}`;
 const PRODUCT_NAME = `E2E-Produkt-${TS}`;
 const PRODUCT_NAME_EDITED = `${PRODUCT_NAME}-Edit`;
 
-let app: ElectronApplication;
+let session: ElectronTestSession;
 let page: Page;
 
 test.describe.serial('Tasks — CRUD', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('tasks-crud');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   // ---------------------------------------------------------------------------
@@ -100,23 +95,19 @@ test.describe.serial('Tasks — CRUD', () => {
     const alert = page.getByRole('alertdialog');
     await expect(alert).toBeVisible();
     await alert.getByRole('button', { name: 'Löschen' }).click();
-    await expect(page.getByText(CUSTOMER_LAST)).not.toBeVisible();
+    await expect(alert).not.toBeVisible();
+    await expect(customerRow).toHaveCount(0);
   });
 });
 
 test.describe.serial('Products — CRUD', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('products-crud');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   // ---------------------------------------------------------------------------
@@ -180,6 +171,7 @@ test.describe.serial('Products — CRUD', () => {
     await expect(alert).toBeVisible();
     await alert.getByRole('button', { name: 'Löschen' }).click();
 
-    await expect(page.getByText(PRODUCT_NAME_EDITED)).not.toBeVisible();
+    await expect(alert).not.toBeVisible();
+    await expect(productRow).toHaveCount(0);
   });
 });

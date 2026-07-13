@@ -101,6 +101,7 @@ src/.DS_Store
 !AGENTS.md
 
 coverage/
+test-results/
 .playwright-cli/
 # Ignore local Claude Code state (settings.local.json, session data). Keep only
 # the shared, versioned MARKDOWN under .claude/skills and .claude/commands: the

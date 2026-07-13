@@ -21,12 +21,14 @@ Short, durable facts discovered during implementation. **Read before refactoring
 
 1. **Pinned toolchain** — use Node.js 24 LTS and pnpm 11.12.0; `pnpm run check:typescript-toolchain` rejects TypeScript below 7.0.2 and legacy compiler integrations.
 2. **Package managers** — use `pnpm install` at the root. Only isolated `packages/svelte-lab` uses its own npm lock with `npm ci --legacy-peer-deps`.
-3. **Native modules** — run `pnpm run postinstall` after Node/Electron version changes (`better-sqlite3`, `keytar`). The patch guard accepts both the legacy direct `HolderV2` patch and the upstream `PROPERTY_HOLDER` macro.
+3. **Native modules** — Node 24 uses ABI 137 while Electron 43 uses ABI 148. `pnpm run native:initialize` caches both `better-sqlite3` binaries; Electron scripts switch with `run-with-electron-native.mjs` and restore Node in `finally`. Do not run `electron-rebuild` directly. The patch guard accepts both the legacy direct `HolderV2` patch and the upstream `PROPERTY_HOLDER` macro.
 4. **CommonJS to ESM dependencies** — load ESM-only packages such as `archiver`, `electron-store`, and `openpgp` with memoized dynamic imports from Electron/server CommonJS output.
-5. **Compatibility exceptions** — `@types/node` stays on the Node 24 major; Kysely stays at `0.28.8` until the CommonJS server is migrated because 0.29 is ESM-only.
+5. **Compatibility exceptions** — `@types/node` stays on the Node 24 major; Kysely stays at the security-patched `0.28.17` until the CommonJS server is migrated because 0.29 is ESM-only.
 6. **Graphile Worker 0.17 migration** — old API/worker replicas must be scaled to zero before the new version starts and migrates its lock schema; `docker/update.sh` enforces this ordering.
-7. **Secrets** — Keytar / env, never commit API keys or mail passwords.
-8. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
+7. **IPC contracts** — payload and result schemas are enforced at runtime. Destructive CRM handlers return `{ success, error? }`; schema mismatches can mutate SQLite and still make the renderer report failure.
+8. **Electron E2E** — use `launchAuthenticatedElectron` so suites get a temporary standalone profile, complete first-run authentication, and never depend on the developer's local account or database.
+9. **Secrets** — Keytar / env, never commit API keys or mail passwords.
+10. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
 9. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
 
 ---
