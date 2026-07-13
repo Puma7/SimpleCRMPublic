@@ -1,6 +1,6 @@
 /**
  * Seeds demo inbox messages for local QA (no IMAP required).
- * Usage: npx ts-node --project scripts/tsconfig.json scripts/seed-email-demo-messages.ts
+ * Usage: npx tsx --tsconfig scripts/tsconfig.json scripts/seed-email-demo-messages.ts
  */
 import Database from 'better-sqlite3';
 import fs from 'fs';
