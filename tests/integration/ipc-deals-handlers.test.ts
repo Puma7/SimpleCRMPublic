@@ -33,7 +33,7 @@ jest.mock('../../electron/database-schema', () => ({
   DEAL_PRODUCTS_TABLE: 'deal_products',
 }));
 
-import { registerDealHandlers } from '../../electron/ipc/deals';
+const { registerDealHandlers } = require('../../electron/ipc/deals') as typeof import('../../electron/ipc/deals');
 
 describe('registerDealHandlers', () => {
   beforeEach(() => {

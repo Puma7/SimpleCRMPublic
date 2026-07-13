@@ -1,5 +1,5 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
 
 const TS = Date.now();
 const EVENT_TITLE = `E2E-Termin-${TS}`;
@@ -7,22 +7,17 @@ const FIELD_NAME = `e2efield${TS}`;
 const FIELD_LABEL = `E2E Testfeld ${TS}`;
 const FIELD_LABEL_UPDATED = `E2E Testfeld Updated ${TS}`;
 
-let app: ElectronApplication;
+let session: ElectronTestSession;
 let page: Page;
 
 test.describe.serial('Nachverfolgung, Calendar, and Custom Fields', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('followup-calendar-customfields');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   // ---------------------------------------------------------------------------
@@ -159,6 +154,6 @@ test.describe.serial('Nachverfolgung, Calendar, and Custom Fields', () => {
     // Second button in the row is Delete (Trash icon)
     await fieldRow.getByRole('button').nth(1).click();
 
-    await expect(page.getByText(FIELD_LABEL_UPDATED)).not.toBeVisible();
+    await expect(fieldRow).toHaveCount(0);
   });
 });

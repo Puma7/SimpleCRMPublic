@@ -17,14 +17,14 @@ export function registerIntegrationNodes(register: Reg): void {
     defaultConfig: {},
     execute: async (ctx, config) => {
       const syncOne = async (accountId: number): Promise<number | null> => {
-        const { getEmailAccountById } = await import('../../email/email-store');
+        const { getEmailAccountById } = await import('../../email/email-store.js');
         const acc = getEmailAccountById(accountId);
         if (!acc) return null;
         if ((acc.protocol || 'imap') === 'pop3') {
-          const { syncInboxPop3 } = await import('../../email/email-pop3-sync');
+          const { syncInboxPop3 } = await import('../../email/email-pop3-sync.js');
           return (await syncInboxPop3(accountId)).fetched;
         }
-        const { syncInboxImap } = await import('../../email/email-imap-sync');
+        const { syncInboxImap } = await import('../../email/email-imap-sync.js');
         return (await syncInboxImap(accountId)).fetched;
       };
 
@@ -38,7 +38,7 @@ export function registerIntegrationNodes(register: Reg): void {
       // accountId=0 (explizit) = alle Konten; sonst Config-Konto, sonst Konto der Nachricht.
       if (configId === 0) {
         if (ctx.dryRun) return { status: 'ok', message: 'dry-run sync (alle Konten)' };
-        const { listEmailAccounts } = await import('../../email/email-store');
+        const { listEmailAccounts } = await import('../../email/email-store.js');
         const accounts = listEmailAccounts();
         if (accounts.length === 0) return { status: 'skipped', message: 'Kein Konto' };
         let fetched = 0;
@@ -140,7 +140,7 @@ export function registerIntegrationNodes(register: Reg): void {
         return { status: 'error', message: 'Query muss mit SELECT beginnen' };
       }
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run mssql' };
-      const { executeReadOnlyMssqlQuery } = await import('../../mssql-keytar-service');
+      const { executeReadOnlyMssqlQuery } = await import('../../mssql-keytar-service.js');
       const r = await executeReadOnlyMssqlQuery(sqlText);
       if (!r.success) return { status: 'error', message: r.error ?? 'MSSQL-Fehler' };
       return {
@@ -167,7 +167,7 @@ export function registerIntegrationNodes(register: Reg): void {
         fetchJtlWarenlager,
         fetchJtlZahlungsarten,
         fetchJtlVersandarten,
-      } = await import('../../mssql-keytar-service');
+      } = await import('../../mssql-keytar-service.js');
       let rows: unknown[] = [];
       if (entity === 'warenlager') rows = await fetchJtlWarenlager();
       else if (entity === 'zahlungsarten') rows = await fetchJtlZahlungsarten();

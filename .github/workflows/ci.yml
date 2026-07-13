@@ -22,21 +22,27 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify TypeScript 7 toolchain
+        run: pnpm run check:typescript-toolchain
+
+      - name: Install and build isolated Svelte lab
+        run: |
+          npm ci --legacy-peer-deps --prefix packages/svelte-lab
+          npm run build --prefix packages/svelte-lab
 
       - name: Provide Electron path.txt (tests import 'electron' in Node)
         # The Node-context jest suites do `import … from 'electron'`, which runs
@@ -103,7 +109,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Generate smoke secrets
         shell: bash

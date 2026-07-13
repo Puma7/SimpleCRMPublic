@@ -17,11 +17,11 @@ jest.mock('../../electron/email/mail-rfc822-compose', () => ({
   buildComposeRfc822: (...a: unknown[]) => mockBuild(...a),
 }));
 
-import {
+const {
   appendSentToImap,
   imapTimeoutsForMessageBytes,
   resolveSentMailboxCandidates,
-} from '../../electron/email/email-imap-append';
+} = require('../../electron/email/email-imap-append') as typeof import('../../electron/email/email-imap-append');
 
 describe('appendSentToImap', () => {
   beforeEach(() => {

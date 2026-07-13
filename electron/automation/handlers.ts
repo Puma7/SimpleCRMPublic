@@ -409,7 +409,7 @@ async function dispatch(ctx: RouteContext, res: ServerResponse, apiScopes: Autom
       sendError(res, 400, 'missing_secret', 'Webhook-Secret fehlt (Feld secret)');
       return;
     }
-    const { fireWebhookWorkflows } = await import('../email/email-webhook');
+    const { fireWebhookWorkflows } = await import('../email/email-webhook.js');
     const result = await fireWebhookWorkflows({
       secret,
       body: (b.body ?? b.payload ?? {}) as Record<string, unknown>,

@@ -27,13 +27,13 @@ jest.mock('../../electron/email/email-imap-auth', () => ({
   resolveImapAuth: (...a: unknown[]) => mockResolveAuth(...a),
 }));
 
-import {
+const {
   deleteImapMessageOnServer,
   isImapDeleteOptInEnabled,
   moveImapMessage,
   moveMessageToImapFolder,
   setImapDeleteOptIn,
-} from '../../electron/email/email-imap-move';
+} = require('../../electron/email/email-imap-move') as typeof import('../../electron/email/email-imap-move');
 
 const imapAccount = {
   protocol: 'imap',

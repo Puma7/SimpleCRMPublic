@@ -24,7 +24,7 @@ const jtlOrderMocks = {
 
 jest.mock('../../electron/jtl-order-service', () => jtlOrderMocks);
 
-import { registerJtlHandlers } from '../../electron/ipc/jtl';
+const { registerJtlHandlers } = require('../../electron/ipc/jtl') as typeof import('../../electron/ipc/jtl');
 
 describe('registerJtlHandlers', () => {
   beforeEach(() => {

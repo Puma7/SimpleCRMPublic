@@ -1,4 +1,3 @@
-import * as openpgp from 'openpgp';
 import { randomUUID } from 'crypto';
 import { getDb } from '../sqlite-service';
 import { PGP_IDENTITIES_TABLE, PGP_PEER_KEYS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
@@ -10,6 +9,16 @@ import {
 } from '../email/email-keytar';
 
 const PGP_KEYTAR_PREFIX = 'pgp-priv-';
+
+type OpenPgpModule = typeof import('openpgp', { with: { 'resolution-mode': 'import' } });
+type OpenPgpPublicKey = Awaited<ReturnType<OpenPgpModule['readKey']>>;
+
+let openPgpPromise: Promise<OpenPgpModule> | undefined;
+
+function loadOpenPgp(): Promise<OpenPgpModule> {
+  openPgpPromise ??= import('openpgp');
+  return openPgpPromise;
+}
 
 /** Keys trusted for outbound encryption (manual import counts as explicit trust). */
 const ENCRYPT_TRUST_LEVELS = "('verified', 'tofu', 'imported')";
@@ -41,6 +50,7 @@ export async function importPublicKeyArmored(
   userId: string = LOCAL_OWNER_USER_ID,
   source = 'manual',
 ): Promise<{ fingerprint: string }> {
+  const openpgp = await loadOpenPgp();
   const key = await openpgp.readKey({ armoredKey: armor });
   const fp = key.getFingerprint().toLowerCase();
   const db = getDb();
@@ -57,6 +67,7 @@ export async function generatePgpIdentity(
   email: string,
   passphrase: string,
 ): Promise<{ fingerprint: string }> {
+  const openpgp = await loadOpenPgp();
   const { privateKey, publicKey } = await openpgp.generateKey({
     type: 'rsa',
     rsaBits: 4096,
@@ -83,6 +94,7 @@ export async function rotateIdentityPassphrase(
   nextPassphrase: string,
   userId: string = LOCAL_OWNER_USER_ID,
 ): Promise<void> {
+  const openpgp = await loadOpenPgp();
   if (!nextPassphrase.trim()) throw new Error('Neue Passphrase darf nicht leer sein');
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
@@ -110,6 +122,7 @@ export async function decryptMessageBody(
   passphrase: string,
   userId: string = LOCAL_OWNER_USER_ID,
 ): Promise<{ text: string; status: string }> {
+  const openpgp = await loadOpenPgp();
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   const row = db
@@ -172,9 +185,10 @@ export async function encryptPlaintextForRecipients(
   recipientEmails: string[],
   userId: string,
 ): Promise<{ armored: string }> {
+  const openpgp = await loadOpenPgp();
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
-  const keys: openpgp.PublicKey[] = [];
+  const keys: OpenPgpPublicKey[] = [];
   for (const email of recipientEmails) {
     const row = db
       .prepare(
@@ -204,6 +218,7 @@ export async function signPlaintext(
   userId: string,
   passphrase: string,
 ): Promise<{ armored: string }> {
+  const openpgp = await loadOpenPgp();
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   const identity = db
@@ -225,6 +240,7 @@ export async function signPlaintext(
 export async function verifySignedMessage(
   messageId: number,
 ): Promise<{ valid: boolean; fingerprint?: string; status: string }> {
+  const openpgp = await loadOpenPgp();
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   const row = db

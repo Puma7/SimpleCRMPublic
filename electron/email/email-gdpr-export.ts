@@ -1,7 +1,5 @@
 import fs from 'fs';
-import { createWriteStream } from 'fs';
 import { PassThrough } from 'stream';
-import archiver from 'archiver';
 import { dialog, type SaveDialogReturnValue } from 'electron';
 import { getDb } from '../sqlite-service';
 import {
@@ -17,6 +15,15 @@ const MESSAGE_BATCH = 2000;
 const NOTES_BATCH = 5000;
 const RUNS_LIMIT = 5000;
 const MAX_EXPORT_ATTACH_BYTES = 4 * 1024 * 1024 * 1024;
+
+type ArchiverModule = typeof import('archiver', { with: { 'resolution-mode': 'import' } });
+
+let archiverPromise: Promise<ArchiverModule> | undefined;
+
+function loadArchiver(): Promise<ArchiverModule> {
+  archiverPromise ??= import('archiver');
+  return archiverPromise;
+}
 
 function dirSizeBytes(dir: string): number {
   if (!fs.existsSync(dir)) return 0;
@@ -52,9 +59,10 @@ export async function exportEmailGdprPackage(
     return { ok: false, error: 'Abgebrochen' };
   }
 
+  const { ZipArchive } = await loadArchiver();
   return new Promise((resolve) => {
-    const out = createWriteStream(filePath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const out = fs.createWriteStream(filePath);
+    const archive = new ZipArchive({ zlib: { level: 9 } });
 
     const fail = (err: Error | string) => {
       try {

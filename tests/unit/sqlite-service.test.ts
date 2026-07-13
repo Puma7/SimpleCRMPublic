@@ -65,7 +65,7 @@ jest.mock('../../electron/database-schema', () => ({
   SAVED_VIEWS_TABLE: 'saved_views',
 }));
 
-import {
+const {
   initializeDatabase,
   getDb,
   getSyncInfo,
@@ -80,7 +80,7 @@ import {
   getCustomersPage,
   searchProducts,
   createTask,
-} from '../../electron/sqlite-service';
+} = require('../../electron/sqlite-service') as typeof import('../../electron/sqlite-service');
 
 describe('sqlite-service', () => {
   // Initialize DB once — migration code consumes prepare mocks, so we do this once

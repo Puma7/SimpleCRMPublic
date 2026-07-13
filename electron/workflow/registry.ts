@@ -61,7 +61,7 @@ let builtinsLoaded = false;
 export function ensureBuiltinWorkflowNodes(): void {
   if (builtinsLoaded) return;
   require('./register-builtin-nodes');
-  const { registerPluginWorkflowNodes } = require('./plugin-node-registry') as typeof import('./plugin-node-registry');
+  const { registerPluginWorkflowNodes } = require('./plugin-node-registry') as typeof import('./plugin-node-registry.js');
   registerPluginWorkflowNodes();
   builtinsLoaded = true;
 }

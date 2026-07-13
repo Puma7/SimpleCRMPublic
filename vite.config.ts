@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import tsconfigPaths from 'vite-tsconfig-paths'
 import path from 'path'
 import electron from 'vite-plugin-electron'
 
@@ -33,7 +32,6 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    tsconfigPaths(),
     ...(webOnly ? [] : [electron([
       {
         entry: 'electron/main.js',

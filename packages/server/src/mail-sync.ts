@@ -1830,7 +1830,7 @@ export async function replacePostgresMailSyncAttachments(input: {
     // der Backfill-Ticker holt Reste nach. Serialisierte Queue (Concurrency 1),
     // damit Bulk-Syncs keine parallelen Extraktionsketten aufstauen; lazy
     // import haelt die Parser-Deps vom Sync-Hot-Path fern.
-    void import('./mail-attachment-text')
+    void import('./mail-attachment-text.js')
       .then((m) => m.queueMessageAttachmentExtraction(
         {
           db: input.db,

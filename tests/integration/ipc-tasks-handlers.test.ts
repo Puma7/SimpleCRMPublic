@@ -20,7 +20,7 @@ const sqliteMocks = {
 
 jest.mock('../../electron/sqlite-service', () => sqliteMocks);
 
-import { registerTaskHandlers } from '../../electron/ipc/tasks';
+const { registerTaskHandlers } = require('../../electron/ipc/tasks') as typeof import('../../electron/ipc/tasks');
 
 describe('registerTaskHandlers', () => {
   beforeEach(() => {

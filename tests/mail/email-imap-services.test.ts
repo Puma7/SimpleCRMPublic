@@ -76,15 +76,15 @@ jest.mock('../../electron/email/email-scheduled-send', () => ({
   processDueScheduledSends: jest.fn().mockResolvedValue(0),
 }));
 
-import { syncAccountImap } from '../../electron/email/email-imap-sync';
-import { syncInboxPop3 } from '../../electron/email/email-pop3-sync';
-import { resolveImapAuth } from '../../electron/email/email-imap-auth';
-import cron from 'node-cron';
-import {
+const { syncAccountImap } = require('../../electron/email/email-imap-sync') as typeof import('../../electron/email/email-imap-sync');
+const { syncInboxPop3 } = require('../../electron/email/email-pop3-sync') as typeof import('../../electron/email/email-pop3-sync');
+const { resolveImapAuth } = require('../../electron/email/email-imap-auth') as typeof import('../../electron/email/email-imap-auth');
+const cron = (require('node-cron') as typeof import('node-cron')).default;
+const {
   restartEmailWorkflowCrons,
   startEmailBackgroundServices,
   stopEmailBackgroundServices,
-} from '../../electron/email/email-imap-services';
+} = require('../../electron/email/email-imap-services') as typeof import('../../electron/email/email-imap-services');
 
 const logger = { warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 

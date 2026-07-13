@@ -39,7 +39,7 @@ Konkrete Erkenntnisse aus Design, Implementierung und QA — **kurz**, damit sie
 
 ## Konfiguration & Betrieb
 
-- **`npm install --legacy-peer-deps`:** aktuell nötig wegen Peer-Konflikten im Baum (Dokumentation im README beibehalten).
+- **Installation:** Root mit `pnpm install`; `--legacy-peer-deps` gilt nur für das isolierte `packages/svelte-lab` mit eigenem npm-Lock.
 - **GDPR-ZIP:** Vollständiger Anhänge-Ordner kann riesig sein — **Export ohne Anhänge** anbieten + Größenlimit mit klarer Meldung.
 
 ## Threading

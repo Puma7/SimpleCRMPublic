@@ -22,7 +22,7 @@ const sqliteMocks = {
 
 jest.mock('../../electron/sqlite-service', () => sqliteMocks);
 
-import { registerFollowUpHandlers } from '../../electron/ipc/followup';
+const { registerFollowUpHandlers } = require('../../electron/ipc/followup') as typeof import('../../electron/ipc/followup');
 
 const mockLogger = {
   debug: jest.fn(),

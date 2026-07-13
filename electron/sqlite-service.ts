@@ -1977,7 +1977,7 @@ export function createCustomer(customerData: any): any {
         // Commit the transaction
         db.prepare('COMMIT').run();
 
-        void import('./workflow/workflow-trigger-dispatch')
+        void import('./workflow/workflow-trigger-dispatch.js')
           .then((m) =>
             m.dispatchCustomerCreatedWorkflow({
               customerId: newCustomerId,
@@ -1987,7 +1987,7 @@ export function createCustomer(customerData: any): any {
           )
           .catch((e) => console.debug('[workflow] customer_created', e));
 
-        void import('./email/email-crm-store')
+        void import('./email/email-crm-store.js')
           .then((m) => m.backfillCustomerLinksForMessages({ limit: 200 }))
           .catch(() => undefined);
 
@@ -2715,7 +2715,7 @@ export function updateDealStage(dealId: number, newStage: string): { success: bo
       } catch (e) {
         console.error('Failed to log stage change activity:', e);
       }
-      void import('./workflow/workflow-trigger-dispatch')
+      void import('./workflow/workflow-trigger-dispatch.js')
         .then((m) =>
           m.fireDealStageChangedWorkflows(
             dealId,

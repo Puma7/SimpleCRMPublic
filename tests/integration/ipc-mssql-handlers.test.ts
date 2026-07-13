@@ -22,7 +22,7 @@ jest.mock('../../electron/utils/ports', () => ({
   parsePort: jest.fn((port: any) => (port ? Number(port) : 1433)),
 }));
 
-import { registerMssqlHandlers } from '../../electron/ipc/mssql';
+const { registerMssqlHandlers } = require('../../electron/ipc/mssql') as typeof import('../../electron/ipc/mssql');
 
 describe('registerMssqlHandlers', () => {
   beforeEach(() => {

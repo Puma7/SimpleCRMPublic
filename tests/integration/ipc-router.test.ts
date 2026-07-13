@@ -42,7 +42,7 @@ jest.mock('../../electron/ipc/setup', () => ({ registerSetupHandlers }));
 jest.mock('../../electron/ipc/diagnostics', () => ({ registerDiagnosticsHandlers }));
 jest.mock('../../electron/ipc/maintenance', () => ({ registerMaintenanceHandlers }));
 
-import { registerAllIpcHandlers } from '../../electron/ipc/router';
+const { registerAllIpcHandlers } = require('../../electron/ipc/router') as typeof import('../../electron/ipc/router');
 
 describe('registerAllIpcHandlers', () => {
   test('registers all handler domains and calls disposers', () => {

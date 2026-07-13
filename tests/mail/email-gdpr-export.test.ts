@@ -24,7 +24,7 @@ const mockDirectory = jest.fn();
 const mockAbort = jest.fn();
 
 jest.mock('archiver', () => {
-  return jest.fn(() => {
+  return { ZipArchive: jest.fn(() => {
     const archive = new EventEmitter() as EventEmitter & {
       pipe: jest.Mock;
       append: jest.Mock;
@@ -40,11 +40,19 @@ jest.mock('archiver', () => {
     });
     archive.abort = mockAbort;
     return archive;
-  });
+  }) };
 });
 
-import { dialog } from 'electron';
-import { exportEmailGdprPackage } from '../../electron/email/email-gdpr-export';
+const { dialog } = require('electron') as typeof import('electron');
+const { exportEmailGdprPackage } = require('../../electron/email/email-gdpr-export') as typeof import('../../electron/email/email-gdpr-export');
+
+async function waitForListener(emitter: EventEmitter, event: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (emitter.listenerCount(event) > 0) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Listener for ${event} was not registered`);
+}
 
 describe('exportEmailGdprPackage', () => {
   beforeEach(() => {
@@ -71,7 +79,8 @@ describe('exportEmailGdprPackage', () => {
     writeStream.destroy = jest.fn();
     jest.spyOn(fs, 'createWriteStream').mockReturnValue(writeStream as never);
     const promise = exportEmailGdprPackage();
-    process.nextTick(() => writeStream.emit('close'));
+    await waitForListener(writeStream, 'close');
+    writeStream.emit('close');
     const r = await promise;
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.path).toBe(outFile);
@@ -85,7 +94,8 @@ describe('exportEmailGdprPackage', () => {
     writeStream.destroy = jest.fn();
     jest.spyOn(fs, 'createWriteStream').mockReturnValue(writeStream as never);
     const promise = exportEmailGdprPackage({ skipAttachments: true });
-    process.nextTick(() => writeStream.emit('close'));
+    await waitForListener(writeStream, 'close');
+    writeStream.emit('close');
     const r = await promise;
     expect(r.ok).toBe(true);
     expect(mockDirectory).not.toHaveBeenCalled();
@@ -116,7 +126,8 @@ describe('exportEmailGdprPackage', () => {
     writeStream.destroy = jest.fn();
     jest.spyOn(fs, 'createWriteStream').mockReturnValue(writeStream as never);
     const promise = exportEmailGdprPackage();
-    process.nextTick(() => writeStream.emit('error', new Error('disk full')));
+    await waitForListener(writeStream, 'error');
+    writeStream.emit('error', new Error('disk full'));
     const r = await promise;
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/disk full/);
@@ -138,7 +149,8 @@ describe('exportEmailGdprPackage', () => {
     writeStream.destroy = jest.fn();
     jest.spyOn(fs, 'createWriteStream').mockReturnValue(writeStream as never);
     const promise = exportEmailGdprPackage();
-    process.nextTick(() => writeStream.emit('close'));
+    await waitForListener(writeStream, 'close');
+    writeStream.emit('close');
     const r = await promise;
     expect(r.ok).toBe(true);
   });

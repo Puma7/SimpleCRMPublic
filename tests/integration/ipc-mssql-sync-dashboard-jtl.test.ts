@@ -45,10 +45,10 @@ const jtlServiceMocks = {
 
 jest.mock('../../electron/jtl-order-service', () => jtlServiceMocks);
 
-import { registerMssqlHandlers } from '../../electron/ipc/mssql';
-import { registerSyncHandlers } from '../../electron/ipc/sync';
-import { registerDashboardHandlers } from '../../electron/ipc/dashboard';
-import { registerJtlHandlers } from '../../electron/ipc/jtl';
+const { registerMssqlHandlers } = require('../../electron/ipc/mssql') as typeof import('../../electron/ipc/mssql');
+const { registerSyncHandlers } = require('../../electron/ipc/sync') as typeof import('../../electron/ipc/sync');
+const { registerDashboardHandlers } = require('../../electron/ipc/dashboard') as typeof import('../../electron/ipc/dashboard');
+const { registerJtlHandlers } = require('../../electron/ipc/jtl') as typeof import('../../electron/ipc/jtl');
 
 describe('misc IPC handlers', () => {
   beforeEach(() => {

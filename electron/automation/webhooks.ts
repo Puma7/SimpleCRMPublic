@@ -24,7 +24,7 @@ export const WEBHOOK_DELIVERIES_TABLE = 'webhook_deliveries';
 // would drag in native modules and fail (or need an electron/sqlite mock). Only
 // the DB functions resolve it, on demand:
 function db() {
-  return (require('../sqlite-service') as typeof import('../sqlite-service')).getDb();
+  return (require('../sqlite-service') as typeof import('../sqlite-service.js')).getDb();
 }
 
 // =============================================================================
@@ -282,7 +282,7 @@ interface Plan001WebhookHandlersModule {
 }
 
 export async function emitWebhookEvent(event: string, data: Record<string, unknown>): Promise<void> {
-  const sqlite = require('../sqlite-service') as typeof import('../sqlite-service');
+  const sqlite = require('../sqlite-service') as typeof import('../sqlite-service.js');
   // Desktop workflow HTTP allowlist (sync_info key), reused as-is (do not rewrite).
   const allowlist = sqlite.getSyncInfo('workflow_http_allowlist') ?? '';
   const { createPinnedFetch } = require('../../packages/server/src/jobs/pinned-fetch') as Plan001PinnedFetchModule;

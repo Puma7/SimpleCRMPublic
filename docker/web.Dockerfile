@@ -7,9 +7,11 @@
 FROM node:24 AS build
 
 WORKDIR /app
+ENV PNPM_CONFIG_NODE_LINKER=hoisted \
+    PNPM_CONFIG_IGNORE_SCRIPTS=true
 # Full context; .dockerignore keeps node_modules/.git/build output out.
 COPY . .
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@11.12.0
 RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
 # The bundle is large (Monaco). Raise the V8 heap so the build does not hit the
 # ~2 GB default limit on small (e.g. 4 GB) hosts. The host still needs enough

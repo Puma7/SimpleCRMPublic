@@ -1,23 +1,16 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
 
-let app: ElectronApplication;
+let session: ElectronTestSession;
 let page: Page;
 
 test.beforeAll(async () => {
-  const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-  app = await electron.launch({
-    args: [mainPath],
-    env: {
-      ...process.env,
-      NODE_ENV: 'production',
-    },
-  });
-  page = await app.firstWindow();
+  session = await launchAuthenticatedElectron('app-flows');
+  page = session.page;
 });
 
 test.afterAll(async () => {
-  await app.close();
+  await session.close();
 });
 
 test('loads dashboard and top-level navigation', async () => {

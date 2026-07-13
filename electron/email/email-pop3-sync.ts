@@ -2,7 +2,10 @@ import { createRequire } from 'module';
 import { simpleParser } from 'mailparser';
 
 const requireCjs = createRequire(__filename);
-const Pop3Command = requireCjs('node-pop3') as typeof import('node-pop3').default;
+const Pop3Command = requireCjs('node-pop3') as typeof import(
+  'node-pop3',
+  { with: { 'resolution-mode': 'require' } }
+).default;
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
 import { getEmailPassword } from './email-keytar';

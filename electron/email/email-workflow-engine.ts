@@ -148,7 +148,7 @@ async function executeInboundStep(
       log.push('link_customer');
       return true;
     case 'forward_copy': {
-      const { sendWorkflowForwardCopy } = await import('./email-forward-copy');
+      const { sendWorkflowForwardCopy } = await import('./email-forward-copy.js');
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [
         row.body_text ?? row.snippet ?? '',
@@ -325,7 +325,7 @@ async function runRulesOutbound(
 }
 
 export type InboundWorkflowRunOpts = {
-  row?: import('./email-store').EmailMessageRow;
+  row?: import('./email-store.js').EmailMessageRow;
   inboundWorkflows?: ReturnType<typeof listWorkflowsByTrigger>;
   appliedWorkflowIds?: Set<number>;
 };
@@ -338,13 +338,13 @@ export async function runInboundWorkflowsForMessage(
   if (!row) return;
   if (row.uid < 0 && !row.pop3_uidl) return;
 
-  const { runMailSecurityPipeline } = await import('./mail-security-pipeline');
+  const { runMailSecurityPipeline } = await import('./mail-security-pipeline.js');
   const security = await runMailSecurityPipeline(messageId, row);
   if (security.preWorkflow.skippedWorkflows) return;
 
   const freshRow = getEmailMessageById(messageId) ?? row;
 
-  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor.js');
   const workflows = opts?.inboundWorkflows ?? listWorkflowsByTrigger('inbound', freshRow.account_id);
   const applied = opts?.appliedWorkflowIds;
   let inboundWorkflowDeferred = false;
@@ -396,10 +396,10 @@ export async function runInboundWorkflowsForMessage(
     return;
   }
 
-  const { ensureReplySuggestion } = await import('./email-reply-ai');
+  const { ensureReplySuggestion } = await import('./email-reply-ai.js');
   ensureReplySuggestion(messageId, { row: postWorkflowRow, trigger: 'inbound' });
 
-  const { maybeSendVacationAutoReply } = await import('./email-vacation');
+  const { maybeSendVacationAutoReply } = await import('./email-vacation.js');
   await maybeSendVacationAutoReply(messageId, postWorkflowRow);
 }
 
@@ -407,7 +407,7 @@ export async function runDraftCreatedWorkflowsForMessage(messageId: number): Pro
   const row = getEmailMessageById(messageId);
   if (!row || row.uid >= 0) return;
 
-  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor.js');
   const workflows = listWorkflowsByTrigger('draft_created', row.account_id);
   for (const wf of workflows) {
     if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
@@ -452,9 +452,9 @@ export async function evaluateOutboundWorkflows(
     return { allowed: false, reason: 'Entwurf nicht gefunden' };
   }
 
-  const { tryOutboundApprovalBypass } = await import('./outbound-approval');
-  const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse');
-  const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments');
+  const { tryOutboundApprovalBypass } = await import('./outbound-approval.js');
+  const { recipientFieldFromJson } = await import('../../shared/email-recipient-parse.js');
+  const { parseDraftAttachmentPathsJson } = await import('../../shared/compose-draft-attachments.js');
   if (
     !dryRun &&
     tryOutboundApprovalBypass(payload.messageId, {
@@ -475,7 +475,7 @@ export async function evaluateOutboundWorkflows(
     setOutboundHold(payload.messageId, false, null);
   }
 
-  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor.js');
   const workflows = listWorkflowsByTrigger('outbound', row.account_id);
   let parseOrEngineError: string | null = null;
   for (const wf of workflows) {
@@ -494,7 +494,7 @@ export async function evaluateOutboundWorkflows(
           r.blockReason ||
           'Ausgehende Nachricht durch Workflow zurückgestellt. Bitte Text prüfen.';
         if (!dryRun && draftSideEffects) {
-          const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+          const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
         }
         return { allowed: false, reason, workflowRunId: r.runId ?? null };
@@ -503,7 +503,7 @@ export async function evaluateOutboundWorkflows(
         const checkHold = getEmailMessageById(payload.messageId);
         if (checkHold?.outbound_hold) {
           const reason = checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
-          const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+          const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
           return {
             allowed: false,
@@ -532,7 +532,7 @@ export async function evaluateOutboundWorkflows(
     const reason = `Workflow-Fehler: ${parseOrEngineError}`;
     if (!dryRun && draftSideEffects) {
       setOutboundHold(payload.messageId, true, reason);
-      const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+      const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
       returnOutboundDraftToInbox(payload.messageId, reason, { payload });
     }
     return {
@@ -546,7 +546,7 @@ export async function evaluateOutboundWorkflows(
     const after = getEmailMessageById(payload.messageId);
     if (after?.outbound_hold) {
       const reason = after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
-      const { returnOutboundDraftToInbox } = await import('./email-outbound-review');
+      const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
       returnOutboundDraftToInbox(payload.messageId, reason, { payload });
       return {
         allowed: false,
@@ -559,7 +559,7 @@ export async function evaluateOutboundWorkflows(
 }
 
 export async function runScheduledWorkflowFire(workflowId: number): Promise<void> {
-  const { getWorkflowById } = await import('./email-workflow-store');
+  const { getWorkflowById } = await import('./email-workflow-store.js');
   const wf = getWorkflowById(workflowId);
   if (!wf || wf.enabled !== 1) return;
 
@@ -571,11 +571,11 @@ export async function runScheduledWorkflowFire(workflowId: number): Promise<void
       if (!acc) {
         syncLog.push(`sync_skip:no_account:${accId}`);
       } else if ((acc.protocol || 'imap') === 'pop3') {
-        const { syncInboxPop3 } = await import('./email-pop3-sync');
+        const { syncInboxPop3 } = await import('./email-pop3-sync.js');
         const r = await syncInboxPop3(accId);
         syncLog.push(`pop3_fetched:${r.fetched}`);
       } else {
-        const { syncInboxImap } = await import('./email-imap-sync');
+        const { syncInboxImap } = await import('./email-imap-sync.js');
         const r = await syncInboxImap(accId);
         syncLog.push(`imap_fetched:${r.fetched}`);
       }
@@ -584,8 +584,8 @@ export async function runScheduledWorkflowFire(workflowId: number): Promise<void
     }
   }
 
-  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor');
-  const trigger = (wf.trigger === 'schedule' ? 'schedule' : wf.trigger) as import('../../shared/workflow-types').WorkflowTriggerKind;
+  const { executeWorkflowForTrigger } = await import('../workflow/workflow-executor.js');
+  const trigger = (wf.trigger === 'schedule' ? 'schedule' : wf.trigger) as import('../../shared/workflow-types.js').WorkflowTriggerKind;
   await executeWorkflowForTrigger({
     workflow: wf,
     trigger,

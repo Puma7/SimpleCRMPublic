@@ -447,7 +447,7 @@ export function registerAiNodes(register: Reg): void {
       if (!row) return { status: 'error', message: 'Nachricht nicht gefunden' };
 
       const { canSuggestReplyForMessage, getReplySuggestion, generateAndStoreReplySuggestion } =
-        await import('../../email/email-reply-ai');
+        await import('../../email/email-reply-ai.js');
 
       if (!canSuggestReplyForMessage(row)) {
         return { status: 'skipped', message: 'Für diese Nachricht nicht anwendbar' };
@@ -522,7 +522,7 @@ export function registerAiNodes(register: Reg): void {
         return { status: 'ok', variables: { 'tool.result': text.slice(0, 4000) } };
       }
       if (tool === 'get_canned') {
-        const { listCannedResponses } = await import('../../email/email-crm-store');
+        const { listCannedResponses } = await import('../../email/email-crm-store.js');
         const list = listCannedResponses(accountScopeFromContext(ctx)).slice(0, 5);
         return {
           status: 'ok',
@@ -575,7 +575,7 @@ export function registerAiNodes(register: Reg): void {
 
       let cannedBlock = '';
       if (config.includeCanned === true) {
-        const { listCannedResponses } = await import('../../email/email-crm-store');
+        const { listCannedResponses } = await import('../../email/email-crm-store.js');
         const canned = listCannedResponses(accountScopeFromContext(ctx)).slice(0, 5);
         if (canned.length > 0) {
           cannedBlock = canned
@@ -667,8 +667,8 @@ export function registerAiNodes(register: Reg): void {
       // Thread-Bezug — nur so kann send_draft ihn später wirklich versenden.
       const replyTo = primaryReplyRecipient(message);
       if (!replyTo) return { status: 'error', message: 'Kein Antwort-Empfänger ermittelbar' };
-      const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse');
-      const { updateComposeDraft } = await import('../../email/email-store');
+      const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse.js');
+      const { updateComposeDraft } = await import('../../email/email-store.js');
       const draftId = createComposeDraft({
         accountId: message.account_id,
         subject: reSubject,
@@ -807,7 +807,7 @@ export function registerAiNodes(register: Reg): void {
     description: 'Die KI wählt den passenden Textbaustein, füllt Platzhalter und legt einen Entwurf an.',
     defaultConfig: { createDraft: true },
     execute: async (ctx, config) => {
-      const { listCannedResponses } = await import('../../email/email-crm-store');
+      const { listCannedResponses } = await import('../../email/email-crm-store.js');
       const canned = listCannedResponses(accountScopeFromContext(ctx));
       if (canned.length === 0) {
         return { status: 'error', message: 'Keine Textbausteine vorhanden' };
@@ -844,8 +844,8 @@ export function registerAiNodes(register: Reg): void {
         variables['ai.canned.text'] = draftBody.slice(0, 8000);
 
         if (createDraft && ctx.message) {
-          const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse');
-          const { updateComposeDraft } = await import('../../email/email-store');
+          const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse.js');
+          const { updateComposeDraft } = await import('../../email/email-store.js');
           // Reply-To vor From (wie ai.draft_reply) — nicht der erste From-Eintrag.
           const replyTo = primaryReplyRecipient(ctx.message);
           const reSubject = replySubject(ctx.message.subject);

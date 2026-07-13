@@ -1,5 +1,5 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
 
 // Use timestamp-based unique names so parallel runs don't collide with leftover data
 const TS = Date.now();
@@ -7,22 +7,17 @@ const CUSTOMER_FIRST = 'E2E';
 const CUSTOMER_LAST = `Testperson-${TS}`;
 const DEAL_NAME = `E2E-Deal-${TS}`;
 
-let app: ElectronApplication;
+let session: ElectronTestSession;
 let page: Page;
 
 test.describe.serial('CRUD workflows — customers and deals', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('crud-workflows');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   // ---------------------------------------------------------------------------
@@ -137,7 +132,7 @@ test.describe.serial('CRUD workflows — customers and deals', () => {
 
     // Should navigate back to the deals list and deal should be gone
     await expect(page.getByRole('heading', { name: 'Deals' })).toBeVisible();
-    await expect(page.getByText(DEAL_NAME)).not.toBeVisible();
+    await expect(page.locator('table tbody tr').filter({ hasText: DEAL_NAME })).toHaveCount(0);
   });
 
   // ---------------------------------------------------------------------------

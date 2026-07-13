@@ -30,7 +30,7 @@ jest.mock('electron', () => ({
 
 jest.mock('fs', () => mockFs);
 
-import { registerWindowHandlers } from '../../electron/ipc/window';
+const { registerWindowHandlers } = require('../../electron/ipc/window') as typeof import('../../electron/ipc/window');
 
 const mockWindow = {
   minimize: jest.fn(),

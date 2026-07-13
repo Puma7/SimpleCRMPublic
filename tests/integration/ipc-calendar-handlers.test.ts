@@ -18,7 +18,7 @@ const sqliteMocks = {
 
 jest.mock('../../electron/sqlite-service', () => sqliteMocks);
 
-import { registerCalendarHandlers } from '../../electron/ipc/calendar';
+const { registerCalendarHandlers } = require('../../electron/ipc/calendar') as typeof import('../../electron/ipc/calendar');
 
 describe('registerCalendarHandlers', () => {
   beforeEach(() => {

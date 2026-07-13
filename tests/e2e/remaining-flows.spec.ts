@@ -1,5 +1,5 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
 
 const TS = Date.now();
 const TODAY = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
@@ -15,22 +15,17 @@ const KANBAN_DEAL = `KanbanDeal-${TS}`;
 const CAL_EVENT = `CalEdit-${TS}`;
 const CAL_EVENT_UPDATED = `CalEdit-Updated-${TS}`;
 
-let app: ElectronApplication;
+let session: ElectronTestSession;
 let page: Page;
 
 test.describe.serial('Nachverfolgung — log-activity dialog', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('remaining-followup');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   test('create a customer and a task due today for the followup queue', async () => {
@@ -100,23 +95,19 @@ test.describe.serial('Nachverfolgung — log-activity dialog', () => {
     const alert = page.getByRole('alertdialog');
     await expect(alert).toBeVisible();
     await alert.getByRole('button', { name: 'Löschen' }).click();
-    await expect(page.getByText(FOLLOWUP_CUSTOMER)).not.toBeVisible();
+    await expect(alert).not.toBeVisible();
+    await expect(row).toHaveCount(0);
   });
 });
 
 test.describe.serial('Deal Kanban — stage change via dropdown', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('remaining-kanban');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   test('create a customer and deal for the kanban test', async () => {
@@ -193,23 +184,19 @@ test.describe.serial('Deal Kanban — stage change via dropdown', () => {
     const alert = page.getByRole('alertdialog');
     await expect(alert).toBeVisible();
     await alert.getByRole('button', { name: 'Löschen' }).click();
-    await expect(page.getByText(KANBAN_CUSTOMER)).not.toBeVisible();
+    await expect(alert).not.toBeVisible();
+    await expect(row).toHaveCount(0);
   });
 });
 
 test.describe.serial('Calendar — event create, edit, delete', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('remaining-calendar');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   test('create a calendar event', async () => {
@@ -264,17 +251,12 @@ test.describe.serial('Calendar — event create, edit, delete', () => {
 
 test.describe.serial('Settings — MSSQL connection test feedback', () => {
   test.beforeAll(async () => {
-    const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-    app = await electron.launch({
-      args: [mainPath],
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
-    page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    session = await launchAuthenticatedElectron('remaining-settings');
+    page = session.page;
   });
 
   test.afterAll(async () => {
-    await app.close();
+    await session.close();
   });
 
   test('clicking "Verbindung testen" shows a failure toast when no server is configured', async () => {

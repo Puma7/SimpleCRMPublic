@@ -1,5 +1,4 @@
 import sql from 'mssql';
-import Store from 'electron-store';
 import keytar from 'keytar';
 import { MssqlSettings } from './types'; // Assuming types.ts exists
 import { performance } from 'perf_hooks'; // For timing
@@ -60,12 +59,27 @@ type MssqlKeytarStoreSchema = {
     [STORE_KEY_SETTINGS]: Omit<MssqlSettings, 'password'> | null;
 };
 
-// Use the explicit type when creating the store instance
-const store: Store<MssqlKeytarStoreSchema> = new Store<MssqlKeytarStoreSchema>({
-    defaults: {
-        [STORE_KEY_SETTINGS]: null
-    }
-});
+type MssqlKeytarStore = {
+    delete(key: typeof STORE_KEY_SETTINGS): void;
+    get(key: typeof STORE_KEY_SETTINGS): MssqlKeytarStoreSchema[typeof STORE_KEY_SETTINGS];
+    set(
+        key: typeof STORE_KEY_SETTINGS,
+        value: MssqlKeytarStoreSchema[typeof STORE_KEY_SETTINGS],
+    ): void;
+};
+
+let storePromise: Promise<MssqlKeytarStore> | undefined;
+
+function getStore(): Promise<MssqlKeytarStore> {
+    storePromise ??= import('electron-store').then(({ default: Store }) => (
+        new Store<MssqlKeytarStoreSchema>({
+            defaults: {
+                [STORE_KEY_SETTINGS]: null,
+            },
+        })
+    ));
+    return storePromise;
+}
 
 let pool: sql.ConnectionPool | null = null;
 let poolConnectPromise: Promise<sql.ConnectionPool> | null = null;
@@ -166,6 +180,7 @@ function buildConnectionConfig(settings: MssqlSettings): sql.config {
 
 export async function saveMssqlSettingsWithKeytar(settings: MssqlSettings): Promise<void> {
     console.log('[MSSQL Keytar] Attempting to save settings. Clearing existing store key first.');
+    const store = await getStore();
     store.delete(STORE_KEY_SETTINGS); // Clear existing settings first
 
     // settings is of type MssqlSettings. We want to store Omit<MssqlSettings, 'password'>.
@@ -204,6 +219,7 @@ export async function saveMssqlSettingsWithKeytar(settings: MssqlSettings): Prom
 }
 
 export async function getMssqlSettingsWithKeytar(): Promise<MssqlSettings | null> {
+    const store = await getStore();
     // Retrieve Omit<MssqlSettings, 'password'> from store
     const storedSettingsWithoutPassword = store.get(STORE_KEY_SETTINGS);
     console.log('[MSSQL Keytar] getMssqlSettingsWithKeytar: Retrieved from store:', JSON.stringify(storedSettingsWithoutPassword));
@@ -233,6 +249,7 @@ export async function getMssqlSettingsWithKeytar(): Promise<MssqlSettings | null
 }
 
 export async function clearMssqlPasswordFromKeytar(): Promise<{ success: boolean; message: string }> {
+    const store = await getStore();
     const storedSettingsWithoutPassword = store.get(STORE_KEY_SETTINGS);
     console.log('[MSSQL Keytar] clearMssqlPasswordFromKeytar: Attempting to clear password. Current stored (non-sensitive) settings:', JSON.stringify(storedSettingsWithoutPassword));
 

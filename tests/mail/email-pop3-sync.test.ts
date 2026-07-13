@@ -72,8 +72,8 @@ jest.mock('mailparser', () => ({
   }),
 }));
 
-import { getEmailAccountById } from '../../electron/email/email-store';
-import { syncInboxPop3, testPop3Connection } from '../../electron/email/email-pop3-sync';
+const { getEmailAccountById } = require('../../electron/email/email-store') as typeof import('../../electron/email/email-store');
+const { syncInboxPop3, testPop3Connection } = require('../../electron/email/email-pop3-sync') as typeof import('../../electron/email/email-pop3-sync');
 
 describe('email-pop3-sync', () => {
   beforeEach(() => {

@@ -30,7 +30,7 @@ const sqliteMocks = {
 
 jest.mock('../../electron/sqlite-service', () => sqliteMocks);
 
-import { registerDatabaseHandlers } from '../../electron/ipc/database';
+const { registerDatabaseHandlers } = require('../../electron/ipc/database') as typeof import('../../electron/ipc/database');
 
 describe('registerDatabaseHandlers', () => {
   describe('isDevelopment: false', () => {

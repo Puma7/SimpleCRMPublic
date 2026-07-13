@@ -12,7 +12,7 @@ import {
 } from '../../packages/server/src/security/captcha-challenge';
 import { hashLoginPin, verifyLoginPin } from '../../packages/server/src/security/login-pin-hash';
 import { generateTotpSecret, verifyTotpCode } from '../../packages/server/src/security/totp';
-import { authenticator } from 'otplib';
+import { generateSync } from 'otplib';
 
 const signer = {
   keyId: 'test',
@@ -69,7 +69,7 @@ describe('login security helpers', () => {
 
   test('totp secret verifies generated code', () => {
     const secret = generateTotpSecret();
-    const token = authenticator.generate(secret);
+    const token = generateSync({ secret });
     expect(verifyTotpCode(secret, token)).toBe(true);
   });
 });

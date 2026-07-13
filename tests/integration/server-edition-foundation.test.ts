@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import http from 'http';
 import { join } from 'path';
 
@@ -91,6 +91,41 @@ describe('server edition repository boundaries', () => {
 
   test('packages/server does not import Electron-only runtime modules', () => {
     expectNoElectronRuntimeImports(join(__dirname, '..', '..', 'packages', 'server', 'src'));
+  });
+
+  test('CI installs the pinned pnpm release through the stable setup action', () => {
+    const ci = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+
+    expect(ci).toContain('uses: pnpm/action-setup@v5');
+    expect(ci).not.toContain('uses: pnpm/action-setup@v6');
+  });
+
+  test('pnpm permits the embedded PostgreSQL build used by Linux CI', () => {
+    const workspace = readFileSync(join(__dirname, '..', '..', 'pnpm-workspace.yaml'), 'utf8');
+
+    expect(workspace).toContain('  "@embedded-postgres/linux-x64": true');
+  });
+
+  test.each(['api.Dockerfile', 'web.Dockerfile'])(
+    '%s keeps pnpm lifecycle settings consistent after install',
+    (dockerfileName) => {
+      const dockerfile = readFileSync(join(__dirname, '..', '..', 'docker', dockerfileName), 'utf8');
+      const configIndex = dockerfile.indexOf('ENV PNPM_CONFIG_NODE_LINKER=hoisted');
+      const installIndex = dockerfile.indexOf('RUN pnpm install');
+
+      expect(configIndex).toBeGreaterThan(-1);
+      expect(dockerfile).toContain('PNPM_CONFIG_IGNORE_SCRIPTS=true');
+      expect(configIndex).toBeLessThan(installIndex);
+    },
+  );
+
+  test('generated MSSQL service JavaScript stays out of the source tree', () => {
+    const repositoryRoot = join(__dirname, '..', '..');
+    const gitignore = readFileSync(join(repositoryRoot, '.gitignore'), 'utf8');
+
+    expect(existsSync(join(repositoryRoot, 'electron', 'mssql-service.js'))).toBe(false);
+    expect(existsSync(join(repositoryRoot, 'electron', 'main.js'))).toBe(true);
+    expect(gitignore).toContain('/electron/mssql-service.js');
   });
 
   test('docker compose foundation uses PostgreSQL 18', () => {
@@ -342,10 +377,36 @@ describe('server edition repository boundaries', () => {
     const packageJson = JSON.parse(readFileSync(join(__dirname, '..', '..', 'packages', 'server', 'package.json'), 'utf8'));
     expect(packageJson.dependencies.fastify).toMatch(/^\^5\./);
     expect(packageJson.dependencies['@fastify/websocket']).toMatch(/^\^11\./);
-    expect(packageJson.dependencies['graphile-worker']).toMatch(/^\^0\.16\./);
+    expect(packageJson.dependencies['graphile-worker']).toMatch(/^\^0\.17\./);
     expect(packageJson.dependencies.kysely).toBeDefined();
     expect(packageJson.dependencies['libsodium-wrappers-sumo']).toBeDefined();
     expect(packageJson.dependencies.pino).toMatch(/^\^10\./);
+  });
+
+  test('server TypeScript build references core so clean builds are ordered', () => {
+    const tsconfig = JSON.parse(readFileSync(join(__dirname, '..', '..', 'packages', 'server', 'tsconfig.json'), 'utf8'));
+
+    expect(tsconfig.references).toContainEqual({ path: '../core' });
+  });
+
+  test('Electron commands select the Electron native ABI and restore Node afterwards', () => {
+    const packageJson = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8'));
+    const scripts = packageJson.scripts as Record<string, string>;
+
+    expect(scripts.postinstall).toContain('native-runtime-manager.mjs initialize');
+    for (const script of ['electron:dev', 'electron:dev:main', 'electron:build', 'electron:publish', 'electron:start', 'electron:dev:debug', 'electron:test:devtools', 'test:e2e']) {
+      expect(scripts[script]).toBe(`node scripts/run-with-electron-native.mjs ${script}:runtime`);
+      expect(scripts[`${script}:runtime`]).toBeTruthy();
+    }
+  });
+
+  test('production update drains old Graphile workers before the new API starts', () => {
+    const updateScript = readFileSync(join(__dirname, '..', '..', 'docker', 'update.sh'), 'utf8');
+    const stopIndex = updateScript.indexOf('compose stop api');
+    const startIndex = updateScript.indexOf('compose up -d api caddy');
+
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(stopIndex);
   });
 
   test('root scripts expose server migration, doctor, and live RLS checks', () => {

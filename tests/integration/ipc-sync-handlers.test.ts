@@ -27,7 +27,7 @@ jest.mock('electron', () => ({
   BrowserWindow: jest.fn(),
 }));
 
-import { registerSyncHandlers } from '../../electron/ipc/sync';
+const { registerSyncHandlers } = require('../../electron/ipc/sync') as typeof import('../../electron/ipc/sync');
 
 const mockWindow = { webContents: { send: jest.fn() } };
 const getMainWindow = jest.fn(() => mockWindow as any);

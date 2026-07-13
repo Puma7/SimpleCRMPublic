@@ -190,7 +190,7 @@ export function listThreadsForMailScope(
   accountScope: number | 'all',
   view: AccountMailView,
   opts: { limit?: number; offset?: number } = {},
-  access?: import('./email-store').MailScopeSession,
+  access?: import('./email-store.js').MailScopeSession,
 ): ThreadListRow[] {
   const off = opts.offset ?? 0;
   const lim = opts.limit ?? 100;

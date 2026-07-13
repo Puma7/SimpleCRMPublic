@@ -1,10 +1,7 @@
-import { authenticator } from 'otplib';
-import { randomBytes } from 'node:crypto';
-
-authenticator.options = { window: 1 };
+import { generateSecret, generateURI, verifySync } from 'otplib';
 
 export function generateTotpSecret(): string {
-  return authenticator.generateSecret(20);
+  return generateSecret({ length: 20 });
 }
 
 export function buildTotpOtpAuthUri(input: {
@@ -12,11 +9,15 @@ export function buildTotpOtpAuthUri(input: {
   email: string;
   issuer?: string;
 }): string {
-  return authenticator.keyuri(input.email, input.issuer ?? 'SimpleCRM', input.secret);
+  return generateURI({
+    issuer: input.issuer ?? 'SimpleCRM',
+    label: input.email,
+    secret: input.secret,
+  });
 }
 
 export function verifyTotpCode(secret: string, code: string): boolean {
   const normalized = code.trim();
   if (!/^\d{6}$/.test(normalized)) return false;
-  return authenticator.verify({ token: normalized, secret });
+  return verifySync({ token: normalized, secret, epochTolerance: 30 }).valid;
 }

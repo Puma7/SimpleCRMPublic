@@ -19,10 +19,10 @@ jest.mock('../../electron/email/email-message-attachments-store', () => ({
   getAttachmentsRootForExport: () => path.join(tmpUserData, 'email-attachments'),
 }));
 
-import {
+const {
   exportLocalMailBackup,
   inspectZipBackup,
-} from '../../electron/email/email-local-backup';
+} = require('../../electron/email/email-local-backup') as typeof import('../../electron/email/email-local-backup');
 
 describe('email-local-backup', () => {
   beforeEach(() => {

@@ -515,7 +515,7 @@ export function deleteEmailTeamMember(id: string): void {
 export async function deleteEmailAccountRecord(id: number): Promise<void> {
   const row = getEmailAccountById(id);
   if (row) {
-    const { purgeAttachmentFilesForAccount } = await import('./email-message-attachments-store');
+    const { purgeAttachmentFilesForAccount } = await import('./email-message-attachments-store.js');
     await purgeAttachmentFilesForAccount(id);
     await deleteEmailPassword(row.keytar_account_key);
     if (row.smtp_keytar_account_key) {

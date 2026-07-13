@@ -1,5 +1,4 @@
 import sql from 'mssql';
-import Store from 'electron-store';
 import { MssqlSettings, MssqlError } from './types';
 
 // Define the schema type explicitly
@@ -7,20 +6,33 @@ type MssqlStoreSchema = {
     mssqlSettings: MssqlSettings | null;
 };
 
-// Use the explicit type when creating the store instance
-const store: Store<MssqlStoreSchema> = new Store<MssqlStoreSchema>({
-    defaults: {
-        mssqlSettings: null
-    }
-});
+type MssqlStore = {
+    get(key: 'mssqlSettings'): MssqlSettings | null;
+    set(key: 'mssqlSettings', value: MssqlSettings | null): void;
+};
+
+let storePromise: Promise<MssqlStore> | undefined;
+
+function getStore(): Promise<MssqlStore> {
+    storePromise ??= import('electron-store').then(({ default: Store }) => (
+        new Store<MssqlStoreSchema>({
+            defaults: {
+                mssqlSettings: null,
+            },
+        })
+    ));
+    return storePromise;
+}
 
 let pool: sql.ConnectionPool | null = null;
 
-export function saveMssqlSettings(settings: MssqlSettings): void {
+export async function saveMssqlSettings(settings: MssqlSettings): Promise<void> {
+    const store = await getStore();
     store.set('mssqlSettings', settings);
 }
 
-export function getMssqlSettings(): MssqlSettings | null {
+export async function getMssqlSettings(): Promise<MssqlSettings | null> {
+    const store = await getStore();
     return store.get('mssqlSettings');
 }
 
@@ -52,7 +64,7 @@ async function getConnectionPool(): Promise<sql.ConnectionPool> {
         return pool;
     }
 
-    const settings = getMssqlSettings();
+    const settings = await getMssqlSettings();
     if (!settings) {
         throw new Error('MSSQL settings not configured');
     }
