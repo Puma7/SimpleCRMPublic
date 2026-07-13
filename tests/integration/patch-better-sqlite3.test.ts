@@ -27,6 +27,18 @@ const bothUnpatched = {
   'src/objects/statement.cpp': `bar(${FROM});`,
 };
 
+const upstreamMacroLayout = {
+  'src/objects/database.cpp': 'foo(PROPERTY_HOLDER(info));',
+  'src/objects/statement.cpp': 'bar(PROPERTY_HOLDER(info));',
+  'src/util/macros.cpp': [
+    '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13',
+    '#define PROPERTY_HOLDER(info) (info).HolderV2()',
+    '#else',
+    '#define PROPERTY_HOLDER(info) (info).This()',
+    '#endif',
+  ].join('\n'),
+};
+
 describe('patchBetterSqlite3', () => {
   it('patches both target files and reports replacements', () => {
     const dir = makePkg(bothUnpatched);
@@ -43,6 +55,12 @@ describe('patchBetterSqlite3', () => {
     const dir = makePkg(bothUnpatched);
     patchBetterSqlite3(dir);
     expect(() => patchBetterSqlite3(dir)).not.toThrow(); // 0 replacements, still OK
+  });
+
+  it('accepts the upstream macro layout that selects HolderV2 for modern V8', () => {
+    const dir = makePkg(upstreamMacroLayout);
+
+    expect(patchBetterSqlite3(dir)).toBe(0);
   });
 
   it('throws when the package directory is missing (undefined)', () => {

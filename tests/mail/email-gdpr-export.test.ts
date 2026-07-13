@@ -24,7 +24,7 @@ const mockDirectory = jest.fn();
 const mockAbort = jest.fn();
 
 jest.mock('archiver', () => {
-  return jest.fn(() => {
+  return { ZipArchive: jest.fn(() => {
     const archive = new EventEmitter() as EventEmitter & {
       pipe: jest.Mock;
       append: jest.Mock;
@@ -40,7 +40,7 @@ jest.mock('archiver', () => {
     });
     archive.abort = mockAbort;
     return archive;
-  });
+  }) };
 });
 
 const { dialog } = require('electron') as typeof import('electron');

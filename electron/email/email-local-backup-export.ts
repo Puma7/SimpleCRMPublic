@@ -3,7 +3,6 @@ import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
 import { createWriteStream } from 'fs';
-import archiver from 'archiver';
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import { redactOneTimeSetupTokenInDatabase } from '../auth/setup-token';
@@ -11,6 +10,15 @@ import { MAIL_SCHEMA_GENERATION, MAIL_SCHEMA_GENERATION_LABEL } from '../db/mail
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 
 export const MAX_BACKUP_ATTACH_BYTES = 8 * 1024 * 1024 * 1024;
+
+type ArchiverModule = typeof import('archiver', { with: { 'resolution-mode': 'import' } });
+
+let archiverPromise: Promise<ArchiverModule> | undefined;
+
+function loadArchiver(): Promise<ArchiverModule> {
+  archiverPromise ??= import('archiver');
+  return archiverPromise;
+}
 
 function dirSizeBytes(dir: string): number {
   if (!fs.existsSync(dir)) return 0;
@@ -51,9 +59,10 @@ export async function exportLocalMailBackupToPath(
     };
   }
 
+  const { ZipArchive } = await loadArchiver();
   return new Promise((resolve) => {
     const out = createWriteStream(filePath);
-    const archive = archiver('zip', { zlib: { level: 6 } });
+    const archive = new ZipArchive({ zlib: { level: 6 } });
     const tempDbPath = path.join(os.tmpdir(), `simplecrm-mail-backup-${randomUUID()}.sqlite`);
 
     const fail = (err: Error | string) => {

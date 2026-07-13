@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Patches better-sqlite3 for Electron 41+ compatibility.
-// v12.7.1 upstream used Holder() but Electron 41's V8 only exposes HolderV2().
+// Verifies better-sqlite3 compatibility with Electron's modern V8 API.
+// Older releases need a local HolderV2 patch; newer releases provide the same
+// compatibility through a guarded PROPERTY_HOLDER macro.
 const fs = require('fs');
 const path = require('path');
 
@@ -21,8 +22,35 @@ function findPackageDir() {
 }
 
 const TARGET_FILES = ['src/objects/database.cpp', 'src/objects/statement.cpp'];
+const MACRO_FILE = 'src/util/macros.cpp';
 const FROM = 'info.Holder()';
 const TO = 'info.HolderV2()';
+
+function usesSafeUpstreamMacro(pkgDir, sources) {
+  if (!sources.every(source => source.includes('PROPERTY_HOLDER(info)'))) {
+    return false;
+  }
+
+  const macroFile = path.join(pkgDir, MACRO_FILE);
+  if (!fs.existsSync(macroFile)) {
+    throw new Error(
+      `patch-better-sqlite3: ${MACRO_FILE} is missing while target files use ` +
+      'PROPERTY_HOLDER(info). Refusing to trust an undefined compatibility macro.'
+    );
+  }
+
+  const macros = fs.readFileSync(macroFile, 'utf8');
+  const modernV8Guard = /#if\s+defined\(V8_MAJOR_VERSION\)\s*&&\s*V8_MAJOR_VERSION\s*>=\s*13/;
+  const holderV2Definition = /#define\s+PROPERTY_HOLDER\(info\)\s+\(info\)\.HolderV2\(\)/;
+  if (!modernV8Guard.test(macros) || !holderV2Definition.test(macros)) {
+    throw new Error(
+      'patch-better-sqlite3: PROPERTY_HOLDER(info) is not guarded for modern ' +
+      'V8 with HolderV2(). Refusing to ship a broken native module.'
+    );
+  }
+
+  return true;
+}
 
 function patchBetterSqlite3(pkgDir) {
   if (!pkgDir) {
@@ -32,8 +60,7 @@ function patchBetterSqlite3(pkgDir) {
       'refusing to continue with a possibly broken native module.'
     );
   }
-  let applied = 0;
-  for (const rel of TARGET_FILES) {
+  const targetSources = TARGET_FILES.map(rel => {
     const file = path.join(pkgDir, rel);
     if (!fs.existsSync(file)) {
       throw new Error(
@@ -42,7 +69,21 @@ function patchBetterSqlite3(pkgDir) {
         'applied. Update this script for the new upstream layout.'
       );
     }
-    const before = fs.readFileSync(file, 'utf8');
+    return fs.readFileSync(file, 'utf8');
+  });
+
+  if (usesSafeUpstreamMacro(pkgDir, targetSources)) {
+    console.log(
+      `patch-better-sqlite3: verified upstream PROPERTY_HOLDER compatibility ` +
+      `in ${pkgDir}`
+    );
+    return 0;
+  }
+
+  let applied = 0;
+  for (const [index, rel] of TARGET_FILES.entries()) {
+    const file = path.join(pkgDir, rel);
+    const before = targetSources[index];
     const after = before.split(FROM).join(TO); // replaceAll of a literal
     // Informational count only (TO is longer than FROM by 2 chars per hit):
     applied += (after.length - before.length) / (TO.length - FROM.length) || 0;

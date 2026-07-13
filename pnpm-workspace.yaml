@@ -21,7 +21,7 @@ allowBuilds:
   "@embedded-postgres/windows-x64": true
   "@parcel/watcher": true
   "@swc/core": true
-  better-sqlite3@https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/c22e411a6b0988a3d488c95f91836f245528fbf5: true
+  better-sqlite3@https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/b5701cb5483d97825778947cb904630c2c2e821e: true
   electron: true
   electron-winstaller: true
   esbuild: true

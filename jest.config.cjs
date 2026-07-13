@@ -21,6 +21,20 @@ const swcTsxTransform = [
     },
   },
 ];
+const swcJsTransform = [
+  '@swc/jest',
+  {
+    ...swcBase,
+    jsc: {
+      ...swcBase.jsc,
+      parser: { syntax: 'ecmascript' },
+    },
+  },
+];
+const esmDependencyTransformIgnore = [
+  '<rootDir>/node_modules/.pnpm/(?!(?:@scure\\+base|@noble\\+hashes)@)',
+  'node_modules/(?!.pnpm|@scure/base|@noble/hashes)',
+];
 
 /** @type {import('jest').Config} */
 module.exports = {
@@ -109,11 +123,13 @@ module.exports = {
       },
       testMatch: ['<rootDir>/tests/unit/**/*.test.(ts|tsx)'],
       setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
+      transformIgnorePatterns: esmDependencyTransformIgnore,
       transform: {
         // Use a custom transformer for files that contain import.meta.env (Vite-specific syntax)
         'localDataService\\.ts$': '<rootDir>/tests/setup/transform-import-meta.cjs',
         '^.+\\.tsx$': swcTsxTransform,
         '^.+\\.ts$': swcTsTransform,
+        '^.+\\.m?js$': swcJsTransform,
       },
     },
     {
@@ -131,9 +147,11 @@ module.exports = {
       },
       testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],
       setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
+      transformIgnorePatterns: esmDependencyTransformIgnore,
       transform: {
         '^.+\\.tsx$': swcTsxTransform,
         '^.+\\.ts$': swcTsTransform,
+        '^.+\\.m?js$': swcJsTransform,
       },
     },
   ],

@@ -1,7 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
-import archiver from 'archiver';
 import type { Kysely } from 'kysely';
 
 import type { EmailGdprExportApiPort, EmailGdprExportResult } from './api/types';
@@ -18,7 +17,15 @@ const NOTES_BATCH = 5000;
 const RUNS_LIMIT = 5000;
 const MAX_EXPORT_ATTACH_BYTES = 4 * 1024 * 1024 * 1024;
 
-type Archive = ReturnType<typeof archiver>;
+type ArchiverModule = typeof import('archiver', { with: { 'resolution-mode': 'import' } });
+type Archive = InstanceType<ArchiverModule['ZipArchive']>;
+
+let archiverPromise: Promise<ArchiverModule> | undefined;
+
+function loadArchiver(): Promise<ArchiverModule> {
+  archiverPromise ??= import('archiver');
+  return archiverPromise;
+}
 
 type AttachmentExportEntry = {
   id: number;
@@ -56,8 +63,9 @@ export function createPostgresEmailGdprExportPort(
         };
       }
 
+      const { ZipArchive } = await loadArchiver();
       const stream = new PassThrough();
-      const archive = archiver('zip', { zlib: { level: 9 } });
+      const archive = new ZipArchive({ zlib: { level: 9 } });
       archive.on('error', (error) => stream.destroy(error));
       archive.pipe(stream);
 
