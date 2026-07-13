@@ -9,3 +9,20 @@ packages:
 # them as local workspace links. This setting restores pnpm's version-based
 # workspace linking.
 linkWorkspacePackages: true
+
+overrides:
+  app-builder-bin: 4.2.0
+  node-abi: ^4.31.0
+  jest-mock: 30.4.1
+  jest-runtime: 30.4.2
+  jest-circus: 30.4.0
+
+allowBuilds:
+  "@embedded-postgres/windows-x64": true
+  "@parcel/watcher": true
+  better-sqlite3@https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/c22e411a6b0988a3d488c95f91836f245528fbf5: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  keytar: true
+  unrs-resolver: true

@@ -2,6 +2,7 @@
   "name": "simplecrm",
   "version": "0.1.7",
   "private": true,
+  "packageManager": "pnpm@11.12.0",
   "engines": {
     "node": ">=24"
   },
@@ -189,23 +190,6 @@
     "vite-plugin-electron-renderer": "^1.0.0",
     "vite-tsconfig-paths": "^6.1.1",
     "wait-on": "^9.0.10"
-  },
-  "pnpm": {
-    "overrides": {
-      "app-builder-bin": "4.2.0",
-      "node-abi": "^4.31.0",
-      "jest-mock": "30.4.1",
-      "jest-runtime": "30.4.2",
-      "jest-circus": "30.4.0"
-    },
-    "onlyBuiltDependencies": [
-      "electron",
-      "better-sqlite3",
-      "esbuild",
-      "keytar",
-      "mssql",
-      "@parcel/watcher"
-    ]
   },
   "build": {
     "appId": "com.zondiac.simplecrm",
