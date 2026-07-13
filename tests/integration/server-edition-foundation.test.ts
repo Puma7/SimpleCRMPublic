@@ -348,6 +348,12 @@ describe('server edition repository boundaries', () => {
     expect(packageJson.dependencies.pino).toMatch(/^\^10\./);
   });
 
+  test('server TypeScript build references core so clean builds are ordered', () => {
+    const tsconfig = JSON.parse(readFileSync(join(__dirname, '..', '..', 'packages', 'server', 'tsconfig.json'), 'utf8'));
+
+    expect(tsconfig.references).toContainEqual({ path: '../core' });
+  });
+
   test('production update drains old Graphile workers before the new API starts', () => {
     const updateScript = readFileSync(join(__dirname, '..', '..', 'docker', 'update.sh'), 'utf8');
     const stopIndex = updateScript.indexOf('compose stop api');
