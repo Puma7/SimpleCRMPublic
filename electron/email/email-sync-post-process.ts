@@ -56,7 +56,7 @@ export async function processNewMessagesAfterSync(
   }
   if (merged.length === 0) return;
 
-  const { persistParsedAttachments } = await import('./email-message-attachments-store.js');
+  const { hasStoredAttachmentsForMessage, persistParsedAttachments } = await import('./email-message-attachments-store.js');
   const { assignJwzThreadAndTicket } = await import('./email-threading-jwz.js');
   const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine.js');
 
@@ -69,12 +69,14 @@ export async function processNewMessagesAfterSync(
       if (parsedAttachments === undefined) {
         const row = getEmailMessageById(item.localMsgId);
         if (row?.has_attachments) {
-          if (!row.raw_rfc822_b64) {
-            throw new Error('raw RFC822 unavailable for attachment recovery');
+          if (!hasStoredAttachmentsForMessage(item.localMsgId)) {
+            if (!row.raw_rfc822_b64) {
+              throw new Error('raw RFC822 unavailable for attachment recovery');
+            }
+            const { simpleParser } = await import('mailparser');
+            const parsed = await simpleParser(Buffer.from(row.raw_rfc822_b64, 'base64'));
+            parsedAttachments = parsed.attachments;
           }
-          const { simpleParser } = await import('mailparser');
-          const parsed = await simpleParser(Buffer.from(row.raw_rfc822_b64, 'base64'));
-          parsedAttachments = parsed.attachments;
         }
       }
       await persistParsedAttachments(item.localMsgId, parsedAttachments);

@@ -6,6 +6,7 @@ const mockLink = jest.fn();
 const mockListWorkflows = jest.fn();
 const mockLoadApplied = jest.fn();
 const mockPersist = jest.fn();
+const mockHasStoredAttachments = jest.fn();
 const mockThread = jest.fn();
 const mockRunInbound = jest.fn();
 const mockSimpleParser = jest.fn();
@@ -25,6 +26,7 @@ jest.mock('../../electron/email/email-workflow-store', () => ({
 }));
 jest.mock('../../electron/email/email-message-attachments-store', () => ({
   persistParsedAttachments: (...a: unknown[]) => mockPersist(...a),
+  hasStoredAttachmentsForMessage: (...a: unknown[]) => mockHasStoredAttachments(...a),
 }));
 jest.mock('../../electron/email/email-threading-jwz', () => ({
   assignJwzThreadAndTicket: (...a: unknown[]) => mockThread(...a),
@@ -46,6 +48,7 @@ describe('processNewMessagesAfterSync', () => {
     mockLoadApplied.mockReturnValue([]);
     mockGetMessage.mockReturnValue({ id: 1 });
     mockPersist.mockResolvedValue(undefined);
+    mockHasStoredAttachments.mockReturnValue(false);
     mockRunInbound.mockResolvedValue(undefined);
     mockSimpleParser.mockResolvedValue({ attachments: [] });
   });
@@ -179,6 +182,23 @@ describe('processNewMessagesAfterSync', () => {
       expect.any(Error),
     );
     warn.mockRestore();
+  });
+
+  test('completes retry without raw mail when attachments are already stored', async () => {
+    mockGetMessage.mockReturnValue({ id: 14, has_attachments: 1, raw_rfc822_b64: null });
+    mockHasStoredAttachments.mockReturnValue(true);
+
+    await processNewMessagesAfterSync(1, [
+      {
+        localMsgId: 14,
+        parsedAttachments: undefined,
+        threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null },
+      },
+    ]);
+
+    expect(mockSimpleParser).not.toHaveBeenCalled();
+    expect(mockPersist).toHaveBeenCalledWith(14, undefined);
+    expect(mockMarkDone).toHaveBeenCalledWith(14);
   });
 
   test('skips workflow when message row missing', async () => {

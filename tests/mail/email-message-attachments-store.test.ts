@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { createSqliteMock } from './helpers/sqlite-mock';
 
 const { db, stmt } = createSqliteMock();
@@ -98,6 +99,50 @@ describe('email-message-attachments-store', () => {
     }]);
     await persistParsedAttachments(9, [{ filename: 'n.txt', content: Buffer.from('x') }]);
     expect(stmt.run).not.toHaveBeenCalled();
+  });
+
+  test('persistParsedAttachments hashes legacy rows instead of duplicating them', async () => {
+    const dir = path.join(userData, 'email-attachments', '29');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'legacy.txt');
+    const content = Buffer.from('legacy payload');
+    fs.writeFileSync(fp, content);
+    stmt.all.mockReturnValueOnce([{
+      id: 29,
+      storage_path: fp,
+      content_sha256: null,
+    }]);
+
+    await persistParsedAttachments(29, [{ filename: 'legacy.txt', content }]);
+
+    const expectedHash = crypto.createHash('sha256').update(content).digest('hex');
+    expect(stmt.run).toHaveBeenCalledWith(expectedHash, 29);
+    expect(db.prepare.mock.calls.map(([sql]) => String(sql)).join('\n'))
+      .not.toContain('INSERT OR IGNORE INTO email_message_attachments');
+  });
+
+  test('persistParsedAttachments preserves existing metadata when a retry omits another part', async () => {
+    const dir = path.join(userData, 'email-attachments', '39');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'keep.txt');
+    const content = Buffer.from('keep me');
+    fs.writeFileSync(fp, content);
+    stmt.all.mockReturnValueOnce([{
+      id: 39,
+      storage_path: fp,
+      content_sha256: crypto.createHash('sha256').update(content).digest('hex'),
+    }]);
+
+    await persistParsedAttachments(39, [
+      { filename: 'keep.txt', content },
+      { filename: 'huge.bin', content: Buffer.alloc(26 * 1024 * 1024) },
+    ]);
+
+    const metadataCall = stmt.run.mock.calls.find(([value]) => typeof value === 'string' && value.startsWith('{'));
+    expect(JSON.parse(metadataCall?.[0] as string)).toMatchObject({
+      stored: [{ name: 'keep.txt', size: content.length }],
+      omitted: [{ name: 'huge.bin', reason: 'too_large' }],
+    });
   });
 
   test('persistParsedAttachments repairs a stale database row whose file is missing', async () => {

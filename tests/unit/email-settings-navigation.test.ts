@@ -19,8 +19,15 @@ describe('email settings navigation', () => {
       'export', 'diagnostics', 'pgp', 'auditLog', 'threadTools', 'snooze', 'misc',
     ] as const
     for (const tab of visibleTabs) {
-      expect(normalizeSettingsTab(tab)).toBe(tab)
+      expect(normalizeSettingsTab(tab, true)).toBe(tab)
     }
     expect(normalizeSettingsTab('accountMail')).toBe('accounts')
+  })
+
+  it('does not restore server-only settings in standalone mode', () => {
+    expect(normalizeSettingsTab('authSecurity', false)).toBeNull()
+    expect(normalizeSettingsTab('userGroups', false)).toBeNull()
+    expect(normalizeSettingsTab('authSecurity', true)).toBe('authSecurity')
+    expect(normalizeSettingsTab('userGroups', true)).toBe('userGroups')
   })
 })

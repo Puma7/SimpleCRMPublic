@@ -63,17 +63,17 @@ function insertPreparedAttachments(
   messageId: number,
   prepared: PreparedPart[],
   omitted: { name: string; size: number; reason: string }[],
+  existingPrepared: PreparedPart[] = [],
 ): { storedCount: number; writeFailures: { name: string; reason: string }[] } {
   const db = getDb();
-  const metaJson =
-    omitted.length > 0
-      ? JSON.stringify({
-          stored: prepared.map((p) => ({ name: p.displayName, size: p.buf.length })),
-          omitted,
-        })
-      : null;
+  const metadataJson = (stored: { name: string; size: number }[]) => omitted.length > 0
+    ? JSON.stringify({ stored, omitted })
+    : null;
 
   if (prepared.length === 0) {
+    const metaJson = metadataJson(
+      existingPrepared.map((part) => ({ name: part.displayName, size: part.buf.length })),
+    );
     const row = db.prepare(`SELECT has_attachments FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).get(messageId) as
       | { has_attachments: number }
       | undefined;
@@ -125,11 +125,13 @@ function insertPreparedAttachments(
   let storedCount = 0;
   const transaction = db.transaction(() => {
     let storedAny = false;
+    const storedWritten: typeof written = [];
     for (const w of written) {
       const r = ins.run(messageId, w.displayName, w.contentType, w.size, w.filePath, w.hash);
       if (r.changes > 0) {
         storedAny = true;
         storedCount += 1;
+        storedWritten.push(w);
       } else {
         void fs.promises.unlink(w.filePath).catch(() => undefined);
         writeFailures.push({ name: w.displayName, reason: 'db_insert_skipped' });
@@ -137,6 +139,10 @@ function insertPreparedAttachments(
     }
 
     if (storedAny || omitted.length > 0) {
+      const metaJson = metadataJson([
+        ...existingPrepared.map((part) => ({ name: part.displayName, size: part.buf.length })),
+        ...storedWritten.map((part) => ({ name: part.displayName, size: part.size })),
+      ]);
       db.prepare(
         `UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 1, attachments_json = COALESCE(?, attachments_json) WHERE id = ?`,
       ).run(metaJson, messageId);
@@ -239,11 +245,21 @@ export async function persistParsedAttachments(
     .prepare(
       `SELECT id, storage_path, content_sha256 FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE message_id = ?`,
     )
-    .all(messageId) as { id: number; storage_path: string; content_sha256: string }[];
+    .all(messageId) as { id: number; storage_path: string; content_sha256: string | null }[];
   const existingHashes = new Set<string>();
   for (const row of existingRows) {
     if (fs.existsSync(row.storage_path)) {
-      existingHashes.add(row.content_sha256);
+      const hash = row.content_sha256 ?? sha256Hex(fs.readFileSync(row.storage_path));
+      existingHashes.add(hash);
+      if (!row.content_sha256) {
+        try {
+          db.prepare(
+            `UPDATE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} SET content_sha256 = ? WHERE id = ? AND content_sha256 IS NULL`,
+          ).run(hash, row.id);
+        } catch {
+          // Deduplication still works when a legacy duplicate prevents the best-effort backfill.
+        }
+      }
     } else {
       db.prepare(`DELETE FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE id = ?`).run(row.id);
     }
@@ -278,14 +294,25 @@ export async function persistParsedAttachments(
   }
 
   const missingPrepared = prepared.filter((part) => !existingHashes.has(part.hash));
+  const existingPrepared = prepared.filter((part) => existingHashes.has(part.hash));
   if (prepared.length > 0 && missingPrepared.length === 0 && omitted.length === 0) return;
-  const { storedCount, writeFailures } = insertPreparedAttachments(messageId, missingPrepared, omitted);
+  const { storedCount, writeFailures } = insertPreparedAttachments(
+    messageId,
+    missingPrepared,
+    omitted,
+    existingPrepared,
+  );
   if (writeFailures.length > 0 || storedCount < missingPrepared.length) {
     const detail = writeFailures.map((failure) => `${failure.name}: ${failure.reason}`).join('; ');
     throw new Error(
       `Nur ${storedCount} von ${missingPrepared.length} Anhängen lokal gespeichert${detail ? ` (${detail})` : ''}.`,
     );
   }
+}
+
+export function hasStoredAttachmentsForMessage(messageId: number): boolean {
+  const rows = listAttachmentsForMessage(messageId);
+  return rows.length > 0 && rows.every((row) => fs.existsSync(row.storage_path));
 }
 
 /** Remove on-disk attachment files for all messages of an account (before account DELETE CASCADE). */

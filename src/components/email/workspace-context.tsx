@@ -20,6 +20,7 @@ import {
   type MessageDoneFilter,
 } from "@shared/email-done-filter"
 import type { ConversationLockRecord, EmailMessage, MailView } from "./types"
+import { isServerClientMode } from "@/lib/runtime-mode"
 
 export type ComposeIntent =
   | { mode: "closed" }
@@ -214,9 +215,17 @@ const VALID_MAIL_VIEWS: MailView[] = [
 ]
 const VALID_MESSAGE_DONE_FILTERS: MessageDoneFilter[] = ["all", "open", "done"]
 
-export function normalizeSettingsTab(raw: string): SettingsTab | null {
+const SERVER_ONLY_SETTINGS_TABS = new Set<SettingsTab>(["authSecurity", "userGroups"])
+
+export function normalizeSettingsTab(
+  raw: string,
+  serverClientMode = isServerClientMode(),
+): SettingsTab | null {
   if (raw === "smtp" || raw === "oauth" || raw === "accountMail") return "accounts"
-  if (VALID_SETTINGS_TAB_IDS.includes(raw as SettingsTab)) return raw as SettingsTab
+  if (VALID_SETTINGS_TAB_IDS.includes(raw as SettingsTab)) {
+    const tab = raw as SettingsTab
+    return !serverClientMode && SERVER_ONLY_SETTINGS_TABS.has(tab) ? null : tab
+  }
   return null
 }
 
