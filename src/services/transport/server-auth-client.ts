@@ -43,7 +43,7 @@ export type ServerLoginConfig = {
 
 export type ServerLoginResult =
   | { kind: "session"; session: ServerAuthSession }
-  | { kind: "pin_required" }
+  | { kind: "pin_required"; captchaChallenge?: string }
   | {
       kind: "mfa_required"
       mfaMethod: AuthMfaMethod
@@ -139,7 +139,7 @@ type AuthResponseBody = {
   csrfToken: string
 }
 
-type LoginResponseBody = AuthResponseBody | { pinRequired: true } | {
+type LoginResponseBody = AuthResponseBody | { pinRequired: true; captchaChallenge?: string } | {
   mfaRequired: true
   mfaMethod: AuthMfaMethod
   mfaChallengeToken: string
@@ -269,7 +269,12 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         }
       }
       if ("pinRequired" in body && body.pinRequired) {
-        return { kind: "pin_required" }
+        return {
+          kind: "pin_required",
+          ...(typeof body.captchaChallenge === "string"
+            ? { captchaChallenge: body.captchaChallenge }
+            : {}),
+        }
       }
       if (!("user" in body) || !("tokens" in body)) {
         throw new ServerAuthClientError("Ungueltige Login-Antwort", { code: "invalid_login_response" })
@@ -382,13 +387,14 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
 
     async logout(): Promise<{ revoked: boolean }> {
       const accessToken = getServerAccessToken(options.storage, options.accessTokenStorage, baseUrl)
+      const legacyRefreshToken = readLegacyServerRefreshToken(options.storage)
       let csrfToken = readServerCsrfToken(options.storage, baseUrl)
-      if (!accessToken && !csrfToken && !readLegacyServerRefreshToken(options.storage)) {
+      if (!accessToken && !csrfToken && !legacyRefreshToken) {
         clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
         return { revoked: false }
       }
       try {
-        if (!csrfToken) {
+        if (!csrfToken && !legacyRefreshToken) {
           const bootstrap = await request<{ csrfToken: string }>(fetchImpl, baseUrl, "/api/v1/auth/csrf", {
             method: "GET",
           })
@@ -397,7 +403,13 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         return await request<{ revoked: boolean }>(fetchImpl, baseUrl, "/api/v1/auth/logout", {
           method: "POST",
           accessToken,
-          headers: { "X-CSRF-Token": csrfToken },
+          ...(legacyRefreshToken ? { body: { refreshToken: legacyRefreshToken } } : {}),
+          headers: legacyRefreshToken
+            ? {
+                "X-SimpleCRM-Session-Migration": "1",
+                ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+              }
+            : { "X-CSRF-Token": csrfToken ?? "" },
         })
       } finally {
         clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)

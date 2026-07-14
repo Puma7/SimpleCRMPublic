@@ -82,6 +82,7 @@ export type LoginSecurityService = Readonly<{
     | { ok: false; code: string }
   >;
   assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): Promise<boolean>;
+  issueCaptchaContinuation(input: { ip: string }): string;
   assertLoginPin(input: {
     user: AuthUserRecord;
     workspaceSettings: AuthSecurityWorkspaceSettings;
@@ -210,6 +211,14 @@ export function createLoginSecurityService(input: {
         purpose: 'captcha',
         ttlMs: CAPTCHA_CHALLENGE_TTL_MS,
         now: now(),
+      });
+    },
+
+    issueCaptchaContinuation({ ip }) {
+      return issueCaptchaChallenge({
+        signer: input.accessTokenSigner,
+        ip,
+        issuedAt: now(),
       });
     },
 

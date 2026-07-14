@@ -51,6 +51,26 @@ export function allowedWindowOpenKind(input: {
   return null;
 }
 
+export function isAllowedChildWindowNavigation(input: {
+  initialUrl: string;
+  candidateUrl: string;
+  kind: 'print' | 'attachment-preview';
+}): boolean {
+  if (input.candidateUrl === input.initialUrl) return true;
+  if (input.kind !== 'attachment-preview') return false;
+  const initialOrigin = parseBlobSourceOrigin(input.initialUrl);
+  return initialOrigin !== null && parseBlobSourceOrigin(input.candidateUrl) === initialOrigin;
+}
+
+function parseBlobSourceOrigin(value: string): string | null {
+  const blobUrl = parseUrl(value);
+  if (blobUrl?.protocol !== 'blob:') return null;
+  const sourceUrl = parseUrl(blobUrl.pathname);
+  if (!sourceUrl) return null;
+  if (sourceUrl.origin !== 'null') return sourceUrl.origin;
+  return sourceUrl.protocol === 'app:' && sourceUrl.hostname === '-' ? 'app://-' : null;
+}
+
 function parseUrl(value: string | undefined): URL | null {
   if (!value?.trim()) return null;
   try {

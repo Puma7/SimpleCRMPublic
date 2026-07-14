@@ -223,6 +223,10 @@ export default function LoginPage() {
       return
     }
     if (result.kind === "pin_required") {
+      if (result.captchaChallenge) {
+        storeCaptchaChallenge(result.captchaChallenge)
+        setCaptchaPassed(true)
+      }
       setLoginPinRequired(true)
       setLoginPin("")
       return

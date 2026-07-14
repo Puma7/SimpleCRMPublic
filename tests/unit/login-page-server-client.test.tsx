@@ -342,6 +342,45 @@ describe('LoginPage server-client mode', () => {
     expect(await screen.findByText('Zugang pruefen')).toBeInTheDocument();
     expect(window.sessionStorage.getItem(CAPTCHA_CHALLENGE_STORAGE_KEY)).toBeNull();
   });
+
+  test('keeps a server-issued CAPTCHA continuation while showing the PIN keypad', async () => {
+    window.sessionStorage.setItem(CAPTCHA_CHALLENGE_STORAGE_KEY, 'solved-once');
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({
+          data: {
+            captcha: { enabled: true, provider: 'turnstile', siteKey: 'site-key' },
+            pinKeypad: { enabled: true },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          },
+        }));
+      }
+      if (String(url).includes('/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          data: { pinRequired: true, captchaChallenge: 'pin-continuation' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'owner@example.com' },
+    });
+    fireEvent.change(await screen.findByLabelText('Passwort'), {
+      target: { value: 'correct-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
+
+    expect(await screen.findByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).toBeInTheDocument();
+    expect(window.sessionStorage.getItem(CAPTCHA_CHALLENGE_STORAGE_KEY)).toBe('pin-continuation');
+    expect(screen.queryByText('Zugang pruefen')).not.toBeInTheDocument();
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

@@ -206,7 +206,12 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
 
   if (workspaceSettings && ports.loginSecurity) {
     if (workspaceSettings.pinKeypadEnabled && user.loginPinEnabled && !pin?.trim()) {
-      return data(200, { pinRequired: true });
+      return data(200, {
+        pinRequired: true,
+        ...(loginConfig?.captcha.enabled
+          ? { captchaChallenge: ports.loginSecurity.issueCaptchaContinuation({ ip }) }
+          : {}),
+      });
     }
     const pinOk = await ports.loginSecurity.assertLoginPin({
       user,

@@ -243,7 +243,7 @@ describe('server auth client', () => {
 
   test('reveals the PIN step only after the server accepted primary credentials', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
-      data: { pinRequired: true },
+      data: { pinRequired: true, captchaChallenge: 'pin-continuation' },
     }));
     const client = createServerAuthClient({
       baseUrl: 'https://crm.example.com',
@@ -253,7 +253,10 @@ describe('server auth client', () => {
     await expect(client.loginAdvanced({
       email: 'owner@example.com',
       password: 'correct-password',
-    })).resolves.toEqual({ kind: 'pin_required' });
+    })).resolves.toEqual({
+      kind: 'pin_required',
+      captchaChallenge: 'pin-continuation',
+    });
   });
 
   test('refresh rotates stored tokens', async () => {
@@ -491,6 +494,43 @@ describe('server auth client', () => {
     expect(fetchImpl.mock.calls[0]?.[1]).not.toHaveProperty('body');
     expect(readServerAuthSession(persistent)).toBeNull();
     expect(volatile.getItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
+  });
+
+  test('logout revokes a legacy localStorage refresh token without cookie CSRF bootstrap', async () => {
+    const persistent = memoryStorage();
+    persistent.setItem(SERVER_AUTH_SESSION_STORAGE_KEY, JSON.stringify({
+      user: user(),
+      tokens: {
+        accessToken: 'legacy-access',
+        refreshToken: 'legacy-refresh',
+        expiresInSeconds: 900,
+      },
+      savedAt: '2026-06-03T10:00:00.000Z',
+      expiresAt: '2026-06-03T10:15:00.000Z',
+    }));
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { revoked: true },
+    }));
+    const client = createServerAuthClient({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+      storage: persistent,
+    });
+
+    await expect(client.logout()).resolves.toEqual({ revoked: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/auth/logout',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'include',
+        headers: expect.objectContaining({
+          'X-SimpleCRM-Session-Migration': '1',
+        }),
+        body: JSON.stringify({ refreshToken: 'legacy-refresh' }),
+      }),
+    );
+    expect(persistent.getItem(SERVER_AUTH_SESSION_STORAGE_KEY)).toBeNull();
   });
 });
 

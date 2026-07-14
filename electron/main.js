@@ -11,6 +11,7 @@ const {
 } = require('../dist-electron/electron/update-service');
 const {
   allowedWindowOpenKind,
+  isAllowedChildWindowNavigation,
   isAllowedRendererNavigation,
 } = require('../dist-electron/electron/security/navigation-policy');
 const {
@@ -163,11 +164,11 @@ const installRendererContentSecurityPolicy = (webContents) => {
   });
 };
 
-const hardenChildWindow = (childWindow, initialUrl) => {
+const hardenChildWindow = (childWindow, initialUrl, kind) => {
   const childContents = childWindow?.webContents;
   if (!childContents) return;
   const guard = (event, url) => {
-    if (url === initialUrl) return;
+    if (isAllowedChildWindowNavigation({ initialUrl, candidateUrl: url, kind })) return;
     event.preventDefault();
     log.warn('[Electron Main] Blocked navigation from an isolated child window.');
   };
@@ -203,7 +204,11 @@ const attachMainWindowSecurity = (webContents) => {
     };
   });
   webContents.on('did-create-window', (childWindow, details) => {
-    hardenChildWindow(childWindow, details.url);
+    const kind = allowedWindowOpenKind({
+      url: details.url,
+      frameName: details.frameName,
+    });
+    if (kind) hardenChildWindow(childWindow, details.url, kind);
   });
 };
 

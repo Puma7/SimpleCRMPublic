@@ -2,6 +2,7 @@ import {
   MAIL_ATTACHMENT_PREVIEW_FRAME_NAME,
   MAIL_PRINT_FRAME_NAME,
   allowedWindowOpenKind,
+  isAllowedChildWindowNavigation,
   isAllowedRendererNavigation,
 } from '../../electron/security/navigation-policy';
 
@@ -45,5 +46,28 @@ describe('Electron renderer navigation policy', () => {
       url: 'https://attacker.example',
       frameName: MAIL_ATTACHMENT_PREVIEW_FRAME_NAME,
     })).toBeNull();
+  });
+
+  test('allows a named attachment preview to navigate only between blob URLs of its origin', () => {
+    expect(isAllowedChildWindowNavigation({
+      initialUrl: 'blob:app://-/first',
+      candidateUrl: 'blob:app://-/second',
+      kind: 'attachment-preview',
+    })).toBe(true);
+    expect(isAllowedChildWindowNavigation({
+      initialUrl: 'blob:app://-/first',
+      candidateUrl: 'blob:https://attacker.example/second',
+      kind: 'attachment-preview',
+    })).toBe(false);
+    expect(isAllowedChildWindowNavigation({
+      initialUrl: 'blob:app://-/first',
+      candidateUrl: 'blob:null/second',
+      kind: 'attachment-preview',
+    })).toBe(false);
+    expect(isAllowedChildWindowNavigation({
+      initialUrl: 'about:blank',
+      candidateUrl: 'blob:app://-/second',
+      kind: 'print',
+    })).toBe(false);
   });
 });

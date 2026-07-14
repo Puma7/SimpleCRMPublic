@@ -14322,6 +14322,64 @@ describe('server edition foundation', () => {
     expect((blocked.body as { error: { code: string } }).error.code).toBe('captcha_required');
   });
 
+  test('server auth route replaces a consumed CAPTCHA with a PIN continuation challenge', async () => {
+    const base = makeServerApiPorts();
+    const existingUser = await base.auth.findUserByEmail('owner@example.com');
+    const issueCaptchaContinuation = jest.fn(() => 'pin-continuation');
+    const api = createServerApi({
+      ...base,
+      auth: {
+        ...base.auth,
+        async findUserByEmail(email) {
+          return email === 'owner@example.com' && existingUser
+            ? { ...existingUser, loginPinEnabled: true }
+            : null;
+        },
+      },
+      loginSecurity: {
+        async getLoginConfig() {
+          return {
+            captcha: { enabled: true, provider: 'turnstile' as const, siteKey: 'site-key' },
+            pinKeypad: { enabled: true },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          };
+        },
+        async assertCaptchaChallenge() {
+          return true;
+        },
+        issueCaptchaContinuation,
+        async getWorkspaceSettings() {
+          return {
+            captchaEnabled: true,
+            pinKeypadEnabled: true,
+            mfaEnabled: false,
+            mfaTotpEnabled: false,
+            mfaEmailEnabled: false,
+          };
+        },
+      } as any,
+    });
+
+    const response = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      ip: '127.0.0.1',
+      body: {
+        email: 'owner@example.com',
+        password: 'correct',
+        captchaChallenge: 'captcha-once',
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect((response.body as any).data).toEqual({
+      pinRequired: true,
+      captchaChallenge: 'pin-continuation',
+    });
+    expect(issueCaptchaContinuation).toHaveBeenCalledWith({ ip: '127.0.0.1' });
+  });
+
   test('public login config never varies with the queried account', async () => {
     const getLoginConfig = jest.fn(async (email?: string) => ({
       captcha: { enabled: false, provider: null, siteKey: null },

@@ -202,6 +202,7 @@ export type LoginSecurityApiPort = Readonly<{
     | { ok: false; code: string }
   >;
   assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): Promise<boolean>;
+  issueCaptchaContinuation(input: { ip: string }): string;
   assertLoginPin(input: {
     user: AuthUserRecord;
     workspaceSettings: AuthSecurityWorkspaceSettings;
