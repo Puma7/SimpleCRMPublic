@@ -33,6 +33,10 @@ export type EmailEvidenceSummary = Readonly<{
   confidence: EmailEvidenceConfidence;
   openCount: number;
   clickCount: number;
+  automatedOpenCount: number;
+  probableOpenCount: number;
+  automatedClickCount: number;
+  probableClickCount: number;
   firstOpenedAt: string | null;
   lastOpenedAt: string | null;
   firstClickedAt: string | null;
@@ -168,6 +172,10 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
   let confidence: EmailEvidenceConfidence = 'none';
   let openCount = 0;
   let clickCount = 0;
+  let automatedOpenCount = 0;
+  let probableOpenCount = 0;
+  let automatedClickCount = 0;
+  let probableClickCount = 0;
   let firstOpenedAt: string | null = null;
   let lastOpenedAt: string | null = null;
   let firstClickedAt: string | null = null;
@@ -189,6 +197,8 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
 
     if (event.type === 'open_automated' || event.type === 'open_probable') {
       openCount += 1;
+      if (event.type === 'open_automated') automatedOpenCount += 1;
+      else probableOpenCount += 1;
       firstOpenedAt ??= event.occurredAt;
       lastOpenedAt = event.occurredAt;
       if (delivery === 'unknown') delivery = 'external_system_reached';
@@ -200,6 +210,8 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
     }
     if (event.type === 'click' || event.type === 'click_automated') {
       clickCount += 1;
+      if (event.type === 'click_automated') automatedClickCount += 1;
+      else probableClickCount += 1;
       firstClickedAt ??= event.occurredAt;
       lastClickedAt = event.occurredAt;
       if (delivery === 'unknown') delivery = 'external_system_reached';
@@ -226,6 +238,10 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
     confidence,
     openCount,
     clickCount,
+    automatedOpenCount,
+    probableOpenCount,
+    automatedClickCount,
+    probableClickCount,
     firstOpenedAt,
     lastOpenedAt,
     firstClickedAt,
@@ -330,6 +346,10 @@ export function emailEvidenceSummaryWorkflowVariables(input: {
     'tracking.confidence': summary.confidence,
     'tracking.open_count': summary.openCount,
     'tracking.click_count': summary.clickCount,
+    'tracking.automated_open_count': summary.automatedOpenCount,
+    'tracking.probable_open_count': summary.probableOpenCount,
+    'tracking.automated_click_count': summary.automatedClickCount,
+    'tracking.probable_click_count': summary.probableClickCount,
     'tracking.first_opened_at': summary.firstOpenedAt,
     'tracking.last_opened_at': summary.lastOpenedAt,
     'tracking.first_clicked_at': summary.firstClickedAt,

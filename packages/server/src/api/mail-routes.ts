@@ -1264,11 +1264,22 @@ async function handleEmailGdprExport(req: ApiRequest, ports: ServerApiPorts): Pr
   if (skipAttachments === null) {
     return error(400, 'invalid_skip_attachments', 'skipAttachments muss true oder false sein');
   }
+  const includeSensitiveTracking = parseOptionalBoolean(req.query?.includeSensitiveTracking);
+  if (includeSensitiveTracking === null) {
+    return error(
+      400,
+      'invalid_include_sensitive_tracking',
+      'includeSensitiveTracking muss true oder false sein',
+    );
+  }
+  if (includeSensitiveTracking === true && !requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
+  }
 
   const result = await ports.emailGdprExport.export({
     workspaceId: principal.workspaceId,
     skipAttachments: skipAttachments === true,
-    ...(requireAdmin(principal) ? { includeSensitiveTracking: true } : {}),
+    ...(includeSensitiveTracking === true ? { includeSensitiveTracking: true } : {}),
   });
   if (!result.ok) {
     return error(409, result.code, 'Anhaenge zu gross fuer einen Export', {

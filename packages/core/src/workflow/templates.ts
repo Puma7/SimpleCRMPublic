@@ -147,7 +147,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           type: 'registry',
           data: {
             nodeType: 'logic.threshold',
-            config: { variable: 'tracking.open_count', operator: 'lte', value: 0 },
+            config: { variable: 'tracking.probable_open_count', operator: 'lte', value: 0 },
           },
         },
         {
@@ -155,7 +155,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           type: 'registry',
           data: {
             nodeType: 'logic.threshold',
-            config: { variable: 'tracking.click_count', operator: 'lte', value: 0 },
+            config: { variable: 'tracking.probable_click_count', operator: 'lte', value: 0 },
           },
         },
         {

@@ -3547,6 +3547,7 @@ describe('renderer transport', () => {
 
     await expect(transport.invoke(IPCChannels.Email.EmailGdprExport, {
       skipAttachments: true,
+      includeSensitiveTracking: true,
     })).resolves.toEqual({
       ok: true,
       blob,
@@ -3555,7 +3556,7 @@ describe('renderer transport', () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://crm.example.com/api/v1/email/gdpr-export?skipAttachments=true',
+      'https://crm.example.com/api/v1/email/gdpr-export?skipAttachments=true&includeSensitiveTracking=true',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({

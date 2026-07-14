@@ -1440,7 +1440,7 @@ describe('server edition foundation', () => {
     const result = await runRlsIsolationCheck(client);
 
     expect(result.status).toBe('passed');
-    expect(result.checks).toHaveLength((RLS_POLICY_COVERAGE_TABLES.length * 3) + 11);
+    expect(result.checks).toHaveLength((RLS_POLICY_COVERAGE_TABLES.length * 3) + 25);
     expect(result.checks.every((check) => check.status === 'passed')).toBe(true);
     expect(result.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'workspaces_rls_enabled', status: 'passed' }),
@@ -1448,9 +1448,15 @@ describe('server edition foundation', () => {
       expect.objectContaining({ name: 'workspaces_workspace_policy', status: 'passed' }),
       expect.objectContaining({ name: 'sqlite_import_table_checkpoints_workspace_policy', status: 'passed' }),
       expect.objectContaining({ name: 'automation_api_keys_workspace_policy', status: 'passed' }),
+      expect.objectContaining({ name: 'email_tracking_token_resolver_public_lookup_policy', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_reads_own_customer', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_customer', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_secret', status: 'passed' }),
+      expect.objectContaining({ name: 'workspace_a_reads_own_email_tracking_events', status: 'passed' }),
+      expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_email_tracking_events', status: 'passed' }),
+      expect.objectContaining({ name: 'public_tracking_token_without_hash_cannot_read_resolver', status: 'passed' }),
+      expect.objectContaining({ name: 'public_tracking_token_wrong_hash_cannot_read_resolver', status: 'passed' }),
+      expect.objectContaining({ name: 'public_tracking_token_matching_hash_reads_one_resolver', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_insert_workspace_b_customer', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_move_customer_to_workspace_b', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_delete_workspace_b_customer', status: 'passed' }),
@@ -4742,6 +4748,73 @@ describe('server edition foundation', () => {
         port: 'default',
         message: null,
       },
+    ]);
+  });
+
+  test('postgres workflow execution runs the tracking evidence node and exposes its variables', async () => {
+    const now = new Date('2026-07-04T10:02:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 24,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 240,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            { id: 'evidence-1', type: 'registry', data: { nodeType: 'email.read_tracking_evidence', config: {} } },
+            {
+              id: 'condition-1',
+              type: 'registry',
+              data: { nodeType: 'logic.switch', config: { field: 'tracking.tracked', cases: 'false' } },
+            },
+            { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop', config: {} } },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'evidence-1' },
+            { id: 'edge-2', source: 'evidence-1', target: 'condition-1' },
+            { id: 'edge-3', source: 'condition-1', target: 'stop-1', label: 'false' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 12,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 120,
+        subject: 'Tracking status',
+        from_json: { value: [{ address: 'agent@example.com' }] },
+        to_json: { value: [{ address: 'customer@example.com' }] },
+        cc_json: null,
+        snippet: 'Tracking status',
+        body_text: 'Status prüfen',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      trackingMessages: [],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 24,
+      messageId: 12,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
+      ['evidence-1', 'email.read_tracking_evidence', 'ok', 'default', 'tracking_not_configured_for_message'],
+      ['condition-1', 'logic.switch', 'ok', 'false', null],
+      ['stop-1', 'logic.stop', 'ok', 'default', null],
     ]);
   });
 
@@ -19080,8 +19153,28 @@ describe('server edition foundation', () => {
     expect(exportCalls[1]).toEqual({
       workspaceId: WORKSPACE_A_ID,
       skipAttachments: false,
+    });
+
+    await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/gdpr-export',
+      query: { includeSensitiveTracking: 'true' },
+      principal: { ...principal, role: 'admin' as const },
+    });
+    expect(exportCalls[2]).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      skipAttachments: false,
       includeSensitiveTracking: true,
     });
+
+    const deniedSensitive = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/gdpr-export',
+      query: { includeSensitiveTracking: 'true' },
+      principal,
+    });
+    expect(deniedSensitive.status).toBe(403);
+    expect(exportCalls).toHaveLength(3);
 
     const invalidFlag = await api.handle({
       method: 'GET',
@@ -19091,6 +19184,15 @@ describe('server edition foundation', () => {
     });
     expect(invalidFlag.status).toBe(400);
     expect((invalidFlag.body as any).error.code).toBe('invalid_skip_attachments');
+
+    const invalidSensitiveFlag = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/gdpr-export',
+      query: { includeSensitiveTracking: 'maybe' },
+      principal: { ...principal, role: 'admin' as const },
+    });
+    expect(invalidSensitiveFlag.status).toBe(400);
+    expect((invalidSensitiveFlag.body as any).error.code).toBe('invalid_include_sensitive_tracking');
 
     const tooLarge = await createServerApi(makeServerApiPorts({
       emailGdprExport: {
@@ -37074,12 +37176,22 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
   let currentWorkspaceId = '';
   let currentRole = 'system';
   let crossWorkspaceAccess = false;
+  let currentPublicTrackingTokenHash = '';
   let nextCustomerId = 1;
+  let nextMessageId = 1;
   const queries: Array<{ sql: string; params?: readonly unknown[] }> = [];
   const workspaces = new Set<string>();
   const users = new Set<string>();
   const customers: Array<{ id: number; workspaceId: string; sourceSqliteId: number }> = [];
   const secrets: Array<{ workspaceId: string; kind: string; name: string }> = [];
+  const emailMessages: Array<{ id: number; workspaceId: string; sourceSqliteId: number }> = [];
+  const trackingRows: Record<string, Array<{ workspaceId: string; tokenHash?: string }>> = {
+    email_tracking_policies: [],
+    email_tracking_messages: [],
+    email_tracking_links: [],
+    email_tracking_events: [],
+    email_tracking_token_resolver: [],
+  };
 
   function canAccessWorkspace(workspaceId: string): boolean {
     return workspaceId === currentWorkspaceId
@@ -37126,6 +37238,10 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
       }
 
       if (normalized.startsWith('select set_config')) {
+        if (params?.length === 1 && normalized.includes('app.email_tracking_token_hash')) {
+          currentPublicTrackingTokenHash = String(params[0] ?? '');
+          return { rows: [] };
+        }
         currentWorkspaceId = String(params?.[0] ?? '');
         currentRole = String(params?.[2] ?? '');
         crossWorkspaceAccess = String(params?.[3] ?? 'off') === 'on';
@@ -37144,6 +37260,16 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
             policy_name: policyName,
             using_expression: table.usingFragments.join(' AND '),
             with_check_expression: table.withCheckFragments.join(' AND '),
+          }] as readonly T[],
+        };
+      }
+
+      if (normalized.includes('from pg_policies') && normalized.includes('email_tracking_token_resolver_public_lookup')) {
+        return {
+          rows: [{
+            policy_name: 'email_tracking_token_resolver_public_lookup',
+            using_expression: "token_hash = nullif(current_setting('app.email_tracking_token_hash', true), '')",
+            with_check_expression: null,
           }] as readonly T[],
         };
       }
@@ -37182,6 +37308,32 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
         return { rows: [] };
       }
 
+      if (normalized.startsWith('insert into email_messages')) {
+        const workspaceId = assertRlsWorkspace(params?.[0]);
+        const sourceSqliteId = Number(params?.[1]);
+        let row = emailMessages.find((candidate) => (
+          candidate.workspaceId === workspaceId && candidate.sourceSqliteId === sourceSqliteId
+        ));
+        if (!row) {
+          row = { id: nextMessageId, workspaceId, sourceSqliteId };
+          nextMessageId += 1;
+          emailMessages.push(row);
+        }
+        return { rows: [{ id: row.id }] as readonly T[] };
+      }
+
+      const trackingInsert = normalized.match(/^insert into (email_tracking_[a-z_]+)/);
+      if (trackingInsert) {
+        const table = trackingInsert[1]!;
+        const rows = trackingRows[table];
+        if (!rows) throw new Error(`Unhandled RLS tracking fixture table: ${table}`);
+        const workspaceParamIndex = table === 'email_tracking_policies' || table === 'email_tracking_events' ? 0 : 1;
+        const workspaceId = assertRlsWorkspace(params?.[workspaceParamIndex]);
+        const tokenHash = table === 'email_tracking_token_resolver' ? String(params?.[0] ?? '') : undefined;
+        if (!rows.some((row) => row.workspaceId === workspaceId)) rows.push({ workspaceId, tokenHash });
+        return { rows: [] };
+      }
+
       if (normalized.startsWith('select count(*)::int as count from customers')) {
         const workspaceId = String(params?.[0]);
         const sourceSqliteId = Number(params?.[1]);
@@ -37199,6 +37351,27 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
           canAccessWorkspace(row.workspaceId)
           && row.workspaceId === workspaceId
           && row.kind === 'rls_probe'
+        )).length;
+        return { rows: [{ count }] as readonly T[] };
+      }
+
+      const trackingWorkspaceCount = normalized.match(
+        /^select count\(\*\)::int as count from (email_tracking_[a-z_]+) where workspace_id = \$1/,
+      );
+      if (trackingWorkspaceCount) {
+        const rows = trackingRows[trackingWorkspaceCount[1]!] ?? [];
+        const workspaceId = String(params?.[0]);
+        const count = rows.filter((row) => (
+          row.workspaceId === workspaceId && canAccessWorkspace(row.workspaceId)
+        )).length;
+        return { rows: [{ count }] as readonly T[] };
+      }
+
+      if (normalized.startsWith('select count(*)::int as count from email_tracking_token_resolver where token_hash')) {
+        const tokenHash = String(params?.[0]);
+        const count = trackingRows.email_tracking_token_resolver.filter((row) => (
+          row.tokenHash === tokenHash
+          && (canAccessWorkspace(row.workspaceId) || currentPublicTrackingTokenHash === row.tokenHash)
         )).length;
         return { rows: [{ count }] as readonly T[] };
       }
@@ -37753,6 +37926,8 @@ type WorkflowExecutionFakeRows = {
   jobs: Array<Record<string, unknown>>;
   messageAttachments: Array<Record<string, unknown>>;
   accountMailSettings: Array<Record<string, unknown>>;
+  trackingMessages: Array<Record<string, unknown>>;
+  trackingEvents: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -37789,6 +37964,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     jobs: input.jobs ?? [],
     messageAttachments: input.messageAttachments ?? [],
     accountMailSettings: input.accountMailSettings ?? [],
+    trackingMessages: input.trackingMessages ?? [],
+    trackingEvents: input.trackingEvents ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table) {
@@ -37850,6 +38027,10 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.jobs;
       case 'email_account_mail_settings':
         return rows.accountMailSettings;
+      case 'email_tracking_messages':
+        return rows.trackingMessages;
+      case 'email_tracking_events':
+        return rows.trackingEvents;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }

@@ -113,6 +113,8 @@ describe('email-workflow-graph-compile', () => {
       expect.objectContaining({ nodeType: 'email.read_tracking_evidence' }),
       expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.tracked', cases: 'true' }) }),
       expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.transport', cases: 'smtp_accepted' }) }),
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_open_count' }) }),
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_click_count' }) }),
       expect.objectContaining({ nodeType: 'crm.create_task' }),
     ]));
   });

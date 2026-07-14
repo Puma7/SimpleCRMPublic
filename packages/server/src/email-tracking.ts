@@ -1129,6 +1129,13 @@ async function prepareTrackedHtmlInTransaction(input: {
     existingLinkCount: existingLinks.length,
   })) mismatch = true;
   if (mismatch) {
+    if (!created) {
+      await input.trx
+        .deleteFrom('email_tracking_messages')
+        .where('workspace_id', '=', input.input.workspaceId)
+        .where('id', '=', trackingId)
+        .execute();
+    }
     return {
       html: input.input.html,
       trackingMessageId: null,
@@ -1502,6 +1509,10 @@ type TrackingEvidenceAggregateRow = {
   has_external_reach: boolean | null;
   open_count: number | string | null;
   click_count: number | string | null;
+  automated_open_count: number | string | null;
+  probable_open_count: number | string | null;
+  automated_click_count: number | string | null;
+  probable_click_count: number | string | null;
   first_opened_at: Date | string | null;
   last_opened_at: Date | string | null;
   first_clicked_at: Date | string | null;
@@ -1535,6 +1546,10 @@ export async function loadEmailEvidenceSummaryForTracking(
       )) AS has_external_reach,
       COUNT(*) FILTER (WHERE event_type IN ('open_automated','open_probable'))::int AS open_count,
       COUNT(*) FILTER (WHERE event_type IN ('click_automated','click'))::int AS click_count,
+      COUNT(*) FILTER (WHERE event_type = 'open_automated')::int AS automated_open_count,
+      COUNT(*) FILTER (WHERE event_type = 'open_probable')::int AS probable_open_count,
+      COUNT(*) FILTER (WHERE event_type = 'click_automated')::int AS automated_click_count,
+      COUNT(*) FILTER (WHERE event_type = 'click')::int AS probable_click_count,
       MIN(occurred_at) FILTER (WHERE event_type IN ('open_automated','open_probable')) AS first_opened_at,
       MAX(occurred_at) FILTER (WHERE event_type IN ('open_automated','open_probable')) AS last_opened_at,
       MIN(occurred_at) FILTER (WHERE event_type IN ('click_automated','click')) AS first_clicked_at,
@@ -1561,6 +1576,10 @@ export async function loadEmailEvidenceSummaryForTracking(
     confidence: confidenceByRank[confidenceRank]!,
     openCount: aggregateCount(row.open_count),
     clickCount: aggregateCount(row.click_count),
+    automatedOpenCount: aggregateCount(row.automated_open_count),
+    probableOpenCount: aggregateCount(row.probable_open_count),
+    automatedClickCount: aggregateCount(row.automated_click_count),
+    probableClickCount: aggregateCount(row.probable_click_count),
     firstOpenedAt: timestampToIso(row.first_opened_at),
     lastOpenedAt: timestampToIso(row.last_opened_at),
     firstClickedAt: timestampToIso(row.first_clicked_at),

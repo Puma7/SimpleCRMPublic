@@ -1772,11 +1772,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Email.EmailGdprExport, ([payload]) => {
     const input = objectPayload(payload, "email GDPR export payload")
     const skipAttachments = optionalBoolean(input.skipAttachments, "email GDPR export skipAttachments flag")
+    const includeSensitiveTracking = optionalBoolean(
+      input.includeSensitiveTracking,
+      "email GDPR export includeSensitiveTracking flag",
+    )
     return {
       method: "GET",
       path: "/api/v1/email/gdpr-export",
       query: pruneQueryUndefined({
         skipAttachments: skipAttachments === true ? true : undefined,
+        includeSensitiveTracking: includeSensitiveTracking === true ? true : undefined,
       }),
       responseType: "blob",
       transform: (body, context) => ({

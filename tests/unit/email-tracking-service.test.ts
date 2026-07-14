@@ -10,6 +10,8 @@ import {
   normalizeEmailTrackingPolicy,
   normalizeInboundEvidenceOccurredAt,
 } from '../../packages/server/src/email-tracking';
+import type { Kysely } from 'kysely';
+import type { ServerDatabase } from '../../packages/server/src/db';
 
 describe('email tracking service security helpers', () => {
   const key = Buffer.alloc(32, 7);
@@ -260,4 +262,307 @@ describe('email tracking service security helpers', () => {
       warning: expect.stringContaining('Groesse'),
     });
   });
+
+  test('the real tracking service never instruments PGP-protected outbound HTML', async () => {
+    const service = createPostgresEmailTrackingService({
+      db: {} as never,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+    });
+    const html = '<p>Vertraulich</p>';
+
+    await expect(service.prepareOutbound({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      messageId: 17,
+      accountId: 3,
+      messageIdHeader: '<pgp-17@crm.example>',
+      recipientCount: 1,
+      html,
+      pgpProtected: true,
+    })).resolves.toEqual({
+      html,
+      trackingMessageId: null,
+      warning: 'PGP-geschuetzte Nachrichten werden nicht nachverfolgt.',
+    });
+  });
+
+  test('the real revoke and public-open chain cannot reactivate revoked tracking', async () => {
+    const token = 'A'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const { db, state } = trackingLifecycleDatabase(tokenHash);
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+    });
+
+    await expect(service.revokeMessage({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      messageId: 17,
+    })).resolves.toBe(true);
+    expect(state.messageRevokedAt).toEqual(new Date('2026-07-14T12:00:00.000Z'));
+    expect(state.resolverRevokedAt).toEqual(new Date('2026-07-14T12:00:00.000Z'));
+
+    await service.recordPublicOpen({
+      token,
+      ip: '203.0.113.9',
+      userAgent: 'MailClient/1.0',
+      headers: {},
+    });
+
+    expect(state.eventTypes).toEqual(['revoked']);
+    await db.destroy();
+  });
+
+  test('retires stale tracking evidence when an unsent retry changes link targets', async () => {
+    const crypto = createEmailTrackingCrypto(key);
+    const { db, state } = trackingRetryMismatchDatabase(crypto.targetHash('https://example.test/old'));
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+    });
+
+    await expect(service.prepareOutbound({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      messageId: 17,
+      accountId: 3,
+      messageIdHeader: '<retry-17@crm.example>',
+      recipientCount: 1,
+      html: '<a href="https://example.test/new">Neu</a>',
+      pgpProtected: false,
+    })).resolves.toMatchObject({
+      trackingMessageId: null,
+      warning: expect.stringContaining('Linkziele'),
+    });
+    expect(state.trackingMessageDeleted).toBe(true);
+  });
 });
+
+function trackingRetryMismatchDatabase(existingTargetHash: string): {
+  db: Kysely<ServerDatabase>;
+  state: { trackingMessageDeleted: boolean };
+} {
+  const state = { trackingMessageDeleted: false };
+  const workspaceId = '11111111-1111-4111-8111-111111111111';
+  const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+  const fixtures: Record<string, unknown> = {
+    email_tracking_policies: {
+      enabled: true,
+      track_opens: true,
+      track_links: true,
+      collect_derived_metadata: true,
+      collect_raw_metadata: false,
+      raw_metadata_retention_days: 7,
+      event_retention_days: 365,
+      token_ttl_days: 730,
+      legal_basis: 'legitimate_interest',
+      privacy_notice_url: 'https://example.test/privacy',
+      compliance_acknowledged_at: new Date('2026-01-01T00:00:00.000Z'),
+      updated_at: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    email_messages: { id: 17, account_id: 3 },
+    email_tracking_messages: {
+      id: trackingMessageId,
+      workspace_id: workspaceId,
+      message_id: 17,
+      recipient_count: 1,
+      track_opens: true,
+      track_links: true,
+      collect_derived_metadata: true,
+      collect_raw_metadata: false,
+      token_expires_at: new Date('2027-07-14T12:00:00.000Z'),
+      revoked_at: null,
+    },
+    email_tracking_links: [{
+      id: '77777777-7777-4777-8777-777777777777',
+      ordinal: 0,
+      target_url_hash: existingTargetHash,
+    }],
+  };
+  const db = {
+    transaction() {
+      return { execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db) };
+    },
+    getExecutor() {
+      return { executeQuery: async () => ({ rows: [] }) };
+    },
+    selectFrom(table: string) {
+      return new TrackingRetrySelect(fixtures[table]);
+    },
+    updateTable() {
+      return new TrackingRetryMutation();
+    },
+    deleteFrom(table: string) {
+      return new TrackingRetryMutation(() => {
+        if (table === 'email_tracking_messages') state.trackingMessageDeleted = true;
+      });
+    },
+  } as unknown as Kysely<ServerDatabase>;
+  return { db, state };
+}
+
+class TrackingRetrySelect {
+  constructor(private readonly fixture: unknown) {}
+
+  select() { return this; }
+  selectAll() { return this; }
+  where() { return this; }
+  orderBy() { return this; }
+  async executeTakeFirst() { return Array.isArray(this.fixture) ? this.fixture[0] : this.fixture; }
+  async execute() { return Array.isArray(this.fixture) ? this.fixture : this.fixture ? [this.fixture] : []; }
+}
+
+class TrackingRetryMutation {
+  constructor(private readonly onExecute?: () => void) {}
+
+  set() { return this; }
+  where() { return this; }
+  async execute() { this.onExecute?.(); }
+}
+
+function trackingLifecycleDatabase(tokenHash: string): {
+  db: Kysely<ServerDatabase>;
+  state: {
+    messageRevokedAt: Date | null;
+    resolverRevokedAt: Date | null;
+    eventTypes: string[];
+  };
+} {
+  const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+  const state = {
+    messageRevokedAt: null as Date | null,
+    resolverRevokedAt: null as Date | null,
+    eventTypes: [] as string[],
+  };
+  const workspaceId = '11111111-1111-4111-8111-111111111111';
+  const db = {
+    transaction() {
+      return { execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db) };
+    },
+    getExecutor() {
+      return { executeQuery: async () => ({ rows: [] }) };
+    },
+    selectFrom(table: string) {
+      return new TrackingLifecycleSelect(table, {
+        workspaceId,
+        trackingMessageId,
+        tokenHash,
+        state,
+      });
+    },
+    updateTable(table: string) {
+      return new TrackingLifecycleUpdate(table, state);
+    },
+    insertInto(table: string) {
+      return new TrackingLifecycleInsert(table, state);
+    },
+    async destroy() {},
+  } as unknown as Kysely<ServerDatabase>;
+  return {
+    db,
+    state,
+  };
+}
+
+type TrackingLifecycleState = {
+  messageRevokedAt: Date | null;
+  resolverRevokedAt: Date | null;
+  eventTypes: string[];
+};
+
+class TrackingLifecycleSelect {
+  private readonly filters = new Map<string, unknown>();
+
+  constructor(
+    private readonly table: string,
+    private readonly fixture: {
+      workspaceId: string;
+      trackingMessageId: string;
+      tokenHash: string;
+      state: TrackingLifecycleState;
+    },
+  ) {}
+
+  select() { return this; }
+
+  where(column: string, operator: string, value: unknown) {
+    if (operator !== '=') throw new Error(`Unexpected tracking lifecycle select operator: ${operator}`);
+    this.filters.set(column, value);
+    return this;
+  }
+
+  async executeTakeFirst() {
+    if (this.table === 'email_tracking_messages') {
+      return this.filters.get('workspace_id') === this.fixture.workspaceId
+        && this.filters.get('message_id') === 17
+        ? { id: this.fixture.trackingMessageId }
+        : undefined;
+    }
+    if (this.table === 'email_tracking_token_resolver') {
+      return this.filters.get('token_hash') === this.fixture.tokenHash
+        ? {
+            workspace_id: this.fixture.workspaceId,
+            tracking_message_id: this.fixture.trackingMessageId,
+            link_id: null,
+            token_kind: 'open',
+            expires_at: new Date('2027-07-14T12:00:00.000Z'),
+            revoked_at: this.fixture.state.resolverRevokedAt,
+          }
+        : undefined;
+    }
+    throw new Error(`Unexpected tracking lifecycle select table: ${this.table}`);
+  }
+}
+
+class TrackingLifecycleUpdate {
+  private patch: Record<string, unknown> = {};
+
+  constructor(private readonly table: string, private readonly state: TrackingLifecycleState) {}
+
+  set(patch: Record<string, unknown>) {
+    this.patch = patch;
+    return this;
+  }
+
+  where() { return this; }
+
+  async execute() {
+    if (this.table === 'email_tracking_messages') {
+      this.state.messageRevokedAt = this.patch.revoked_at as Date;
+      return;
+    }
+    if (this.table === 'email_tracking_token_resolver') {
+      this.state.resolverRevokedAt = this.patch.revoked_at as Date;
+      return;
+    }
+    throw new Error(`Unexpected tracking lifecycle update table: ${this.table}`);
+  }
+}
+
+class TrackingLifecycleInsert {
+  private row: Record<string, unknown> = {};
+
+  constructor(private readonly table: string, private readonly state: TrackingLifecycleState) {}
+
+  values(row: Record<string, unknown>) {
+    this.row = row;
+    return this;
+  }
+
+  onConflict(callback: (builder: unknown) => unknown) {
+    const doNothing = () => ({});
+    callback({ columns: () => ({ doNothing }), column: () => ({ doNothing }) });
+    return this;
+  }
+
+  async execute() {
+    if (this.table !== 'email_tracking_events') {
+      throw new Error(`Unexpected tracking lifecycle insert table: ${this.table}`);
+    }
+    this.state.eventTypes.push(String(this.row.event_type));
+  }
+}

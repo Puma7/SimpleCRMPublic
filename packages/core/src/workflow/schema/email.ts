@@ -15,6 +15,10 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       { name: 'tracking.confidence', label: 'Aussagekraft', example: 'medium', type: 'string' },
       { name: 'tracking.open_count', label: 'Anzahl Pixelabrufe', example: '1', type: 'number' },
       { name: 'tracking.click_count', label: 'Anzahl Klicks', example: '0', type: 'number' },
+      { name: 'tracking.automated_open_count', label: 'Automatisierte Pixelabrufe', example: '0', type: 'number' },
+      { name: 'tracking.probable_open_count', label: 'Wahrscheinliche Öffnungen', example: '1', type: 'number' },
+      { name: 'tracking.automated_click_count', label: 'Automatisierte Klicks', example: '0', type: 'number' },
+      { name: 'tracking.probable_click_count', label: 'Wahrscheinliche Klicks', example: '1', type: 'number' },
       { name: 'tracking.last_opened_at', label: 'Zuletzt geöffnet', type: 'string' },
       { name: 'tracking.last_clicked_at', label: 'Zuletzt geklickt', type: 'string' },
       { name: 'tracking.replied', label: 'Antwort erhalten', type: 'boolean' },
@@ -24,7 +28,7 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       longHelp:
         'Liest die Evidenz zum aktuellen ausgehenden Mail-Datensatz neu aus der Datenbank. ' +
         'Der Knoten gehört nach eine Wartezeit, damit anschließende Bedingungen nicht mit dem Stand beim Versand arbeiten. ' +
-        'Pixelabrufe bleiben Wahrscheinlichkeits-Signale; tracking.replied ist die stärkste Interaktion.',
+        'Automatisierte und wahrscheinliche Abrufe/Klicks stehen getrennt bereit; tracking.replied ist die stärkste Interaktion.',
       prerequisites: [
         'Server-Edition mit aktivierter E-Mail-Nachverfolgung.',
         'Der Workflow benötigt eine aktuelle ausgehende Nachricht.',

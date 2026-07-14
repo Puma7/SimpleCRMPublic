@@ -1498,7 +1498,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({ success: z.literal(true), data: z.unknown() }),
   });
   set(IPCChannels.Email.EmailGdprExport, {
-    payload: z.object({ skipAttachments: z.boolean().optional() }).optional(),
+    payload: z.object({
+      skipAttachments: z.boolean().optional(),
+      includeSensitiveTracking: z.boolean().optional(),
+    }).optional(),
     result: z.object({}).passthrough(),
   });
 
