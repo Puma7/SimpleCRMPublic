@@ -1,8 +1,9 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-13 (Node 24 / pnpm 11 / TypeScript 7 modernization)
-**Integration branch:** `codex/typescript-7-modernization`
+**Last updated:** 2026-07-14 (system/mail/UX/security audit)
+**Integration branch:** `codex/system-mail-ux-security-audit`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
+**Current audit:** [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
 ---
 
@@ -20,7 +21,10 @@
 
 ## 2. Project
 
-**SimpleCRM** — Electron + React + TypeScript, SQLite (`better-sqlite3`), no cloud CRM backend.
+**SimpleCRM** ships two editions from the same monorepo:
+
+- Desktop: Electron + React + TypeScript with local SQLite (`better-sqlite3`).
+- Server: Fastify API + PostgreSQL + browser client, deployed through Docker Compose; see [`SETUP_SERVER.md`](SETUP_SERVER.md).
 
 | Environment | DB path (Linux) |
 |-------------|-----------------|
@@ -41,7 +45,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 
 ---
 
-## 4. Recent product fixes (on `main`)
+## 4. Recent product fixes and current branch
 
 | Area | Notes |
 |------|--------|
@@ -51,8 +55,9 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Sent folder | IMAP append for outbound (#75) |
 | Toolchain | Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
-| Native ABI | Cached Node 137 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
+| Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
+| System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers and login challenge handling hardened; see the current audit report |
 
 ---
 
@@ -80,6 +85,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Settings: Konto-Overrides UI (Prompts/Canned/KB) | ✅ siehe `BACKLOG.md` |
 | IMAP multi-folder sync | `EMAIL_ROADMAP.md` |
 | Embeddings RAG | `WORKFLOW_VISION.md` (vision, not all 🔲 = todo) |
+| Beta security and reliability blockers | [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md), section 4 |
 
 **Do not merge** stale branch `cursor/mail-category-dnd-and-ux-d125` (pre-main compose regressions).
 

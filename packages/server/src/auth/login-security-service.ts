@@ -20,6 +20,7 @@ import type {
 import type { PostgresSecretPort } from '../db/postgres-secret-port';
 import type { ServerDatabase } from '../db/schema';
 import {
+  CAPTCHA_CHALLENGE_TTL_MS,
   issueCaptchaChallenge,
   verifyCaptchaChallenge,
 } from '../security/captcha-challenge';
@@ -29,6 +30,7 @@ import {
   issueMfaChallengeToken,
   parseMfaChallengeToken,
 } from '../security/mfa-challenge';
+import { registerTokenAttempt } from '../security/token-attempt-store';
 import type { AccessTokenSigner } from '../security/access-token';
 import {
   buildTotpOtpAuthUri,
@@ -128,6 +130,8 @@ export function createLoginSecurityService(input: {
   now?: () => Date;
 }): LoginSecurityService {
   const now = input.now ?? (() => new Date());
+  const maxMfaCodeAttempts = 5;
+  const mfaChallengeTtlMs = 5 * 60 * 1000;
 
   return {
     async getWorkspaceSettings(workspaceId) {
@@ -190,12 +194,14 @@ export function createLoginSecurityService(input: {
 
     assertCaptchaChallenge({ challenge, ip }) {
       if (!challenge?.trim()) return false;
-      return verifyCaptchaChallenge({
-        token: challenge.trim(),
+      const token = challenge.trim();
+      const valid = verifyCaptchaChallenge({
+        token,
         signer: input.accessTokenSigner,
         ip,
         now: now(),
       });
+      return valid && consumeSingleUseToken(token, CAPTCHA_CHALLENGE_TTL_MS, now().getTime());
     },
 
     async assertLoginPin({ user, workspaceSettings, pin }) {
@@ -216,7 +222,7 @@ export function createLoginSecurityService(input: {
         Boolean(input.authInvitationSmtp),
       );
       if (!allowedMethods.includes(user.mfaMethod)) {
-        return { kind: 'complete' };
+        return { kind: 'mfa_delivery_failed' };
       }
       if (user.mfaMethod === 'email') {
         const sent = await sendEmailMfaCode({
@@ -256,6 +262,14 @@ export function createLoginSecurityService(input: {
       }
       if (user.disabledAt) {
         return { ok: false, code: 'user_disabled' };
+      }
+      if (!registerTokenAttempt(
+        mfaChallengeToken,
+        maxMfaCodeAttempts,
+        mfaChallengeTtlMs,
+        now().getTime(),
+      )) {
+        return { ok: false, code: 'mfa_attempts_exceeded' };
       }
 
       const verified = claims.method === 'totp'

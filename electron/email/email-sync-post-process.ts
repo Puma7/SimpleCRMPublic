@@ -61,11 +61,25 @@ export async function processNewMessagesAfterSync(
   const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine.js');
 
   const customerByEmail = buildCustomerEmailMap();
+  const failedPostProcessIds = new Set<number>();
 
   for (const item of merged) {
     try {
-      await persistParsedAttachments(item.localMsgId, item.parsedAttachments);
+      let parsedAttachments = item.parsedAttachments;
+      if (parsedAttachments === undefined) {
+        const row = getEmailMessageById(item.localMsgId);
+        if (row?.has_attachments) {
+          if (!row.raw_rfc822_b64) {
+            throw new Error('raw RFC822 unavailable for attachment recovery');
+          }
+          const { simpleParser } = await import('mailparser');
+          const parsed = await simpleParser(Buffer.from(row.raw_rfc822_b64, 'base64'));
+          parsedAttachments = parsed.attachments;
+        }
+      }
+      await persistParsedAttachments(item.localMsgId, parsedAttachments);
     } catch (e) {
+      failedPostProcessIds.add(item.localMsgId);
       console.warn(`[email] post-process attachments failed msg ${item.localMsgId}`, e);
     }
     try {
@@ -83,12 +97,14 @@ export async function processNewMessagesAfterSync(
         runCrossAccountThreadHeuristics(item.localMsgId);
       }
     } catch (e) {
+      failedPostProcessIds.add(item.localMsgId);
       console.warn(`[email] post-process threading/crm failed msg ${item.localMsgId}`, e);
     }
   }
 
   if (runInboundWorkflows) {
     for (const item of merged) {
+      if (failedPostProcessIds.has(item.localMsgId)) continue;
       try {
         const row = getEmailMessageById(item.localMsgId);
         if (!row) continue;
@@ -104,7 +120,9 @@ export async function processNewMessagesAfterSync(
     }
   } else {
     for (const item of merged) {
-      markMessagePostProcessDone(item.localMsgId);
+      if (!failedPostProcessIds.has(item.localMsgId)) {
+        markMessagePostProcessDone(item.localMsgId);
+      }
     }
   }
 }

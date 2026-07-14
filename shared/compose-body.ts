@@ -85,6 +85,28 @@ export function splitEditorAndSignature(html: string): {
   };
 }
 
+/** Split trusted zone markers before HTML sanitization removes comments. */
+export function splitAndSanitizeComposeHtml(
+  html: string,
+  sanitizeHtml: (value: string) => string,
+): ReturnType<typeof splitEditorAndSignature> {
+  const split = splitEditorAndSignature(html);
+  return {
+    editorHtml: sanitizeHtml(split.editorHtml),
+    signatureHtml: sanitizeHtml(split.signatureHtml),
+    quotedHtml: sanitizeHtml(split.quotedHtml),
+  };
+}
+
+/** Sanitize each compose zone without losing the comment markers needed on restore. */
+export function sanitizeComposeHtmlPreservingZones(
+  html: string,
+  sanitizeHtml: (value: string) => string,
+): string {
+  const split = splitAndSanitizeComposeHtml(html, sanitizeHtml);
+  return mergeEditorAndSignature(split.editorHtml, split.signatureHtml, split.quotedHtml);
+}
+
 export function mergeEditorAndSignature(
   editorHtml: string,
   signatureHtml: string,

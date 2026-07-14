@@ -449,8 +449,15 @@ export function saveAccountSignature(accountId: number, signatureHtml: string | 
     .run(accountId, trimmed);
 }
 
-function getTeamFallbackSignatureHtml(): string | null {
+function getTeamFallbackSignatureHtml(teamMemberId?: string | null): string | null {
   const rows = listEmailTeamMembers();
+  const selected = teamMemberId
+    ? rows.find((row) => row.id === teamMemberId)
+    : undefined;
+  if (selected?.signature_html?.trim()) return selected.signature_html.trim();
+  if (selected) {
+    return `<p>Mit freundlichen Grüßen<br/>${selected.display_name}</p>`;
+  }
   const withSig = rows.find((r) => r.signature_html?.trim());
   if (withSig?.signature_html) return withSig.signature_html.trim();
   if (rows.length > 0) {
@@ -463,8 +470,9 @@ function interpolateComposeSignatureHtml(
   html: string,
   account: EmailAccountRow,
   teamMembers: EmailTeamMemberRow[],
+  teamMemberId?: string | null,
 ): string {
-  const teamMember = teamMembers[0];
+  const teamMember = teamMembers.find((member) => member.id === teamMemberId) ?? teamMembers[0];
   return interpolateSignatureTemplate(
     html,
     buildSignatureTemplateContext({
@@ -476,7 +484,7 @@ function interpolateComposeSignatureHtml(
 }
 
 /** Compose footer for a specific mail account (per-account → team → account display name). */
-export function getComposeSignatureHtml(accountId: number): string | null {
+export function getComposeSignatureHtml(accountId: number, teamMemberId?: string | null): string | null {
   const acc = getEmailAccountById(accountId);
   if (!acc) return null;
   const row = getDb()
@@ -488,13 +496,13 @@ export function getComposeSignatureHtml(accountId: number): string | null {
   if (row?.signature_html?.trim()) {
     rawHtml = row.signature_html.trim();
   } else {
-    const teamFallback = getTeamFallbackSignatureHtml();
+    const teamFallback = getTeamFallbackSignatureHtml(teamMemberId);
     if (teamFallback) rawHtml = teamFallback;
     else rawHtml = `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
   }
   if (!rawHtml.includes('{{')) return rawHtml;
   const teamMembers = listEmailTeamMembers();
-  return interpolateComposeSignatureHtml(rawHtml, acc, teamMembers);
+  return interpolateComposeSignatureHtml(rawHtml, acc, teamMembers, teamMemberId);
 }
 
 /** @deprecated Use getComposeSignatureHtml(accountId) */

@@ -22,6 +22,7 @@ import {
 } from "@/services/transport"
 import { useMailWorkspace } from "../workspace-context"
 import type { AccountSignature } from "../types"
+import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 type Props = {
   /** When set, hides the account picker and edits this account only (Konten → Signatur tab). */
@@ -81,7 +82,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
             : String(list[0]!.account_id)
       const row = list.find((r) => String(r.account_id) === preferred) ?? list[0]!
       setSelectedId(preferred)
-      const sigHtml = row.signature_html ?? ""
+      const sigHtml = sanitizeEmailHtml(row.signature_html ?? "")
       setHtml(sigHtml)
       await refreshStatus(row.account_id, sigHtml)
     },
@@ -105,7 +106,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
   const onSelectAccount = (id: string) => {
     setSelectedId(id)
     const row = rows.find((r) => String(r.account_id) === id)
-    const sigHtml = row?.signature_html ?? ""
+    const sigHtml = sanitizeEmailHtml(row?.signature_html ?? "")
     setHtml(sigHtml)
     const accountId = parseInt(id, 10)
     if (Number.isFinite(accountId)) void refreshStatus(accountId, sigHtml)
@@ -177,7 +178,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
           <Label className="text-xs text-muted-foreground">Vorschau beim Verfassen</Label>
           <div
             className="rounded-md border bg-muted/30 px-3 py-2 text-sm [&_a]:text-primary"
-            dangerouslySetInnerHTML={{ __html: resolvedPreview }}
+            dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(resolvedPreview) }}
           />
         </div>
       ) : null}
@@ -188,11 +189,12 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
         onClick={async () => {
           const accountId = parseInt(effectiveId, 10)
           if (!Number.isFinite(accountId)) return
+          const safeHtml = sanitizeEmailHtml(html).trim()
           setSaving(true)
           try {
             await invokeRenderer(IPCChannels.Email.SaveAccountSignature, {
               accountId,
-              signatureHtml: html.trim() || null,
+              signatureHtml: safeHtml || null,
             })
             const verify = (await invokeRenderer(IPCChannels.Email.GetComposeSignature, {
               accountId,
@@ -200,7 +202,7 @@ export function AccountSignaturesSection({ embeddedAccountId }: Props) {
             toast.success("Konto-Signatur gespeichert")
             bumpAccountsRevision()
             await load(effectiveId)
-            if (html.trim() && !verify.html?.includes(html.trim().slice(0, 20))) {
+            if (safeHtml && !verify.html?.includes(safeHtml.slice(0, 20))) {
               toast.message("Hinweis: Beim Verfassen kann die Team-Signatur greifen, wenn die Konto-Signatur leer bleibt.")
             }
           } catch (e) {

@@ -4,6 +4,7 @@ import type { AccessTokenSigner } from './access-token';
 
 const CAPTCHA_CHALLENGE_TYPE = 'simplecrm-captcha-challenge-v1';
 const DEFAULT_TTL_SECONDS = 10 * 60;
+export const CAPTCHA_CHALLENGE_TTL_MS = DEFAULT_TTL_SECONDS * 1000;
 
 export type CaptchaChallengeClaims = Readonly<{
   typ: typeof CAPTCHA_CHALLENGE_TYPE;

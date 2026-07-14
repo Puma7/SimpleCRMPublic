@@ -2733,6 +2733,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Email.GetComposeSignature, ([payload]) => {
     const input = objectPayload(payload, "email compose signature payload")
     const accountId = positiveId(input.accountId, "email account id")
+    const teamMemberId = optionalStringPayloadField(input.teamMemberId, "email team member id", 200)
     return {
       method: "GET",
       path: "/api/v1/email/account-signatures",
@@ -2754,11 +2755,14 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
             query: { limit: DEFAULT_LIST_LIMIT },
           })
           teamMembers = listItems<EmailTeamMemberRecord>(teamBody)
-          const withTeamSig = teamMembers.find((member) => member.signatureHtml?.trim())
-          if (withTeamSig?.signatureHtml) {
-            rawHtml = withTeamSig.signatureHtml.trim()
-          } else if (teamMembers.length > 0 && teamMembers[0]?.displayName?.trim()) {
-            rawHtml = `<p>Mit freundlichen Grüßen<br/>${teamMembers[0]!.displayName}</p>`
+          const selectedTeamMember = teamMembers.find((member) => member.id === teamMemberId)
+          const fallbackTeamMember = selectedTeamMember
+            ?? teamMembers.find((member) => member.signatureHtml?.trim())
+            ?? teamMembers[0]
+          if (fallbackTeamMember?.signatureHtml?.trim()) {
+            rawHtml = fallbackTeamMember.signatureHtml.trim()
+          } else if (fallbackTeamMember?.displayName?.trim()) {
+            rawHtml = `<p>Mit freundlichen Grüßen<br/>${fallbackTeamMember.displayName}</p>`
           }
         }
         const accountsBody = await context.fetchJson({
@@ -2786,7 +2790,10 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           buildSignatureTemplateContext({
             accountDisplayName: account?.display_name ?? null,
             accountEmail: account?.email_address ?? null,
-            teamMemberDisplayName: teamMembers[0]?.displayName ?? null,
+            teamMemberDisplayName:
+              teamMembers.find((member) => member.id === teamMemberId)?.displayName
+              ?? teamMembers[0]?.displayName
+              ?? null,
           }),
         )
         return { html: interpolated }

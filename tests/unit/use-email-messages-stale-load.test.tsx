@@ -41,8 +41,10 @@ jest.mock('@/components/email/workspace-context', () => ({
 describe('useEmailMessages — stale/racing list load', () => {
   beforeEach(() => {
     mockInvokeRenderer.mockReset();
+    (mockWorkspace.setSelectedMessage as jest.Mock).mockReset();
     listDeferreds.clear();
     mockWorkspace.selectedAccountId = 1;
+    mockWorkspace.selectedMessage = null;
     // Every ListMessagesByView call returns a promise the test resolves later,
     // keyed by the account id in the payload.
     mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {
@@ -121,5 +123,100 @@ describe('useEmailMessages — stale/racing list load', () => {
     });
 
     expect(result.current.messages).toEqual([]);
+  });
+
+  test('a late detail response cannot replace the message selected afterwards', async () => {
+    const detailResolvers = new Map<number, (value: unknown) => void>();
+    mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {
+      if (channel === IPCChannels.Email.ListMessagesByView) {
+        return new Promise((resolve) => {
+          listDeferreds.set(payload.accountId as number, resolve);
+        });
+      }
+      if (channel === IPCChannels.Email.GetMessage) {
+        return new Promise((resolve) => {
+          detailResolvers.set(Number(payload), resolve);
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const { result } = renderHook(() => useEmailMessages());
+    await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+
+    const rows = [
+      { id: 1, uid: -1, seen_local: 1 },
+      { id: 2, uid: -2, seen_local: 1 },
+    ] as any[];
+    await act(async () => {
+      listDeferreds.get(1)!(rows);
+    });
+
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = result.current.openMessage(rows[0]);
+      second = result.current.openMessage(rows[1]);
+    });
+    await waitFor(() => expect(detailResolvers.size).toBe(2));
+
+    await act(async () => {
+      detailResolvers.get(2)!({ ...rows[1], body_text: 'zweite Nachricht' });
+      await second;
+    });
+    await act(async () => {
+      detailResolvers.get(1)!({ ...rows[0], body_text: 'veraltete erste Nachricht' });
+      await first;
+    });
+
+    const selections = (mockWorkspace.setSelectedMessage as jest.Mock).mock.calls
+      .map(([value]) => value)
+      .filter((value) => value && typeof value === 'object');
+    expect(selections.at(-1)).toMatchObject({ id: 2, body_text: 'zweite Nachricht' });
+  });
+
+  test('a late refresh cannot restore the message that was open before a new selection', async () => {
+    const detailResolvers = new Map<number, (value: unknown) => void>();
+    mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {
+      if (channel === IPCChannels.Email.ListMessagesByView) {
+        return new Promise((resolve) => {
+          listDeferreds.set(payload.accountId as number, resolve);
+        });
+      }
+      if (channel === IPCChannels.Email.GetMessage) {
+        return new Promise((resolve) => {
+          detailResolvers.set(Number(payload), resolve);
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const first = { id: 1, uid: -1, seen_local: 1 } as any;
+    const second = { id: 2, uid: -2, seen_local: 1 } as any;
+    mockWorkspace.selectedMessage = first;
+    const { result } = renderHook(() => useEmailMessages());
+    await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+
+    let refresh!: Promise<void>;
+    let open!: Promise<void>;
+    act(() => {
+      refresh = result.current.refreshCurrentMessage();
+      open = result.current.openMessage(second);
+    });
+    await waitFor(() => expect(detailResolvers.size).toBe(2));
+
+    await act(async () => {
+      detailResolvers.get(2)!({ ...second, body_text: 'aktuelle Nachricht' });
+      await open;
+    });
+    await act(async () => {
+      detailResolvers.get(1)!({ ...first, body_text: 'veralteter Refresh' });
+      await refresh;
+    });
+
+    const selections = (mockWorkspace.setSelectedMessage as jest.Mock).mock.calls
+      .map(([value]) => value)
+      .filter((value) => value && typeof value === 'object');
+    expect(selections.at(-1)).toMatchObject({ id: 2, body_text: 'aktuelle Nachricht' });
   });
 });

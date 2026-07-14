@@ -73,6 +73,25 @@ describe('email account signatures', () => {
     expect(getComposeSignatureHtml(account.id)).toBe('<p>Team HTML</p>');
   });
 
+  it('getComposeSignatureHtml uses the explicitly selected team member', () => {
+    teamMembers = [
+      { id: 'team-1', display_name: 'Anna', role: '', signature_html: '<p>Anna SIG</p>' },
+      { id: 'team-2', display_name: 'Ben', role: '', signature_html: '<p>Ben SIG</p>' },
+    ];
+    expect(getComposeSignatureHtml(account.id, 'team-2')).toBe('<p>Ben SIG</p>');
+  });
+
+  it('interpolates an account template with the selected team member', () => {
+    perAccountSignature = '<p>{{user.name}} / {{user.email}}</p>';
+    teamMembers = [
+      { id: 'team-1', display_name: 'Anna', role: '', signature_html: null },
+      { id: 'team-2', display_name: 'Ben', role: '', signature_html: null },
+    ];
+    expect(getComposeSignatureHtml(account.id, 'team-2')).toBe(
+      '<p>Ben / nord@example.com</p>',
+    );
+  });
+
   it('getComposeSignatureHtml falls back to account display name when team is empty', () => {
     teamMembers = [];
     expect(getComposeSignatureHtml(account.id)).toContain('Shop Nord');

@@ -42,7 +42,6 @@ import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
-import { AccountMailSettingsPanel } from "./settings/account-mail-settings-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -70,12 +69,6 @@ const TAB_DEFS: TabDef[] = [
     render: () => <OAuthAppsPanel />,
   },
   { id: "ai", label: "KI", icon: BrainCircuit, render: () => <AiPanel /> },
-  {
-    id: "accountMail",
-    label: "Konto-Details",
-    icon: AtSign,
-    render: () => <AccountMailSettingsPanel />,
-  },
   {
     id: "knowledge",
     label: "Wissensbasis",
@@ -132,7 +125,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "oauthApps"] },
   {
     label: "KI & Automation",
-    tabIds: ["ai", "accountMail", "knowledge", "mailSecurity", "automation", "prompts"],
+    tabIds: ["ai", "knowledge", "mailSecurity", "automation", "prompts"],
   },
   { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics", "snooze"] },

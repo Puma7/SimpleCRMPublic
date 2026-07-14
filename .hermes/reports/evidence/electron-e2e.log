@@ -1,0 +1,115 @@
+$ node scripts/run-with-electron-native.mjs test:e2e:runtime
+Selected Electron 43.1.0 ABI 148 native modules.
+
+> simplecrm@0.1.7 test:e2e:runtime
+> pnpm run build && playwright test -c tests/e2e/playwright.electron.config.ts
+
+$ npm run build:packages && npm run build:web && npm run build:electron:main
+
+> simplecrm@0.1.7 build:packages
+> tsc -b packages/core packages/server packages/desktop
+
+
+> simplecrm@0.1.7 build:web
+> tsc && vite build
+
+vite v8.1.4 building client environment for production...
+
+transforming...✓ 5668 modules transformed.
+rendering chunks...
+dist/index.html                                    0.58 kB
+dist/assets/codicon-ngg6Pgfi.ttf                 121.97 kB
+dist/assets/editor.worker-B9tos8Rw.js            280.07 kB
+dist/assets/json.worker-ulnR8HPd.js              409.34 kB
+dist/assets/editor-DOgAgpTS.css                  146.06 kB
+dist/assets/main-DM7CoRYk.css                    181.78 kB
+dist/assets/rolldown-runtime-QTnfLwEv.js           0.69 kB
+dist/assets/monaco-curated-BVFDSGTa.js             3.29 kB
+dist/assets/python-Cj1G85J6.js                     3.45 kB
+dist/assets/markdown-Cimd5fb3.js                   3.63 kB
+dist/assets/javascript-Bdyr6ZMe.js                 5.26 kB
+dist/assets/dist-BKYBIs7u.js                      14.21 kB
+dist/assets/jsonMode-CcCT5e4Y.js                  41.31 kB
+dist/assets/channel-http-registry-zr6kfh3F.js    121.35 kB
+dist/assets/main-pPOVvEFI.js                   2,444.03 kB
+dist/assets/editor.api2-Bcc9nfRd.js            3,626.94 kB
+
+[INEFFECTIVE_DYNAMIC_IMPORT] shared/email-recipient-parse.ts is dynamically imported by src/components/email/compose-dialog.tsx but also statically imported by shared/email-reply-addresses.ts, src/components/email/compose-dialog.tsx, src/components/email/message-addresses-block.tsx, dynamic import will not move module into another chunk.
+
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.09s
+vite v8.1.4 building client environment for production...
+
+transforming...✓ 3 modules transformed.
+rendering chunks...
+computing gzip size...
+dist-electron/main.js  12.30 kB │ gzip: 4.59 kB
+
+✓ built in 19ms
+vite v8.1.4 building client environment for production...
+
+transforming...✓ 4 modules transformed.
+rendering chunks...
+computing gzip size...
+dist-electron/electron/preload.js  17.08 kB │ gzip: 4.79 kB
+
+✓ built in 15ms
+> simplecrm@0.1.7 build:electron:main
+> tsc -p tsconfig.electron.json
+
+
+Running 46 tests using 1 worker
+
+  ok  1 tests\e2e\app-flows.spec.ts:16:5 › loads dashboard and top-level navigation (21ms)
+  ok  2 tests\e2e\app-flows.spec.ts:27:5 › customers flow: opens add dialog (326ms)
+  ok  3 tests\e2e\app-flows.spec.ts:36:5 › deals flow: opens create dialog (492ms)
+  ok  4 tests\e2e\app-flows.spec.ts:44:5 › tasks flow: opens add dialog and calendar toggle behavior (527ms)
+  ok  5 tests\e2e\app-flows.spec.ts:58:5 › calendar flow: opens event create modal (501ms)
+  ok  6 tests\e2e\app-flows.spec.ts:67:5 › products and settings pages render key controls (176ms)
+  ok  7 tests\e2e\crud-workflows.spec.ts:27:7 › CRUD workflows — customers and deals › create a new customer via the add dialog (519ms)
+  ok  8 tests\e2e\crud-workflows.spec.ts:53:7 › CRUD workflows — customers and deals › customer detail page shows the saved data (65ms)
+  ok  9 tests\e2e\crud-workflows.spec.ts:68:7 › CRUD workflows — customers and deals › create a new deal and link it to the test customer (1.6s)
+  ok 10 tests\e2e\crud-workflows.spec.ts:106:7 › CRUD workflows — customers and deals › deal detail page shows name and linked customer (78ms)
+  ok 11 tests\e2e\crud-workflows.spec.ts:119:7 › CRUD workflows — customers and deals › delete the deal from its detail page (331ms)
+  ok 12 tests\e2e\crud-workflows.spec.ts:142:7 › CRUD workflows — customers and deals › delete the test customer via checkbox selection (739ms)
+  ok 13 tests\e2e\edit-flows.spec.ts:26:7 › Customer and Deal edit flows › create a customer for edit tests (602ms)
+  ok 14 tests\e2e\edit-flows.spec.ts:44:7 › Customer and Deal edit flows › edit the customer company from the detail page (595ms)
+  ok 15 tests\e2e\edit-flows.spec.ts:72:7 › Customer and Deal edit flows › create a deal linked to the test customer (1.5s)
+  ok 16 tests\e2e\edit-flows.spec.ts:98:7 › Customer and Deal edit flows › edit the deal name from the detail page (423ms)
+  ok 17 tests\e2e\edit-flows.spec.ts:124:7 › Customer and Deal edit flows › delete the test deal (292ms)
+  ok 18 tests\e2e\edit-flows.spec.ts:134:7 › Customer and Deal edit flows › delete the test customer (929ms)
+  ok 19 tests\e2e\followup-calendar-customfields.spec.ts:27:7 › Nachverfolgung, Calendar, and Custom Fields › Nachverfolgung page renders with correct heading (64ms)
+  ok 20 tests\e2e\followup-calendar-customfields.spec.ts:38:7 › Nachverfolgung, Calendar, and Custom Fields › create a calendar event via the add button (378ms)
+  ok 21 tests\e2e\followup-calendar-customfields.spec.ts:61:7 › Nachverfolgung, Calendar, and Custom Fields › delete the calendar event from its detail panel (350ms)
+  ok 22 tests\e2e\followup-calendar-customfields.spec.ts:83:7 › Nachverfolgung, Calendar, and Custom Fields › navigate to Custom Fields via the Settings tab (185ms)
+  ok 23 tests\e2e\followup-calendar-customfields.spec.ts:93:7 › Nachverfolgung, Calendar, and Custom Fields › create a custom field (586ms)
+  ok 24 tests\e2e\followup-calendar-customfields.spec.ts:119:7 › Nachverfolgung, Calendar, and Custom Fields › edit the custom field label (587ms)
+  ok 25 tests\e2e\followup-calendar-customfields.spec.ts:145:7 › Nachverfolgung, Calendar, and Custom Fields › delete the custom field via the delete button (125ms)
+  ok 26 tests\e2e\remaining-flows.spec.ts:31:7 › Nachverfolgung — log-activity dialog › create a customer and a task due today for the followup queue (2.0s)
+  ok 27 tests\e2e\remaining-flows.spec.ts:64:7 › Nachverfolgung — log-activity dialog › task appears in the Nachverfolgung "Heute" queue (48ms)
+  ok 28 tests\e2e\remaining-flows.spec.ts:72:7 › Nachverfolgung — log-activity dialog › select the item and open the log-activity dialog via "Notiz" (546ms)
+  ok 29 tests\e2e\remaining-flows.spec.ts:88:7 › Nachverfolgung — log-activity dialog › cleanup: delete the followup task customer (921ms)
+  ok 30 tests\e2e\remaining-flows.spec.ts:113:7 › Deal Kanban — stage change via dropdown › create a customer and deal for the kanban test (2.1s)
+  ok 31 tests\e2e\remaining-flows.spec.ts:142:7 › Deal Kanban — stage change via dropdown › switch to Kanban view and change deal stage via the card dropdown (303ms)
+  ok 32 tests\e2e\remaining-flows.spec.ts:167:7 › Deal Kanban — stage change via dropdown › cleanup: delete the kanban deal and customer (1.3s)
+  ok 33 tests\e2e\remaining-flows.spec.ts:202:7 › Calendar — event create, edit, delete › create a calendar event (427ms)
+  ok 34 tests\e2e\remaining-flows.spec.ts:215:7 › Calendar — event create, edit, delete › open the event detail and edit the title (598ms)
+  ok 35 tests\e2e\remaining-flows.spec.ts:238:7 › Calendar — event create, edit, delete › delete the edited calendar event (292ms)
+  ok 36 tests\e2e\remaining-flows.spec.ts:262:7 › Settings — MSSQL connection test feedback › clicking "Verbindung testen" shows a failure toast when no server is configured (176ms)
+  ok 37 tests\e2e\tasks-products.spec.ts:27:7 › Tasks — CRUD › create a customer for task linking (583ms)
+  ok 38 tests\e2e\tasks-products.spec.ts:43:7 › Tasks — CRUD › create a new task linked to the test customer (1.5s)
+  ok 39 tests\e2e\tasks-products.spec.ts:73:7 › Tasks — CRUD › mark the task as complete via checkbox (46ms)
+  ok 40 tests\e2e\tasks-products.spec.ts:88:7 › Tasks — CRUD › cleanup: delete the test customer (933ms)
+  ok 41 tests\e2e\tasks-products.spec.ts:117:7 › Products — CRUD › create a new product (383ms)
+  ok 42 tests\e2e\tasks-products.spec.ts:138:7 › Products — CRUD › edit the product name via dropdown menu (515ms)
+  ok 43 tests\e2e\tasks-products.spec.ts:163:7 › Products — CRUD › delete the product via dropdown menu (458ms)
+  ok 44 tests\e2e\workflow-parity-manual.spec.ts:42:7 › Workflow GUI smoke (manual parity) › opens workflow editor after isolated setup (196ms)
+  ok 45 tests\e2e\workflow-parity-manual.spec.ts:47:7 › Workflow GUI smoke (manual parity) › workflow node palette contains parity nodes (545ms)
+  ok 46 tests\e2e\workflow-parity-manual.spec.ts:71:7 › Workflow GUI smoke (manual parity) › workflow templates dialog lists key templates (239ms)
+
+  46 passed (1.4m)
+Selected Node ABI 141 native modules.

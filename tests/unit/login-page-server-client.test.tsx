@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import LoginPage from '@/app/login/page';
+import { CAPTCHA_CHALLENGE_STORAGE_KEY } from '@/components/auth/login-captcha-gate';
 import {
   configureRendererTransport,
   createHttpRendererTransport,
@@ -299,6 +300,44 @@ describe('LoginPage server-client mode', () => {
     render(<LoginPage />);
 
     expect(await screen.findByLabelText('E-Mail')).toHaveValue('owner@example.com');
+  });
+
+  test('requires a fresh CAPTCHA after a failed credential attempt', async () => {
+    window.sessionStorage.setItem(CAPTCHA_CHALLENGE_STORAGE_KEY, 'solved-once');
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({
+          data: {
+            captcha: { enabled: true, provider: 'turnstile', siteKey: 'site-key' },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          },
+        }));
+      }
+      if (String(url).includes('/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          error: { code: 'invalid_credentials', message: 'Ungueltige Zugangsdaten' },
+        }, 401));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'owner@example.com' },
+    });
+    fireEvent.change(await screen.findByLabelText('Passwort'), {
+      target: { value: 'wrong-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
+
+    expect(await screen.findByText('Zugang pruefen')).toBeInTheDocument();
+    expect(window.sessionStorage.getItem(CAPTCHA_CHALLENGE_STORAGE_KEY)).toBeNull();
   });
 });
 

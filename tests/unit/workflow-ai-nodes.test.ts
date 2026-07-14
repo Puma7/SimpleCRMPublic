@@ -257,13 +257,15 @@ describe('ai.agent — Wissensbasis-Auswahl und Entwurf', () => {
     expect(r.variables?.['ai.agent.sources']).toBe('FAQ Retouren');
   });
 
-  test('createDraft (Standard) → Antwort-Entwurf mit Re:-Betreff + draft.id', async () => {
+  test('createDraft (Standard) → adressierter Antwort-Entwurf mit Thread-Bezug + draft.id', async () => {
     const r = await node.execute(ctx(), {}, 'a');
     expect(createComposeDraft).toHaveBeenCalledWith({
       accountId: 1,
       subject: 'Re: Frage zu Bestellung 1234',
       bodyText: 'Agent-Antwort',
+      toJson: expect.stringContaining('kunde@firma.de'),
     });
+    expect(updateComposeDraft).toHaveBeenCalledWith(42, { replyParentMessageId: 7 });
     expect(r.variables?.['draft.id']).toBe(42);
   });
 

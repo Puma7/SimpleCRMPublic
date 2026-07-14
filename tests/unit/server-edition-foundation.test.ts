@@ -101,6 +101,7 @@ import {
   assertValidJobType,
   auditRetentionDeletionIds,
   auditRetentionRowsByIds,
+  autoSubmittedDraftKey,
   bearerTokenFromAuthorizationHeader,
   buildServerAttachmentStoragePath,
   buildAuditRetentionPlan,
@@ -3846,6 +3847,7 @@ describe('server edition foundation', () => {
         cc_json: null,
         snippet: 'Wie funktioniert die Retoure?',
         body_text: 'Bitte erklaere die Retoure.',
+        raw_headers: 'From: Max <max@example.com>\r\nReply-To: "max@example.com" <retoure@example.com>',
         has_attachments: false,
         attachments_json: null,
       }],
@@ -3975,6 +3977,8 @@ describe('server edition foundation', () => {
       folder_kind: 'draft',
       subject: 'Re: Retoure',
       body_text: 'Antwort aus Agent',
+      to_json: { value: [{ address: 'retoure@example.com' }] },
+      reply_parent_message_id: 14,
     }));
     expect((rows.jobs[1]?.payload as any).context.eventVariables).toMatchObject({
       'ai.agent.response': 'Antwort aus Agent',
@@ -3991,7 +3995,12 @@ describe('server edition foundation', () => {
         source_sqlite_id: 600,
         account_id: 7,
         subject: 'Wo bleibt mein Paket',
-        from_json: { value: [{ address: 'kunde@example.com' }] },
+        from_json: {
+          value: [
+            { address: 'kunde@example.com' },
+            { address: 'unerwartet@example.com' },
+          ],
+        },
         to_json: { value: [{ address: 'support@example.com' }] },
         cc_json: null,
         snippet: 'Wo bleibt mein Paket?',
@@ -4017,6 +4026,18 @@ describe('server edition foundation', () => {
         created_at: now,
         updated_at: now,
       }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 7,
+      }],
+      folders: [{
+        id: 70,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 700,
+        account_id: 7,
+        path: 'INBOX',
+      }],
       cannedResponses: [
         { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Versandstatus', body: 'Status zu {{subject}}: unterwegs.', sort_order: 0 },
         { id: 102, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1020, title: 'Retoure', body: 'Retoure-Infos.', sort_order: 1 },
@@ -4039,7 +4060,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       messageId: 60,
       profileId: 21,
-      createDraft: false,
+      createDraft: true,
       continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'message.id': 60 } },
     });
 
@@ -4054,6 +4075,11 @@ describe('server edition foundation', () => {
       'ai.canned.title': 'Versandstatus',
       'ai.canned.text': 'Status zu Wo bleibt mein Paket: unterwegs.',
     });
+    expect(rows.messages).toContainEqual(expect.objectContaining({
+      folder_kind: 'draft',
+      to_json: { value: [{ address: 'kunde@example.com' }] },
+      reply_parent_message_id: 60,
+    }));
   });
 
   test('postgres AI review port resumes on OK and blocks outbound on BLOCK', async () => {
@@ -10520,6 +10546,7 @@ describe('server edition foundation', () => {
     const [iso, hash] = String(approval!.value).split('|');
     expect(iso).toBe(now.toISOString());
     expect(hash).toMatch(/^[0-9a-f]{32}$/);
+    expect(rows.syncInfo.find((row) => row.key === autoSubmittedDraftKey(91))?.value).toBe('1');
     // (c) Step message reflects the auto-send branch.
     expect(rows.steps.map((s) => [s.node_type, s.port, s.message])).toEqual([
       ['email.send_draft', 'default', 'send_draft_queued_auto'],
@@ -19255,7 +19282,10 @@ describe('server edition foundation', () => {
     expect(updated.status).toBe(200);
     expect(syncWrites).toEqual([{
       workspaceId: WORKSPACE_A_ID,
-      values: { 'compose_mark_parent_done:44': '1' },
+      values: {
+        [autoSubmittedDraftKey(44)]: null,
+        'compose_mark_parent_done:44': '1',
+      },
     }]);
 
     const sent = await api.handle({
@@ -20800,6 +20830,7 @@ describe('server edition foundation', () => {
     const pgpPrepareCalls: unknown[] = [];
     const pgpPrepareAttachmentCalls: unknown[] = [];
     const syncInfo = new Map<string, string | null>();
+    syncInfo.set(autoSubmittedDraftKey(44), '1');
     let locked = false;
     const attachmentRoot = mkdtempSync(join(tmpdir(), 'server-compose-attach-'));
     const attachmentPath = join(attachmentRoot, 'invoice.pdf');
@@ -20969,6 +21000,7 @@ describe('server edition foundation', () => {
     expect(rfc822).toContain('In-Reply-To: <parent@example.com>');
     expect(rfc822).toContain('References: <root@example.com> <parent@example.com>');
     expect(rfc822).toContain('Disposition-Notification-To: Support <agent@example.com>');
+    expect(rfc822).toContain('Auto-Submitted: auto-replied');
     expect(rfc822).toContain('Content-Type: multipart/alternative;');
 
     expect(updates).toEqual([
@@ -21001,7 +21033,7 @@ describe('server edition foundation', () => {
       }],
       ['deleteSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
-        keys: ['email_compose_smtp_ok:44'],
+        keys: ['email_compose_smtp_ok:44', autoSubmittedDraftKey(44)],
       }],
       ['setSyncInfo', {
         workspaceId: WORKSPACE_A_ID,
@@ -21038,6 +21070,7 @@ describe('server edition foundation', () => {
       accountId: 7,
     });
     const attachmentRfc822 = (smtpSends[0] as { rfc822: string }).rfc822;
+    expect(attachmentRfc822).not.toContain('Auto-Submitted: auto-replied');
     expect(attachmentRfc822).toContain('Content-Type: multipart/mixed;');
     expect(attachmentRfc822).toContain('Content-Disposition: attachment');
     expect(attachmentRfc822).toContain('invoice.pdf');

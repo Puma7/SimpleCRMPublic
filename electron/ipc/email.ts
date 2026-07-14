@@ -1900,8 +1900,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.GetComposeSignature,
-      async (_event: IpcMainInvokeEvent, payload: { accountId: number }) => {
-        return { html: getComposeSignatureHtml(payload.accountId) };
+      async (_event: IpcMainInvokeEvent, payload: { accountId: number; teamMemberId?: string }) => {
+        return { html: getComposeSignatureHtml(payload.accountId, payload.teamMemberId) };
       },
       { logger },
     ),

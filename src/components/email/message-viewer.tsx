@@ -101,6 +101,7 @@ import {
 } from "@/services/transport"
 import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
+import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
 
 type Props = {
   accounts: EmailAccount[]
@@ -481,6 +482,11 @@ export function MessageViewer(props: Props) {
 
   const openServerAttachment = async (att: MessageAttachment) => {
     const blob = await fetchServerAttachmentBlob(att)
+    if (!isSafeAttachmentMimeTypeForInlineOpen(blob.type || att.content_type)) {
+      downloadBlob(blob, att.filename_display || `attachment-${att.id}`)
+      toast.info("Dieser Dateityp wird aus Sicherheitsgründen heruntergeladen statt im Browser geöffnet.")
+      return
+    }
     const objectUrl = URL.createObjectURL(blob)
     const opened = window.open(objectUrl, "_blank")
     if (!opened) {

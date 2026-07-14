@@ -1,0 +1,19 @@
+$ npm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs
+
+> simplecrm@0.1.7 test:ui:coverage
+> jest --config jest.ui.config.cjs
+
+
+=============================== Coverage summary ===============================
+Statements   : 13.47% ( 3473/25776 )
+Branches     : 59.96% ( 388/647 )
+Functions    : 26.96% ( 72/267 )
+Lines        : 13.47% ( 3473/25776 )
+================================================================================
+
+Test Suites: 219 passed, 219 total
+Tests:       1845 passed, 1845 total
+Snapshots:   1 passed, 1 total
+Time:        21.686 s
+Ran all test suites.
+Email UI coverage meets baseline: { statements: 13.47, branches: 59.96, functions: 26.96, lines: 13.47 }

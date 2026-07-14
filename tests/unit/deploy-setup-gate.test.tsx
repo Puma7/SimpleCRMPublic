@@ -26,6 +26,8 @@ describe('DeploySetupGate', () => {
 
     expect(await screen.findByText('Betriebsmodus auswaehlen')).toBeInTheDocument();
     expect(screen.getByText('Ausgewaehlt: Server verbinden')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /^Lokal/ })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: /^Server installieren/ })).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Server-URL'), {
       target: { value: 'https://crm.example.com/' },

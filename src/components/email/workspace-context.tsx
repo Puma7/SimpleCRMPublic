@@ -214,8 +214,8 @@ const VALID_MAIL_VIEWS: MailView[] = [
 ]
 const VALID_MESSAGE_DONE_FILTERS: MessageDoneFilter[] = ["all", "open", "done"]
 
-function normalizeSettingsTab(raw: string): SettingsTab | null {
-  if (raw === "smtp" || raw === "oauth") return "accounts"
+export function normalizeSettingsTab(raw: string): SettingsTab | null {
+  if (raw === "smtp" || raw === "oauth" || raw === "accountMail") return "accounts"
   if (VALID_SETTINGS_TAB_IDS.includes(raw as SettingsTab)) return raw as SettingsTab
   return null
 }
@@ -230,11 +230,14 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "automation",
   "team",
   "appUsers",
+  "authSecurity",
   "userGroups",
   "canned",
   "prompts",
   "export",
   "diagnostics",
+  "pgp",
+  "auditLog",
   "threadTools",
   "snooze",
   "misc",
