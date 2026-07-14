@@ -176,7 +176,9 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
 
   const ordered = [...events].sort((left, right) => left.occurredAt.localeCompare(right.occurredAt));
   for (const event of ordered) {
-    confidence = higherConfidence(confidence, event.confidence);
+    if (event.type !== 'revoked' && event.type !== 'expired') {
+      confidence = higherConfidence(confidence, event.confidence);
+    }
     if (event.type === 'queued') transport = 'queued';
     if (event.type === 'sending') transport = 'sending';
     if (event.type === 'smtp_accepted') transport = 'smtp_accepted';
@@ -235,12 +237,18 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
 export function detectInboundEmailEvidence(input: {
   rawHeaders?: string | null;
   bodyText?: string | null;
+  reportFields?: string | null;
   embeddedMessageHeaders?: string | null;
   inReplyTo?: string | null;
   referencesHeader?: string | null;
 }): readonly InboundEmailEvidence[] {
   const headers = parseRfcFields(input.rawHeaders, 64 * 1024);
-  const reportFields = parseRfcFields(input.bodyText, 512 * 1024);
+  const reportFields = parseRfcFields(
+    [input.reportFields, input.bodyText]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join('\r\n'),
+    512 * 1024,
+  );
   const embeddedFields = parseRfcFields(input.embeddedMessageHeaders, 64 * 1024);
   const contentType = firstField(headers, 'content-type').toLowerCase();
   const originalMessageId = normalizeMessageId(firstField(reportFields, 'original-message-id'))

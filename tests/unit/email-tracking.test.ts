@@ -124,6 +124,16 @@ describe('email evidence tracking core', () => {
     });
   });
 
+  test('does not promote evidence confidence for administrative lifecycle events', () => {
+    expect(buildEmailEvidenceSummary([
+      event('smtp_accepted', 'low', '2026-07-13T08:00:00.000Z'),
+      event('revoked', 'verified', '2026-07-13T08:05:00.000Z'),
+    ])).toMatchObject({
+      transport: 'smtp_accepted',
+      confidence: 'low',
+    });
+  });
+
   test('detects structured delivery failures without retaining recipient details', () => {
     const evidence = detectInboundEmailEvidence({
       rawHeaders: [
@@ -205,6 +215,37 @@ describe('email evidence tracking core', () => {
       suppressAutomation: true,
       metadata: { disposition: 'displayed' },
     }]);
+  });
+
+  test('detects displayed MDNs from the machine-readable report attachment', () => {
+    expect(detectInboundEmailEvidence({
+      rawHeaders: 'Content-Type: multipart/report; report-type=disposition-notification',
+      bodyText: 'Your message was displayed.',
+      reportFields: [
+        'Original-Message-ID: <reminder-report@crm.example>',
+        'Disposition: manual-action/MDN-sent-manually; displayed',
+      ].join('\r\n'),
+      inReplyTo: null,
+      referencesHeader: null,
+    })).toEqual([expect.objectContaining({
+      type: 'mdn_displayed',
+      originalMessageId: '<reminder-report@crm.example>',
+      source: 'mdn',
+    })]);
+  });
+
+  test('combines machine-readable report fields with fallback body fields', () => {
+    expect(detectInboundEmailEvidence({
+      rawHeaders: 'Content-Type: multipart/report; report-type=disposition-notification',
+      bodyText: 'Original-Message-ID: <reminder-split@crm.example>',
+      reportFields: 'Disposition: manual-action/MDN-sent-manually; displayed',
+      inReplyTo: null,
+      referencesHeader: null,
+    })).toEqual([expect.objectContaining({
+      type: 'mdn_displayed',
+      originalMessageId: '<reminder-split@crm.example>',
+      source: 'mdn',
+    })]);
   });
 
   test('counts only non-automated replies as verified engagement', () => {

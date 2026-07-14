@@ -235,6 +235,30 @@ export function buildDerivedTrackingMetadata(input: {
   };
 }
 
+export function buildStoredTrackingMetadata(input: {
+  collectDerivedMetadata: boolean;
+  ip?: string | null;
+  userAgent?: string | null;
+  classificationReasons: readonly string[];
+}): Record<string, unknown> {
+  if (!input.collectDerivedMetadata) return {};
+  return buildDerivedTrackingMetadata({
+    ip: input.ip ?? null,
+    userAgent: input.userAgent ?? null,
+    classificationReasons: input.classificationReasons,
+  });
+}
+
+export function effectiveTrackingTokenExpiry(input: {
+  existingExpiry: Date | null;
+  now: Date;
+  tokenTtlDays: number;
+  recovery: boolean;
+}): Date {
+  if (input.existingExpiry && input.recovery) return input.existingExpiry;
+  return addDays(input.now, input.tokenTtlDays);
+}
+
 function associatedDataBuffer(value: string): Buffer {
   if (!value.trim() || value.length > 1_024) throw new Error('Tracking-Kontext ist ungueltig');
   return Buffer.from(value, 'utf8');
@@ -983,15 +1007,18 @@ async function prepareTrackedHtmlInTransaction(input: {
   if (input.input.recovery && !existing) {
     return { html: input.input.html, trackingMessageId: null, warning: null };
   }
-  if (!input.input.recovery && (existing?.revoked_at || (existing && toDate(existing.token_expires_at).getTime() <= input.now.getTime()))) {
-    return { html: input.input.html, trackingMessageId: null, warning: 'Tracking fuer diesen Versand ist widerrufen oder abgelaufen.' };
+  if (!input.input.recovery && existing?.revoked_at) {
+    return { html: input.input.html, trackingMessageId: null, warning: 'Tracking fuer diesen Versand ist widerrufen.' };
   }
 
   const created = !existing;
   const trackingId = existing?.id ?? randomUUID();
-  const expiresAt = existing?.token_expires_at
-    ? toDate(existing.token_expires_at)
-    : addDays(input.now, input.policy.tokenTtlDays);
+  const expiresAt = effectiveTrackingTokenExpiry({
+    existingExpiry: existing?.token_expires_at ? toDate(existing.token_expires_at) : null,
+    now: input.now,
+    tokenTtlDays: input.policy.tokenTtlDays,
+    recovery: input.input.recovery === true,
+  });
   const existingFlags = existing ? {
       trackOpens: Boolean(existing.track_opens),
       trackLinks: Boolean(existing.track_links),
@@ -1035,6 +1062,30 @@ async function prepareTrackedHtmlInTransaction(input: {
         created_at: input.now,
         updated_at: input.now,
       })
+      .execute();
+  } else if (!input.input.recovery) {
+    await input.trx
+      .updateTable('email_tracking_messages')
+      .set({
+        recipient_count: input.input.recipientCount,
+        token_expires_at: expiresAt,
+        updated_at: input.now,
+      })
+      .where('workspace_id', '=', input.input.workspaceId)
+      .where('id', '=', trackingId)
+      .execute();
+    await input.trx
+      .updateTable('email_tracking_token_resolver')
+      .set({ expires_at: expiresAt })
+      .where('workspace_id', '=', input.input.workspaceId)
+      .where('tracking_message_id', '=', trackingId)
+      .execute();
+    await input.trx
+      .updateTable('email_tracking_events')
+      .set({ metadata_json: { recipientCount: input.input.recipientCount } })
+      .where('workspace_id', '=', input.input.workspaceId)
+      .where('tracking_message_id', '=', trackingId)
+      .where('event_type', '=', 'queued')
       .execute();
   }
 
@@ -1317,13 +1368,12 @@ async function recordPublicInteraction(input: {
         input.request.ip ?? '',
         Math.floor(input.now.getTime() / 60_000),
       ].join(':'));
-      const metadata = input.resolver.collectDerivedMetadata
-        ? buildDerivedTrackingMetadata({
-          ip: input.request.ip,
-          userAgent: input.request.userAgent,
-          classificationReasons: classification.reasons,
-        })
-        : { classificationReasons: classification.reasons };
+      const metadata = buildStoredTrackingMetadata({
+        collectDerivedMetadata: input.resolver.collectDerivedMetadata,
+        ip: input.request.ip,
+        userAgent: input.request.userAgent,
+        classificationReasons: classification.reasons,
+      });
       const raw = input.resolver.collectRawMetadata
         ? input.crypto.sealJson({
           ip: input.request.ip?.slice(0, 64) ?? null,
@@ -1470,7 +1520,8 @@ export async function loadEmailEvidenceSummaryForTracking(
         FILTER (WHERE event_type IN ('queued','sending','smtp_accepted','smtp_failed','delayed','bounced')))[1]
         AS latest_transport_type,
       COALESCE(MAX(CASE confidence
-        WHEN 'verified' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END), 0)::int
+        WHEN 'verified' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END)
+        FILTER (WHERE event_type NOT IN ('revoked','expired')), 0)::int
         AS confidence_rank,
       COALESCE(MAX(CASE
         WHEN event_type = 'replied' THEN 4

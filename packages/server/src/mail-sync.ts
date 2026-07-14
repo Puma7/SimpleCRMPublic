@@ -298,6 +298,7 @@ type ImapFolderSyncSpec = Readonly<{
   archived: boolean;
   isSpam: boolean;
   runPostSync: boolean;
+  recordEvidence: boolean;
 }>;
 
 type ServerMailSyncUpsertContext = {
@@ -594,7 +595,7 @@ async function syncImapFolder(input: {
       }
       if (upserted.isNew && upserted.id > 0) {
         newMessageIds.push(upserted.id);
-        if (input.spec.runPostSync && await processInboundEvidence({
+        if (input.spec.recordEvidence && await processInboundEvidence({
           workspaceId: input.plan.workspaceId,
           parsed,
           port: input.inboundEvidence,
@@ -761,6 +762,7 @@ async function processInboundEvidence(input: {
   const evidence = detectInboundEmailEvidence({
     rawHeaders: input.parsed.rawHeaders,
     bodyText: input.parsed.bodyText,
+    reportFields: machineReadableReportFields(input.parsed.attachments),
     embeddedMessageHeaders: embeddedOriginalMessageHeaders(input.parsed.attachments),
     inReplyTo: input.parsed.inReplyTo,
     referencesHeader: input.parsed.referencesHeader,
@@ -782,6 +784,24 @@ async function processInboundEvidence(input: {
     if (recorded && item.suppressAutomation) suppressAutomation = true;
   }
   return suppressAutomation;
+}
+
+function machineReadableReportFields(
+  attachments: readonly ServerMailSyncParsedAttachment[] | undefined,
+): string | null {
+  const parts: string[] = [];
+  let bytes = 0;
+  for (const attachment of attachments ?? []) {
+    const contentType = attachment.contentType?.trim().toLowerCase();
+    if (contentType !== 'message/delivery-status' && contentType !== 'message/disposition-notification') continue;
+    const remaining = 512 * 1024 - bytes;
+    if (remaining <= 0) break;
+    const part = attachment.content.subarray(0, remaining).toString('utf8').trim();
+    if (!part) continue;
+    parts.push(part);
+    bytes += Buffer.byteLength(part, 'utf8');
+  }
+  return parts.length > 0 ? parts.join('\r\n') : null;
 }
 
 function embeddedOriginalMessageHeaders(
@@ -1945,6 +1965,7 @@ function resolveImapSyncFolders(
     archived: false,
     isSpam: false,
     runPostSync: true,
+    recordEvidence: true,
   }];
   const seen = new Set<string>(['inbox']);
   const push = (spec: ImapFolderSyncSpec | null): void => {
@@ -1962,6 +1983,7 @@ function resolveImapSyncFolders(
       archived: false,
       isSpam: false,
       runPostSync: false,
+      recordEvidence: false,
     } : null);
   }
   if (account.imapSyncArchive) {
@@ -1978,6 +2000,7 @@ function resolveImapSyncFolders(
       archived: true,
       isSpam: false,
       runPostSync: false,
+      recordEvidence: true,
     } : null);
   }
   if (account.imapSyncSpam) {
@@ -1994,6 +2017,7 @@ function resolveImapSyncFolders(
       archived: false,
       isSpam: true,
       runPostSync: false,
+      recordEvidence: true,
     } : null);
   }
   return specs;

@@ -43,7 +43,7 @@ export function createPostgresMailSyncPostProcessor(
             ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
             applyStatus: true,
             runSecurityCheck: true,
-            enqueueInboundWorkflows: true,
+            enqueueInboundWorkflows: !suppressed.has(messageId),
           },
           maxAttempts: 3,
         });

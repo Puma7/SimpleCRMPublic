@@ -2625,6 +2625,7 @@ describe('server edition foundation', () => {
     const account = makeServerMailSyncAccount({
       protocol: 'imap',
       imapSyncSpam: true,
+      imapSyncArchive: true,
     });
     const upserts: any[] = [];
     const attachmentWrites: any[] = [];
@@ -2632,6 +2633,7 @@ describe('server edition foundation', () => {
     const folders = new Map<string, any>([
       ['INBOX', makeServerMailSyncFolder({ id: 71, sourceSqliteId: -710, path: 'INBOX', lastUid: 5 })],
       ['Junk', makeServerMailSyncFolder({ id: 72, sourceSqliteId: -720, path: 'Junk', lastUid: 0 })],
+      ['Archive', makeServerMailSyncFolder({ id: 73, sourceSqliteId: -730, path: 'Archive', lastUid: 0 })],
     ]);
     const store = makeServerMailSyncStore({
       account,
@@ -2639,12 +2641,13 @@ describe('server edition foundation', () => {
       upserts,
       attachmentWrites,
       folderUpdates,
-      messageIds: [1001, 1002],
+      messageIds: [1001, 1002, 1003],
     });
     const imapFactoryInputs: any[] = [];
     const inboundEvidence: Parameters<EmailTrackingService['recordInboundEvidence']>[0][] = [];
     const fetchedUids: string[] = [];
     const releasedLocks: string[] = [];
+    let currentMailbox = '';
     const client = {
       async connect() {
         return undefined;
@@ -2652,24 +2655,27 @@ describe('server edition foundation', () => {
       async list() {
         return [
           { path: 'Junk', name: 'Junk', delimiter: '/', flags: new Set(['\\Junk']), specialUse: '\\Junk' },
+          { path: 'Archive', name: 'Archive', delimiter: '/', flags: new Set(['\\Archive']), specialUse: '\\Archive' },
         ];
       },
       async status(path: string) {
-        if (path === 'Junk') throw new Error('optional mailbox missing');
-        return { uidValidity: 22 };
+        if (path === 'Archive') throw new Error('optional mailbox missing');
+        return { uidValidity: path === 'Junk' ? 23 : 22 };
       },
       async getMailboxLock(path: string) {
+        currentMailbox = path;
         return { release: () => releasedLocks.push(path) };
       },
       async search(query: any) {
+        if (currentMailbox === 'Junk' && query.all) return [1];
         if (query.uid === '6:*') return [6, 7];
         if (query.all) return [1, 2, 3, 4, 5, 6, 7];
         return [];
       },
       async fetchOne(uid: string) {
-        fetchedUids.push(uid);
+        fetchedUids.push(`${currentMailbox}:${uid}`);
         return {
-          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          source: Buffer.from(`Subject: ${currentMailbox}:${uid}\r\n\r\nBody ${uid}`),
           flags: uid === '6' ? new Set(['\\Seen']) : new Set<string>(),
           threadId: `thread-${uid}`,
         };
@@ -2685,8 +2691,8 @@ describe('server edition foundation', () => {
       parser: async (source) => {
         const seed = source.toString('utf8');
         const parsed = makeParsedServerMailSyncMessage(seed);
-        return seed.includes('Subject: 6')
-          ? {
+        if (seed.includes('Subject: INBOX:6')) {
+          return {
             ...parsed,
             rawHeaders: 'Content-Type: multipart/report; report-type=delivery-status',
             bodyText: 'Action: failed\r\nStatus: 5.1.1',
@@ -2705,8 +2711,31 @@ describe('server edition foundation', () => {
               contentSha256: 'hash-1',
               content: Buffer.from('payload'),
             }],
-          }
-          : parsed;
+          };
+        }
+        if (seed.includes('Subject: INBOX:7')) {
+          return {
+            ...parsed,
+            rawHeaders: 'Content-Type: multipart/report; report-type=disposition-notification',
+            bodyText: 'Your message was displayed.',
+            hasAttachments: true,
+            attachments: [{
+              filename: 'disposition-notification.txt',
+              contentType: 'message/disposition-notification',
+              sizeBytes: 120,
+              contentSha256: 'hash-mdn',
+              content: Buffer.from('Original-Message-ID: <sent-7@example.com>\r\nDisposition: manual-action/MDN-sent-manually; displayed'),
+            }],
+          };
+        }
+        if (seed.includes('Subject: Junk:1')) {
+          return {
+            ...parsed,
+            rawHeaders: 'Content-Type: multipart/report; report-type=delivery-status',
+            bodyText: 'Original-Message-ID: <sent-spam@example.com>\r\nAction: failed\r\nStatus: 5.1.1',
+          };
+        }
+        return parsed;
       },
       inboundEvidence: {
         async recordInboundEvidence(input) {
@@ -2727,19 +2756,14 @@ describe('server edition foundation', () => {
       actorUserId: USER_A_ID,
     })).resolves.toEqual({
       inboundMessageIds: [1001, 1002],
-      automatedEvidenceMessageIds: [1001],
+      automatedEvidenceMessageIds: [1001, 1002],
     });
 
-    expect(inboundEvidence).toEqual([expect.objectContaining({
-      workspaceId: WORKSPACE_A_ID,
-      messageIdHeader: '<sent-6@example.com>',
-      messageIdHeaders: ['<sent-6@example.com>'],
-      evidenceMessageId: expect.any(String),
-      type: 'bounced',
-      source: 'dsn',
-      confidence: 'high',
-      metadata: { action: 'failed', status: '5.1.1' },
-    })]);
+    expect(inboundEvidence).toEqual([
+      expect.objectContaining({ messageIdHeader: '<sent-6@example.com>', type: 'bounced', source: 'dsn' }),
+      expect.objectContaining({ messageIdHeader: '<sent-7@example.com>', type: 'mdn_displayed', source: 'mdn' }),
+      expect.objectContaining({ messageIdHeader: '<sent-spam@example.com>', type: 'bounced', source: 'dsn' }),
+    ]);
 
     expect(imapFactoryInputs).toEqual([expect.objectContaining({
       host: 'imap.example.com',
@@ -2747,8 +2771,8 @@ describe('server edition foundation', () => {
       secure: true,
       auth: { user: 'sync@example.com', pass: 'imap-secret' },
     })]);
-    expect(fetchedUids).toEqual(['6', '7']);
-    expect(releasedLocks).toEqual(['INBOX', 'Junk']);
+    expect(fetchedUids).toEqual(['INBOX:6', 'INBOX:7', 'Junk:1']);
+    expect(releasedLocks).toEqual(['INBOX', 'Archive', 'Junk']);
     expect(upserts.map((item) => ({
       uid: item.uid,
       seenLocal: item.seenLocal,
@@ -2757,30 +2781,26 @@ describe('server edition foundation', () => {
     }))).toEqual([
       { uid: 6, seenLocal: true, folderKind: 'inbox', imapThreadId: 'thread-6' },
       { uid: 7, seenLocal: false, folderKind: 'inbox', imapThreadId: 'thread-7' },
+      { uid: 1, seenLocal: false, folderKind: 'inbox', imapThreadId: 'thread-1' },
     ]);
     expect(attachmentWrites).toEqual([{
       workspaceId: WORKSPACE_A_ID,
       messageId: 1001,
       attachments: [
-        expect.objectContaining({
-          filename: 'original.eml',
-          contentType: 'message/rfc822',
-        }),
-        expect.objectContaining({
-          filename: 'invoice.pdf',
-          contentType: 'application/pdf',
-          sizeBytes: 7,
-        }),
+        expect.objectContaining({ filename: 'original.eml', contentType: 'message/rfc822' }),
+        expect.objectContaining({ filename: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 7 }),
+      ],
+    }, {
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 1002,
+      attachments: [
+        expect.objectContaining({ contentType: 'message/disposition-notification' }),
       ],
     }]);
-    expect(folderUpdates).toEqual([expect.objectContaining({
-      workspaceId: WORKSPACE_A_ID,
-      folderId: 71,
-      lastUid: 7,
-      uidvalidity: 22,
-      uidvalidityStr: '22',
-      syncedAt: now,
-    })]);
+    expect(folderUpdates).toEqual([
+      expect.objectContaining({ folderId: 71, lastUid: 7, uidvalidity: 22 }),
+      expect.objectContaining({ folderId: 72, lastUid: 1, uidvalidity: 23 }),
+    ]);
   });
 
   test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
@@ -4482,6 +4502,8 @@ describe('server edition foundation', () => {
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
       .map((item) => (item as any).payload.messageId)).toEqual([43, 44]);
+    expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
+      .map((item) => (item as any).payload.enqueueInboundWorkflows)).toEqual([true, false]);
     expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);

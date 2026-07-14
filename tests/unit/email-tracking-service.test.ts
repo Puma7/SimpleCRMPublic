@@ -1,8 +1,10 @@
 import {
   buildDerivedTrackingMetadata,
+  buildStoredTrackingMetadata,
   createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
   effectiveRetryTrackingFlags,
+  effectiveTrackingTokenExpiry,
   retryLinkCountMismatch,
   clampInboundEvidenceAfterSmtpAccepted,
   normalizeEmailTrackingPolicy,
@@ -179,6 +181,33 @@ describe('email tracking service security helpers', () => {
     });
     expect(JSON.stringify(metadata)).not.toContain('2001:db8::1');
     expect(JSON.stringify(metadata)).not.toContain('Mozilla/5.0');
+  });
+
+  test('stores no derived request metadata after the workspace opted out', () => {
+    expect(buildStoredTrackingMetadata({
+      collectDerivedMetadata: false,
+      ip: '203.0.113.9',
+      userAgent: 'Proofpoint URL Defense Scanner',
+      classificationReasons: ['known_security_or_mail_proxy'],
+    })).toEqual({});
+  });
+
+  test('refreshes token lifetime only for a retry that has not reached SMTP commit', () => {
+    const previousExpiry = new Date('2026-07-14T12:00:00.000Z');
+    const retriedAt = new Date('2026-07-20T12:00:00.000Z');
+
+    expect(effectiveTrackingTokenExpiry({
+      existingExpiry: previousExpiry,
+      now: retriedAt,
+      tokenTtlDays: 30,
+      recovery: false,
+    })).toEqual(new Date('2026-08-19T12:00:00.000Z'));
+    expect(effectiveTrackingTokenExpiry({
+      existingExpiry: previousExpiry,
+      now: retriedAt,
+      tokenTtlDays: 30,
+      recovery: true,
+    })).toBe(previousExpiry);
   });
 
   test('clamps forged future evidence dates to the server observation time', () => {
