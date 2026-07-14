@@ -341,6 +341,32 @@ describe('email tracking service security helpers', () => {
     expect(state.trackingMessageDeleted).toBe(true);
   });
 
+  test('preserves committed tracking evidence when recovery HTML changes link targets', async () => {
+    const crypto = createEmailTrackingCrypto(key);
+    const { db, state } = trackingRetryMismatchDatabase(crypto.targetHash('https://example.test/old'));
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+    });
+
+    await expect(service.prepareOutbound({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      messageId: 17,
+      accountId: 3,
+      messageIdHeader: '<retry-17@crm.example>',
+      recipientCount: 1,
+      html: '<a href="https://example.test/new">Neu</a>',
+      pgpProtected: false,
+      recovery: true,
+    })).resolves.toMatchObject({
+      trackingMessageId: null,
+      warning: expect.stringContaining('Linkziele'),
+    });
+    expect(state.trackingMessageDeleted).toBe(false);
+  });
+
   test('recreates a pruned click resolver when an unsent retry reuses the same link', async () => {
     const crypto = createEmailTrackingCrypto(key);
     const targetUrl = 'https://example.test/unchanged';

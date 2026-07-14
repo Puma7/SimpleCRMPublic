@@ -1129,7 +1129,7 @@ async function prepareTrackedHtmlInTransaction(input: {
     existingLinkCount: existingLinks.length,
   })) mismatch = true;
   if (mismatch) {
-    if (!created) {
+    if (!created && !input.input.recovery) {
       await input.trx
         .deleteFrom('email_tracking_messages')
         .where('workspace_id', '=', input.input.workspaceId)
