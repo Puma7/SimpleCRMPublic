@@ -40,6 +40,7 @@ import {
   type EmailThreadAliasRecord,
   type EmailThreadEdgeRecord,
   type EmailThreadRecord,
+  type EmailTrackingApiPort,
   type JtlReferenceRecord,
   type PgpIdentityRecord,
   type PgpPeerKeyRecord,
@@ -320,7 +321,7 @@ describe('server edition repository boundaries', () => {
     expect(caddyfile).toContain('root * /srv/dist');
     expect(caddyfile).toContain('try_files {path} /index.html');
     expect(caddyfile).toContain('file_server');
-    expect(caddyfile).toContain('path /api/* /health /health/* /openapi.json');
+    expect(caddyfile).toContain('path /api/* /t/* /health /health/* /openapi.json');
     // web.Dockerfile builds the web-only bundle and bakes it into a caddy image.
     expect(webDockerfile).toContain('FROM caddy:2');
     expect(webDockerfile).toContain('SIMPLECRM_WEB_ONLY=1 npx vite build');
@@ -1864,6 +1865,35 @@ describe('server edition repository boundaries', () => {
       expect(denied.statusCode).toBe(403);
       expect(denied.headers['access-control-allow-origin']).toBeUndefined();
       expect((denied.json() as any).error.code).toBe('cors_origin_not_allowed');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('fastify adapter allows public tracking resources from cross-origin mail clients', async () => {
+    const emailTracking: EmailTrackingApiPort = {
+      async getPolicy() { throw new Error('unused'); },
+      async setPolicy() { throw new Error('unused'); },
+      async getTimeline() { return null; },
+      async recordPublicOpen() {},
+      async resolvePublicClick() { return null; },
+      async revokeMessage() { return false; },
+      async eraseMessage() { return false; },
+    };
+    const app = createFastifyServer({
+      ports: { ...makeServerApiPorts(), emailTracking },
+      corsAllowedOrigins: [],
+    });
+
+    try {
+      const token = 'A'.repeat(43);
+      const response = await app.inject({
+        method: 'GET',
+        url: `/t/o/${token}.gif`,
+        headers: { origin: 'null' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('image/gif');
     } finally {
       await app.close();
     }

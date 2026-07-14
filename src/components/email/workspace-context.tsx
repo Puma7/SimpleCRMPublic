@@ -39,6 +39,7 @@ export type SettingsTab =
   | "accountMail"
   | "knowledge"
   | "mailSecurity"
+  | "tracking"
   | "automation"
   | "team"
   | "appUsers"
@@ -215,7 +216,7 @@ const VALID_MAIL_VIEWS: MailView[] = [
 ]
 const VALID_MESSAGE_DONE_FILTERS: MessageDoneFilter[] = ["all", "open", "done"]
 
-const SERVER_ONLY_SETTINGS_TABS = new Set<SettingsTab>(["authSecurity", "userGroups"])
+const SERVER_ONLY_SETTINGS_TABS = new Set<SettingsTab>(["authSecurity", "userGroups", "tracking"])
 
 export function normalizeSettingsTab(
   raw: string,
@@ -236,6 +237,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "accountMail",
   "knowledge",
   "mailSecurity",
+  "tracking",
   "automation",
   "team",
   "appUsers",

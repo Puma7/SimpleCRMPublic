@@ -73,5 +73,5 @@ Legende: **stabil** · **teilweise** · **geplant**
 |----------|--------|---------|
 | IMAP Multi-Folder (Sent / Archiv / Spam) | stabil | Opt-in pro Konto unter SMTP/IMAP-Einstellungen |
 | PGP | begrenzt | Eingehende Klassifikation/Entschlüsselung, Cleartext-Signaturprüfung, serverseitige Private-Key-Passphrase-Rotation sowie Plaintext-/Compose-Sign/Encrypt lokal und serverseitig; Detached-/Anhang-Signaturen, Anhänge und HTML-Encryption-Ausbau offen |
-| Open/Click-Tracking | geplant |
+| Open/Click-/Delivery-Evidenz | Server-Edition: opt-in umgesetzt; Standalone: bewusst aus. Siehe `EMAIL_EVIDENCE_TRACKING.md` |
 | Abwesenheitsantwort pro Konto | stabil | Einstellungen → Konten bearbeiten |

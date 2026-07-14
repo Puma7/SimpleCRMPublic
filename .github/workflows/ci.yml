@@ -166,6 +166,7 @@ jobs:
           fi
 
           docker compose -p "$project" -f docker/docker-compose.yml ps
+          docker compose -p "$project" -f docker/docker-compose.yml exec -T api node packages/server/dist/cli/rls-check.js
           docker compose -p "$project" -f docker/docker-compose.yml --profile backup run --rm backup
           docker compose -p "$project" -f docker/docker-compose.yml --profile doctor run --rm doctor
           docker compose -p "$project" -f docker/docker-compose.yml --profile restore-drill run --rm restore-drill

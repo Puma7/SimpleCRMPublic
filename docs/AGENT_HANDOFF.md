@@ -58,6 +58,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
 | System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers and login challenge handling hardened; see the current audit report |
+| E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 
 ---
 
@@ -71,6 +72,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Workflow UI | `src/components/email/workflow/node-properties-panel.tsx` |
 | KI profile select | `src/components/email/ai-profile-select.tsx` |
 | Diagnostics | `src/components/email/settings/diagnostics-panel.tsx` |
+| E-Mail-Evidenz | `packages/server/src/email-tracking.ts`, `src/components/email/message-evidence-panel.tsx`, `docs/EMAIL_EVIDENCE_TRACKING.md` |
 | Native ABI manager | `scripts/native-runtime-manager.mjs`, `scripts/run-with-electron-native.mjs` |
 | Electron E2E session | `tests/e2e/helpers/electron-session.ts` |
 

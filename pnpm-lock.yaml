@@ -387,7 +387,11 @@ importers:
         specifier: ^9.0.10
         version: 9.0.10(supports-color@5.5.0)
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      parse5:
+        specifier: ^7.3.0
+        version: 7.3.0
 
   packages/desktop:
     optionalDependencies:

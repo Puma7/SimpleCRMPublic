@@ -14,7 +14,7 @@ describe('email settings navigation', () => {
 
   it('keeps every visible settings tab restorable and migrates the legacy tab', () => {
     const visibleTabs = [
-      'accounts', 'oauthApps', 'ai', 'knowledge', 'mailSecurity', 'automation',
+      'accounts', 'oauthApps', 'ai', 'knowledge', 'mailSecurity', 'tracking', 'automation',
       'team', 'appUsers', 'authSecurity', 'userGroups', 'canned', 'prompts',
       'export', 'diagnostics', 'pgp', 'auditLog', 'threadTools', 'snooze', 'misc',
     ] as const
@@ -27,7 +27,9 @@ describe('email settings navigation', () => {
   it('does not restore server-only settings in standalone mode', () => {
     expect(normalizeSettingsTab('authSecurity', false)).toBeNull()
     expect(normalizeSettingsTab('userGroups', false)).toBeNull()
+    expect(normalizeSettingsTab('tracking', false)).toBeNull()
     expect(normalizeSettingsTab('authSecurity', true)).toBe('authSecurity')
     expect(normalizeSettingsTab('userGroups', true)).toBe('userGroups')
+    expect(normalizeSettingsTab('tracking', true)).toBe('tracking')
   })
 })

@@ -7,6 +7,7 @@ import { handleDashboardRoute } from './dashboard-routes';
 import { handleDiagnosticsRoute } from './diagnostics-routes';
 import { handleExtendedCrmReadRoute } from './extended-crm-routes';
 import { handleFollowUpRoute } from './follow-up-routes';
+import { handleEmailTrackingRoute, handlePublicEmailTrackingRoute } from './email-tracking-routes';
 import { handleLockRoute } from './lock-routes';
 import { handleMailReadRoute } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
@@ -41,6 +42,8 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
       // path is not /api/v1/portal/..., so the rest of the dispatcher is unaffected.
       const publicPortal = await handlePublicPortalRoute(req, ports);
       if (publicPortal) return publicPortal;
+      const publicEmailTracking = await handlePublicEmailTrackingRoute(req, ports);
+      if (publicEmailTracking) return publicEmailTracking;
 
       if (req.path === '/health/ready' || req.path === '/api/v1/health/ready') {
         if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -80,6 +83,9 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const automation = await handleAutomationReadRoute(req, ports);
       if (automation) return automation;
+
+      const emailTracking = await handleEmailTrackingRoute(req, ports);
+      if (emailTracking) return emailTracking;
 
       const customers = await handleCustomerRoute(req, ports);
       if (customers) return customers;

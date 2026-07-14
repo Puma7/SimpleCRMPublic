@@ -30,6 +30,21 @@ const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
 const WORKSPACE_B_ID = '22222222-2222-4222-8222-222222222222';
 const USER_A_ID = '33333333-3333-4333-8333-333333333333';
 const USER_B_ID = '44444444-4444-4444-8444-444444444444';
+const TRACKING_MESSAGE_A_ID = '55555555-5555-4555-8555-555555555555';
+const TRACKING_MESSAGE_B_ID = '66666666-6666-4666-8666-666666666666';
+const TRACKING_LINK_A_ID = '77777777-7777-4777-8777-777777777777';
+const TRACKING_LINK_B_ID = '88888888-8888-4888-8888-888888888888';
+const TRACKING_TOKEN_HASH_A = 'a'.repeat(64);
+const TRACKING_TOKEN_HASH_B = 'b'.repeat(64);
+const TRACKING_TOKEN_HASH_WRONG = 'c'.repeat(64);
+
+const TRACKING_RLS_TABLES = [
+  'email_tracking_policies',
+  'email_tracking_messages',
+  'email_tracking_links',
+  'email_tracking_events',
+  'email_tracking_token_resolver',
+] as const;
 
 const WORKSPACE_COLUMN_POLICY_FRAGMENTS = ['app.can_access_workspace', 'workspace_id'] as const;
 
@@ -97,6 +112,11 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('email_spam_learning_events'),
   rlsPolicyTable('email_spam_feature_stats'),
   rlsPolicyTable('email_spam_decisions'),
+  rlsPolicyTable('email_tracking_policies'),
+  rlsPolicyTable('email_tracking_messages'),
+  rlsPolicyTable('email_tracking_links'),
+  rlsPolicyTable('email_tracking_events'),
+  rlsPolicyTable('email_tracking_token_resolver'),
   rlsPolicyTable('pgp_identities'),
   rlsPolicyTable('pgp_peer_keys'),
   rlsPolicyTable('automation_api_keys'),
@@ -112,18 +132,25 @@ export async function runRlsIsolationCheck(client: RlsCheckClient): Promise<RlsC
   await client.query('BEGIN');
   try {
     await expectRlsPolicyCoverage(client, checks);
+    await expectPublicResolverPolicyCoverage(client, checks);
 
     await seedWorkspaceFixture(client, {
       workspaceId: WORKSPACE_A_ID,
       userId: USER_A_ID,
       label: 'a',
       customerSourceId: 101,
+      trackingMessageId: TRACKING_MESSAGE_A_ID,
+      trackingLinkId: TRACKING_LINK_A_ID,
+      trackingTokenHash: TRACKING_TOKEN_HASH_A,
     });
     await seedWorkspaceFixture(client, {
       workspaceId: WORKSPACE_B_ID,
       userId: USER_B_ID,
       label: 'b',
       customerSourceId: 201,
+      trackingMessageId: TRACKING_MESSAGE_B_ID,
+      trackingLinkId: TRACKING_LINK_B_ID,
+      trackingTokenHash: TRACKING_TOKEN_HASH_B,
     });
 
     await setRlsContext(client, WORKSPACE_A_ID, USER_A_ID, 'user');
@@ -145,6 +172,20 @@ export async function runRlsIsolationCheck(client: RlsCheckClient): Promise<RlsC
       params: [WORKSPACE_B_ID],
       expected: 0,
     });
+    for (const table of TRACKING_RLS_TABLES) {
+      await expectCount(client, checks, {
+        name: `workspace_a_reads_own_${table}`,
+        sql: `SELECT count(*)::int AS count FROM ${table} WHERE workspace_id = $1;`,
+        params: [WORKSPACE_A_ID],
+        expected: 1,
+      });
+      await expectCount(client, checks, {
+        name: `workspace_a_cannot_read_workspace_b_${table}`,
+        sql: `SELECT count(*)::int AS count FROM ${table} WHERE workspace_id = $1;`,
+        params: [WORKSPACE_B_ID],
+        expected: 0,
+      });
+    }
     await expectPolicyError(client, checks, 'workspace_a_cannot_insert_workspace_b_customer', () => client.query(
       `INSERT INTO customers (workspace_id, source_sqlite_id, name, email, source_row)
 VALUES ($1, $2, $3, $4, '{}'::jsonb);`,
@@ -173,6 +214,29 @@ VALUES ($1, $2, $3, $4, '{}'::jsonb);`,
       sql: 'SELECT count(*)::int AS count FROM customers WHERE workspace_id = $1 AND source_sqlite_id = $2;',
       params: [WORKSPACE_A_ID, 101],
       expected: 0,
+    });
+
+    await setRlsContext(client, WORKSPACE_A_ID, USER_A_ID, 'user');
+    await setPublicTrackingTokenHash(client, '');
+    await expectCount(client, checks, {
+      name: 'public_tracking_token_without_hash_cannot_read_resolver',
+      sql: 'SELECT count(*)::int AS count FROM email_tracking_token_resolver WHERE token_hash = $1;',
+      params: [TRACKING_TOKEN_HASH_B],
+      expected: 0,
+    });
+    await setPublicTrackingTokenHash(client, TRACKING_TOKEN_HASH_WRONG);
+    await expectCount(client, checks, {
+      name: 'public_tracking_token_wrong_hash_cannot_read_resolver',
+      sql: 'SELECT count(*)::int AS count FROM email_tracking_token_resolver WHERE token_hash = $1;',
+      params: [TRACKING_TOKEN_HASH_B],
+      expected: 0,
+    });
+    await setPublicTrackingTokenHash(client, TRACKING_TOKEN_HASH_B);
+    await expectCount(client, checks, {
+      name: 'public_tracking_token_matching_hash_reads_one_resolver',
+      sql: 'SELECT count(*)::int AS count FROM email_tracking_token_resolver WHERE token_hash = $1;',
+      params: [TRACKING_TOKEN_HASH_B],
+      expected: 1,
     });
 
     await setRlsContext(client, WORKSPACE_A_ID, USER_A_ID, 'admin');
@@ -250,6 +314,34 @@ async function expectRlsPolicyCoverage(
   }
 }
 
+async function expectPublicResolverPolicyCoverage(
+  client: RlsCheckClient,
+  checks: RlsCheckItem[],
+): Promise<void> {
+  const result = await client.query<Pick<RlsPolicyCoverageRow, 'policy_name' | 'using_expression' | 'with_check_expression'>>(
+    `SELECT
+  policyname AS policy_name,
+  qual AS using_expression,
+  with_check AS with_check_expression
+FROM pg_policies
+WHERE schemaname = 'public'
+  AND tablename = 'email_tracking_token_resolver'
+  AND policyname = 'email_tracking_token_resolver_public_lookup';`,
+  );
+  const row = result.rows[0];
+  const usingExpression = normalizePolicyExpression(row?.using_expression);
+  const valid = row?.policy_name === 'email_tracking_token_resolver_public_lookup'
+    && row.with_check_expression == null
+    && ['token_hash', 'current_setting', 'app.email_tracking_token_hash'].every((fragment) => (
+      usingExpression.includes(normalizePolicyExpression(fragment))
+    ));
+  checks.push({
+    name: 'email_tracking_token_resolver_public_lookup_policy',
+    status: valid ? 'passed' : 'failed',
+    detail: row ? `policy ${String(row.policy_name ?? '<missing>')}` : 'public resolver policy missing',
+  });
+}
+
 async function readRlsPolicyCoverage(
   client: RlsCheckClient,
   table: RlsPolicyCoverageTable,
@@ -309,6 +401,9 @@ async function seedWorkspaceFixture(
     userId: string;
     label: string;
     customerSourceId: number;
+    trackingMessageId: string;
+    trackingLinkId: string;
+    trackingTokenHash: string;
   },
 ): Promise<void> {
   await setRlsContext(client, input.workspaceId, input.userId, 'owner');
@@ -350,6 +445,59 @@ ON CONFLICT (workspace_id, kind, name)
 DO UPDATE SET key_id = EXCLUDED.key_id;`,
     [input.workspaceId, `secret-${input.label}`],
   );
+  const messageResult = await client.query<{ id: number | string }>(
+    `INSERT INTO email_messages (
+  workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id, uid, subject, source_row
+)
+VALUES ($1, $2, $2, $2, $2, $3, '{}'::jsonb)
+ON CONFLICT (workspace_id, source_sqlite_id)
+DO UPDATE SET subject = EXCLUDED.subject
+RETURNING id;`,
+    [input.workspaceId, input.customerSourceId + 10_000, `RLS tracking ${input.label}`],
+  );
+  const messageId = messageResult.rows[0]?.id;
+  if (messageId === undefined) throw new Error(`RLS tracking fixture message ${input.label} missing`);
+  await client.query(
+    `INSERT INTO email_tracking_policies (workspace_id)
+VALUES ($1)
+ON CONFLICT (workspace_id) DO NOTHING;`,
+    [input.workspaceId],
+  );
+  await client.query(
+    `INSERT INTO email_tracking_messages (
+  id, workspace_id, message_id, recipient_count, track_opens, track_links,
+  collect_derived_metadata, collect_raw_metadata, token_expires_at
+)
+VALUES ($1, $2, $3, 1, true, true, false, false, now() + INTERVAL '1 day')
+ON CONFLICT (id) DO NOTHING;`,
+    [input.trackingMessageId, input.workspaceId, messageId],
+  );
+  await client.query(
+    `INSERT INTO email_tracking_links (
+  id, workspace_id, tracking_message_id, ordinal, token_hash,
+  target_ciphertext, target_nonce, target_auth_tag, target_url_hash
+)
+VALUES ($1, $2, $3, 0, $4, decode('00', 'hex'), decode('01', 'hex'), decode('02', 'hex'), $4)
+ON CONFLICT (id) DO NOTHING;`,
+    [input.trackingLinkId, input.workspaceId, input.trackingMessageId, `link-${input.trackingTokenHash}`],
+  );
+  await client.query(
+    `INSERT INTO email_tracking_events (
+  workspace_id, tracking_message_id, message_id, event_type, source, confidence,
+  automated, occurred_at, dedupe_key
+)
+VALUES ($1, $2, $3, 'queued', 'rls_probe', 'none', true, now(), $4)
+ON CONFLICT (workspace_id, dedupe_key) DO NOTHING;`,
+    [input.workspaceId, input.trackingMessageId, messageId, `rls-probe-${input.label}`],
+  );
+  await client.query(
+    `INSERT INTO email_tracking_token_resolver (
+  token_hash, workspace_id, tracking_message_id, link_id, token_kind, expires_at
+)
+VALUES ($1, $2, $3, NULL, 'open', now() + INTERVAL '1 day')
+ON CONFLICT (token_hash) DO NOTHING;`,
+    [input.trackingTokenHash, input.workspaceId, input.trackingMessageId],
+  );
 }
 
 async function setRlsContext(
@@ -366,6 +514,13 @@ async function setRlsContext(
   set_config('app.role', $3, true),
   set_config('app.cross_workspace_access', $4, true);`,
     [workspaceId, userId, role, crossWorkspaceAccess ? 'on' : 'off'],
+  );
+}
+
+async function setPublicTrackingTokenHash(client: RlsCheckClient, tokenHash: string): Promise<void> {
+  await client.query(
+    "SELECT set_config('app.email_tracking_token_hash', $1, true);",
+    [tokenHash],
   );
 }
 

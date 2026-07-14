@@ -3453,6 +3453,86 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps email tracking settings and message evidence routes', async () => {
+    const policy = {
+      enabled: true,
+      trackOpens: true,
+      trackLinks: true,
+      collectDerivedMetadata: true,
+      collectRawMetadata: false,
+      rawMetadataRetentionDays: 7,
+      eventRetentionDays: 365,
+      tokenTtlDays: 730,
+      legalBasis: 'legitimate_interest',
+      privacyNoticeUrl: 'https://crm.example.com/datenschutz',
+      complianceAcknowledgedAt: '2026-07-13T12:00:00.000Z',
+      publicBaseUrl: 'https://crm.example.com',
+      updatedAt: '2026-07-13T12:00:00.000Z',
+    };
+    const timeline = {
+      messageId: 41,
+      tracked: true,
+      warning: null,
+      eventsTruncated: false,
+      summary: {
+        transport: 'smtp_accepted',
+        delivery: 'external_system_reached',
+        engagement: 'probable_open',
+        confidence: 'medium',
+        openCount: 1,
+        clickCount: 0,
+        firstOpenedAt: '2026-07-13T12:05:00.000Z',
+        lastOpenedAt: '2026-07-13T12:05:00.000Z',
+        firstClickedAt: null,
+        lastClickedAt: null,
+        repliedAt: null,
+      },
+      events: [],
+    };
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: policy }))
+      .mockResolvedValueOnce(jsonResponse({ data: { ...policy, trackLinks: false } }))
+      .mockResolvedValueOnce(jsonResponse({ data: timeline }))
+      .mockResolvedValueOnce(jsonResponse({ data: { revoked: true } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { erased: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetEmailTrackingSettings)).resolves.toEqual(policy);
+    await expect(transport.invoke(IPCChannels.Email.SetEmailTrackingSettings, {
+      trackLinks: false,
+    })).resolves.toEqual({ ...policy, trackLinks: false });
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTracking, {
+      messageId: 41,
+      includeSensitive: true,
+    })).resolves.toEqual(timeline);
+    await expect(transport.invoke(IPCChannels.Email.RevokeMessageTracking, 41)).resolves.toEqual({ revoked: true });
+    await expect(transport.invoke(IPCChannels.Email.DeleteMessageTracking, 41)).resolves.toEqual({ success: true });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(1,
+      'https://crm.example.com/api/v1/email/tracking/settings',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(2,
+      'https://crm.example.com/api/v1/email/tracking/settings',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ trackLinks: false }) }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(3,
+      'https://crm.example.com/api/v1/email/messages/41/tracking?includeSensitive=true',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(4,
+      'https://crm.example.com/api/v1/email/messages/41/tracking/revoke',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(5,
+      'https://crm.example.com/api/v1/email/messages/41/tracking',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
   test('maps email GDPR export to server ZIP download route', async () => {
     const blob = new Blob(['zip-bytes'], { type: 'application/zip' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(blobResponse(blob, {
@@ -3467,6 +3547,7 @@ describe('renderer transport', () => {
 
     await expect(transport.invoke(IPCChannels.Email.EmailGdprExport, {
       skipAttachments: true,
+      includeSensitiveTracking: true,
     })).resolves.toEqual({
       ok: true,
       blob,
@@ -3475,7 +3556,7 @@ describe('renderer transport', () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://crm.example.com/api/v1/email/gdpr-export?skipAttachments=true',
+      'https://crm.example.com/api/v1/email/gdpr-export?skipAttachments=true&includeSensitiveTracking=true',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({
