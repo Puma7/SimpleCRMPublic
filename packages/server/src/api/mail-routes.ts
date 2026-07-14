@@ -41,6 +41,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './http';
 import { JOB_STALE_LOCK_SECONDS } from '../jobs';
@@ -1267,6 +1268,7 @@ async function handleEmailGdprExport(req: ApiRequest, ports: ServerApiPorts): Pr
   const result = await ports.emailGdprExport.export({
     workspaceId: principal.workspaceId,
     skipAttachments: skipAttachments === true,
+    ...(requireAdmin(principal) ? { includeSensitiveTracking: true } : {}),
   });
   if (!result.ok) {
     return error(409, result.code, 'Anhaenge zu gross fuer einen Export', {

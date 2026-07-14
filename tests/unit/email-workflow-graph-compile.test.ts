@@ -102,6 +102,21 @@ describe('email-workflow-graph-compile', () => {
     );
   });
 
+  it('ships a delayed outbound evidence follow-up template', () => {
+    const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'outbound-evidence-follow-up');
+    expect(template).toBeDefined();
+
+    const nodes = template!.graph.nodes.map((node) => node.data as { nodeType?: string; config?: Record<string, unknown> });
+    expect(nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeType: 'email.release_outbound', config: expect.objectContaining({ autoSend: true }) }),
+      expect.objectContaining({ nodeType: 'logic.delay', config: expect.objectContaining({ delaySeconds: 172800 }) }),
+      expect.objectContaining({ nodeType: 'email.read_tracking_evidence' }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.tracked', cases: 'true' }) }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.transport', cases: 'smtp_accepted' }) }),
+      expect.objectContaining({ nodeType: 'crm.create_task' }),
+    ]));
+  });
+
   it('preserves forward_copy attachment and outbound-review options when compiling registry nodes', () => {
     const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'inbound-invoice-auto-forward');
     expect(template).toBeDefined();

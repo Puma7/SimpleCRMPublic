@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { isServerClientMode } from "@/lib/runtime-mode"
 import {
   AtSign,
+  Activity,
   BookOpen,
   BrainCircuit,
   Clock,
@@ -43,6 +44,7 @@ import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
 import { AccountMailSettingsPanel } from "./settings/account-mail-settings-panel"
+import { TrackingSettingsPanel } from "./settings/tracking-settings-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -90,6 +92,13 @@ const TAB_DEFS: TabDef[] = [
     render: () => <MailSecurityPanel />,
   },
   {
+    id: "tracking",
+    label: "Nachverfolgung",
+    icon: Activity,
+    render: () => <TrackingSettingsPanel />,
+    serverOnly: true,
+  },
+  {
     id: "automation",
     label: "Automatisierung",
     icon: Workflow,
@@ -132,7 +141,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "oauthApps"] },
   {
     label: "KI & Automation",
-    tabIds: ["ai", "accountMail", "knowledge", "mailSecurity", "automation", "prompts"],
+    tabIds: ["ai", "accountMail", "knowledge", "mailSecurity", "tracking", "automation", "prompts"],
   },
   { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics", "snooze"] },

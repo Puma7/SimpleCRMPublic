@@ -314,6 +314,11 @@ export function isMailSpamListRefreshEvent(event: ServerEvent): boolean {
   return event.entityType === "spam_list_entry" && MAIL_SPAM_LIST_ENTRY_REFRESH_EVENT_TYPES.has(event.type)
 }
 
+export function isMailTrackingRefreshEvent(event: ServerEvent, messageId?: number | null): boolean {
+  if (event.type !== "email_tracking.updated" || event.entityType !== "email_message") return false
+  return messageId == null || event.entityId === String(messageId)
+}
+
 export function isMailAccountDataRefreshEvent(event: ServerEvent): boolean {
   if (event.entityType === "email_account") {
     return MAIL_ACCOUNT_REFRESH_EVENT_TYPES.has(event.type)

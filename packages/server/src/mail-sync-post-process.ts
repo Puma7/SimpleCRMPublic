@@ -28,8 +28,11 @@ export function createPostgresMailSyncPostProcessor(
   const limit = normalizeLimit(options.limit);
   return {
     async afterSync(input) {
-      const postSyncMessageIds = await resolvePostSyncMessageIds(options, { ...input, limit });
-      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
+      const suppressed = new Set(uniquePositiveIds(input.result?.automatedEvidenceMessageIds ?? []));
+      const postSyncMessageIds = (await resolvePostSyncMessageIds(options, { ...input, limit }))
+        .filter((messageId) => !suppressed.has(messageId));
+      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result)
+        .filter((messageId) => !suppressed.has(messageId));
 
       for (const messageId of spamScoringMessageIds) {
         await options.jobQueue.enqueue({

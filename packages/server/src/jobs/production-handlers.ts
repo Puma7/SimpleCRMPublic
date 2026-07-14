@@ -38,6 +38,7 @@ export type MailSyncJobPlan = Readonly<{
 export type MailSyncJobResult = Readonly<{
   inboundMessageIds?: readonly number[];
   replySuggestionMessageIds?: readonly number[];
+  automatedEvidenceMessageIds?: readonly number[];
 }>;
 
 export type ScheduledSendJobPlan = Readonly<{

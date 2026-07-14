@@ -108,6 +108,88 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     },
   },
   {
+    id: 'outbound-evidence-follow-up',
+    name: 'Ausgehend: Ohne Reaktion nachfassen',
+    description:
+      'Versendet die Mail, wartet zwei Tage und legt nur nach SMTP-Annahme ohne Oeffnung, Linkklick oder Antwort eine Aufgabe an.',
+    trigger: 'outbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        {
+          id: 'release',
+          type: 'registry',
+          data: { nodeType: 'email.release_outbound', config: { autoSend: true } },
+        },
+        {
+          id: 'wait',
+          type: 'registry',
+          data: { nodeType: 'logic.delay', config: { delaySeconds: 172800 } },
+        },
+        {
+          id: 'evidence',
+          type: 'registry',
+          data: { nodeType: 'email.read_tracking_evidence', config: {} },
+        },
+        {
+          id: 'tracking_enabled',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.tracked', cases: 'true' } },
+        },
+        {
+          id: 'transport_accepted',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.transport', cases: 'smtp_accepted' } },
+        },
+        {
+          id: 'no_open',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'tracking.open_count', operator: 'lte', value: 0 },
+          },
+        },
+        {
+          id: 'no_click',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'tracking.click_count', operator: 'lte', value: 0 },
+          },
+        },
+        {
+          id: 'reply_state',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.replied', cases: 'false' } },
+        },
+        {
+          id: 'task',
+          type: 'registry',
+          data: {
+            nodeType: 'crm.create_task',
+            config: {
+              title: 'E-Mail telefonisch nachfassen: {{subject}}',
+              priority: 'medium',
+              daysUntilDue: 1,
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'release' },
+        { id: 'e1', source: 'release', target: 'wait' },
+        { id: 'e2', source: 'wait', target: 'evidence' },
+        { id: 'e3', source: 'evidence', target: 'tracking_enabled' },
+        { id: 'e_tracking', source: 'tracking_enabled', target: 'transport_accepted', label: 'true' },
+        { id: 'e_transport', source: 'transport_accepted', target: 'no_open', label: 'smtp_accepted' },
+        { id: 'e4', source: 'no_open', target: 'no_click', label: 'yes' },
+        { id: 'e5', source: 'no_click', target: 'reply_state', label: 'yes' },
+        { id: 'e6', source: 'reply_state', target: 'task', label: 'false' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'inbound-attachments',
     name: 'Eingehend: Anhänge markieren',
     description: 'Taggt Nachrichten mit PDF-Anhang.',

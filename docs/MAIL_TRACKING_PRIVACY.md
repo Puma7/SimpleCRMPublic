@@ -14,11 +14,18 @@
 - **Eingehend:** Standard `never`; Konto kann `ask` oder `always_trusted` (nur vertrauenswürdige Domains).
 - **Keine automatische MDN-Antwort** ohne explizite Nutzer- oder Admin-Policy.
 
-## Bewusst nicht implementiert
+## Ausgehende Evidenz (Server-Edition)
 
-- **Open-/Click-Tracking** für Marketing (F7 im Backlog) — erfordert Server, Consent und Retention.
+- In der Standalone-Edition bleibt Open-/Click-Tracking bewusst deaktiviert.
+- Die Server-Edition bietet eine standardmäßig ausgeschaltete Evidenz-Pipeline für HTML-Mail:
+  SMTP, DSN/MDN, klassifizierte Pixel-/Klickabrufe und Antworten.
+- Aktivierung erfordert Rechtsgrundlage, HTTPS-Datenschutzhinweis, Admin-Bestätigung und
+  Aufbewahrungsfristen. Roh-IP und User-Agent sind optional AES-GCM-verschlüsselt.
+- Details und Aussagegrenzen: [`EMAIL_EVIDENCE_TRACKING.md`](EMAIL_EVIDENCE_TRACKING.md).
 
 ## Grenzen
 
 - Subject, Header-Metadaten und lokale DB bleiben unverschlüsselt.
 - Wer OS- oder Dateizugriff hat, kann alle Daten lesen (siehe `MAIL_SINGLE_USER_LIMITS.md`).
+- Tracking-Signale beweisen weder persönliche Kenntnisnahme noch eine einzelne Person bei
+  mehreren Empfängern oder Weiterleitungen.

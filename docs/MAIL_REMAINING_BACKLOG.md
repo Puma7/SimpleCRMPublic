@@ -58,7 +58,7 @@
 |----|--------|-----------|
 | **F14** | Mehrbenutzer kryptographisch | Stufe 1 = Profil + Audit nur ([`MAIL_AUTH_THREAT_MODEL.md`](MAIL_AUTH_THREAT_MODEL.md)) |
 | **F11** | Thread-Bulk / `imapflow.thread()` | Teilweise; Bulk-by-thread folgt |
-| **F7** | Open/Click-Tracking (Marketing) | ⛔ Datenschutz — bewusst nicht |
+| **F7** | Open/Click-Tracking | ✅ Server opt-in als Evidenzsystem mit Retention/DSGVO-Controls; Standalone bewusst aus (`EMAIL_EVIDENCE_TRACKING.md`) |
 | **F8** | S/MIME | Nach PGP ([`MAIL_PGP_THREAT_MODEL.md`](MAIL_PGP_THREAT_MODEL.md)) |
 | **NF14** | `draft_created` nur einmal | by design, dokumentiert |
 

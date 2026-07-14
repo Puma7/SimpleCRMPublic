@@ -38,6 +38,7 @@ export type SettingsTab =
   | "accountMail"
   | "knowledge"
   | "mailSecurity"
+  | "tracking"
   | "automation"
   | "team"
   | "appUsers"
@@ -227,6 +228,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "accountMail",
   "knowledge",
   "mailSecurity",
+  "tracking",
   "automation",
   "team",
   "appUsers",

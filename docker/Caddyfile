@@ -1,9 +1,14 @@
 {$PUBLIC_DOMAIN:localhost} {
 	encode gzip zstd
+	@tracking path /t/*
+	log_skip @tracking
 
-	# API, health probes, OpenAPI and the SSE/WebSocket event stream (/api/v1/events)
-	# go to the Fastify backend. Spoofable identity headers are stripped here.
-	@backend path /api/* /health /health/* /openapi.json
+	# API, public email evidence endpoints, health probes, OpenAPI and the
+	# SSE/WebSocket event stream (/api/v1/events) go to Fastify. Tracking URLs
+	# are intentionally excluded from access logs because their paths contain
+	# bearer-like opaque tokens.
+	# Spoofable identity headers are stripped before requests reach Fastify.
+	@backend path /api/* /t/* /health /health/* /openapi.json
 	handle @backend {
 		reverse_proxy api:3000 {
 			header_up -x-simplecrm-user-id

@@ -6,6 +6,7 @@ import { join, resolve } from 'path';
 import { PassThrough } from 'stream';
 
 import type { Kysely } from 'kysely';
+import type { EmailTrackingService } from '../../packages/server/src/email-tracking';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
@@ -337,6 +338,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0024_settings_kb_context_imap',
   '0025_email_message_thread_lookup',
   '0026_mail_search_overhaul',
+  '0027_email_evidence_tracking',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -2640,6 +2642,7 @@ describe('server edition foundation', () => {
       messageIds: [1001, 1002],
     });
     const imapFactoryInputs: any[] = [];
+    const inboundEvidence: Parameters<EmailTrackingService['recordInboundEvidence']>[0][] = [];
     const fetchedUids: string[] = [];
     const releasedLocks: string[] = [];
     const client = {
@@ -2685,9 +2688,17 @@ describe('server edition foundation', () => {
         return seed.includes('Subject: 6')
           ? {
             ...parsed,
+            rawHeaders: 'Content-Type: multipart/report; report-type=delivery-status',
+            bodyText: 'Action: failed\r\nStatus: 5.1.1',
             hasAttachments: true,
             attachmentsJson: [{ filename: 'invoice.pdf', contentType: 'application/pdf', size: 7 }],
             attachments: [{
+              filename: 'original.eml',
+              contentType: 'message/rfc822',
+              sizeBytes: 57,
+              contentSha256: 'hash-original',
+              content: Buffer.from('From: sender@example.com\r\nMessage-ID: <sent-6@example.com>'),
+            }, {
               filename: 'invoice.pdf',
               contentType: 'application/pdf',
               sizeBytes: 7,
@@ -2696,6 +2707,12 @@ describe('server edition foundation', () => {
             }],
           }
           : parsed;
+      },
+      inboundEvidence: {
+        async recordInboundEvidence(input) {
+          inboundEvidence.push(input);
+          return true;
+        },
       },
       imapClientFactory(input) {
         imapFactoryInputs.push(input);
@@ -2708,7 +2725,21 @@ describe('server edition foundation', () => {
       accountId: 7,
       protocol: 'imap',
       actorUserId: USER_A_ID,
-    })).resolves.toEqual({ inboundMessageIds: [1001, 1002] });
+    })).resolves.toEqual({
+      inboundMessageIds: [1001, 1002],
+      automatedEvidenceMessageIds: [1001],
+    });
+
+    expect(inboundEvidence).toEqual([expect.objectContaining({
+      workspaceId: WORKSPACE_A_ID,
+      messageIdHeader: '<sent-6@example.com>',
+      messageIdHeaders: ['<sent-6@example.com>'],
+      evidenceMessageId: expect.any(String),
+      type: 'bounced',
+      source: 'dsn',
+      confidence: 'high',
+      metadata: { action: 'failed', status: '5.1.1' },
+    })]);
 
     expect(imapFactoryInputs).toEqual([expect.objectContaining({
       host: 'imap.example.com',
@@ -2730,11 +2761,17 @@ describe('server edition foundation', () => {
     expect(attachmentWrites).toEqual([{
       workspaceId: WORKSPACE_A_ID,
       messageId: 1001,
-      attachments: [expect.objectContaining({
-        filename: 'invoice.pdf',
-        contentType: 'application/pdf',
-        sizeBytes: 7,
-      })],
+      attachments: [
+        expect.objectContaining({
+          filename: 'original.eml',
+          contentType: 'message/rfc822',
+        }),
+        expect.objectContaining({
+          filename: 'invoice.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 7,
+        }),
+      ],
     }]);
     expect(folderUpdates).toEqual([expect.objectContaining({
       workspaceId: WORKSPACE_A_ID,
@@ -4409,16 +4446,17 @@ describe('server edition foundation', () => {
       result: {
         replySuggestionMessageIds: [42, 42, 0],
         inboundMessageIds: [43, 44],
+        automatedEvidenceMessageIds: [44],
       },
     });
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
-      .map((item) => (item as any).payload.messageId)).toEqual([43, 44]);
+      .map((item) => (item as any).payload.messageId)).toEqual([43]);
     expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+      .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
     expect(enqueued.filter((item) => (item as any).type === 'mail.vacation.auto_reply')
-      .map((item) => (item as any).payload.messageId)).toEqual([42, 43, 44]);
+      .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
   });
 
   test('postgres workflow inbound backfill port clears applied markers and enqueues workflow jobs', async () => {
@@ -18982,6 +19020,17 @@ describe('server edition foundation', () => {
     expect(response.headers?.['Content-Disposition']).toContain('filename="simple export.zip"');
     expect(exportCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, skipAttachments: true }]);
 
+    await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/gdpr-export',
+      principal: { ...principal, role: 'admin' as const },
+    });
+    expect(exportCalls[1]).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      skipAttachments: false,
+      includeSensitiveTracking: true,
+    });
+
     const invalidFlag = await api.handle({
       method: 'GET',
       path: '/api/v1/email/gdpr-export',
@@ -20797,6 +20846,8 @@ describe('server edition foundation', () => {
   test('server compose sender sends SMTP and finalizes local drafts', async () => {
     const smtpSends: unknown[] = [];
     const updates: unknown[] = [];
+    const trackingCalls: unknown[] = [];
+    const sendOrder: string[] = [];
     const pgpPrepareCalls: unknown[] = [];
     const pgpPrepareAttachmentCalls: unknown[] = [];
     const syncInfo = new Map<string, string | null>();
@@ -20848,7 +20899,40 @@ describe('server edition foundation', () => {
       attachmentsRoot: attachmentRoot,
       now: () => new Date('2026-07-03T08:05:00.000Z'),
       smtpSend: async (input) => {
+        sendOrder.push('smtp');
         smtpSends.push(input);
+      },
+      outboundReview: {
+        async review() {
+          sendOrder.push('review');
+          return { allowed: true };
+        },
+      },
+      tracking: {
+        async prepareOutbound(input) {
+          sendOrder.push('tracking');
+          trackingCalls.push(['prepare', input]);
+          if (!input.html || input.pgpProtected) {
+            return { html: input.html, trackingMessageId: null, warning: null };
+          }
+          return {
+            html: `${input.html}<img data-test-tracking="1">`,
+            trackingMessageId: 'tracking-44',
+            warning: null,
+          };
+        },
+        async recordSmtpAccepted(input) {
+          sendOrder.push('accepted');
+          trackingCalls.push(['accepted', input]);
+        },
+        async recordSending(input) {
+          sendOrder.push('sending');
+          trackingCalls.push(['sending', input]);
+        },
+        async recordSmtpFailed(input) {
+          sendOrder.push('failed');
+          trackingCalls.push(['failed', input]);
+        },
       },
       pgpMessages: {
         async prepareOutboundBody(input) {
@@ -20970,6 +21054,31 @@ describe('server edition foundation', () => {
     expect(rfc822).toContain('References: <root@example.com> <parent@example.com>');
     expect(rfc822).toContain('Disposition-Notification-To: Support <agent@example.com>');
     expect(rfc822).toContain('Content-Type: multipart/alternative;');
+    expect(rfc822).toContain('data-test-tracking="1"');
+    expect(sendOrder.slice(0, 5)).toEqual(['review', 'tracking', 'sending', 'smtp', 'accepted']);
+    expect(trackingCalls.slice(0, 3)).toEqual([
+      ['prepare', expect.objectContaining({
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 44,
+        accountId: 7,
+        recipientCount: 3,
+        html: '<p>Hallo</p>',
+        pgpProtected: false,
+      })],
+      ['sending', expect.objectContaining({
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 44,
+        trackingMessageId: 'tracking-44',
+      })],
+      ['accepted', expect.objectContaining({
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 44,
+        trackingMessageId: 'tracking-44',
+        smtpCode: 250,
+        acceptedRecipientCount: 3,
+        rejectedRecipientCount: 0,
+      })],
+    ]);
 
     expect(updates).toEqual([
       ['updateDraftForSend', expect.objectContaining({
@@ -21017,6 +21126,26 @@ describe('server edition foundation', () => {
         messageId: 44,
       }],
     ]);
+
+    smtpSends.length = 0;
+    trackingCalls.length = 0;
+    pgpPrepareCalls.length = 0;
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 44,
+        subject: 'PGP signiert',
+        bodyText: 'Signierter Text',
+        bodyHtml: '<p>Signierter Text</p>',
+        to: 'customer@example.com',
+        inReplyToMessageId: 11,
+        pgpSign: true,
+      },
+    })).resolves.toMatchObject({ ok: true });
+    expect(trackingCalls[0]).toEqual(['prepare', expect.objectContaining({ pgpProtected: true })]);
+    expect((smtpSends[0] as { rfc822: string }).rfc822).not.toContain('data-test-tracking');
 
     smtpSends.length = 0;
     updates.length = 0;
@@ -21188,6 +21317,27 @@ describe('server edition foundation', () => {
     expect(pgpHtmlRfc822).not.toContain('Content-Type: multipart/alternative;');
     expect(pgpHtmlRfc822).not.toContain('text/html');
     expect(pgpHtmlRfc822).not.toContain('<strong>');
+
+    smtpSends.length = 0;
+    trackingCalls.length = 0;
+    sendOrder.length = 0;
+    syncInfo.set('email_compose_smtp_ok:44', 'sent');
+    await expect(sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 44,
+        subject: 'Recovery',
+        bodyText: 'Already sent',
+        bodyHtml: '<p>Already sent</p>',
+        to: 'customer@example.com',
+        inReplyToMessageId: 11,
+      },
+    })).resolves.toMatchObject({ ok: true, recoveredSentAppend: true });
+    expect(smtpSends).toEqual([]);
+    expect(trackingCalls).toEqual([]);
+    expect(sendOrder).toEqual(['review']);
   });
 
   test('server compose sender blocks before SMTP when outbound review is pending', async () => {

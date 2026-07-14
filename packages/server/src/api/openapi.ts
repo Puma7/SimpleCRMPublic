@@ -215,6 +215,10 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/email/diagnostics': { get: { summary: 'Get mail diagnostics' } },
       '/email/reporting': { get: { summary: 'Get email reporting metrics' } },
       '/email/gdpr-export': { get: { summary: 'Create email GDPR export' } },
+      '/email/tracking/settings': {
+        get: { summary: 'Get privacy-controlled email evidence settings' },
+        patch: { summary: 'Update email evidence settings (admin)' },
+      },
       '/email/messages': {
         get: { summary: 'List messages' },
       },
@@ -250,6 +254,11 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/email/messages/{id}/assignment': { patch: { summary: 'Assign message' } },
       '/email/messages/{id}/security': { get: { summary: 'Get message security summary' } },
       '/email/messages/{id}/security/check': { post: { summary: 'Run message mailauth/Rspamd security check' } },
+      '/email/messages/{id}/tracking': {
+        get: { summary: 'Get outbound email evidence timeline' },
+        delete: { summary: 'Erase outbound email evidence (admin)' },
+      },
+      '/email/messages/{id}/tracking/revoke': { post: { summary: 'Revoke outbound tracking tokens (admin)' } },
       '/email/messages/{id}/raw-headers': { get: { summary: 'Get raw message headers' } },
       '/email/messages/{id}/spam-status': { patch: { summary: 'Set spam status and optional training' } },
       '/email/messages/{id}/spam-decision': { post: { summary: 'Run spam decision for one message' } },

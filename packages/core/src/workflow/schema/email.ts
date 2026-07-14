@@ -6,6 +6,33 @@ import type { WorkflowNodeSchemaExtension } from '../node-schema';
  * (variableRef), email.sender_filter (Mehrfach-Ports).
  */
 export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
+  'email.read_tracking_evidence': {
+    outputs: [
+      { name: 'tracking.tracked', label: 'Tracking angelegt', type: 'boolean' },
+      { name: 'tracking.transport', label: 'Versandstatus', example: 'smtp_accepted', type: 'string' },
+      { name: 'tracking.delivery', label: 'Zustellstatus', example: 'external_system_reached', type: 'string' },
+      { name: 'tracking.engagement', label: 'Interaktion', example: 'probable_open', type: 'string' },
+      { name: 'tracking.confidence', label: 'Aussagekraft', example: 'medium', type: 'string' },
+      { name: 'tracking.open_count', label: 'Anzahl Pixelabrufe', example: '1', type: 'number' },
+      { name: 'tracking.click_count', label: 'Anzahl Klicks', example: '0', type: 'number' },
+      { name: 'tracking.last_opened_at', label: 'Zuletzt geöffnet', type: 'string' },
+      { name: 'tracking.last_clicked_at', label: 'Zuletzt geklickt', type: 'string' },
+      { name: 'tracking.replied', label: 'Antwort erhalten', type: 'boolean' },
+      { name: 'tracking.replied_at', label: 'Antwortzeitpunkt', type: 'string' },
+    ],
+    docs: {
+      longHelp:
+        'Liest die Evidenz zum aktuellen ausgehenden Mail-Datensatz neu aus der Datenbank. ' +
+        'Der Knoten gehört nach eine Wartezeit, damit anschließende Bedingungen nicht mit dem Stand beim Versand arbeiten. ' +
+        'Pixelabrufe bleiben Wahrscheinlichkeits-Signale; tracking.replied ist die stärkste Interaktion.',
+      prerequisites: [
+        'Server-Edition mit aktivierter E-Mail-Nachverfolgung.',
+        'Der Workflow benötigt eine aktuelle ausgehende Nachricht.',
+      ],
+      seeAlso: ['logic.delay', 'logic.threshold', 'logic.switch', 'crm.create_task'],
+    },
+  },
+
   'email.auto_reply': {
     fields: [
       {

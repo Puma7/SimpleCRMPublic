@@ -29,6 +29,7 @@
 | Document | Purpose |
 |----------|---------|
 | [DEVELOPER_EMAIL.md](DEVELOPER_EMAIL.md) | Technical map (paths, invariants, IPC) |
+| [EMAIL_EVIDENCE_TRACKING.md](EMAIL_EVIDENCE_TRACKING.md) | Server opt-in: Versand-, Zustell- und Interaktionsevidenz, Datenschutz und Workflows |
 | [EMAIL_PHASES.md](EMAIL_PHASES.md) | Implementation checklist (phases 1–4) |
 | [EMAIL_INBOX_CAPABILITIES.md](EMAIL_INBOX_CAPABILITIES.md) | Feature matrix (inbox, archive, spam, …) |
 | [MAIL_SECURITY.md](MAIL_SECURITY.md) | P2 mailauth + P3 Rspamd (Desktop-Mail-Sicherheit) |

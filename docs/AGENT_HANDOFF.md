@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-13 (Node 24 / pnpm 11 / TypeScript 7 modernization)
-**Integration branch:** `codex/typescript-7-modernization`
+**Last updated:** 2026-07-14 (server-side e-mail evidence tracking)
+**Current feature branch:** `codex/email-evidence-tracking`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 
 ---
@@ -20,7 +20,8 @@
 
 ## 2. Project
 
-**SimpleCRM** — Electron + React + TypeScript, SQLite (`better-sqlite3`), no cloud CRM backend.
+**SimpleCRM** - Electron + React + TypeScript mit lokaler SQLite-Edition und optionaler
+Fastify/PostgreSQL-Server-Edition.
 
 | Environment | DB path (Linux) |
 |-------------|-----------------|
@@ -53,6 +54,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
 | Native ABI | Cached Node 137 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
+| E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 
 ---
 
@@ -66,6 +68,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Workflow UI | `src/components/email/workflow/node-properties-panel.tsx` |
 | KI profile select | `src/components/email/ai-profile-select.tsx` |
 | Diagnostics | `src/components/email/settings/diagnostics-panel.tsx` |
+| E-Mail-Evidenz | `packages/server/src/email-tracking.ts`, `src/components/email/message-evidence-panel.tsx`, `docs/EMAIL_EVIDENCE_TRACKING.md` |
 | Native ABI manager | `scripts/native-runtime-manager.mjs`, `scripts/run-with-electron-native.mjs` |
 | Electron E2E session | `tests/e2e/helpers/electron-session.ts` |
 
