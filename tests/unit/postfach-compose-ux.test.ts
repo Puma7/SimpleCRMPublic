@@ -7,6 +7,8 @@ import {
   composeAiContextText,
   mergeComposeZones,
   mergeEditorAndSignature,
+  sanitizeComposeHtmlPreservingZones,
+  splitAndSanitizeComposeHtml,
   splitComposeZones,
   splitEditorAndSignature,
 } from '../../shared/compose-body';
@@ -74,6 +76,51 @@ describe('compose-body zones', () => {
     const merged = mergeEditorAndSignature(split.editorHtml, split.signatureHtml, split.quotedHtml);
     expect(merged).toContain(COMPOSE_SIGNATURE_MARKER);
     expect(merged).toContain('Sig');
+  });
+
+  it('splits stored zones before a sanitizer removes marker comments', () => {
+    const stored = buildReplyComposeHtml({
+      greetingHtml: '<p>Guten Tag,</p>',
+      replyHtml: '<p>Antwort</p>',
+      signatureHtml: '<p>Einmalige Signatur</p>',
+      quotedPlain: 'Vorherige Nachricht',
+    });
+    const stripComments = (html: string) => html.replace(/<!--[\s\S]*?-->/g, '');
+
+    const restored = splitAndSanitizeComposeHtml(stored, stripComments);
+
+    expect(restored.editorHtml).toContain('Antwort');
+    expect(restored.editorHtml).not.toContain('Einmalige Signatur');
+    expect(restored.editorHtml).not.toContain('Vorherige Nachricht');
+    expect(restored.signatureHtml).toContain('Einmalige Signatur');
+    expect(restored.quotedHtml).toContain('Vorherige Nachricht');
+  });
+
+  it('preserves zone boundaries through the autosave sanitize and restore roundtrip', () => {
+    const composed = buildReplyComposeHtml({
+      greetingHtml: '<p>Guten Tag,</p>',
+      replyHtml: '<p>Antwort<script>alert(1)</script></p>',
+      signatureHtml: '<p>Einmalige Signatur</p>',
+      quotedPlain: 'Vorherige Nachricht',
+    });
+    const sanitizer = (html: string) => html
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '');
+
+    const stored = sanitizeComposeHtmlPreservingZones(composed, sanitizer);
+    const restored = splitAndSanitizeComposeHtml(stored, sanitizer);
+    const restoredEditorZones = splitComposeZones(restored.editorHtml);
+
+    expect(stored).toContain(COMPOSE_BODY_MARKER);
+    expect(stored).toContain(COMPOSE_SIGNATURE_MARKER);
+    expect(stored).toContain(COMPOSE_QUOTE_MARKER);
+    expect(stored).not.toContain('<script>');
+    expect(restored.editorHtml).toContain('Antwort');
+    expect(restoredEditorZones.greetingHtml).toContain('Guten Tag');
+    expect(restoredEditorZones.bodyHtml).toContain('Antwort');
+    expect(restored.editorHtml).not.toContain('Einmalige Signatur');
+    expect(restored.signatureHtml).toContain('Einmalige Signatur');
+    expect(restored.quotedHtml).toContain('Vorherige Nachricht');
   });
 });
 

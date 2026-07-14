@@ -85,6 +85,31 @@ export function splitEditorAndSignature(html: string): {
   };
 }
 
+/** Split trusted zone markers before HTML sanitization removes comments. */
+export function splitAndSanitizeComposeHtml(
+  html: string,
+  sanitizeHtml: (value: string) => string,
+): ReturnType<typeof splitEditorAndSignature> {
+  const zones = splitComposeZones(html);
+  return {
+    editorHtml: mergeComposeZones({
+      greetingHtml: sanitizeHtml(zones.greetingHtml),
+      bodyHtml: sanitizeHtml(zones.bodyHtml),
+    }),
+    signatureHtml: sanitizeHtml(zones.signatureHtml),
+    quotedHtml: sanitizeHtml(zones.quotedHtml),
+  };
+}
+
+/** Sanitize each compose zone without losing the comment markers needed on restore. */
+export function sanitizeComposeHtmlPreservingZones(
+  html: string,
+  sanitizeHtml: (value: string) => string,
+): string {
+  const split = splitAndSanitizeComposeHtml(html, sanitizeHtml);
+  return mergeEditorAndSignature(split.editorHtml, split.signatureHtml, split.quotedHtml);
+}
+
 export function mergeEditorAndSignature(
   editorHtml: string,
   signatureHtml: string,
@@ -129,13 +154,22 @@ export function plainTextToReplyHtml(text: string): string {
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter(Boolean)
-    .map((p) => `<p>${p.replace(/\n/g, '<br/>')}</p>`)
+    .map((p) => `<p>${escapeHtmlText(p).replace(/\n/g, '<br/>')}</p>`)
     .join('');
 }
 
 export function buildQuotedBlockHtml(quotedPlain: string): string {
   if (!quotedPlain.trim()) return '';
-  return `<p>${quotedPlain.replace(/\n/g, '<br/>')}</p>`;
+  return `<p>${escapeHtmlText(quotedPlain).replace(/\n/g, '<br/>')}</p>`;
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function buildReplyComposeHtml(parts: {

@@ -1,0 +1,20 @@
+$ node scripts/check-dangerous-defaults.js
+🔍 Checking for Dangerous Default Parameters
+
+📋 Scanning codebase for dangerous default parameters...
+
+✅ SAFE: IPC handler dangerous default - default is 'false' or not found
+✅ SAFE: customerService dangerous default - default is 'false' or not found
+✅ SAFE: SQLite service dangerous default - default is 'false' or not found
+
+📊 Summary:
+✅ No dangerous defaults found - all parameters default to "false"
+🎉 Good! This prevents expensive customer loading operations
+
+🔍 If you're still experiencing performance issues:
+1. Run the manual test: npm run electron:dev and check console logs
+2. Look for any direct calls to getAllCustomers(true) in your code
+3. Check if any components are explicitly passing includeCustomFields=true
+
+📖 For detailed manual testing instructions:
+   See: scripts/manual-performance-guide.md

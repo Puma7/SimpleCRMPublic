@@ -8337,6 +8337,64 @@ describe('renderer transport', () => {
     );
   });
 
+  test('GetComposeSignature selects the requested team member fallback', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 'agent-1', displayName: 'Anna', signatureHtml: '<p>Anna SIG</p>' },
+            { id: 'agent-2', displayName: 'Ben', signatureHtml: '<p>Ben SIG</p>' },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, {
+      accountId: 7,
+      teamMemberId: 'agent-2',
+    })).resolves.toEqual({ html: '<p>Ben SIG</p>' });
+  });
+
+  test('GetComposeSignature falls back to an existing team signature for a stale member id', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 'agent-1', displayName: 'Anna', signatureHtml: null },
+            { id: 'agent-2', displayName: 'Ben', signatureHtml: '<p>Ben SIG</p>' },
+          ],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, {
+      accountId: 7,
+      teamMemberId: 'deleted-agent',
+    })).resolves.toEqual({ html: '<p>Ben SIG</p>' });
+  });
+
   test('rejects unsupported IPC channels in HTTP mode before fetching', async () => {
     const fetchImpl = jest.fn();
     const transport = createHttpRendererTransport({

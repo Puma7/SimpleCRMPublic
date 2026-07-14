@@ -69,6 +69,11 @@ const COMPOSE_SMTP_COMMITTED_PREFIX = 'email_compose_smtp_ok:';
 const COMPOSE_SMTP_OUTBOX_VALUE = 'outbox';
 const COMPOSE_SMTP_SENT_VALUE = 'sent';
 const COMPOSE_SMTP_COMMITTED_VALUE = '1';
+const AUTO_SUBMITTED_DRAFT_PREFIX = 'email_auto_submitted:';
+
+export function autoSubmittedDraftKey(draftId: number): string {
+  return `${AUTO_SUBMITTED_DRAFT_PREFIX}${draftId}`;
+}
 
 export type ComposeSmtpOutboxState = 'none' | 'outbox' | 'committed';
 const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
@@ -584,6 +589,13 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         });
         const from = formatMailbox(account.displayName, account.emailAddress);
         const requestReceipt = values.requestReadReceipt ?? account.requestReadReceipt;
+        const autoSubmittedValues = await options.store.getSyncInfo({
+          workspaceId: input.workspaceId,
+          keys: [autoSubmittedDraftKey(values.draftMessageId)],
+        });
+        const autoSubmitted = autoSubmittedValues.get(
+          autoSubmittedDraftKey(values.draftMessageId),
+        ) === '1';
 
         if (outboundReview) {
           const review = await outboundReview.review({
@@ -660,6 +672,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           references: prepared.references ?? undefined,
           requestReadReceipt: requestReceipt,
           attachments,
+          ...(autoSubmitted ? { extraHeaders: ['Auto-Submitted: auto-replied'] } : {}),
           date: now(),
         }).toString('utf8');
 
@@ -1622,7 +1635,10 @@ async function finalizeSentDraft(input: {
   });
   await input.store.deleteSyncInfo({
     workspaceId: input.workspaceId,
-    keys: [smtpCommittedKey(input.draftMessageId)],
+    keys: [
+      smtpCommittedKey(input.draftMessageId),
+      autoSubmittedDraftKey(input.draftMessageId),
+    ],
   });
 
   if (input.inReplyToMessageId) {

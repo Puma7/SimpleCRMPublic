@@ -6,6 +6,7 @@ import "quill/dist/quill.snow.css"
 import "@/styles/compose-quill.css"
 import { SIGNATURE_QUILL_TOOLBAR } from "@shared/signature-quill-toolbar"
 import { cn } from "@/lib/utils"
+import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 type Props = {
   value: string
@@ -46,14 +47,14 @@ export function SignatureQuillEditor({
 
     if (value) {
       syncingExternalRef.current = true
-      quill.clipboard.dangerouslyPasteHTML(value)
+      quill.clipboard.dangerouslyPasteHTML(sanitizeEmailHtml(value))
       syncingExternalRef.current = false
     }
 
     quill.on("text-change", () => {
       if (syncingExternalRef.current) return
       const html = quill.root.innerHTML
-      onChangeRef.current(html === "<p><br></p>" ? "" : html)
+      onChangeRef.current(html === "<p><br></p>" ? "" : sanitizeEmailHtml(html))
     })
 
     return () => {
@@ -70,7 +71,7 @@ export function SignatureQuillEditor({
     if (current === normalized || (value === "" && current === "<p><br></p>")) return
     syncingExternalRef.current = true
     if (value) {
-      quill.clipboard.dangerouslyPasteHTML(value)
+      quill.clipboard.dangerouslyPasteHTML(sanitizeEmailHtml(value))
     } else {
       quill.setText("")
     }

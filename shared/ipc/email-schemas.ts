@@ -972,7 +972,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     ]),
   });
   set(IPCChannels.Email.GetComposeSignature, {
-    payload: z.object({ accountId: positiveInt }),
+    payload: z.object({
+      accountId: positiveInt,
+      teamMemberId: nonEmptyString.max(200).optional(),
+    }),
     result: z.object({ html: z.string().nullable() }),
   });
   set(IPCChannels.Email.ListAccountSignatures, { payload: voidPayload, result: recordArray });

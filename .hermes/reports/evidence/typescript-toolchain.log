@@ -1,0 +1,2 @@
+$ node scripts/check-typescript-toolchain.mjs
+TypeScript 7 toolchain declarations are consistent.

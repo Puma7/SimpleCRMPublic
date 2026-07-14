@@ -62,7 +62,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
-import { outboundReviewApprovedKey } from './mail-compose-send';
+import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 
@@ -4446,6 +4446,24 @@ async function sendWorkflowDraft(
       })
       .where('workspace_id', '=', context.workspaceId)
       .where('id', '=', draftId)
+      .execute();
+  }
+
+  if (context.direction === 'inbound') {
+    await trx
+      .insertInto('sync_info')
+      .values({
+        workspace_id: context.workspaceId,
+        key: autoSubmittedDraftKey(draftId),
+        value: '1',
+        last_updated: now,
+        source_row: serverWorkerSourceRow(),
+        imported_in_run_id: null,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc
+        .columns(['workspace_id', 'key'])
+        .doUpdateSet({ value: '1', last_updated: now, updated_at: now }))
       .execute();
   }
 

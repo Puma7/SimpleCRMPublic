@@ -1,6 +1,7 @@
 import {
   COMPOSE_QUOTE_MARKER,
   buildReplyComposeHtml,
+  buildQuotedBlockHtml,
   mergeComposeHtml,
   plainTextToReplyHtml,
   splitComposeHtml,
@@ -33,6 +34,15 @@ describe('compose-body', () => {
   it('converts plain text paragraphs to html', () => {
     expect(plainTextToReplyHtml('Zeile eins\n\nZeile zwei')).toBe(
       '<p>Zeile eins</p><p>Zeile zwei</p>',
+    );
+  });
+
+  it('escapes untrusted plain text before creating compose html', () => {
+    expect(plainTextToReplyHtml('<img src=x onerror=alert(1)> & "quoted"')).toBe(
+      '<p>&lt;img src=x onerror=alert(1)&gt; &amp; &quot;quoted&quot;</p>',
+    );
+    expect(buildQuotedBlockHtml('<script>alert(1)</script>')).toBe(
+      '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
     );
   });
 });

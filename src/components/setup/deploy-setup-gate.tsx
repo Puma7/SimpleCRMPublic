@@ -155,8 +155,8 @@ function DeployModeWizard({
     const invoke = window.electronAPI?.invoke
     setError(null)
     if (!invoke) {
-      if (mode === "server-install") {
-        setError("Server-Installation ist im Browser nicht verfuegbar.")
+      if (mode !== "server-client") {
+        setError("Dieser Modus ist nur in der Desktop-App verfuegbar.")
         return
       }
       const result = saveBrowserDeployConfig(buildPayload())
@@ -229,8 +229,9 @@ function DeployModeWizard({
               type="button"
               role="radio"
               aria-checked={active}
+              disabled={browserOnly && item.id !== "server-client"}
               className={cn(
-                "flex min-h-28 flex-col items-start justify-between rounded-md border bg-background p-4 text-left transition-colors",
+                "flex min-h-28 flex-col items-start justify-between rounded-md border bg-background p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                 active
                   ? "border-primary bg-primary/5 text-foreground"
                   : "border-border hover:border-primary/50",

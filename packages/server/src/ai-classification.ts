@@ -1,5 +1,10 @@
 import type { Kysely, Selectable } from 'kysely';
-import { addressesFromRecipientJson, parseOutboundReviewResponse } from '@simplecrm/core';
+import {
+  addressesFromRecipientJson,
+  normalizeAddressJson,
+  parseOutboundReviewResponse,
+} from '@simplecrm/core';
+import addressparser from 'nodemailer/lib/addressparser';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type {
@@ -167,6 +172,7 @@ const classificationMessageColumns = [
   'cc_json',
   'snippet',
   'body_text',
+  'raw_headers',
   'has_attachments',
   'attachments_json',
 ] as const;
@@ -761,6 +767,8 @@ export function createPostgresAiAgentPort(
             };
             if (input.createDraft) {
               if (!context.message) throw new Error('Nachricht fuer KI-Agent-Entwurf nicht gefunden');
+              const replyToAddress = firstReplyAddress(context.message);
+              if (!replyToAddress) throw new Error('Kein Antwort-Empfaenger ermittelbar');
               const draft = await createPostgresComposeDraftInTransaction(trx, {
                 workspaceId: input.workspaceId,
                 accountId: Number(context.message.account_id),
@@ -768,6 +776,7 @@ export function createPostgresAiAgentPort(
                   accountId: Number(context.message.account_id),
                   subject: replySubject(context.message.subject),
                   bodyText: output,
+                  toJson: { value: [{ address: replyToAddress }] },
                 },
               });
               if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
@@ -776,7 +785,10 @@ export function createPostgresAiAgentPort(
               // much a human edits it before sending.
               await trx
                 .updateTable('email_messages')
-                .set({ ai_suggestion_snapshot: output })
+                .set({
+                  ai_suggestion_snapshot: output,
+                  reply_parent_message_id: Number(context.message.id),
+                })
                 .where('workspace_id', '=', input.workspaceId)
                 .where('id', '=', Number(draft.message.id))
                 .execute();
@@ -907,7 +919,8 @@ export function createPostgresAiPickCannedPort(
               // Address the canned-response draft to the original sender; without
               // a recipient, scheduled-send would clear scheduled_send_at and the
               // auto-reply would never actually go out (silently no-op).
-              const replyToAddress = recipientAddresses(context.message.from_json).trim();
+              const replyToAddress = firstReplyAddress(context.message);
+              if (!replyToAddress) throw new Error('Kein Antwort-Empfaenger ermittelbar');
               const draft = await createPostgresComposeDraftInTransaction(trx, {
                 workspaceId: input.workspaceId,
                 accountId: Number(context.message.account_id),
@@ -915,16 +928,17 @@ export function createPostgresAiPickCannedPort(
                   accountId: Number(context.message.account_id),
                   subject: replySubject(context.message.subject),
                   bodyText: draftBodyForCreate,
-                  ...(replyToAddress
-                    ? { toJson: { value: [{ address: replyToAddress }] } }
-                    : {}),
+                  toJson: { value: [{ address: replyToAddress }] },
                 },
               });
               if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
               continuationVariables['draft.id'] = draft.message.id;
               await trx
                 .updateTable('email_messages')
-                .set({ ai_suggestion_snapshot: draftBodyForCreate })
+                .set({
+                  ai_suggestion_snapshot: draftBodyForCreate,
+                  reply_parent_message_id: Number(context.message.id),
+                })
                 .where('workspace_id', '=', input.workspaceId)
                 .where('id', '=', Number(draft.message.id))
                 .execute();
@@ -1168,6 +1182,26 @@ function recipientAddresses(value: unknown): string {
     return addressesFromRecipientJson(JSON.stringify(value));
   } catch {
     return '';
+  }
+}
+
+function firstRecipientAddress(value: unknown): string {
+  const normalized = normalizeAddressJson(value)
+  return normalized?.value[0]?.address.trim() ?? ''
+}
+
+function firstReplyAddress(
+  message: Pick<ClassificationMessageRow, 'from_json' | 'raw_headers'>,
+): string {
+  const fallback = firstRecipientAddress(message.from_json)
+  const rawHeaders = String(message.raw_headers ?? '').slice(0, 128_000)
+  if (!rawHeaders) return fallback
+  try {
+    const unfolded = rawHeaders.replace(/\r?\n[ \t]+/g, ' ')
+    const replyTo = unfolded.match(/^Reply-To:\s*([^\r\n]+)/im)?.[1] ?? ''
+    return addressparser(replyTo, { flatten: true })[0]?.address.trim() || fallback
+  } catch {
+    return fallback
   }
 }
 

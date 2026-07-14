@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { createSqliteMock } from './helpers/sqlite-mock';
 
 const { db, stmt } = createSqliteMock();
@@ -14,6 +15,7 @@ jest.mock('../../electron/sqlite-service', () => ({ getDb: () => db }));
 import {
   getAttachmentById,
   getAttachmentsRootForExport,
+  hasCompleteStoredAttachmentsForMessage,
   listAttachmentsForMessage,
   persistLocalComposeAttachments,
   persistParsedAttachments,
@@ -56,6 +58,18 @@ describe('email-message-attachments-store', () => {
     expect(stmt.run).toHaveBeenCalled();
   });
 
+  test('persistParsedAttachments rejects write failures so sync recovery retries', async () => {
+    const write = jest.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    await expect(persistParsedAttachments(17, [
+      { filename: 'invoice.pdf', content: Buffer.from('payload') },
+    ])).rejects.toThrow(/0 von 1 Anhängen/);
+    expect(db.prepare.mock.calls.map(([sql]) => String(sql)).join('\n'))
+      .not.toContain('SET has_attachments = 0');
+    write.mockRestore();
+  });
+
   test('persistLocalComposeAttachments stores sent compose files', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-att-'));
     const fp = path.join(dir, 'angebot.xlsx');
@@ -79,9 +93,100 @@ describe('email-message-attachments-store', () => {
     fs.mkdirSync(dir, { recursive: true });
     const fp = path.join(dir, 'keep.txt');
     fs.writeFileSync(fp, 'ok');
-    stmt.all.mockReturnValueOnce([{ id: 1, storage_path: fp }]);
+    stmt.all.mockReturnValueOnce([{
+      id: 1,
+      storage_path: fp,
+      content_sha256: '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881',
+    }]);
     await persistParsedAttachments(9, [{ filename: 'n.txt', content: Buffer.from('x') }]);
     expect(stmt.run).not.toHaveBeenCalled();
+  });
+
+  test('does not treat a partial attachment set as complete without raw recovery data', () => {
+    const dir = path.join(userData, 'email-attachments', '59');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'first.txt');
+    fs.writeFileSync(fp, 'first');
+    stmt.all.mockReturnValueOnce([{
+      id: 59,
+      message_id: 59,
+      filename_display: 'first.txt',
+      content_type: 'text/plain',
+      size_bytes: 5,
+      storage_path: fp,
+      created_at: '2026-07-14T12:00:00.000Z',
+    }]);
+
+    expect(hasCompleteStoredAttachmentsForMessage(59, JSON.stringify([
+      { filename: 'first.txt' },
+      { filename: 'missing.txt' },
+    ]))).toBe(false);
+  });
+
+  test('distinguishes omitted-only metadata from an inconsistent empty legacy list', () => {
+    stmt.all.mockReturnValueOnce([]).mockReturnValueOnce([]);
+
+    expect(hasCompleteStoredAttachmentsForMessage(60, JSON.stringify([]))).toBe(false);
+    expect(hasCompleteStoredAttachmentsForMessage(61, JSON.stringify({
+      stored: [],
+      omitted: [{ name: 'large.zip', size: 30_000_000, reason: 'too_large' }],
+    }))).toBe(true);
+  });
+
+  test('persistParsedAttachments hashes legacy rows instead of duplicating them', async () => {
+    const dir = path.join(userData, 'email-attachments', '29');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'legacy.txt');
+    const content = Buffer.from('legacy payload');
+    fs.writeFileSync(fp, content);
+    stmt.all.mockReturnValueOnce([{
+      id: 29,
+      storage_path: fp,
+      content_sha256: null,
+    }]);
+
+    await persistParsedAttachments(29, [{ filename: 'legacy.txt', content }]);
+
+    const expectedHash = crypto.createHash('sha256').update(content).digest('hex');
+    expect(stmt.run).toHaveBeenCalledWith(expectedHash, 29);
+    expect(db.prepare.mock.calls.map(([sql]) => String(sql)).join('\n'))
+      .not.toContain('INSERT OR IGNORE INTO email_message_attachments');
+  });
+
+  test('persistParsedAttachments preserves existing metadata when a retry omits another part', async () => {
+    const dir = path.join(userData, 'email-attachments', '39');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'keep.txt');
+    const content = Buffer.from('keep me');
+    fs.writeFileSync(fp, content);
+    stmt.all.mockReturnValueOnce([{
+      id: 39,
+      storage_path: fp,
+      content_sha256: crypto.createHash('sha256').update(content).digest('hex'),
+    }]);
+
+    await persistParsedAttachments(39, [
+      { filename: 'keep.txt', content },
+      { filename: 'huge.bin', content: Buffer.alloc(26 * 1024 * 1024) },
+    ]);
+
+    const metadataCall = stmt.run.mock.calls.find(([value]) => typeof value === 'string' && value.startsWith('{'));
+    expect(JSON.parse(metadataCall?.[0] as string)).toMatchObject({
+      stored: [{ name: 'keep.txt', size: content.length }],
+      omitted: [{ name: 'huge.bin', reason: 'too_large' }],
+    });
+  });
+
+  test('persistParsedAttachments repairs a stale database row whose file is missing', async () => {
+    stmt.all.mockReturnValueOnce([{
+      id: 91,
+      storage_path: path.join(userData, 'missing-attachment.bin'),
+      content_sha256: 'stale',
+    }]);
+    await persistParsedAttachments(19, [{ filename: 'replacement.bin', content: Buffer.from('new') }]);
+    expect(db.prepare.mock.calls.map(([sql]) => String(sql)).join('\n'))
+      .toContain('DELETE FROM email_message_attachments WHERE id = ?');
+    expect(stmt.run).toHaveBeenCalledWith(91);
   });
 
   test('persistParsedAttachments only omitted meta', async () => {

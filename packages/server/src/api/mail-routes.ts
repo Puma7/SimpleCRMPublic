@@ -45,6 +45,7 @@ import {
   requirePrincipal,
 } from './http';
 import { JOB_STALE_LOCK_SECONDS } from '../jobs';
+import { autoSubmittedDraftKey } from '../mail-compose-send';
 import { handleMailMetadataReadRoute } from './mail-metadata-routes';
 
 const DEFAULT_MESSAGE_LIMIT = 50;
@@ -704,12 +705,18 @@ async function handleComposeDraftUpdate(
     values: parsed.values,
   });
   if (!result.ok) return composeDraftMutationError(result.reason);
-  if (parsed.markReplyParentDone !== undefined) {
-    if (!ports.syncInfo) return error(503, 'sync_info_unavailable', 'Sync-info API nicht konfiguriert');
+  if (ports.syncInfo) {
     await ports.syncInfo.setMany({
       workspaceId: principal.workspaceId,
-      values: { [`compose_mark_parent_done:${messageId}`]: parsed.markReplyParentDone ? '1' : '0' },
+      values: {
+        [autoSubmittedDraftKey(messageId)]: null,
+        ...(parsed.markReplyParentDone === undefined
+          ? {}
+          : { [`compose_mark_parent_done:${messageId}`]: parsed.markReplyParentDone ? '1' : '0' }),
+      },
     });
+  } else if (parsed.markReplyParentDone !== undefined) {
+    return error(503, 'sync_info_unavailable', 'Sync-info API nicht konfiguriert');
   }
   return data(200, { success: true, message: sanitizeEmailMessage(result.message, true) });
 }

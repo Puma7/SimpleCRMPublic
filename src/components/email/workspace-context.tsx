@@ -216,13 +216,13 @@ const VALID_MAIL_VIEWS: MailView[] = [
 ]
 const VALID_MESSAGE_DONE_FILTERS: MessageDoneFilter[] = ["all", "open", "done"]
 
-const SERVER_ONLY_SETTINGS_TABS = new Set<SettingsTab>(["tracking"])
+const SERVER_ONLY_SETTINGS_TABS = new Set<SettingsTab>(["authSecurity", "userGroups", "tracking"])
 
 export function normalizeSettingsTab(
   raw: string,
   serverClientMode = isServerClientMode(),
 ): SettingsTab | null {
-  if (raw === "smtp" || raw === "oauth") return "accounts"
+  if (raw === "smtp" || raw === "oauth" || raw === "accountMail") return "accounts"
   if (VALID_SETTINGS_TAB_IDS.includes(raw as SettingsTab)) {
     const tab = raw as SettingsTab
     return !serverClientMode && SERVER_ONLY_SETTINGS_TABS.has(tab) ? null : tab
@@ -241,11 +241,14 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "automation",
   "team",
   "appUsers",
+  "authSecurity",
   "userGroups",
   "canned",
   "prompts",
   "export",
   "diagnostics",
+  "pgp",
+  "auditLog",
   "threadTools",
   "snooze",
   "misc",

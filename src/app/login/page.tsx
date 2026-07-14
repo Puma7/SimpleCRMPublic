@@ -11,6 +11,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { hasElectron, invokeIpc } from "@/components/email/types"
 import { isValidEmail } from "@/lib/contact-utils"
 import {
+  clearCaptchaChallenge,
   LoginCaptchaGate,
   readCaptchaChallenge,
   storeCaptchaChallenge,
@@ -197,12 +198,21 @@ export default function LoginPage() {
     }
     const normalizedUsername = username.trim()
     const loginIdentity = serverSetupMode ? normalizedUsername.toLowerCase() : normalizedUsername
-    const result = await serverAuth.loginAdvanced({
-      email: loginIdentity,
-      password: passphrase,
-      pin: pinValue,
-      captchaChallenge: readCaptchaChallenge() || undefined,
-    })
+    const captchaChallenge = readCaptchaChallenge()
+    let result
+    try {
+      result = await serverAuth.loginAdvanced({
+        email: loginIdentity,
+        password: passphrase,
+        pin: pinValue,
+        captchaChallenge: captchaChallenge || undefined,
+      })
+    } finally {
+      if (captchaChallenge) {
+        clearCaptchaChallenge()
+        setCaptchaPassed(false)
+      }
+    }
     if (result.kind === "mfa_required") {
       setMfaChallengeToken(result.mfaChallengeToken)
       setMfaMethod(result.mfaMethod)

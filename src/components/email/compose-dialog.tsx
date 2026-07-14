@@ -8,6 +8,7 @@ import {
   ComposeQuillEditor,
   type ComposeQuillEditorHandle,
 } from "./compose-quill-editor"
+import { SignatureQuillEditor } from "./signature-quill-editor"
 import {
   recipientFieldFromJson,
   validateRecipientField,
@@ -65,6 +66,8 @@ import {
   mergeComposeZones,
   mergeEditorAndSignature,
   plainTextToReplyHtml,
+  sanitizeComposeHtmlPreservingZones,
+  splitAndSanitizeComposeHtml,
   splitComposeHtml,
   splitComposeZones,
   splitEditorAndSignature,
@@ -132,6 +135,9 @@ import { useComposeDialogSize } from "./use-compose-dialog-size"
 import { ComposeOutboundPreviewDialog } from "./compose-outbound-preview-dialog"
 import { useNavigate } from "@tanstack/react-router"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
+import { useAuth } from "@/components/auth/auth-context"
+import { resolveComposeTeamMemberId } from "@shared/compose-sender-identity"
+import { prepareScheduledSend } from "@shared/compose-scheduled-send"
 
 type Props = {
   accounts: EmailAccount[]
@@ -165,11 +171,11 @@ function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
   attachmentPaths: string[]
 } {
   const html = existing.body_html
-    ? sanitizeComposeHtml(existing.body_html)
+    ? existing.body_html
     : existing.body_text
       ? sanitizeComposeHtml(`<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`)
       : ""
-  const split = splitEditorAndSignature(html)
+  const split = splitAndSanitizeComposeHtml(html, sanitizeComposeHtml)
   return {
     replyToId:
       (existing as EmailMessage & { reply_parent_message_id?: number | null })
@@ -211,6 +217,7 @@ function localPathFromDroppedFile(file: File): string | null {
 }
 
 export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, onSent }: Props) {
+  const { user } = useAuth()
   const {
     composeIntent,
     setComposeIntent,
@@ -243,6 +250,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [subject, setSubject] = useState("")
   const [editorHtml, setEditorHtml] = useState("")
   const [signatureHtml, setSignatureHtml] = useState("")
+  const [composeTeamMemberId, setComposeTeamMemberId] = useState<string | null>(null)
+  const [signatureEditing, setSignatureEditing] = useState(false)
+  const [signatureManuallyEdited, setSignatureManuallyEdited] = useState(false)
+  const [assigningIdentity, setAssigningIdentity] = useState(false)
   const [quotedHtml, setQuotedHtml] = useState("")
   const [sending, setSending] = useState(false)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
@@ -270,6 +281,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const editorRef = useRef<ComposeQuillEditorHandle>(null)
   const serverAttachmentInputRef = useRef<HTMLInputElement>(null)
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const signatureRequestRef = useRef(0)
   /** Bumped to re-run draft bootstrap (e.g. „Von“-Konto gewechselt) without stale-effect cancel. */
   const [draftBootstrapGen, setDraftBootstrapGen] = useState(0)
   const [draftBootstrapping, setDraftBootstrapping] = useState(false)
@@ -347,6 +359,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       initialisedDraftKeyRef.current = null
       setDraftBootstrapping(false)
       setKeepReplyOpenInInbox(false)
+      setComposeTeamMemberId(null)
+      setSignatureEditing(false)
+      setSignatureManuallyEdited(false)
+      setAssigningIdentity(false)
       return
     }
     let messageAccountId: number | undefined
@@ -396,7 +412,14 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           }
           initialisedDraftKeyRef.current = draftInitKey
           setComposeAccountId(existing.account_id)
+          setComposeTeamMemberId(resolveComposeTeamMemberId(teamMembers, {
+            assignedTo: existing.assigned_to,
+            userId: user?.id,
+            username: user?.username,
+            displayName: user?.displayName,
+          }))
           const hydrated = hydrateComposeFieldsFromDraftMessage(existing)
+          setSignatureManuallyEdited(true)
           setReplyToId(hydrated.replyToId)
           setTo(recipientFieldFromJson(existing.to_json))
           setCc(recipientFieldFromJson(existing.cc_json))
@@ -436,7 +459,14 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             initialisedDraftKeyRef.current = draftInitKey
             setDraftId(session.draftId)
             setComposeAccountId(resumed.account_id)
+            setComposeTeamMemberId(resolveComposeTeamMemberId(teamMembers, {
+              assignedTo: resumed.assigned_to,
+              userId: user?.id,
+              username: user?.username,
+              displayName: user?.displayName,
+            }))
             const hydrated = hydrateComposeFieldsFromDraftMessage(resumed)
+            setSignatureManuallyEdited(true)
             setReplyToId(hydrated.replyToId)
             setTo(recipientFieldFromJson(resumed.to_json))
             setCc(recipientFieldFromJson(resumed.cc_json))
@@ -499,9 +529,21 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             ).trim()}`
           : ""
 
+        const initialTeamMemberId = resolveComposeTeamMemberId(teamMembers, {
+          assignedTo: sourceMsg?.assigned_to,
+          userId: user?.id,
+          username: user?.username,
+          displayName: user?.displayName,
+        })
+        setComposeTeamMemberId(initialTeamMemberId)
+        setSignatureManuallyEdited(false)
+
         const sigRes = await invokeRenderer(
           IPCChannels.Email.GetComposeSignature,
-          { accountId: accountIdAtOpen },
+          {
+            accountId: accountIdAtOpen,
+            ...(initialTeamMemberId ? { teamMemberId: initialTeamMemberId } : {}),
+          },
         ) as { html: string | null }
         let customerForSig: CustomerOpt | null = null
         let customerSalutation: string | null = null
@@ -520,12 +562,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           }
         }
         const accountRow = accounts.find((a) => a.id === accountIdAtOpen)
+        const selectedTeamMember = teamMembers.find((member) => member.id === initialTeamMemberId)
         const sigRaw =
           sigRes.html && composeIntent.mode !== "forward"
             ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
                 accountDisplayName: accountRow?.display_name ?? "",
                 accountEmail: accountRow?.email_address ?? "",
-                teamMemberDisplayName: teamMembers[0]?.display_name ?? null,
+                teamMemberDisplayName: selectedTeamMember?.display_name ?? null,
                 customerName: customerForSig?.name ?? "",
                 customerFirstName: customerForSig?.firstName ?? "",
                 customerEmail: customerForSig?.email ?? "",
@@ -541,6 +584,15 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         if (cancelled) return
         if (res.success && res.id != null) {
           setDraftId(res.id)
+          if (initialTeamMemberId) {
+            const assignment = await invokeRenderer(IPCChannels.Email.AssignMessage, {
+              messageId: res.id,
+              teamMemberId: initialTeamMemberId,
+            }) as { success: boolean; error?: string }
+            if (!assignment.success) {
+              toast.warning(assignment.error ?? "Bearbeiter konnte nicht zugeordnet werden.")
+            }
+          }
           const replyParentId =
             composeIntent.mode === "reply" || composeIntent.mode === "reply-all"
               ? sourceMsg?.id ?? null
@@ -635,7 +687,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     return () => {
       cancelled = true
     }
-  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, draftBootstrapGen, clearComposeSession, setComposeSession])
+  }, [isOpen, composeIntent, selectedAccountId, accounts, teamMembers, user, draftBootstrapGen, clearComposeSession, setComposeSession])
 
   const getFullComposeHtml = useCallback(() => {
     const editable = editorRef.current?.getHtml() ?? editorHtml
@@ -644,12 +696,16 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const getEditorHtml = getFullComposeHtml
 
-  const reloadComposeSignature = useCallback(async () => {
+  const reloadComposeSignature = useCallback(async (teamMemberId = composeTeamMemberId) => {
     if (!isOpen || composeAccountId == null || composeIntent.mode === "forward") return
+    const requestId = ++signatureRequestRef.current
     try {
       const sigRes = await invokeRenderer(
         IPCChannels.Email.GetComposeSignature,
-        { accountId: composeAccountId },
+        {
+          accountId: composeAccountId,
+          ...(teamMemberId ? { teamMemberId } : {}),
+        },
       ) as { html: string | null }
       const sourceMsg = getComposeSourceMessage(composeIntent)
       let customerForSig: CustomerOpt | null = null
@@ -665,29 +721,33 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         }
       }
       const accountRow = accounts.find((a) => a.id === composeAccountId)
+      const selectedTeamMember = teamMembers.find((member) => member.id === teamMemberId)
       const sigRaw = sigRes.html
         ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
           accountDisplayName: accountRow?.display_name ?? "",
           accountEmail: accountRow?.email_address ?? "",
-          teamMemberDisplayName: teamMembers[0]?.display_name ?? null,
+          teamMemberDisplayName: selectedTeamMember?.display_name ?? null,
           customerName: customerForSig?.name ?? "",
           customerFirstName: customerForSig?.firstName ?? "",
           customerEmail: customerForSig?.email ?? "",
         }))
         : ""
+      if (requestId !== signatureRequestRef.current) return
       setSignatureHtml(sigRaw ? sanitizeComposeHtml(sigRaw) : "")
+      setSignatureManuallyEdited(false)
     } catch {
       /* ignore */
     }
-  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers])
+  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers, composeTeamMemberId])
 
   useEffect(() => {
     if (accountsRevision === 0) return
+    if (signatureManuallyEdited) return
     void reloadComposeSignature()
-  }, [accountsRevision, reloadComposeSignature])
+  }, [accountsRevision, reloadComposeSignature, signatureManuallyEdited])
 
   useEffect(() => {
-    if (!isOpen || draftBootstrapping || composeIntent.mode === "forward") return
+    if (!isOpen || draftBootstrapping || composeIntent.mode === "forward" || signatureManuallyEdited) return
     if (signatureHtml.trim()) return
     void reloadComposeSignature()
   }, [
@@ -695,8 +755,29 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     draftBootstrapping,
     composeIntent.mode,
     signatureHtml,
+    signatureManuallyEdited,
     reloadComposeSignature,
   ])
+
+  const handleComposeTeamMemberChange = useCallback(async (teamMemberId: string) => {
+    if (draftId == null || assigningIdentity || teamMemberId === composeTeamMemberId) return
+    setAssigningIdentity(true)
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.AssignMessage, {
+        messageId: draftId,
+        teamMemberId,
+      }) as { success: boolean; error?: string }
+      if (!result.success) throw new Error(result.error ?? "Bearbeiter konnte nicht zugeordnet werden.")
+      setComposeTeamMemberId(teamMemberId)
+      setSignatureEditing(false)
+      setSignatureManuallyEdited(false)
+      await reloadComposeSignature(teamMemberId)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Bearbeiter konnte nicht zugeordnet werden.")
+    } finally {
+      setAssigningIdentity(false)
+    }
+  }, [assigningIdentity, composeTeamMemberId, draftId, reloadComposeSignature])
 
   const composeFromDisplay = (() => {
     const account = accounts.find((a) => a.id === composeAccountId)
@@ -792,6 +873,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   )
 
   const closeDialog = () => {
+    signatureRequestRef.current += 1
     clearComposeSession()
     setComposeIntent({ mode: "closed" })
     setComposeAccountId(null)
@@ -803,6 +885,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     setSubject("")
     setEditorHtml("")
     setSignatureHtml("")
+    setComposeTeamMemberId(null)
+    setSignatureEditing(false)
+    setSignatureManuallyEdited(false)
+    setAssigningIdentity(false)
     setQuotedHtml("")
     setAttachmentPaths([])
     setAttachmentDropActive(false)
@@ -884,7 +970,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       if (draftId == null) return false
       try {
         const rawHtml = getFullComposeHtml()
-        const safeHtml = sanitizeComposeHtml(rawHtml)
+        const safeHtml = sanitizeComposeHtmlPreservingZones(rawHtml, sanitizeComposeHtml)
         const plain = stripHtmlToText(safeHtml)
         await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
           messageId: draftId,
@@ -1349,22 +1435,6 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           <DialogDescription>
             Änderungen werden nach kurzer Pause automatisch als Entwurf gespeichert.
           </DialogDescription>
-          {isReplyCompose && replyToId != null ? (
-            <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-left text-sm">
-              <Checkbox
-                className="mt-0.5"
-                checked={keepReplyOpenInInbox}
-                onCheckedChange={(v) => setKeepReplyOpenInInbox(v === true)}
-              />
-              <span>
-                <span className="font-medium">Im Posteingang offen lassen</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Standard: Ursprungsnachricht wird nach dem Senden als erledigt markiert. Aktivieren,
-                  wenn Sie sie als Erinnerung offen behalten möchten.
-                </span>
-              </span>
-            </label>
-          ) : null}
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-2 pt-1">
@@ -1439,7 +1509,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             </div>
           ) : null}
           <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-2">
-            <p className="text-xs font-medium text-foreground">Text-Hilfen</p>
+            <p className="text-xs font-medium text-foreground">Text & Optionen</p>
             <div className="flex flex-col gap-2">
             <div className="space-y-1">
               <div className="flex items-center gap-1">
@@ -1637,6 +1707,42 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             </Button>
             </div>
             </div>
+            {teamMembers.length > 0 || (isReplyCompose && replyToId != null) ? (
+              <div className="flex flex-wrap items-end gap-x-5 gap-y-2 border-t border-border/60 pt-2">
+                {teamMembers.length > 0 ? (
+                  <div className="space-y-1">
+                    <Label htmlFor="compose-team-member" className="text-xs text-muted-foreground">
+                      Signatur / Bearbeiter
+                    </Label>
+                    <Select
+                      value={composeTeamMemberId ?? undefined}
+                      disabled={draftId == null || draftBootstrapping || assigningIdentity}
+                      onValueChange={(id) => void handleComposeTeamMemberChange(id)}
+                    >
+                      <SelectTrigger id="compose-team-member" className="h-8 w-[220px] text-xs">
+                        <SelectValue placeholder="Identität wählen…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {teamMembers.map((member) => (
+                          <SelectItem key={member.id} value={member.id}>
+                            {member.display_name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+                {isReplyCompose && replyToId != null ? (
+                  <label className="flex h-8 cursor-pointer items-center gap-2 text-xs text-foreground">
+                    <Checkbox
+                      checked={keepReplyOpenInInbox}
+                      onCheckedChange={(value) => setKeepReplyOpenInInbox(value === true)}
+                    />
+                    Im Posteingang offen lassen
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
             </div>
           </div>
 
@@ -1704,7 +1810,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           </div>
 
           <div
-            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col rounded-md border bg-background [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-muted"
+            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col overflow-hidden rounded-md border bg-background shadow-sm [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-background"
             title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
           >
             <ComposeQuillEditor
@@ -1717,17 +1823,38 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               <div className="compose-signature-readonly shrink-0 border-t border-border bg-muted/40">
                 <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1">
                   <span className="text-[11px] font-medium text-muted-foreground">Signatur</span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-2 text-[11px]"
-                    onClick={handleEditSignature}
-                  >
-                    Bearbeiten
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => setSignatureEditing((current) => !current)}
+                    >
+                      {signatureEditing ? "Fertig" : "Für diese E-Mail bearbeiten"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={handleEditSignature}
+                    >
+                      Standard ändern
+                    </Button>
+                  </div>
                 </div>
-                {signatureHtml ? (
+                {signatureEditing ? (
+                  <SignatureQuillEditor
+                    value={signatureHtml}
+                    onChange={(html) => {
+                      setSignatureHtml(html)
+                      setSignatureManuallyEdited(true)
+                    }}
+                    className="min-h-[7rem] rounded-none border-0 [&_.ql-container]:border-x-0 [&_.ql-container]:border-b-0 [&_.ql-toolbar]:border-x-0 [&_.ql-toolbar]:border-t-0"
+                    placeholder="Signatur für diese E-Mail…"
+                  />
+                ) : signatureHtml ? (
                   <div
                     className="max-h-24 overflow-y-auto px-3 py-2 text-xs text-muted-foreground [&_a]:text-primary"
                     dangerouslySetInnerHTML={{ __html: signatureHtml }}
@@ -1936,12 +2063,17 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   if (!draftId || !scheduledSendAt) return
                   void (async () => {
                     try {
-                      await saveDraft({ silent: true })
-                      const iso = new Date(scheduledSendAt).toISOString()
-                      await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
+                      const iso = await prepareScheduledSend(
+                        scheduledSendAt,
+                        () => saveDraft({ silent: true }),
+                      )
+                      const result = await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
                         messageId: draftId,
                         sendAt: iso,
-                      })
+                      }) as { success: boolean; error?: string }
+                      if (!result.success) {
+                        throw new Error(result.error ?? "Versand konnte nicht geplant werden.")
+                      }
                       toast.success("Versand geplant — siehe „Späterer Versand“.")
                       setMailView("scheduled_send")
                       const contextId = getComposeContextMessageId(composeIntent, replyToId)

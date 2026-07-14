@@ -15,6 +15,7 @@ import {
 } from "@/services/transport"
 import type { TeamMember } from "../types"
 import { useMailWorkspace } from "../workspace-context"
+import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 export function TeamPanel() {
   const { bumpAccountsRevision } = useMailWorkspace()
@@ -53,7 +54,10 @@ export function TeamPanel() {
     await invokeRenderer(IPCChannels.Email.SaveTeamMember, {
       id: payload.id,
       displayName: payload.displayName,
-      signatureHtml: payload.signatureHtml,
+      signatureHtml:
+        typeof payload.signatureHtml === "string"
+          ? sanitizeEmailHtml(payload.signatureHtml)
+          : payload.signatureHtml,
     })
     await load()
   }
@@ -85,7 +89,7 @@ export function TeamPanel() {
                     size="sm"
                     onClick={() => {
                       setEditingId(t.id)
-                      setEditSignature(t.signature_html ?? "")
+                      setEditSignature(sanitizeEmailHtml(t.signature_html ?? ""))
                     }}
                   >
                     Signatur

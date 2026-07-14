@@ -417,11 +417,21 @@ export function registerAiNodes(register: Reg): void {
         'ai.agent.sources': knowledgeSourcesLabel(chunks),
       };
       if (config.createDraft !== false && ctx.message) {
+        const replyTo = primaryReplyRecipient(ctx.message);
+        if (!replyTo) {
+          return { status: 'error', message: 'Kein Antwort-Empfänger ermittelbar' };
+        }
+        const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse.js');
+        const { updateComposeDraft } = await import('../../email/email-store.js');
         const id = createComposeDraft({
           accountId: ctx.message.account_id,
           subject: ctx.message.subject?.startsWith('Re:') ? ctx.message.subject : `Re: ${ctx.message.subject ?? ''}`,
           bodyText: out,
+          toJson: recipientJsonFromField(replyTo),
         });
+        if (ctx.messageId != null) {
+          updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
+        }
         variables['draft.id'] = id;
       }
       return { status: 'ok', variables };

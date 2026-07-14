@@ -74,6 +74,7 @@ export function useEmailMessages() {
   const loadGenerationRef = useRef(0)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedMessageIdRef = useRef<number | null>(null)
+  const selectionRequestRef = useRef(0)
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -121,6 +122,7 @@ export function useEmailMessages() {
 
   const selectMessageById = useCallback(
     async (targetId: number | null, scroll = false) => {
+      const requestId = ++selectionRequestRef.current
       if (targetId == null) {
         setSelectedMessage(null)
         return
@@ -136,8 +138,10 @@ export function useEmailMessages() {
           IPCChannels.Email.GetMessage,
           row.id,
         ) as EmailMessage | null
+        if (requestId !== selectionRequestRef.current) return
         setSelectedMessage(full ?? row)
       } catch {
+        if (requestId !== selectionRequestRef.current) return
         setSelectedMessage(row)
       }
     },
@@ -200,6 +204,7 @@ export function useEmailMessages() {
       const append = opts?.append ?? false
       const silent = opts?.silent ?? false
       const generation = append ? loadGenerationRef.current : ++loadGenerationRef.current
+      if (!append && !silent) selectionRequestRef.current += 1
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
       if (append) setLoadingMore(true)
@@ -314,7 +319,7 @@ export function useEmailMessages() {
             await selectMessageById(null, true)
           }
         } else if (!append && keepId == null && !silent) {
-          setSelectedMessage(null)
+          await selectMessageById(null, true)
         }
       } catch (e) {
         logError("use-email-messages: load", e)
@@ -354,7 +359,9 @@ export function useEmailMessages() {
       )
     } else {
       loadGenerationRef.current += 1
+      selectionRequestRef.current += 1
       setMessages([])
+      setSelectedMessage(null)
       setLoadingMessages(false)
       setLoadingMore(false)
     }
@@ -652,16 +659,21 @@ export function useEmailMessages() {
 
   const openMessage = useCallback(
     async (m: EmailMessage) => {
+      const requestId = ++selectionRequestRef.current
       try {
         const full = await invokeRenderer(IPCChannels.Email.GetMessage, m.id) as EmailMessage | null
-        setSelectedMessage(full ?? m)
+        if (requestId === selectionRequestRef.current) {
+          setSelectedMessage(full ?? m)
+        }
         if (!m.seen_local && m.uid >= 0) {
           await invokeRenderer(IPCChannels.Email.SetMessageSeen, { messageId: m.id, seen: true })
           patchMessageInList(m.id, { seen_local: 1 })
         }
       } catch (e) {
         logError("use-email-messages: open message", e)
-        setSelectedMessage(m)
+        if (requestId === selectionRequestRef.current) {
+          setSelectedMessage(m)
+        }
       }
     },
     [setSelectedMessage, patchMessageInList],
@@ -669,12 +681,18 @@ export function useEmailMessages() {
 
   const refreshCurrentMessage = useCallback(async () => {
     if (!selectedMessage) return
+    const requestId = selectionRequestRef.current
+    const messageId = selectedMessage.id
     try {
       const full = await invokeRenderer(
         IPCChannels.Email.GetMessage,
-        selectedMessage.id,
+        messageId,
       ) as EmailMessage | null
-      if (full) {
+      if (
+        full &&
+        requestId === selectionRequestRef.current &&
+        selectedMessageIdRef.current === messageId
+      ) {
         setSelectedMessage(full)
         patchMessageInList(full.id, full)
       }

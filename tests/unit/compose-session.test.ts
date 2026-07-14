@@ -3,6 +3,7 @@ import {
   buildComposeSessionKey,
   buildComposeSessionSnapshot,
 } from '../../shared/compose-session';
+import { resolveComposeTeamMemberId } from '../../shared/compose-sender-identity';
 
 describe('compose session keys', () => {
   it('buildComposeSessionKey is stable across bootstrap generations', () => {
@@ -34,5 +35,24 @@ describe('compose session keys', () => {
     expect(snap.keepReplyOpenInInbox).toBe(true);
     expect(snap.pgpEncrypt).toBe(true);
     expect(snap.pgpSign).toBe(false);
+  });
+});
+
+describe('compose sender identity', () => {
+  const members = [
+    { id: 'agent-1', display_name: 'Anna Agent' },
+    { id: 'user-2', display_name: 'Ben Bearbeiter' },
+  ];
+
+  it('keeps the team member already assigned to the source or draft', () => {
+    expect(resolveComposeTeamMemberId(members, { assignedTo: 'agent-1', userId: 'user-2' }))
+      .toBe('agent-1');
+  });
+
+  it('matches the authenticated user and otherwise leaves the draft unassigned', () => {
+    expect(resolveComposeTeamMemberId(members, { userId: 'user-2' })).toBe('user-2');
+    expect(resolveComposeTeamMemberId(members, { displayName: 'ben bearbeiter' })).toBe('user-2');
+    expect(resolveComposeTeamMemberId(members, { userId: 'missing' })).toBeNull();
+    expect(resolveComposeTeamMemberId(members, {})).toBeNull();
   });
 });

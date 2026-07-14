@@ -1,0 +1,14 @@
+$ node scripts/native-runtime-manager.mjs status
+{
+  "betterSqlite3": "12.11.2",
+  "current": "node",
+  "node": {
+    "abi": "141",
+    "cached": true
+  },
+  "electron": {
+    "version": "43.1.0",
+    "abi": "148",
+    "cached": true
+  }
+}

@@ -293,8 +293,9 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       longHelp:
         'Agent 1 der Zwei-Stufen-KI-Antwort: schreibt mit deinem Auftrag (System-Prompt) und der Wissensbasis ' +
         'eine vollständige Antwort, ergänzt Anrede und Konto-Signatur und legt einen korrekt adressierten ' +
-        'Antwort-Entwurf mit Thread-Bezug an. Der Entwurf wird als automatische Antwort markiert (RFC 3834). ' +
-        'Versendet wird hier noch nichts — danach „KI-Gegenprüfung (Entwurf)" und „Entwurf versenden" anschließen.',
+        'Antwort-Entwurf mit Thread-Bezug an. Versendet wird hier noch nichts — danach „KI-Gegenprüfung (Entwurf)" ' +
+        'und „Entwurf versenden" anschließen. Beim automatischen Versand wird die Mail als automatische Antwort ' +
+        'gekennzeichnet (RFC 3834).',
       prerequisites: [
         'Ein KI-Profil mit API-Schlüssel (Einstellungen → E-Mail → KI).',
         'Empfohlen: eine Wissensbasis mit FAQ/Richtlinien, damit die Antworten fachlich stimmen.',
@@ -485,8 +486,8 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         type: 'boolean',
         label: 'Antwort-Entwurf direkt anlegen',
         help:
-          'Legt die KI-Antwort als Antwort-Entwurf („Re: …“) an und setzt die Variable draft.id — ' +
-          'die kann „Entwurf versenden“ direkt verschicken. Achtung: der Entwurf hat noch KEINEN Empfänger eingetragen.',
+          'Legt die KI-Antwort als adressierten Antwort-Entwurf („Re: …“) mit Thread-Bezug an und setzt draft.id — ' +
+          '„Entwurf versenden“ kann ihn anschließend direkt verschicken.',
       },
     ],
     outputs: [

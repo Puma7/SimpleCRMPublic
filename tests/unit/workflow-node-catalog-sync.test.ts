@@ -92,6 +92,13 @@ describe('Workflow-Katalog-Synchronität', () => {
     }
   });
 
+  test('KI-Agent dokumentiert den tatsächlich adressierten Antwort-Entwurf', () => {
+    const agent = catalog.find((entry) => entry.type === 'ai.agent');
+    const createDraftHelp = agent?.fields?.find((field) => field.key === 'createDraft')?.help ?? '';
+    expect(createDraftHelp).toContain('adressiert');
+    expect(createDraftHelp).not.toContain('KEINEN Empfänger');
+  });
+
   test('interpolate nur auf freien Textfeldern (nie code/select/boolean/number/variableName/variableRef)', () => {
     const forbidden = new Set([
       'code',
