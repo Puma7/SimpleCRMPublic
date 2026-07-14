@@ -1788,11 +1788,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Email.EmailGdprExport, ([payload]) => {
     const input = objectPayload(payload, "email GDPR export payload")
     const skipAttachments = optionalBoolean(input.skipAttachments, "email GDPR export skipAttachments flag")
+    const includeSensitiveTracking = optionalBoolean(
+      input.includeSensitiveTracking,
+      "email GDPR export includeSensitiveTracking flag",
+    )
     return {
       method: "GET",
       path: "/api/v1/email/gdpr-export",
       query: pruneQueryUndefined({
         skipAttachments: skipAttachments === true ? true : undefined,
+        includeSensitiveTracking: includeSensitiveTracking === true ? true : undefined,
       }),
       responseType: "blob",
       transform: (body, context) => ({
@@ -1938,6 +1943,40 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         spamDecisionSource: result.decision?.source ?? result.security?.spamDecisionSource ?? null,
       }
     },
+  })],
+  [IPCChannels.Email.GetEmailTrackingSettings, () => ({
+    method: "GET",
+    path: "/api/v1/email/tracking/settings",
+    transform: (body) => dataBody<Record<string, unknown>>(body),
+  })],
+  [IPCChannels.Email.SetEmailTrackingSettings, ([payload]) => ({
+    method: "PATCH",
+    path: "/api/v1/email/tracking/settings",
+    body: objectPayload(payload, "email tracking settings payload"),
+    transform: (body) => dataBody<Record<string, unknown>>(body),
+  })],
+  [IPCChannels.Email.GetMessageTracking, ([payload]) => {
+    const input = objectPayload(payload, "email tracking timeline payload")
+    return {
+      method: "GET",
+      path: `/api/v1/email/messages/${positiveId(input.messageId, "email message id")}/tracking`,
+      query: pruneQueryUndefined({
+        includeSensitive: input.includeSensitive === undefined
+          ? undefined
+          : optionalBoolean(input.includeSensitive, "include sensitive email tracking metadata"),
+      }),
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.RevokeMessageTracking, ([messageId]) => ({
+    method: "POST",
+    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking/revoke`,
+    transform: (body) => dataBody<{ revoked: true }>(body),
+  })],
+  [IPCChannels.Email.DeleteMessageTracking, ([messageId]) => ({
+    method: "DELETE",
+    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking`,
+    transform: () => ({ success: true }),
   })],
   [IPCChannels.Email.GetMessageRawHeaders, ([messageId]) => ({
     method: "GET",

@@ -1,4 +1,10 @@
-import type { WorkflowNodeCatalogEntry, WorkflowTemplate } from '@simplecrm/core';
+import type {
+  EmailEvidenceConfidence,
+  EmailEvidenceEventType,
+  EmailEvidenceSummary,
+  WorkflowNodeCatalogEntry,
+  WorkflowTemplate,
+} from '@simplecrm/core';
 import type { Readable } from 'node:stream';
 
 import type { EnqueueJobInput, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from '../jobs';
@@ -407,6 +413,7 @@ export type ServerEventType =
   | 'email_thread_alias.updated'
   | 'email_thread_alias.deleted'
   | 'email_thread.updated'
+  | 'email_tracking.updated'
   | 'email_account_signature.created'
   | 'email_account_signature.updated'
   | 'email_account_signature.deleted'
@@ -2418,6 +2425,7 @@ export type EmailGdprExportApiPort = {
   export(input: {
     workspaceId: string;
     skipAttachments?: boolean;
+    includeSensitiveTracking?: boolean;
   }): Promise<EmailGdprExportResult>;
 };
 
@@ -2819,6 +2827,98 @@ export type EmailAccountMailSettingsMutationInput = {
 export type EmailAccountMailSettingsApiPort = {
   get(input: { workspaceId: string; accountId: number }): Promise<EmailAccountMailSettingsRecord | null>;
   set(input: { workspaceId: string; actorUserId: string; values: EmailAccountMailSettingsMutationInput }): Promise<EmailAccountMailSettingsRecord>;
+};
+
+export type EmailTrackingLegalBasis = 'consent' | 'legitimate_interest' | 'contract' | 'other';
+
+export type EmailTrackingPolicyRecord = {
+  enabled: boolean;
+  trackOpens: boolean;
+  trackLinks: boolean;
+  collectDerivedMetadata: boolean;
+  collectRawMetadata: boolean;
+  rawMetadataRetentionDays: number;
+  eventRetentionDays: number;
+  tokenTtlDays: number;
+  legalBasis: EmailTrackingLegalBasis | null;
+  privacyNoticeUrl: string | null;
+  complianceAcknowledgedAt: string | null;
+  publicBaseUrl: string;
+  updatedAt: string | null;
+};
+
+export type EmailTrackingPolicyMutationInput = Partial<{
+  enabled: boolean;
+  trackOpens: boolean;
+  trackLinks: boolean;
+  collectDerivedMetadata: boolean;
+  collectRawMetadata: boolean;
+  rawMetadataRetentionDays: number;
+  eventRetentionDays: number;
+  tokenTtlDays: number;
+  legalBasis: EmailTrackingLegalBasis | null;
+  privacyNoticeUrl: string | null;
+  complianceAcknowledged: boolean;
+}>;
+
+export type EmailTrackingEventRecord = {
+  id: number;
+  type: EmailEvidenceEventType;
+  source: string;
+  confidence: EmailEvidenceConfidence;
+  automated: boolean;
+  occurredAt: string;
+  metadata: Readonly<Record<string, unknown>>;
+};
+
+export type EmailTrackingTimelineRecord = {
+  messageId: number;
+  tracked: boolean;
+  warning: string | null;
+  summary: EmailEvidenceSummary;
+  events: readonly EmailTrackingEventRecord[];
+  eventsTruncated: boolean;
+};
+
+export type EmailTrackingPublicRequest = {
+  token: string;
+  ip: string | null;
+  userAgent: string | null;
+  headers: Readonly<Record<string, string | undefined>>;
+};
+
+export type EmailTrackingApiPort = {
+  getPolicy(input: { workspaceId: string }): Promise<EmailTrackingPolicyRecord>;
+  setPolicy(input: {
+    workspaceId: string;
+    actorUserId: string;
+    values: EmailTrackingPolicyMutationInput;
+  }): Promise<EmailTrackingPolicyRecord>;
+  getTimeline(input: {
+    workspaceId: string;
+    messageId: number;
+    includeSensitive?: boolean;
+  }): Promise<EmailTrackingTimelineRecord | null>;
+  recordPublicOpen(input: EmailTrackingPublicRequest): Promise<void>;
+  resolvePublicClick(input: EmailTrackingPublicRequest): Promise<{ targetUrl: string } | null>;
+  revokeMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;
+  eraseMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;
+  recordInboundEvidence?(input: {
+    workspaceId: string;
+    messageIdHeader: string;
+    messageIdHeaders?: readonly string[];
+    evidenceMessageId?: string | null;
+    type: 'replied' | 'bounced' | 'delayed' | 'dsn_delivered' | 'mdn_displayed';
+    source: string;
+    confidence: 'medium' | 'high' | 'verified';
+    occurredAt?: Date;
+    metadata?: Readonly<Record<string, unknown>>;
+  }): Promise<boolean>;
+  pruneWorkspace?(input: { workspaceId: string }): Promise<{
+    rawMetadataCleared: number;
+    trackingMessagesDeleted: number;
+    expiredTokensDeleted: number;
+  }>;
 };
 
 export type EmailAccountSignatureRecord = {
@@ -4593,6 +4693,7 @@ export type ServerApiPorts = {
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
   emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
+  emailTracking?: EmailTrackingApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;
   emailAttachmentContent?: EmailAttachmentContentApiPort;
   emailAttachments?: EmailAttachmentApiPort;

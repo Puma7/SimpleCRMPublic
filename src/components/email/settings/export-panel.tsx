@@ -5,6 +5,8 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import { getRendererTransport } from "@/services/transport"
 import { hasLocalIpc, invokeIpc } from "../types"
 
@@ -28,16 +30,23 @@ function exportErrorMessage(error: unknown): string {
 
 export function ExportPanel() {
   const [running, setRunning] = useState(false)
+  const [includeSensitiveTracking, setIncludeSensitiveTracking] = useState(false)
+  const transport = getRendererTransport()
+  const isServerExport = transport.kind === "http" && Boolean(transport.serverBaseUrl)
 
   const run = async (skipAttachments: boolean) => {
-    const transport = getRendererTransport()
     if (!hasLocalIpc() && transport.kind !== "http") return
     setRunning(true)
     try {
       if (transport.kind === "http" && transport.serverBaseUrl) {
         const result = await transport.invoke(
           IPCChannels.Email.EmailGdprExport,
-          skipAttachments ? { skipAttachments: true } : undefined,
+          skipAttachments || includeSensitiveTracking
+            ? {
+                ...(skipAttachments ? { skipAttachments: true } : {}),
+                ...(includeSensitiveTracking ? { includeSensitiveTracking: true } : {}),
+              }
+            : undefined,
         ) as ServerExportResult
         downloadBlob(
           result.blob,
@@ -80,6 +89,19 @@ export function ExportPanel() {
           <strong>Diagnose</strong>.
         </p>
       </div>
+      {isServerExport ? (
+        <div className="flex items-start gap-2">
+          <Checkbox
+            id="gdpr-export-sensitive-tracking"
+            checked={includeSensitiveTracking}
+            disabled={running}
+            onCheckedChange={(checked) => setIncludeSensitiveTracking(checked === true)}
+          />
+          <Label htmlFor="gdpr-export-sensitive-tracking" className="text-sm font-normal leading-5">
+            Sensible Tracking-Rohdaten einschließen (entschlüsselte IP-Adressen, User-Agents und Klickziele; nur für Admins).
+          </Label>
+        </div>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"

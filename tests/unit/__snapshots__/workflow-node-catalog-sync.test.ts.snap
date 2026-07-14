@@ -104,6 +104,7 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
   "email.move_imap": [
     "folderPath",
   ],
+  "email.read_tracking_evidence": [],
   "email.release_outbound": [
     "autoSend",
   ],

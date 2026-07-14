@@ -129,6 +129,8 @@ export function createServerLogStore(options: CreateServerLogStoreOptions = {}):
 /** Strips obvious secrets (passwords/tokens) so they never land in the log buffer. */
 export function redactSecrets(message: string): string {
   return message
+    .replace(/\/t\/o\/[A-Za-z0-9_-]{43}\.gif/g, '/t/o/[redacted].gif')
+    .replace(/\/t\/c\/[A-Za-z0-9_-]{43}/g, '/t/c/[redacted]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
     .replace(/("?(?:password|passwd|secret|token|api[_-]?key)"?\s*[:=]\s*)("?)([^"\s,}]+)/gi, '$1$2[redacted]');
 }

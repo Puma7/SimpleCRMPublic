@@ -1,4 +1,4 @@
-import { autoReplyLimitsMigration } from '../../packages/server/src/migrations/0028_auto_reply_limits';
+import { autoReplyLimitsMigration } from '../../packages/server/src/migrations/0029_auto_reply_limits';
 
 describe('server auto-reply limit migration', () => {
   test('creates workspace-isolated dedup and daily counter tables', () => {

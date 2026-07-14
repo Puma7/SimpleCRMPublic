@@ -1,7 +1,7 @@
 import type { SqlMigration } from './types';
 
 export const autoReplyLimitsMigration: SqlMigration = {
-  id: '0028_auto_reply_limits',
+  id: '0029_auto_reply_limits',
   description: 'Atomic per-message deduplication and daily recipient limits for server auto replies.',
   upSql: [
     `CREATE TABLE IF NOT EXISTS email_auto_reply_reservations (

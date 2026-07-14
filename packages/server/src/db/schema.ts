@@ -66,6 +66,11 @@ export type ServerDatabase = {
   email_spam_learning_events: EmailSpamLearningEventsTable;
   email_spam_feature_stats: EmailSpamFeatureStatsTable;
   email_spam_decisions: EmailSpamDecisionsTable;
+  email_tracking_policies: EmailTrackingPoliciesTable;
+  email_tracking_messages: EmailTrackingMessagesTable;
+  email_tracking_links: EmailTrackingLinksTable;
+  email_tracking_events: EmailTrackingEventsTable;
+  email_tracking_token_resolver: EmailTrackingTokenResolverTable;
   pgp_identities: PgpIdentitiesTable;
   pgp_peer_keys: PgpPeerKeysTable;
   automation_api_keys: AutomationApiKeysTable;
@@ -690,6 +695,85 @@ export type EmailMessagesTable = {
   imported_in_run_id: string | null;
   created_at: TimestampColumn | null;
   updated_at: TimestampColumn;
+};
+
+export type EmailTrackingPoliciesTable = {
+  workspace_id: string;
+  enabled: boolean;
+  track_opens: boolean;
+  track_links: boolean;
+  collect_derived_metadata: boolean;
+  collect_raw_metadata: boolean;
+  raw_metadata_retention_days: number;
+  event_retention_days: number;
+  token_ttl_days: number;
+  legal_basis: 'consent' | 'legitimate_interest' | 'contract' | 'other' | null;
+  privacy_notice_url: string | null;
+  compliance_acknowledged_at: TimestampColumn | null;
+  updated_by_user_id: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type EmailTrackingMessagesTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  message_id: number;
+  account_id: number | null;
+  message_id_header: string | null;
+  recipient_count: number;
+  track_opens: boolean;
+  track_links: boolean;
+  collect_derived_metadata: boolean;
+  collect_raw_metadata: boolean;
+  token_expires_at: TimestampColumn;
+  revoked_at: TimestampColumn | null;
+  policy_snapshot: JsonColumn;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type EmailTrackingLinksTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  tracking_message_id: string;
+  ordinal: number;
+  token_hash: string;
+  target_ciphertext: Buffer;
+  target_nonce: Buffer;
+  target_auth_tag: Buffer;
+  target_url_hash: string;
+  created_at: TimestampColumn;
+};
+
+export type EmailTrackingEventsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  tracking_message_id: string;
+  message_id: number | null;
+  link_id: string | null;
+  event_type: string;
+  source: string;
+  confidence: string;
+  automated: boolean;
+  occurred_at: TimestampColumn;
+  metadata_json: JsonColumn;
+  raw_metadata_ciphertext: Buffer | null;
+  raw_metadata_nonce: Buffer | null;
+  raw_metadata_auth_tag: Buffer | null;
+  dedupe_key: string;
+  created_at: TimestampColumn;
+};
+
+export type EmailTrackingTokenResolverTable = {
+  token_hash: string;
+  workspace_id: string;
+  tracking_message_id: string;
+  link_id: string | null;
+  token_kind: 'open' | 'click';
+  expires_at: TimestampColumn;
+  revoked_at: TimestampColumn | null;
+  created_at: TimestampColumn;
 };
 
 export type EmailMessageAttachmentsTable = EmailMessageChildTable & {

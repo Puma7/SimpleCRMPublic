@@ -1,6 +1,7 @@
 # E-Mail-Modul — Entwickler- & LLM-Referenz
 
-Kurze technische Landkarte für Menschen und Assistenzsysteme, die am **Desktop-E-Mail-Feature** arbeiten.
+Kurze technische Landkarte für Menschen und Assistenzsysteme, die am E-Mail-Feature der
+Standalone- oder Server-Edition arbeiten.
 
 **AI agents:** start with [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) and [`LEARNINGS.md`](LEARNINGS.md).
 
@@ -14,6 +15,7 @@ Detaillierte Plan-Phasen: [`EMAIL_PHASES.md`](EMAIL_PHASES.md). **Workflow-Umset
 | **IPC** | `electron/ipc/email.ts`, `shared/ipc/channels.ts` (`email:*`) | Renderer ↔ Main |
 | **Renderer** | `src/app/email/**` | Inbox, Workflows (React Flow), Einstellungen, Reporting |
 | **Shared** | `shared/email-workflow-graph.ts`, `shared/email-constants.ts`, `shared/email-recipient-parse.ts` | Typen, Konstanten, Parsing |
+| **Server** | `packages/server/src/mail-*.ts`, `packages/server/src/email-tracking.ts` | PostgreSQL-Mail, Jobs, Versand, Evidenz, REST |
 
 Hintergrund: `electron/email/email-imap-services.ts` (Cron, IDLE), `email-sync-mutex.ts` (ein Sync pro Konto).
 
@@ -29,6 +31,9 @@ Hintergrund: `electron/email/email-imap-services.ts` (Cron, IDLE), `email-sync-m
 2. **Listen/Suche/Reporting „echte Mails“:** Bedingung `(uid >= 0 OR pop3_uidl IS NOT NULL)` — schließt reine Entwürfe aus.
 3. **Outbound-Workflows:** `evaluateOutboundWorkflows` ist **async**, **fail-closed** bei Engine-/Parse-Fehlern (Hold + block); alle konfigurierten Workflows werden trotzdem durchlaufen, bevor final blockiert wird.
 4. **`forward_copy`:** Dedupe-Eintrag (`email_workflow_forward_dedup`) **nach** erfolgreichem SMTP — bei Fehler Retry möglich.
+5. **E-Mail-Evidenz:** Nur Server-Edition, opt-in und HTML-only. Entwürfe bleiben unverändert;
+   PGP-signierte/-verschlüsselte und reine Textmails werden nicht instrumentiert. Siehe
+   [`EMAIL_EVIDENCE_TRACKING.md`](EMAIL_EVIDENCE_TRACKING.md).
 
 ## Build & IPC
 

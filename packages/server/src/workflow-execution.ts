@@ -3,6 +3,8 @@ import {
   addressesFromRecipientJson,
   buildSpamDecision,
   buildFeaturePreview,
+  emailEvidenceWorkflowVariables,
+  emailEvidenceSummaryWorkflowVariables,
   encodeOutboundApprovalMarker,
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
@@ -62,6 +64,7 @@ import {
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -1582,6 +1585,9 @@ async function executeServerNode(
           : 'default';
     return { status: 'ok', port, variables: { [`auth.check.${protocol}`]: value } };
   }
+  if (type === 'email.read_tracking_evidence') {
+    return readWorkflowTrackingEvidence(trx, context);
+  }
   if (type === 'email.sender_filter') {
     return await evaluateWorkflowSenderFilter(trx, context, config);
   }
@@ -1686,6 +1692,40 @@ async function executeServerNode(
   }
 
   return unsupportedWorkflowNodeResult(type, log);
+}
+
+async function readWorkflowTrackingEvidence(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+): Promise<NodeResult> {
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht fuer Versandstatus vorhanden' };
+  }
+  const tracking = await trx
+    .selectFrom('email_tracking_messages')
+    .select('id')
+    .where('workspace_id', '=', context.workspaceId)
+    .where('message_id', '=', context.messageId)
+    .executeTakeFirst();
+  if (!tracking) {
+    return {
+      status: 'ok',
+      port: 'default',
+      message: 'tracking_not_configured_for_message',
+      variables: { ...emailEvidenceWorkflowVariables({ tracked: false, events: [] }) },
+    };
+  }
+  const summary = await loadEmailEvidenceSummaryForTracking(trx, context.workspaceId, tracking.id);
+  return {
+    status: 'ok',
+    port: 'default',
+    variables: {
+      ...emailEvidenceSummaryWorkflowVariables({
+        tracked: true,
+        summary,
+      }),
+    },
+  };
 }
 
 async function markWorkflowMessageSeen(

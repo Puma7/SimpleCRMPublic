@@ -1,4 +1,4 @@
-import { authChallengeStateMigration } from '../../packages/server/src/migrations/0027_auth_challenge_state';
+import { authChallengeStateMigration } from '../../packages/server/src/migrations/0028_auth_challenge_state';
 import { authChallengeTokenHash } from '../../packages/server/src/security/auth-challenge-store';
 
 describe('shared auth challenge state', () => {

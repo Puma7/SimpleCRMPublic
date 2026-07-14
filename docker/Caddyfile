@@ -1,5 +1,7 @@
 {$PUBLIC_DOMAIN:localhost} {
 	encode gzip zstd
+	@tracking path /t/*
+	log_skip @tracking
 
 	header {
 		Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; media-src 'self' data: blob: https: http:; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; connect-src 'self' https://challenges.cloudflare.com; manifest-src 'self'"
@@ -9,9 +11,12 @@
 		-X-Powered-By
 	}
 
-	# API, health probes, OpenAPI and the SSE/WebSocket event stream (/api/v1/events)
-	# go to the Fastify backend. Spoofable identity headers are stripped here.
-	@backend path /api/* /health /health/* /openapi.json
+	# API, public email evidence endpoints, health probes, OpenAPI and the
+	# SSE/WebSocket event stream (/api/v1/events) go to Fastify. Tracking URLs
+	# are intentionally excluded from access logs because their paths contain
+	# bearer-like opaque tokens.
+	# Spoofable identity headers are stripped before requests reach Fastify.
+	@backend path /api/* /t/* /health /health/* /openapi.json
 	handle @backend {
 		reverse_proxy api:3000 {
 			header_up -x-simplecrm-user-id

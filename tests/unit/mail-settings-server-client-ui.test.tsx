@@ -188,6 +188,7 @@ describe('mail settings server-client UI', () => {
 
     try {
       render(<ExportPanel />);
+      fireEvent.click(screen.getByRole('checkbox', { name: /sensible Tracking-Rohdaten/i }));
       fireEvent.click(screen.getByRole('button', { name: /ZIP nur Metadaten/ }));
 
       await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
@@ -196,7 +197,7 @@ describe('mail settings server-client UI', () => {
       expect(createObjectURL).toHaveBeenCalledWith(blob);
       expect(clickSpy).toHaveBeenCalled();
       expect(fetchImpl).toHaveBeenCalledWith(
-        'https://crm.example.com/api/v1/email/gdpr-export?skipAttachments=true',
+        'https://crm.example.com/api/v1/email/gdpr-export?skipAttachments=true&includeSensitiveTracking=true',
         expect.objectContaining({
           method: 'GET',
           headers: expect.objectContaining({

@@ -1,7 +1,7 @@
 import type { SqlMigration } from './types';
 
 export const authChallengeStateMigration: SqlMigration = {
-  id: '0027_auth_challenge_state',
+  id: '0028_auth_challenge_state',
   description: 'Shared atomic CAPTCHA and MFA challenge replay/attempt state.',
   upSql: [
     `CREATE TABLE IF NOT EXISTS auth_challenge_tokens (

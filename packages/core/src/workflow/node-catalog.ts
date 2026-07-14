@@ -109,6 +109,15 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: { protocol: 'dmarc', treatSoftfailAsFail: true },
   },
   {
+    type: 'email.read_tracking_evidence',
+    label: 'Versandstatus lesen',
+    category: 'email',
+    canvasType: 'registry',
+    runtime: 'server',
+    description: 'Liest den aktuellen Versand-, Zustell- und Interaktionsstatus der ausgehenden Nachricht in tracking.*-Variablen.',
+    defaultConfig: {},
+  },
+  {
     type: 'email.sender_filter',
     label: 'Absender-Filter',
     category: 'email',

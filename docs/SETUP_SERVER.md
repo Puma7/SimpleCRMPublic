@@ -34,7 +34,9 @@ Set these in `docker/.env`:
 - `INITIAL_SETUP_TOKEN`: **required** before the first owner account can be created. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. Pass as `X-Initial-Setup-Token` header or in the setup UI.
 - `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: optional Cloudflare Turnstile pair for login CAPTCHA (enable separately in workspace security settings).
 - `PUBLIC_DOMAIN`: domain for Caddy, for example `crm.example.com`.
-- `PUBLIC_BASE_URL`: public URL, for example `https://crm.example.com`.
+- `PUBLIC_BASE_URL`: public URL, for example `https://crm.example.com`. It is also the origin
+  for optional e-mail pixel/click URLs, so production tracking requires stable HTTPS and must
+  remain reachable by recipients after the message was sent.
 - `CORS_ALLOWED_ORIGINS`: optional comma-separated extra browser origins for server-client HTTP transport. `PUBLIC_BASE_URL` is allowed automatically. Add `null` only for trusted packaged desktop/file-origin clients that require it.
 
 Invite SMTP variables are optional. If they are empty, invite creation can still return a manual link. E-mail MFA codes also use the invite SMTP configuration when enabled.
@@ -108,11 +110,19 @@ The profile ports bind to `127.0.0.1` by default. Change the bind variables only
 ## Web App And First Owner
 
 The `caddy` service builds and serves the browser app (single-page app) at
-`PUBLIC_BASE_URL` and reverse-proxies the API, health probes, OpenAPI and the
+`PUBLIC_BASE_URL` and reverse-proxies the API, public `/t/*` e-mail evidence endpoints,
+health probes, OpenAPI and the
 WebSocket event stream to the `api` service. Open `PUBLIC_BASE_URL` in a browser;
 because the bundle is served by the server itself, it talks to the same origin
 automatically (no `?serverUrl=` query and no extra `CORS_ALLOWED_ORIGINS` entry
 needed for the served app).
+
+Caddy deliberately excludes `/t/*` from access logs because those paths contain opaque
+bearer-like tracking tokens. Keep this rule when replacing the bundled proxy. Configure
+`TRUST_PROXY` only for known proxy hops; IP-based classification and abuse limits use the
+resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records
+the legal basis, HTTPS privacy notice and retention choices under the e-mail settings. See
+[EMAIL_EVIDENCE_TRACKING.md](EMAIL_EVIDENCE_TRACKING.md).
 
 On first start the app runs the initial setup flow, which calls:
 

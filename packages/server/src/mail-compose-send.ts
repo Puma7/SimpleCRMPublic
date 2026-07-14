@@ -48,6 +48,7 @@ import type {
 } from './mail-imap-append';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import type { EmailTrackingService } from './email-tracking';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -85,6 +86,9 @@ type ComposeSmtpCommitSnapshot = Readonly<{
   rfc822: string;
   inReplyToMessageId: number | null;
   markReplyParentDone: boolean | null;
+  trackingMessageId: string | null;
+  trackingWarning: string | null;
+  recipientCount: number;
 }>;
 type StoredComposeSmtpState =
   | Readonly<{ kind: 'none' }>
@@ -465,6 +469,7 @@ export type ComposeSenderOptions = Readonly<{
   pgpMessages?: Pick<PgpMessageCryptoApiPort, 'prepareOutboundBody' | 'prepareOutboundAttachments'>;
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
+  tracking?: Pick<EmailTrackingService, 'prepareOutbound' | 'recordSending' | 'recordSmtpAccepted' | 'recordSmtpFailed'>;
 }>;
 
 export type PostgresComposeSenderOptions = Readonly<{
@@ -478,12 +483,14 @@ export type PostgresComposeSenderOptions = Readonly<{
   pgpMessages?: Pick<PgpMessageCryptoApiPort, 'prepareOutboundBody' | 'prepareOutboundAttachments'>;
   oauthFetchImpl?: typeof fetch;
   now?: () => Date;
+  tracking?: Pick<EmailTrackingService, 'prepareOutbound' | 'recordSending' | 'recordSmtpAccepted' | 'recordSmtpFailed'>;
 }>;
 
 export function createEmailComposeSenderPort(options: ComposeSenderOptions): EmailComposeSenderApiPort {
   const smtpSend = options.smtpSend ?? sendSmtpMessage;
   const sentCopyAppend = options.sentCopyAppend;
   const outboundReview = options.outboundReview;
+  const tracking = options.tracking;
   const now = options.now ?? (() => new Date());
 
   return {
@@ -517,6 +524,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           state: storedState,
           store: options.store,
           append: sentCopyAppend,
+          tracking,
           workspaceId: input.workspaceId,
           draftMessageId: values.draftMessageId,
         });
@@ -627,21 +635,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         const autoSubmitted = autoSubmittedValues.get(
           autoSubmittedDraftKey(values.draftMessageId),
         ) === '1';
-        const rfc822 = buildComposeRfc822({
-          from,
-          to: smtpTo.join(', '),
-          cc: smtpCc.length > 0 ? smtpCc.join(', ') : undefined,
-          subject: prepared.finalSubject,
-          text: bodyText,
-          html: html?.trim() ? html : undefined,
-          messageId: prepared.outboundMessageId,
-          inReplyTo: prepared.inReplyTo ?? undefined,
-          references: prepared.references ?? undefined,
-          requestReadReceipt: requestReceipt,
-          attachments,
-          ...(autoSubmitted ? { extraHeaders: ['Auto-Submitted: auto-replied'] } : {}),
-          date: now(),
-        }).toString('utf8');
 
         if (outboundReview) {
           const review = await outboundReview.review({
@@ -680,6 +673,43 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
         if (!smtpHost) return { ok: false, error: SMTP_HOST_MISSING_ERROR };
 
+        let outboundHtml = html;
+        let trackingMessageId: string | null = null;
+        let trackingWarning: string | null = null;
+        if (tracking) {
+          try {
+            const tracked = await tracking.prepareOutbound({
+              workspaceId: input.workspaceId,
+              messageId: values.draftMessageId,
+              accountId: account.id,
+              messageIdHeader: prepared.outboundMessageId,
+              recipientCount: recipients.length,
+              html,
+              pgpProtected: values.pgpEncrypt === true || values.pgpSign === true,
+            });
+            outboundHtml = tracked.html;
+            trackingMessageId = tracked.trackingMessageId;
+            trackingWarning = tracked.warning;
+          } catch {
+            trackingWarning = 'E-Mail wurde ohne Nachverfolgung versendet, weil der Tracking-Dienst nicht erreichbar war.';
+          }
+        }
+        const rfc822 = buildComposeRfc822({
+          from,
+          to: smtpTo.join(', '),
+          cc: smtpCc.length > 0 ? smtpCc.join(', ') : undefined,
+          subject: prepared.finalSubject,
+          text: bodyText,
+          html: outboundHtml?.trim() ? outboundHtml : undefined,
+          messageId: prepared.outboundMessageId,
+          inReplyTo: prepared.inReplyTo ?? undefined,
+          references: prepared.references ?? undefined,
+          requestReadReceipt: requestReceipt,
+          attachments,
+          ...(autoSubmitted ? { extraHeaders: ['Auto-Submitted: auto-replied'] } : {}),
+          date: now(),
+        }).toString('utf8');
+
         const commitSnapshot = encodeSmtpCommitSnapshot({
           version: 2,
           draftMessageId: values.draftMessageId,
@@ -687,6 +717,9 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           rfc822,
           inReplyToMessageId: values.inReplyToMessageId ?? null,
           markReplyParentDone: values.markReplyParentDone ?? null,
+          trackingMessageId,
+          trackingWarning,
+          recipientCount: recipients.length,
         });
         if (!commitSnapshot) {
           return {
@@ -721,6 +754,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             state: claimedState,
             store: options.store,
             append: sentCopyAppend,
+            tracking,
             workspaceId: input.workspaceId,
             draftMessageId: values.draftMessageId,
           }) ?? {
@@ -728,6 +762,12 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             error: 'SMTP-Versandstatus ist unklar; automatischer Wiederholungsversand wurde blockiert.',
           };
         }
+
+        await tracking?.recordSending({
+          workspaceId: input.workspaceId,
+          messageId: values.draftMessageId,
+          trackingMessageId,
+        }).catch(() => undefined);
 
         try {
           const smtpInput: ServerSmtpSendInput = {
@@ -745,6 +785,13 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
           });
         } catch (error) {
+          await tracking?.recordSmtpFailed({
+            workspaceId: input.workspaceId,
+            messageId: values.draftMessageId,
+            trackingMessageId,
+            stage: 'send',
+            ...smtpCodeFromError(error),
+          }).catch(() => undefined);
           await clearSmtpOutboxClaim(options.store, input.workspaceId, values.draftMessageId);
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
@@ -755,6 +802,14 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           values.draftMessageId,
           commitSnapshot,
         );
+        await tracking?.recordSmtpAccepted({
+          workspaceId: input.workspaceId,
+          messageId: values.draftMessageId,
+          trackingMessageId,
+          smtpCode: 250,
+          acceptedRecipientCount: recipients.length,
+          rejectedRecipientCount: 0,
+        }).catch(() => undefined);
         const sentCopy = await appendSentCopyAfterSmtp({
           append: sentCopyAppend,
           workspaceId: input.workspaceId,
@@ -775,7 +830,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           ok: true,
           messageId: values.draftMessageId,
           accountId: account.id,
-          warning: sentCopy.warning,
+          warning: combineComposeWarnings(trackingWarning, sentCopy.warning),
         };
       } finally {
         await options.store.releaseSendingLock({
@@ -799,11 +854,23 @@ export function createPostgresEmailComposeSenderPort(
       now: options.now,
       workflowDryRun: options.workflowDryRun,
     }),
+    tracking: options.tracking,
     pgpMessages: options.pgpMessages,
     oauthFetchImpl: options.oauthFetchImpl,
     now: options.now,
     store: createPostgresComposeSenderStore(options),
   });
+}
+
+function combineComposeWarnings(...warnings: Array<string | null | undefined>): string | undefined {
+  const unique = [...new Set(warnings.map((warning) => warning?.trim()).filter((warning): warning is string => Boolean(warning)))];
+  return unique.length > 0 ? unique.join(' ') : undefined;
+}
+
+function smtpCodeFromError(error: unknown): { smtpCode?: number } {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /(?:^|\s)([45]\d{2})(?:\s|$)/.exec(message);
+  return match ? { smtpCode: Number(match[1]) } : {};
 }
 
 export function createPostgresEmailOutboundValidationPort(options: {
@@ -2250,6 +2317,9 @@ function parseStoredSmtpState(value: string | null, draftMessageId: number): Sto
     const candidate = parsed as Record<string, unknown>;
     const inReplyToMessageId = candidate.inReplyToMessageId;
     const markReplyParentDone = candidate.markReplyParentDone;
+    const trackingMessageId = candidate.trackingMessageId;
+    const trackingWarning = candidate.trackingWarning;
+    const recipientCount = candidate.recipientCount;
     if (
       candidate.version !== 2
       || candidate.draftMessageId !== draftMessageId
@@ -2262,6 +2332,20 @@ function parseStoredSmtpState(value: string | null, draftMessageId: number): Sto
         || (Number.isSafeInteger(inReplyToMessageId) && Number(inReplyToMessageId) > 0)
       )
       || !(markReplyParentDone === null || typeof markReplyParentDone === 'boolean')
+      || !(
+        trackingMessageId === undefined
+        || trackingMessageId === null
+        || (typeof trackingMessageId === 'string' && trackingMessageId.length > 0 && trackingMessageId.length <= 128)
+      )
+      || !(
+        trackingWarning === undefined
+        || trackingWarning === null
+        || (typeof trackingWarning === 'string' && trackingWarning.length <= 2_048)
+      )
+      || !(
+        recipientCount === undefined
+        || (Number.isSafeInteger(recipientCount) && Number(recipientCount) >= 0 && Number(recipientCount) <= 1_000)
+      )
     ) {
       return { kind: 'invalid' };
     }
@@ -2274,6 +2358,9 @@ function parseStoredSmtpState(value: string | null, draftMessageId: number): Sto
         rfc822: candidate.rfc822,
         inReplyToMessageId: inReplyToMessageId === null ? null : Number(inReplyToMessageId),
         markReplyParentDone,
+        trackingMessageId: typeof trackingMessageId === 'string' ? trackingMessageId : null,
+        trackingWarning: typeof trackingWarning === 'string' ? trackingWarning : null,
+        recipientCount: recipientCount === undefined ? 0 : Number(recipientCount),
       },
     };
   } catch {
@@ -2295,6 +2382,7 @@ async function recoverStoredSmtpState(input: {
   state: StoredComposeSmtpState;
   store: ComposeSenderStore;
   append?: (input: ServerImapSentCopyAppendInput) => Promise<ServerImapSentCopyAppendResult>;
+  tracking?: Pick<EmailTrackingService, 'recordSmtpAccepted'>;
   workspaceId: string;
   draftMessageId: number;
 }): Promise<EmailComposeSendResult | null> {
@@ -2328,6 +2416,14 @@ async function recoverStoredSmtpState(input: {
       error: 'SMTP wurde bereits bestaetigt, aber das Versandkonto fuer die Sent-Wiederherstellung fehlt.',
     };
   }
+  await input.tracking?.recordSmtpAccepted({
+    workspaceId: input.workspaceId,
+    messageId: input.draftMessageId,
+    trackingMessageId: input.state.snapshot.trackingMessageId,
+    smtpCode: 250,
+    acceptedRecipientCount: input.state.snapshot.recipientCount,
+    rejectedRecipientCount: 0,
+  }).catch(() => undefined);
   const sentCopy = await appendSentCopyAfterSmtp({
     append: input.append,
     workspaceId: input.workspaceId,
@@ -2349,7 +2445,7 @@ async function recoverStoredSmtpState(input: {
     messageId: input.draftMessageId,
     accountId: account.id,
     recoveredSentAppend: true,
-    warning: sentCopy.warning,
+    warning: combineComposeWarnings(input.state.snapshot.trackingWarning, sentCopy.warning),
   };
 }
 

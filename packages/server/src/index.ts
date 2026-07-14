@@ -20,6 +20,7 @@ export * from './jtl-order-lookup';
 export * from './jtl-sync';
 export * from './locks';
 export * from './mail-compose-send';
+export * from './email-tracking';
 export * from './mail-compose-attachments';
 export * from './mail-connection-test';
 export * from './mail-gdpr-export';
