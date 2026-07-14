@@ -41,6 +41,8 @@ describe('email evidence tracking migration', () => {
     expect(sql).toContain('email_tracking_token_resolver_expiry_idx');
     expect(sql).toContain('email_tracking_events_retention_idx');
     expect(sql).toContain('email_tracking_events_message_time_idx');
+    expect(sql).toContain('email_tracking_messages_message_id_idx');
+    expect(sql).toContain('email_tracking_events_message_id_idx');
     expect(sql).toContain('UNIQUE (workspace_id, dedupe_key)');
     expect(sql).toContain('UNIQUE (workspace_id, message_id)');
     expect(sql).toContain('recipient_count integer NOT NULL');

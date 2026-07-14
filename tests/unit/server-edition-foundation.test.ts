@@ -2815,10 +2815,26 @@ describe('server edition foundation', () => {
       },
       async logout() { return undefined; },
     };
+    const inboundEvidence: Parameters<EmailTrackingService['recordInboundEvidence']>[0][] = [];
     const port = createServerMailSyncJobPort({
       store,
       now: () => now,
-      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      parser: async (source) => {
+        const parsed = makeParsedServerMailSyncMessage(source.toString('utf8'));
+        return source.toString('utf8').includes('Subject: 1')
+          ? {
+            ...parsed,
+            rawHeaders: 'Content-Type: multipart/report; report-type=delivery-status',
+            bodyText: 'Original-Message-ID: <backfill-sent@example.com>\r\nAction: failed\r\nStatus: 5.1.1',
+          }
+          : parsed;
+      },
+      inboundEvidence: {
+        async recordInboundEvidence(input) {
+          inboundEvidence.push(input);
+          return true;
+        },
+      },
       imapClientFactory() { return client as any; },
     });
 
@@ -2838,7 +2854,11 @@ describe('server edition foundation', () => {
     // The sync cursor is not moved by a backfill.
     expect(folderUpdates[0].lastUid).toBe(7);
     // Historical mail must not trigger inbound workflows/spam/AI.
-    expect(result).toEqual({ inboundMessageIds: [] });
+    expect(result).toEqual({
+      inboundMessageIds: [],
+      automatedEvidenceMessageIds: [201],
+    });
+    expect(inboundEvidence).toHaveLength(1);
   });
 
   test('server mail sync skips a failing message and keeps advancing the cursor past it', async () => {
@@ -4440,6 +4460,16 @@ describe('server edition foundation', () => {
     await postProcess.afterSync({
       workspaceId: WORKSPACE_A_ID,
       accountId: 7,
+      protocol: 'imap',
+      syncStartedAt,
+      syncFinishedAt,
+      result: { inboundMessageIds: [] },
+    });
+    expect(enqueued).toEqual([]);
+
+    await postProcess.afterSync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
       protocol: 'pop3',
       syncStartedAt,
       syncFinishedAt,
@@ -4451,7 +4481,7 @@ describe('server edition foundation', () => {
     });
 
     expect(enqueued.filter((item) => (item as any).type === 'mail.spam.score')
-      .map((item) => (item as any).payload.messageId)).toEqual([43]);
+      .map((item) => (item as any).payload.messageId)).toEqual([43, 44]);
     expect(enqueued.filter((item) => (item as any).type === 'workflow.execute')).toHaveLength(0);
     expect(enqueued.filter((item) => (item as any).type === 'ai.reply_suggestion')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
@@ -21336,8 +21366,11 @@ describe('server edition foundation', () => {
       },
     })).resolves.toMatchObject({ ok: true, recoveredSentAppend: true });
     expect(smtpSends).toEqual([]);
-    expect(trackingCalls).toEqual([]);
-    expect(sendOrder).toEqual(['review']);
+    expect(trackingCalls).toEqual([
+      ['prepare', expect.objectContaining({ recovery: true, html: '<p>Already sent</p>' })],
+      ['accepted', expect.objectContaining({ trackingMessageId: 'tracking-44' })],
+    ]);
+    expect(sendOrder).toEqual(['review', 'tracking', 'accepted']);
   });
 
   test('server compose sender blocks before SMTP when outbound review is pending', async () => {

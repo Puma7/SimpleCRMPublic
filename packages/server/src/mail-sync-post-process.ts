@@ -31,8 +31,7 @@ export function createPostgresMailSyncPostProcessor(
       const suppressed = new Set(uniquePositiveIds(input.result?.automatedEvidenceMessageIds ?? []));
       const postSyncMessageIds = (await resolvePostSyncMessageIds(options, { ...input, limit }))
         .filter((messageId) => !suppressed.has(messageId));
-      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result)
-        .filter((messageId) => !suppressed.has(messageId));
+      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
 
       for (const messageId of spamScoringMessageIds) {
         await options.jobQueue.enqueue({
@@ -101,13 +100,19 @@ async function resolvePostSyncMessageIds(
   },
 ): Promise<number[]> {
   const explicitIds = explicitReplySuggestionMessageIds(input.result);
-  if (explicitIds.length > 0) return explicitIds.slice(0, input.limit);
+  if (hasExplicitPostSyncIds(input.result)) return explicitIds.slice(0, input.limit);
   return selectPostSyncInboundMessageIds(options, {
     workspaceId: input.workspaceId,
     accountId: input.accountId,
     syncStartedAt: input.syncStartedAt,
     limit: input.limit,
   });
+}
+
+function hasExplicitPostSyncIds(result: MailSyncJobResult | null): boolean {
+  if (!result) return false;
+  return Object.prototype.hasOwnProperty.call(result, 'replySuggestionMessageIds')
+    || Object.prototype.hasOwnProperty.call(result, 'inboundMessageIds');
 }
 
 function explicitReplySuggestionMessageIds(result: MailSyncJobResult | null): number[] {

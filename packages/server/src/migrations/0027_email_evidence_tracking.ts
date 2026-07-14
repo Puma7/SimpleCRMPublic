@@ -60,6 +60,7 @@ export const emailEvidenceTrackingMigration: SqlMigration = {
   UNIQUE (workspace_id, message_id)
 );`,
     'CREATE INDEX IF NOT EXISTS email_tracking_messages_header_idx ON email_tracking_messages (workspace_id, message_id_header) WHERE message_id_header IS NOT NULL;',
+    'CREATE INDEX IF NOT EXISTS email_tracking_messages_message_id_idx ON email_tracking_messages (message_id);',
     `CREATE TABLE IF NOT EXISTS email_tracking_links (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -102,6 +103,7 @@ export const emailEvidenceTrackingMigration: SqlMigration = {
   )
 );`,
     'CREATE INDEX IF NOT EXISTS email_tracking_events_message_time_idx ON email_tracking_events (workspace_id, message_id, occurred_at DESC);',
+    'CREATE INDEX IF NOT EXISTS email_tracking_events_message_id_idx ON email_tracking_events (message_id);',
     'CREATE INDEX IF NOT EXISTS email_tracking_events_tracking_time_idx ON email_tracking_events (tracking_message_id, occurred_at DESC);',
     'CREATE INDEX IF NOT EXISTS email_tracking_events_retention_idx ON email_tracking_events (workspace_id, created_at);',
     `CREATE TABLE IF NOT EXISTS email_tracking_token_resolver (

@@ -637,7 +637,7 @@ async function syncImapFolder(input: {
 
   return {
     newMessageIds: fullInbox ? [] : newMessageIds,
-    automatedEvidenceMessageIds: fullInbox ? [] : automatedEvidenceMessageIds,
+    automatedEvidenceMessageIds,
   };
 }
 
@@ -765,9 +765,10 @@ async function processInboundEvidence(input: {
     inReplyTo: input.parsed.inReplyTo,
     referencesHeader: input.parsed.referencesHeader,
   });
+  let suppressAutomation = false;
   for (const item of evidence) {
     const occurredAt = parsedEvidenceDate(input.parsed.dateReceived);
-    await input.port?.recordInboundEvidence({
+    const recorded = await input.port?.recordInboundEvidence({
       workspaceId: input.workspaceId,
       messageIdHeader: item.originalMessageId,
       messageIdHeaders: item.candidateMessageIds,
@@ -777,9 +778,10 @@ async function processInboundEvidence(input: {
       confidence: item.confidence,
       ...(occurredAt ? { occurredAt } : {}),
       metadata: item.metadata,
-    }).catch(() => false);
+    }).catch(() => false) ?? false;
+    if (recorded && item.suppressAutomation) suppressAutomation = true;
   }
-  return evidence.some((item) => item.suppressAutomation);
+  return suppressAutomation;
 }
 
 function embeddedOriginalMessageHeaders(

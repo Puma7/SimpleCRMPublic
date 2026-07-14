@@ -73,6 +73,17 @@ export function effectiveRetryTrackingFlags(
   };
 }
 
+export function retryLinkCountMismatch(input: {
+  created: boolean;
+  trackLinks: boolean;
+  trackedLinkCount: number;
+  existingLinkCount: number;
+}): boolean {
+  return !input.created
+    && input.trackLinks
+    && input.trackedLinkCount !== input.existingLinkCount;
+}
+
 export function createEmailTrackingCrypto(masterKey: Buffer) {
   if (masterKey.length !== 32) throw new Error('E-Mail-Tracking-Schluessel muss 32 Bytes lang sein');
   const tokenKey = createHmac('sha256', masterKey).update(TRACKING_TOKEN_CONTEXT, 'utf8').digest();
@@ -265,6 +276,7 @@ export type EmailTrackingService = EmailTrackingApiPort & Readonly<{
     recipientCount: number;
     html: string | null;
     pgpProtected: boolean;
+    recovery?: boolean;
   }): Promise<EmailTrackingPrepareResult>;
   recordSending(input: {
     workspaceId: string;
@@ -361,6 +373,39 @@ export function createPostgresEmailTrackingService(
           if (current?.trackLinks && !next.trackLinks) {
             await revokeWorkspaceTokenKind(trx, input.workspaceId, 'click', changedAt);
           }
+          if (current?.collectDerivedMetadata && !next.collectDerivedMetadata) {
+            await trx
+              .updateTable('email_tracking_messages')
+              .set({
+                collect_derived_metadata: false,
+                collect_raw_metadata: false,
+                updated_at: changedAt,
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .execute();
+          } else if (current?.collectRawMetadata && !next.collectRawMetadata) {
+            await trx
+              .updateTable('email_tracking_messages')
+              .set({ collect_raw_metadata: false, updated_at: changedAt })
+              .where('workspace_id', '=', input.workspaceId)
+              .execute();
+          }
+          if (current && next.tokenTtlDays < current.tokenTtlDays) {
+            const shortenedExpiry = addDays(changedAt, next.tokenTtlDays);
+            await trx
+              .updateTable('email_tracking_messages')
+              .set({
+                token_expires_at: sql`LEAST(token_expires_at, ${shortenedExpiry})`,
+                updated_at: changedAt,
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .execute();
+            await trx
+              .updateTable('email_tracking_token_resolver')
+              .set({ expires_at: sql`LEAST(expires_at, ${shortenedExpiry})` })
+              .where('workspace_id', '=', input.workspaceId)
+              .execute();
+          }
           return row;
         },
       );
@@ -404,7 +449,7 @@ export function createPostgresEmailTrackingService(
       }
       const policyRow = await loadPolicyRow(options.db, input.workspaceId);
       const policy = policyRow ? mapPolicyRow(policyRow) : defaultTrackingPolicy();
-      if (!policy.enabled || (!policy.trackOpens && !policy.trackLinks)) {
+      if (!input.recovery && (!policy.enabled || (!policy.trackOpens && !policy.trackLinks))) {
         return { html: input.html, trackingMessageId: null, warning: null };
       }
 
@@ -545,21 +590,22 @@ export function createPostgresEmailTrackingService(
       } catch {
         return null;
       }
-      await recordPublicInteraction({
+      void recordPublicInteraction({
         db: options.db,
         crypto,
         resolver,
         request: input,
         interaction: 'click',
         now: now(),
-      }).catch(() => undefined);
-      await publishTrackingChanged(
+      }).then(() => publishTrackingChanged(
         options.events,
         resolver.workspaceId,
         resolver.messageId,
         'click',
         now(),
-      );
+      )).catch((error) => {
+        console.warn(`[email-tracking] click evidence could not be recorded for message ${resolver.messageId}: ${error instanceof Error ? error.message : String(error)}`);
+      });
       return { targetUrl };
     },
 
@@ -884,6 +930,7 @@ async function prepareTrackedHtmlInTransaction(input: {
     messageIdHeader: string;
     recipientCount: number;
     html: string | null;
+    recovery?: boolean;
   };
   policy: NormalizedEmailTrackingPolicy;
   crypto: TrackingCrypto;
@@ -906,7 +953,10 @@ async function prepareTrackedHtmlInTransaction(input: {
     .where('workspace_id', '=', input.input.workspaceId)
     .where('message_id', '=', input.input.messageId)
     .executeTakeFirst();
-  if (existing?.revoked_at || (existing && toDate(existing.token_expires_at).getTime() <= input.now.getTime())) {
+  if (input.input.recovery && !existing) {
+    return { html: input.input.html, trackingMessageId: null, warning: null };
+  }
+  if (!input.input.recovery && (existing?.revoked_at || (existing && toDate(existing.token_expires_at).getTime() <= input.now.getTime()))) {
     return { html: input.input.html, trackingMessageId: null, warning: 'Tracking fuer diesen Versand ist widerrufen oder abgelaufen.' };
   }
 
@@ -915,13 +965,14 @@ async function prepareTrackedHtmlInTransaction(input: {
   const expiresAt = existing?.token_expires_at
     ? toDate(existing.token_expires_at)
     : addDays(input.now, input.policy.tokenTtlDays);
-  const flags = existing
-    ? effectiveRetryTrackingFlags({
+  const existingFlags = existing ? {
       trackOpens: Boolean(existing.track_opens),
       trackLinks: Boolean(existing.track_links),
       collectDerivedMetadata: Boolean(existing.collect_derived_metadata),
       collectRawMetadata: Boolean(existing.collect_raw_metadata),
-    }, input.policy)
+    } : null;
+  const flags = existingFlags
+    ? input.input.recovery ? existingFlags : effectiveRetryTrackingFlags(existingFlags, input.policy)
     : input.policy;
   if (!flags.trackOpens && !flags.trackLinks) {
     return {
@@ -993,7 +1044,12 @@ async function prepareTrackedHtmlInTransaction(input: {
       }
       : undefined,
   });
-  if (!created && result.trackedLinks.length !== existingLinks.length) mismatch = true;
+  if (retryLinkCountMismatch({
+    created,
+    trackLinks: flags.trackLinks,
+    trackedLinkCount: result.trackedLinks.length,
+    existingLinkCount: existingLinks.length,
+  })) mismatch = true;
   if (mismatch) {
     return {
       html: input.input.html,
@@ -1197,6 +1253,7 @@ async function recordPublicInteraction(input: {
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
+      await sql`SELECT pg_advisory_xact_lock(hashtext(${input.resolver.trackingMessageId}))`.execute(trx);
       const accepted = await trx
         .selectFrom('email_tracking_events')
         .select('occurred_at')

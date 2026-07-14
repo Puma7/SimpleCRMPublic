@@ -629,7 +629,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         let outboundHtml = html;
         let trackingMessageId: string | null = null;
         let trackingWarning: string | null = null;
-        if (smtpOutboxClaim !== 'committed' && tracking) {
+        if (tracking) {
           try {
             const tracked = await tracking.prepareOutbound({
               workspaceId: input.workspaceId,
@@ -639,6 +639,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
               recipientCount: recipients.length,
               html,
               pgpProtected: values.pgpEncrypt === true || values.pgpSign === true,
+              recovery: smtpOutboxClaim === 'committed',
             });
             outboundHtml = tracked.html;
             trackingMessageId = tracked.trackingMessageId;
@@ -663,6 +664,14 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         }).toString('utf8');
 
         if (smtpOutboxClaim === 'committed') {
+          await tracking?.recordSmtpAccepted({
+            workspaceId: input.workspaceId,
+            messageId: values.draftMessageId,
+            trackingMessageId,
+            smtpCode: 250,
+            acceptedRecipientCount: recipients.length,
+            rejectedRecipientCount: 0,
+          }).catch(() => undefined);
           const sentCopy = await appendSentCopyAfterSmtp({
             append: sentCopyAppend,
             workspaceId: input.workspaceId,

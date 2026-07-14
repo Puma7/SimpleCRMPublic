@@ -3,6 +3,7 @@ import {
   createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
   effectiveRetryTrackingFlags,
+  retryLinkCountMismatch,
   normalizeEmailTrackingPolicy,
   normalizeInboundEvidenceOccurredAt,
 } from '../../packages/server/src/email-tracking';
@@ -134,6 +135,21 @@ describe('email tracking service security helpers', () => {
       collectDerivedMetadata: true,
       collectRawMetadata: false,
     });
+  });
+
+  test('ignores stored click links when click tracking was intentionally disabled', () => {
+    expect(retryLinkCountMismatch({
+      created: false,
+      trackLinks: false,
+      trackedLinkCount: 0,
+      existingLinkCount: 2,
+    })).toBe(false);
+    expect(retryLinkCountMismatch({
+      created: false,
+      trackLinks: true,
+      trackedLinkCount: 1,
+      existingLinkCount: 2,
+    })).toBe(true);
   });
 
   test('derives bounded non-identifying client metadata without copying raw IP or UA', () => {

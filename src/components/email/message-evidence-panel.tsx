@@ -376,6 +376,8 @@ function readableMetadata(metadata: Record<string, unknown>): Array<[string, str
       const raw = value as Record<string, unknown>
       if (typeof raw.ip === "string" && raw.ip) rows.push(["IP-Adresse", raw.ip])
       if (typeof raw.userAgent === "string" && raw.userAgent) rows.push(["User-Agent", raw.userAgent])
+    } else if (key === "rawUnavailable" && value === true) {
+      rows.push(["Rohdaten", "Nicht entschlüsselbar"])
     } else if (labels[key] && (typeof value === "string" || typeof value === "number")) {
       rows.push([labels[key], String(value)])
     }
