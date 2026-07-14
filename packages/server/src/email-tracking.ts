@@ -1143,6 +1143,21 @@ async function prepareTrackedHtmlInTransaction(input: {
     };
   }
 
+  if (!created && !input.input.recovery && flags.trackLinks) {
+    for (const link of existingLinks) {
+      const token = input.crypto.token('click', link.id);
+      await insertTokenResolver(input.trx, {
+        tokenHash: input.crypto.tokenHash(token),
+        workspaceId: input.input.workspaceId,
+        trackingMessageId: trackingId,
+        linkId: link.id,
+        kind: 'click',
+        expiresAt,
+        createdAt: input.now,
+      });
+    }
+  }
+
   for (const link of pendingLinks) {
     const token = input.crypto.token('click', link.id);
     const sealed = input.crypto.sealJson(

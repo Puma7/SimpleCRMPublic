@@ -149,8 +149,10 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
 ]
 
 function SettingsPanels({ current }: { current: SettingsTab }) {
-  const active = TAB_DEFS.find((t) => t.id === current) ?? TAB_DEFS[0]!
-  const wide = current === "knowledge" || current === "prompts"
+  const active = TAB_DEFS.find(
+    (t) => t.id === current && (!t.serverOnly || isServerClientMode()),
+  ) ?? TAB_DEFS[0]!
+  const wide = active.id === "knowledge" || active.id === "prompts"
   return (
     <div
       className={cn(
@@ -221,7 +223,9 @@ function SettingsNav({ current, onSelect }: NavProps) {
 export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
   const navigate = useNavigate()
-  const active = TAB_DEFS.find((t) => t.id === settingsTab) ?? TAB_DEFS[0]!
+  const active = TAB_DEFS.find(
+    (t) => t.id === settingsTab && (!t.serverOnly || isServerClientMode()),
+  ) ?? TAB_DEFS[0]!
 
   const selectTab = (tab: SettingsTab) => {
     setSettingsTab(tab)

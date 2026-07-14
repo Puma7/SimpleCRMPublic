@@ -143,6 +143,11 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           data: { nodeType: 'logic.switch', config: { field: 'tracking.transport', cases: 'smtp_accepted' } },
         },
         {
+          id: 'no_engagement',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.engagement', cases: 'none,automated_fetch' } },
+        },
+        {
           id: 'no_open',
           type: 'registry',
           data: {
@@ -182,7 +187,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e2', source: 'wait', target: 'evidence' },
         { id: 'e3', source: 'evidence', target: 'tracking_enabled' },
         { id: 'e_tracking', source: 'tracking_enabled', target: 'transport_accepted', label: 'true' },
-        { id: 'e_transport', source: 'transport_accepted', target: 'no_open', label: 'smtp_accepted' },
+        { id: 'e_transport', source: 'transport_accepted', target: 'no_engagement', label: 'smtp_accepted' },
+        { id: 'e_no_engagement', source: 'no_engagement', target: 'no_open', label: 'none' },
+        { id: 'e_automated_fetch', source: 'no_engagement', target: 'no_open', label: 'automated_fetch' },
         { id: 'e4', source: 'no_open', target: 'no_click', label: 'yes' },
         { id: 'e5', source: 'no_click', target: 'reply_state', label: 'yes' },
         { id: 'e6', source: 'reply_state', target: 'task', label: 'false' },

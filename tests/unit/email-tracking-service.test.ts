@@ -340,13 +340,47 @@ describe('email tracking service security helpers', () => {
     });
     expect(state.trackingMessageDeleted).toBe(true);
   });
+
+  test('recreates a pruned click resolver when an unsent retry reuses the same link', async () => {
+    const crypto = createEmailTrackingCrypto(key);
+    const targetUrl = 'https://example.test/unchanged';
+    const { db, state } = trackingRetryMismatchDatabase(crypto.targetHash(targetUrl));
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+    });
+
+    await expect(service.prepareOutbound({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      messageId: 17,
+      accountId: 3,
+      messageIdHeader: '<retry-17@crm.example>',
+      recipientCount: 1,
+      html: `<a href="${targetUrl}">Unveraendert</a>`,
+      pgpProtected: false,
+    })).resolves.toMatchObject({
+      trackingMessageId: '55555555-5555-4555-8555-555555555555',
+      warning: null,
+    });
+    expect(state.resolverRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        token_kind: 'click',
+        link_id: '77777777-7777-4777-8777-777777777777',
+      }),
+    ]));
+  });
 });
 
 function trackingRetryMismatchDatabase(existingTargetHash: string): {
   db: Kysely<ServerDatabase>;
-  state: { trackingMessageDeleted: boolean };
+  state: { trackingMessageDeleted: boolean; resolverRows: Array<Record<string, unknown>> };
 } {
-  const state = { trackingMessageDeleted: false };
+  const state = {
+    trackingMessageDeleted: false,
+    resolverRows: [] as Array<Record<string, unknown>>,
+  };
   const workspaceId = '11111111-1111-4111-8111-111111111111';
   const trackingMessageId = '55555555-5555-4555-8555-555555555555';
   const fixtures: Record<string, unknown> = {
@@ -396,6 +430,9 @@ function trackingRetryMismatchDatabase(existingTargetHash: string): {
     updateTable() {
       return new TrackingRetryMutation();
     },
+    insertInto(table: string) {
+      return new TrackingRetryInsert(table, state.resolverRows);
+    },
     deleteFrom(table: string) {
       return new TrackingRetryMutation(() => {
         if (table === 'email_tracking_messages') state.trackingMessageDeleted = true;
@@ -422,6 +459,35 @@ class TrackingRetryMutation {
   set() { return this; }
   where() { return this; }
   async execute() { this.onExecute?.(); }
+}
+
+class TrackingRetryInsert {
+  private row: Record<string, unknown> = {};
+
+  constructor(
+    private readonly table: string,
+    private readonly resolverRows: Array<Record<string, unknown>>,
+  ) {}
+
+  values(row: Record<string, unknown>) {
+    this.row = row;
+    return this;
+  }
+
+  onConflict(callback: (builder: unknown) => unknown) {
+    const doNothing = () => ({});
+    callback({ columns: () => ({ doNothing }), column: () => ({ doNothing }) });
+    return this;
+  }
+
+  async execute() {
+    if (this.table === 'email_tracking_token_resolver') {
+      this.resolverRows.push(this.row);
+      return;
+    }
+    if (this.table === 'email_tracking_events') return;
+    throw new Error(`Unexpected tracking retry insert table: ${this.table}`);
+  }
 }
 
 function trackingLifecycleDatabase(tokenHash: string): {
