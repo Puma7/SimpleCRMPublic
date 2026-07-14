@@ -109,11 +109,15 @@ describe('compose-body zones', () => {
 
     const stored = sanitizeComposeHtmlPreservingZones(composed, sanitizer);
     const restored = splitAndSanitizeComposeHtml(stored, sanitizer);
+    const restoredEditorZones = splitComposeZones(restored.editorHtml);
 
+    expect(stored).toContain(COMPOSE_BODY_MARKER);
     expect(stored).toContain(COMPOSE_SIGNATURE_MARKER);
     expect(stored).toContain(COMPOSE_QUOTE_MARKER);
     expect(stored).not.toContain('<script>');
     expect(restored.editorHtml).toContain('Antwort');
+    expect(restoredEditorZones.greetingHtml).toContain('Guten Tag');
+    expect(restoredEditorZones.bodyHtml).toContain('Antwort');
     expect(restored.editorHtml).not.toContain('Einmalige Signatur');
     expect(restored.signatureHtml).toContain('Einmalige Signatur');
     expect(restored.quotedHtml).toContain('Vorherige Nachricht');

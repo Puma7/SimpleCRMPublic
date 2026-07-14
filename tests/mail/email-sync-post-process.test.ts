@@ -6,7 +6,7 @@ const mockLink = jest.fn();
 const mockListWorkflows = jest.fn();
 const mockLoadApplied = jest.fn();
 const mockPersist = jest.fn();
-const mockHasStoredAttachments = jest.fn();
+const mockHasCompleteStoredAttachments = jest.fn();
 const mockThread = jest.fn();
 const mockRunInbound = jest.fn();
 const mockSimpleParser = jest.fn();
@@ -26,7 +26,7 @@ jest.mock('../../electron/email/email-workflow-store', () => ({
 }));
 jest.mock('../../electron/email/email-message-attachments-store', () => ({
   persistParsedAttachments: (...a: unknown[]) => mockPersist(...a),
-  hasStoredAttachmentsForMessage: (...a: unknown[]) => mockHasStoredAttachments(...a),
+  hasCompleteStoredAttachmentsForMessage: (...a: unknown[]) => mockHasCompleteStoredAttachments(...a),
 }));
 jest.mock('../../electron/email/email-threading-jwz', () => ({
   assignJwzThreadAndTicket: (...a: unknown[]) => mockThread(...a),
@@ -48,7 +48,7 @@ describe('processNewMessagesAfterSync', () => {
     mockLoadApplied.mockReturnValue([]);
     mockGetMessage.mockReturnValue({ id: 1 });
     mockPersist.mockResolvedValue(undefined);
-    mockHasStoredAttachments.mockReturnValue(false);
+    mockHasCompleteStoredAttachments.mockReturnValue(false);
     mockRunInbound.mockResolvedValue(undefined);
     mockSimpleParser.mockResolvedValue({ attachments: [] });
   });
@@ -185,8 +185,14 @@ describe('processNewMessagesAfterSync', () => {
   });
 
   test('completes retry without raw mail when attachments are already stored', async () => {
-    mockGetMessage.mockReturnValue({ id: 14, has_attachments: 1, raw_rfc822_b64: null });
-    mockHasStoredAttachments.mockReturnValue(true);
+    const attachmentsJson = JSON.stringify([{ filename: 'stored.pdf' }]);
+    mockGetMessage.mockReturnValue({
+      id: 14,
+      has_attachments: 1,
+      attachments_json: attachmentsJson,
+      raw_rfc822_b64: null,
+    });
+    mockHasCompleteStoredAttachments.mockReturnValue(true);
 
     await processNewMessagesAfterSync(1, [
       {
@@ -197,6 +203,7 @@ describe('processNewMessagesAfterSync', () => {
     ]);
 
     expect(mockSimpleParser).not.toHaveBeenCalled();
+    expect(mockHasCompleteStoredAttachments).toHaveBeenCalledWith(14, attachmentsJson);
     expect(mockPersist).toHaveBeenCalledWith(14, undefined);
     expect(mockMarkDone).toHaveBeenCalledWith(14);
   });

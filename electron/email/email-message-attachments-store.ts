@@ -310,9 +310,45 @@ export async function persistParsedAttachments(
   }
 }
 
-export function hasStoredAttachmentsForMessage(messageId: number): boolean {
+export function hasCompleteStoredAttachmentsForMessage(
+  messageId: number,
+  attachmentsJson: string | null | undefined,
+): boolean {
   const rows = listAttachmentsForMessage(messageId);
-  return rows.length > 0 && rows.every((row) => fs.existsSync(row.storage_path));
+  const expectation = storedAttachmentExpectation(attachmentsJson);
+  if (expectation?.expectedCount === 0) return expectation.completeWithoutRows;
+  if (rows.length === 0 || (expectation && rows.length < expectation.expectedCount)) return false;
+  return rows.every((row) => fs.existsSync(row.storage_path));
+}
+
+type StoredAttachmentExpectation = {
+  expectedCount: number;
+  completeWithoutRows: boolean;
+};
+
+function storedAttachmentExpectation(
+  attachmentsJson: string | null | undefined,
+): StoredAttachmentExpectation | null {
+  if (!attachmentsJson) return null;
+  try {
+    const parsed = JSON.parse(attachmentsJson) as unknown;
+    if (Array.isArray(parsed)) {
+      return { expectedCount: parsed.length, completeWithoutRows: false };
+    }
+    if (parsed && typeof parsed === 'object') {
+      const stored = (parsed as { stored?: unknown }).stored;
+      const omitted = (parsed as { omitted?: unknown }).omitted;
+      if (Array.isArray(stored)) {
+        return {
+          expectedCount: stored.length,
+          completeWithoutRows: stored.length === 0 && Array.isArray(omitted) && omitted.length > 0,
+        };
+      }
+    }
+  } catch {
+    // Legacy malformed metadata cannot prove a count; existing files remain the compatibility fallback.
+  }
+  return null;
 }
 
 /** Remove on-disk attachment files for all messages of an account (before account DELETE CASCADE). */

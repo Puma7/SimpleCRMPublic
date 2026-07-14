@@ -90,11 +90,14 @@ export function splitAndSanitizeComposeHtml(
   html: string,
   sanitizeHtml: (value: string) => string,
 ): ReturnType<typeof splitEditorAndSignature> {
-  const split = splitEditorAndSignature(html);
+  const zones = splitComposeZones(html);
   return {
-    editorHtml: sanitizeHtml(split.editorHtml),
-    signatureHtml: sanitizeHtml(split.signatureHtml),
-    quotedHtml: sanitizeHtml(split.quotedHtml),
+    editorHtml: mergeComposeZones({
+      greetingHtml: sanitizeHtml(zones.greetingHtml),
+      bodyHtml: sanitizeHtml(zones.bodyHtml),
+    }),
+    signatureHtml: sanitizeHtml(zones.signatureHtml),
+    quotedHtml: sanitizeHtml(zones.quotedHtml),
   };
 }
 

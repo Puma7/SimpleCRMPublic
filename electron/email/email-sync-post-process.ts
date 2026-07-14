@@ -56,7 +56,7 @@ export async function processNewMessagesAfterSync(
   }
   if (merged.length === 0) return;
 
-  const { hasStoredAttachmentsForMessage, persistParsedAttachments } = await import('./email-message-attachments-store.js');
+  const { hasCompleteStoredAttachmentsForMessage, persistParsedAttachments } = await import('./email-message-attachments-store.js');
   const { assignJwzThreadAndTicket } = await import('./email-threading-jwz.js');
   const { runInboundWorkflowsForMessage } = await import('./email-workflow-engine.js');
 
@@ -69,7 +69,7 @@ export async function processNewMessagesAfterSync(
       if (parsedAttachments === undefined) {
         const row = getEmailMessageById(item.localMsgId);
         if (row?.has_attachments) {
-          if (!hasStoredAttachmentsForMessage(item.localMsgId)) {
+          if (!hasCompleteStoredAttachmentsForMessage(item.localMsgId, row.attachments_json)) {
             if (!row.raw_rfc822_b64) {
               throw new Error('raw RFC822 unavailable for attachment recovery');
             }

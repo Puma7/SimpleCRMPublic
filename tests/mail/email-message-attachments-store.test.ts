@@ -15,6 +15,7 @@ jest.mock('../../electron/sqlite-service', () => ({ getDb: () => db }));
 import {
   getAttachmentById,
   getAttachmentsRootForExport,
+  hasCompleteStoredAttachmentsForMessage,
   listAttachmentsForMessage,
   persistLocalComposeAttachments,
   persistParsedAttachments,
@@ -99,6 +100,37 @@ describe('email-message-attachments-store', () => {
     }]);
     await persistParsedAttachments(9, [{ filename: 'n.txt', content: Buffer.from('x') }]);
     expect(stmt.run).not.toHaveBeenCalled();
+  });
+
+  test('does not treat a partial attachment set as complete without raw recovery data', () => {
+    const dir = path.join(userData, 'email-attachments', '59');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'first.txt');
+    fs.writeFileSync(fp, 'first');
+    stmt.all.mockReturnValueOnce([{
+      id: 59,
+      message_id: 59,
+      filename_display: 'first.txt',
+      content_type: 'text/plain',
+      size_bytes: 5,
+      storage_path: fp,
+      created_at: '2026-07-14T12:00:00.000Z',
+    }]);
+
+    expect(hasCompleteStoredAttachmentsForMessage(59, JSON.stringify([
+      { filename: 'first.txt' },
+      { filename: 'missing.txt' },
+    ]))).toBe(false);
+  });
+
+  test('distinguishes omitted-only metadata from an inconsistent empty legacy list', () => {
+    stmt.all.mockReturnValueOnce([]).mockReturnValueOnce([]);
+
+    expect(hasCompleteStoredAttachmentsForMessage(60, JSON.stringify([]))).toBe(false);
+    expect(hasCompleteStoredAttachmentsForMessage(61, JSON.stringify({
+      stored: [],
+      omitted: [{ name: 'large.zip', size: 30_000_000, reason: 'too_large' }],
+    }))).toBe(true);
   });
 
   test('persistParsedAttachments hashes legacy rows instead of duplicating them', async () => {

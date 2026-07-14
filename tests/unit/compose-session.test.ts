@@ -49,9 +49,10 @@ describe('compose sender identity', () => {
       .toBe('agent-1');
   });
 
-  it('matches the authenticated user before falling back to the first member', () => {
+  it('matches the authenticated user and otherwise leaves the draft unassigned', () => {
     expect(resolveComposeTeamMemberId(members, { userId: 'user-2' })).toBe('user-2');
     expect(resolveComposeTeamMemberId(members, { displayName: 'ben bearbeiter' })).toBe('user-2');
-    expect(resolveComposeTeamMemberId(members, { userId: 'missing' })).toBe('agent-1');
+    expect(resolveComposeTeamMemberId(members, { userId: 'missing' })).toBeNull();
+    expect(resolveComposeTeamMemberId(members, {})).toBeNull();
   });
 });

@@ -30,5 +30,5 @@ export function resolveComposeTeamMemberId(
   const byDisplayName = displayName
     ? members.find((member) => member.display_name.trim().toLocaleLowerCase() === displayName)
     : undefined
-  return byDisplayName?.id ?? members[0]!.id
+  return byDisplayName?.id ?? null
 }
