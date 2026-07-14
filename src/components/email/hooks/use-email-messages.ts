@@ -204,6 +204,7 @@ export function useEmailMessages() {
       const append = opts?.append ?? false
       const silent = opts?.silent ?? false
       const generation = append ? loadGenerationRef.current : ++loadGenerationRef.current
+      if (!append && !silent) selectionRequestRef.current += 1
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
       if (append) setLoadingMore(true)
@@ -358,7 +359,9 @@ export function useEmailMessages() {
       )
     } else {
       loadGenerationRef.current += 1
+      selectionRequestRef.current += 1
       setMessages([])
+      setSelectedMessage(null)
       setLoadingMessages(false)
       setLoadingMore(false)
     }

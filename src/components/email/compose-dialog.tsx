@@ -418,8 +418,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             username: user?.username,
             displayName: user?.displayName,
           }))
-          setSignatureManuallyEdited(false)
           const hydrated = hydrateComposeFieldsFromDraftMessage(existing)
+          setSignatureManuallyEdited(!hydrated.signatureHtml.trim())
           setReplyToId(hydrated.replyToId)
           setTo(recipientFieldFromJson(existing.to_json))
           setCc(recipientFieldFromJson(existing.cc_json))
@@ -465,8 +465,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               username: user?.username,
               displayName: user?.displayName,
             }))
-            setSignatureManuallyEdited(false)
             const hydrated = hydrateComposeFieldsFromDraftMessage(resumed)
+            setSignatureManuallyEdited(!hydrated.signatureHtml.trim())
             setReplyToId(hydrated.replyToId)
             setTo(recipientFieldFromJson(resumed.to_json))
             setCc(recipientFieldFromJson(resumed.cc_json))

@@ -175,6 +175,38 @@ describe('useEmailMessages — stale/racing list load', () => {
     expect(selections.at(-1)).toMatchObject({ id: 2, body_text: 'zweite Nachricht' });
   });
 
+  test('clearing the account invalidates an in-flight detail response and selection', async () => {
+    let resolveDetail!: (value: unknown) => void;
+    mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {
+      if (channel === IPCChannels.Email.ListMessagesByView) {
+        return new Promise((resolve) => listDeferreds.set(payload.accountId as number, resolve));
+      }
+      if (channel === IPCChannels.Email.GetMessage) {
+        return new Promise((resolve) => { resolveDetail = resolve; });
+      }
+      return Promise.resolve(null);
+    });
+
+    const row = { id: 1, uid: -1, seen_local: 1 } as any;
+    const { result, rerender } = renderHook(() => useEmailMessages());
+    await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+    await act(async () => { listDeferreds.get(1)!([row]); });
+
+    let open!: Promise<void>;
+    act(() => { open = result.current.openMessage(row); });
+    await waitFor(() => expect(resolveDetail).toBeDefined());
+    act(() => { mockWorkspace.selectedAccountId = null; });
+    rerender();
+    await act(async () => {
+      resolveDetail({ ...row, body_text: 'stale detail' });
+      await open;
+    });
+
+    const selections = (mockWorkspace.setSelectedMessage as jest.Mock).mock.calls.map(([value]) => value);
+    expect(selections.at(-1)).toBeNull();
+    expect(selections).not.toContainEqual(expect.objectContaining({ body_text: 'stale detail' }));
+  });
+
   test('a late refresh cannot restore the message that was open before a new selection', async () => {
     const detailResolvers = new Map<number, (value: unknown) => void>();
     mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {

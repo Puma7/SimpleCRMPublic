@@ -151,13 +151,22 @@ export function plainTextToReplyHtml(text: string): string {
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter(Boolean)
-    .map((p) => `<p>${p.replace(/\n/g, '<br/>')}</p>`)
+    .map((p) => `<p>${escapeHtmlText(p).replace(/\n/g, '<br/>')}</p>`)
     .join('');
 }
 
 export function buildQuotedBlockHtml(quotedPlain: string): string {
   if (!quotedPlain.trim()) return '';
-  return `<p>${quotedPlain.replace(/\n/g, '<br/>')}</p>`;
+  return `<p>${escapeHtmlText(quotedPlain).replace(/\n/g, '<br/>')}</p>`;
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function buildReplyComposeHtml(parts: {

@@ -140,7 +140,7 @@ function insertPreparedAttachments(
       db.prepare(
         `UPDATE ${EMAIL_MESSAGES_TABLE} SET has_attachments = 1, attachments_json = COALESCE(?, attachments_json) WHERE id = ?`,
       ).run(metaJson, messageId);
-    } else {
+    } else if (writeFailures.length === 0) {
       const row = db.prepare(`SELECT has_attachments FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).get(messageId) as
         | { has_attachments: number }
         | undefined;
@@ -237,11 +237,17 @@ export async function persistParsedAttachments(
   const db = getDb();
   const existingRows = db
     .prepare(
-      `SELECT id, storage_path FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE message_id = ?`,
+      `SELECT id, storage_path, content_sha256 FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE message_id = ?`,
     )
-    .all(messageId) as { id: number; storage_path: string }[];
-  const missingOnDisk = existingRows.some((r) => !fs.existsSync(r.storage_path));
-  if (existingRows.length > 0 && !missingOnDisk) return;
+    .all(messageId) as { id: number; storage_path: string; content_sha256: string }[];
+  const existingHashes = new Set<string>();
+  for (const row of existingRows) {
+    if (fs.existsSync(row.storage_path)) {
+      existingHashes.add(row.content_sha256);
+    } else {
+      db.prepare(`DELETE FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE id = ?`).run(row.id);
+    }
+  }
 
   const prepared: PreparedPart[] = [];
   const omitted: { name: string; size: number; reason: string }[] = [];
@@ -271,7 +277,15 @@ export async function persistParsedAttachments(
     idx += 1;
   }
 
-  insertPreparedAttachments(messageId, prepared, omitted);
+  const missingPrepared = prepared.filter((part) => !existingHashes.has(part.hash));
+  if (prepared.length > 0 && missingPrepared.length === 0 && omitted.length === 0) return;
+  const { storedCount, writeFailures } = insertPreparedAttachments(messageId, missingPrepared, omitted);
+  if (writeFailures.length > 0 || storedCount < missingPrepared.length) {
+    const detail = writeFailures.map((failure) => `${failure.name}: ${failure.reason}`).join('; ');
+    throw new Error(
+      `Nur ${storedCount} von ${missingPrepared.length} Anhängen lokal gespeichert${detail ? ` (${detail})` : ''}.`,
+    );
+  }
 }
 
 /** Remove on-disk attachment files for all messages of an account (before account DELETE CASCADE). */
