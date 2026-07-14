@@ -39,6 +39,8 @@ describe('email evidence tracking migration', () => {
     const sql = emailEvidenceTrackingMigration.upSql.join('\n');
 
     expect(sql).toContain('email_tracking_token_resolver_expiry_idx');
+    expect(sql).toContain('email_tracking_token_resolver_workspace_kind_revoked_idx');
+    expect(sql).toContain('email_tracking_token_resolver_tracking_message_idx');
     expect(sql).toContain('email_tracking_events_retention_idx');
     expect(sql).toContain('email_tracking_events_message_time_idx');
     expect(sql).toContain('email_tracking_messages_message_id_idx');

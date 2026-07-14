@@ -118,6 +118,8 @@ export const emailEvidenceTrackingMigration: SqlMigration = {
   CHECK ((token_kind = 'open' AND link_id IS NULL) OR (token_kind = 'click' AND link_id IS NOT NULL))
 );`,
     'CREATE INDEX IF NOT EXISTS email_tracking_token_resolver_expiry_idx ON email_tracking_token_resolver (expires_at);',
+    'CREATE INDEX IF NOT EXISTS email_tracking_token_resolver_workspace_kind_revoked_idx ON email_tracking_token_resolver (workspace_id, token_kind, revoked_at);',
+    'CREATE INDEX IF NOT EXISTS email_tracking_token_resolver_tracking_message_idx ON email_tracking_token_resolver (tracking_message_id);',
     `ALTER TABLE email_tracking_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_tracking_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_tracking_links ENABLE ROW LEVEL SECURITY;

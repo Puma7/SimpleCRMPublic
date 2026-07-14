@@ -4,6 +4,7 @@ import {
   createPostgresEmailTrackingService,
   effectiveRetryTrackingFlags,
   retryLinkCountMismatch,
+  clampInboundEvidenceAfterSmtpAccepted,
   normalizeEmailTrackingPolicy,
   normalizeInboundEvidenceOccurredAt,
 } from '../../packages/server/src/email-tracking';
@@ -20,6 +21,16 @@ describe('email tracking service security helpers', () => {
     expect(first).not.toBe(crypto.token('click', '11111111-1111-4111-8111-111111111111'));
     expect(crypto.tokenHash(first)).toMatch(/^[a-f0-9]{64}$/);
     expect(crypto.tokenHash(first)).not.toContain(first);
+  });
+
+  test('binds stored link target hashes to the configured tracking key', () => {
+    const first = createEmailTrackingCrypto(key);
+    const second = createEmailTrackingCrypto(Buffer.alloc(32, 8));
+    const target = 'https://customer.example/invoice/17';
+
+    expect(first.targetHash(target)).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.targetHash(target)).toBe(first.targetHash(target));
+    expect(first.targetHash(target)).not.toBe(second.targetHash(target));
   });
 
   test('encrypts target/raw metadata with authenticated context and rejects tampering', () => {
@@ -180,6 +191,19 @@ describe('email tracking service security helpers', () => {
       observedAt,
     )).toBe(observedAt);
     expect(normalizeInboundEvidenceOccurredAt(new Date('invalid'), observedAt)).toBe(observedAt);
+  });
+
+  test('does not let inbound evidence predate SMTP acceptance', () => {
+    const observedAt = new Date('2026-07-13T10:05:00.000Z');
+    const acceptedAt = new Date('2026-07-13T10:00:00.000Z');
+    const plausible = new Date('2026-07-13T10:01:00.000Z');
+
+    expect(clampInboundEvidenceAfterSmtpAccepted(plausible, acceptedAt, observedAt)).toBe(plausible);
+    expect(clampInboundEvidenceAfterSmtpAccepted(
+      new Date('2001-01-01T00:00:00.000Z'),
+      acceptedAt,
+      observedAt,
+    )).toBe(observedAt);
   });
 
   test('skips oversized HTML before database work and rejects credentials in the public URL', async () => {

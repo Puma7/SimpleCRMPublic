@@ -33,6 +33,7 @@ import { withWorkspaceTransaction, type WorkspaceTransaction } from './db/worksp
 
 const TRACKING_TOKEN_CONTEXT = 'simplecrm/email-tracking/token/v1';
 const TRACKING_ENCRYPTION_CONTEXT = 'simplecrm/email-tracking/encryption/v1';
+const TRACKING_LINK_HASH_CONTEXT = 'simplecrm/email-tracking/link-hash/v1';
 const AES_GCM_NONCE_BYTES = 12;
 const MAX_SEALED_JSON_BYTES = 64 * 1024;
 const MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE = 10_000;
@@ -88,6 +89,7 @@ export function createEmailTrackingCrypto(masterKey: Buffer) {
   if (masterKey.length !== 32) throw new Error('E-Mail-Tracking-Schluessel muss 32 Bytes lang sein');
   const tokenKey = createHmac('sha256', masterKey).update(TRACKING_TOKEN_CONTEXT, 'utf8').digest();
   const encryptionKey = createHmac('sha256', masterKey).update(TRACKING_ENCRYPTION_CONTEXT, 'utf8').digest();
+  const linkHashKey = createHmac('sha256', masterKey).update(TRACKING_LINK_HASH_CONTEXT, 'utf8').digest();
 
   return {
     token(purpose: 'open' | 'click', id: string): string {
@@ -101,6 +103,9 @@ export function createEmailTrackingCrypto(masterKey: Buffer) {
     },
     dedupeHash(value: string): string {
       return createHmac('sha256', tokenKey).update(value, 'utf8').digest('hex');
+    },
+    targetHash(value: string): string {
+      return createHmac('sha256', linkHashKey).update(value, 'utf8').digest('hex');
     },
     sealJson(value: unknown, associatedData: string): SealedTrackingJson {
       const plaintext = Buffer.from(JSON.stringify(value), 'utf8');
@@ -344,11 +349,8 @@ export function createPostgresEmailTrackingService(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
         async (trx) => {
-          const currentRow = await trx
-            .selectFrom('email_tracking_policies')
-            .selectAll()
-            .where('workspace_id', '=', input.workspaceId)
-            .executeTakeFirst();
+          await lockTrackingPolicy(trx, input.workspaceId);
+          const currentRow = await loadPolicyRowInTransaction(trx, input.workspaceId);
           const current = currentRow ? mapPolicyRow(currentRow) : null;
           const next = normalizeEmailTrackingPolicy({
             current,
@@ -391,18 +393,17 @@ export function createPostgresEmailTrackingService(
               .execute();
           }
           if (current && next.tokenTtlDays < current.tokenTtlDays) {
-            const shortenedExpiry = addDays(changedAt, next.tokenTtlDays);
             await trx
               .updateTable('email_tracking_messages')
               .set({
-                token_expires_at: sql`LEAST(token_expires_at, ${shortenedExpiry})`,
+                token_expires_at: sql`LEAST(token_expires_at, created_at + ${next.tokenTtlDays} * INTERVAL '1 day')`,
                 updated_at: changedAt,
               })
               .where('workspace_id', '=', input.workspaceId)
               .execute();
             await trx
               .updateTable('email_tracking_token_resolver')
-              .set({ expires_at: sql`LEAST(expires_at, ${shortenedExpiry})` })
+              .set({ expires_at: sql`LEAST(expires_at, created_at + ${next.tokenTtlDays} * INTERVAL '1 day')` })
               .where('workspace_id', '=', input.workspaceId)
               .execute();
           }
@@ -447,23 +448,25 @@ export function createPostgresEmailTrackingService(
           warning: 'E-Mail wurde wegen ihrer Groesse ohne Nachverfolgung versendet.',
         };
       }
-      const policyRow = await loadPolicyRow(options.db, input.workspaceId);
-      const policy = policyRow ? mapPolicyRow(policyRow) : defaultTrackingPolicy();
-      if (!input.recovery && (!policy.enabled || (!policy.trackOpens && !policy.trackLinks))) {
-        return { html: input.html, trackingMessageId: null, warning: null };
-      }
-
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => prepareTrackedHtmlInTransaction({
-          trx,
-          input,
-          policy,
-          crypto,
-          publicBaseUrl,
-          now: now(),
-        }),
+        async (trx) => {
+          await lockTrackingPolicy(trx, input.workspaceId);
+          const policyRow = await loadPolicyRowInTransaction(trx, input.workspaceId);
+          const policy = policyRow ? mapPolicyRow(policyRow) : defaultTrackingPolicy();
+          if (!input.recovery && (!policy.enabled || (!policy.trackOpens && !policy.trackLinks))) {
+            return { html: input.html, trackingMessageId: null, warning: null };
+          }
+          return prepareTrackedHtmlInTransaction({
+            trx,
+            input,
+            policy,
+            crypto,
+            publicBaseUrl,
+            now: now(),
+          });
+        },
       );
     },
 
@@ -721,6 +724,19 @@ export function createPostgresEmailTrackingService(
             .orderBy('created_at', 'desc')
             .executeTakeFirst();
           if (!tracking) return null;
+          const smtpAccepted = await trx
+            .selectFrom('email_tracking_events')
+            .select('occurred_at')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('tracking_message_id', '=', tracking.id)
+            .where('event_type', '=', 'smtp_accepted')
+            .orderBy('occurred_at', 'desc')
+            .executeTakeFirst();
+          const effectiveOccurredAt = clampInboundEvidenceAfterSmtpAccepted(
+            occurredAt,
+            smtpAccepted ? toDate(smtpAccepted.occurred_at) : null,
+            observedAt,
+          );
           await insertTrackingEvent(trx, {
             workspaceId: input.workspaceId,
             trackingMessageId: tracking.id,
@@ -729,17 +745,17 @@ export function createPostgresEmailTrackingService(
             source: sanitizeMetadataLabel(input.source),
             confidence: input.confidence,
             automated: input.type !== 'replied',
-            occurredAt,
+            occurredAt: effectiveOccurredAt,
             metadata: sanitizeMetadataObject(input.metadata ?? {}),
             dedupeKey: evidenceMessageId && crypto
               ? crypto.dedupeHash(`inbound:${input.type}:${tracking.id}:${evidenceMessageId}`)
-              : `${input.type}:${tracking.id}:${minuteBucket(occurredAt)}`,
+              : `${input.type}:${tracking.id}:${minuteBucket(effectiveOccurredAt)}`,
           });
-          return { messageId: Number(tracking.message_id) };
+          return { messageId: Number(tracking.message_id), occurredAt: effectiveOccurredAt };
         },
       );
       if (!result) return false;
-      await publishTrackingChanged(options.events, input.workspaceId, result.messageId, input.type, occurredAt);
+      await publishTrackingChanged(options.events, input.workspaceId, result.messageId, input.type, result.occurredAt);
       return true;
     },
 
@@ -838,16 +854,27 @@ async function loadPolicyRow(db: Kysely<ServerDatabase>, workspaceId: string): P
   return withWorkspaceTransaction(
     db,
     { workspaceId, role: 'system' },
-    (trx) => trx
-      .selectFrom('email_tracking_policies')
-      .select([
-        'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata',
-        'raw_metadata_retention_days', 'event_retention_days', 'token_ttl_days', 'legal_basis',
-        'privacy_notice_url', 'compliance_acknowledged_at', 'updated_at',
-      ])
-      .where('workspace_id', '=', workspaceId)
-      .executeTakeFirst(),
+    (trx) => loadPolicyRowInTransaction(trx, workspaceId),
   );
+}
+
+function loadPolicyRowInTransaction(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<PolicyRowLike | undefined> {
+  return trx
+    .selectFrom('email_tracking_policies')
+    .select([
+      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata',
+      'raw_metadata_retention_days', 'event_retention_days', 'token_ttl_days', 'legal_basis',
+      'privacy_notice_url', 'compliance_acknowledged_at', 'updated_at',
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .executeTakeFirst();
+}
+
+async function lockTrackingPolicy(trx: WorkspaceTransaction, workspaceId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
 }
 
 function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
@@ -1028,7 +1055,7 @@ async function prepareTrackedHtmlInTransaction(input: {
     trackingBaseUrl: input.publicBaseUrl,
     createClickUrl: flags.trackLinks
       ? ({ ordinal, targetUrl }) => {
-        const targetUrlHash = createHash('sha256').update(targetUrl, 'utf8').digest('hex');
+        const targetUrlHash = input.crypto.targetHash(targetUrl);
         const existingLink = existingLinks.find((link) => Number(link.ordinal) === ordinal);
         if (existingLink) {
           if (existingLink.target_url_hash !== targetUrlHash) mismatch = true;
@@ -1513,6 +1540,15 @@ export function normalizeInboundEvidenceOccurredAt(value: Date | undefined, obse
   const observedMs = observedAt.getTime();
   if (!Number.isFinite(valueMs) || !Number.isFinite(observedMs)) return observedAt;
   return valueMs > observedMs + 5 * 60_000 ? observedAt : value!;
+}
+
+export function clampInboundEvidenceAfterSmtpAccepted(
+  occurredAt: Date,
+  smtpAcceptedAt: Date | null,
+  observedAt: Date,
+): Date {
+  if (!smtpAcceptedAt) return occurredAt;
+  return occurredAt.getTime() < smtpAcceptedAt.getTime() ? observedAt : occurredAt;
 }
 
 async function revokeWorkspaceTracking(

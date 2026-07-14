@@ -155,6 +155,20 @@ describe('email evidence tracking core', () => {
     expect(JSON.stringify(evidence)).not.toContain('private.customer');
   });
 
+  test('does not interpret ordinary message text as a delivery or read receipt', () => {
+    expect(detectInboundEmailEvidence({
+      rawHeaders: 'Content-Type: text/plain; charset=utf-8',
+      bodyText: [
+        'Original-Message-ID: <invoice-17@crm.example>',
+        'Action: failed',
+        'Status: 5.1.1',
+        'Disposition: manual-action/MDN-sent-manually; displayed',
+      ].join('\r\n'),
+      inReplyTo: null,
+      referencesHeader: null,
+    })).toEqual([]);
+  });
+
   test('correlates standard DSNs through the attached original message headers', () => {
     expect(detectInboundEmailEvidence({
       rawHeaders: 'Content-Type: multipart/report; report-type=delivery-status',

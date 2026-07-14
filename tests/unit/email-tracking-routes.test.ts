@@ -103,6 +103,23 @@ describe('email tracking routes', () => {
     expect(calls).toBe(121);
   });
 
+  test('does not charge the shared click IP bucket after a token is already exhausted', async () => {
+    const api = apiFor(makeTrackingPort({
+      async resolvePublicClick() { return { targetUrl: 'https://customer.example/invoice/7' }; },
+    }));
+
+    for (let index = 0; index < 600; index += 1) {
+      await api.handle({ method: 'GET', path: `/t/c/${TOKEN}`, ip: '203.0.113.21' });
+    }
+
+    const unrelated = await api.handle({
+      method: 'GET',
+      path: `/t/c/${'B'.repeat(43)}`,
+      ip: '203.0.113.21',
+    });
+    expect(unrelated.status).toBe(302);
+  });
+
   test('rejects unknown click tokens and unsafe stored redirect schemes', async () => {
     const unknown = await apiFor(makeTrackingPort()).handle({ method: 'GET', path: `/t/c/${TOKEN}` });
     const unsafe = await apiFor(makeTrackingPort({

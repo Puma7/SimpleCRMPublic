@@ -249,8 +249,7 @@ export function detectInboundEmailEvidence(input: {
   const status = firstField(reportFields, 'status').toLowerCase();
   const disposition = dispositionResult(firstField(reportFields, 'disposition'));
 
-  const looksLikeDsn = contentType.includes('report-type=delivery-status')
-    || (Boolean(originalMessageId) && Boolean(action) && /^[245]\.[0-9]{1,3}\.[0-9]{1,3}$/.test(status));
+  const looksLikeDsn = isMultipartReport(contentType, 'delivery-status');
   if (looksLikeDsn && originalMessageId) {
     const type = dsnEventType(action, status);
     if (type) {
@@ -269,8 +268,7 @@ export function detectInboundEmailEvidence(input: {
     }
   }
 
-  const looksLikeMdn = contentType.includes('report-type=disposition-notification')
-    || (Boolean(originalMessageId) && Boolean(disposition));
+  const looksLikeMdn = isMultipartReport(contentType, 'disposition-notification');
   if (looksLikeMdn && originalMessageId && disposition === 'displayed') {
     return [{
       type: 'mdn_displayed',
@@ -296,6 +294,11 @@ export function detectInboundEmailEvidence(input: {
     suppressAutomation: false,
     metadata: {},
   }];
+}
+
+function isMultipartReport(contentType: string, reportType: string): boolean {
+  return /\bmultipart\/report\b/i.test(contentType)
+    && new RegExp(`\\breport-type\\s*=\\s*"?${reportType}"?\\b`, 'i').test(contentType);
 }
 
 export function emailEvidenceWorkflowVariables(input: {

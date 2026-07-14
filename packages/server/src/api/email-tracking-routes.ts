@@ -84,8 +84,8 @@ export async function handlePublicEmailTrackingRoute(
     if (
       ports.emailTracking
       && PUBLIC_TOKEN_PATTERN.test(token)
-      && openIpRateLimiter.check(rateKey)
       && openTokenRateLimiter.check(`open-token:${token}`)
+      && openIpRateLimiter.check(rateKey)
     ) {
       await withPublicTimeout(ports.emailTracking.recordPublicOpen({
         token,
@@ -103,8 +103,8 @@ export async function handlePublicEmailTrackingRoute(
   const token = clickMatch[1] ?? '';
   if (!ports.emailTracking || !PUBLIC_TOKEN_PATTERN.test(token)) return trackingNotFound();
   if (
-    !clickIpRateLimiter.check(`click:${req.ip ?? 'unknown'}`)
-    || !clickTokenRateLimiter.check(`click-token:${token}`)
+    !clickTokenRateLimiter.check(`click-token:${token}`)
+    || !clickIpRateLimiter.check(`click:${req.ip ?? 'unknown'}`)
   ) {
     return error(429, 'rate_limited', 'Zu viele Anfragen');
   }
