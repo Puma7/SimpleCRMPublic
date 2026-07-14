@@ -4,6 +4,7 @@ import { isCorruptRawHeaders } from './email-parse-utils';
 import { buildRfc822FromStored, extractEnvelopeSender } from './mail-rfc822-build';
 
 let dnsResultOrderPatched = false;
+const DEFAULT_MAILAUTH_TIMEOUT_MS = 15_000;
 
 /** Broken IPv6 DNS on some networks causes mailauth temperror for SPF/DKIM/DMARC. */
 function ensureDnsPrefersIpv4(): void {
@@ -264,6 +265,7 @@ export async function verifyMailAuthentication(input: {
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
+  timeoutMs?: number;
 }): Promise<MailAuthVerification> {
   const message = buildRfc822FromStored(input);
   if (!message) {
@@ -282,11 +284,14 @@ export async function verifyMailAuthentication(input: {
   try {
     ensureDnsPrefersIpv4();
     const sender = extractEnvelopeSender(headerText ?? input.rawHeaders);
-    const result = await authenticate(message, {
-      trustReceived: true,
-      sender,
-      disableBimi: true,
-    });
+    const result = await withMailauthTimeout(
+      authenticate(message, {
+        trustReceived: true,
+        sender,
+        disableBimi: true,
+      }),
+      input.timeoutMs,
+    );
     const dkimAgg = aggregateDkim(result.dkim);
     const spf =
       result.spf && typeof result.spf === 'object' ? statusLabel(result.spf.status) : 'none';
@@ -318,6 +323,23 @@ export async function verifyMailAuthentication(input: {
       },
       headerText,
     );
+  }
+}
+
+async function withMailauthTimeout<T>(promise: Promise<T>, timeoutMs?: number): Promise<T> {
+  const boundedTimeout = Number.isFinite(timeoutMs)
+    ? Math.max(1, Math.min(60_000, Math.floor(Number(timeoutMs))))
+    : DEFAULT_MAILAUTH_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Mailauth Timeout')), boundedTimeout);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

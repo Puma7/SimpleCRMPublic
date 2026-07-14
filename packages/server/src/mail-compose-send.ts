@@ -64,10 +64,13 @@ const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
 };
 
 const COMPOSE_SEND_LOCK_PREFIX = 'email_compose_sending:';
+const COMPOSE_SEND_LOCK_TTL_MS = 15 * 60 * 1000;
 const COMPOSE_SMTP_COMMITTED_PREFIX = 'email_compose_smtp_ok:';
 const COMPOSE_SMTP_OUTBOX_VALUE = 'outbox';
 const COMPOSE_SMTP_SENT_VALUE = 'sent';
 const COMPOSE_SMTP_COMMITTED_VALUE = '1';
+const COMPOSE_SMTP_SNAPSHOT_PREFIX = 'sent:v2:';
+const MAX_COMPOSE_SMTP_SNAPSHOT_BYTES = 96 * 1024 * 1024;
 const AUTO_SUBMITTED_DRAFT_PREFIX = 'email_auto_submitted:';
 
 export function autoSubmittedDraftKey(draftId: number): string {
@@ -75,6 +78,20 @@ export function autoSubmittedDraftKey(draftId: number): string {
 }
 
 export type ComposeSmtpOutboxState = 'none' | 'outbox' | 'committed';
+type ComposeSmtpCommitSnapshot = Readonly<{
+  version: 2;
+  draftMessageId: number;
+  accountId: number;
+  rfc822: string;
+  inReplyToMessageId: number | null;
+  markReplyParentDone: boolean | null;
+}>;
+type StoredComposeSmtpState =
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'outbox' }>
+  | Readonly<{ kind: 'legacy' }>
+  | Readonly<{ kind: 'invalid' }>
+  | Readonly<{ kind: 'committed'; snapshot: ComposeSmtpCommitSnapshot }>;
 const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
 /** Marker set by email.release_outbound (autoSend=true) after ai.outbound_review
  *  returned OK. reviewOutbound.review honours it as "already approved, just send",
@@ -380,6 +397,10 @@ export type ComposeSenderStore = Readonly<{
     workspaceId: string;
     messageId: number;
   }): Promise<boolean>;
+  refreshSendingLock?(input: {
+    workspaceId: string;
+    messageId: number;
+  }): Promise<boolean>;
   releaseSendingLock(input: {
     workspaceId: string;
     messageId: number;
@@ -477,12 +498,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
       if (draft.folderKind === 'sent') {
         return { ok: true, messageId: draft.id, accountId: draft.accountId };
       }
-      if (draft.accountId !== values.accountId) {
-        return { ok: false, error: 'Entwurf gehoert zu einem anderen Konto' };
-      }
-
-      const recipientError = validateComposeRecipients(values);
-      if (recipientError) return { ok: false, error: recipientError };
 
       const locked = await options.store.tryAcquireSendingLock({
         workspaceId: input.workspaceId,
@@ -493,6 +508,26 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
       }
 
       try {
+        const storedState = await readStoredSmtpState(
+          options.store,
+          input.workspaceId,
+          values.draftMessageId,
+        );
+        const recovered = await recoverStoredSmtpState({
+          state: storedState,
+          store: options.store,
+          append: sentCopyAppend,
+          workspaceId: input.workspaceId,
+          draftMessageId: values.draftMessageId,
+        });
+        if (recovered) return recovered;
+
+        if (draft.accountId !== values.accountId) {
+          return { ok: false, error: 'Entwurf gehoert zu einem anderen Konto' };
+        }
+        const recipientError = validateComposeRecipients(values);
+        if (recipientError) return { ok: false, error: recipientError };
+
         const account = await options.store.getAccount({
           workspaceId: input.workspaceId,
           accountId: values.accountId,
@@ -645,33 +680,52 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         const smtpHost = resolveConfiguredSmtpHost(account.smtpHost);
         if (!smtpHost) return { ok: false, error: SMTP_HOST_MISSING_ERROR };
 
+        const commitSnapshot = encodeSmtpCommitSnapshot({
+          version: 2,
+          draftMessageId: values.draftMessageId,
+          accountId: account.id,
+          rfc822,
+          inReplyToMessageId: values.inReplyToMessageId ?? null,
+          markReplyParentDone: values.markReplyParentDone ?? null,
+        });
+        if (!commitSnapshot) {
+          return {
+            ok: false,
+            error: 'Die erzeugte E-Mail ist zu gross fuer eine sichere SMTP-Wiederherstellung.',
+          };
+        }
+        if (
+          options.store.refreshSendingLock
+          && !(await options.store.refreshSendingLock({
+            workspaceId: input.workspaceId,
+            messageId: values.draftMessageId,
+          }))
+        ) {
+          return {
+            ok: false,
+            error: 'Die Versand-Sperre ist abgelaufen; SMTP wurde nicht gestartet.',
+          };
+        }
+
         const smtpOutboxClaim = await options.store.claimSmtpOutbox({
           workspaceId: input.workspaceId,
           messageId: values.draftMessageId,
         });
-        if (smtpOutboxClaim === 'committed') {
-          const sentCopy = await appendSentCopyAfterSmtp({
+        if (smtpOutboxClaim !== 'claimed') {
+          const claimedState = await readStoredSmtpState(
+            options.store,
+            input.workspaceId,
+            values.draftMessageId,
+          );
+          return await recoverStoredSmtpState({
+            state: claimedState,
+            store: options.store,
             append: sentCopyAppend,
             workspaceId: input.workspaceId,
-            account,
             draftMessageId: values.draftMessageId,
-            rfc822,
-          });
-          await finalizeSentDraft({
-            store: options.store,
-            workspaceId: input.workspaceId,
-            draftMessageId: values.draftMessageId,
-            inReplyToMessageId: values.inReplyToMessageId,
-            markReplyParentDone: values.markReplyParentDone,
-            recovered: true,
-            sentImapSyncFailed: sentCopy.sentImapSyncFailed,
-          });
-          return {
-            ok: true,
-            messageId: values.draftMessageId,
-            accountId: account.id,
-            recoveredSentAppend: true,
-            warning: sentCopy.warning,
+          }) ?? {
+            ok: false,
+            error: 'SMTP-Versandstatus ist unklar; automatischer Wiederholungsversand wurde blockiert.',
           };
         }
 
@@ -695,7 +749,12 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
 
-        await markSmtpSent(options.store, input.workspaceId, values.draftMessageId);
+        await markSmtpSent(
+          options.store,
+          input.workspaceId,
+          values.draftMessageId,
+          commitSnapshot,
+        );
         const sentCopy = await appendSentCopyAfterSmtp({
           append: sentCopyAppend,
           workspaceId: input.workspaceId,
@@ -1065,6 +1124,7 @@ export function createPostgresComposeOutboundReviewPort(options: {
 }
 
 function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions): ComposeSenderStore {
+  const sendingLockTokens = new Map<string, string>();
   return {
     async getDraft(input) {
       return withWorkspaceTransaction(
@@ -1264,18 +1324,51 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const now = options.now?.() ?? new Date();
+          const staleBefore = new Date(now.getTime() - COMPOSE_SEND_LOCK_TTL_MS);
+          const token = randomBytes(24).toString('base64url');
           const row = await trx
             .insertInto('sync_info')
             .values({
               workspace_id: input.workspaceId,
               key: sendingInProgressKey(input.messageId),
-              value: '1',
+              value: token,
               last_updated: now,
               source_row: serverApiSourceRow(),
               imported_in_run_id: null,
               updated_at: now,
             })
-            .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+            .onConflict((oc) => oc
+              .columns(['workspace_id', 'key'])
+              .doUpdateSet({
+                value: token,
+                last_updated: now,
+                updated_at: now,
+              })
+              .where(kyselySql<boolean>`sync_info.last_updated <= ${staleBefore}`))
+            .returning('value')
+            .executeTakeFirst();
+          const acquired = row?.value === token;
+          if (acquired) {
+            sendingLockTokens.set(`${input.workspaceId}\u0000${input.messageId}`, token);
+          }
+          return acquired;
+        },
+      );
+    },
+    async refreshSendingLock(input) {
+      const token = sendingLockTokens.get(`${input.workspaceId}\u0000${input.messageId}`);
+      if (!token) return false;
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const now = options.now?.() ?? new Date();
+          const row = await trx
+            .updateTable('sync_info')
+            .set({ last_updated: now, updated_at: now })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', sendingInProgressKey(input.messageId))
+            .where('value', '=', token)
             .returning('key')
             .executeTakeFirst();
           return Boolean(row);
@@ -1283,17 +1376,25 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
       );
     },
     async releaseSendingLock(input) {
-      await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          await trx
-            .deleteFrom('sync_info')
-            .where('workspace_id', '=', input.workspaceId)
-            .where('key', '=', sendingInProgressKey(input.messageId))
-            .execute();
-        },
-      );
+      const mapKey = `${input.workspaceId}\u0000${input.messageId}`;
+      const token = sendingLockTokens.get(mapKey);
+      if (!token) return;
+      try {
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            await trx
+              .deleteFrom('sync_info')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', '=', sendingInProgressKey(input.messageId))
+              .where('value', '=', token)
+              .execute();
+          },
+        );
+      } finally {
+        if (sendingLockTokens.get(mapKey) === token) sendingLockTokens.delete(mapKey);
+      }
     },
     async updateDraftForSend(input) {
       await withWorkspaceTransaction(
@@ -2125,6 +2226,133 @@ function emailAccountSecretIdentifier(
   };
 }
 
+function encodeSmtpCommitSnapshot(snapshot: ComposeSmtpCommitSnapshot): string | null {
+  const value = `${COMPOSE_SMTP_SNAPSHOT_PREFIX}${JSON.stringify(snapshot)}`;
+  return Buffer.byteLength(value, 'utf8') <= MAX_COMPOSE_SMTP_SNAPSHOT_BYTES ? value : null;
+}
+
+function parseStoredSmtpState(value: string | null, draftMessageId: number): StoredComposeSmtpState {
+  if (value === null) return { kind: 'none' };
+  if (value === COMPOSE_SMTP_OUTBOX_VALUE) return { kind: 'outbox' };
+  if (value === COMPOSE_SMTP_SENT_VALUE || value === COMPOSE_SMTP_COMMITTED_VALUE) {
+    return { kind: 'legacy' };
+  }
+  if (
+    !value.startsWith(COMPOSE_SMTP_SNAPSHOT_PREFIX)
+    || Buffer.byteLength(value, 'utf8') > MAX_COMPOSE_SMTP_SNAPSHOT_BYTES
+  ) {
+    return { kind: 'invalid' };
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value.slice(COMPOSE_SMTP_SNAPSHOT_PREFIX.length));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'invalid' };
+    const candidate = parsed as Record<string, unknown>;
+    const inReplyToMessageId = candidate.inReplyToMessageId;
+    const markReplyParentDone = candidate.markReplyParentDone;
+    if (
+      candidate.version !== 2
+      || candidate.draftMessageId !== draftMessageId
+      || !Number.isSafeInteger(candidate.accountId)
+      || Number(candidate.accountId) <= 0
+      || typeof candidate.rfc822 !== 'string'
+      || candidate.rfc822.length === 0
+      || !(
+        inReplyToMessageId === null
+        || (Number.isSafeInteger(inReplyToMessageId) && Number(inReplyToMessageId) > 0)
+      )
+      || !(markReplyParentDone === null || typeof markReplyParentDone === 'boolean')
+    ) {
+      return { kind: 'invalid' };
+    }
+    return {
+      kind: 'committed',
+      snapshot: {
+        version: 2,
+        draftMessageId,
+        accountId: Number(candidate.accountId),
+        rfc822: candidate.rfc822,
+        inReplyToMessageId: inReplyToMessageId === null ? null : Number(inReplyToMessageId),
+        markReplyParentDone,
+      },
+    };
+  } catch {
+    return { kind: 'invalid' };
+  }
+}
+
+async function readStoredSmtpState(
+  store: ComposeSenderStore,
+  workspaceId: string,
+  draftMessageId: number,
+): Promise<StoredComposeSmtpState> {
+  const key = smtpCommittedKey(draftMessageId);
+  const values = await store.getSyncInfo({ workspaceId, keys: [key] });
+  return parseStoredSmtpState(values.get(key) ?? null, draftMessageId);
+}
+
+async function recoverStoredSmtpState(input: {
+  state: StoredComposeSmtpState;
+  store: ComposeSenderStore;
+  append?: (input: ServerImapSentCopyAppendInput) => Promise<ServerImapSentCopyAppendResult>;
+  workspaceId: string;
+  draftMessageId: number;
+}): Promise<EmailComposeSendResult | null> {
+  if (input.state.kind === 'none') return null;
+  if (input.state.kind === 'outbox') {
+    return {
+      ok: false,
+      error: 'SMTP-Versandstatus ist nach einer Unterbrechung unklar; automatischer Wiederholungsversand wurde zum Schutz vor Duplikaten blockiert.',
+    };
+  }
+  if (input.state.kind === 'legacy') {
+    return {
+      ok: false,
+      error: 'Der Legacy-SMTP-Marker enthaelt keine unveraenderliche Versandkopie; automatische Wiederherstellung wurde blockiert.',
+    };
+  }
+  if (input.state.kind === 'invalid') {
+    return {
+      ok: false,
+      error: 'Der SMTP-Commit-Marker ist ungueltig; automatische Wiederherstellung wurde blockiert.',
+    };
+  }
+
+  const account = await input.store.getAccount({
+    workspaceId: input.workspaceId,
+    accountId: input.state.snapshot.accountId,
+  });
+  if (!account) {
+    return {
+      ok: false,
+      error: 'SMTP wurde bereits bestaetigt, aber das Versandkonto fuer die Sent-Wiederherstellung fehlt.',
+    };
+  }
+  const sentCopy = await appendSentCopyAfterSmtp({
+    append: input.append,
+    workspaceId: input.workspaceId,
+    account,
+    draftMessageId: input.draftMessageId,
+    rfc822: input.state.snapshot.rfc822,
+  });
+  await finalizeSentDraft({
+    store: input.store,
+    workspaceId: input.workspaceId,
+    draftMessageId: input.draftMessageId,
+    inReplyToMessageId: input.state.snapshot.inReplyToMessageId,
+    markReplyParentDone: input.state.snapshot.markReplyParentDone ?? undefined,
+    recovered: true,
+    sentImapSyncFailed: sentCopy.sentImapSyncFailed,
+  });
+  return {
+    ok: true,
+    messageId: input.draftMessageId,
+    accountId: account.id,
+    recoveredSentAppend: true,
+    warning: sentCopy.warning,
+  };
+}
+
 async function claimSmtpOutboxInTransaction(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -2158,6 +2386,7 @@ async function claimSmtpOutboxInTransaction(
   if (
     row?.value === COMPOSE_SMTP_COMMITTED_VALUE
     || row?.value === COMPOSE_SMTP_SENT_VALUE
+    || row?.value?.startsWith(COMPOSE_SMTP_SNAPSHOT_PREFIX)
   ) {
     return 'committed';
   }
@@ -2179,10 +2408,11 @@ async function markSmtpSent(
   store: ComposeSenderStore,
   workspaceId: string,
   messageId: number,
+  snapshot: string,
 ): Promise<void> {
   await store.setSyncInfo({
     workspaceId,
-    values: { [smtpCommittedKey(messageId)]: COMPOSE_SMTP_SENT_VALUE },
+    values: { [smtpCommittedKey(messageId)]: snapshot },
   });
 }
 

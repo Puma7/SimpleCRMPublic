@@ -465,7 +465,7 @@ export function MessageViewer(props: Props) {
       `/api/v1/email/attachments/${att.id}/content`,
       serverAttachmentBaseUrl,
     )
-    const token = getServerAccessToken()
+    const token = getServerAccessToken(undefined, undefined, serverAttachmentBaseUrl)
     const response = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     })
@@ -488,7 +488,7 @@ export function MessageViewer(props: Props) {
       return
     }
     const objectUrl = URL.createObjectURL(blob)
-    const opened = window.open(objectUrl, "_blank")
+    const opened = window.open(objectUrl, "simplecrm-mail-attachment-preview")
     if (!opened) {
       URL.revokeObjectURL(objectUrl)
       throw new Error("Anhang konnte nicht geoeffnet werden. Popup-Blocker pruefen.")
@@ -799,7 +799,7 @@ export function MessageViewer(props: Props) {
       ],
     ].filter(([, value]) => value)
 
-    const printWindow = window.open("", "_blank", "width=900,height=700")
+    const printWindow = window.open("", "simplecrm-mail-print", "width=900,height=700")
     if (!printWindow) {
       toast.error("Druckfenster konnte nicht geöffnet werden.")
       return

@@ -1,7 +1,6 @@
-$ jest
 
-Test Suites: 241 passed, 241 total
-Tests:       2139 passed, 2139 total
+Test Suites: 250 passed, 250 total
+Tests:       2183 passed, 2183 total
 Snapshots:   1 passed, 1 total
-Time:        13.704 s
+Time:        42.656 s, estimated 234 s
 Ran all test suites in 2 projects.

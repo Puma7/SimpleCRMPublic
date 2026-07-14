@@ -26,6 +26,20 @@ function makeDb(input: {
       if (table === 'email_messages') return builder;
       return builder;
     },
+    updateTable() {
+      let patch: Record<string, unknown> = {};
+      const builder: any = {
+        set: (value: Record<string, unknown>) => {
+          patch = value;
+          return builder;
+        },
+        where: () => builder,
+        execute: async () => {
+          if (input.message) Object.assign(input.message, patch);
+        },
+      };
+      return builder;
+    },
   };
   return {
     transaction: () => ({

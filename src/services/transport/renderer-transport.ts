@@ -284,7 +284,7 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
         code: "fetch_unavailable",
       })
     }
-    let token = await getAccessToken(options.getAccessToken)
+    let token = await getAccessToken(options.getAccessToken, baseUrl)
 
     const fetchHttp = async (
       requestSpec: HttpRequestSpec,
@@ -295,12 +295,13 @@ export function createHttpRendererTransport(options: HttpRendererTransportOption
       const headers: Record<string, string> = {
         Accept: requestSpec.responseType === "blob" ? "application/octet-stream, application/json" : "application/json",
       }
-      const activeToken = await getAccessToken(options.getAccessToken) ?? token
+      const activeToken = await getAccessToken(options.getAccessToken, baseUrl) ?? token
       if (activeToken) headers.Authorization = `Bearer ${activeToken}`
 
       const init: RequestInit = {
         method: requestSpec.method,
         headers,
+        credentials: "include",
       }
 
       if (requestSpec.body !== undefined) {
@@ -391,11 +392,12 @@ async function authorizedServerFetch(
     return fetchImpl(url, {
       method: init.method,
       headers,
+      credentials: "include",
       ...(init.body === undefined ? {} : { body: init.body }),
     })
   }
 
-  let response = await send(await getAccessToken(undefined))
+  let response = await send(await getAccessToken(undefined, baseUrl))
   if (response.status === 401) {
     const serverAuth = createServerAuthClient({ baseUrl, device: "simplecrm-renderer" })
     const refreshed = await serverAuth.refresh()
@@ -423,9 +425,10 @@ async function postServerJson<T>(path: string, bodyValue: Record<string, unknown
 
 async function getAccessToken(
   provider: HttpRendererTransportOptions["getAccessToken"],
+  baseUrl: string,
 ): Promise<string | null | undefined> {
   if (provider) return provider()
-  return getServerAccessToken()
+  return getServerAccessToken(undefined, undefined, baseUrl)
 }
 
 function normalizeBaseUrl(value: string): string {

@@ -86,6 +86,41 @@ describe('registerSetupHandlers', () => {
     });
   });
 
+  test('rejects every rewrite after initial setup and preserves the first config', async () => {
+    const save = handlers.get(IPCChannels.Setup.SaveDeployConfig);
+    const read = handlers.get(IPCChannels.Setup.GetDeployConfig);
+
+    await expect(save({}, { mode: 'standalone' })).resolves.toMatchObject({ success: true });
+    await expect(save({}, {
+      mode: 'server-client',
+      server: { baseUrl: 'https://attacker.example' },
+    })).resolves.toEqual({
+      success: false,
+      error: 'deploy config is already configured; use authenticated maintenance to change it',
+    });
+    await expect(read({})).resolves.toMatchObject({
+      status: 'ok',
+      config: { mode: 'standalone' },
+    });
+  });
+
+  test('serializes concurrent first-write attempts so exactly one wins', async () => {
+    const save = handlers.get(IPCChannels.Setup.SaveDeployConfig);
+    const results = await Promise.all([
+      save({}, { mode: 'standalone' }),
+      save({}, {
+        mode: 'server-client',
+        server: { baseUrl: 'https://crm.example.com' },
+      }),
+    ]);
+
+    expect(results.filter((result) => result.success)).toHaveLength(1);
+    expect(results.filter((result) => !result.success)).toEqual([{
+      success: false,
+      error: 'deploy config is already configured; use authenticated maintenance to change it',
+    }]);
+  });
+
   test('registers both setup channels', () => {
     expect(handlers.has(IPCChannels.Setup.GetDeployConfig)).toBe(true);
     expect(handlers.has(IPCChannels.Setup.SaveDeployConfig)).toBe(true);

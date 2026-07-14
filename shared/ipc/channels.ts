@@ -258,6 +258,7 @@ const EmailChannels = literal({
   DismissImapAuthNotice: 'email:dismiss-imap-auth-notice',
   GetLatestWorkflowRunForMessage: 'email:get-latest-workflow-run-for-message',
   GetMailDiagnostics: 'email:get-mail-diagnostics',
+  RetryMessagePostProcess: 'email:retry-message-post-process',
   ExportLocalMailBackup: 'email:export-local-mail-backup',
   VerifyLocalMailBackup: 'email:verify-local-mail-backup',
   PickLocalMailBackupZip: 'email:pick-local-mail-backup-zip',

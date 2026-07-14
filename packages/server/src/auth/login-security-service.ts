@@ -20,17 +20,23 @@ import type {
 import type { PostgresSecretPort } from '../db/postgres-secret-port';
 import type { ServerDatabase } from '../db/schema';
 import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+} from '../db/workspace-context';
+import {
   CAPTCHA_CHALLENGE_TTL_MS,
   issueCaptchaChallenge,
   verifyCaptchaChallenge,
 } from '../security/captcha-challenge';
-import { consumeSingleUseToken } from '../security/consumed-token-store';
+import {
+  createPostgresAuthChallengeStore,
+  type AuthChallengeStore,
+} from '../security/auth-challenge-store';
 import { hashLoginPin, verifyLoginPin } from '../security/login-pin-hash';
 import {
   issueMfaChallengeToken,
   parseMfaChallengeToken,
 } from '../security/mfa-challenge';
-import { registerTokenAttempt } from '../security/token-attempt-store';
 import type { AccessTokenSigner } from '../security/access-token';
 import {
   buildTotpOtpAuthUri,
@@ -70,12 +76,12 @@ export type LoginSecurityService = Readonly<{
     workspaceId: string,
     settings: AuthSecurityWorkspaceSettings,
   ): Promise<AuthSecurityWorkspaceSettings>;
-  getLoginConfig(email?: string): Promise<LoginConfigResponse>;
+  getLoginConfig(): Promise<LoginConfigResponse>;
   verifyCaptcha(input: { token: string; ip: string }): Promise<
     | { ok: true; challenge: string }
     | { ok: false; code: string }
   >;
-  assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): boolean;
+  assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): Promise<boolean>;
   assertLoginPin(input: {
     user: AuthUserRecord;
     workspaceSettings: AuthSecurityWorkspaceSettings;
@@ -122,14 +128,18 @@ export type LoginSecurityService = Readonly<{
 export function createLoginSecurityService(input: {
   db: Kysely<ServerDatabase>;
   syncInfo: SyncInfoApiPort;
+  listPublicWorkspaceSettings: () => Promise<readonly AuthSecurityWorkspaceSettings[]>;
   secrets: PostgresSecretPort;
   auth: AuthApiPort;
   accessTokenSigner: AccessTokenSigner;
   config: LoginSecurityConfig;
   authInvitationSmtp?: AuthInvitationSmtpConfig;
+  challengeStore?: AuthChallengeStore;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
   now?: () => Date;
 }): LoginSecurityService {
   const now = input.now ?? (() => new Date());
+  const challengeStore = input.challengeStore ?? createPostgresAuthChallengeStore(input.db);
   const maxMfaCodeAttempts = 5;
   const mfaChallengeTtlMs = 5 * 60 * 1000;
 
@@ -146,36 +156,30 @@ export function createLoginSecurityService(input: {
       return settings;
     },
 
-    async getLoginConfig(email) {
-      const workspaceId = await resolveWorkspaceId(input.db, input.auth, email);
-      const workspaceSettings = workspaceId
-        ? await loadWorkspaceSettings(input.syncInfo, workspaceId)
-        : DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS;
+    async getLoginConfig() {
+      const settingsRows = await input.listPublicWorkspaceSettings();
       const turnstileConfigured = Boolean(
         input.config.turnstileSiteKey?.trim()
         && input.config.turnstileSecretKey?.trim(),
       );
-      const user = email ? await input.auth.findUserByEmail(email.trim().toLowerCase()) : null;
-      const mfaMethods = resolveMfaMethods(workspaceSettings, Boolean(input.authInvitationSmtp));
+      const mfaMethods = [...new Set(settingsRows.flatMap((settings) => (
+        resolveMfaMethods(settings, Boolean(input.authInvitationSmtp))
+      )))];
 
       return {
         captcha: {
-          enabled: turnstileConfigured && workspaceSettings.captchaEnabled,
+          enabled: turnstileConfigured && settingsRows.some((settings) => settings.captchaEnabled),
           provider: turnstileConfigured ? 'turnstile' : null,
           siteKey: turnstileConfigured ? input.config.turnstileSiteKey ?? null : null,
         },
         pinKeypad: {
-          enabled: workspaceSettings.pinKeypadEnabled,
+          enabled: settingsRows.some((settings) => settings.pinKeypadEnabled),
         },
         mfa: {
-          enabled: workspaceSettings.mfaEnabled && mfaMethods.length > 0,
+          enabled: settingsRows.some((settings) => settings.mfaEnabled) && mfaMethods.length > 0,
           methods: mfaMethods,
         },
-        user: user ? {
-          pinRequired: workspaceSettings.pinKeypadEnabled && Boolean(user.loginPinEnabled),
-          mfaRequired: workspaceSettings.mfaEnabled && Boolean(user.mfaEnabled),
-          mfaMethod: user.mfaEnabled ? user.mfaMethod ?? null : null,
-        } : null,
+        user: null,
       };
     },
 
@@ -192,7 +196,7 @@ export function createLoginSecurityService(input: {
       return { ok: true, challenge };
     },
 
-    assertCaptchaChallenge({ challenge, ip }) {
+    async assertCaptchaChallenge({ challenge, ip }) {
       if (!challenge?.trim()) return false;
       const token = challenge.trim();
       const valid = verifyCaptchaChallenge({
@@ -201,7 +205,12 @@ export function createLoginSecurityService(input: {
         ip,
         now: now(),
       });
-      return valid && consumeSingleUseToken(token, CAPTCHA_CHALLENGE_TTL_MS, now().getTime());
+      return valid && await challengeStore.consume({
+        token,
+        purpose: 'captcha',
+        ttlMs: CAPTCHA_CHALLENGE_TTL_MS,
+        now: now(),
+      });
     },
 
     async assertLoginPin({ user, workspaceSettings, pin }) {
@@ -254,7 +263,12 @@ export function createLoginSecurityService(input: {
       });
       if (!claims) return { ok: false, code: 'mfa_challenge_invalid' };
 
-      const email = await lookupUserEmail(input.db, claims.userId);
+      const email = await lookupUserEmail(
+        input.db,
+        claims.workspaceId,
+        claims.userId,
+        input.applyWorkspaceSession,
+      );
       if (!email) return { ok: false, code: 'mfa_challenge_invalid' };
       const user = await input.auth.findUserByEmail(email);
       if (!user || user.id !== claims.userId) {
@@ -263,12 +277,13 @@ export function createLoginSecurityService(input: {
       if (user.disabledAt) {
         return { ok: false, code: 'user_disabled' };
       }
-      if (!registerTokenAttempt(
-        mfaChallengeToken,
-        maxMfaCodeAttempts,
-        mfaChallengeTtlMs,
-        now().getTime(),
-      )) {
+      if (!(await challengeStore.registerAttempt({
+        token: mfaChallengeToken,
+        purpose: 'mfa',
+        maxAttempts: maxMfaCodeAttempts,
+        ttlMs: mfaChallengeTtlMs,
+        now: now(),
+      }))) {
         return { ok: false, code: 'mfa_attempts_exceeded' };
       }
 
@@ -288,7 +303,12 @@ export function createLoginSecurityService(input: {
       if (!verified) return { ok: false, code: 'mfa_code_invalid' };
 
       const challengeTtlMs = 5 * 60 * 1000;
-      if (!consumeSingleUseToken(mfaChallengeToken, challengeTtlMs, now().getTime())) {
+      if (!(await challengeStore.consume({
+        token: mfaChallengeToken,
+        purpose: 'mfa',
+        ttlMs: challengeTtlMs,
+        now: now(),
+      }))) {
         return { ok: false, code: 'mfa_challenge_invalid' };
       }
 
@@ -303,16 +323,23 @@ export function createLoginSecurityService(input: {
 
     async setUserPin({ workspaceId, userId, pin }) {
       const pinHash = pin ? await hashLoginPin(pin) : null;
-      await input.db
-        .updateTable('users')
-        .set({
-          login_pin_hash: pinHash,
-          login_pin_enabled: Boolean(pinHash),
-          updated_at: now(),
-        })
-        .where('id', '=', userId)
-        .where('workspace_id', '=', workspaceId)
-        .execute();
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId, role: 'system' },
+        async (trx) => {
+          await trx
+            .updateTable('users')
+            .set({
+              login_pin_hash: pinHash,
+              login_pin_enabled: Boolean(pinHash),
+              updated_at: now(),
+            })
+            .where('id', '=', userId)
+            .where('workspace_id', '=', workspaceId)
+            .execute();
+        },
+        { applySession: input.applyWorkspaceSession },
+      );
     },
 
     async beginTotpSetup({ workspaceId, userId, email }) {
@@ -344,53 +371,81 @@ export function createLoginSecurityService(input: {
         name: userId,
         value: secret,
       });
+      const updated = await withWorkspaceTransaction(
+        input.db,
+        { workspaceId, role: 'system' },
+        (trx) => trx
+          .updateTable('users')
+          .set({
+            mfa_enabled: true,
+            mfa_method: 'totp',
+            mfa_totp_secret_id: stored.id,
+            updated_at: now(),
+          })
+          .where('id', '=', userId)
+          .where('workspace_id', '=', workspaceId)
+          .returning('id')
+          .executeTakeFirst(),
+        { applySession: input.applyWorkspaceSession },
+      );
+      if (!updated) {
+        await input.secrets.deleteSecret({
+          workspaceId,
+          kind: 'auth_mfa_totp',
+          name: userId,
+        });
+        return false;
+      }
       await input.secrets.deleteSecret({
         workspaceId,
         kind: 'auth_mfa_totp_pending',
         name: userId,
       });
-      await input.db
-        .updateTable('users')
-        .set({
-          mfa_enabled: true,
-          mfa_method: 'totp',
-          mfa_totp_secret_id: stored.id,
-          updated_at: now(),
-        })
-        .where('id', '=', userId)
-        .where('workspace_id', '=', workspaceId)
-        .execute();
       return true;
     },
 
     async enableEmailMfa({ workspaceId, userId }) {
-      await input.db
-        .updateTable('users')
-        .set({
-          mfa_enabled: true,
-          mfa_method: 'email',
-          mfa_totp_secret_id: null,
-          updated_at: now(),
-        })
-        .where('id', '=', userId)
-        .where('workspace_id', '=', workspaceId)
-        .execute();
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId, role: 'system' },
+        async (trx) => {
+          await trx
+            .updateTable('users')
+            .set({
+              mfa_enabled: true,
+              mfa_method: 'email',
+              mfa_totp_secret_id: null,
+              updated_at: now(),
+            })
+            .where('id', '=', userId)
+            .where('workspace_id', '=', workspaceId)
+            .execute();
+        },
+        { applySession: input.applyWorkspaceSession },
+      );
     },
 
     async disableUserMfa({ workspaceId, userId }) {
       await input.secrets.deleteSecret({ workspaceId, kind: 'auth_mfa_totp', name: userId });
       await input.secrets.deleteSecret({ workspaceId, kind: 'auth_mfa_totp_pending', name: userId });
-      await input.db
-        .updateTable('users')
-        .set({
-          mfa_enabled: false,
-          mfa_method: null,
-          mfa_totp_secret_id: null,
-          updated_at: now(),
-        })
-        .where('id', '=', userId)
-        .where('workspace_id', '=', workspaceId)
-        .execute();
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId, role: 'system' },
+        async (trx) => {
+          await trx
+            .updateTable('users')
+            .set({
+              mfa_enabled: false,
+              mfa_method: null,
+              mfa_totp_secret_id: null,
+              updated_at: now(),
+            })
+            .where('id', '=', userId)
+            .where('workspace_id', '=', workspaceId)
+            .execute();
+        },
+        { applySession: input.applyWorkspaceSession },
+      );
     },
   };
 }
@@ -407,20 +462,6 @@ async function loadWorkspaceSettings(
   return parseAuthSecuritySyncValues(values);
 }
 
-async function resolveWorkspaceId(
-  db: Kysely<ServerDatabase>,
-  auth: AuthApiPort,
-  email?: string,
-): Promise<string | null> {
-  if (email?.trim()) {
-    const user = await auth.findUserByEmail(email.trim().toLowerCase());
-    if (user) return user.workspaceId;
-  }
-  const only = await db.selectFrom('workspaces').select(['id']).execute();
-  if (only.length === 1) return only[0]?.id ?? null;
-  return null;
-}
-
 function resolveMfaMethods(
   settings: AuthSecurityWorkspaceSettings,
   smtpConfigured: boolean,
@@ -432,12 +473,23 @@ function resolveMfaMethods(
   return methods;
 }
 
-async function lookupUserEmail(db: Kysely<ServerDatabase>, userId: string): Promise<string | null> {
-  const row = await db
-    .selectFrom('users')
-    .select(['email'])
-    .where('id', '=', userId)
-    .executeTakeFirst();
+async function lookupUserEmail(
+  db: Kysely<ServerDatabase>,
+  workspaceId: string,
+  userId: string,
+  applyWorkspaceSession?: WorkspaceSessionApplier,
+): Promise<string | null> {
+  const row = await withWorkspaceTransaction(
+    db,
+    { workspaceId, role: 'system' },
+    (trx) => trx
+      .selectFrom('users')
+      .select(['email'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', userId)
+      .executeTakeFirst(),
+    { applySession: applyWorkspaceSession },
+  );
   return row?.email ?? null;
 }
 

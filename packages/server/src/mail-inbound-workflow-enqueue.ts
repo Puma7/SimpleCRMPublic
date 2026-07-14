@@ -48,47 +48,61 @@ export async function enqueueInboundWorkflowsAfterSpam(
       .executeTakeFirst(),
     { applySession: options.applyWorkspaceSession },
   );
-  if (!message || messageIsSpamOrReviewForWorkflow(message)) return;
+  if (!message) return;
 
-  const workflows = await withWorkspaceTransaction(
+  if (!messageIsSpamOrReviewForWorkflow(message)) {
+    const workflows = await withWorkspaceTransaction(
+      options.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => {
+        let query = trx
+          .selectFrom('email_workflows')
+          .select(['id', 'account_id', 'override_key'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('trigger_name', '=', 'inbound')
+          .where('enabled', '=', true);
+        query = message.account_id == null
+          ? query.where('account_id', 'is', null)
+          : query.where((eb) => eb.or([
+            eb('account_id', 'is', null),
+            eb('account_id', '=', message.account_id),
+          ]));
+        return query
+          .orderBy('priority', 'asc')
+          .orderBy('id', 'asc')
+          .execute() as Promise<InboundWorkflowRow[]>;
+      },
+      { applySession: options.applyWorkspaceSession },
+    );
+
+    for (const workflow of resolveScopedInboundWorkflowOverrides(workflows)) {
+      await options.jobQueue.enqueue({
+        workspaceId: input.workspaceId,
+        type: 'workflow.execute',
+        payload: {
+          workspaceId: input.workspaceId,
+          workflowId: Number(workflow.id),
+          messageId: input.messageId,
+          ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
+          triggerName: 'inbound',
+          context: { skipIfMessageSpamOrReview: true },
+        },
+        maxAttempts: 3,
+      });
+    }
+  }
+
+  await withWorkspaceTransaction(
     options.db,
     { workspaceId: input.workspaceId, role: 'system' },
-    async (trx) => {
-      let query = trx
-        .selectFrom('email_workflows')
-        .select(['id', 'account_id', 'override_key'])
-        .where('workspace_id', '=', input.workspaceId)
-        .where('trigger_name', '=', 'inbound')
-        .where('enabled', '=', true);
-      query = message.account_id == null
-        ? query.where('account_id', 'is', null)
-        : query.where((eb) => eb.or([
-          eb('account_id', 'is', null),
-          eb('account_id', '=', message.account_id),
-        ]));
-      return query
-        .orderBy('priority', 'asc')
-        .orderBy('id', 'asc')
-        .execute() as Promise<InboundWorkflowRow[]>;
-    },
+    async (trx) => trx
+      .updateTable('email_messages')
+      .set({ post_process_done: true })
+      .where('workspace_id', '=', input.workspaceId)
+      .where('id', '=', input.messageId)
+      .execute(),
     { applySession: options.applyWorkspaceSession },
   );
-
-  for (const workflow of resolveScopedInboundWorkflowOverrides(workflows)) {
-    await options.jobQueue.enqueue({
-      workspaceId: input.workspaceId,
-      type: 'workflow.execute',
-      payload: {
-        workspaceId: input.workspaceId,
-        workflowId: Number(workflow.id),
-        messageId: input.messageId,
-        ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
-        triggerName: 'inbound',
-        context: { skipIfMessageSpamOrReview: true },
-      },
-      maxAttempts: 3,
-    });
-  }
 }
 
 function resolveScopedInboundWorkflowOverrides(rows: readonly InboundWorkflowRow[]): InboundWorkflowRow[] {

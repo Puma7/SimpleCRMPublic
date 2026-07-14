@@ -41,6 +41,10 @@ export function createSpamScoringJobHandlers(options: SpamScoringJobHandlersOpti
         : await options.emailMessages.evaluateSpamDecision?.(input);
       if (!result) throw new Error(`email message not found for spam scoring: ${plan.messageId}`);
 
+      if (plan.enqueueInboundWorkflows && (!options.jobQueue || !options.db)) {
+        throw new Error('inbound workflow post-processing is not configured');
+      }
+
       if (
         plan.enqueueInboundWorkflows
         && options.jobQueue

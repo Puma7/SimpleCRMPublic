@@ -3,37 +3,40 @@ import {
   createRouter,
   createRoute,
   createRootRoute,
+  lazyRouteComponent,
   redirect,
 } from '@tanstack/react-router'
 
 import App from './App'
-import HomePage from './app/page'
-import CustomersPage from './app/customers/page'
-import CustomerDetailPage from './app/customers/[id]/page'
-import DealsPage from './app/deals/page'
-import DealDetailPage from './app/deals/[id]/page'
-import TasksPage from './app/tasks/page'
-import CalendarPage from './app/calendar/page'
-import LoginPage from './app/login/page'
-import ErrorPage from './app/error/page'
-import SettingsPage from './app/settings/page'
-import SettingsLayout from './app/settings/layout'
-import CustomFieldsPage from './app/settings/custom-fields/page'
-import MaintenancePage from './app/settings/maintenance/page'
-import ProductsPage from './app/products/page'
 import ProductsLoading from './app/products/loading'
-import FollowUpPage from './app/followup/page'
-import ReturnsPage from './app/returns/page'
-import PortalReturnsNewPage from './app/portal/returns-new/page'
-import PortalReturnsLookupPage from './app/portal/returns-lookup/page'
-import PortalReturnsStatusPage from './app/portal/returns-status/page'
-import EmailModuleLayout from './app/email/layout'
-import EmailPage from './app/email/page'
-import EmailWorkflowsPage from './app/email/workflows/page'
-import EmailSettingsPage from './app/email/settings/page'
-import EmailReportingPage from './app/email/reporting/page'
-import EmailSvelteLabPage from './app/email/svelte-lab/page'
-import { SETTINGS_TAB_IDS } from './components/email/settings-panels'
+import { SETTINGS_TAB_IDS } from './components/email/settings-tab-ids'
+import type { SettingsTab } from './components/email/workspace-context'
+
+const HomePage = lazyRouteComponent(() => import('./app/page'))
+const CustomersPage = lazyRouteComponent(() => import('./app/customers/page'))
+const CustomerDetailPage = lazyRouteComponent(() => import('./app/customers/[id]/page'))
+const DealsPage = lazyRouteComponent(() => import('./app/deals/page'))
+const DealDetailPage = lazyRouteComponent(() => import('./app/deals/[id]/page'))
+const TasksPage = lazyRouteComponent(() => import('./app/tasks/page'))
+const CalendarPage = lazyRouteComponent(() => import('./app/calendar/page'))
+const LoginPage = lazyRouteComponent(() => import('./app/login/page'))
+const ErrorPage = lazyRouteComponent(() => import('./app/error/page'))
+const SettingsPage = lazyRouteComponent(() => import('./app/settings/page'))
+const SettingsLayout = lazyRouteComponent(() => import('./app/settings/layout'))
+const CustomFieldsPage = lazyRouteComponent(() => import('./app/settings/custom-fields/page'))
+const MaintenancePage = lazyRouteComponent(() => import('./app/settings/maintenance/page'))
+const ProductsPage = lazyRouteComponent(() => import('./app/products/page'))
+const FollowUpPage = lazyRouteComponent(() => import('./app/followup/page'))
+const ReturnsPage = lazyRouteComponent(() => import('./app/returns/page'))
+const PortalReturnsNewPage = lazyRouteComponent(() => import('./app/portal/returns-new/page'))
+const PortalReturnsLookupPage = lazyRouteComponent(() => import('./app/portal/returns-lookup/page'))
+const PortalReturnsStatusPage = lazyRouteComponent(() => import('./app/portal/returns-status/page'))
+const EmailModuleLayout = lazyRouteComponent(() => import('./app/email/layout'))
+const EmailPage = lazyRouteComponent(() => import('./app/email/page'))
+const EmailWorkflowsPage = lazyRouteComponent(() => import('./app/email/workflows/page'))
+const EmailSettingsPage = lazyRouteComponent(() => import('./app/email/settings/page'))
+const EmailReportingPage = lazyRouteComponent(() => import('./app/email/reporting/page'))
+const EmailSvelteLabPage = lazyRouteComponent(() => import('./app/email/svelte-lab/page'))
 
 const svelteLabEnabled = import.meta.env.VITE_ENABLE_SVELTE_LAB === 'true'
 
@@ -129,7 +132,7 @@ const emailSettingsRoute = createRoute({
         ? mapped
         : 'accounts'
     return {
-      tab: validTab as (typeof SETTINGS_TAB_IDS)[number],
+      tab: validTab as SettingsTab,
     }
   },
   component: EmailSettingsPage,

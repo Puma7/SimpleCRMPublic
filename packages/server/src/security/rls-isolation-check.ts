@@ -90,6 +90,8 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('email_workflow_run_steps'),
   rlsPolicyTable('email_message_workflow_applied'),
   rlsPolicyTable('email_workflow_forward_dedup'),
+  rlsPolicyTable('email_auto_reply_reservations'),
+  rlsPolicyTable('email_auto_reply_daily_counters'),
   rlsPolicyTable('workflow_knowledge_bases'),
   rlsPolicyTable('workflow_knowledge_chunks'),
   rlsPolicyTable('workflow_delayed_jobs'),

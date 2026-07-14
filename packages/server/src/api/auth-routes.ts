@@ -15,9 +15,17 @@ import {
   requirePrincipal,
 } from './http';
 import { timingSafeEqual } from 'node:crypto';
+import {
+  authSessionData,
+  clearAuthSessionHeaders,
+  csrfBootstrapData,
+  hasValidRefreshCsrf,
+  readRefreshCredential,
+} from './auth-session-cookie';
 
 const DEFAULT_AUDIT_LIMIT = 100;
 const MAX_AUDIT_LIMIT = 500;
+const DUMMY_PASSWORD_HASH = 'scrypt:v1:simplecrm-dummy-salt-v1:IvE+tonSi0EvIm9VN4phgR9I6p0OZVU7pjjO2VaIpJtRFAF4jA7+A8bOfQvLFEli3gmqYogtnb/I0ImLqzzQ8w==';
 
 export async function handleAuthRoute(
   req: ApiRequest,
@@ -32,6 +40,9 @@ export async function handleAuthRoute(
   }
   if (req.path === '/api/v1/auth/login' && req.method === 'POST') {
     return handleLogin(req, ports);
+  }
+  if (req.path === '/api/v1/auth/csrf' && req.method === 'GET') {
+    return csrfBootstrapData(req);
   }
   if (req.path === '/api/v1/auth/refresh' && req.method === 'POST') {
     return handleRefresh(req, ports);
@@ -118,10 +129,9 @@ async function handleInitialSetup(req: ApiRequest, ports: ServerApiPorts): Promi
     },
   });
 
-  return data(201, {
+  return authSessionData(req, 201, {
     user: publicUser(created.user),
-    tokens: created.tokens,
-  });
+  }, created.tokens);
 }
 
 async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -147,26 +157,21 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     );
   }
 
-  const user = await ports.auth.findUserByEmail(email);
-  if (user?.disabledAt) {
-    return error(403, 'user_disabled', 'Benutzer ist deaktiviert');
-  }
-
   const loginConfig = ports.loginSecurity
-    ? await ports.loginSecurity.getLoginConfig(email)
+    ? await ports.loginSecurity.getLoginConfig()
     : null;
   if (loginConfig?.captcha.enabled && ports.loginSecurity) {
-    if (!ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip })) {
+    if (!(await ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip }))) {
       return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
     }
   }
 
-  const workspaceSettings = user && ports.loginSecurity
-    ? await ports.loginSecurity.getWorkspaceSettings(user.workspaceId)
-    : null;
-
-  const verified = user ? await ports.auth.verifyPassword(password, user.passwordHash) : false;
-  if (!user || !verified) {
+  const user = await ports.auth.findUserByEmail(email);
+  const verified = await ports.auth.verifyPassword(
+    password,
+    user?.passwordHash ?? DUMMY_PASSWORD_HASH,
+  );
+  if (!user || !verified || user.disabledAt) {
     const failedAttempts = await ports.auth.recordFailedLogin({
       email,
       ip,
@@ -195,7 +200,14 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     });
   }
 
+  const workspaceSettings = user && ports.loginSecurity
+    ? await ports.loginSecurity.getWorkspaceSettings(user.workspaceId)
+    : null;
+
   if (workspaceSettings && ports.loginSecurity) {
+    if (workspaceSettings.pinKeypadEnabled && user.loginPinEnabled && !pin?.trim()) {
+      return data(200, { pinRequired: true });
+    }
     const pinOk = await ports.loginSecurity.assertLoginPin({
       user,
       workspaceSettings,
@@ -243,22 +255,27 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
       device: device ?? null,
     },
   });
-  return data(200, {
+  return authSessionData(req, 200, {
     user: publicUser(user),
-    tokens,
     resetFailureCounter: shouldResetFailureCounterAfterSuccess(),
-  });
+  }, tokens);
 }
 
 async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
-  const refreshToken = getStringField(req.body, 'refreshToken')?.trim();
-  if (!refreshToken) {
-    return error(400, 'validation_error', 'refreshToken ist erforderlich');
+  const credential = readRefreshCredential(req);
+  if (!credential) {
+    return error(401, 'refresh_cookie_required', 'Keine aktive Browser-Sitzung');
+  }
+  if (!hasValidRefreshCsrf(req, credential)) {
+    return error(403, 'csrf_invalid', 'CSRF-Bestaetigung fehlt oder ist ungueltig');
   }
 
-  const rotated = await ports.auth.rotateRefreshToken({ refreshToken });
+  const rotated = await ports.auth.rotateRefreshToken({ refreshToken: credential.refreshToken });
   if (!rotated) {
-    return error(401, 'invalid_refresh_token', 'Refresh-Token ist ungültig oder widerrufen');
+    return {
+      ...error(401, 'invalid_refresh_token', 'Refresh-Token ist ungültig oder widerrufen'),
+      headers: clearAuthSessionHeaders(req),
+    };
   }
 
   await ports.audit?.record({
@@ -270,10 +287,9 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
     metadata: {},
   });
 
-  return data(200, {
+  return authSessionData(req, 200, {
     user: publicUser(rotated.user),
-    tokens: rotated.tokens,
-  });
+  }, rotated.tokens);
 }
 
 async function handleListUsers(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -519,20 +535,25 @@ async function handleAcceptInvitation(
     },
   });
 
-  return data(200, {
+  return authSessionData(req, 200, {
     user: publicUser(result.user),
-    tokens: result.tokens,
-  });
+  }, result.tokens);
 }
 
 async function handleLogout(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
-  const refreshToken = getStringField(req.body, 'refreshToken')?.trim();
-  if (!refreshToken) {
-    return error(400, 'validation_error', 'refreshToken ist erforderlich');
+  const credential = readRefreshCredential(req);
+  if (!credential) {
+    return {
+      ...data(200, { revoked: false }),
+      headers: clearAuthSessionHeaders(req),
+    };
+  }
+  if (!hasValidRefreshCsrf(req, credential)) {
+    return error(403, 'csrf_invalid', 'CSRF-Bestaetigung fehlt oder ist ungueltig');
   }
 
   const revoked = await ports.auth.revokeRefreshToken({
-    refreshToken,
+    refreshToken: credential.refreshToken,
     principal: req.principal,
   });
   if (req.principal) {
@@ -547,7 +568,10 @@ async function handleLogout(req: ApiRequest, ports: ServerApiPorts): Promise<Api
       },
     });
   }
-  return data(200, { revoked });
+  return {
+    ...data(200, { revoked }),
+    headers: clearAuthSessionHeaders(req),
+  };
 }
 
 async function handleAuditLog(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

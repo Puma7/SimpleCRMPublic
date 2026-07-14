@@ -46,6 +46,8 @@ export type StoredMailSecurityCheckInput = {
   bodyText: string | null;
   bodyHtml: string | null;
   mailauthEnabled: boolean;
+  mailauthTimeoutMs?: number;
+  mailauthAuthenticate?: typeof import('mailauth').authenticate;
   rspamdEnabled: boolean;
   rspamdUrl: string;
   rspamdTimeoutMs: number;
@@ -67,6 +69,7 @@ type RspamdJson = {
 };
 
 let dnsResultOrderPatched = false;
+const DEFAULT_MAILAUTH_TIMEOUT_MS = 15_000;
 
 export async function runStoredMailSecurityChecks(
   input: StoredMailSecurityCheckInput,
@@ -124,6 +127,8 @@ export async function verifyMailAuthentication(input: {
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
+  mailauthTimeoutMs?: number;
+  mailauthAuthenticate?: typeof import('mailauth').authenticate;
 }): Promise<MailAuthVerification> {
   const message = buildRfc822FromStored(input);
   if (!message) {
@@ -140,12 +145,15 @@ export async function verifyMailAuthentication(input: {
   const headerText = resolveHeaderTextForMailAuth(input);
   try {
     ensureDnsPrefersIpv4();
-    const { authenticate } = await import('mailauth');
-    const result = await authenticate(message, {
-      trustReceived: true,
-      sender: extractEnvelopeSender(headerText ?? input.rawHeaders),
-      disableBimi: true,
-    });
+    const authenticate = input.mailauthAuthenticate ?? (await import('mailauth')).authenticate;
+    const result = await withMailauthTimeout(
+      authenticate(message, {
+        trustReceived: true,
+        sender: extractEnvelopeSender(headerText ?? input.rawHeaders),
+        disableBimi: true,
+      }),
+      input.mailauthTimeoutMs,
+    );
     const dkimAgg = aggregateDkim(result.dkim);
     return applyHeaderAuthFallback({
       spf: result.spf && typeof result.spf === 'object' ? statusLabel(result.spf.status) : 'none',
@@ -163,6 +171,23 @@ export async function verifyMailAuthentication(input: {
       dkimDomains: [],
       error: error instanceof Error ? error.message : String(error),
     }, headerText);
+  }
+}
+
+async function withMailauthTimeout<T>(promise: Promise<T>, timeoutMs?: number): Promise<T> {
+  const boundedTimeout = Number.isFinite(timeoutMs)
+    ? Math.max(1, Math.min(60_000, Math.floor(Number(timeoutMs))))
+    : DEFAULT_MAILAUTH_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Mailauth Timeout')), boundedTimeout);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

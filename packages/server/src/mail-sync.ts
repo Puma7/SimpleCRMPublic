@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   addressJson,
+  assertInboundRfc822Size,
   canAdvanceImapSyncCursor,
   findSentMailboxOnServer,
   formatDate,
@@ -522,9 +523,11 @@ async function syncImapFolder(input: {
           { uid: true },
         );
         if (!fetched || !fetched.source) throw new Error(`empty source for UID ${uid}`);
+        const source = sourceToBuffer(fetched.source);
+        assertInboundRfc822Size(source.length);
         fetchedMessages.push({
           uid,
-          source: sourceToBuffer(fetched.source),
+          source,
           flags: fetched.flags,
           threadId: fetched.threadId == null ? null : String(fetched.threadId),
         });

@@ -5,7 +5,8 @@ import { join } from 'path';
 
 const repoRoot = join(__dirname, '..', '..');
 
-const bashAvailable = () => spawnSync('bash', ['--version'], { stdio: 'ignore' }).status === 0;
+const bashAvailable = () => process.platform !== 'win32'
+  && spawnSync('bash', ['--version'], { stdio: 'ignore' }).status === 0;
 
 // Spins up a fake `docker` on PATH that records every argv it receives, reports
 // the configured set of existing Compose stacks for `compose ls`, and lets the

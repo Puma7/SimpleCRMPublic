@@ -1,6 +1,7 @@
 // Main Electron process
 const { app, BrowserWindow, dialog, protocol, globalShortcut, screen } = require('electron'); // Added 'protocol'
 const path = require('path');
+const { pathToFileURL } = require('url');
 const windowStateKeeper = require('electron-window-state');
 const log = require('electron-log');
 const { registerAllIpcHandlers } = require('../dist-electron/electron/ipc/router');
@@ -8,6 +9,16 @@ const {
   initializeAutoUpdater,
   checkForUpdatesAndNotify,
 } = require('../dist-electron/electron/update-service');
+const {
+  allowedWindowOpenKind,
+  isAllowedRendererNavigation,
+} = require('../dist-electron/electron/security/navigation-policy');
+const {
+  buildRendererContentSecurityPolicy,
+} = require('../dist-electron/electron/security/content-security-policy');
+const {
+  readElectronDeployConfig,
+} = require('../dist-electron/electron/setup/deploy-config');
 
 // Configure electron-log
 log.transports.file.resolvePath = () => path.join(app.getPath('userData'), 'logs/main.log');
@@ -106,6 +117,95 @@ let devToolsWindow = null;
 let loadURLFunction;
 
 let cleanupIpcHandlers = () => {};
+let rendererCspServerBaseUrl;
+let rendererCspAllowsServerSelection = true;
+const cspProtectedSessions = new WeakSet();
+
+const rendererNavigationPolicy = () => ({
+  isDevelopment,
+  devServerUrl: process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173',
+  productionFileUrl: pathToFileURL(path.join(__dirname, '../dist/index.html')).toString(),
+});
+
+const preventDisallowedNavigation = (webContents, policy) => {
+  const guard = (event, url) => {
+    if (isAllowedRendererNavigation(url, policy)) return;
+    event.preventDefault();
+    log.warn('[Electron Main] Blocked renderer navigation outside the application allowlist.');
+  };
+  webContents.on('will-navigate', guard);
+  webContents.on('will-redirect', guard);
+};
+
+const installRendererContentSecurityPolicy = (webContents) => {
+  const rendererSession = webContents?.session;
+  if (!rendererSession || cspProtectedSessions.has(rendererSession)) return;
+  cspProtectedSessions.add(rendererSession);
+  rendererSession.webRequest.onHeadersReceived((details, callback) => {
+    if (
+      details.resourceType !== 'mainFrame'
+      || !isAllowedRendererNavigation(details.url, rendererNavigationPolicy())
+    ) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+    const headers = { ...(details.responseHeaders || {}) };
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'content-security-policy') delete headers[key];
+    }
+    headers['Content-Security-Policy'] = [buildRendererContentSecurityPolicy({
+      isDevelopment,
+      devServerUrl: process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173',
+      ...(rendererCspServerBaseUrl ? { serverBaseUrl: rendererCspServerBaseUrl } : {}),
+      allowUnconfiguredServer: rendererCspAllowsServerSelection,
+    })];
+    callback({ responseHeaders: headers });
+  });
+};
+
+const hardenChildWindow = (childWindow, initialUrl) => {
+  const childContents = childWindow?.webContents;
+  if (!childContents) return;
+  const guard = (event, url) => {
+    if (url === initialUrl) return;
+    event.preventDefault();
+    log.warn('[Electron Main] Blocked navigation from an isolated child window.');
+  };
+  childContents.on('will-navigate', guard);
+  childContents.on('will-redirect', guard);
+  childContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+};
+
+const attachMainWindowSecurity = (webContents) => {
+  installRendererContentSecurityPolicy(webContents);
+  preventDisallowedNavigation(webContents, rendererNavigationPolicy());
+  webContents.setWindowOpenHandler((details) => {
+    const kind = allowedWindowOpenKind({
+      url: details.url,
+      frameName: details.frameName,
+    });
+    if (!kind) {
+      log.warn('[Electron Main] Blocked popup outside the application allowlist.');
+      return { action: 'deny' };
+    }
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          webSecurity: true,
+          allowRunningInsecureContent: false,
+          preload: undefined,
+        },
+      },
+    };
+  });
+  webContents.on('did-create-window', (childWindow, details) => {
+    hardenChildWindow(childWindow, details.url);
+  });
+};
 
 const ensureDevToolsWindow = () => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -226,6 +326,20 @@ async function initializeApp() {
 // --- Create Main Window ---
 async function createMainWindow() {
   log.info(`[Electron Main] createMainWindow called.`);
+  try {
+    const deployConfig = await readElectronDeployConfig(app.getPath('userData'));
+    if (deployConfig.status === 'ok') {
+      rendererCspServerBaseUrl = deployConfig.config.server?.baseUrl;
+      rendererCspAllowsServerSelection = deployConfig.config.mode === 'server-install';
+    } else {
+      rendererCspServerBaseUrl = undefined;
+      rendererCspAllowsServerSelection = true;
+    }
+  } catch (error) {
+    rendererCspServerBaseUrl = undefined;
+    rendererCspAllowsServerSelection = true;
+    log.warn('[Electron Main] Could not resolve deploy config for renderer CSP:', error);
+  }
   // Example structure:
   const windowState = windowStateKeeper({
     defaultWidth: 1400,
@@ -259,6 +373,8 @@ async function createMainWindow() {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     autoHideMenuBar: true,
   });
+
+  attachMainWindowSecurity(mainWindow.webContents);
 
   windowState.manage(mainWindow);
 

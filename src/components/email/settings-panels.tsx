@@ -42,6 +42,7 @@ import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
+export { SETTINGS_TAB_IDS } from "./settings-tab-ids"
 
 type TabDef = {
   id: SettingsTab
@@ -118,8 +119,6 @@ const TAB_DEFS: TabDef[] = [
   { id: "diagnostics", label: "Diagnose", icon: Stethoscope, render: () => <DiagnosticsPanel /> },
   { id: "misc", label: "Sonstiges", icon: Wrench, render: () => <MiscPanel /> },
 ]
-
-export const SETTINGS_TAB_IDS = TAB_DEFS.map((t) => t.id)
 
 export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "oauthApps"] },

@@ -1,14 +1,14 @@
 $ jest --config jest.server.config.cjs
 
 =============================== Coverage summary ===============================
-Statements   : 69.2% ( 64738/93540 )
-Branches     : 68.18% ( 9759/14312 )
-Functions    : 66.34% ( 2324/3503 )
-Lines        : 69.2% ( 64738/93540 )
+Statements   : 69.42% ( 65841/94836 )
+Branches     : 68.11% ( 9938/14590 )
+Functions    : 66.8% ( 2363/3537 )
+Lines        : 69.42% ( 65841/94836 )
 ================================================================================
 
-Test Suites: 241 passed, 241 total
-Tests:       2139 passed, 2139 total
+Test Suites: 250 passed, 250 total
+Tests:       2183 passed, 2183 total
 Snapshots:   1 passed, 1 total
-Time:        23.232 s
+Time:        25.859 s
 Ran all test suites in 2 projects.

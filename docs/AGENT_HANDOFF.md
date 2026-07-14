@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
 **Last updated:** 2026-07-14 (system/mail/UX/security audit)
-**Integration branch:** `codex/system-mail-ux-security-audit`
+**Integration branch:** `codex/system-mail-ux-security-audit-complete`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 **Current audit:** [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
@@ -57,7 +57,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
-| System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers and login challenge handling hardened; see the current audit report |
+| System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers, RLS-sichere MFA-Mutationen und multi-replizierter Login-Challenge-State gehärtet; siehe aktuellen Auditbericht |
 
 ---
 
@@ -85,7 +85,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Settings: Konto-Overrides UI (Prompts/Canned/KB) | ✅ siehe `BACKLOG.md` |
 | IMAP multi-folder sync | `EMAIL_ROADMAP.md` |
 | Embeddings RAG | `WORKFLOW_VISION.md` (vision, not all 🔲 = todo) |
-| Beta security and reliability blockers | [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md), section 4 |
+| Beta security and reliability audit | Code-Maßnahmen abgeschlossen; externe Release-Abnahmen siehe [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md), Abschnitt 6 |
 
 **Do not merge** stale branch `cursor/mail-category-dnd-and-ux-d125` (pre-main compose regressions).
 

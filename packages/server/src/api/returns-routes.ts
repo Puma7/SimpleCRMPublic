@@ -640,7 +640,7 @@ async function handlePortalCreate(
         ? req.body.captchaChallenge
         : undefined;
       const ip = req.ip ?? '0.0.0.0';
-      if (!ports.loginSecurity.assertCaptchaChallenge({ challenge, ip })) {
+      if (!(await ports.loginSecurity.assertCaptchaChallenge({ challenge, ip }))) {
         return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
       }
       captchaStatus = 'passed';

@@ -1,5 +1,6 @@
 import { createRequire } from 'module';
 import { simpleParser } from 'mailparser';
+import { assertInboundRfc822Size } from '@simplecrm/core';
 
 const requireCjs = createRequire(__filename);
 const Pop3Command = requireCjs('node-pop3') as typeof import(
@@ -115,6 +116,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     const raw = await pop3.RETR(num);
     const sourceBuf =
       typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw as Buffer);
+    assertInboundRfc822Size(sourceBuf.length);
     const parsed = await simpleParser(sourceBuf);
     const messageId = parsed.messageId ?? null;
     const inReplyTo = parsed.inReplyTo ?? null;

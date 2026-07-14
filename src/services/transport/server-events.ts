@@ -59,7 +59,9 @@ export function subscribeServerEvents(options: ServerEventSubscriptionOptions): 
 
   const connect = async () => {
     try {
-      const token = await (options.getAccessToken ? options.getAccessToken() : getServerAccessToken())
+      const token = await (options.getAccessToken
+        ? options.getAccessToken()
+        : getServerAccessToken(undefined, undefined, transport.serverBaseUrl))
       if (closed) return
       const url = buildServerEventWebSocketUrl(transport.serverBaseUrl!, since)
       const protocols = buildServerEventProtocols(token)

@@ -125,12 +125,35 @@ describe('renderer transport', () => {
     );
   });
 
-  const seedSession = (accessToken: string, refreshToken: string) =>
+  test('does not send a token saved for another server origin', async () => {
     saveServerAuthSession(
       buildServerAuthSession({
         user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
-        tokens: { accessToken, refreshToken, expiresInSeconds: 900 },
+        tokens: { accessToken: 'origin-a-token', expiresInSeconds: 900 },
       }),
+      'csrf-a',
+      null,
+      null,
+      'https://a.example.com',
+    );
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { valid: true, checked: 1 } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://b.example.com', fetchImpl });
+
+    await transport.invoke(IPCChannels.Auth.VerifyAuditChain, undefined);
+
+    expect(authHeader(fetchImpl.mock.calls[0])).toBeUndefined();
+  });
+
+  const seedSession = (accessToken: string, csrfToken: string) =>
+    saveServerAuthSession(
+      buildServerAuthSession({
+        user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
+        tokens: { accessToken, expiresInSeconds: 900 },
+      }),
+      csrfToken,
+      undefined,
+      undefined,
+      'https://crm.example.com',
     );
   const unauthorized = () =>
     jsonResponse({ error: { code: 'unauthorized', message: 'Authentifizierung erforderlich' } }, 401);
@@ -138,15 +161,16 @@ describe('renderer transport', () => {
     (call[1] as { headers: Record<string, string> }).headers.Authorization;
 
   test('refreshes the access token once and retries after a 401', async () => {
-    seedSession('old-token', 'r1');
+    seedSession('old-token', 'csrf-1');
     const fetchImpl = jest.fn()
       // 1) channel request carries the stale token -> 401
       .mockResolvedValueOnce(unauthorized())
-      // 2) POST /auth/refresh -> fresh tokens (stored to localStorage/sessionStorage)
+      // 2) POST /auth/refresh -> fresh access token in memory; refresh rotates as HttpOnly cookie
       .mockResolvedValueOnce(jsonResponse({
         data: {
           user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
-          tokens: { accessToken: 'new-token', refreshToken: 'r2', expiresInSeconds: 900 },
+          tokens: { accessToken: 'new-token', expiresInSeconds: 900 },
+          csrfToken: 'csrf-2',
         },
       }))
       // 3) retry the channel request with the refreshed token -> ok
@@ -165,7 +189,7 @@ describe('renderer transport', () => {
   });
 
   test('does not retry when the refresh itself fails', async () => {
-    seedSession('old-token', 'r1');
+    seedSession('old-token', 'csrf-1');
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(unauthorized())
       .mockResolvedValueOnce(jsonResponse({ error: { code: 'invalid_refresh_token', message: 'abgelaufen' } }, 401));
@@ -193,7 +217,7 @@ describe('renderer transport', () => {
   });
 
   test('retries only the failed sub-request, not an earlier mutation in the same transform', async () => {
-    seedSession('old-token', 'r1');
+    seedSession('old-token', 'csrf-1');
     // AddMessageCategory does GET (list) then POST (create). The POST 401s;
     // the refresh must replay ONLY the POST, never re-issue the GET.
     const fetchImpl = jest.fn()
@@ -205,7 +229,8 @@ describe('renderer transport', () => {
       .mockResolvedValueOnce(jsonResponse({
         data: {
           user: { id: 'u1', workspaceId: 'w1', email: 'a@b.de', displayName: 'A', role: 'owner' },
-          tokens: { accessToken: 'new-token', refreshToken: 'r2', expiresInSeconds: 900 },
+          tokens: { accessToken: 'new-token', expiresInSeconds: 900 },
+          csrfToken: 'csrf-2',
         },
       }))
       // 4) POST retry -> created
@@ -3347,6 +3372,9 @@ describe('renderer transport', () => {
           total: 12,
           pendingPostProcess: 2,
           outboundHold: 1,
+          oldestPendingPostProcessSeconds: 7200,
+          pendingPostProcessSamples: [{ id: 41, accountId: 7, subject: 'Offen', ageSeconds: 7200 }],
+          failedScheduledSends: [{ messageId: 44, failureCount: 5, lastError: 'SMTP timeout' }],
           byFolderKind: { inbox: 9, sent: 3 },
         },
         workflows: {
@@ -3370,6 +3398,31 @@ describe('renderer transport', () => {
             inboxLastSyncedAt: '2026-06-04T09:00:00.000Z',
           },
         ],
+        operations: {
+          inboundLagSeconds: 3600,
+          postProcessRetrying: 1,
+          smtpCommitRecoveries: 2,
+          mfaLocks: 3,
+        },
+        jobQueue: {
+          ready: 4,
+          locked: 1,
+          deadLetter: 2,
+          workflowDeadLetter: 1,
+          lagSeconds: 90,
+          oldestLockedSeconds: 30,
+          samples: [{
+            id: 99,
+            type: 'workflow.execute',
+            attempts: 3,
+            maxAttempts: 3,
+            lockedBy: null,
+            lockedSeconds: null,
+            lastError: 'failed',
+            engine: 'graphile',
+            terminal: true,
+          }],
+        },
       },
     }));
     const transport = createHttpRendererTransport({
@@ -3382,6 +3435,17 @@ describe('renderer transport', () => {
         schemaGeneration: 13,
         sizes: { databaseBytes: null, attachmentsBytes: 2048 },
         messages: expect.objectContaining({ total: 12, byFolderKind: { inbox: 9, sent: 3 } }),
+        operations: {
+          inboundLagSeconds: 3600,
+          postProcessRetrying: 1,
+          smtpCommitRecoveries: 2,
+          mfaLocks: 3,
+        },
+        jobQueue: expect.objectContaining({
+          deadLetter: 2,
+          workflowDeadLetter: 1,
+          samples: [expect.objectContaining({ engine: 'graphile', terminal: true })],
+        }),
         accounts: [
           {
             id: 7,
@@ -3396,6 +3460,22 @@ describe('renderer transport', () => {
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://crm.example.com/api/v1/email/diagnostics',
       expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('maps post-process recovery to the server admin route', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(
+      transport.invoke(IPCChannels.Email.RetryMessagePostProcess, 41),
+    ).resolves.toEqual({ success: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/41/post-process/retry',
+      expect.objectContaining({ method: 'POST' }),
     );
   });
 

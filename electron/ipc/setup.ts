@@ -18,6 +18,7 @@ export function registerSetupHandlers(options: {
   const getUserDataDir = options.getUserDataDir ?? (() => app.getPath('userData'));
   const now = options.now ?? (() => new Date());
   const disposers: Disposer[] = [];
+  let saveQueue: Promise<void> = Promise.resolve();
 
   disposers.push(registerIpcHandler(
     IPCChannels.Setup.GetDeployConfig,
@@ -28,14 +29,32 @@ export function registerSetupHandlers(options: {
   disposers.push(registerIpcHandler(
     IPCChannels.Setup.SaveDeployConfig,
     async (_event: IpcMainInvokeEvent, payload: ElectronDeployConfigInput) => {
+      let result: { success: true; config: Awaited<ReturnType<typeof writeElectronDeployConfig>> }
+        | { success: false; error: string } = {
+          success: false,
+          error: 'deploy config could not be saved',
+        };
+      const operation = saveQueue.then(async () => {
+        const existing = await readElectronDeployConfig(getUserDataDir());
+        if (existing.status === 'ok') {
+          result = {
+            success: false,
+            error: 'deploy config is already configured; use authenticated maintenance to change it',
+          };
+          return;
+        }
       try {
         const config = await writeElectronDeployConfig(getUserDataDir(), payload, { now: now() });
-        return { success: true as const, config };
+          result = { success: true, config };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
         logger.warn('[setup] could not save deploy config', { error: message });
-        return { success: false as const, error: message };
+          result = { success: false, error: message };
       }
+      });
+      saveQueue = operation.catch(() => undefined);
+      await operation;
+      return result;
     },
     { logger, requireAuth: false },
   ));

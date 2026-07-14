@@ -1,12 +1,26 @@
 import type { Kysely, Selectable } from 'kysely';
+import {
+  AUTH_SECURITY_SYNC_KEYS,
+  DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS,
+  parseAuthSecuritySyncValues,
+  type AuthSecurityWorkspaceSettings,
+} from '@simplecrm/core';
 
 import type { SyncInfoApiPort, SyncInfoRecord } from '../api/types';
 import type { ServerDatabase, SyncInfoTable } from './schema';
-import { withWorkspaceTransaction } from './workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+} from './workspace-context';
 
 export type PostgresSyncInfoPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   now?: () => Date;
+}>;
+
+export type PostgresPublicAuthSecuritySettingsReaderOptions = Readonly<{
+  db: Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
 
 type SyncInfoRow = Selectable<SyncInfoTable>;
@@ -16,6 +30,8 @@ const syncInfoSelectColumns = [
   'value',
   'updated_at',
 ] as const;
+
+const PUBLIC_AUTH_SETTINGS_CONTEXT_ID = '00000000-0000-4000-8000-000000000001';
 
 export function createPostgresSyncInfoPort(options: PostgresSyncInfoPortOptions): SyncInfoApiPort {
   const now = options.now ?? (() => new Date());
@@ -115,6 +131,36 @@ export function createPostgresSyncInfoPort(options: PostgresSyncInfoPortOptions)
       );
     },
   };
+}
+
+export function createPostgresPublicAuthSecuritySettingsReader(
+  options: PostgresPublicAuthSecuritySettingsReaderOptions,
+): () => Promise<readonly AuthSecurityWorkspaceSettings[]> {
+  return async () => withWorkspaceTransaction(
+    options.db,
+    {
+      workspaceId: PUBLIC_AUTH_SETTINGS_CONTEXT_ID,
+      role: 'system',
+      crossWorkspaceAccess: true,
+    },
+    async (trx) => {
+      const rows = await trx
+        .selectFrom('sync_info')
+        .select(['workspace_id', 'key', 'value'])
+        .where('key', 'in', Object.values(AUTH_SECURITY_SYNC_KEYS))
+        .execute();
+      if (rows.length === 0) return [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS];
+
+      const valuesByWorkspace = new Map<string, Record<string, string | null>>();
+      for (const row of rows) {
+        const values = valuesByWorkspace.get(row.workspace_id) ?? {};
+        values[row.key] = row.value;
+        valuesByWorkspace.set(row.workspace_id, values);
+      }
+      return [...valuesByWorkspace.values()].map(parseAuthSecuritySyncValues);
+    },
+    { applySession: options.applyWorkspaceSession },
+  );
 }
 
 function uniqueSyncInfoKeys(keys: readonly string[]): string[] {
