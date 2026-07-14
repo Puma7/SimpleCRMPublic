@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   addressJson,
   canAdvanceImapSyncCursor,
+  detectInboundEmailEvidence,
   findSentMailboxOnServer,
   formatDate,
   normalizeMailboxName,
@@ -58,6 +59,7 @@ export {
 import type { EmailAccountsTable, EmailFoldersTable, EmailMessagesTable, ServerDatabase } from './db/schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
+import type { EmailTrackingService } from './email-tracking';
 import type { MailSyncJobPlan, MailSyncJobPort, MailSyncJobResult } from './jobs';
 import { accountSyncAdvisoryLockKey } from './jobs/policy';
 
@@ -271,6 +273,7 @@ export type ServerMailSyncPortOptions = Readonly<{
   oauthFetchImpl?: typeof fetch;
   firstSyncMaxMessages?: number;
   now?: () => Date;
+  inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
 }>;
 
 export type PostgresMailSyncJobPortOptions = Readonly<{
@@ -284,6 +287,7 @@ export type PostgresMailSyncJobPortOptions = Readonly<{
   firstSyncMaxMessages?: number;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
+  inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
 }>;
 
 type ServerMailSyncFolderKind = 'inbox' | 'sent' | 'draft';
@@ -294,6 +298,7 @@ type ImapFolderSyncSpec = Readonly<{
   archived: boolean;
   isSpam: boolean;
   runPostSync: boolean;
+  recordEvidence: boolean;
 }>;
 
 type ServerMailSyncUpsertContext = {
@@ -342,6 +347,7 @@ export function createServerMailSyncJobPort(options: ServerMailSyncPortOptions):
           firstSyncMaxMessages,
           oauthFetchImpl: options.oauthFetchImpl,
           now,
+          inboundEvidence: options.inboundEvidence,
         })
         : syncPop3Account({
           plan: input,
@@ -351,6 +357,7 @@ export function createServerMailSyncJobPort(options: ServerMailSyncPortOptions):
           parser,
           oauthFetchImpl: options.oauthFetchImpl,
           now,
+          inboundEvidence: options.inboundEvidence,
         });
     },
   };
@@ -365,6 +372,7 @@ export function createPostgresMailSyncJobPort(options: PostgresMailSyncJobPortOp
     oauthFetchImpl: options.oauthFetchImpl,
     firstSyncMaxMessages: options.firstSyncMaxMessages,
     now: options.now,
+    inboundEvidence: options.inboundEvidence,
   });
 }
 
@@ -377,6 +385,7 @@ async function syncImapAccount(input: {
   firstSyncMaxMessages: number;
   oauthFetchImpl?: typeof fetch;
   now: () => Date;
+  inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
 }): Promise<MailSyncJobResult> {
   const auth = await resolveMailAuth({
     workspaceId: input.plan.workspaceId,
@@ -398,6 +407,7 @@ async function syncImapAccount(input: {
   });
 
   const inboundMessageIds: number[] = [];
+  const automatedEvidenceMessageIds: number[] = [];
   try {
     await client.connect();
     let listedMailboxes: MailboxListEntry[] = [];
@@ -410,7 +420,10 @@ async function syncImapAccount(input: {
     for (const spec of specs) {
       try {
         const result = await syncImapFolder({ ...input, client, spec });
-        if (spec.runPostSync) inboundMessageIds.push(...result.newMessageIds);
+        if (spec.runPostSync) {
+          inboundMessageIds.push(...result.newMessageIds);
+          automatedEvidenceMessageIds.push(...result.automatedEvidenceMessageIds);
+        }
       } catch (error) {
         if (spec.runPostSync) throw error;
       }
@@ -419,7 +432,11 @@ async function syncImapAccount(input: {
     await client.logout().catch(() => undefined);
   }
 
-  return { inboundMessageIds: uniquePositiveIds(inboundMessageIds) };
+  const automatedIds = uniquePositiveIds(automatedEvidenceMessageIds);
+  return {
+    inboundMessageIds: uniquePositiveIds(inboundMessageIds),
+    ...(automatedIds.length > 0 ? { automatedEvidenceMessageIds: automatedIds } : {}),
+  };
 }
 
 async function syncImapFolder(input: {
@@ -431,7 +448,8 @@ async function syncImapFolder(input: {
   firstSyncMaxMessages: number;
   spec: ImapFolderSyncSpec;
   now: () => Date;
-}): Promise<{ newMessageIds: number[] }> {
+  inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
+}): Promise<{ newMessageIds: number[]; automatedEvidenceMessageIds: number[] }> {
   let folder = await input.store.getOrCreateFolder({
     workspaceId: input.plan.workspaceId,
     account: input.account,
@@ -544,6 +562,7 @@ async function syncImapFolder(input: {
     reconcileSeenFromServer: true,
   };
   const newMessageIds: number[] = [];
+  const automatedEvidenceMessageIds: number[] = [];
 
   for (const item of fetchedMessages) {
     try {
@@ -574,7 +593,16 @@ async function syncImapFolder(input: {
           now: input.now(),
         });
       }
-      if (upserted.isNew && upserted.id > 0) newMessageIds.push(upserted.id);
+      if (upserted.isNew && upserted.id > 0) {
+        newMessageIds.push(upserted.id);
+        if (input.spec.recordEvidence && await processInboundEvidence({
+          workspaceId: input.plan.workspaceId,
+          parsed,
+          port: input.inboundEvidence,
+        })) {
+          automatedEvidenceMessageIds.push(upserted.id);
+        }
+      }
       if (canAdvanceImapSyncCursor(chainEnd, item.uid, sortedSet, skippedUids)) chainEnd = item.uid;
     } catch (error) {
       skippedUids.add(item.uid);
@@ -608,7 +636,10 @@ async function syncImapFolder(input: {
     syncedAt: input.now(),
   });
 
-  return { newMessageIds: fullInbox ? [] : newMessageIds };
+  return {
+    newMessageIds: fullInbox ? [] : newMessageIds,
+    automatedEvidenceMessageIds,
+  };
 }
 
 async function syncPop3Account(input: {
@@ -619,6 +650,7 @@ async function syncPop3Account(input: {
   parser: ServerMailSyncParser;
   oauthFetchImpl?: typeof fetch;
   now: () => Date;
+  inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
 }): Promise<MailSyncJobResult> {
   const auth = await resolveMailAuth({
     workspaceId: input.plan.workspaceId,
@@ -655,6 +687,7 @@ async function syncPop3Account(input: {
     }),
   };
   const inboundMessageIds: number[] = [];
+  const automatedEvidenceMessageIds: number[] = [];
 
   try {
     await client.connect();
@@ -688,7 +721,16 @@ async function syncPop3Account(input: {
           messageId: upserted.id,
           attachments: parsed.attachments,
         });
-        if (upserted.id > 0 && upserted.isNew) inboundMessageIds.push(upserted.id);
+        if (upserted.id > 0 && upserted.isNew) {
+          inboundMessageIds.push(upserted.id);
+          if (await processInboundEvidence({
+            workspaceId: input.plan.workspaceId,
+            parsed,
+            port: input.inboundEvidence,
+          })) {
+            automatedEvidenceMessageIds.push(upserted.id);
+          }
+        }
       } catch {
         // Per-message POP3 failures should not abort the whole mailbox; the UIDL remains unpersisted as a row.
       }
@@ -705,7 +747,77 @@ async function syncPop3Account(input: {
     await client.quit().catch(() => undefined);
   }
 
-  return { inboundMessageIds: uniquePositiveIds(inboundMessageIds) };
+  const automatedIds = uniquePositiveIds(automatedEvidenceMessageIds);
+  return {
+    inboundMessageIds: uniquePositiveIds(inboundMessageIds),
+    ...(automatedIds.length > 0 ? { automatedEvidenceMessageIds: automatedIds } : {}),
+  };
+}
+
+async function processInboundEvidence(input: {
+  workspaceId: string;
+  parsed: ServerMailSyncParsedMessage;
+  port?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
+}): Promise<boolean> {
+  const evidence = detectInboundEmailEvidence({
+    rawHeaders: input.parsed.rawHeaders,
+    bodyText: input.parsed.bodyText,
+    reportFields: machineReadableReportFields(input.parsed.attachments),
+    embeddedMessageHeaders: embeddedOriginalMessageHeaders(input.parsed.attachments),
+    inReplyTo: input.parsed.inReplyTo,
+    referencesHeader: input.parsed.referencesHeader,
+  });
+  let suppressAutomation = false;
+  for (const item of evidence) {
+    const occurredAt = parsedEvidenceDate(input.parsed.dateReceived);
+    const recorded = await input.port?.recordInboundEvidence({
+      workspaceId: input.workspaceId,
+      messageIdHeader: item.originalMessageId,
+      messageIdHeaders: item.candidateMessageIds,
+      evidenceMessageId: input.parsed.messageId,
+      type: item.type,
+      source: item.source,
+      confidence: item.confidence,
+      ...(occurredAt ? { occurredAt } : {}),
+      metadata: item.metadata,
+    }).catch(() => false) ?? false;
+    if (recorded && item.suppressAutomation) suppressAutomation = true;
+  }
+  return suppressAutomation;
+}
+
+function machineReadableReportFields(
+  attachments: readonly ServerMailSyncParsedAttachment[] | undefined,
+): string | null {
+  const parts: string[] = [];
+  let bytes = 0;
+  for (const attachment of attachments ?? []) {
+    const contentType = attachment.contentType?.trim().toLowerCase();
+    if (contentType !== 'message/delivery-status' && contentType !== 'message/disposition-notification') continue;
+    const remaining = 512 * 1024 - bytes;
+    if (remaining <= 0) break;
+    const part = attachment.content.subarray(0, remaining).toString('utf8').trim();
+    if (!part) continue;
+    parts.push(part);
+    bytes += Buffer.byteLength(part, 'utf8');
+  }
+  return parts.length > 0 ? parts.join('\r\n') : null;
+}
+
+function embeddedOriginalMessageHeaders(
+  attachments: readonly ServerMailSyncParsedAttachment[] | undefined,
+): string | null {
+  const embedded = attachments?.find((attachment) => {
+    const contentType = attachment.contentType?.trim().toLowerCase();
+    return contentType === 'message/rfc822' || contentType === 'text/rfc822-headers';
+  });
+  return embedded ? embedded.content.subarray(0, 64 * 1024).toString('utf8') : null;
+}
+
+function parsedEvidenceDate(value: string | null): Date | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : undefined;
 }
 
 function createPostgresMailSyncStore(options: PostgresMailSyncJobPortOptions): ServerMailSyncStore {
@@ -1853,6 +1965,7 @@ function resolveImapSyncFolders(
     archived: false,
     isSpam: false,
     runPostSync: true,
+    recordEvidence: true,
   }];
   const seen = new Set<string>(['inbox']);
   const push = (spec: ImapFolderSyncSpec | null): void => {
@@ -1870,6 +1983,7 @@ function resolveImapSyncFolders(
       archived: false,
       isSpam: false,
       runPostSync: false,
+      recordEvidence: false,
     } : null);
   }
   if (account.imapSyncArchive) {
@@ -1886,6 +2000,7 @@ function resolveImapSyncFolders(
       archived: true,
       isSpam: false,
       runPostSync: false,
+      recordEvidence: true,
     } : null);
   }
   if (account.imapSyncSpam) {
@@ -1902,6 +2017,7 @@ function resolveImapSyncFolders(
       archived: false,
       isSpam: true,
       runPostSync: false,
+      recordEvidence: true,
     } : null);
   }
   return specs;

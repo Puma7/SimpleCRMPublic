@@ -364,6 +364,7 @@ function assertServerEventType(value: string): ServerEvent['type'] {
     || value === 'email_account_signature.updated'
     || value === 'email_account_signature.deleted'
     || value === 'email_read_receipt.created'
+    || value === 'email_tracking.updated'
   ) {
     return value;
   }

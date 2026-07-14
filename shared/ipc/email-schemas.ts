@@ -655,6 +655,86 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  const emailTrackingPolicySchema = z.object({
+    enabled: z.boolean(),
+    trackOpens: z.boolean(),
+    trackLinks: z.boolean(),
+    collectDerivedMetadata: z.boolean(),
+    collectRawMetadata: z.boolean(),
+    rawMetadataRetentionDays: z.number().int(),
+    eventRetentionDays: z.number().int(),
+    tokenTtlDays: z.number().int(),
+    legalBasis: z.enum(['consent', 'legitimate_interest', 'contract', 'other']).nullable(),
+    privacyNoticeUrl: z.string().nullable(),
+    complianceAcknowledgedAt: z.string().nullable(),
+    publicBaseUrl: z.string(),
+    updatedAt: z.string().nullable(),
+  });
+  const emailTrackingMutationSchema = z.object({
+    enabled: z.boolean().optional(),
+    trackOpens: z.boolean().optional(),
+    trackLinks: z.boolean().optional(),
+    collectDerivedMetadata: z.boolean().optional(),
+    collectRawMetadata: z.boolean().optional(),
+    rawMetadataRetentionDays: z.number().int().optional(),
+    eventRetentionDays: z.number().int().optional(),
+    tokenTtlDays: z.number().int().optional(),
+    legalBasis: z.enum(['consent', 'legitimate_interest', 'contract', 'other']).nullable().optional(),
+    privacyNoticeUrl: z.string().nullable().optional(),
+    complianceAcknowledged: z.boolean().optional(),
+  });
+  const emailEvidenceSummarySchema = z.object({
+    transport: z.enum(['unknown', 'queued', 'sending', 'smtp_accepted', 'delayed', 'failed', 'bounced']),
+    delivery: z.enum(['unknown', 'external_system_reached', 'dsn_delivered']),
+    engagement: z.enum(['none', 'automated_fetch', 'probable_open', 'link_interaction', 'human_reply']),
+    confidence: z.enum(['none', 'low', 'medium', 'high', 'verified']),
+    openCount: z.number().int().nonnegative(),
+    clickCount: z.number().int().nonnegative(),
+    firstOpenedAt: z.string().nullable(),
+    lastOpenedAt: z.string().nullable(),
+    firstClickedAt: z.string().nullable(),
+    lastClickedAt: z.string().nullable(),
+    repliedAt: z.string().nullable(),
+  });
+  set(IPCChannels.Email.GetEmailTrackingSettings, {
+    payload: z.undefined().optional(),
+    result: emailTrackingPolicySchema,
+  });
+  set(IPCChannels.Email.SetEmailTrackingSettings, {
+    payload: emailTrackingMutationSchema,
+    result: emailTrackingPolicySchema,
+  });
+  set(IPCChannels.Email.GetMessageTracking, {
+    payload: z.object({ messageId: positiveInt, includeSensitive: z.boolean().optional() }),
+    result: z.object({
+      messageId: positiveInt,
+      tracked: z.boolean(),
+      warning: z.string().nullable(),
+      summary: emailEvidenceSummarySchema,
+      eventsTruncated: z.boolean(),
+      events: z.array(z.object({
+        id: positiveInt,
+        type: z.enum([
+          'queued', 'sending', 'smtp_accepted', 'smtp_failed', 'delayed', 'bounced',
+          'dsn_delivered', 'mdn_displayed', 'open_automated', 'open_probable',
+          'click_automated', 'click', 'replied', 'revoked', 'expired',
+        ]),
+        source: z.string(),
+        confidence: z.enum(['none', 'low', 'medium', 'high', 'verified']),
+        automated: z.boolean(),
+        occurredAt: z.string(),
+        metadata: z.record(z.string(), z.unknown()),
+      })),
+    }),
+  });
+  set(IPCChannels.Email.RevokeMessageTracking, {
+    payload: positiveInt,
+    result: z.object({ revoked: z.literal(true) }),
+  });
+  set(IPCChannels.Email.DeleteMessageTracking, {
+    payload: positiveInt,
+    result: successResult,
+  });
   set(IPCChannels.Email.TestRspamdConnection, {
     payload: z.object({
       rspamdUrl: z.string().optional(),
@@ -1418,7 +1498,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({ success: z.literal(true), data: z.unknown() }),
   });
   set(IPCChannels.Email.EmailGdprExport, {
-    payload: z.object({ skipAttachments: z.boolean().optional() }).optional(),
+    payload: z.object({
+      skipAttachments: z.boolean().optional(),
+      includeSensitiveTracking: z.boolean().optional(),
+    }).optional(),
     result: z.object({}).passthrough(),
   });
 

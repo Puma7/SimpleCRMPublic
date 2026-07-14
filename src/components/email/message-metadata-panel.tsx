@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils"
 import { METADATA_CONVERSATION_SECTION_ID } from "@/lib/scroll-metadata-conversation"
 import { isAllAccountsScope } from "./account-scope"
 import { useMailWorkspace } from "./workspace-context"
+import { MessageEvidencePanel } from "./message-evidence-panel"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -293,6 +294,10 @@ export function MessageMetadataPanel({
 
       <ScrollArea className="flex-1">
         <div className="space-y-5 p-4">
+          <MessageEvidencePanel
+            messageId={selectedMessage.id}
+            folderKind={selectedMessage.folder_kind}
+          />
           <div className="space-y-2">
             <Label className="text-xs">Interne Notizen</Label>
             {internalNotes.length === 0 ? (

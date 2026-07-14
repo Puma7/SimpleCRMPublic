@@ -112,6 +112,10 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
       return;
     }
     const path = request.url.split('?')[0] ?? request.url;
+    if (path.startsWith('/t/')) {
+      done();
+      return;
+    }
     if (path.startsWith('/api/v1/')) {
       const rate = checkApiRateLimit({
         ip: safeRequestIp(request),

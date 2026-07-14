@@ -1,4 +1,4 @@
-import type { ServerLogLevel, ServerLogStore } from './server-log-store';
+import { redactSecrets, type ServerLogLevel, type ServerLogStore } from './server-log-store';
 
 /** pino numeric levels: 40=warn, 50=error, 60=fatal. */
 function pinoLevelToServerLevel(level: unknown): ServerLogLevel | null {
@@ -38,8 +38,9 @@ export function createPinoLogCaptureStream(
 ): { write(chunk: string): void } {
   return {
     write(chunk: string): void {
-      out.write(chunk);
-      for (const line of chunk.split('\n')) {
+      const redactedChunk = redactSecrets(chunk);
+      out.write(redactedChunk);
+      for (const line of redactedChunk.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed[0] !== '{') continue;
         try {

@@ -7,6 +7,11 @@ import type { EmailGdprExportApiPort, EmailGdprExportResult } from './api/types'
 import type { ServerDatabase } from './db';
 import { resolveAttachmentStoragePath } from './db/postgres-mail-read-ports';
 import {
+  createEmailTrackingCrypto,
+  emailTrackingEventAssociatedData,
+  emailTrackingLinkAssociatedData,
+} from './email-tracking';
+import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
@@ -14,6 +19,7 @@ import {
 
 const MESSAGE_BATCH = 2000;
 const NOTES_BATCH = 5000;
+const TRACKING_BATCH = 2000;
 const RUNS_LIMIT = 5000;
 const MAX_EXPORT_ATTACH_BYTES = 4 * 1024 * 1024 * 1024;
 
@@ -42,6 +48,7 @@ type PostgresEmailGdprExportPortOptions = Readonly<{
   attachmentsRoot: string;
   now?: () => Date;
   applyWorkspaceSession?: WorkspaceSessionApplier;
+  trackingMasterKey?: Buffer;
 }>;
 
 export function createPostgresEmailGdprExportPort(
@@ -76,6 +83,7 @@ export function createPostgresEmailGdprExportPort(
         attachments,
         archive,
         exportedAt: now,
+        includeSensitiveTracking: input.includeSensitiveTracking === true,
       }).catch((error) => {
         try {
           archive.abort();
@@ -143,6 +151,7 @@ async function writeExportArchive(
     attachments: AttachmentExportEntry[];
     archive: Archive;
     exportedAt: Date;
+    includeSensitiveTracking: boolean;
   },
 ): Promise<void> {
   await withWorkspaceTransaction(
@@ -154,6 +163,13 @@ async function writeExportArchive(
       await appendInternalNotes(trx, input.workspaceId, input.archive);
       await appendWorkflows(trx, input.workspaceId, input.archive);
       await appendWorkflowRuns(trx, input.workspaceId, input.archive);
+      await appendEmailTracking(
+        trx,
+        input.workspaceId,
+        input.archive,
+        input.includeSensitiveTracking,
+        input.trackingMasterKey,
+      );
     },
     { applySession: input.applyWorkspaceSession },
   );
@@ -185,6 +201,7 @@ async function writeExportArchive(
         note: input.skipAttachments
           ? 'Keine Passwoerter/Keytar. Anhaenge in diesem Export ausgelassen (skipAttachments).'
           : 'Keine Passwoerter/Keytar-Inhalte. Nachrichten als JSONL (messages_index.jsonl). Rohmail nicht enthalten.',
+        trackingSensitiveDataIncluded: input.includeSensitiveTracking && Boolean(input.trackingMasterKey),
       },
       null,
       2,
@@ -319,6 +336,151 @@ async function appendWorkflowRuns(
     .limit(RUNS_LIMIT)
     .execute();
   archive.append(JSON.stringify(rows, null, 2), { name: 'workflow_runs_sample.json' });
+}
+
+async function appendEmailTracking(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  archive: Archive,
+  includeSensitive: boolean,
+  masterKey?: Buffer,
+): Promise<void> {
+  const crypto = masterKey ? createEmailTrackingCrypto(masterKey) : null;
+  const policy = await trx
+    .selectFrom('email_tracking_policies')
+    .select([
+      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata',
+      'raw_metadata_retention_days', 'event_retention_days', 'token_ttl_days', 'legal_basis',
+      'privacy_notice_url', 'compliance_acknowledged_at', 'created_at', 'updated_at',
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .executeTakeFirst();
+  archive.append(JSON.stringify(policy ?? null, null, 2), { name: 'tracking_policy.json' });
+
+  const messageStream = new PassThrough();
+  archive.append(messageStream, { name: 'tracking_messages.jsonl' });
+  let messageCursor: string | null = null;
+  for (;;) {
+    let query = trx
+      .selectFrom('email_tracking_messages')
+      .select([
+        'id', 'message_id', 'account_id', 'message_id_header', 'recipient_count', 'track_opens',
+        'track_links', 'collect_derived_metadata', 'collect_raw_metadata', 'token_expires_at',
+        'revoked_at', 'policy_snapshot', 'created_at', 'updated_at',
+      ])
+      .where('workspace_id', '=', workspaceId);
+    if (messageCursor) query = query.where('id', '>', messageCursor);
+    const batch = await query.orderBy('id', 'asc').limit(TRACKING_BATCH).execute();
+    if (batch.length === 0) break;
+    for (const row of batch) messageStream.write(`${JSON.stringify(row)}\n`);
+    messageCursor = String(batch[batch.length - 1]!.id);
+    if (batch.length < TRACKING_BATCH) break;
+  }
+  messageStream.end();
+
+  const linkStream = new PassThrough();
+  archive.append(linkStream, { name: 'tracking_links.jsonl' });
+  let linkCursor: string | null = null;
+  for (;;) {
+    let query = trx
+      .selectFrom('email_tracking_links')
+      .select([
+        'id', 'tracking_message_id', 'ordinal', 'target_ciphertext', 'target_nonce',
+        'target_auth_tag', 'created_at',
+      ])
+      .where('workspace_id', '=', workspaceId);
+    if (linkCursor) query = query.where('id', '>', linkCursor);
+    const batch = await query.orderBy('id', 'asc').limit(TRACKING_BATCH).execute();
+    if (batch.length === 0) break;
+    for (const row of batch) {
+      const exported: Record<string, unknown> = {
+        id: row.id,
+        trackingMessageId: row.tracking_message_id,
+        ordinal: row.ordinal,
+        createdAt: row.created_at,
+      };
+      if (includeSensitive) {
+        if (crypto) {
+          try {
+            const opened = crypto.openJson({
+              ciphertext: row.target_ciphertext,
+              nonce: row.target_nonce,
+              authTag: row.target_auth_tag,
+            }, emailTrackingLinkAssociatedData(workspaceId, row.tracking_message_id, row.id));
+            exported.targetUrl = opened && typeof opened === 'object' && typeof (opened as { url?: unknown }).url === 'string'
+              ? (opened as { url: string }).url
+              : null;
+          } catch {
+            exported.targetUnavailable = true;
+          }
+        } else {
+          exported.targetUnavailable = true;
+        }
+      }
+      linkStream.write(`${JSON.stringify(exported)}\n`);
+    }
+    linkCursor = String(batch[batch.length - 1]!.id);
+    if (batch.length < TRACKING_BATCH) break;
+  }
+  linkStream.end();
+
+  const eventStream = new PassThrough();
+  archive.append(eventStream, { name: 'tracking_events.jsonl' });
+  let eventCursor = 0;
+  for (;;) {
+    const batch = await trx
+      .selectFrom('email_tracking_events')
+      .select([
+        'id', 'tracking_message_id', 'message_id', 'link_id', 'event_type', 'source', 'confidence',
+        'automated', 'occurred_at', 'metadata_json', 'raw_metadata_ciphertext', 'raw_metadata_nonce',
+        'raw_metadata_auth_tag', 'dedupe_key', 'created_at',
+      ])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '>', eventCursor)
+      .orderBy('id', 'asc')
+      .limit(TRACKING_BATCH)
+      .execute();
+    if (batch.length === 0) break;
+    for (const row of batch) {
+      const exported: Record<string, unknown> = {
+        id: Number(row.id),
+        trackingMessageId: row.tracking_message_id,
+        messageId: row.message_id,
+        linkId: row.link_id,
+        type: row.event_type,
+        source: row.source,
+        confidence: row.confidence,
+        automated: row.automated,
+        occurredAt: row.occurred_at,
+        metadata: row.metadata_json,
+        createdAt: row.created_at,
+      };
+      if (
+        includeSensitive
+        && row.raw_metadata_ciphertext
+        && row.raw_metadata_nonce
+        && row.raw_metadata_auth_tag
+      ) {
+        if (crypto) {
+          try {
+            exported.rawMetadata = crypto.openJson({
+              ciphertext: row.raw_metadata_ciphertext,
+              nonce: row.raw_metadata_nonce,
+              authTag: row.raw_metadata_auth_tag,
+            }, emailTrackingEventAssociatedData(workspaceId, row.tracking_message_id, row.dedupe_key));
+          } catch {
+            exported.rawMetadataUnavailable = true;
+          }
+        } else {
+          exported.rawMetadataUnavailable = true;
+        }
+      }
+      eventStream.write(`${JSON.stringify(exported)}\n`);
+      eventCursor = Number(row.id);
+    }
+    if (batch.length < TRACKING_BATCH) break;
+  }
+  eventStream.end();
 }
 
 function safeZipName(value: string): string {

@@ -1,4 +1,5 @@
 import {
+  createPinoLogCaptureStream,
   createServerLogStore,
   redactSecrets,
   type ServerLogFileSystem,
@@ -51,6 +52,24 @@ describe('server log store', () => {
     expect(store.recent()[0].message).not.toContain('hunter2');
     expect(store.recent()[1].message).toContain('Bearer [redacted]');
     expect(redactSecrets('token: "s3cr3t"')).toBe('token: "[redacted]"');
+  });
+
+  test('redacts email tracking bearer tokens before writing pino output', () => {
+    const token = 'a'.repeat(43);
+    const output: string[] = [];
+    const stream = createPinoLogCaptureStream(createServerLogStore(), {
+      write: (chunk) => output.push(chunk),
+    });
+
+    stream.write(`${JSON.stringify({
+      level: 30,
+      req: { method: 'GET', url: `/t/o/${token}.gif` },
+      msg: 'request completed',
+    })}\n`);
+
+    expect(output.join('')).toContain('/t/o/[redacted].gif');
+    expect(output.join('')).not.toContain(token);
+    expect(redactSecrets(`GET /t/c/${token}`)).toBe('GET /t/c/[redacted]');
   });
 
   test('persists to the file and reloads on restart (survives rebuild)', () => {

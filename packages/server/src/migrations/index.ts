@@ -24,6 +24,7 @@ import { accountScopeOverridesMigration } from './0023_account_scope_overrides';
 import { settingsKbContextImapMigration } from './0024_settings_kb_context_imap';
 import { emailMessageThreadLookupMigration } from './0025_email_message_thread_lookup';
 import { mailSearchOverhaulMigration } from './0026_mail_search_overhaul';
+import { emailEvidenceTrackingMigration } from './0027_email_evidence_tracking';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -54,6 +55,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   settingsKbContextImapMigration,
   emailMessageThreadLookupMigration,
   mailSearchOverhaulMigration,
+  emailEvidenceTrackingMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

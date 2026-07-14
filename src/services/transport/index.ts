@@ -91,6 +91,7 @@ export {
   isMailPgpKeyRefreshEvent,
   isMailRemoteContentPolicyRefreshEvent,
   isMailSpamListRefreshEvent,
+  isMailTrackingRefreshEvent,
   isProductListRefreshEvent,
   isTaskListRefreshEvent,
   isWorkflowKnowledgeRefreshEvent,

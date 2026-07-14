@@ -1,4 +1,4 @@
-import { WORKFLOW_TEMPLATES } from '@simplecrm/core';
+import { WORKFLOW_TEMPLATES } from '../../electron/workflow/templates';
 import { ensureBuiltinWorkflowNodes, listWorkflowNodeCatalog } from '../../electron/workflow/registry';
 import {
   parseCannedPickNumber,

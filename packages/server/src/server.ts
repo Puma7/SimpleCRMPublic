@@ -136,6 +136,10 @@ import {
 } from './mail-compose-send';
 import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
+import {
+  createPostgresEmailTrackingService,
+  startEmailTrackingRetentionTicker,
+} from './email-tracking';
 import { createPostgresServerImapSentCopyAppenderPort } from './mail-imap-append';
 import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt-responder';
 import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
@@ -178,6 +182,8 @@ export type PostgresServerApiPortsOptions = Readonly<{
   turnstileSiteKey?: string;
   turnstileSecretKey?: string;
   rspamdFetch?: typeof fetch;
+  publicBaseUrl?: string;
+  masterKey?: Buffer;
 }>;
 
 export type ServerListenOptions = Readonly<{
@@ -253,6 +259,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let scheduledSendTicker: ReturnType<typeof startScheduledSendTicker> | undefined;
   let attachmentTextTicker: ReturnType<typeof startAttachmentTextBackfillTicker> | undefined;
   let bodyTextBackfillRun: ReturnType<typeof startBodyTextBackfillRun> | undefined;
+  let emailTrackingRetentionTicker: ReturnType<typeof startEmailTrackingRetentionTicker> | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
     accessTokenSigner,
@@ -263,6 +270,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     createDatabase: options.createDatabase,
     createEventNotifications: options.createEventNotifications,
     masterKey: env.SIMPLECRM_MASTER_KEY,
+    publicBaseUrl: env.PUBLIC_BASE_URL?.trim(),
     authInvitationMail,
     turnstileSiteKey: env.TURNSTILE_SITE_KEY?.trim(),
     turnstileSecretKey: env.TURNSTILE_SECRET_KEY?.trim(),
@@ -322,6 +330,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     scheduledSendTicker?.stop();
     attachmentTextTicker?.stop();
     bodyTextBackfillRun?.stop();
+    emailTrackingRetentionTicker?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
   });
 
@@ -367,12 +376,19 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         attachmentsRoot,
       });
       bodyTextBackfillRun = startBodyTextBackfillRun({ db });
+      if (ports.emailTracking?.pruneWorkspace) {
+        emailTrackingRetentionTicker = startEmailTrackingRetentionTicker({
+          db,
+          service: { pruneWorkspace: ports.emailTracking.pruneWorkspace },
+        });
+      }
     }
     await app.listen({ host, port });
   } catch (error) {
     scheduledSendTicker?.stop();
     attachmentTextTicker?.stop();
     bodyTextBackfillRun?.stop();
+    emailTrackingRetentionTicker?.stop();
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }
@@ -459,6 +475,17 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       },
     })
     : undefined;
+  const audit = createPostgresAuditPort({ db: options.db });
+  const events = options.events ?? createPostgresServerEventPort({ db: options.db });
+  const emailTracking = options.publicBaseUrl?.trim() && options.masterKey
+    ? createPostgresEmailTrackingService({
+      db: options.db,
+      publicBaseUrl: options.publicBaseUrl,
+      masterKey: options.masterKey,
+      audit,
+      events,
+    })
+    : undefined;
   return {
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
     health: {
@@ -479,7 +506,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       authInvitationMailer: createAuthInvitationMailerPort(options.authInvitationMail),
     } : {}),
     locks: createPostgresConversationLockPort({ db: options.db }),
-    audit: createPostgresAuditPort({ db: options.db }),
+    audit,
     mssqlSettings: createPostgresMssqlSettingsPort({ db: options.db, secrets: options.secrets }),
     customerCustomFields: createPostgresCustomerCustomFieldReadPort({ db: options.db }),
     customerCustomFieldValues: createPostgresCustomerCustomFieldValueReadPort({ db: options.db }),
@@ -490,6 +517,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     dealProducts: createPostgresDealProductPort({ db: options.db }),
     emailAccounts: createPostgresEmailAccountReadPort({ db: options.db, secrets: options.secrets }),
     emailAccountMailSettings: createPostgresEmailAccountMailSettingsPort({ db: options.db }),
+    ...(emailTracking ? { emailTracking } : {}),
     emailAccountSignatures: createPostgresEmailAccountSignatureReadPort({ db: options.db }),
     emailAttachmentContent: createPostgresEmailAttachmentContentPort({ db: options.db, attachmentsRoot }),
     emailAttachments: createPostgresEmailAttachmentReadPort({ db: options.db }),
@@ -500,6 +528,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       db: options.db,
       attachmentsRoot,
       secrets: options.secrets,
+      tracking: emailTracking,
       sentCopyAppend: sentCopyAppender.append,
       pgpMessages,
       workflowDryRun,
@@ -508,7 +537,11 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
     emailFolders: createPostgresEmailFolderReadPort({ db: options.db }),
-    emailGdprExport: createPostgresEmailGdprExportPort({ db: options.db, attachmentsRoot }),
+    emailGdprExport: createPostgresEmailGdprExportPort({
+      db: options.db,
+      attachmentsRoot,
+      trackingMasterKey: options.masterKey,
+    }),
     emailInternalNotes: createPostgresEmailInternalNoteReadPort({ db: options.db }),
     emailMessageCategories: createPostgresEmailMessageCategoryReadPort({ db: options.db }),
     emailMessages: createPostgresEmailMessageReadPort({
@@ -529,7 +562,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     emailThreadEdges: createPostgresEmailThreadEdgeReadPort({ db: options.db }),
     emailThreads: createPostgresEmailThreadReadPort({ db: options.db }),
     followUp: createPostgresFollowUpPort({ db: options.db }),
-    events: options.events ?? createPostgresServerEventPort({ db: options.db }),
+    events,
     mailThreadBackfill: createPostgresMailThreadBackfillPort({ db: options.db }),
     ...(options.jobQueue ? {
       jobQueue: options.jobQueue,
@@ -589,6 +622,7 @@ async function createDefaultServerPorts(input: {
   createDatabase?: (options: { databaseUrl: string }) => Promise<Kysely<ServerDatabase>>;
   createEventNotifications?: (options: { databaseUrl: string }) => Promise<PostgresServerEventNotificationChannel>;
   masterKey?: string;
+  publicBaseUrl?: string;
   authInvitationMail?: AuthInvitationMailConfig;
   turnstileSiteKey?: string;
   turnstileSecretKey?: string;
@@ -610,10 +644,13 @@ async function createDefaultServerPorts(input: {
   )({
     databaseUrl: input.databaseUrl,
   });
-  const secrets = input.masterKey?.trim()
+  const masterKey = input.masterKey?.trim()
+    ? parseBase64MasterKey(input.masterKey)
+    : undefined;
+  const secrets = masterKey
     ? createPostgresSecretPort({
       db,
-      key: parseBase64MasterKey(input.masterKey),
+      key: masterKey,
     })
     : undefined;
   input.onDatabaseCreated(db);
@@ -630,6 +667,8 @@ async function createDefaultServerPorts(input: {
     authInvitationMail: input.authInvitationMail,
     turnstileSiteKey: input.turnstileSiteKey,
     turnstileSecretKey: input.turnstileSecretKey,
+    publicBaseUrl: input.publicBaseUrl,
+    masterKey: masterKey?.bytes,
     events: createPostgresServerEventPort({ db, notifications: eventNotifications }),
     secrets,
   });
@@ -772,6 +811,9 @@ function buildServerJobHandlers(input: {
             db,
             secrets,
             attachmentsRoot,
+            ...(ports.emailTracking?.recordInboundEvidence ? {
+              inboundEvidence: { recordInboundEvidence: ports.emailTracking.recordInboundEvidence },
+            } : {}),
           }),
           mailSyncPostProcess: createPostgresMailSyncPostProcessor({
             db,
