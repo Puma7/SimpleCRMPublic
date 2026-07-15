@@ -152,9 +152,9 @@ classified_at timestamptz NOT NULL DEFAULT now(),
 PRIMARY KEY (event_id, classification_version)
 ```
 
-- [ ] **Step 1:** Migrationstest schreiben, der Tabelle, Checks, Foreign Key, RLS und Policy `ip_insights_enabled boolean NOT NULL DEFAULT false` verlangt.
+- [ ] **Step 1:** Migrationstest schreiben, der Tabelle, Checks, Foreign Key, RLS und Policy `ip_insights_enabled boolean NOT NULL DEFAULT false` verlangt und sicherstellt, dass die Strukturmigration keinen globalen Event-Backfill außerhalb eines Workspace-Kontexts ausführt.
 - [ ] **Step 2:** `pnpm exec jest --runInBand tests/unit/email-tracking-migration.test.ts` ausführen; erwartet wird ein FAIL wegen fehlender Migration `0030`.
-- [ ] **Step 3:** Migration, Kysely-Schema und Core-Typen implementieren. Historische Lifecycle-Ereignisse werden als `system`, alte `*_automated` als `automated_unknown` und alte `open_probable`/`click` konservativ als `unknown` projiziert.
+- [ ] **Step 3:** Migration, Kysely-Schema und Core-Typen implementieren. Migration `0030` bleibt rein strukturell und führt unter `FORCE ROW LEVEL SECURITY` keinen globalen Backfill aus. Die historische Projektion erfolgt in Task 5 innerhalb einer autorisierten Workspace-Transaktion: Lifecycle-Ereignisse werden als `system`, alte `*_automated` als `automated_unknown` und alte `open_probable`/`click` konservativ als `unknown` projiziert.
 - [ ] **Step 4:** Migration- und Core-Tests erneut ausführen; erwartet wird PASS.
 - [ ] **Step 5:** Commit: `feat(email): add versioned evidence classifications`.
 
@@ -287,7 +287,7 @@ reclassifyMessage(input: {
 }): Promise<{ classified: number; unavailableRaw: number }>;
 ```
 
-- [ ] **Step 1:** Tests schreiben: Reclassification aktualisiert oder ergänzt Version 2 per idempotentem Upsert ausschließlich in der Projektion, verändert `email_tracking_events` nicht und überspringt abgelaufene Rohdaten.
+- [ ] **Step 1:** Tests schreiben: Reclassification erzeugt den in Migration `0030` bewusst ausgesparten historischen Backfill innerhalb der autorisierten Workspace-Sitzung, aktualisiert oder ergänzt Version 2 per idempotentem Upsert ausschließlich in der Projektion, verändert `email_tracking_events` nicht und überspringt abgelaufene Rohdaten.
 - [ ] **Step 2:** Fokustests ausführen; erwartet wird FAIL wegen fehlender Projektionserzeugung.
 - [ ] **Step 3:** Admin-only Route `POST /api/v1/email/messages/:messageId/tracking/reclassify` implementieren. Pro Batch maximal 500 Ereignisse; vorhandene Version-2-Zeilen werden mit `INSERT ... ON CONFLICT (event_id, classification_version) DO UPDATE` deterministisch ersetzt. Entschlüsselte IP/UA bleiben nur im Speicher und werden nicht geloggt.
 - [ ] **Step 4:** Timeline und Summary auf die höchste vorhandene Klassifikationsversion umstellen; ohne Projektion gilt konservativer Fallback `unknown`, niemals `probable_human`.
