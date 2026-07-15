@@ -35,6 +35,7 @@ services:
       HOST: ${HOST:-0.0.0.0}
       NODE_ENV: ${NODE_ENV:-production}
       CI: ${CI:-}
+      BACKUP_DIR: ${BACKUP_DIR:-}
       # Trust exactly the one Caddy hop in front of the API so rate limiting sees
       # the real client IP (not Caddy's). The API is only reachable via Caddy on
       # the internal network, so a client cannot inject extra XFF hops.

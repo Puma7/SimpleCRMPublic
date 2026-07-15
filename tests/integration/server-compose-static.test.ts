@@ -74,6 +74,7 @@ describe('server Compose GeoIP profile', () => {
         HOST: RUNTIME_SENTINELS.HOST,
         NODE_ENV: RUNTIME_SENTINELS.NODE_ENV,
         CI: RUNTIME_SENTINELS.CI,
+        BACKUP_DIR: RUNTIME_SENTINELS.BACKUP_DIR,
         GEOIP_COUNTRY_DB_PATH: '/var/lib/simplecrm/geoip/GeoLite2-Country.mmdb',
         GEOIP_ASN_DB_PATH: '/var/lib/simplecrm/geoip/GeoLite2-ASN.mmdb',
       });
