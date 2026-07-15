@@ -15,6 +15,7 @@ import { InboundMessageTooLargeError } from '../../packages/core/src/email/inbou
 import {
   SERVER_EDITION_DEPLOY_MODES,
   SERVER_EDITION_TARGETS,
+  WORKFLOW_TEMPLATES,
   createCoreRuntime,
   emailEvidenceSummaryWorkflowVariables,
   isServerEditionDeployMode,
@@ -4954,6 +4955,127 @@ describe('server edition foundation', () => {
       ['condition-1', 'logic.switch', 'ok', 'false', null],
       ['stop-1', 'logic.stop', 'ok', 'default', null],
     ]);
+  });
+
+  test('runs the outbound evidence follow-up graph conservatively for every evidence class', async () => {
+    const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'outbound-evidence-follow-up');
+    expect(template).toBeDefined();
+    const cases = [
+      { name: 'SMTP-only', events: [] as Array<Record<string, unknown>>, followsUp: true, engagementPort: 'none' },
+      {
+        name: 'mail proxy',
+        events: [trackingWorkflowEvent('open_probable', 'mail_proxy')],
+        followsUp: true,
+        engagementPort: 'automated_fetch',
+      },
+      {
+        name: 'unknown pixel fetch',
+        events: [trackingWorkflowEvent('open_probable', 'unknown')],
+        followsUp: true,
+        engagementPort: 'none',
+      },
+      {
+        name: 'probable-human open',
+        events: [trackingWorkflowEvent('open_probable', 'probable_human')],
+        followsUp: false,
+        engagementPort: 'default',
+      },
+      {
+        name: 'probable-human click',
+        events: [trackingWorkflowEvent('click', 'probable_human')],
+        followsUp: false,
+        engagementPort: 'default',
+      },
+      {
+        name: 'reply',
+        events: [trackingWorkflowEvent('replied')],
+        followsUp: false,
+        engagementPort: 'default',
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const now = new Date(`2026-07-16T08:0${index}:00.000Z`);
+      const workflowId = 260 + index;
+      const messageId = 160 + index;
+      const trackingId = `tracking-follow-up-${index}`;
+      const { db, rows } = makeWorkflowExecutionDb({
+        workflows: [{
+          id: workflowId,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: workflowId * 10,
+          trigger_name: 'outbound',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: template!.graph,
+          execution_mode: 'graph',
+        }],
+        messages: [{
+          id: messageId,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: messageId * 10,
+          customer_id: 7,
+          customer_source_sqlite_id: 70,
+          subject: 'Nachfassen',
+          from_json: { value: [{ address: 'agent@example.com' }] },
+          to_json: { value: [{ address: 'customer@example.com' }] },
+          cc_json: null,
+          snippet: 'Bitte melden Sie sich.',
+          body_text: 'Bitte melden Sie sich.',
+          body_html: null,
+          has_attachments: false,
+          attachments_json: null,
+        }],
+        customers: [{ id: 7, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 70, name: 'Kunde' }],
+        trackingMessages: [{ id: trackingId, workspace_id: WORKSPACE_A_ID, message_id: messageId }],
+        trackingEvents: [
+          {
+            id: `${index + 1}00`,
+            workspace_id: WORKSPACE_A_ID,
+            tracking_message_id: trackingId,
+            event_type: 'smtp_accepted',
+            source: 'smtp',
+            confidence: 'low',
+            automated: false,
+            occurred_at: now,
+          },
+          ...testCase.events.map((event, eventIndex) => ({
+            ...event,
+            id: `${index + 1}0${eventIndex + 1}`,
+            workspace_id: WORKSPACE_A_ID,
+            tracking_message_id: trackingId,
+            occurred_at: new Date(now.getTime() + 60_000),
+          })),
+        ],
+        trackingEventClassifications: testCase.events
+          .filter((event) => event.actor_class !== undefined)
+          .map((event, eventIndex) => ({
+            event_id: `${index + 1}0${eventIndex + 1}`,
+            classification_version: 2,
+            actor_class: event.actor_class,
+            confidence: 'medium',
+            reasons_json: [],
+          })),
+      });
+      const port = createPostgresWorkflowExecutionJobPort({
+        db,
+        now: () => now,
+        applyWorkspaceSession: async () => undefined,
+      });
+
+      await port.execute({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId,
+        messageId,
+        triggerName: 'outbound',
+        context: { resumeNodeId: 'evidence' },
+      });
+
+      expect(rows.tasks).toHaveLength(testCase.followsUp ? 1 : 0);
+      expect(rows.steps.find((step) => step.node_id === 'no_engagement')).toMatchObject({
+        port: testCase.engagementPort,
+      });
+    }
   });
 
   test('postgres workflow execution job port requires inbound condition gate for side-effect nodes', async () => {
@@ -38630,6 +38752,19 @@ function timestampMillis(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
   }
   return Number.NEGATIVE_INFINITY;
+}
+
+function trackingWorkflowEvent(
+  eventType: 'open_probable' | 'click' | 'replied',
+  actorClass?: string,
+): Record<string, unknown> {
+  return {
+    event_type: eventType,
+    source: eventType === 'replied' ? 'reply' : 'tracking',
+    confidence: eventType === 'replied' ? 'verified' : 'medium',
+    automated: false,
+    ...(actorClass === undefined ? {} : { actor_class: actorClass }),
+  };
 }
 
 type WorkflowExecutionFakeRows = {

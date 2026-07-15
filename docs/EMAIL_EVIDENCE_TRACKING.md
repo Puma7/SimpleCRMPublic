@@ -164,10 +164,23 @@ persistent überstandenen Wartezeit den aktuellen Stand. Variablen:
 - `tracking.first_clicked_at`, `tracking.last_clicked_at`
 - `tracking.replied`, `tracking.replied_at`
 
+Empfohlene praezise V2-Variablen fuer Pixelabrufe und wahrscheinlich menschliche
+Oeffnungssignale:
+
+- `tracking.pixel_fetch_count`
+- `tracking.automated_pixel_fetch_count`
+- `tracking.unknown_pixel_fetch_count`
+- `tracking.probable_human_pixel_fetch_count`
+- `tracking.probable_human_open_session_count`
+- `tracking.first_pixel_fetched_at`, `tracking.last_pixel_fetched_at`
+- `tracking.first_probable_human_open_at`, `tracking.last_probable_human_open_at`
+
 Die Vorlage **Ausgehend: Ohne Reaktion nachfassen** versendet, wartet zwei Tage, lädt die
-Evidenz neu und erstellt nur nach aktueller SMTP-Annahme bei aktivem Tracking ohne Pixelabruf,
-Klick oder Antwort eine Aufgabe. Fehlgeschlagene, verzögerte oder gebouncte Sendungen lösen
-diesen Nachfasspfad nicht aus. Schwellen und Wartezeit können im Workflow angepasst werden.
+Evidenz neu und erstellt nur nach aktueller SMTP-Annahme bei aktivem Tracking ohne
+wahrscheinlich menschliches Oeffnungssignal, menschlichen Klick oder Antwort eine Aufgabe.
+Technische Proxy- und unklare Pixelabrufe unterdruecken den Nachfasspfad nicht. Fehlgeschlagene,
+verzögerte oder gebouncte Sendungen lösen diesen Nachfasspfad nicht aus. Schwellen und Wartezeit
+können im Workflow angepasst werden.
 
 ## Aufbewahrung und Betrieb
 
