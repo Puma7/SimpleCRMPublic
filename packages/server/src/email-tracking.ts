@@ -1342,7 +1342,7 @@ async function insertTrackingEvent(
   await trx
     .insertInto('email_tracking_event_classifications')
     .values({
-      event_id: Number(event.id),
+      event_id: canonicalTrackingEventId(event.id),
       classification_version: classification.version,
       actor_class: classification.actorClass,
       confidence: classification.confidence,
@@ -1589,7 +1589,7 @@ async function publicInteractionAtCapacity(
 }
 
 type HistoricalTrackingEventRow = Readonly<{
-  id: number;
+  id: string;
   event_type: string;
   confidence: string;
   occurred_at: Date | string;
@@ -1597,13 +1597,20 @@ type HistoricalTrackingEventRow = Readonly<{
   raw_metadata_nonce: Buffer | null;
   raw_metadata_auth_tag: Buffer | null;
   dedupe_key: string;
+  created_at: Date | string;
 }>;
 
 type PreparedHistoricalClassification = Readonly<{
-  eventId: number;
+  eventId: string;
   base: EmailEvidenceClassification;
   withNetworkContext: EmailEvidenceClassification | null;
   unavailableRaw: boolean;
+  rawEnvelope: Readonly<{
+    ciphertext: Buffer;
+    nonce: Buffer;
+    authTag: Buffer;
+    dedupeKey: string;
+  }> | null;
 }>;
 
 async function reclassifyTrackingMessage(input: Readonly<{
@@ -1650,7 +1657,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
   });
   if (!target) return { classified: 0, unavailableRaw: 0 };
 
-  let afterEventId = 0;
+  let afterEventId = '0';
   let classified = 0;
   let unavailableRaw = 0;
   while (true) {
@@ -1663,7 +1670,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
         .executeTakeFirst();
       const policy = await trx
         .selectFrom('email_tracking_policies')
-        .select(['ip_insights_enabled', 'collect_derived_metadata'])
+        .select(['ip_insights_enabled', 'collect_derived_metadata', 'raw_metadata_retention_days'])
         .where('workspace_id', '=', input.workspaceId)
         .executeTakeFirst();
       const rows = await trx
@@ -1671,6 +1678,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
         .select([
           'id', 'event_type', 'confidence', 'occurred_at',
           'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key',
+          'created_at',
         ])
         .where('workspace_id', '=', input.workspaceId)
         .where('tracking_message_id', '=', target.trackingMessageId)
@@ -1685,12 +1693,16 @@ async function reclassifyTrackingMessage(input: Readonly<{
           && policy?.collect_derived_metadata
           && policy.ip_insights_enabled,
         ),
+        rawCutoff: addDays(input.now, -(Number(policy?.raw_metadata_retention_days ?? 7))),
       };
     });
     if (page.rows.length === 0) break;
 
     const prepared = await classifyHistoricalTrackingPage({
-      rows: page.rows.map((row) => ({ ...row, id: Number(row.id) })),
+      rows: page.rows.map((row) => logicallyRetainedHistoricalRow(
+        { ...row, id: canonicalTrackingEventId(row.id) },
+        page.rawCutoff,
+      )),
       workspaceId: input.workspaceId,
       trackingMessageId: target.trackingMessageId,
       smtpAcceptedAt: target.smtpAcceptedAt,
@@ -1698,7 +1710,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
       crypto: input.crypto,
       ipIntelligence: input.ipIntelligence,
     });
-    await withWorkspaceTransaction(input.db, context, async (trx) => {
+    const upserted = await withWorkspaceTransaction(input.db, context, async (trx) => {
       await lockTrackingPolicy(trx, input.workspaceId);
       const tracking = await trx
         .selectFrom('email_tracking_messages')
@@ -1708,7 +1720,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
         .executeTakeFirst();
       const policy = await trx
         .selectFrom('email_tracking_policies')
-        .select(['ip_insights_enabled', 'collect_derived_metadata'])
+        .select(['ip_insights_enabled', 'collect_derived_metadata', 'raw_metadata_retention_days'])
         .where('workspace_id', '=', input.workspaceId)
         .executeTakeFirst();
       const allowNetworkContext = Boolean(
@@ -1716,10 +1728,39 @@ async function reclassifyTrackingMessage(input: Readonly<{
         && policy?.collect_derived_metadata
         && policy.ip_insights_enabled,
       );
-      const rows = prepared.map((item) => {
-        const classification = allowNetworkContext
+      const rawCutoff = addDays(input.now, -(Number(policy?.raw_metadata_retention_days ?? 7)));
+      const lockedEvents = await trx
+        .selectFrom('email_tracking_events')
+        .select([
+          'id', 'event_type', 'confidence', 'occurred_at',
+          'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key',
+          'created_at',
+        ])
+        .where('workspace_id', '=', input.workspaceId)
+        .where('tracking_message_id', '=', target.trackingMessageId)
+        .where('id', 'in', prepared.map((item) => item.eventId))
+        .orderBy('id', 'asc')
+        .forUpdate()
+        .execute();
+      const preparedByEventId = new Map(prepared.map((item) => [item.eventId, item]));
+      const finalized = lockedEvents.flatMap((event) => {
+        const eventId = canonicalTrackingEventId(event.id);
+        const item = preparedByEventId.get(eventId);
+        if (!item) return [];
+        const normalizedEvent = { ...event, id: eventId };
+        const fallback = item.rawEnvelope && !historicalRawEnvelopeMatches(
+          item.rawEnvelope,
+          normalizedEvent,
+          rawCutoff,
+        )
+          ? historicalRawUnavailableClassification(normalizedEvent)
+          : null;
+        const classification = fallback?.base ?? (allowNetworkContext
           ? item.withNetworkContext ?? item.base
-          : item.base;
+          : item.base);
+        return [{ item, classification, unavailableRaw: fallback?.unavailableRaw ?? item.unavailableRaw }];
+      });
+      const rows = finalized.map(({ item, classification }) => {
         return {
           event_id: item.eventId,
           classification_version: classification.version,
@@ -1731,22 +1772,28 @@ async function reclassifyTrackingMessage(input: Readonly<{
           classified_at: input.now,
         };
       });
-      await trx
-        .insertInto('email_tracking_event_classifications')
-        .values(rows)
-        .onConflict((oc) => oc
-          .columns(['event_id', 'classification_version'])
-          .doUpdateSet((eb) => ({
-            actor_class: eb.ref('excluded.actor_class'),
-            confidence: eb.ref('excluded.confidence'),
-            reasons_json: eb.ref('excluded.reasons_json'),
-            classified_at: eb.ref('excluded.classified_at'),
-          })))
-        .execute();
+      if (rows.length > 0) {
+        await trx
+          .insertInto('email_tracking_event_classifications')
+          .values(rows)
+          .onConflict((oc) => oc
+            .columns(['event_id', 'classification_version'])
+            .doUpdateSet((eb) => ({
+              actor_class: eb.ref('excluded.actor_class'),
+              confidence: eb.ref('excluded.confidence'),
+              reasons_json: eb.ref('excluded.reasons_json'),
+              classified_at: eb.ref('excluded.classified_at'),
+            })))
+          .execute();
+      }
+      return {
+        classified: rows.length,
+        unavailableRaw: finalized.filter((item) => item.unavailableRaw).length,
+      };
     });
 
-    classified += prepared.length;
-    unavailableRaw += prepared.filter((item) => item.unavailableRaw).length;
+    classified += upserted.classified;
+    unavailableRaw += upserted.unavailableRaw;
     afterEventId = prepared[prepared.length - 1]!.eventId;
     if (page.rows.length < EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE) break;
   }
@@ -1780,17 +1827,7 @@ async function classifyHistoricalTrackingEvent(input: Readonly<{
 }>): Promise<PreparedHistoricalClassification> {
   const interaction = historicalInteraction(input.row.event_type);
   if (!interaction) {
-    return {
-      eventId: input.row.id,
-      base: {
-        version: 2,
-        actorClass: 'system',
-        confidence: normalizedEvidenceConfidence(input.row.confidence),
-        reasons: ['system_generated_evidence'],
-      },
-      withNetworkContext: null,
-      unavailableRaw: false,
-    };
+    return historicalRawUnavailableClassification(input.row);
   }
 
   const raw = openHistoricalRequestRaw(
@@ -1800,19 +1837,7 @@ async function classifyHistoricalTrackingEvent(input: Readonly<{
     input.trackingMessageId,
   );
   if (!raw) {
-    const legacyAutomated = input.row.event_type === 'open_automated'
-      || input.row.event_type === 'click_automated';
-    return {
-      eventId: input.row.id,
-      base: {
-        version: 2,
-        actorClass: legacyAutomated ? 'automated_unknown' : 'unknown',
-        confidence: 'low',
-        reasons: ['raw_request_data_unavailable'],
-      },
-      withNetworkContext: null,
-      unavailableRaw: !legacyAutomated,
-    };
+    return historicalRawUnavailableClassification(input.row);
   }
 
   const secondsSinceSmtpAccepted = input.smtpAcceptedAt
@@ -1836,7 +1861,72 @@ async function classifyHistoricalTrackingEvent(input: Readonly<{
       ? classifyEmailTrackingRequest({ ...request, networkContext })
       : null,
     unavailableRaw: false,
+    rawEnvelope: {
+      ciphertext: input.row.raw_metadata_ciphertext!,
+      nonce: input.row.raw_metadata_nonce!,
+      authTag: input.row.raw_metadata_auth_tag!,
+      dedupeKey: input.row.dedupe_key,
+    },
   };
+}
+
+function historicalRawUnavailableClassification(
+  row: HistoricalTrackingEventRow,
+): PreparedHistoricalClassification {
+  const interaction = historicalInteraction(row.event_type);
+  if (!interaction) {
+    return {
+      eventId: row.id,
+      base: {
+        version: 2,
+        actorClass: 'system',
+        confidence: normalizedEvidenceConfidence(row.confidence),
+        reasons: ['system_generated_evidence'],
+      },
+      withNetworkContext: null,
+      unavailableRaw: false,
+      rawEnvelope: null,
+    };
+  }
+  const legacyAutomated = row.event_type === 'open_automated'
+    || row.event_type === 'click_automated';
+  return {
+    eventId: row.id,
+    base: {
+      version: 2,
+      actorClass: legacyAutomated ? 'automated_unknown' : 'unknown',
+      confidence: 'low',
+      reasons: ['raw_request_data_unavailable'],
+    },
+    withNetworkContext: null,
+    unavailableRaw: !legacyAutomated,
+    rawEnvelope: null,
+  };
+}
+
+function logicallyRetainedHistoricalRow(
+  row: HistoricalTrackingEventRow,
+  rawCutoff: Date,
+): HistoricalTrackingEventRow {
+  if (toDate(row.created_at).getTime() >= rawCutoff.getTime()) return row;
+  return {
+    ...row,
+    raw_metadata_ciphertext: null,
+    raw_metadata_nonce: null,
+    raw_metadata_auth_tag: null,
+  };
+}
+
+function historicalRawEnvelopeMatches(
+  expected: NonNullable<PreparedHistoricalClassification['rawEnvelope']>,
+  row: HistoricalTrackingEventRow,
+  rawCutoff: Date,
+): boolean {
+  return toDate(row.created_at).getTime() >= rawCutoff.getTime()
+    && row.dedupe_key === expected.dedupeKey
+    && row.raw_metadata_ciphertext?.equals(expected.ciphertext) === true
+    && row.raw_metadata_nonce?.equals(expected.nonce) === true
+    && row.raw_metadata_auth_tag?.equals(expected.authTag) === true;
 }
 
 function historicalInteraction(value: string): 'open' | 'click' | null {
@@ -1897,8 +1987,26 @@ function normalizedEvidenceConfidence(value: string): EmailEvidenceConfidence {
     : 'none';
 }
 
+function canonicalTrackingEventId(value: string | number | bigint): string {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error('Unsafe email tracking event id');
+    }
+    return String(value);
+  }
+  const canonical = String(value);
+  if (!/^\d+$/.test(canonical)) throw new Error('Invalid email tracking event id');
+  return BigInt(canonical).toString();
+}
+
+function publicTrackingEventId(value: string | number | bigint): number | string {
+  const canonical = canonicalTrackingEventId(value);
+  const numeric = Number(canonical);
+  return Number.isSafeInteger(numeric) ? numeric : canonical;
+}
+
 type TrackingEventProjectionRow = Readonly<{
-  id: number | string;
+  id: string | number;
   event_type: string;
   source: string;
   confidence: string;
@@ -1915,27 +2023,12 @@ type TrackingEventProjectionRow = Readonly<{
   reasons_json: unknown;
 }>;
 
-function trackingEventsWithHighestClassification(trx: WorkspaceTransaction) {
-  const classification = trx
-    .selectFrom('email_tracking_event_classifications')
-    .distinctOn('event_id')
-    .select([
-      'event_id',
-      'classification_version',
-      'actor_class',
-      'confidence as classification_confidence',
-      'reasons_json',
-      'classified_at',
-    ])
-    .orderBy('event_id', 'asc')
-    .orderBy('classification_version', 'desc')
-    .as('classification');
-  return trx
-    .selectFrom('email_tracking_events as event')
-    .leftJoin(classification, 'classification.event_id', 'event.id');
-}
+type TrackingEventRow = Omit<
+  TrackingEventProjectionRow,
+  'classification_version' | 'actor_class' | 'classification_confidence' | 'reasons_json'
+>;
 
-function selectTrackingEventProjectionFields() {
+function selectTrackingEventFields() {
   return [
     'event.id as id',
     'event.event_type as event_type',
@@ -1943,11 +2036,51 @@ function selectTrackingEventProjectionFields() {
     'event.confidence as confidence',
     'event.automated as automated',
     'event.occurred_at as occurred_at',
-    'classification.classification_version as classification_version',
-    'classification.actor_class as actor_class',
-    'classification.classification_confidence as classification_confidence',
-    'classification.reasons_json as reasons_json',
   ] as const;
+}
+
+async function trackingEventsWithHighestClassification(
+  trx: WorkspaceTransaction,
+  rows: readonly TrackingEventRow[],
+): Promise<TrackingEventProjectionRow[]> {
+  const classifications = new Map<string, Readonly<{
+    classificationVersion: number | string;
+    actorClass: string;
+    confidence: string;
+    reasons: unknown;
+  }>>();
+  for (let offset = 0; offset < rows.length; offset += EMAIL_TRACKING_SUMMARY_PAGE_SIZE) {
+    const eventIds = rows
+      .slice(offset, offset + EMAIL_TRACKING_SUMMARY_PAGE_SIZE)
+      .map((row) => canonicalTrackingEventId(row.id));
+    if (eventIds.length === 0) continue;
+    const page = await trx
+      .selectFrom('email_tracking_event_classifications')
+      .distinctOn('event_id')
+      .select(['event_id', 'classification_version', 'actor_class', 'confidence', 'reasons_json'])
+      .where('event_id', 'in', eventIds)
+      .orderBy('event_id', 'asc')
+      .orderBy('classification_version', 'desc')
+      .execute();
+    for (const classification of page) {
+      classifications.set(canonicalTrackingEventId(classification.event_id), {
+        classificationVersion: classification.classification_version,
+        actorClass: classification.actor_class,
+        confidence: classification.confidence,
+        reasons: classification.reasons_json,
+      });
+    }
+  }
+  return rows.map((row) => {
+    const classification = classifications.get(canonicalTrackingEventId(row.id));
+    return {
+      ...row,
+      classification_version: classification?.classificationVersion ?? null,
+      actor_class: classification?.actorClass ?? null,
+      classification_confidence: classification?.confidence ?? null,
+      reasons_json: classification?.reasons ?? null,
+    };
+  });
 }
 
 function classificationFromProjectionRow(
@@ -2046,9 +2179,10 @@ async function loadTrackingTimeline(
         workspaceId,
         tracking.id,
       );
-      const rows = await trackingEventsWithHighestClassification(trx)
+      const rows = await trx
+        .selectFrom('email_tracking_events as event')
         .select([
-          ...selectTrackingEventProjectionFields(),
+          ...selectTrackingEventFields(),
           'event.metadata_json as metadata_json',
           'event.raw_metadata_ciphertext as raw_metadata_ciphertext',
           'event.raw_metadata_nonce as raw_metadata_nonce',
@@ -2062,7 +2196,8 @@ async function loadTrackingTimeline(
         .limit(1_001)
         .execute();
       const eventsTruncated = rows.length > 1_000;
-      const events: EmailTrackingEventRecord[] = rows.slice(0, 1_000).reverse().map((row) => {
+      const projectedRows = await trackingEventsWithHighestClassification(trx, rows.slice(0, 1_000));
+      const events: EmailTrackingEventRecord[] = projectedRows.reverse().map((row) => {
         const metadata = sanitizeMetadataObject(jsonObject(row.metadata_json));
         if (
           includeSensitive
@@ -2070,6 +2205,7 @@ async function loadTrackingTimeline(
           && row.raw_metadata_ciphertext
           && row.raw_metadata_nonce
           && row.raw_metadata_auth_tag
+          && row.dedupe_key
         ) {
           try {
             const raw = crypto.openJson({
@@ -2083,7 +2219,7 @@ async function loadTrackingTimeline(
           }
         }
         return {
-          id: Number(row.id),
+          id: publicTrackingEventId(row.id),
           type: row.event_type as EmailEvidenceEventType,
           source: row.source,
           confidence: row.confidence as EmailEvidenceConfidence,
@@ -2112,23 +2248,98 @@ export async function loadEmailEvidenceSummaryForTracking(
   workspaceId: string,
   trackingMessageId: string,
 ): Promise<EmailEvidenceSummary> {
-  const events: EmailEvidenceEvent[] = [];
-  let afterEventId = 0;
+  let summary = buildEmailEvidenceSummary([]);
+  let afterOccurredAt: Date | null = null;
+  let afterEventId = '0';
   while (true) {
-    const rows = await trackingEventsWithHighestClassification(trx)
-      .select(selectTrackingEventProjectionFields())
+    let query = trx
+      .selectFrom('email_tracking_events as event')
+      .select(selectTrackingEventFields())
       .where('event.workspace_id', '=', workspaceId)
-      .where('event.tracking_message_id', '=', trackingMessageId)
-      .where('event.id', '>', afterEventId)
+      .where('event.tracking_message_id', '=', trackingMessageId);
+    if (afterOccurredAt) {
+      query = query.where((eb) => eb.or([
+        eb('event.occurred_at', '>', afterOccurredAt!),
+        eb.and([
+          eb('event.occurred_at', '=', afterOccurredAt!),
+          eb('event.id', '>', afterEventId),
+        ]),
+      ]));
+    }
+    const rows = await query
+      .orderBy('event.occurred_at', 'asc')
       .orderBy('event.id', 'asc')
       .limit(EMAIL_TRACKING_SUMMARY_PAGE_SIZE)
       .execute();
     if (rows.length === 0) break;
-    events.push(...rows.map((row) => summaryEvidenceEventFromProjectionRow(row)));
-    afterEventId = Number(rows[rows.length - 1]!.id);
+    const projectedRows = await trackingEventsWithHighestClassification(trx, rows);
+    const pageSummary = buildEmailEvidenceSummary(
+      projectedRows.map((row) => summaryEvidenceEventFromProjectionRow(row)),
+    );
+    summary = mergeEmailEvidenceSummaries(summary, pageSummary);
+    const last = rows[rows.length - 1]!;
+    afterOccurredAt = toDate(last.occurred_at);
+    afterEventId = canonicalTrackingEventId(last.id);
     if (rows.length < EMAIL_TRACKING_SUMMARY_PAGE_SIZE) break;
   }
-  return buildEmailEvidenceSummary(events);
+  return summary;
+}
+
+function mergeEmailEvidenceSummaries(
+  current: EmailEvidenceSummary,
+  page: EmailEvidenceSummary,
+): EmailEvidenceSummary {
+  const probableSessionContinues = current.lastProbableHumanOpenAt !== null
+    && page.firstProbableHumanOpenAt !== null
+    && Date.parse(page.firstProbableHumanOpenAt) - Date.parse(current.lastProbableHumanOpenAt) < 30 * 60_000;
+  return {
+    transport: page.transport === 'unknown' ? current.transport : page.transport,
+    delivery: higherSummaryValue(
+      current.delivery,
+      page.delivery,
+      ['unknown', 'external_system_reached', 'dsn_delivered'],
+    ),
+    engagement: higherSummaryValue(
+      current.engagement,
+      page.engagement,
+      ['none', 'automated_fetch', 'probable_open', 'link_interaction', 'human_reply'],
+    ),
+    confidence: higherSummaryValue(
+      current.confidence,
+      page.confidence,
+      ['none', 'low', 'medium', 'high', 'verified'],
+    ),
+    pixelFetchCount: current.pixelFetchCount + page.pixelFetchCount,
+    automatedPixelFetchCount: current.automatedPixelFetchCount + page.automatedPixelFetchCount,
+    unknownPixelFetchCount: current.unknownPixelFetchCount + page.unknownPixelFetchCount,
+    probableHumanPixelFetchCount: current.probableHumanPixelFetchCount + page.probableHumanPixelFetchCount,
+    probableHumanOpenSessionCount: current.probableHumanOpenSessionCount
+      + page.probableHumanOpenSessionCount
+      - (probableSessionContinues ? 1 : 0),
+    firstPixelFetchedAt: current.firstPixelFetchedAt ?? page.firstPixelFetchedAt,
+    lastPixelFetchedAt: page.lastPixelFetchedAt ?? current.lastPixelFetchedAt,
+    firstProbableHumanOpenAt: current.firstProbableHumanOpenAt ?? page.firstProbableHumanOpenAt,
+    lastProbableHumanOpenAt: page.lastProbableHumanOpenAt ?? current.lastProbableHumanOpenAt,
+    openCount: current.openCount + page.openCount,
+    clickCount: current.clickCount + page.clickCount,
+    automatedOpenCount: current.automatedOpenCount + page.automatedOpenCount,
+    probableOpenCount: current.probableOpenCount + page.probableOpenCount,
+    automatedClickCount: current.automatedClickCount + page.automatedClickCount,
+    probableClickCount: current.probableClickCount + page.probableClickCount,
+    firstOpenedAt: current.firstOpenedAt ?? page.firstOpenedAt,
+    lastOpenedAt: page.lastOpenedAt ?? current.lastOpenedAt,
+    firstClickedAt: current.firstClickedAt ?? page.firstClickedAt,
+    lastClickedAt: page.lastClickedAt ?? current.lastClickedAt,
+    repliedAt: page.repliedAt ?? current.repliedAt,
+  };
+}
+
+function higherSummaryValue<T extends string>(
+  current: T,
+  candidate: T,
+  ordered: readonly T[],
+): T {
+  return ordered.indexOf(candidate) > ordered.indexOf(current) ? candidate : current;
 }
 
 export function normalizeInboundEvidenceOccurredAt(value: Date | undefined, observedAt: Date): Date {

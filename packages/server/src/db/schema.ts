@@ -749,7 +749,7 @@ export type EmailTrackingLinksTable = {
 };
 
 export type EmailTrackingEventsTable = {
-  id: Generated<number>;
+  id: Generated<string | number>;
   workspace_id: string;
   tracking_message_id: string;
   message_id: number | null;
@@ -768,7 +768,7 @@ export type EmailTrackingEventsTable = {
 };
 
 export type EmailTrackingEventClassificationsTable = {
-  event_id: number;
+  event_id: string | number;
   classification_version: number;
   actor_class:
     | 'system'

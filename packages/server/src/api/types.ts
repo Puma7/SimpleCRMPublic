@@ -2863,7 +2863,7 @@ export type EmailTrackingPolicyMutationInput = Partial<{
 }>;
 
 export type EmailTrackingEventRecord = {
-  id: number;
+  id: number | string;
   type: EmailEvidenceEventType;
   source: string;
   confidence: EmailEvidenceConfidence;
