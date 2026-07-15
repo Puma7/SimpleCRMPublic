@@ -289,7 +289,7 @@ reclassifyMessage(input: {
 
 - [ ] **Step 1:** Tests schreiben: Reclassification erzeugt den in Migration `0030` bewusst ausgesparten historischen Backfill innerhalb der autorisierten Workspace-Sitzung, aktualisiert oder ergänzt Version 2 per idempotentem Upsert ausschließlich in der Projektion, verändert `email_tracking_events` nicht und überspringt abgelaufene Rohdaten.
 - [ ] **Step 2:** Fokustests ausführen; erwartet wird FAIL wegen fehlender Projektionserzeugung.
-- [ ] **Step 3:** Admin-only Route `POST /api/v1/email/messages/:messageId/tracking/reclassify` implementieren. Pro Batch maximal 500 Ereignisse; vorhandene Version-2-Zeilen werden mit `INSERT ... ON CONFLICT (event_id, classification_version) DO UPDATE` deterministisch ersetzt. Entschlüsselte IP/UA bleiben nur im Speicher und werden nicht geloggt.
+- [ ] **Step 3:** Admin-only Route `POST /api/v1/email/messages/:messageId/tracking/reclassify` implementieren. Ein Aufruf iteriert deterministisch nach aufsteigender `event_id` über Seiten von maximal 500 Ereignissen, bis die Nachricht vollständig bearbeitet ist; kein Select und keine Transaktion enthält mehr als 500 Eventzeilen. Vorhandene Version-2-Zeilen werden mit `INSERT ... ON CONFLICT (event_id, classification_version) DO UPDATE` deterministisch ersetzt. Entschlüsselte IP/UA bleiben nur im Speicher und werden nicht geloggt.
 - [ ] **Step 4:** Timeline und Summary auf die höchste vorhandene Klassifikationsversion umstellen; ohne Projektion gilt konservativer Fallback `unknown`, niemals `probable_human`.
 - [ ] **Step 5:** Commit: `feat(email): reclassify retained tracking evidence`.
 
