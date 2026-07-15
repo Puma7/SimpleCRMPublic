@@ -47,4 +47,30 @@ describe('tracking settings panel', () => {
 
     expect(await screen.findByRole('switch', { name: 'IP-Insights aus lokalen Datenbanken' })).toBeDisabled();
   });
+
+  test('turning raw metadata off also saves IP insights as disabled', async () => {
+    const enabledPolicy = { ...policy, ipInsightsEnabled: true };
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockResolvedValueOnce(enabledPolicy).mockResolvedValueOnce({ ...enabledPolicy, collectRawMetadata: false, ipInsightsEnabled: false });
+    render(<TrackingSettingsPanel />);
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'IP-Adresse und User-Agent verschlüsselt speichern' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(IPCChannels.Email.SetEmailTrackingSettings,
+      expect.objectContaining({ collectRawMetadata: false, ipInsightsEnabled: false })));
+  });
+
+  test('turning derived metadata off also saves IP insights as disabled', async () => {
+    const enabledPolicy = { ...policy, collectRawMetadata: false, ipInsightsEnabled: true };
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockResolvedValueOnce(enabledPolicy).mockResolvedValueOnce({ ...enabledPolicy, collectDerivedMetadata: false, ipInsightsEnabled: false });
+    render(<TrackingSettingsPanel />);
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Abgeleitete Geräte- und Clientdaten speichern' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(IPCChannels.Email.SetEmailTrackingSettings,
+      expect.objectContaining({ collectDerivedMetadata: false, ipInsightsEnabled: false })));
+  });
 });

@@ -9,6 +9,7 @@ import {
   Eye,
   Loader2,
   MailWarning,
+  MapPin,
   MousePointerClick,
   Network,
   RefreshCw,
@@ -113,40 +114,67 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [ipInsightEvent, setIpInsightEvent] = useState<EvidenceEvent | null>(null)
   const requestSequence = useRef(0)
+  const actionSequence = useRef(0)
+  const mounted = useRef(false)
+  const activeMessageId = useRef(props.messageId)
+
+  const resetEphemeralState = useCallback(() => {
+    actionSequence.current += 1
+    setBusy(false)
+    setDeleteConfirmOpen(false)
+    setIpInsightEvent(null)
+  }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      requestSequence.current += 1
+      actionSequence.current += 1
+    }
+  }, [])
 
   const load = useCallback(async (sensitive = false) => {
     const requestId = ++requestSequence.current
+    const messageId = props.messageId
+    const canCommit = () => mounted.current
+      && activeMessageId.current === messageId
+      && requestId === requestSequence.current
     if (authLoading || !hasUser || !isServerClientMode() || props.folderKind !== "sent") {
-      setLoading(false)
+      if (canCommit()) setLoading(false)
       return
     }
     setLoading(true)
     try {
       const result = await invokeRenderer(IPCChannels.Email.GetMessageTracking, {
-        messageId: props.messageId,
+        messageId,
         ...(sensitive ? { includeSensitive: true } : {}),
       }) as EvidenceTimeline
-      if (requestId !== requestSequence.current) return
+      if (!canCommit()) return
       setTimeline(result)
       setAvailable(true)
     } catch {
-      if (requestId !== requestSequence.current) return
+      if (!canCommit()) return
       setTimeline(null)
       setAvailable(false)
     } finally {
-      if (requestId === requestSequence.current) setLoading(false)
+      if (canCommit()) setLoading(false)
     }
   }, [authLoading, hasUser, props.folderKind, props.messageId])
 
   useEffect(() => {
+    activeMessageId.current = props.messageId
+    requestSequence.current += 1
+    resetEphemeralState()
     setTimeline(null)
     setAvailable(true)
     setIncludeSensitive(false)
+    setOpen(false)
     void load(false)
     return () => {
       requestSequence.current += 1
     }
-  }, [load])
+  }, [load, props.messageId, resetEphemeralState])
 
   useEffect(() => {
     if (authLoading || !hasUser || !isServerClientMode() || props.folderKind !== "sent") return
@@ -167,6 +195,34 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const unknownPixelFetchCount = timeline?.summary.unknownPixelFetchCount ?? 0
   const probableHumanPixelFetchCount = timeline?.summary.probableHumanPixelFetchCount ?? 0
   const probableHumanOpenSessionCount = timeline?.summary.probableHumanOpenSessionCount ?? 0
+  const engagement = displayedEngagement(timeline?.summary)
+
+  const startAction = async (
+    channel: string,
+    successMessage: string,
+    failureMessage: string,
+    afterSuccess?: () => void,
+  ) => {
+    if (busy) return
+    const messageId = props.messageId
+    const actionId = ++actionSequence.current
+    const canCommit = () => mounted.current
+      && activeMessageId.current === messageId
+      && actionId === actionSequence.current
+    setBusy(true)
+    try {
+      await invokeRenderer(channel, messageId)
+      if (!canCommit()) return
+      toast.success(successMessage)
+      afterSuccess?.()
+      if (!canCommit()) return
+      await load(includeSensitive)
+    } catch (error) {
+      if (canCommit()) toast.error(error instanceof Error ? error.message : failureMessage)
+    } finally {
+      if (canCommit()) setBusy(false)
+    }
+  }
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -185,13 +241,16 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
         <div className="space-y-1 text-[11px]">
           <EvidenceStatusRow kind="transport" value={timeline.summary.transport} />
           <EvidenceStatusRow kind="delivery" value={timeline.summary.delivery} />
-          <EvidenceStatusRow kind="engagement" value={timeline.summary.engagement} />
+          <EvidenceStatusRow kind="engagement" value={engagement} />
         </div>
       ) : (
         <p className="text-[11px] text-muted-foreground">Für diese Nachricht wurden keine Tracking-Signale angelegt.</p>
       )}
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(nextOpen) => {
+        setOpen(nextOpen)
+        if (!nextOpen) resetEphemeralState()
+      }}>
         <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
           <DialogHeader>
             <DialogTitle>E-Mail-Evidenz</DialogTitle>
@@ -213,7 +272,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                 <div className="grid gap-3 border-b pb-4 sm:grid-cols-3">
                   <EvidenceStatusRow kind="transport" value={timeline.summary.transport} />
                   <EvidenceStatusRow kind="delivery" value={timeline.summary.delivery} />
-                  <EvidenceStatusRow kind="engagement" value={timeline.summary.engagement} />
+                  <EvidenceStatusRow kind="engagement" value={engagement} />
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
                   <Metric label="Pixelabrufe" value={pixelFetchCount} />
@@ -236,6 +295,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                     <Switch
                       checked={includeSensitive}
                       onCheckedChange={(checked) => {
+                        if (!checked) resetEphemeralState()
                         setIncludeSensitive(checked)
                         void load(checked)
                       }}
@@ -258,20 +318,20 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                         <p className="text-[11px] text-muted-foreground">
                           {eventContextLabel(event)}
                         </p>
-                        <EvidenceMetadata metadata={event.metadata} infrastructure={isInfrastructureEvent(event)} />
-                        {isAdmin && includeSensitive && hasRawIp(event.metadata) ? (
+                        <EvidenceMetadata event={event} infrastructure={isInfrastructureEvent(event)} />
+                        {isAdmin && includeSensitive && rawIpAddress(event.metadata) ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button
                                 type="button"
                                 variant="ghost"
-                                size="icon"
-                                className="mt-1 h-7 w-7"
-                                aria-label="IP-Insight öffnen"
+                                size="sm"
+                                className="mt-1 h-7 gap-1 px-2 font-mono text-xs"
+                                aria-label={`IP-Insight für ${rawIpAddress(event.metadata)}`}
                                 onClick={() => setIpInsightEvent(event)}
-                              ><Network className="h-3.5 w-3.5" /></Button>
+                              ><Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}</Button>
                             </TooltipTrigger>
-                            <TooltipContent>IP-Insight öffnen</TooltipContent>
+                            <TooltipContent>IP-Insight für diese Infrastruktur öffnen</TooltipContent>
                           </Tooltip>
                         ) : null}
                       </div>
@@ -297,36 +357,13 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                 type="button"
                 variant="outline"
                 disabled={busy}
-                onClick={async () => {
-                  if (busy) return
-                  setBusy(true)
-                  try {
-                    await invokeRenderer(IPCChannels.Email.ReclassifyMessageTracking, props.messageId)
-                    toast.success("Tracking-Evidenz neu bewertet.")
-                    await load(includeSensitive)
-                  } catch (error) {
-                    toast.error(error instanceof Error ? error.message : "Neubewertung fehlgeschlagen.")
-                  } finally {
-                    setBusy(false)
-                  }
-                }}
+                onClick={() => void startAction(IPCChannels.Email.ReclassifyMessageTracking, "Tracking-Evidenz neu bewertet.", "Neubewertung fehlgeschlagen.")}
               ><RefreshCw className="mr-2 h-4 w-4" /> Neu bewerten</Button>
               <Button
                 type="button"
                 variant="outline"
                 disabled={busy}
-                onClick={async () => {
-                  setBusy(true)
-                  try {
-                    await invokeRenderer(IPCChannels.Email.RevokeMessageTracking, props.messageId)
-                    toast.success("Tracking-Token widerrufen.")
-                    await load(includeSensitive)
-                  } catch (error) {
-                    toast.error(error instanceof Error ? error.message : "Widerruf fehlgeschlagen.")
-                  } finally {
-                    setBusy(false)
-                  }
-                }}
+                onClick={() => void startAction(IPCChannels.Email.RevokeMessageTracking, "Tracking-Token widerrufen.", "Widerruf fehlgeschlagen.")}
               >
                 <ShieldOff className="mr-2 h-4 w-4" /> Token widerrufen
               </Button>
@@ -357,18 +394,16 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={async (event) => {
                 event.preventDefault()
-                setBusy(true)
-                try {
-                  await invokeRenderer(IPCChannels.Email.DeleteMessageTracking, props.messageId)
-                  toast.success("Tracking-Daten gelöscht.")
-                  setDeleteConfirmOpen(false)
-                  setOpen(false)
-                  await load(false)
-                } catch (error) {
-                  toast.error(error instanceof Error ? error.message : "Löschen fehlgeschlagen.")
-                } finally {
-                  setBusy(false)
-                }
+                await startAction(
+                  IPCChannels.Email.DeleteMessageTracking,
+                  "Tracking-Daten gelöscht.",
+                  "Löschen fehlgeschlagen.",
+                  () => {
+                    setDeleteConfirmOpen(false)
+                    setOpen(false)
+                    resetEphemeralState()
+                  },
+                )
               }}
             >
               Endgültig löschen
@@ -425,8 +460,8 @@ function Metric(props: { label: string; value: string | number }) {
   return <div><p className="text-[10px] uppercase text-muted-foreground">{props.label}</p><p className="font-medium">{props.value}</p></div>
 }
 
-function EvidenceMetadata({ metadata, infrastructure }: { metadata: Record<string, unknown>; infrastructure: boolean }) {
-  const rows = readableMetadata(metadata, infrastructure)
+function EvidenceMetadata({ event, infrastructure }: { event: EvidenceEvent; infrastructure: boolean }) {
+  const rows = readableMetadata(event.metadata, infrastructure, event.classification?.reasons)
   if (rows.length === 0) return null
   return (
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px]">
@@ -439,22 +474,23 @@ function EvidenceMetadata({ metadata, infrastructure }: { metadata: Record<strin
   )
 }
 
-function readableMetadata(metadata: Record<string, unknown>, infrastructure: boolean): Array<[string, string]> {
+function readableMetadata(metadata: Record<string, unknown>, infrastructure: boolean, canonicalReasons?: string[]): Array<[string, string]> {
   const labels: Record<string, string> = {
     ipFamily: "IP-Familie", operatingSystem: "Betriebssystem", client: "Client",
     device: "Gerät", status: "DSN-Status", action: "DSN-Aktion", disposition: "MDN",
     acceptedRecipientCount: "Angenommen", rejectedRecipientCount: "Abgelehnt", smtpCode: "SMTP-Code",
   }
   const rows: Array<[string, string]> = []
+  const reasons = canonicalReasons ?? (Array.isArray(metadata.classificationReasons) ? metadata.classificationReasons : [])
+  if (reasons.length > 0) rows.push(["Klassifizierung", reasons.map(classificationReasonLabel).join(", ")])
   const infrastructureDetails = [metadata.client, metadata.operatingSystem, metadata.device]
     .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
     .map(String)
   if (infrastructure && infrastructureDetails.length > 0) rows.push(["Abrufende Infrastruktur", infrastructureDetails.join(" · ")])
   for (const [key, value] of Object.entries(metadata)) {
     if (infrastructure && ["client", "operatingSystem", "device"].includes(key)) continue
-    if (key === "classificationReasons" && Array.isArray(value) && value.length > 0) {
-      rows.push(["Klassifizierung", value.map(classificationReasonLabel).join(", ")])
-    } else if (key === "raw" && value && typeof value === "object" && !Array.isArray(value)) {
+    if (key === "classificationReasons") continue
+    if (key === "raw" && value && typeof value === "object" && !Array.isArray(value)) {
       rows.push(["Rohdaten", "Für IP-Insight verfügbar"])
     } else if (key === "rawUnavailable" && value === true) {
       rows.push(["Rohdaten", "Nicht entschlüsselbar"])
@@ -468,16 +504,38 @@ function readableMetadata(metadata: Record<string, unknown>, infrastructure: boo
 function classificationReasonLabel(value: unknown): string {
   const labels: Record<string, string> = {
     known_security_or_mail_proxy: "Mail-Proxy/Scanner",
+    known_proxy_user_agent: "Bekannter Mail-Proxy-User-Agent",
+    known_scanner_user_agent: "Bekannter Sicherheits-Scanner-User-Agent",
+    known_proxy_header: "Bekannter Mail-Proxy-Header",
     prefetch_header: "Prefetch",
+    known_provider_network: "Bekanntes Infrastruktur-Netzwerk",
+    immediate_infrastructure_fetch: "Sofortiger Infrastrukturabruf",
+    immediate_unattributed_fetch: "Sofortiger Abruf ohne Zuordnung",
+    missing_client_identity: "Fehlende Client-Kennung",
+    unattributed_infrastructure_network: "Nicht zugeordnetes Infrastruktur-Netzwerk",
+    system_generated_evidence: "Systemseitig erzeugte Evidenz",
+    raw_request_data_unavailable: "Rohdaten der Anfrage nicht verfügbar",
+    classification_unavailable: "Klassifizierung nicht verfügbar",
     mail_privacy_proxy_header: "Datenschutz-Proxy",
     immediate_mail_proxy_pattern: "sofortiger Proxy-Abruf",
   }
   const key = String(value)
-  return labels[key] ?? key
+  if (labels[key]) return labels[key]
+  const safeKey = key.replace(/[^a-z0-9_:-]/gi, "_").slice(0, 80) || "unbekannt"
+  return `Unbekannter Klassifizierungsgrund (${safeKey})`
 }
 
 function eventLabel(event: EvidenceEvent): string {
-  if (event.classification?.actorClass === "unknown" && event.type.startsWith("open_")) return "Pixelabruf, Ursache unklar"
+  if (isInteractionFetch(event)) {
+    const actor = interactionActor(event)
+    const fetch = event.type.startsWith("click") ? "Linkabruf" : "Pixelabruf"
+    if (actor === "probable_human") return `Wahrscheinlicher menschlicher ${fetch.toLowerCase()}`
+    if (actor === "mail_proxy") return `${fetch} durch Mail-Proxy`
+    if (actor === "privacy_proxy") return `${fetch} durch Datenschutz-Proxy`
+    if (actor === "security_scanner") return `${fetch} durch Sicherheits-Scanner`
+    if (actor === "automated_unknown") return `Automatischer ${fetch.toLowerCase()}`
+    return `${fetch}, Ursache unklar`
+  }
   const labels: Record<string, string> = {
     queued: "Versand eingeplant", sending: "Versand gestartet", smtp_accepted: "SMTP-Annahme",
     smtp_failed: "SMTP-Fehler", delayed: "Zustellung verzögert", bounced: "Rückläufer",
@@ -490,23 +548,49 @@ function eventLabel(event: EvidenceEvent): string {
 }
 
 function eventContextLabel(event: EvidenceEvent): string {
-  const actor = event.classification?.actorClass
+  const actor = isInteractionFetch(event) ? interactionActor(event) : event.classification?.actorClass
   if (actor === "probable_human") return "Menschlicher Abruf wahrscheinlich; keine Gewissheit über eine persönliche Kenntnisnahme"
   if (actor === "mail_proxy") return "Abrufende Infrastruktur: Mail-Proxy"
   if (actor === "privacy_proxy") return "Abrufende Infrastruktur: Datenschutz-Proxy"
   if (actor === "security_scanner") return "Abrufende Infrastruktur: Sicherheits-Scanner"
   if (actor === "automated_unknown") return "Abrufende Infrastruktur: automatischer Abruf"
-  if (actor === "unknown") return "Pixelabruf, Ursache unklar"
+  if (actor === "unknown") return event.type.startsWith("click") ? "Linkabruf, Ursache unklar" : "Pixelabruf, Ursache unklar"
   return confidenceLabel(event.confidence)
 }
 
 function isInfrastructureEvent(event: EvidenceEvent): boolean {
-  return ["mail_proxy", "privacy_proxy", "security_scanner", "automated_unknown"].includes(event.classification?.actorClass ?? "")
+  return isInteractionFetch(event) && interactionActor(event) !== "probable_human"
 }
 
-function hasRawIp(metadata: Record<string, unknown>): boolean {
+function rawIpAddress(metadata: Record<string, unknown>): string | null {
   const raw = metadata.raw
-  return Boolean(raw && typeof raw === "object" && !Array.isArray(raw) && typeof (raw as Record<string, unknown>).ip === "string")
+  const ip = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>).ip : null
+  return typeof ip === "string" && ip.length > 0 ? ip : null
+}
+
+function isInteractionFetch(event: EvidenceEvent): boolean {
+  return event.type.startsWith("open_") || event.type === "click" || event.type === "click_automated"
+}
+
+function interactionActor(event: EvidenceEvent): NonNullable<EvidenceEvent["classification"]>["actorClass"] {
+  const actor = event.classification?.actorClass
+  return actor && actor !== "system" ? actor : "unknown"
+}
+
+function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined): string {
+  if (!summary) return "none"
+  const hasV2Metrics = [
+    summary.pixelFetchCount,
+    summary.automatedPixelFetchCount,
+    summary.unknownPixelFetchCount,
+    summary.probableHumanPixelFetchCount,
+    summary.probableHumanOpenSessionCount,
+  ].some((value) => value !== undefined)
+  if (!hasV2Metrics) return summary.engagement
+  if ((summary.probableHumanPixelFetchCount ?? 0) > 0 || (summary.probableHumanOpenSessionCount ?? 0) > 0) return "probable_open"
+  if ((summary.automatedPixelFetchCount ?? 0) > 0) return "automated_fetch"
+  if ((summary.unknownPixelFetchCount ?? 0) > 0 || (summary.pixelFetchCount ?? 0) > 0) return "unknown_fetch"
+  return summary.engagement === "probable_open" ? "none" : summary.engagement
 }
 
 function confidenceLabel(value: EvidenceConfidence): string {

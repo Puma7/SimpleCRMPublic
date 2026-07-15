@@ -69,3 +69,45 @@ pnpm run build
 
 - Die Browser-/Playwright-Abnahme ist bewusst nicht ausgefuehrt; sie ist der separate Task-11-Gate.
 - Die Dialogtests verwenden den Renderer-Transport-Mock. Die Route, der HTTP-Transport und die Policy-Validierung sind separat abgedeckt, jedoch nicht als kompletter Browserfluss gegen eine laufende Serverinstanz.
+
+## Review-Follow-up (2026-07-16)
+
+### RED
+
+```powershell
+pnpm exec jest tests/unit/message-evidence-panel.test.tsx tests/unit/ip-insight-dialog.test.tsx tests/unit/tracking-settings-panel.test.tsx --runInBand
+```
+
+- Kanonische V2-Klassifizierungsgruende fehlten in der Renderer-Ansicht.
+- Legacy-Eventtypen konnten trotz Proxy-/Scanner-Klassifizierung menschliche Oeffnungen oder Klicks behaupten.
+- Ein Reclassify-Request fuer Nachricht A konnte nach einem Wechsel zu Nachricht B erneut laden.
+- Der IP-Dialog hatte weder Retry-/Live-Feedback noch StrictMode-Deduplizierung.
+- Das Abschalten von Raw-/Derived-Metadaten setzte IP-Insights nicht ebenfalls zurueck.
+
+### GREEN
+
+- Interaktionszeilen sind actor-first: Nur `probable_human` zeigt wahrscheinliche menschliche Nutzung. Fehlende oder nichtmenschliche Klassifizierung bleibt konservativ unklar bzw. Infrastruktur.
+- V2-Metriken bestimmen den Kopfstatus. Zwei Google-Proxy-Abrufe ergeben exakt `2/2/0/0/0` fuer Pixel/automatisiert/unklar/wahrscheinlich menschlich/Sitzungen; kein menschlicher Kopfstatus erscheint.
+- Der Renderer nutzt kanonische `classification.reasons`, lokalisiert alle aktuellen Core-/Server-Codes und zeigt unbekannte Codes sicher an.
+- IP-Insights werden beim Nachrichtenwechsel, Parent-Close, Abschalten sensibler Daten und Unmount zurueckgesetzt. Async-Ladevorgaenge sowie Reclassify/Revoke/Delete pruefen Nachricht und Sequenz vor jedem State-Update.
+- Der sichtbare Admin-Einstieg zeigt die geladene rohe IP als Button-Label mit Network/MapPin; der Transport erhaelt weiterhin ausschliesslich `{ messageId, eventId }`.
+- Der Dialog liefert `role=status` und `role=alert`, Retry sowie lokale StrictMode-Deduplizierung. IPC-Cancellation ist nicht verfuegbar; alte Antworten werden per Sequenz ignoriert.
+- Das Abschalten von Raw- oder Derived-Metadaten setzt `ipInsightsEnabled` explizit auf `false`, ohne Voraussetzungen still zu aktivieren.
+
+Frische Verifikation:
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking-migration.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts tests/unit/ip-insight-dialog.test.tsx tests/unit/message-evidence-panel.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 8/8 Suiten, 232/232 Tests bestanden
+
+pnpm run typecheck
+# bestanden
+
+pnpm exec eslint src/components/email/message-evidence-panel.tsx src/components/email/ip-insight-dialog.tsx src/components/email/settings/tracking-settings-panel.tsx tests/unit/message-evidence-panel.test.tsx tests/unit/ip-insight-dialog.test.tsx tests/unit/tracking-settings-panel.test.tsx --max-warnings 0
+# bestanden
+
+pnpm run build:web
+# bestanden
+```
+
+Der wiederholte Lauf mit `tests/unit/email-tracking.test.ts` ist derzeit rot gegen parallel hinzugekommene, nicht zu Task 7 gehoerende Core-/Workflow-Testaenderungen. Diese Dateien wurden weder bearbeitet noch werden sie in diesem Commit enthalten sein.

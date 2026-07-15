@@ -59,7 +59,7 @@ describe('message evidence panel', () => {
       events: [
         {
           id: '9007199254740993',
-          type: 'open_automated',
+          type: 'open_probable',
           source: 'tracking_pixel',
           confidence: 'low',
           automated: true,
@@ -69,12 +69,12 @@ describe('message evidence panel', () => {
             version: 2,
             actorClass: 'mail_proxy',
             confidence: 'low',
-            reasons: ['known_security_or_mail_proxy'],
+            reasons: ['known_proxy_user_agent'],
           },
         },
         {
           id: 2,
-          type: 'open_automated',
+          type: 'open_probable',
           source: 'tracking_pixel',
           confidence: 'low',
           automated: true,
@@ -84,7 +84,7 @@ describe('message evidence panel', () => {
             version: 2,
             actorClass: 'mail_proxy',
             confidence: 'low',
-            reasons: ['known_security_or_mail_proxy'],
+            reasons: ['known_proxy_user_agent'],
           },
         },
         {
@@ -111,12 +111,14 @@ describe('message evidence panel', () => {
 
     expect(await screen.findByText('Pixelabrufe')).toBeInTheDocument();
     expect(within(screen.getByText('Pixelabrufe').parentElement!).getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('Automatisierte Abrufe')).toBeInTheDocument();
-    expect(screen.getByText('Ursache unklar')).toBeInTheDocument();
-    expect(screen.getByText('Wahrscheinlich menschlich')).toBeInTheDocument();
-    expect(screen.getByText('Öffnungssitzungen')).toBeInTheDocument();
+    expect(within(screen.getByText('Automatisierte Abrufe').parentElement!).getByText('2')).toBeInTheDocument();
+    expect(within(screen.getByText('Ursache unklar').parentElement!).getByText('0')).toBeInTheDocument();
+    expect(within(screen.getByText('Wahrscheinlich menschlich').parentElement!).getByText('0')).toBeInTheDocument();
+    expect(within(screen.getByText('Öffnungssitzungen').parentElement!).getByText('0')).toBeInTheDocument();
     expect(screen.queryByText('Wahrscheinlich geöffnet')).not.toBeInTheDocument();
+    expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
     expect(screen.getAllByText('Abrufende Infrastruktur')).toHaveLength(2);
+    expect(screen.getAllByText('Bekannter Mail-Proxy-User-Agent')).toHaveLength(2);
     expect(screen.queryByText('Chrome')).not.toBeInTheDocument();
     expect(screen.queryByText('Windows')).not.toBeInTheDocument();
     expect(screen.queryByText(/automatischer Abruf wahrscheinlich/i)).not.toBeInTheDocument();
@@ -174,6 +176,117 @@ describe('message evidence panel', () => {
     ));
   });
 
+  test('does not reload message A after reclassification completes for message B', async () => {
+    const reclassification = deferred<unknown>();
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockImplementation((channel, payload) => {
+      if (channel === 'email:reclassify-message-tracking') {
+        return reclassification.promise;
+      }
+      return Promise.resolve(v2Timeline((payload as { messageId: number }).messageId));
+    });
+
+    const view = render(<MessageEvidencePanel messageId={1} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Neu bewerten' }));
+    view.rerender(<MessageEvidencePanel messageId={2} folderKind="sent" />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('email:get-message-tracking', { messageId: 2 }));
+
+    await act(async () => {
+      reclassification.resolve({ classified: 1, unavailableRaw: 0 });
+      await reclassification.promise;
+    });
+
+    expect(invoke.mock.calls.filter(([channel, payload]) => (
+      channel === 'email:get-message-tracking' && (payload as { messageId: number }).messageId === 1
+    ))).toHaveLength(1);
+  });
+
+  test('uses classification actors over legacy open and click event labels', async () => {
+    const reclassifiedTimeline = {
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'probable_open',
+        pixelFetchCount: 1,
+        unknownPixelFetchCount: 1,
+      },
+      events: [
+        {
+          id: 1,
+          type: 'open_probable',
+          source: 'tracking_pixel',
+          confidence: 'medium',
+          automated: false,
+          occurredAt: '2026-07-15T10:00:00.000Z',
+          metadata: {},
+          classification: {
+            version: 2,
+            actorClass: 'unknown',
+            confidence: 'medium',
+            reasons: ['raw_request_data_unavailable'],
+          },
+        },
+        {
+          id: 2,
+          type: 'click',
+          source: 'tracking_link',
+          confidence: 'high',
+          automated: false,
+          occurredAt: '2026-07-15T10:01:00.000Z',
+          metadata: {},
+          classification: {
+            version: 2,
+            actorClass: 'security_scanner',
+            confidence: 'high',
+            reasons: ['known_scanner_user_agent'],
+          },
+        },
+      ],
+    };
+    jest.mocked(invokeRenderer).mockResolvedValueOnce(reclassifiedTimeline);
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+
+    expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(2);
+    expect(screen.getByText('Linkabruf durch Sicherheits-Scanner')).toBeInTheDocument();
+    expect(screen.getByText('Rohdaten der Anfrage nicht verfügbar')).toBeInTheDocument();
+    expect(screen.getByText('Bekannter Sicherheits-Scanner-User-Agent')).toBeInTheDocument();
+    expect(screen.queryByText('Wahrscheinliches Öffnen')).not.toBeInTheDocument();
+    expect(screen.queryByText('Link angeklickt')).not.toBeInTheDocument();
+    expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
+  });
+
+  test('treats a legacy probable-open event without V2 classification as unknown', async () => {
+    const legacyTimeline = {
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'probable_open',
+        pixelFetchCount: 1,
+        unknownPixelFetchCount: 1,
+      },
+      events: [{
+        id: 1,
+        type: 'open_probable',
+        source: 'tracking_pixel',
+        confidence: 'medium',
+        automated: false,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+      }],
+    };
+    jest.mocked(invokeRenderer).mockResolvedValueOnce(legacyTimeline);
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+
+    expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(2);
+    expect(screen.queryByText('Wahrscheinliches Öffnen')).not.toBeInTheDocument();
+    expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
+  });
+
   test('shows the IP insight button only to admins after sensitive raw data was requested', async () => {
     const sensitiveTimeline = {
       ...v2Timeline(41),
@@ -189,13 +302,49 @@ describe('message evidence panel', () => {
       }],
     };
     const invoke = jest.mocked(invokeRenderer);
-    invoke.mockResolvedValueOnce(sensitiveTimeline).mockResolvedValueOnce(sensitiveTimeline);
+    invoke
+      .mockResolvedValueOnce(sensitiveTimeline)
+      .mockResolvedValueOnce(sensitiveTimeline)
+      .mockResolvedValueOnce({
+        ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public', countryCode: 'US',
+        continentCode: 'NA', asn: 15169, networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+        databaseBuildAt: '2026-07-15T00:00:00.000Z',
+      });
 
     render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
     expect(screen.queryByRole('button', { name: 'IP-Insight öffnen' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('switch'));
-    expect(await screen.findByRole('button', { name: 'IP-Insight öffnen' })).toBeInTheDocument();
+    const ipButton = await screen.findByRole('button', { name: 'IP-Insight für 8.8.8.8' });
+    expect(ipButton).toHaveTextContent('8.8.8.8');
+    fireEvent.click(ipButton);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('email:get-message-tracking-ip-insight', {
+      messageId: 41,
+      eventId: 2,
+    }));
+  });
+
+  test('clears message-specific confirmation and closes the IP dialog when the parent closes', async () => {
+    const sensitiveTimeline = {
+      ...v2Timeline(41),
+      events: [{
+        id: 2, type: 'open_automated', source: 'tracking_pixel', confidence: 'low', automated: true,
+        occurredAt: '2026-07-15T10:00:00.000Z', metadata: { raw: { ip: '8.8.8.8' } },
+        classification: { version: 2, actorClass: 'mail_proxy', confidence: 'low', reasons: [] },
+      }],
+    };
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockResolvedValueOnce(sensitiveTimeline).mockResolvedValueOnce(sensitiveTimeline).mockResolvedValueOnce({
+      ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public', countryCode: 'US', continentCode: 'NA',
+      asn: 15169, networkName: 'Google LLC', networkCidr: '8.8.8.0/24', databaseBuildAt: null,
+    });
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+    fireEvent.click(screen.getByRole('switch'));
+    fireEvent.click(await screen.findByRole('button', { name: 'IP-Insight für 8.8.8.8' }));
+    expect(await screen.findByRole('dialog', { name: 'IP-Insight' })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0]);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'IP-Insight' })).not.toBeInTheDocument());
   });
 
   test('does not offer the IP insight button to non-admin users', async () => {

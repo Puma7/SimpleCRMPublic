@@ -191,7 +191,10 @@ export function TrackingSettingsPanel() {
           label="Abgeleitete Geräte- und Clientdaten speichern"
           checked={policy.collectDerivedMetadata}
           disabled={!isAdmin || policy.collectRawMetadata}
-          onCheckedChange={(collectDerivedMetadata) => patch({ collectDerivedMetadata })}
+          onCheckedChange={(collectDerivedMetadata) => patch({
+            collectDerivedMetadata,
+            ...(!collectDerivedMetadata ? { ipInsightsEnabled: false } : {}),
+          })}
         />
         <SettingSwitch
           id="tracking-raw"
@@ -201,6 +204,7 @@ export function TrackingSettingsPanel() {
           onCheckedChange={(collectRawMetadata) => patch({
             collectRawMetadata,
             ...(collectRawMetadata ? { collectDerivedMetadata: true } : {}),
+            ...(!collectRawMetadata ? { ipInsightsEnabled: false } : {}),
           })}
         />
         <div className="space-y-1">

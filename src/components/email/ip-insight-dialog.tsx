@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Loader2, Network } from "lucide-react"
+import { Loader2, Network, RefreshCw } from "lucide-react"
 
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import { RendererTransportError, invokeRenderer } from "@/services/transport"
 import { IPCChannels } from "@shared/ipc/channels"
 
@@ -34,20 +35,41 @@ export function IpInsightDialog(props: {
   const [insight, setInsight] = useState<IpInsight | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [retryGeneration, setRetryGeneration] = useState(0)
   const requestSequence = useRef(0)
+  // IPC requests cannot be cancelled. Keep the request local to this dialog and reuse it
+  // during StrictMode's effect replay while sequences safely ignore stale completions.
+  const inFlightRequest = useRef<{ key: string; promise: Promise<IpInsight> } | null>(null)
 
   useEffect(() => {
-    if (!props.open) return
+    if (!props.open) {
+      requestSequence.current += 1
+      setInsight(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
     const requestId = ++requestSequence.current
+    const key = `${props.messageId}:${String(props.eventId)}:${retryGeneration}`
     setInsight(null)
     setError(null)
     setLoading(true)
-    void invokeRenderer(IPCChannels.Email.GetMessageTrackingIpInsight, {
-      messageId: props.messageId,
-      eventId: props.eventId,
-    }).then((result) => {
+    let request = inFlightRequest.current
+    if (!request || request.key !== key) {
+      const promise = Promise.resolve(invokeRenderer(IPCChannels.Email.GetMessageTrackingIpInsight, {
+        messageId: props.messageId,
+        eventId: props.eventId,
+      })) as Promise<IpInsight>
+      request = { key, promise }
+      inFlightRequest.current = request
+      void promise.then(
+        () => { if (inFlightRequest.current?.promise === promise) inFlightRequest.current = null },
+        () => { if (inFlightRequest.current?.promise === promise) inFlightRequest.current = null },
+      )
+    }
+    void request.promise.then((result) => {
       if (requestId !== requestSequence.current) return
-      setInsight(result as IpInsight)
+      setInsight(result)
     }).catch((caught: unknown) => {
       if (requestId !== requestSequence.current) return
       setError(ipInsightErrorMessage(caught))
@@ -57,7 +79,7 @@ export function IpInsightDialog(props: {
     return () => {
       requestSequence.current += 1
     }
-  }, [props.eventId, props.messageId, props.open])
+  }, [props.eventId, props.messageId, props.open, retryGeneration])
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -68,8 +90,13 @@ export function IpInsightDialog(props: {
             Ungefährer Standort der abrufenden Infrastruktur; kein Nachweis des Empfängerstandorts
           </DialogDescription>
         </DialogHeader>
-        {loading ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Wird geladen…</div> : null}
-        {error ? <p className="text-sm text-muted-foreground">{error}</p> : null}
+        {loading ? <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Wird geladen…</div> : null}
+        {error ? <div className="space-y-3">
+          <p role="alert" aria-live="assertive" className="text-sm text-muted-foreground">{error}</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => setRetryGeneration((current) => current + 1)}>
+            <RefreshCw className="mr-2 h-4 w-4" /> Erneut versuchen
+          </Button>
+        </div> : null}
         {insight ? <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
           <InsightRow label="IP-Adresse" value={insight.ipAddress} />
           <InsightRow label="Land" value={countryName(insight.countryCode)} />

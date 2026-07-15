@@ -1,4 +1,5 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 
 import { IpInsightDialog } from '@/components/email/ip-insight-dialog';
 import { RendererTransportError, invokeRenderer } from '@/services/transport';
@@ -47,7 +48,52 @@ describe('IP insight dialog', () => {
 
     render(<IpInsightDialog open onOpenChange={jest.fn()} messageId={41} eventId={2} />);
 
-    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(screen.getByRole('button', { name: 'Erneut versuchen' })).toBeInTheDocument();
+  });
+
+  test('deduplicates a StrictMode effect replay while the same insight is in flight', async () => {
+    const pending = deferred<unknown>();
+    jest.mocked(invokeRenderer).mockReturnValue(pending.promise);
+
+    render(<StrictMode><IpInsightDialog open onOpenChange={jest.fn()} messageId={41} eventId={2} /></StrictMode>);
+
+    await waitFor(() => expect(invokeRenderer).toHaveBeenCalledTimes(1));
+  });
+
+  test('retries a failed insight request exactly once more', async () => {
+    jest.mocked(invokeRenderer)
+      .mockRejectedValueOnce(new RendererTransportError('failed', { status: 503 }))
+      .mockResolvedValueOnce({ countryCode: 'DE', networkName: 'Example' });
+
+    render(<IpInsightDialog open onOpenChange={jest.fn()} messageId={41} eventId={2} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Erneut versuchen' }));
+
+    expect(await screen.findByText('Deutschland')).toBeInTheDocument();
+    expect(invokeRenderer).toHaveBeenCalledTimes(2);
+  });
+
+  test('ignores an older message response after the dialog switches messages', async () => {
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    jest.mocked(invokeRenderer)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const view = render(<IpInsightDialog open onOpenChange={jest.fn()} messageId={41} eventId={2} />);
+    view.rerender(<IpInsightDialog open onOpenChange={jest.fn()} messageId={42} eventId={3} />);
+
+    await act(async () => {
+      second.resolve({ countryCode: 'DE', networkName: 'Aktuell' });
+      await second.promise;
+    });
+    expect(await screen.findByText('Deutschland')).toBeInTheDocument();
+
+    await act(async () => {
+      first.resolve({ countryCode: 'US', networkName: 'Veraltet' });
+      await first.promise;
+    });
+    expect(screen.queryByText('Vereinigte Staaten')).not.toBeInTheDocument();
+    expect(screen.queryByText('Veraltet')).not.toBeInTheDocument();
   });
 
   test('does not update after its request is cancelled by unmount', async () => {
