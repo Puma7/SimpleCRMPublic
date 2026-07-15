@@ -296,7 +296,7 @@ function parsePolicyMutation(body: unknown):
   }
   const source = body as Record<string, unknown>;
   const allowed = new Set([
-    'enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata',
+    'enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata', 'ipInsightsEnabled',
     'rawMetadataRetentionDays', 'eventRetentionDays', 'tokenTtlDays', 'legalBasis',
     'privacyNoticeUrl', 'complianceAcknowledged',
   ]);
@@ -305,7 +305,7 @@ function parsePolicyMutation(body: unknown):
     return { ok: false, response: error(400, 'invalid_tracking_policy', 'Unbekannte Tracking-Einstellung', { fields: unknown }) };
   }
   const values: EmailTrackingPolicyMutationInput = {};
-  for (const key of ['enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata', 'complianceAcknowledged'] as const) {
+  for (const key of ['enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata', 'ipInsightsEnabled', 'complianceAcknowledged'] as const) {
     if (source[key] === undefined) continue;
     if (typeof source[key] !== 'boolean') {
       return { ok: false, response: error(400, 'invalid_tracking_policy', `${key} muss boolesch sein`) };

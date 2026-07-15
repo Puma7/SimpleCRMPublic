@@ -2838,6 +2838,7 @@ export type EmailTrackingPolicyRecord = {
   trackLinks: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
+  ipInsightsEnabled: boolean;
   rawMetadataRetentionDays: number;
   eventRetentionDays: number;
   tokenTtlDays: number;
@@ -2854,6 +2855,7 @@ export type EmailTrackingPolicyMutationInput = Partial<{
   trackLinks: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
+  ipInsightsEnabled: boolean;
   rawMetadataRetentionDays: number;
   eventRetentionDays: number;
   tokenTtlDays: number;

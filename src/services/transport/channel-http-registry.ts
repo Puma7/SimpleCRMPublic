@@ -1976,6 +1976,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => dataBody<Record<string, unknown>>(body),
     }
   }],
+  [IPCChannels.Email.ReclassifyMessageTracking, ([messageId]) => ({
+    method: "POST",
+    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking/reclassify`,
+    transform: (body) => dataBody<{ classified: number; unavailableRaw: number }>(body),
+  })],
   [IPCChannels.Email.RevokeMessageTracking, ([messageId]) => ({
     method: "POST",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking/revoke`,

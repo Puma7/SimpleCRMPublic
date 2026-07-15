@@ -29,6 +29,7 @@ export type EmailTrackingPolicy = {
   trackLinks: boolean
   collectDerivedMetadata: boolean
   collectRawMetadata: boolean
+  ipInsightsEnabled: boolean
   rawMetadataRetentionDays: number
   eventRetentionDays: number
   tokenTtlDays: number
@@ -94,6 +95,7 @@ export function TrackingSettingsPanel() {
         trackLinks: policy.trackLinks,
         collectDerivedMetadata: policy.collectDerivedMetadata,
         collectRawMetadata: policy.collectRawMetadata,
+        ipInsightsEnabled: policy.ipInsightsEnabled,
         rawMetadataRetentionDays: policy.rawMetadataRetentionDays,
         eventRetentionDays: policy.eventRetentionDays,
         tokenTtlDays: policy.tokenTtlDays,
@@ -201,6 +203,21 @@ export function TrackingSettingsPanel() {
             ...(collectRawMetadata ? { collectDerivedMetadata: true } : {}),
           })}
         />
+        <div className="space-y-1">
+          <SettingSwitch
+            id="tracking-ip-insights"
+            label="IP-Insights aus lokalen Datenbanken"
+            checked={policy.ipInsightsEnabled}
+            disabled={!isAdmin || !policy.collectDerivedMetadata || !policy.collectRawMetadata}
+            onCheckedChange={(ipInsightsEnabled) => patch({ ipInsightsEnabled })}
+          />
+          <p className="text-xs text-muted-foreground">
+            Ordnet nur die abrufende Infrastruktur lokal einem Land und Netzwerk zu. Kein Nachweis eines Empfängerstandorts; die Option aktiviert weder Roh- noch abgeleitete Metadaten.
+          </p>
+          {!policy.collectDerivedMetadata || !policy.collectRawMetadata ? (
+            <p className="text-xs text-muted-foreground">Erfordert aktivierte abgeleitete Daten sowie verschlüsselt gespeicherte IP-Adresse und User-Agent.</p>
+          ) : null}
+        </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <NumberField
             id="tracking-raw-days"

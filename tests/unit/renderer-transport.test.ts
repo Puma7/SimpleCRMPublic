@@ -3574,6 +3574,7 @@ describe('renderer transport', () => {
       trackLinks: true,
       collectDerivedMetadata: true,
       collectRawMetadata: false,
+      ipInsightsEnabled: false,
       rawMetadataRetentionDays: 7,
       eventRetentionDays: 365,
       tokenTtlDays: 730,
@@ -3614,6 +3615,7 @@ describe('renderer transport', () => {
       .mockResolvedValueOnce(jsonResponse({ data: { ...policy, trackLinks: false } }))
       .mockResolvedValueOnce(jsonResponse({ data: timeline }))
       .mockResolvedValueOnce(jsonResponse({ data: ipInsight }))
+      .mockResolvedValueOnce(jsonResponse({ data: { classified: 2, unavailableRaw: 0 } }))
       .mockResolvedValueOnce(jsonResponse({ data: { revoked: true } }))
       .mockResolvedValueOnce(jsonResponse({ data: { erased: true } }));
     const transport = createHttpRendererTransport({
@@ -3633,6 +3635,10 @@ describe('renderer transport', () => {
       messageId: 41,
       eventId: '9007199254740993',
     })).resolves.toEqual(ipInsight);
+    await expect(transport.invoke(IPCChannels.Email.ReclassifyMessageTracking, 41)).resolves.toEqual({
+      classified: 2,
+      unavailableRaw: 0,
+    });
     await expect(transport.invoke(IPCChannels.Email.RevokeMessageTracking, 41)).resolves.toEqual({ revoked: true });
     await expect(transport.invoke(IPCChannels.Email.DeleteMessageTracking, 41)).resolves.toEqual({ success: true });
 
@@ -3653,10 +3659,14 @@ describe('renderer transport', () => {
       expect.objectContaining({ method: 'GET' }),
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(5,
-      'https://crm.example.com/api/v1/email/messages/41/tracking/revoke',
+      'https://crm.example.com/api/v1/email/messages/41/tracking/reclassify',
       expect.objectContaining({ method: 'POST' }),
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(6,
+      'https://crm.example.com/api/v1/email/messages/41/tracking/revoke',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(7,
       'https://crm.example.com/api/v1/email/messages/41/tracking',
       expect.objectContaining({ method: 'DELETE' }),
     );

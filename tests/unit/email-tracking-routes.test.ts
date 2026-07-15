@@ -28,6 +28,7 @@ const policy: EmailTrackingPolicyRecord = {
   trackLinks: false,
   collectDerivedMetadata: false,
   collectRawMetadata: false,
+  ipInsightsEnabled: false,
   rawMetadataRetentionDays: 7,
   eventRetentionDays: 365,
   tokenTtlDays: 730,
@@ -348,5 +349,26 @@ describe('email tracking routes', () => {
       body: {},
       principal,
     })).rejects.toThrow('database unavailable');
+  });
+
+  test('accepts IP insight policy updates and passes the explicit field through', async () => {
+    const calls: unknown[] = [];
+    const api = apiFor(makeTrackingPort({
+      async setPolicy(input) {
+        calls.push(input.values);
+        return { ...policy, ipInsightsEnabled: true };
+      },
+    }));
+
+    await expect(api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/tracking/settings',
+      body: { ipInsightsEnabled: true },
+      principal,
+    })).resolves.toMatchObject({
+      status: 200,
+      body: { data: { ipInsightsEnabled: true } },
+    });
+    expect(calls).toEqual([{ ipInsightsEnabled: true }]);
   });
 });

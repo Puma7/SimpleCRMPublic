@@ -147,6 +147,26 @@ describe('email tracking service security helpers', () => {
     })).toThrow('zu lang');
   });
 
+  test('requires both retained raw and derived metadata before IP insights can be enabled', () => {
+    expect(() => normalizeEmailTrackingPolicy({
+      current: null,
+      values: { ipInsightsEnabled: true, collectDerivedMetadata: true, collectRawMetadata: false },
+      now: new Date('2026-07-15T10:00:00.000Z'),
+      encryptionAvailable: true,
+    })).toThrow('IP-Insights erfordern abgeleitete und Rohmetadaten');
+
+    expect(normalizeEmailTrackingPolicy({
+      current: null,
+      values: {
+        ipInsightsEnabled: true,
+        collectDerivedMetadata: true,
+        collectRawMetadata: true,
+      },
+      now: new Date('2026-07-15T10:00:00.000Z'),
+      encryptionAvailable: true,
+    }).ipInsightsEnabled).toBe(true);
+  });
+
   test('requires a fresh compliance acknowledgement after material policy changes', () => {
     const current = normalizeEmailTrackingPolicy({
       current: null,

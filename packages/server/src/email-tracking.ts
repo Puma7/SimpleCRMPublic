@@ -191,6 +191,7 @@ export function normalizeEmailTrackingPolicy(input: {
     trackLinks: false,
     collectDerivedMetadata: false,
     collectRawMetadata: false,
+    ipInsightsEnabled: false,
     rawMetadataRetentionDays: 7,
     eventRetentionDays: 365,
     tokenTtlDays: 730,
@@ -205,6 +206,7 @@ export function normalizeEmailTrackingPolicy(input: {
     ...(input.values.trackLinks === undefined ? {} : { trackLinks: input.values.trackLinks }),
     ...(input.values.collectDerivedMetadata === undefined ? {} : { collectDerivedMetadata: input.values.collectDerivedMetadata }),
     ...(input.values.collectRawMetadata === undefined ? {} : { collectRawMetadata: input.values.collectRawMetadata }),
+    ...(input.values.ipInsightsEnabled === undefined ? {} : { ipInsightsEnabled: input.values.ipInsightsEnabled }),
     ...(input.values.rawMetadataRetentionDays === undefined ? {} : { rawMetadataRetentionDays: input.values.rawMetadataRetentionDays }),
     ...(input.values.eventRetentionDays === undefined ? {} : { eventRetentionDays: input.values.eventRetentionDays }),
     ...(input.values.tokenTtlDays === undefined ? {} : { tokenTtlDays: input.values.tokenTtlDays }),
@@ -222,6 +224,7 @@ export function normalizeEmailTrackingPolicy(input: {
     || next.trackLinks !== current.trackLinks
     || next.collectDerivedMetadata !== current.collectDerivedMetadata
     || next.collectRawMetadata !== current.collectRawMetadata
+    || next.ipInsightsEnabled !== current.ipInsightsEnabled
     || next.rawMetadataRetentionDays !== current.rawMetadataRetentionDays
     || next.eventRetentionDays !== current.eventRetentionDays
     || next.tokenTtlDays !== current.tokenTtlDays
@@ -236,6 +239,9 @@ export function normalizeEmailTrackingPolicy(input: {
   assertIntegerRange(next.tokenTtlDays, 1, 3650, 'Token-Laufzeit');
   if (next.collectRawMetadata && !next.collectDerivedMetadata) {
     throw new EmailTrackingPolicyValidationError('Raw-Metadaten erfordern abgeleitete Metadaten');
+  }
+  if (next.ipInsightsEnabled && (!next.collectDerivedMetadata || !next.collectRawMetadata)) {
+    throw new EmailTrackingPolicyValidationError('IP-Insights erfordern abgeleitete und Rohmetadaten');
   }
   if (next.privacyNoticeUrl) {
     if (next.privacyNoticeUrl.length > MAX_PRIVACY_NOTICE_URL_LENGTH) {
@@ -1147,6 +1153,7 @@ type PolicyRowLike = {
   track_links: boolean;
   collect_derived_metadata: boolean;
   collect_raw_metadata: boolean;
+  ip_insights_enabled: boolean;
   raw_metadata_retention_days: number;
   event_retention_days: number;
   token_ttl_days: number;
@@ -1171,7 +1178,7 @@ function loadPolicyRowInTransaction(
   return trx
     .selectFrom('email_tracking_policies')
     .select([
-      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata',
+      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata', 'ip_insights_enabled',
       'raw_metadata_retention_days', 'event_retention_days', 'token_ttl_days', 'legal_basis',
       'privacy_notice_url', 'compliance_acknowledged_at', 'updated_at',
     ])
@@ -1190,6 +1197,7 @@ function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
     trackLinks: Boolean(row.track_links),
     collectDerivedMetadata: Boolean(row.collect_derived_metadata),
     collectRawMetadata: Boolean(row.collect_raw_metadata),
+    ipInsightsEnabled: Boolean(row.ip_insights_enabled),
     rawMetadataRetentionDays: Number(row.raw_metadata_retention_days),
     eventRetentionDays: Number(row.event_retention_days),
     tokenTtlDays: Number(row.token_ttl_days),
@@ -1206,6 +1214,7 @@ function defaultTrackingPolicy(): NormalizedEmailTrackingPolicy {
     trackLinks: false,
     collectDerivedMetadata: false,
     collectRawMetadata: false,
+    ipInsightsEnabled: false,
     rawMetadataRetentionDays: 7,
     eventRetentionDays: 365,
     tokenTtlDays: 730,
@@ -1243,6 +1252,7 @@ function policyUpdateValues(actorUserId: string, policy: NormalizedEmailTracking
     track_links: policy.trackLinks,
     collect_derived_metadata: policy.collectDerivedMetadata,
     collect_raw_metadata: policy.collectRawMetadata,
+    ip_insights_enabled: policy.ipInsightsEnabled,
     raw_metadata_retention_days: policy.rawMetadataRetentionDays,
     event_retention_days: policy.eventRetentionDays,
     token_ttl_days: policy.tokenTtlDays,
