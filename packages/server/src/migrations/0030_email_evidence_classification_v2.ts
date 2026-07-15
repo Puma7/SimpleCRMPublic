@@ -16,29 +16,6 @@ export const emailEvidenceClassificationV2Migration: SqlMigration = {
   classified_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (event_id, classification_version)
 );`,
-    `INSERT INTO email_tracking_event_classifications (
-  event_id,
-  classification_version,
-  actor_class,
-  confidence,
-  reasons_json
-)
-SELECT
-  id,
-  2,
-  CASE
-    WHEN event_type IN ('queued', 'sending', 'smtp_accepted', 'smtp_failed', 'delayed', 'bounced', 'dsn_delivered', 'mdn_displayed', 'replied', 'revoked', 'expired') THEN 'system'
-    WHEN event_type IN ('open_automated', 'click_automated') THEN 'automated_unknown'
-    WHEN event_type IN ('open_probable', 'click') THEN 'unknown'
-    ELSE 'unknown'
-  END,
-  CASE
-    WHEN confidence IN ('none', 'low', 'medium', 'high', 'verified') THEN confidence
-    ELSE 'none'
-  END,
-  jsonb_build_array('legacy_event_projection_v2')
-FROM email_tracking_events
-ON CONFLICT (event_id, classification_version) DO NOTHING;`,
     `ALTER TABLE email_tracking_event_classifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_tracking_event_classifications FORCE ROW LEVEL SECURITY;`,
     `CREATE POLICY email_tracking_event_classifications_workspace_isolation ON email_tracking_event_classifications

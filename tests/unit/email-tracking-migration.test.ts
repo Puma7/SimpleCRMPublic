@@ -51,7 +51,7 @@ describe('email evidence tracking migration', () => {
     expect(sql).toContain('recipient_count integer NOT NULL');
   });
 
-  test('adds the V2 versioned classification projection without changing raw events', () => {
+  test('adds the V2 classification structure without a global event backfill', () => {
     const sql = emailEvidenceClassificationV2Migration.upSql.join('\n');
 
     expect(serverMigrations).toContain(emailEvidenceClassificationV2Migration);
@@ -66,10 +66,9 @@ describe('email evidence tracking migration', () => {
     expect(sql).toContain('ALTER TABLE email_tracking_event_classifications ENABLE ROW LEVEL SECURITY');
     expect(sql).toContain('ALTER TABLE email_tracking_event_classifications FORCE ROW LEVEL SECURITY');
     expect(sql).toContain('CREATE POLICY email_tracking_event_classifications_workspace_isolation');
-    expect(sql).toContain('INSERT INTO email_tracking_event_classifications');
-    expect(sql).toContain("WHEN event_type IN ('queued', 'sending', 'smtp_accepted', 'smtp_failed', 'delayed', 'bounced', 'dsn_delivered', 'mdn_displayed', 'replied', 'revoked', 'expired') THEN 'system'");
-    expect(sql).toContain("WHEN event_type IN ('open_automated', 'click_automated') THEN 'automated_unknown'");
-    expect(sql).toContain("WHEN event_type IN ('open_probable', 'click') THEN 'unknown'");
+    expect(sql).not.toMatch(
+      /INSERT\s+INTO\s+email_tracking_event_classifications[\s\S]*?SELECT[\s\S]*?FROM\s+email_tracking_events/i,
+    );
     expect(sql).not.toMatch(/UPDATE\s+email_tracking_events/i);
   });
 });
