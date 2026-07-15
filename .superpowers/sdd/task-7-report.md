@@ -111,3 +111,35 @@ pnpm run build:web
 ```
 
 Der wiederholte Lauf mit `tests/unit/email-tracking.test.ts` ist derzeit rot gegen parallel hinzugekommene, nicht zu Task 7 gehoerende Core-/Workflow-Testaenderungen. Diese Dateien wurden weder bearbeitet noch werden sie in diesem Commit enthalten sein.
+
+## Zweiter Review-Follow-up (2026-07-16)
+
+### RED
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/message-evidence-panel.test.tsx
+```
+
+- Ein wirkliches Legacy-Summary ohne V2-Felder konnte bei `engagement=probable_open` noch menschliche Kopfzeilen zeigen.
+- Der Delete-Erfolg invalidierte seine eigene Action-Sequenz vor dem Timeline-Reload.
+
+### GREEN
+
+- Ein Legacy-`probable_open` ohne V2-Metrik und ohne `probable_human`-Klassifizierung wird als unklarer Pixelabruf dargestellt. Der Fallback leitet die unklare Pixelanzahl konsistent aus `openCount` ab; Link- und Antwortsignale bleiben unveraendert.
+- Erfolgreiches Loeschen laedt die aktuelle Timeline vor dem Schliessen/Reset nach. Die Regressionsabdeckung prueft `tracked=false` nach erneutem Oeffnen; A/B-, Parent-Close- und Unmount-Guards bleiben erhalten.
+
+Frische Verifikation:
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/message-evidence-panel.test.tsx tests/unit/ip-insight-dialog.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 3/3 Suiten, 22/22 Tests bestanden
+
+pnpm run typecheck
+# bestanden
+
+pnpm exec eslint src/components/email/message-evidence-panel.tsx tests/unit/message-evidence-panel.test.tsx --max-warnings 0
+# bestanden
+
+pnpm run build:web
+# bestanden
+```

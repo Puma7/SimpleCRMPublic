@@ -192,10 +192,12 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
 
   const pixelFetchCount = timeline?.summary.pixelFetchCount ?? timeline?.summary.openCount ?? 0
   const automatedPixelFetchCount = timeline?.summary.automatedPixelFetchCount ?? 0
-  const unknownPixelFetchCount = timeline?.summary.unknownPixelFetchCount ?? 0
   const probableHumanPixelFetchCount = timeline?.summary.probableHumanPixelFetchCount ?? 0
   const probableHumanOpenSessionCount = timeline?.summary.probableHumanOpenSessionCount ?? 0
-  const engagement = displayedEngagement(timeline?.summary)
+  const hasV2Metrics = hasV2EvidenceMetrics(timeline?.summary)
+  const engagement = displayedEngagement(timeline?.summary, timeline?.events ?? [])
+  const unknownPixelFetchCount = timeline?.summary.unknownPixelFetchCount
+    ?? (!hasV2Metrics && engagement === "unknown_fetch" ? pixelFetchCount : 0)
 
   const startAction = async (
     channel: string,
@@ -214,9 +216,9 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       await invokeRenderer(channel, messageId)
       if (!canCommit()) return
       toast.success(successMessage)
-      afterSuccess?.()
-      if (!canCommit()) return
       await load(includeSensitive)
+      if (!canCommit()) return
+      afterSuccess?.()
     } catch (error) {
       if (canCommit()) toast.error(error instanceof Error ? error.message : failureMessage)
     } finally {
@@ -577,17 +579,28 @@ function interactionActor(event: EvidenceEvent): NonNullable<EvidenceEvent["clas
   return actor && actor !== "system" ? actor : "unknown"
 }
 
-function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined): string {
-  if (!summary) return "none"
-  const hasV2Metrics = [
+function hasV2EvidenceMetrics(summary: EvidenceTimeline["summary"] | undefined): boolean {
+  if (!summary) return false
+  return [
     summary.pixelFetchCount,
     summary.automatedPixelFetchCount,
     summary.unknownPixelFetchCount,
     summary.probableHumanPixelFetchCount,
     summary.probableHumanOpenSessionCount,
   ].some((value) => value !== undefined)
-  if (!hasV2Metrics) return summary.engagement
-  if ((summary.probableHumanPixelFetchCount ?? 0) > 0 || (summary.probableHumanOpenSessionCount ?? 0) > 0) return "probable_open"
+}
+
+function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined, events: EvidenceEvent[]): string {
+  if (!summary) return "none"
+  const hasProbableHumanEvidence = (summary.probableHumanPixelFetchCount ?? 0) > 0
+    || (summary.probableHumanOpenSessionCount ?? 0) > 0
+    || events.some((event) => event.classification?.actorClass === "probable_human")
+  if (!hasV2EvidenceMetrics(summary)) {
+    return summary.engagement === "probable_open" && !hasProbableHumanEvidence
+      ? "unknown_fetch"
+      : summary.engagement
+  }
+  if (hasProbableHumanEvidence) return "probable_open"
   if ((summary.automatedPixelFetchCount ?? 0) > 0) return "automated_fetch"
   if ((summary.unknownPixelFetchCount ?? 0) > 0 || (summary.pixelFetchCount ?? 0) > 0) return "unknown_fetch"
   return summary.engagement === "probable_open" ? "none" : summary.engagement

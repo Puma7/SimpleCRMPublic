@@ -260,13 +260,14 @@ describe('message evidence panel', () => {
 
   test('treats a legacy probable-open event without V2 classification as unknown', async () => {
     const legacyTimeline = {
-      ...v2Timeline(41),
       summary: {
-        ...v2Timeline(41).summary,
+        ...timeline(41, 'smtp_accepted').summary,
         engagement: 'probable_open',
-        pixelFetchCount: 1,
-        unknownPixelFetchCount: 1,
+        openCount: 1,
       },
+      messageId: 41,
+      tracked: true,
+      warning: null,
       events: [{
         id: 1,
         type: 'open_probable',
@@ -283,8 +284,26 @@ describe('message evidence panel', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
 
     expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(2);
+    expect(within(screen.getByText('Ursache unklar').parentElement!).getByText('1')).toBeInTheDocument();
     expect(screen.queryByText('Wahrscheinliches Öffnen')).not.toBeInTheDocument();
     expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
+  });
+
+  test('reloads deleted tracking data before closing the timeline', async () => {
+    const invoke = jest.mocked(invokeRenderer);
+    invoke
+      .mockResolvedValueOnce(v2Timeline(41))
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ ...v2Timeline(41), tracked: false });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tracking-Daten löschen' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Endgültig löschen' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenLastCalledWith('email:get-message-tracking', { messageId: 41 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verlauf' }));
+    expect(await screen.findByText('Für diese Nachricht ist keine Evidenz vorhanden.')).toBeInTheDocument();
   });
 
   test('shows the IP insight button only to admins after sensitive raw data was requested', async () => {
