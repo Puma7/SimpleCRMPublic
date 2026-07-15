@@ -1380,8 +1380,8 @@ describe('email tracking service security helpers', () => {
       firstProbableHumanOpenAt: '2026-07-15T11:00:00.000Z',
       lastProbableHumanOpenAt: '2026-07-15T11:40:00.000Z',
       openCount: 5,
-      automatedOpenCount: 1,
-      probableOpenCount: 4,
+      automatedOpenCount: 0,
+      probableOpenCount: 3,
     });
     expect(state.summaryPageLimits).toEqual([500]);
     expect(state.timelineLimits).toEqual([1_001]);
@@ -1442,10 +1442,10 @@ describe('email tracking service security helpers', () => {
       pixelFetchCount: 4,
       openCount: 4,
       clickCount: 2,
-      automatedOpenCount: 1,
+      automatedOpenCount: 0,
       probableOpenCount: 3,
-      automatedClickCount: 1,
-      probableClickCount: 1,
+      automatedClickCount: 0,
+      probableClickCount: 0,
       automatedPixelFetchCount: 0,
       unknownPixelFetchCount: 1,
       probableHumanPixelFetchCount: 3,
