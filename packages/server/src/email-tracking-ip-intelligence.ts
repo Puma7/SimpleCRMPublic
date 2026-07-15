@@ -100,24 +100,22 @@ export function createEmailTrackingIpIntelligence(
       const current = await currentSnapshot();
       if (current.state !== 'ready') return emptyInsight(local);
 
-      try {
-        const country = current.countryReader?.country?.(local.ipAddress);
-        const asn = current.asnReader?.asn?.(local.ipAddress);
-        return {
-          ...local,
-          countryCode: nestedString(country, 'country', 'isoCode'),
-          continentCode: nestedString(country, 'continent', 'code'),
-          asn: nestedNumber(asn, 'autonomousSystemNumber'),
-          networkName: nestedString(asn, 'autonomousSystemOrganization'),
-          networkCidr: nestedString(asn, 'network') ?? nestedString(country, 'network'),
-          databaseBuildAt: oldestBuildAt(
-            current.countryDatabaseBuildAt,
-            current.asnDatabaseBuildAt,
-          ),
-        };
-      } catch {
-        return emptyInsight(local);
-      }
+      const country = lookupRecord(current.countryReader?.country, local.ipAddress);
+      const asn = lookupRecord(current.asnReader?.asn, local.ipAddress);
+      return {
+        ...local,
+        countryCode: nestedString(country, 'country', 'isoCode'),
+        continentCode: nestedString(country, 'continent', 'code'),
+        asn: nestedNumber(asn, 'autonomousSystemNumber'),
+        networkName: nestedString(asn, 'autonomousSystemOrganization'),
+        networkCidr: nestedString(asn, 'network')
+          ?? nestedString(country, 'traits', 'network')
+          ?? nestedString(country, 'network'),
+        databaseBuildAt: oldestBuildAt(
+          current.countryDatabaseBuildAt,
+          current.asnDatabaseBuildAt,
+        ),
+      };
     },
 
     status() {
@@ -289,6 +287,8 @@ function ipv4Scope(ip: string): EmailTrackingIpInsight['scope'] {
 
 function ipv6Scope(ip: string): EmailTrackingIpInsight['scope'] {
   const normalized = ip.toLowerCase();
+  const mappedIpv4 = /^::ffff:((?:\d{1,3}\.){3}\d{1,3})$/.exec(normalized)?.[1];
+  if (mappedIpv4 && isIP(mappedIpv4) === 4) return ipv4Scope(mappedIpv4);
   if (normalized === '::1') return 'loopback';
   if (/^(?:fc|fd)/.test(normalized)) return 'private';
   if (
@@ -310,6 +310,14 @@ function emptyInsight(local: Pick<EmailTrackingIpInsight, 'ipAddress' | 'ipFamil
     networkCidr: null,
     databaseBuildAt: null,
   };
+}
+
+function lookupRecord(reader: ((ip: string) => unknown) | undefined, ip: string): unknown {
+  try {
+    return reader?.(ip);
+  } catch {
+    return undefined;
+  }
 }
 
 function nestedString(value: unknown, ...path: string[]): string | null {

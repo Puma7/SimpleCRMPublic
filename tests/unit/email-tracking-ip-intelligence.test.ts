@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+
 import {
   createEmailTrackingIpIntelligence,
   type EmailTrackingIpIntelligenceReader,
@@ -65,6 +68,71 @@ describe('email tracking IP intelligence', () => {
     });
     await expect(intelligence.lookup('fe90::7')).resolves.toMatchObject({ scope: 'reserved' });
     await expect(intelligence.lookup('192.0.2.17')).resolves.toMatchObject({ scope: 'reserved' });
+  });
+
+  test('classifies IPv4-mapped IPv6 private and loopback ranges without opening readers', async () => {
+    const readerLoader = jest.fn(async (): Promise<EmailTrackingIpIntelligenceReader> => fixtureReader({
+      buildEpoch: Math.floor(now.getTime() / 1_000),
+    }));
+    const intelligence = createEmailTrackingIpIntelligence({
+      countryDatabasePath: 'country.mmdb',
+      readerLoader,
+      stat: statLoader({ 'country.mmdb': 1 }),
+      now: () => now,
+    });
+
+    await expect(intelligence.lookup('::ffff:10.0.0.1')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'private',
+    });
+    await expect(intelligence.lookup('::ffff:127.0.0.1')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'loopback',
+    });
+    expect(readerLoader).not.toHaveBeenCalled();
+  });
+
+  test('opens pinned local MaxMind fixtures through the default production loader', () => {
+    const source = [
+      "import { createEmailTrackingIpIntelligence } from './packages/server/src/email-tracking-ip-intelligence';",
+      'void (async () => {',
+      "  const intelligence = createEmailTrackingIpIntelligence({ countryDatabasePath: 'tests/fixtures/maxmind/GeoLite2-Country-Test.mmdb', asnDatabasePath: 'tests/fixtures/maxmind/GeoLite2-ASN-Test.mmdb', maxDatabaseAgeMs: 365 * 24 * 60 * 60 * 1000 });",
+      "  const country = await intelligence.lookup('2.125.160.216');",
+      "  const asn = await intelligence.lookup('1.0.0.1');",
+      '  const shape = ({ ipFamily, scope, countryCode, continentCode, asn, networkName, networkCidr, databaseBuildAt }) => ({ ipFamily, scope, countryCode, continentCode, asn, networkName, networkCidr, databaseBuildAt });',
+      '  console.log(JSON.stringify({ country: shape(country), asn: shape(asn), status: intelligence.status() }));',
+      '})();',
+    ].join('\n');
+    const output = execFileSync(process.execPath, [
+      resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs'),
+      '-e',
+      source,
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+    const result = JSON.parse(output) as {
+      country: Record<string, unknown>;
+      asn: Record<string, unknown>;
+      status: Record<string, unknown>;
+    };
+
+    expect(result.country).toMatchObject({
+      ipFamily: 'ipv4',
+      scope: 'public',
+      countryCode: 'GB',
+      continentCode: 'EU',
+      databaseBuildAt: expect.any(String),
+    });
+    expect(result.asn).toMatchObject({
+      ipFamily: 'ipv4',
+      scope: 'public',
+      asn: 15169,
+      networkName: 'Google Inc.',
+      databaseBuildAt: expect.any(String),
+    });
+    expect(result.status).toEqual({
+      state: 'ready',
+      countryDatabaseBuildAt: expect.any(String),
+      asnDatabaseBuildAt: expect.any(String),
+    });
   });
 
   test('returns local country and ASN insight from configured read-only databases', async () => {
