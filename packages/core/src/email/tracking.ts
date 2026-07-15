@@ -52,6 +52,7 @@ export type EmailEvidenceEvent = Readonly<{
   confidence: EmailEvidenceConfidence;
   occurredAt: string;
   automated: boolean;
+  classification?: EmailEvidenceClassification | null;
 }>;
 
 export type EmailEvidenceSummary = Readonly<{
@@ -59,6 +60,15 @@ export type EmailEvidenceSummary = Readonly<{
   delivery: 'unknown' | 'external_system_reached' | 'dsn_delivered';
   engagement: 'none' | 'automated_fetch' | 'probable_open' | 'link_interaction' | 'human_reply';
   confidence: EmailEvidenceConfidence;
+  pixelFetchCount: number;
+  automatedPixelFetchCount: number;
+  unknownPixelFetchCount: number;
+  probableHumanPixelFetchCount: number;
+  probableHumanOpenSessionCount: number;
+  firstPixelFetchedAt: string | null;
+  lastPixelFetchedAt: string | null;
+  firstProbableHumanOpenAt: string | null;
+  lastProbableHumanOpenAt: string | null;
   openCount: number;
   clickCount: number;
   automatedOpenCount: number;
@@ -322,6 +332,13 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
   let delivery: EmailEvidenceSummary['delivery'] = 'unknown';
   let engagement: EmailEvidenceSummary['engagement'] = 'none';
   let confidence: EmailEvidenceConfidence = 'none';
+  let automatedPixelFetchCount = 0;
+  let unknownPixelFetchCount = 0;
+  let probableHumanPixelFetchCount = 0;
+  let probableHumanOpenSessionCount = 0;
+  let firstProbableHumanOpenAt: string | null = null;
+  let lastProbableHumanOpenAt: string | null = null;
+  let lastProbableHumanOpenTime: number | null = null;
   let openCount = 0;
   let clickCount = 0;
   let automatedOpenCount = 0;
@@ -351,6 +368,22 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
       openCount += 1;
       if (event.type === 'open_automated') automatedOpenCount += 1;
       else probableOpenCount += 1;
+      const pixelFetchActor = classifyPixelFetchActor(event);
+      if (pixelFetchActor === 'automated') automatedPixelFetchCount += 1;
+      if (pixelFetchActor === 'unknown') unknownPixelFetchCount += 1;
+      if (pixelFetchActor === 'probable_human') {
+        probableHumanPixelFetchCount += 1;
+        firstProbableHumanOpenAt ??= event.occurredAt;
+        lastProbableHumanOpenAt = event.occurredAt;
+        const occurredAtTime = Date.parse(event.occurredAt);
+        if (
+          lastProbableHumanOpenTime === null
+          || occurredAtTime - lastProbableHumanOpenTime >= 30 * 60_000
+        ) {
+          probableHumanOpenSessionCount += 1;
+        }
+        lastProbableHumanOpenTime = occurredAtTime;
+      }
       firstOpenedAt ??= event.occurredAt;
       lastOpenedAt = event.occurredAt;
       if (delivery === 'unknown') delivery = 'external_system_reached';
@@ -388,6 +421,15 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
     delivery,
     engagement,
     confidence,
+    pixelFetchCount: openCount,
+    automatedPixelFetchCount,
+    unknownPixelFetchCount,
+    probableHumanPixelFetchCount,
+    probableHumanOpenSessionCount,
+    firstPixelFetchedAt: firstOpenedAt,
+    lastPixelFetchedAt: lastOpenedAt,
+    firstProbableHumanOpenAt,
+    lastProbableHumanOpenAt,
     openCount,
     clickCount,
     automatedOpenCount,
@@ -400,6 +442,21 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
     lastClickedAt,
     repliedAt,
   };
+}
+
+function classifyPixelFetchActor(
+  event: EmailEvidenceEvent,
+): 'automated' | 'probable_human' | 'unknown' {
+  const actorClass = event.classification?.actorClass;
+  if (actorClass === 'probable_human') return 'probable_human';
+  if (
+    actorClass === 'mail_proxy'
+    || actorClass === 'privacy_proxy'
+    || actorClass === 'security_scanner'
+    || actorClass === 'automated_unknown'
+  ) return 'automated';
+  if (actorClass) return 'unknown';
+  return event.type === 'open_automated' ? 'automated' : 'unknown';
 }
 
 export function detectInboundEmailEvidence(input: {

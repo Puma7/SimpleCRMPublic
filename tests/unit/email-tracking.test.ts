@@ -257,6 +257,49 @@ describe('email evidence tracking core', () => {
     });
   });
 
+  test('adds precise pixel-fetch counters while preserving legacy open aliases', () => {
+    const events: EmailEvidenceEvent[] = [
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),
+      classifiedEvent('open_probable', '2026-07-13T08:01:00.000Z', 'mail_proxy'),
+      classifiedEvent('open_probable', '2026-07-13T08:02:00.000Z', 'privacy_proxy'),
+      classifiedEvent('open_probable', '2026-07-13T08:03:00.000Z', 'security_scanner'),
+      classifiedEvent('open_probable', '2026-07-13T08:04:00.000Z', 'automated_unknown'),
+      classifiedEvent('open_probable', '2026-07-13T08:05:00.000Z', 'unknown'),
+      event('open_probable', 'medium', '2026-07-13T08:06:00.000Z'),
+      event('open_automated', 'low', '2026-07-13T08:07:00.000Z'),
+    ];
+
+    expect(buildEmailEvidenceSummary(events)).toMatchObject({
+      pixelFetchCount: 8,
+      automatedPixelFetchCount: 5,
+      unknownPixelFetchCount: 2,
+      probableHumanPixelFetchCount: 1,
+      probableHumanOpenSessionCount: 1,
+      firstPixelFetchedAt: '2026-07-13T08:00:00.000Z',
+      lastPixelFetchedAt: '2026-07-13T08:07:00.000Z',
+      firstProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
+      lastProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
+      openCount: 8,
+      automatedOpenCount: 1,
+      probableOpenCount: 7,
+      firstOpenedAt: '2026-07-13T08:00:00.000Z',
+      lastOpenedAt: '2026-07-13T08:07:00.000Z',
+    });
+  });
+
+  test('starts a new probable-human open session at exactly thirty minutes', () => {
+    const summary = buildEmailEvidenceSummary([
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),
+      classifiedEvent('open_probable', '2026-07-13T08:29:59.999Z', 'probable_human'),
+      classifiedEvent('open_probable', '2026-07-13T08:59:59.999Z', 'probable_human'),
+    ]);
+
+    expect(summary.probableHumanPixelFetchCount).toBe(3);
+    expect(summary.probableHumanOpenSessionCount).toBe(2);
+    expect(summary.firstProbableHumanOpenAt).toBe('2026-07-13T08:00:00.000Z');
+    expect(summary.lastProbableHumanOpenAt).toBe('2026-07-13T08:59:59.999Z');
+  });
+
   test('a later bounce wins over SMTP acceptance without inventing engagement', () => {
     expect(buildEmailEvidenceSummary([
       event('smtp_accepted', 'low', '2026-07-13T08:00:00.000Z'),
@@ -466,4 +509,20 @@ function event(
   occurredAt: string,
 ): EmailEvidenceEvent {
   return { type, confidence, occurredAt, automated: type.endsWith('_automated') };
+}
+
+function classifiedEvent(
+  type: 'open_automated' | 'open_probable',
+  occurredAt: string,
+  actorClass: EmailEvidenceActorClass,
+): EmailEvidenceEvent {
+  return {
+    ...event(type, actorClass === 'probable_human' ? 'medium' : 'low', occurredAt),
+    classification: {
+      version: 2,
+      actorClass,
+      confidence: actorClass === 'probable_human' ? 'medium' : 'low',
+      reasons: ['test_projection'],
+    },
+  };
 }

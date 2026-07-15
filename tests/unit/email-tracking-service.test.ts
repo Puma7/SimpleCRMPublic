@@ -488,11 +488,41 @@ describe('email tracking service security helpers', () => {
       'policy_read_final',
       'accepted_read',
       'capacity_authoritative',
+      'dedupe_read',
       'event_insert',
       'classification_insert',
     ]);
     expect(state.eventInsertHeldPolicyLock).toBe(true);
     expect(JSON.stringify([state.eventRows, state.classificationRows])).not.toMatch(/GOOGLE|15169|countryCode|networkCidr/);
+  });
+
+  test('deduplicates same-IP fetches for less than ten seconds across bucket boundaries', async () => {
+    const token = 'F'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const { db, state } = publicInteractionDatabase(tokenHash);
+    let current = new Date('2026-07-15T12:00:09.000Z');
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => current,
+    });
+    const request = {
+      token,
+      ip: '8.8.8.8',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    };
+
+    await service.recordPublicOpen(request);
+    current = new Date('2026-07-15T12:00:18.000Z');
+    await service.recordPublicOpen(request);
+    expect(state.eventRows).toHaveLength(1);
+
+    current = new Date('2026-07-15T12:00:19.000Z');
+    await service.recordPublicOpen(request);
+    expect(state.eventRows).toHaveLength(2);
+    expect(state.classificationRows).toHaveLength(2);
   });
 
   test('policy-gates lookup and discards context when the write-time policy opted out', async () => {
@@ -1003,6 +1033,7 @@ function publicInteractionDatabase(
 
 class PublicInteractionSelect {
   private selected: string | readonly string[] | undefined;
+  private readonly filters: Array<readonly [string, string, unknown]> = [];
 
   constructor(
     private readonly table: string,
@@ -1023,7 +1054,10 @@ class PublicInteractionSelect {
     return this;
   }
 
-  where() { return this; }
+  where(column: string, operator: string, value: unknown) {
+    this.filters.push([column, operator, value]);
+    return this;
+  }
   orderBy() { return this; }
   offset() { return this; }
   limit() { return this; }
@@ -1062,8 +1096,23 @@ class PublicInteractionSelect {
     if (this.table === 'email_tracking_events') {
       const selected = Array.isArray(this.selected) ? this.selected : [this.selected];
       if (selected.includes('occurred_at')) {
-        this.state.operations.push('accepted_read');
-        return { occurred_at: new Date('2026-07-15T12:00:00.000Z') };
+        const eventType = this.filters.find(([column]) => column === 'event_type')?.[2];
+        if (eventType === 'smtp_accepted') {
+          this.state.operations.push('accepted_read');
+          return { occurred_at: new Date('2026-07-15T12:00:00.000Z') };
+        }
+        const dedupeKeys = this.filters.find(([column, operator]) => (
+          column === 'dedupe_key' && operator === 'in'
+        ))?.[2] as readonly string[] | undefined;
+        const cutoff = this.filters.find(([column, operator]) => (
+          column === 'occurred_at' && operator === '>='
+        ))?.[2] as Date | undefined;
+        this.state.operations.push('dedupe_read');
+        return [...this.state.eventRows].reverse().find((row) => (
+          dedupeKeys?.includes(String(row.dedupe_key))
+          && row.occurred_at instanceof Date
+          && (!cutoff || row.occurred_at.getTime() >= cutoff.getTime())
+        ));
       }
       this.state.operations.push(this.state.policyReads === 1 ? 'capacity_precheck' : 'capacity_authoritative');
       return this.fixture.publicEventCount >= 10_000 ? { id: 10_000 } : undefined;

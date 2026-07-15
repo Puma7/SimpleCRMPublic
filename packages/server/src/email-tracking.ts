@@ -1427,13 +1427,29 @@ async function recordPublicInteraction(input: {
         interaction: input.interaction,
         networkContext: allowedNetworkContext,
       });
-      const dedupeKey = input.crypto.dedupeHash([
+      const dedupeBucket = Math.floor(input.now.getTime() / 10_000);
+      const dedupeKeyForBucket = (bucket: number) => input.crypto.dedupeHash([
         classification.eventType,
         input.resolver.trackingMessageId,
         input.resolver.linkId ?? '',
         input.request.ip ?? '',
-        Math.floor(input.now.getTime() / 60_000),
+        bucket,
       ].join(':'));
+      const dedupeKey = dedupeKeyForBucket(dedupeBucket);
+      const dedupeCutoff = new Date(input.now.getTime() - 10_000);
+      const recentDuplicate = await trx
+        .selectFrom('email_tracking_events')
+        .select('occurred_at')
+        .where('workspace_id', '=', input.resolver.workspaceId)
+        .where('tracking_message_id', '=', input.resolver.trackingMessageId)
+        .where('dedupe_key', 'in', [dedupeKey, dedupeKeyForBucket(dedupeBucket - 1)])
+        .where('occurred_at', '>=', dedupeCutoff)
+        .orderBy('occurred_at', 'desc')
+        .executeTakeFirst();
+      if (
+        recentDuplicate
+        && input.now.getTime() - toDate(recentDuplicate.occurred_at).getTime() < 10_000
+      ) return;
       const metadata = buildStoredTrackingMetadata({
         collectDerivedMetadata: input.resolver.collectDerivedMetadata,
         ip: input.request.ip,
@@ -1702,6 +1718,15 @@ export async function loadEmailEvidenceSummaryForTracking(
       : row.has_external_reach ? 'external_system_reached' : 'unknown',
     engagement: engagementByRank[engagementRank]!,
     confidence: confidenceByRank[confidenceRank]!,
+    pixelFetchCount: aggregateCount(row.open_count),
+    automatedPixelFetchCount: aggregateCount(row.automated_open_count),
+    unknownPixelFetchCount: aggregateCount(row.probable_open_count),
+    probableHumanPixelFetchCount: 0,
+    probableHumanOpenSessionCount: 0,
+    firstPixelFetchedAt: timestampToIso(row.first_opened_at),
+    lastPixelFetchedAt: timestampToIso(row.last_opened_at),
+    firstProbableHumanOpenAt: null,
+    lastProbableHumanOpenAt: null,
     openCount: aggregateCount(row.open_count),
     clickCount: aggregateCount(row.click_count),
     automatedOpenCount: aggregateCount(row.automated_open_count),
