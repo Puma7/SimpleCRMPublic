@@ -1377,24 +1377,30 @@ async function recordPublicInteraction(input: {
   now: Date;
   ipIntelligence?: EmailTrackingIpIntelligencePort;
 }): Promise<void> {
-  const networkContext = await loadPublicNetworkContext({
+  const precheck = await preparePublicInteraction({
     db: input.db,
     workspaceId: input.resolver.workspaceId,
+    trackingMessageId: input.resolver.trackingMessageId,
+    collectDerivedMetadata: input.resolver.collectDerivedMetadata,
     requestIp: input.request.ip,
     ipIntelligence: input.ipIntelligence,
   });
+  if (precheck.atCapacity) return;
   await withWorkspaceTransaction(
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
+      await lockTrackingPolicy(trx, input.resolver.workspaceId);
       await sql`SELECT pg_advisory_xact_lock(hashtext(${input.resolver.trackingMessageId}))`.execute(trx);
       const policy = await trx
         .selectFrom('email_tracking_policies')
         .select(['ip_insights_enabled', 'collect_derived_metadata'])
         .where('workspace_id', '=', input.resolver.workspaceId)
         .executeTakeFirst();
-      const allowedNetworkContext = policy?.ip_insights_enabled && policy.collect_derived_metadata
-        ? networkContext
+      const allowedNetworkContext = input.resolver.collectDerivedMetadata
+        && policy?.ip_insights_enabled
+        && policy.collect_derived_metadata
+        ? precheck.networkContext
         : null;
       const accepted = await trx
         .selectFrom('email_tracking_events')
@@ -1404,16 +1410,11 @@ async function recordPublicInteraction(input: {
         .where('event_type', '=', 'smtp_accepted')
         .orderBy('occurred_at', 'desc')
         .executeTakeFirst();
-      const atCapacity = await trx
-        .selectFrom('email_tracking_events')
-        .select('id')
-        .where('workspace_id', '=', input.resolver.workspaceId)
-        .where('tracking_message_id', '=', input.resolver.trackingMessageId)
-        .where('event_type', 'in', ['open_automated', 'open_probable', 'click_automated', 'click'])
-        .orderBy('id', 'asc')
-        .offset(MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE - 1)
-        .limit(1)
-        .executeTakeFirst();
+      const atCapacity = await publicInteractionAtCapacity(
+        trx,
+        input.resolver.workspaceId,
+        input.resolver.trackingMessageId,
+      );
       if (atCapacity) return;
       const secondsSinceSmtpAccepted = accepted
         ? Math.max(0, (input.now.getTime() - toDate(accepted.occurred_at).getTime()) / 1_000)
@@ -1463,15 +1464,19 @@ async function recordPublicInteraction(input: {
   );
 }
 
-async function loadPublicNetworkContext(input: Readonly<{
+async function preparePublicInteraction(input: Readonly<{
   db: Kysely<ServerDatabase>;
   workspaceId: string;
+  trackingMessageId: string;
+  collectDerivedMetadata: boolean;
   requestIp?: string | null;
   ipIntelligence?: EmailTrackingIpIntelligencePort;
-}>): Promise<EmailTrackingNetworkContext | null> {
+}>): Promise<Readonly<{
+  atCapacity: boolean;
+  networkContext: EmailTrackingNetworkContext | null;
+}>> {
   const requestIp = input.requestIp?.trim();
-  if (!requestIp || !input.ipIntelligence) return null;
-  const enabled = await withWorkspaceTransaction(
+  const precheck = await withWorkspaceTransaction(
     input.db,
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => {
@@ -1480,17 +1485,52 @@ async function loadPublicNetworkContext(input: Readonly<{
         .select(['ip_insights_enabled', 'collect_derived_metadata'])
         .where('workspace_id', '=', input.workspaceId)
         .executeTakeFirst();
-      return Boolean(policy?.ip_insights_enabled && policy.collect_derived_metadata);
+      const atCapacity = await publicInteractionAtCapacity(
+        trx,
+        input.workspaceId,
+        input.trackingMessageId,
+      );
+      return {
+        atCapacity,
+        insightsEnabled: Boolean(
+          input.collectDerivedMetadata
+          && policy?.ip_insights_enabled
+          && policy.collect_derived_metadata,
+        ),
+      };
     },
   );
-  if (!enabled) return null;
+  if (precheck.atCapacity) return { atCapacity: true, networkContext: null };
+  if (!precheck.insightsEnabled || !requestIp || !input.ipIntelligence) {
+    return { atCapacity: false, networkContext: null };
+  }
   try {
     const insight = await input.ipIntelligence.lookup(requestIp);
-    if (input.ipIntelligence.status().state !== 'ready') return null;
-    return emailTrackingNetworkContext(insight);
+    if (input.ipIntelligence.status().state !== 'ready') {
+      return { atCapacity: false, networkContext: null };
+    }
+    return { atCapacity: false, networkContext: emailTrackingNetworkContext(insight) };
   } catch {
-    return null;
+    return { atCapacity: false, networkContext: null };
   }
+}
+
+async function publicInteractionAtCapacity(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  trackingMessageId: string,
+): Promise<boolean> {
+  const atCapacity = await trx
+    .selectFrom('email_tracking_events')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('tracking_message_id', '=', trackingMessageId)
+    .where('event_type', 'in', ['open_automated', 'open_probable', 'click_automated', 'click'])
+    .orderBy('id', 'asc')
+    .offset(MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE - 1)
+    .limit(1)
+    .executeTakeFirst();
+  return Boolean(atCapacity);
 }
 
 async function loadTrackingTimeline(

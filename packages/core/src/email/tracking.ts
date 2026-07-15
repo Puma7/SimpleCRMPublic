@@ -189,8 +189,7 @@ export function classifyEmailTrackingRequest(input: {
     return trackingClassification(interaction, providerActor, 'low', ['known_provider_network']);
   }
   if (immediate && input.networkContext?.providerClass === 'hosting_or_cloud') {
-    const actorClass = isGoogleNetwork(input.networkContext) ? 'mail_proxy' : 'automated_unknown';
-    return trackingClassification(interaction, actorClass, 'low', ['immediate_infrastructure_fetch']);
+    return trackingClassification(interaction, 'automated_unknown', 'low', ['immediate_infrastructure_fetch']);
   }
   if (immediate && /^17\./.test(clientIp) && /AppleWebKit/i.test(userAgent)) {
     return trackingClassification(interaction, 'privacy_proxy', 'low', ['immediate_infrastructure_fetch']);
@@ -241,10 +240,6 @@ function verifiedProviderActor(
   if (providerClass === 'apple_privacy' || providerClass === 'proton_proxy') return 'privacy_proxy';
   if (providerClass === 'security_vendor') return 'security_scanner';
   return null;
-}
-
-function isGoogleNetwork(context: EmailTrackingNetworkContext): boolean {
-  return context.asn === 15169 && /(?:^|\W)google(?:\W|$)/i.test(context.networkName ?? '');
 }
 
 function requestIpScope(ip: string): 'public' | 'non_public' | 'unknown' {

@@ -447,6 +447,7 @@ describe('email tracking service security helpers', () => {
     const { db, state } = publicInteractionDatabase(tokenHash);
     const lookup = jest.fn(async () => {
       expect(state.transactionDepth).toBe(0);
+      state.operations.push('lookup');
       return ipInsight({ asn: 15169, networkName: 'GOOGLE' });
     });
     const intelligence = readyIpIntelligence(lookup);
@@ -473,11 +474,24 @@ describe('email tracking service security helpers', () => {
     expect(state.classificationRows).toEqual([{
       event_id: 41,
       classification_version: 2,
-      actor_class: 'mail_proxy',
+      actor_class: 'automated_unknown',
       confidence: 'low',
       reasons_json: ['immediate_infrastructure_fetch'],
       classified_at: new Date('2026-07-15T12:00:03.000Z'),
     }]);
+    expect(state.operations).toEqual([
+      'policy_read_initial',
+      'capacity_precheck',
+      'lookup',
+      'policy_lock',
+      'message_lock',
+      'policy_read_final',
+      'accepted_read',
+      'capacity_authoritative',
+      'event_insert',
+      'classification_insert',
+    ]);
+    expect(state.eventInsertHeldPolicyLock).toBe(true);
     expect(JSON.stringify([state.eventRows, state.classificationRows])).not.toMatch(/GOOGLE|15169|countryCode|networkCidr/);
   });
 
@@ -501,6 +515,25 @@ describe('email tracking service security helpers', () => {
       headers: {},
     });
     expect(disabledLookup).not.toHaveBeenCalled();
+
+    const snapshotDisabled = publicInteractionDatabase(tokenHash, {
+      trackedCollectDerivedMetadata: false,
+    });
+    const snapshotLookup = jest.fn(async () => ipInsight({ asn: 15169, networkName: 'GOOGLE' }));
+    const snapshotService = createPostgresEmailTrackingService({
+      db: snapshotDisabled.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(snapshotLookup),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+    await snapshotService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+    expect(snapshotLookup).not.toHaveBeenCalled();
 
     const changed = publicInteractionDatabase(tokenHash, { recheckPolicyEnabled: false });
     const changedLookup = jest.fn(async () => ipInsight({ asn: 15169, networkName: 'GOOGLE' }));
@@ -570,6 +603,51 @@ describe('email tracking service security helpers', () => {
     });
     expect(duplicate.state.eventRows).toEqual([]);
     expect(duplicate.state.classificationRows).toEqual([]);
+  });
+
+  test('prechecks the public-event capacity at the realistic 9,999 and 10,000 boundaries', async () => {
+    const token = 'E'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const belowCap = publicInteractionDatabase(tokenHash, { publicEventCount: 9_999 });
+    const belowCapLookup = jest.fn(async () => ipInsight({ asn: 15169, networkName: 'GOOGLE' }));
+    const belowCapService = createPostgresEmailTrackingService({
+      db: belowCap.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(belowCapLookup),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+
+    await belowCapService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+    expect(belowCapLookup).toHaveBeenCalledTimes(1);
+    expect(belowCap.state.eventRows).toHaveLength(1);
+    expect(belowCap.state.classificationRows).toHaveLength(1);
+
+    const atCap = publicInteractionDatabase(tokenHash, { publicEventCount: 10_000 });
+    const atCapLookup = jest.fn(async () => ipInsight({ asn: 15169, networkName: 'GOOGLE' }));
+    const atCapService = createPostgresEmailTrackingService({
+      db: atCap.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(atCapLookup),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+
+    await atCapService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+    expect(atCapLookup).not.toHaveBeenCalled();
+    expect(atCap.state.eventRows).toEqual([]);
+    expect(atCap.state.classificationRows).toEqual([]);
+    expect(atCap.state.operations).toEqual(['policy_read_initial', 'capacity_precheck']);
   });
 });
 
@@ -849,6 +927,9 @@ function readyIpIntelligence(
 type PublicInteractionTestState = {
   transactionDepth: number;
   policyReads: number;
+  policyLockHeld: boolean;
+  eventInsertHeldPolicyLock: boolean;
+  operations: string[];
   eventRows: Array<Record<string, unknown>>;
   classificationRows: Array<Record<string, unknown>>;
 };
@@ -858,12 +939,17 @@ function publicInteractionDatabase(
   options: Readonly<{
     initialPolicyEnabled?: boolean;
     recheckPolicyEnabled?: boolean;
+    trackedCollectDerivedMetadata?: boolean;
+    publicEventCount?: number;
     duplicateEvent?: boolean;
   }> = {},
 ): { db: Kysely<ServerDatabase>; state: PublicInteractionTestState } {
   const state: PublicInteractionTestState = {
     transactionDepth: 0,
     policyReads: 0,
+    policyLockHeld: false,
+    eventInsertHeldPolicyLock: false,
+    operations: [],
     eventRows: [],
     classificationRows: [],
   };
@@ -873,6 +959,8 @@ function publicInteractionDatabase(
     tokenHash,
     initialPolicyEnabled: options.initialPolicyEnabled ?? true,
     recheckPolicyEnabled: options.recheckPolicyEnabled ?? true,
+    trackedCollectDerivedMetadata: options.trackedCollectDerivedMetadata ?? true,
+    publicEventCount: options.publicEventCount ?? 0,
     duplicateEvent: options.duplicateEvent ?? false,
   };
   const db = {
@@ -884,12 +972,24 @@ function publicInteractionDatabase(
             return await operation(db);
           } finally {
             state.transactionDepth -= 1;
+            state.policyLockHeld = false;
           }
         },
       };
     },
     getExecutor() {
-      return { executeQuery: async () => ({ rows: [] }) };
+      return {
+        executeQuery: async (query: { sql?: string }) => {
+          const statement = query.sql ?? '';
+          if (statement.includes('pg_advisory_xact_lock') && statement.includes('hashtextextended')) {
+            state.operations.push('policy_lock');
+            state.policyLockHeld = true;
+          } else if (statement.includes('pg_advisory_xact_lock') && statement.includes('hashtext')) {
+            state.operations.push('message_lock');
+          }
+          return { rows: [] };
+        },
+      };
     },
     selectFrom(table: string) {
       return new PublicInteractionSelect(table, state, fixture);
@@ -913,6 +1013,8 @@ class PublicInteractionSelect {
       tokenHash: string;
       initialPolicyEnabled: boolean;
       recheckPolicyEnabled: boolean;
+      trackedCollectDerivedMetadata: boolean;
+      publicEventCount: number;
     }>,
   ) {}
 
@@ -942,12 +1044,13 @@ class PublicInteractionSelect {
         message_id: 17,
         revoked_at: null,
         token_expires_at: new Date('2027-07-15T12:00:00.000Z'),
-        collect_derived_metadata: true,
+        collect_derived_metadata: this.fixture.trackedCollectDerivedMetadata,
         collect_raw_metadata: false,
       };
     }
     if (this.table === 'email_tracking_policies') {
       this.state.policyReads += 1;
+      this.state.operations.push(this.state.policyReads === 1 ? 'policy_read_initial' : 'policy_read_final');
       const enabled = this.state.policyReads === 1
         ? this.fixture.initialPolicyEnabled
         : this.fixture.recheckPolicyEnabled;
@@ -958,9 +1061,12 @@ class PublicInteractionSelect {
     }
     if (this.table === 'email_tracking_events') {
       const selected = Array.isArray(this.selected) ? this.selected : [this.selected];
-      return selected.includes('occurred_at')
-        ? { occurred_at: new Date('2026-07-15T12:00:00.000Z') }
-        : undefined;
+      if (selected.includes('occurred_at')) {
+        this.state.operations.push('accepted_read');
+        return { occurred_at: new Date('2026-07-15T12:00:00.000Z') };
+      }
+      this.state.operations.push(this.state.policyReads === 1 ? 'capacity_precheck' : 'capacity_authoritative');
+      return this.fixture.publicEventCount >= 10_000 ? { id: 10_000 } : undefined;
     }
     throw new Error(`Unexpected public interaction select table: ${this.table}`);
   }
@@ -992,6 +1098,8 @@ class PublicInteractionInsert {
       throw new Error(`Unexpected returning insert table: ${this.table}`);
     }
     if (this.duplicateEvent) return undefined;
+    this.state.operations.push('event_insert');
+    this.state.eventInsertHeldPolicyLock = this.state.policyLockHeld;
     this.state.eventRows.push(this.row);
     return { id: 41 };
   }
@@ -1000,6 +1108,7 @@ class PublicInteractionInsert {
     if (this.table !== 'email_tracking_event_classifications') {
       throw new Error(`Unexpected public interaction insert table: ${this.table}`);
     }
+    this.state.operations.push('classification_insert');
     this.state.classificationRows.push(this.row);
   }
 }

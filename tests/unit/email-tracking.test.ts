@@ -133,7 +133,7 @@ describe('email evidence tracking core', () => {
       },
     })).toMatchObject({
       version: 2,
-      actorClass: 'mail_proxy',
+      actorClass: 'automated_unknown',
       automated: true,
       eventType: 'open_automated',
       reasons: ['immediate_infrastructure_fetch'],
