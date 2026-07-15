@@ -89,6 +89,7 @@ type ComposeSmtpCommitSnapshot = Readonly<{
   trackingMessageId: string | null;
   trackingWarning: string | null;
   recipientCount: number;
+  sentCopyCompleted: boolean;
 }>;
 type StoredComposeSmtpState =
   | Readonly<{ kind: 'none' }>
@@ -710,7 +711,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           date: now(),
         }).toString('utf8');
 
-        const commitSnapshot = encodeSmtpCommitSnapshot({
+        const commitSnapshotState: ComposeSmtpCommitSnapshot = {
           version: 2,
           draftMessageId: values.draftMessageId,
           accountId: account.id,
@@ -720,7 +721,9 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           trackingMessageId,
           trackingWarning,
           recipientCount: recipients.length,
-        });
+          sentCopyCompleted: false,
+        };
+        const commitSnapshot = encodeSmtpCommitSnapshot(commitSnapshotState);
         if (!commitSnapshot) {
           return {
             ok: false,
@@ -817,6 +820,14 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           draftMessageId: values.draftMessageId,
           rfc822,
         });
+        if (!sentCopy.sentImapSyncFailed) {
+          await markSmtpSent(
+            options.store,
+            input.workspaceId,
+            values.draftMessageId,
+            encodeSmtpCommitSnapshot({ ...commitSnapshotState, sentCopyCompleted: true })!,
+          );
+        }
         await finalizeSentDraft({
           store: options.store,
           workspaceId: input.workspaceId,
@@ -2320,6 +2331,7 @@ function parseStoredSmtpState(value: string | null, draftMessageId: number): Sto
     const trackingMessageId = candidate.trackingMessageId;
     const trackingWarning = candidate.trackingWarning;
     const recipientCount = candidate.recipientCount;
+    const sentCopyCompleted = candidate.sentCopyCompleted;
     if (
       candidate.version !== 2
       || candidate.draftMessageId !== draftMessageId
@@ -2346,6 +2358,7 @@ function parseStoredSmtpState(value: string | null, draftMessageId: number): Sto
         recipientCount === undefined
         || (Number.isSafeInteger(recipientCount) && Number(recipientCount) >= 0 && Number(recipientCount) <= 1_000)
       )
+      || !(sentCopyCompleted === undefined || typeof sentCopyCompleted === 'boolean')
     ) {
       return { kind: 'invalid' };
     }
@@ -2361,6 +2374,7 @@ function parseStoredSmtpState(value: string | null, draftMessageId: number): Sto
         trackingMessageId: typeof trackingMessageId === 'string' ? trackingMessageId : null,
         trackingWarning: typeof trackingWarning === 'string' ? trackingWarning : null,
         recipientCount: recipientCount === undefined ? 0 : Number(recipientCount),
+        sentCopyCompleted: sentCopyCompleted === true,
       },
     };
   } catch {
@@ -2424,13 +2438,23 @@ async function recoverStoredSmtpState(input: {
     acceptedRecipientCount: input.state.snapshot.recipientCount,
     rejectedRecipientCount: 0,
   }).catch(() => undefined);
-  const sentCopy = await appendSentCopyAfterSmtp({
-    append: input.append,
-    workspaceId: input.workspaceId,
-    account,
-    draftMessageId: input.draftMessageId,
-    rfc822: input.state.snapshot.rfc822,
-  });
+  const sentCopy = input.state.snapshot.sentCopyCompleted
+    ? { sentImapSyncFailed: false }
+    : await appendSentCopyAfterSmtp({
+      append: input.append,
+      workspaceId: input.workspaceId,
+      account,
+      draftMessageId: input.draftMessageId,
+      rfc822: input.state.snapshot.rfc822,
+    });
+  if (!input.state.snapshot.sentCopyCompleted && !sentCopy.sentImapSyncFailed) {
+    await markSmtpSent(
+      input.store,
+      input.workspaceId,
+      input.draftMessageId,
+      encodeSmtpCommitSnapshot({ ...input.state.snapshot, sentCopyCompleted: true })!,
+    );
+  }
   await finalizeSentDraft({
     store: input.store,
     workspaceId: input.workspaceId,

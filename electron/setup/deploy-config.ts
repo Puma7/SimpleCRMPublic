@@ -112,8 +112,8 @@ export function normalizeElectronServerBaseUrl(value: unknown): string {
   } catch {
     throw new Error('server.baseUrl must be a valid URL');
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('server.baseUrl must use http or https');
+  if (parsed.protocol !== 'https:') {
+    throw new Error('server.baseUrl must use https');
   }
   parsed.pathname = parsed.pathname.replace(/\/+$/, '');
   parsed.search = '';

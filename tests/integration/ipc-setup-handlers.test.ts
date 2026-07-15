@@ -82,7 +82,7 @@ describe('registerSetupHandlers', () => {
 
     expect(result).toEqual({
       success: false,
-      error: 'server.baseUrl must use http or https',
+      error: 'server.baseUrl must use https',
     });
   });
 

@@ -277,10 +277,7 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
 
   const rotated = await ports.auth.rotateRefreshToken({ refreshToken: credential.refreshToken });
   if (!rotated) {
-    return {
-      ...error(401, 'invalid_refresh_token', 'Refresh-Token ist ungültig oder widerrufen'),
-      headers: clearAuthSessionHeaders(req),
-    };
+    return error(401, 'invalid_refresh_token', 'Refresh-Token ist ungültig oder widerrufen');
   }
 
   await ports.audit?.record({

@@ -1,3 +1,12 @@
+const mockGetSyncInfo = jest.fn(() => null as string | null);
+const mockSetSyncInfo = jest.fn();
+const mockAssertInboundRfc822Size = jest.fn();
+
+jest.mock('@simplecrm/core', () => ({
+  ...jest.requireActual('@simplecrm/core'),
+  assertInboundRfc822Size: (...args: unknown[]) => mockAssertInboundRfc822Size(...args),
+}));
+
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => ({
     prepare: () => ({
@@ -6,8 +15,8 @@ jest.mock('../../electron/sqlite-service', () => ({
       all: jest.fn(() => []),
     }),
   }),
-  getSyncInfo: jest.fn(() => null),
-  setSyncInfo: jest.fn(),
+  getSyncInfo: (...args: unknown[]) => mockGetSyncInfo(...args),
+  setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
   deleteSyncInfo: jest.fn(),
 }));
 
@@ -81,6 +90,8 @@ describe('email-pop3-sync', () => {
     mockUidl.mockResolvedValue([]);
     mockRetr.mockResolvedValue(Buffer.from('From: a@b.de\r\n\r\nbody'));
     mockQuit.mockResolvedValue(undefined);
+    mockGetSyncInfo.mockReturnValue(null);
+    mockAssertInboundRfc822Size.mockImplementation(() => undefined);
   });
 
   test('testPop3Connection succeeds with mocked client', async () => {
@@ -168,5 +179,24 @@ describe('email-pop3-sync', () => {
     mockRetr.mockRejectedValueOnce(new Error('retr fail'));
     const r = await syncInboxPop3(1);
     expect(r.fetched).toBe(0);
+  });
+
+  test('sync remembers oversized UIDLs and does not retrieve them again', async () => {
+    let persisted: string | null = null;
+    mockGetSyncInfo.mockImplementation(() => persisted);
+    mockSetSyncInfo.mockImplementation((_key: string, value: string) => {
+      persisted = value;
+    });
+    mockUidl.mockResolvedValue([['4', 'uidl-oversized']]);
+    mockAssertInboundRfc822Size.mockImplementation(() => {
+      const { InboundMessageTooLargeError } = jest.requireActual('@simplecrm/core');
+      throw new InboundMessageTooLargeError(81, 80);
+    });
+
+    await syncInboxPop3(1);
+    await syncInboxPop3(1);
+
+    expect(mockRetr).toHaveBeenCalledTimes(1);
+    expect(persisted).toBe(JSON.stringify(['uidl-oversized']));
   });
 });

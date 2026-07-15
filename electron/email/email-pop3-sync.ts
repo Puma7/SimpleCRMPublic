@@ -1,6 +1,10 @@
 import { createRequire } from 'module';
 import { simpleParser } from 'mailparser';
-import { assertInboundRfc822Size } from '@simplecrm/core';
+import {
+  assertInboundRfc822Size,
+  InboundMessageTooLargeError,
+  parseLegacyPop3UidlStr,
+} from '@simplecrm/core';
 
 const requireCjs = createRequire(__filename);
 const Pop3Command = requireCjs('node-pop3') as typeof import(
@@ -8,7 +12,7 @@ const Pop3Command = requireCjs('node-pop3') as typeof import(
   { with: { 'resolution-mode': 'require' } }
 ).default;
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
-import { getDb } from '../sqlite-service';
+import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getEmailPassword } from './email-keytar';
 import { resolveImapAuth } from './email-imap-auth';
 import { clearImapAuthNotice, maybeRecordImapAuthNotice } from './email-imap-auth-notice';
@@ -89,6 +93,8 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     folderRow = upsertEmailFolder({ accountId, path: POP_FOLDER, lastUid: 0 });
   }
 
+  const oversizedUidlKey = `email_pop3_oversized_uidls:${accountId}:${folderRow.id}`;
+  const oversizedUidls = parseLegacyPop3UidlStr(getSyncInfo(oversizedUidlKey));
   const known = loadPop3UidlsForFolder(folderRow.id);
   const upsertCtx = createPop3UpsertContext(folderRow.id, accountId);
   const newAfterSync: SyncNewMessageItem[] = [];
@@ -104,7 +110,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     if (uidl) serverUidls.push(uidl);
     const num = parseInt(numStr, 10);
     if (!uidl || Number.isNaN(num)) continue;
-    if (known.has(uidl)) {
+    if (known.has(uidl) || oversizedUidls.has(uidl)) {
       console.warn(
         `[pop3-sync] UIDL ${uidl} already known for account ${accountId} — skipping message #${num} (server may reuse UIDLs)`,
       );
@@ -175,6 +181,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     maxNum = Math.max(maxNum, num);
     fetched += 1;
     } catch (perMsgErr) {
+      if (perMsgErr instanceof InboundMessageTooLargeError) oversizedUidls.add(uidl);
       console.warn(
         `[pop3-sync] UIDL ${uidl} account ${accountId} skipped:`,
         perMsgErr instanceof Error ? perMsgErr.message : perMsgErr,
@@ -192,6 +199,10 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
   }
 
   const uidlStr = serializePop3ServerUidls(serverUidls);
+  setSyncInfo(
+    oversizedUidlKey,
+    serializePop3ServerUidls(serverUidls.filter((uidl) => oversizedUidls.has(uidl))),
+  );
 
   updateFolderSyncState(folderRow.id, {
     lastUid: maxNum,

@@ -7,6 +7,7 @@ import { PassThrough } from 'stream';
 
 import type { Kysely } from 'kysely';
 import type { EmailTrackingService } from '../../packages/server/src/email-tracking';
+import { InboundMessageTooLargeError } from '../../packages/core/src/email/inbound-message-size';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
@@ -582,8 +583,8 @@ describe('server edition foundation', () => {
           installDir: 'C:/SimpleCRM/server',
         },
       });
-      expect(normalizeServerBaseUrl('http://localhost:3000/')).toBe('http://localhost:3000');
-      expect(() => normalizeServerBaseUrl('file:///tmp/simplecrm')).toThrow('http or https');
+      expect(() => normalizeServerBaseUrl('http://localhost:3000/')).toThrow('must use https');
+      expect(() => normalizeServerBaseUrl('file:///tmp/simplecrm')).toThrow('must use https');
       expect(() => normalizeDesktopDeployConfig({
         mode: 'server-client',
         selectedAt: '2026-06-03T12:00:00.000Z',
@@ -3188,6 +3189,49 @@ describe('server edition foundation', () => {
       syncedAt: now,
     })]);
     expect(quitCalled).toBe(true);
+  });
+
+  test('server mail sync remembers oversized POP3 UIDLs without suppressing transient failures', async () => {
+    const account = makeServerMailSyncAccount({ protocol: 'pop3' });
+    const syncInfo = new Map<string, string | null>();
+    const retrCalls: number[] = [];
+    const store = {
+      ...makeServerMailSyncStore({ account }),
+      async getSyncInfo(input: { keys: readonly string[] }) {
+        return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+      },
+      async setSyncInfo(input: { values: Readonly<Record<string, string>> }) {
+        for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+      },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      parser: async (source) => {
+        const text = source.toString('utf8');
+        if (text === 'oversized') throw new InboundMessageTooLargeError(81, 80);
+        if (text === 'transient') throw new Error('temporary parser failure');
+        return makeParsedServerMailSyncMessage(text);
+      },
+      pop3ClientFactory() {
+        return {
+          async connect() {},
+          async uidl() {
+            return [[1, 'oversized-uidl'], [2, 'transient-uidl']] as [number, string][];
+          },
+          async retr(messageNumber: number) {
+            retrCalls.push(messageNumber);
+            return Buffer.from(messageNumber === 1 ? 'oversized' : 'transient');
+          },
+          async quit() {},
+        };
+      },
+    });
+
+    await port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'pop3' });
+    await port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'pop3' });
+
+    expect(retrCalls).toEqual([1, 2, 2]);
+    expect([...syncInfo.values()]).toContain(JSON.stringify(['oversized-uidl']));
   });
 
   test('server mail sync job port rejects account protocol mismatches', async () => {
@@ -14693,6 +14737,31 @@ describe('server edition foundation', () => {
     expect(logout.headers?.['Set-Cookie']).toContain('Max-Age=0');
   });
 
+  test('server auth does not clear a newer cookie when a stale refresh token loses the rotation race', async () => {
+    const ports = makeServerApiPorts();
+    ports.auth.rotateRefreshToken = async () => null;
+    const api = createServerApi(ports);
+    const bootstrap = await api.handle({
+      method: 'GET',
+      path: '/api/v1/auth/csrf',
+      headers: { cookie: 'simplecrm_refresh=stale-refresh-token' },
+    });
+    const csrfToken = (bootstrap.body as { data: { csrfToken: string } }).data.csrfToken;
+
+    const stale = await api.handle({
+      method: 'POST',
+      path: '/api/v1/auth/refresh',
+      headers: {
+        cookie: 'simplecrm_refresh=stale-refresh-token',
+        'x-csrf-token': csrfToken,
+      },
+    });
+
+    expect(stale.status).toBe(401);
+    expect((stale.body as any).error.code).toBe('invalid_refresh_token');
+    expect(stale.headers?.['Set-Cookie']).toBeUndefined();
+  });
+
   test('server API serves documented OpenAPI spec without authentication', async () => {
     const api = createServerApi(makeServerApiPorts());
 
@@ -22212,8 +22281,7 @@ describe('server edition foundation', () => {
       },
       sentCopyAppend: async (input) => {
         sentCopies.push(input.rfc822);
-        if (sentCopies.length === 1) throw new Error('imap timeout');
-        return { ok: true, uid: 481, uidValidity: 1 };
+        return { ok: true, mailbox: 'Sent' };
       },
       store: {
         async getDraft(input) {
@@ -22308,7 +22376,7 @@ describe('server edition foundation', () => {
       recoveredSentAppend: true,
     });
     expect(smtpSends).toHaveLength(1);
-    expect(sentCopies).toEqual([originallySent, originallySent]);
+    expect(sentCopies).toEqual([originallySent]);
     expect(syncInfo.get('email_compose_smtp_ok:48')).toBeUndefined();
 
     draft.accountId = 7;
