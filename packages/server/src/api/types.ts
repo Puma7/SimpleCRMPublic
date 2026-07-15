@@ -2873,6 +2873,18 @@ export type EmailTrackingEventRecord = {
   classification?: EmailEvidenceClassification | null;
 };
 
+export type EmailTrackingIpInsightRecord = Readonly<{
+  ipAddress: string;
+  ipFamily: 'ipv4' | 'ipv6';
+  scope: 'public' | 'private' | 'loopback' | 'reserved' | 'unknown';
+  countryCode: string | null;
+  continentCode: string | null;
+  asn: number | null;
+  networkName: string | null;
+  networkCidr: string | null;
+  databaseBuildAt: string | null;
+}>;
+
 export type EmailTrackingTimelineRecord = {
   messageId: number;
   tracked: boolean;
@@ -2901,6 +2913,12 @@ export type EmailTrackingApiPort = {
     messageId: number;
     includeSensitive?: boolean;
   }): Promise<EmailTrackingTimelineRecord | null>;
+  getIpInsight?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+    eventId: string;
+  }): Promise<EmailTrackingIpInsightRecord>;
   recordPublicOpen(input: EmailTrackingPublicRequest): Promise<void>;
   resolvePublicClick(input: EmailTrackingPublicRequest): Promise<{ targetUrl: string } | null>;
   revokeMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;

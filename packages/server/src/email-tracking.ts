@@ -25,6 +25,7 @@ import type {
   AuditApiPort,
   EmailTrackingApiPort,
   EmailTrackingEventRecord,
+  EmailTrackingIpInsightRecord,
   EmailTrackingPublicRequest,
   EmailTrackingPolicyMutationInput,
   EmailTrackingPolicyRecord,
@@ -67,6 +68,38 @@ export class EmailTrackingMessageNotFoundError extends Error {
 
   constructor() {
     super('E-Mail-Nachricht nicht gefunden');
+  }
+}
+
+export class EmailTrackingIpInsightNotFoundError extends Error {
+  override readonly name = 'EmailTrackingIpInsightNotFoundError';
+
+  constructor() {
+    super('Tracking-Ereignis nicht gefunden');
+  }
+}
+
+export class EmailTrackingIpInsightForbiddenError extends Error {
+  override readonly name = 'EmailTrackingIpInsightForbiddenError';
+
+  constructor() {
+    super('IP-Insights sind fuer diesen Workspace nicht aktiviert');
+  }
+}
+
+export class EmailTrackingIpInsightRawDataUnavailableError extends Error {
+  override readonly name = 'EmailTrackingIpInsightRawDataUnavailableError';
+
+  constructor() {
+    super('Rohdaten fuer den IP-Insight sind nicht mehr verfuegbar');
+  }
+}
+
+export class EmailTrackingIpInsightUnavailableError extends Error {
+  override readonly name = 'EmailTrackingIpInsightUnavailableError';
+
+  constructor() {
+    super('Lokale IP-Insight-Datenbank ist nicht verfuegbar');
   }
 }
 
@@ -312,6 +345,12 @@ export type EmailTrackingPrepareResult = Readonly<{
 }>;
 
 export type EmailTrackingService = EmailTrackingApiPort & Readonly<{
+  getIpInsight(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+    eventId: string;
+  }): Promise<EmailTrackingIpInsightRecord>;
   reclassifyMessage(input: {
     workspaceId: string;
     actorUserId: string;
@@ -369,6 +408,7 @@ export type PostgresEmailTrackingServiceOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   publicBaseUrl: string;
   masterKey?: Buffer;
+  emailTrackingCrypto?: TrackingCrypto;
   now?: () => Date;
   audit?: AuditApiPort;
   events?: ServerEventPort;
@@ -380,7 +420,7 @@ export function createPostgresEmailTrackingService(
 ): EmailTrackingService {
   const now = options.now ?? (() => new Date());
   const publicBaseUrl = normalizeTrackingBaseUrl(options.publicBaseUrl);
-  const crypto = options.masterKey ? createEmailTrackingCrypto(options.masterKey) : null;
+  const crypto = options.emailTrackingCrypto ?? (options.masterKey ? createEmailTrackingCrypto(options.masterKey) : null);
 
   const service: EmailTrackingService = {
     async getPolicy(input) {
@@ -669,6 +709,28 @@ export function createPostgresEmailTrackingService(
       );
     },
 
+    async getIpInsight(input) {
+      try {
+        const insight = await loadTrackingIpInsight({
+          db: options.db,
+          crypto,
+          ipIntelligence: options.emailTrackingIpIntelligence,
+          now: now(),
+          ...input,
+        });
+        await recordTrackingIpInsightAudit(options.audit, input, 'email_tracking.ip_insight_accessed', 'success');
+        return insight;
+      } catch (caught) {
+        await recordTrackingIpInsightAudit(
+          options.audit,
+          input,
+          'email_tracking.ip_insight_denied',
+          trackingIpInsightAuditOutcome(caught),
+        );
+        throw caught;
+      }
+    },
+
     async reclassifyMessage(input) {
       const result = await reclassifyTrackingMessage({
         db: options.db,
@@ -904,6 +966,180 @@ function positiveTickerDelay(value: number | undefined, fallback: number): numbe
 }
 
 type TrackingCrypto = ReturnType<typeof createEmailTrackingCrypto>;
+
+async function loadTrackingIpInsight(input: Readonly<{
+  db: Kysely<ServerDatabase>;
+  crypto: TrackingCrypto | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+  now: Date;
+  workspaceId: string;
+  actorUserId: string;
+  messageId: number;
+  eventId: string;
+}>): Promise<EmailTrackingIpInsightRecord> {
+  const context = { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' as const };
+  const authorized = await withWorkspaceTransaction(
+    input.db,
+    context,
+    (trx) => loadTrackingIpInsightTarget(trx, input),
+  );
+  const raw = openHistoricalRequestRaw(
+    input.crypto,
+    authorized.event,
+    input.workspaceId,
+    authorized.trackingMessageId,
+  );
+  if (!raw?.ip) throw new EmailTrackingIpInsightRawDataUnavailableError();
+  if (!input.ipIntelligence) throw new EmailTrackingIpInsightUnavailableError();
+
+  let insight: EmailTrackingIpInsightRecord;
+  try {
+    insight = await input.ipIntelligence.lookup(raw.ip);
+  } catch {
+    throw new EmailTrackingIpInsightUnavailableError();
+  }
+  if (insight.scope === 'public' && input.ipIntelligence.status().state !== 'ready') {
+    throw new EmailTrackingIpInsightUnavailableError();
+  }
+
+  const rechecked = await withWorkspaceTransaction(
+    input.db,
+    context,
+    (trx) => loadTrackingIpInsightTarget(trx, input),
+  );
+  if (!sameTrackingIpInsightTarget(authorized, rechecked)) {
+    throw new EmailTrackingIpInsightRawDataUnavailableError();
+  }
+  return insight;
+}
+
+type TrackingIpInsightTarget = Readonly<{
+  trackingMessageId: string;
+  event: Readonly<{
+    id: string;
+    event_type: string;
+    confidence: string;
+    occurred_at: Date | string;
+    raw_metadata_ciphertext: Buffer;
+    raw_metadata_nonce: Buffer;
+    raw_metadata_auth_tag: Buffer;
+    dedupe_key: string;
+    created_at: Date | string;
+  }>;
+}>;
+
+async function loadTrackingIpInsightTarget(
+  trx: WorkspaceTransaction,
+  input: Readonly<{
+    workspaceId: string;
+    messageId: number;
+    eventId: string;
+    now: Date;
+  }>,
+): Promise<TrackingIpInsightTarget> {
+  const message = await trx
+    .selectFrom('email_messages')
+    .select('id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.messageId)
+    .executeTakeFirst();
+  if (!message) throw new EmailTrackingIpInsightNotFoundError();
+
+  const tracking = await trx
+    .selectFrom('email_tracking_messages')
+    .select(['id', 'collect_derived_metadata', 'collect_raw_metadata'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_id', '=', input.messageId)
+    .executeTakeFirst();
+  if (!tracking) throw new EmailTrackingIpInsightNotFoundError();
+
+  const event = await trx
+    .selectFrom('email_tracking_events')
+    .select([
+      'id', 'event_type', 'confidence', 'occurred_at',
+      'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key', 'created_at',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('tracking_message_id', '=', tracking.id)
+    .where('message_id', '=', input.messageId)
+    .where('id', '=', input.eventId)
+    .executeTakeFirst();
+  if (!event) throw new EmailTrackingIpInsightNotFoundError();
+
+  const policy = await trx
+    .selectFrom('email_tracking_policies')
+    .select([
+      'ip_insights_enabled', 'collect_derived_metadata', 'collect_raw_metadata',
+      'raw_metadata_retention_days',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .executeTakeFirst();
+  if (!policy
+    || !policy.ip_insights_enabled
+    || !policy.collect_derived_metadata
+    || !policy.collect_raw_metadata) {
+    throw new EmailTrackingIpInsightForbiddenError();
+  }
+
+  const rawCutoff = addDays(input.now, -Number(policy.raw_metadata_retention_days));
+  if (!tracking.collect_derived_metadata
+    || !tracking.collect_raw_metadata
+    || toDate(event.created_at).getTime() < rawCutoff.getTime()
+    || !event.raw_metadata_ciphertext
+    || !event.raw_metadata_nonce
+    || !event.raw_metadata_auth_tag) {
+    throw new EmailTrackingIpInsightRawDataUnavailableError();
+  }
+  return {
+    trackingMessageId: tracking.id,
+    event: {
+      ...event,
+      id: canonicalTrackingEventId(event.id),
+      raw_metadata_ciphertext: event.raw_metadata_ciphertext,
+      raw_metadata_nonce: event.raw_metadata_nonce,
+      raw_metadata_auth_tag: event.raw_metadata_auth_tag,
+    },
+  };
+}
+
+function sameTrackingIpInsightTarget(
+  initial: TrackingIpInsightTarget,
+  current: TrackingIpInsightTarget,
+): boolean {
+  return initial.trackingMessageId === current.trackingMessageId
+    && initial.event.id === current.event.id
+    && initial.event.dedupe_key === current.event.dedupe_key
+    && toDate(initial.event.created_at).getTime() === toDate(current.event.created_at).getTime()
+    && initial.event.raw_metadata_ciphertext.equals(current.event.raw_metadata_ciphertext)
+    && initial.event.raw_metadata_nonce.equals(current.event.raw_metadata_nonce)
+    && initial.event.raw_metadata_auth_tag.equals(current.event.raw_metadata_auth_tag);
+}
+
+async function recordTrackingIpInsightAudit(
+  audit: AuditApiPort | undefined,
+  input: Readonly<{ workspaceId: string; actorUserId: string; eventId: string }>,
+  action: 'email_tracking.ip_insight_accessed' | 'email_tracking.ip_insight_denied',
+  outcome: 'success' | 'not_found' | 'forbidden' | 'raw_data_unavailable' | 'unavailable' | 'internal_error',
+): Promise<void> {
+  await audit?.record({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId,
+    action,
+    entityType: 'email_tracking_event',
+    entityId: input.eventId,
+    metadata: { outcome },
+  });
+}
+
+function trackingIpInsightAuditOutcome(
+  error: unknown,
+): 'not_found' | 'forbidden' | 'raw_data_unavailable' | 'unavailable' | 'internal_error' {
+  if (error instanceof EmailTrackingIpInsightNotFoundError) return 'not_found';
+  if (error instanceof EmailTrackingIpInsightForbiddenError) return 'forbidden';
+  if (error instanceof EmailTrackingIpInsightRawDataUnavailableError) return 'raw_data_unavailable';
+  if (error instanceof EmailTrackingIpInsightUnavailableError) return 'unavailable';
+  return 'internal_error';
+}
 
 type PolicyRowLike = {
   enabled: boolean;

@@ -3,6 +3,9 @@ import {
   buildStoredTrackingMetadata,
   createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
+  EmailTrackingIpInsightForbiddenError,
+  EmailTrackingIpInsightNotFoundError,
+  EmailTrackingIpInsightRawDataUnavailableError,
   emailTrackingEventAssociatedData,
   effectiveRetryTrackingFlags,
   effectiveTrackingTokenExpiry,
@@ -853,6 +856,263 @@ describe('email tracking service security helpers', () => {
     });
   });
 
+  test('returns a local IP insight only after RLS-bound event association, retained raw data, and decryption', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const actorUserId = '33333333-3333-4333-8333-333333333333';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const eventId = '9007199254740993';
+    const crypto = createEmailTrackingCrypto(key);
+    const event = historicalEvent({
+      id: eventId,
+      type: 'open_probable',
+      occurredAt: new Date('2026-07-15T12:00:00.000Z'),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, eventId, {
+        ip: '8.8.8.8', userAgent: 'Mozilla/5.0',
+      }),
+    });
+    const { db, state } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events: [event],
+      acceptedAt: new Date('2026-07-15T11:59:00.000Z'),
+    });
+    const lookup = jest.fn(async () => ipInsight({
+      ipAddress: '8.8.8.8', asn: 15169, networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+    }));
+    const openJson = jest.fn((...args: Parameters<typeof crypto.openJson>) => {
+      expect(state.transactionDepth).toBe(0);
+      return crypto.openJson(...args);
+    });
+    const audit = { record: jest.fn(async () => undefined) };
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingCrypto: { ...crypto, openJson },
+      audit,
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await expect(service.getIpInsight({
+      workspaceId, actorUserId, messageId: 17, eventId,
+    })).resolves.toEqual({
+      ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public',
+      countryCode: 'US', continentCode: 'NA', asn: 15169,
+      networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+      databaseBuildAt: '2026-07-15T00:00:00.000Z',
+    });
+    expect(lookup).toHaveBeenCalledWith('8.8.8.8');
+    expect(openJson).toHaveBeenCalledTimes(1);
+    expect(state.sessionContexts).toContainEqual([workspaceId, actorUserId, 'admin', 'off']);
+    expect(audit.record).toHaveBeenCalledWith({
+      workspaceId,
+      actorUserId,
+      action: 'email_tracking.ip_insight_accessed',
+      entityType: 'email_tracking_event',
+      entityId: eventId,
+      metadata: { outcome: 'success' },
+    });
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/8\.8\.8\.8|Mozilla|Google|ASN|CIDR/i);
+  });
+
+  test('rechecks policy and the exact raw envelope after lookup before returning an IP insight', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const actorUserId = '33333333-3333-4333-8333-333333333333';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const eventId = '9007199254740993';
+    const crypto = createEmailTrackingCrypto(key);
+    const event = historicalEvent({
+      id: eventId,
+      type: 'open_probable',
+      occurredAt: new Date('2026-07-15T12:00:00.000Z'),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, eventId, {
+        ip: '8.8.8.8', userAgent: 'Mozilla/5.0',
+      }),
+    });
+    const { db, state } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events: [event],
+      acceptedAt: new Date('2026-07-15T11:59:00.000Z'),
+    });
+    const openJson = jest.fn((...args: Parameters<typeof crypto.openJson>) => {
+      expect(state.transactionDepth).toBe(0);
+      return crypto.openJson(...args);
+    });
+    const lookup = jest.fn(async () => {
+      expect(state.transactionDepth).toBe(0);
+      state.ipInsightPolicyEnabled = false;
+      return ipInsight({ ipAddress: '8.8.8.8' });
+    });
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingCrypto: { ...crypto, openJson },
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await expect(service.getIpInsight({
+      workspaceId, actorUserId, messageId: 17, eventId,
+    })).rejects.toBeInstanceOf(EmailTrackingIpInsightForbiddenError);
+    expect(openJson).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(state.ipInsightPolicyReads).toBeGreaterThanOrEqual(2);
+  });
+
+  test('rejects a raw envelope changed while the local lookup is running', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const actorUserId = '33333333-3333-4333-8333-333333333333';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const eventId = '9007199254740993';
+    const crypto = createEmailTrackingCrypto(key);
+    const event = historicalEvent({
+      id: eventId,
+      type: 'open_probable',
+      occurredAt: new Date('2026-07-15T12:00:00.000Z'),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, eventId, {
+        ip: '8.8.8.8', userAgent: 'Mozilla/5.0',
+      }),
+    });
+    const { db, state } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events: [event],
+      acceptedAt: new Date('2026-07-15T11:59:00.000Z'),
+    });
+    const lookup = jest.fn(async () => {
+      expect(state.transactionDepth).toBe(0);
+      state.events[0]!.raw_metadata_ciphertext = Buffer.from('changed-after-lookup');
+      return ipInsight({ ipAddress: '8.8.8.8' });
+    });
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await expect(service.getIpInsight({
+      workspaceId, actorUserId, messageId: 17, eventId,
+    })).rejects.toBeInstanceOf(EmailTrackingIpInsightRawDataUnavailableError);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(state.ipInsightPolicyReads).toBeGreaterThanOrEqual(2);
+  });
+
+  test('rejects logically expired raw IP data before the local lookup', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const crypto = createEmailTrackingCrypto(key);
+    const event = historicalEvent({
+      id: '9007199254740993',
+      type: 'open_probable',
+      occurredAt: new Date('2026-07-01T12:00:00.000Z'),
+      createdAt: new Date('2026-07-01T12:00:00.000Z'),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, '9007199254740993', {
+        ip: '8.8.8.8', userAgent: 'Mozilla/5.0',
+      }),
+    });
+    const { db } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events: [event],
+      acceptedAt: new Date('2026-07-01T11:59:00.000Z'),
+      rawMetadataRetentionDays: 7,
+    });
+    const lookup = jest.fn(async () => ipInsight({}));
+    const audit = { record: jest.fn(async () => undefined) };
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      audit,
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await expect(service.getIpInsight({
+      workspaceId,
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      messageId: 17,
+      eventId: '9007199254740993',
+    })).rejects.toBeInstanceOf(EmailTrackingIpInsightRawDataUnavailableError);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith({
+      workspaceId,
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      action: 'email_tracking.ip_insight_denied',
+      entityType: 'email_tracking_event',
+      entityId: '9007199254740993',
+      metadata: { outcome: 'raw_data_unavailable' },
+    });
+  });
+
+  test('keeps a missing or foreign tracking event non-disclosing and audits the authenticated denial', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const { db } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId: '55555555-5555-4555-8555-555555555555',
+      events: [],
+      acceptedAt: new Date('2026-07-15T11:59:00.000Z'),
+    });
+    const audit = { record: jest.fn(async () => undefined) };
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      audit,
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await expect(service.getIpInsight({
+      workspaceId,
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      messageId: 17,
+      eventId: '9007199254740993',
+    })).rejects.toBeInstanceOf(EmailTrackingIpInsightNotFoundError);
+    expect(audit.record).toHaveBeenCalledWith({
+      workspaceId,
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      action: 'email_tracking.ip_insight_denied',
+      entityType: 'email_tracking_event',
+      entityId: '9007199254740993',
+      metadata: { outcome: 'not_found' },
+    });
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/\d{1,3}(?:\.\d{1,3}){3}|Mozilla|Geo|ASN|CIDR|secret/i);
+  });
+
+  test('audits unexpected IP insight failures as internal errors without changing the thrown error', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const actorUserId = '33333333-3333-4333-8333-333333333333';
+    const audit = { record: jest.fn(async () => undefined) };
+    const db = {
+      transaction() {
+        return { execute: async () => { throw new Error('database read failed'); } };
+      },
+    } as unknown as Kysely<ServerDatabase>;
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      audit,
+    });
+
+    await expect(service.getIpInsight({
+      workspaceId, actorUserId, messageId: 17, eventId: '9007199254740993',
+    })).rejects.toThrow('database read failed');
+    expect(audit.record).toHaveBeenCalledWith({
+      workspaceId,
+      actorUserId,
+      action: 'email_tracking.ip_insight_denied',
+      entityType: 'email_tracking_event',
+      entityId: '9007199254740993',
+      metadata: { outcome: 'internal_error' },
+    });
+  });
+
   test('revalidates and locks events before upsert when prune or delete wins the page race', async () => {
     const workspaceId = '11111111-1111-4111-8111-111111111111';
     const trackingMessageId = '55555555-5555-4555-8555-555555555555';
@@ -1674,6 +1934,8 @@ type HistoricalReclassificationState = {
   eventReloadPageSizes: number[];
   eventReloadsHeldPolicyLock: boolean[];
   sessionContexts: unknown[][];
+  ipInsightPolicyEnabled: boolean;
+  ipInsightPolicyReads: number;
 };
 
 function historicalReclassificationDatabase(input: {
@@ -1700,6 +1962,8 @@ function historicalReclassificationDatabase(input: {
     eventReloadPageSizes: [],
     eventReloadsHeldPolicyLock: [],
     sessionContexts: [],
+    ipInsightPolicyEnabled: input.insightsEnabled ?? true,
+    ipInsightPolicyReads: 0,
   };
   const fixture = {
     ...input,
@@ -1814,20 +2078,33 @@ class HistoricalReclassificationSelect {
             id: this.fixture.trackingMessageId,
             message_id: 17,
             collect_derived_metadata: this.fixture.collectDerivedMetadata,
+            collect_raw_metadata: true,
           }
         : undefined;
     }
     if (this.table === 'email_tracking_policies') {
+      if (Array.isArray(this.selected) && this.selected.includes('raw_metadata_retention_days')) {
+        this.state.ipInsightPolicyReads += 1;
+      }
       return workspaceId === this.fixture.workspaceId
         ? {
-            ip_insights_enabled: this.fixture.insightsEnabled,
-            collect_derived_metadata: this.fixture.insightsEnabled,
+            ip_insights_enabled: this.state.ipInsightPolicyEnabled,
+            collect_derived_metadata: this.state.ipInsightPolicyEnabled,
+            collect_raw_metadata: true,
             raw_metadata_retention_days: this.fixture.rawMetadataRetentionDays,
           }
         : undefined;
     }
     if (this.table === 'email_tracking_events') {
       const selected = Array.isArray(this.selected) ? this.selected : [this.selected];
+      if (selected.includes('raw_metadata_ciphertext')) {
+        const eventId = this.filterValue('id', '=');
+        return this.filterValue('workspace_id', '=') === this.fixture.workspaceId
+          && this.filterValue('tracking_message_id', '=') === this.fixture.trackingMessageId
+          && this.filterValue('message_id', '=') === 17
+          ? this.fixture.events.find((event) => String(event.id) === String(eventId))
+          : undefined;
+      }
       if (selected.includes('occurred_at') && this.filterValue('event_type', '=') === 'smtp_accepted') {
         return { occurred_at: this.fixture.acceptedAt };
       }
