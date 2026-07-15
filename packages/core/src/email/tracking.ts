@@ -366,8 +366,9 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
 
     if (event.type === 'open_automated' || event.type === 'open_probable') {
       openCount += 1;
-      if (event.type === 'open_automated') automatedOpenCount += 1;
-      else probableOpenCount += 1;
+      const interactionActor = classifyInteractionActor(event);
+      if (interactionActor === 'automated') automatedOpenCount += 1;
+      if (interactionActor === 'probable_human') probableOpenCount += 1;
       const pixelFetchActor = classifyPixelFetchActor(event);
       if (pixelFetchActor === 'automated') automatedPixelFetchCount += 1;
       if (pixelFetchActor === 'unknown') unknownPixelFetchCount += 1;
@@ -387,23 +388,27 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
       firstOpenedAt ??= event.occurredAt;
       lastOpenedAt = event.occurredAt;
       if (delivery === 'unknown') delivery = 'external_system_reached';
-      if (event.type === 'open_probable') {
+      if (interactionActor === 'probable_human') {
         engagement = higherEngagement(engagement, 'probable_open');
-      } else {
+      }
+      if (interactionActor === 'automated') {
         engagement = higherEngagement(engagement, 'automated_fetch');
       }
     }
     if (event.type === 'click' || event.type === 'click_automated') {
       clickCount += 1;
-      if (event.type === 'click_automated') automatedClickCount += 1;
-      else probableClickCount += 1;
+      const interactionActor = classifyInteractionActor(event);
+      if (interactionActor === 'automated') automatedClickCount += 1;
+      if (interactionActor === 'probable_human') probableClickCount += 1;
       firstClickedAt ??= event.occurredAt;
       lastClickedAt = event.occurredAt;
       if (delivery === 'unknown') delivery = 'external_system_reached';
-      engagement = higherEngagement(
-        engagement,
-        event.type === 'click' ? 'link_interaction' : 'automated_fetch',
-      );
+      if (interactionActor === 'probable_human') {
+        engagement = higherEngagement(engagement, 'link_interaction');
+      }
+      if (interactionActor === 'automated') {
+        engagement = higherEngagement(engagement, 'automated_fetch');
+      }
     }
     if (event.type === 'mdn_displayed') {
       if (delivery === 'unknown') delivery = 'external_system_reached';
@@ -457,6 +462,23 @@ function classifyPixelFetchActor(
   ) return 'automated';
   if (actorClass) return 'unknown';
   return event.type === 'open_automated' ? 'automated' : 'unknown';
+}
+
+function classifyInteractionActor(
+  event: EmailEvidenceEvent,
+): 'automated' | 'probable_human' | 'unknown' {
+  const actorClass = event.classification?.actorClass;
+  if (actorClass === 'probable_human') return 'probable_human';
+  if (
+    actorClass === 'mail_proxy'
+    || actorClass === 'privacy_proxy'
+    || actorClass === 'security_scanner'
+    || actorClass === 'automated_unknown'
+  ) return 'automated';
+  if (actorClass) return 'unknown';
+  return event.type === 'open_automated' || event.type === 'click_automated'
+    ? 'automated'
+    : 'probable_human';
 }
 
 export function detectInboundEmailEvidence(input: {
@@ -553,6 +575,15 @@ export function emailEvidenceSummaryWorkflowVariables(input: {
     'tracking.delivery': summary.delivery,
     'tracking.engagement': summary.engagement,
     'tracking.confidence': summary.confidence,
+    'tracking.pixel_fetch_count': summary.pixelFetchCount,
+    'tracking.automated_pixel_fetch_count': summary.automatedPixelFetchCount,
+    'tracking.unknown_pixel_fetch_count': summary.unknownPixelFetchCount,
+    'tracking.probable_human_pixel_fetch_count': summary.probableHumanPixelFetchCount,
+    'tracking.probable_human_open_session_count': summary.probableHumanOpenSessionCount,
+    'tracking.first_pixel_fetched_at': summary.firstPixelFetchedAt,
+    'tracking.last_pixel_fetched_at': summary.lastPixelFetchedAt,
+    'tracking.first_probable_human_open_at': summary.firstProbableHumanOpenAt,
+    'tracking.last_probable_human_open_at': summary.lastProbableHumanOpenAt,
     'tracking.open_count': summary.openCount,
     'tracking.click_count': summary.clickCount,
     'tracking.automated_open_count': summary.automatedOpenCount,

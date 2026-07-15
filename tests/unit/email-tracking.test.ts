@@ -8,6 +8,7 @@ import {
   type EmailEvidenceClassification,
   type EmailEvidenceEvent,
 } from '../../packages/core/src/email';
+import { EMAIL_NODE_SCHEMAS } from '../../packages/core/src/workflow/schema/email';
 
 describe('email evidence tracking core', () => {
   test('defines immutable V2 evidence classifications without changing evidence events', () => {
@@ -280,8 +281,8 @@ describe('email evidence tracking core', () => {
       firstProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
       lastProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
       openCount: 8,
-      automatedOpenCount: 1,
-      probableOpenCount: 7,
+      automatedOpenCount: 5,
+      probableOpenCount: 2,
       firstOpenedAt: '2026-07-13T08:00:00.000Z',
       lastOpenedAt: '2026-07-13T08:07:00.000Z',
     });
@@ -298,6 +299,73 @@ describe('email evidence tracking core', () => {
     expect(summary.probableHumanOpenSessionCount).toBe(2);
     expect(summary.firstProbableHumanOpenAt).toBe('2026-07-13T08:00:00.000Z');
     expect(summary.lastProbableHumanOpenAt).toBe('2026-07-13T08:59:59.999Z');
+  });
+
+  test('lets V2 actor classifications override immutable legacy interaction types', () => {
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
+    ])).toMatchObject({
+      engagement: 'automated_fetch',
+      automatedOpenCount: 1,
+      probableOpenCount: 0,
+      automatedPixelFetchCount: 1,
+      probableHumanPixelFetchCount: 0,
+    });
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('click', '2026-07-13T08:00:00.000Z', 'security_scanner'),
+    ])).toMatchObject({
+      engagement: 'automated_fetch',
+      automatedClickCount: 1,
+      probableClickCount: 0,
+    });
+
+    for (const actorClass of ['unknown', 'system'] as const) {
+      expect(buildEmailEvidenceSummary([
+        classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', actorClass),
+      ])).toMatchObject({
+        engagement: 'none',
+        unknownPixelFetchCount: 1,
+        automatedOpenCount: 0,
+        probableOpenCount: 0,
+      });
+    }
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('open_automated', '2026-07-13T08:00:00.000Z', 'probable_human'),
+    ])).toMatchObject({
+      engagement: 'probable_open',
+      automatedOpenCount: 0,
+      probableOpenCount: 1,
+      probableHumanPixelFetchCount: 1,
+    });
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('click_automated', '2026-07-13T08:00:00.000Z', 'probable_human'),
+    ])).toMatchObject({
+      engagement: 'link_interaction',
+      automatedClickCount: 0,
+      probableClickCount: 1,
+    });
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
+      event('replied', 'verified', '2026-07-13T08:01:00.000Z'),
+    ])).toMatchObject({
+      engagement: 'human_reply',
+      repliedAt: '2026-07-13T08:01:00.000Z',
+    });
+  });
+
+  test('retains legacy interaction categories when no V2 classification exists', () => {
+    expect(buildEmailEvidenceSummary([
+      event('open_probable', 'medium', '2026-07-13T08:00:00.000Z'),
+      event('click', 'medium', '2026-07-13T08:01:00.000Z'),
+    ])).toMatchObject({
+      engagement: 'link_interaction',
+      probableOpenCount: 1,
+      probableClickCount: 1,
+    });
   });
 
   test('a later bounce wins over SMTP acceptance without inventing engagement', () => {
@@ -501,6 +569,56 @@ describe('email evidence tracking core', () => {
       'tracking.replied': false,
     }));
   });
+
+  test('exports all recommended V2 tracking evidence variables without removing legacy variables', () => {
+    const variables = emailEvidenceWorkflowVariables({
+      tracked: true,
+      events: [
+        classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),
+        classifiedEvent('open_probable', '2026-07-13T08:01:00.000Z', 'mail_proxy'),
+        classifiedEvent('open_probable', '2026-07-13T08:02:00.000Z', 'unknown'),
+        classifiedEvent('open_probable', '2026-07-13T08:30:00.000Z', 'probable_human'),
+      ],
+    });
+
+    expect(variables).toEqual(expect.objectContaining({
+      'tracking.pixel_fetch_count': 4,
+      'tracking.automated_pixel_fetch_count': 1,
+      'tracking.unknown_pixel_fetch_count': 1,
+      'tracking.probable_human_pixel_fetch_count': 2,
+      'tracking.probable_human_open_session_count': 2,
+      'tracking.first_pixel_fetched_at': '2026-07-13T08:00:00.000Z',
+      'tracking.last_pixel_fetched_at': '2026-07-13T08:30:00.000Z',
+      'tracking.first_probable_human_open_at': '2026-07-13T08:00:00.000Z',
+      'tracking.last_probable_human_open_at': '2026-07-13T08:30:00.000Z',
+      'tracking.open_count': 4,
+      'tracking.probable_open_count': 2,
+    }));
+  });
+
+  test('documents all V2 tracking evidence outputs as the recommended workflow fields', () => {
+    const outputs = EMAIL_NODE_SCHEMAS['email.read_tracking_evidence']?.outputs ?? [];
+    const recommendedNames = [
+      'tracking.pixel_fetch_count',
+      'tracking.automated_pixel_fetch_count',
+      'tracking.unknown_pixel_fetch_count',
+      'tracking.probable_human_pixel_fetch_count',
+      'tracking.probable_human_open_session_count',
+      'tracking.first_pixel_fetched_at',
+      'tracking.last_pixel_fetched_at',
+      'tracking.first_probable_human_open_at',
+      'tracking.last_probable_human_open_at',
+    ];
+
+    expect(outputs.map((output) => output.name)).toEqual(expect.arrayContaining([
+      'tracking.open_count',
+      'tracking.probable_open_count',
+      ...recommendedNames,
+    ]));
+    for (const name of recommendedNames) {
+      expect(outputs.find((output) => output.name === name)?.description).toMatch(/empfohlen/i);
+    }
+  });
 });
 
 function event(
@@ -512,7 +630,7 @@ function event(
 }
 
 function classifiedEvent(
-  type: 'open_automated' | 'open_probable',
+  type: 'open_automated' | 'open_probable' | 'click_automated' | 'click',
   occurredAt: string,
   actorClass: EmailEvidenceActorClass,
 ): EmailEvidenceEvent {

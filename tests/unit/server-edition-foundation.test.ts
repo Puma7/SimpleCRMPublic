@@ -6,13 +6,17 @@ import { join, resolve } from 'path';
 import { PassThrough } from 'stream';
 
 import type { Kysely } from 'kysely';
-import type { EmailTrackingService } from '../../packages/server/src/email-tracking';
+import {
+  loadEmailEvidenceSummaryForTracking,
+  type EmailTrackingService,
+} from '../../packages/server/src/email-tracking';
 import { InboundMessageTooLargeError } from '../../packages/core/src/email/inbound-message-size';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
   SERVER_EDITION_TARGETS,
   createCoreRuntime,
+  emailEvidenceSummaryWorkflowVariables,
   isServerEditionDeployMode,
   listBuiltinWorkflowNodeCatalog,
 } from '../../packages/core/src';
@@ -513,6 +517,65 @@ describe('server edition foundation', () => {
         expect(field.runtime).not.toBe('desktop');
       }
     }
+  });
+
+  test('server workflow catalog keeps legacy tracking outputs and exposes recommended V2 evidence', () => {
+    const trackingEvidence = listServerWorkflowNodeCatalog()
+      .find((entry) => entry.type === 'email.read_tracking_evidence');
+    const outputs = trackingEvidence?.outputs ?? [];
+    const v2OutputNames = [
+      'tracking.pixel_fetch_count',
+      'tracking.automated_pixel_fetch_count',
+      'tracking.unknown_pixel_fetch_count',
+      'tracking.probable_human_pixel_fetch_count',
+      'tracking.probable_human_open_session_count',
+      'tracking.first_pixel_fetched_at',
+      'tracking.last_pixel_fetched_at',
+      'tracking.first_probable_human_open_at',
+      'tracking.last_probable_human_open_at',
+    ];
+
+    expect(outputs.map((output) => output.name)).toEqual(expect.arrayContaining([
+      'tracking.open_count',
+      'tracking.probable_open_count',
+      ...v2OutputNames,
+    ]));
+    for (const name of v2OutputNames) {
+      expect(outputs.find((output) => output.name === name)?.description).toMatch(/empfohlen/i);
+    }
+  });
+
+  test('server summary conservatively projects historical unclassified opens as unknown', async () => {
+    const { db } = makeWorkflowExecutionDb({
+      trackingEvents: [{
+        id: '501',
+        workspace_id: WORKSPACE_A_ID,
+        tracking_message_id: 'tracking-501',
+        event_type: 'open_probable',
+        source: 'pixel',
+        confidence: 'medium',
+        automated: false,
+        occurred_at: new Date('2026-07-16T08:00:00.000Z'),
+      }],
+    });
+
+    const summary = await loadEmailEvidenceSummaryForTracking(
+      db as never,
+      WORKSPACE_A_ID,
+      'tracking-501',
+    );
+    const variables = emailEvidenceSummaryWorkflowVariables({ tracked: true, summary });
+
+    expect(summary).toMatchObject({
+      engagement: 'none',
+      unknownPixelFetchCount: 1,
+      probableOpenCount: 0,
+    });
+    expect(variables).toEqual(expect.objectContaining({
+      'tracking.engagement': 'none',
+      'tracking.unknown_pixel_fetch_count': 1,
+      'tracking.probable_open_count': 0,
+    }));
   });
 
   test('server template list omits templates with server-unsupported nodes', () => {
@@ -38603,6 +38666,7 @@ type WorkflowExecutionFakeRows = {
   autoReplyCounters: Array<Record<string, unknown>>;
   trackingMessages: Array<Record<string, unknown>>;
   trackingEvents: Array<Record<string, unknown>>;
+  trackingEventClassifications: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -38643,9 +38707,10 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     autoReplyCounters: input.autoReplyCounters ?? [],
     trackingMessages: input.trackingMessages ?? [],
     trackingEvents: input.trackingEvents ?? [],
+    trackingEventClassifications: input.trackingEventClassifications ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
-    switch (table) {
+    switch (table.split(' ')[0]) {
       case 'email_message_attachments':
         return rows.messageAttachments;
       case 'email_workflows':
@@ -38712,6 +38777,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.trackingMessages;
       case 'email_tracking_events':
         return rows.trackingEvents;
+      case 'email_tracking_event_classifications':
+        return rows.trackingEventClassifications;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }
@@ -38751,6 +38818,10 @@ class FakeWorkflowExecutionSelect {
     return this;
   }
 
+  distinctOn() {
+    return this;
+  }
+
   where(column: string | ((eb: unknown) => unknown), operator?: string, value?: unknown) {
     if (typeof column === 'function') return this;
     if (!operator) throw new Error('missing workflow execution select operator');
@@ -38781,19 +38852,21 @@ class FakeWorkflowExecutionSelect {
 
   private matchingRows(): Array<Record<string, unknown>> {
     const result = this.rows.filter((row) => this.wheres.every(([column, operator, value]) => {
-      if (operator === '=') return row[column] === value;
-      if (operator === '!=') return row[column] !== value;
-      if (operator === 'is') return value === null ? row[column] === null || row[column] === undefined : row[column] === value;
-      if (operator === 'in' && Array.isArray(value)) return value.includes(row[column]);
-      if (operator === 'ilike') return ilikeMatch(row[column], value);
-      if (operator === '<') return Number(row[column]) < Number(value);
-      if (operator === '>') return Number(row[column]) > Number(value);
+      const field = column.includes('.') ? column.slice(column.lastIndexOf('.') + 1) : column;
+      if (operator === '=') return row[field] === value;
+      if (operator === '!=') return row[field] !== value;
+      if (operator === 'is') return value === null ? row[field] === null || row[field] === undefined : row[field] === value;
+      if (operator === 'in' && Array.isArray(value)) return value.includes(row[field]);
+      if (operator === 'ilike') return ilikeMatch(row[field], value);
+      if (operator === '<') return Number(row[field]) < Number(value);
+      if (operator === '>') return Number(row[field]) > Number(value);
       throw new Error(`unexpected workflow execution select operator: ${operator}`);
     }));
     return [...result].sort((left, right) => {
       for (const [column, direction] of this.order) {
-        const leftValue = Number(left[column] ?? 0);
-        const rightValue = Number(right[column] ?? 0);
+        const field = column.includes('.') ? column.slice(column.lastIndexOf('.') + 1) : column;
+        const leftValue = Number(left[field] ?? 0);
+        const rightValue = Number(right[field] ?? 0);
         if (leftValue === rightValue) continue;
         return direction === 'desc' ? rightValue - leftValue : leftValue - rightValue;
       }
