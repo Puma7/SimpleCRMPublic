@@ -3463,6 +3463,40 @@ describe('renderer transport', () => {
     );
   });
 
+  test('does not turn an unavailable MFA lock diagnostic into a false zero', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        collectedAt: '2026-06-04T10:00:00.000Z',
+        schemaGeneration: 13,
+        schemaGenerationLabel: 'schema',
+        sizes: { databaseBytes: null, attachmentsBytes: 0 },
+        messages: { total: 0, pendingPostProcess: 0, outboundHold: 0, byFolderKind: {} },
+        workflows: { runsLast24h: 0, runsBlockedLast24h: 0, runsErrorLast24h: 0 },
+        notices: { imapAuth: 0, uidValidity: 0 },
+        syncInfo: { totalKeys: 0, prefixes: {} },
+        background: {
+          cronScheduled: false,
+          cronTickInFlight: false,
+          syncInFlightAccountIds: [],
+          idleImapAccountIds: [],
+        },
+        accounts: [],
+        operations: {
+          inboundLagSeconds: null,
+          postProcessRetrying: 0,
+          smtpCommitRecoveries: 0,
+        },
+      },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Email.GetMailDiagnostics) as any;
+    expect(result.operations).not.toHaveProperty('mfaLocks');
+  });
+
   test('maps post-process recovery to the server admin route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { success: true } }));
     const transport = createHttpRendererTransport({
@@ -8337,6 +8371,7 @@ describe('renderer transport', () => {
       IPCChannels.Update.OpenExternalUrl,
       IPCChannels.Setup.GetDeployConfig,
       IPCChannels.Setup.SaveDeployConfig,
+      IPCChannels.Setup.ResetDeployConfig,
 
       // Server-client auth uses server-auth-client/AuthProvider instead of legacy invoke mapping.
       IPCChannels.Auth.Login,

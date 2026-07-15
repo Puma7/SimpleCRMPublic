@@ -2694,7 +2694,9 @@ function sanitizeMailDiagnostics(report: EmailDiagnosticsReport): EmailDiagnosti
             inboundLagSeconds: safeNullableCount(report.operations.inboundLagSeconds),
             postProcessRetrying: safeCount(report.operations.postProcessRetrying),
             smtpCommitRecoveries: safeCount(report.operations.smtpCommitRecoveries),
-            mfaLocks: safeCount(report.operations.mfaLocks),
+            ...(report.operations.mfaLocks == null
+              ? {}
+              : { mfaLocks: safeCount(report.operations.mfaLocks) }),
           },
         }
       : {}),

@@ -5363,7 +5363,9 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
           : countValue(record.operations.inboundLagSeconds),
         postProcessRetrying: countValue(record.operations.postProcessRetrying),
         smtpCommitRecoveries: countValue(record.operations.smtpCommitRecoveries),
-        mfaLocks: countValue(record.operations.mfaLocks),
+        ...(record.operations.mfaLocks == null
+          ? {}
+          : { mfaLocks: countValue(record.operations.mfaLocks) }),
       },
     } : {}),
     ...(record.jobQueue ? {

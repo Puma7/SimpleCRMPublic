@@ -108,6 +108,19 @@ describe('LoginPage server-client mode', () => {
     expect(localInvoke).not.toHaveBeenCalled();
   });
 
+  test('offers a confirmed deploy config reset when the configured server is unreachable', async () => {
+    const localInvoke = jest.fn().mockResolvedValue({ success: true });
+    (window as any).electronAPI = { invoke: localInvoke };
+    global.fetch = jest.fn().mockRejectedValue(new Error('Server nicht erreichbar')) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://wrong.example.com' }));
+
+    render(<LoginPage />);
+
+    expect(await screen.findByText('Server nicht erreichbar')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Betriebsmodus oder Server-Verbindung ändern' }));
+    await waitFor(() => expect(localInvoke).toHaveBeenCalledWith('setup:reset-deploy-config'));
+  });
+
   test('validates email before server initial setup submit', async () => {
     global.fetch = jest.fn().mockImplementation((url: string) => {
       if (String(url).includes('/auth/setup-state')) {

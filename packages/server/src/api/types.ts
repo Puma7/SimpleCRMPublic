@@ -1868,7 +1868,7 @@ export type EmailDiagnosticsReport = {
     inboundLagSeconds: number | null;
     postProcessRetrying: number;
     smtpCommitRecoveries: number;
-    mfaLocks: number;
+    mfaLocks?: number;
   };
   jobQueue?: {
     ready: number;

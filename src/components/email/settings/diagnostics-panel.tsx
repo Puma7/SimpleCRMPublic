@@ -70,7 +70,7 @@ type DiagnosticsReport = {
     inboundLagSeconds: number | null
     postProcessRetrying: number
     smtpCommitRecoveries: number
-    mfaLocks: number
+    mfaLocks?: number
   }
   jobQueue?: {
     ready: number
@@ -408,7 +408,9 @@ export function DiagnosticsPanel() {
                 <li>Inbound-Lag: {formatDuration(report.operations.inboundLagSeconds)}</li>
                 <li>Post-Process-Retries: {report.operations.postProcessRetrying}</li>
                 <li>SMTP-Recovery offen: {report.operations.smtpCommitRecoveries}</li>
-                <li>MFA-Sperren aktiv: {report.operations.mfaLocks}</li>
+                {report.operations.mfaLocks == null
+                  ? null
+                  : <li>MFA-Sperren aktiv: {report.operations.mfaLocks}</li>}
               </ul>
             </section>
           ) : null}

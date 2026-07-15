@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 
 export const ELECTRON_DEPLOY_CONFIG_VERSION = 1;
@@ -42,6 +42,7 @@ export type ElectronDeployConfigFilePort = Readonly<{
   readFile(path: string, encoding: 'utf8'): Promise<string>;
   writeFile(path: string, data: string, encoding: 'utf8'): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
 }>;
 
 export function buildElectronDeployConfigPath(userDataDir: string): string {
@@ -81,6 +82,17 @@ export async function writeElectronDeployConfig(
   await filePort.writeFile(`${path}.tmp`, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   await filePort.rename(`${path}.tmp`, path);
   return config;
+}
+
+export async function deleteElectronDeployConfig(
+  userDataDir: string,
+  filePort: ElectronDeployConfigFilePort = nodeFilePort,
+): Promise<void> {
+  try {
+    await filePort.unlink(buildElectronDeployConfigPath(userDataDir));
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
 }
 
 export function normalizeElectronDeployConfig(input: unknown): ElectronDeployConfig {
@@ -195,4 +207,5 @@ const nodeFilePort: ElectronDeployConfigFilePort = {
   readFile,
   writeFile,
   rename,
+  unlink,
 };

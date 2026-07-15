@@ -125,8 +125,6 @@ async function collectDiagnostics(
   const legacyJobQueue = await selectLegacyJobQueueStats(trx, workspaceId, now);
   const graphileJobQueue = await selectGraphileJobQueueStats(trx, workspaceId, now);
   const jobQueue = mergeJobQueueDiagnostics(graphileJobQueue, legacyJobQueue);
-  const mfaLocks = await selectMfaLocks(trx, now);
-
   return {
     collectedAt: now.toISOString(),
     schemaGeneration,
@@ -181,7 +179,6 @@ async function collectDiagnostics(
       inboundLagSeconds: inboundLagSeconds(accounts, now),
       postProcessRetrying: jobQueue.postProcessRetrying,
       smtpCommitRecoveries: syncInfoRows.filter((row) => row.key.startsWith(SMTP_COMMIT_PREFIX)).length,
-      mfaLocks,
     },
     jobQueue: {
       ready: jobQueue.ready,
@@ -760,18 +757,6 @@ async function selectGraphileJobQueueStats(
       terminal: countValue(row.attempts) >= countValue(row.max_attempts),
     })),
   };
-}
-
-async function selectMfaLocks(trx: WorkspaceTransaction, now: Date): Promise<number> {
-  const row = await trx
-    .selectFrom('auth_challenge_tokens')
-    .select(kyselySql<CountValue>`count(*)`.as('count'))
-    .where('purpose', '=', 'mfa')
-    .where('attempt_count', '>=', 5)
-    .where('consumed_at', 'is', null)
-    .where('expires_at', '>', now)
-    .executeTakeFirst();
-  return countValue(row?.count);
 }
 
 function emptyJobQueueDiagnostics(): JobQueueDiagnostics {

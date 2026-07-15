@@ -121,8 +121,83 @@ describe('registerSetupHandlers', () => {
     }]);
   });
 
-  test('registers both setup channels', () => {
+  test('preserves the deploy config when the native reset confirmation is cancelled', async () => {
+    const save = handlers.get(IPCChannels.Setup.SaveDeployConfig);
+    await save({}, { mode: 'standalone' });
+
+    handlers.clear();
+    const restartApp = jest.fn();
+    registerSetupHandlers({
+      logger: console,
+      getUserDataDir: () => userDataDir,
+      confirmDeployConfigReset: async () => false,
+      restartApp,
+    });
+
+    const reset = handlers.get(IPCChannels.Setup.ResetDeployConfig);
+    await expect(reset({})).resolves.toEqual({
+      success: false,
+      error: 'deploy config reset was cancelled',
+    });
+    await expect(handlers.get(IPCChannels.Setup.GetDeployConfig)({})).resolves.toMatchObject({
+      status: 'ok',
+      config: { mode: 'standalone' },
+    });
+    expect(restartApp).not.toHaveBeenCalled();
+  });
+
+  test('deletes the deploy config and restarts after native confirmation', async () => {
+    const save = handlers.get(IPCChannels.Setup.SaveDeployConfig);
+    await save({}, { mode: 'standalone' });
+
+    handlers.clear();
+    const restartApp = jest.fn();
+    registerSetupHandlers({
+      logger: console,
+      getUserDataDir: () => userDataDir,
+      confirmDeployConfigReset: async () => true,
+      restartApp,
+    });
+
+    const reset = handlers.get(IPCChannels.Setup.ResetDeployConfig);
+    await expect(reset({})).resolves.toEqual({ success: true });
+    await expect(handlers.get(IPCChannels.Setup.GetDeployConfig)({})).resolves.toEqual({ status: 'missing' });
+    expect(restartApp).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects a queued config write after a reset was approved', async () => {
+    const save = handlers.get(IPCChannels.Setup.SaveDeployConfig);
+    await save({}, { mode: 'standalone' });
+
+    handlers.clear();
+    registerSetupHandlers({
+      logger: console,
+      getUserDataDir: () => userDataDir,
+      confirmDeployConfigReset: async () => true,
+      restartApp: jest.fn(),
+    });
+
+    const reset = handlers.get(IPCChannels.Setup.ResetDeployConfig);
+    const queuedSave = handlers.get(IPCChannels.Setup.SaveDeployConfig);
+    const [resetResult, saveResult] = await Promise.all([
+      reset({}),
+      queuedSave({}, {
+        mode: 'server-client',
+        server: { baseUrl: 'https://attacker.example' },
+      }),
+    ]);
+
+    expect(resetResult).toEqual({ success: true });
+    expect(saveResult).toEqual({
+      success: false,
+      error: 'deploy config reset is in progress',
+    });
+    await expect(handlers.get(IPCChannels.Setup.GetDeployConfig)({})).resolves.toEqual({ status: 'missing' });
+  });
+
+  test('registers all setup channels', () => {
     expect(handlers.has(IPCChannels.Setup.GetDeployConfig)).toBe(true);
     expect(handlers.has(IPCChannels.Setup.SaveDeployConfig)).toBe(true);
+    expect(handlers.has(IPCChannels.Setup.ResetDeployConfig)).toBe(true);
   });
 });

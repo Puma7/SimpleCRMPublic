@@ -95,6 +95,14 @@ baseSchemaMap.set(IPCChannels.Setup.SaveDeployConfig, {
   ]),
 });
 
+baseSchemaMap.set(IPCChannels.Setup.ResetDeployConfig, {
+  payload: z.undefined(),
+  result: z.union([
+    z.object({ success: z.literal(true) }),
+    failureResponse,
+  ]),
+});
+
 // --- Deals ---
 const dealProductIdentifier = z.object({
   dealProductId: z.number().int().positive().optional(),

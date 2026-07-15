@@ -14,6 +14,7 @@ const UpdateChannels = literal({
 const SetupChannels = literal({
   GetDeployConfig: 'setup:get-deploy-config',
   SaveDeployConfig: 'setup:save-deploy-config',
+  ResetDeployConfig: 'setup:reset-deploy-config',
 });
 
 // DB related invoke channels

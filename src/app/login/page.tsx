@@ -53,6 +53,7 @@ export default function LoginPage() {
   const [setupStateResolved, setSetupStateResolved] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isFetchingSetupToken, setIsFetchingSetupToken] = useState(false)
+  const [isResettingDeployConfig, setIsResettingDeployConfig] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loginConfig, setLoginConfig] = useState<ServerLoginConfig | null>(null)
   const [loginConfigResolved, setLoginConfigResolved] = useState(false)
@@ -381,6 +382,27 @@ export default function LoginPage() {
     }
   }
 
+  async function handleResetDeployConfig() {
+    setIsResettingDeployConfig(true)
+    setError(null)
+    try {
+      const result = await invokeIpc<{ success: boolean; error?: string }>(
+        IPCChannels.Setup.ResetDeployConfig,
+      )
+      if (!result.success) {
+        setError(result.error === 'deploy config reset was cancelled'
+          ? 'Die Server-Konfiguration wurde nicht geaendert.'
+          : result.error ?? 'Server-Konfiguration konnte nicht geaendert werden.')
+      }
+    } catch (resetError) {
+      setError(resetError instanceof Error
+        ? resetError.message
+        : 'Server-Konfiguration konnte nicht geaendert werden.')
+    } finally {
+      setIsResettingDeployConfig(false)
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const normalizedUsername = username.trim()
@@ -608,6 +630,17 @@ export default function LoginPage() {
               <Button type="submit" className="w-full" disabled={isLoading || !setupFormReady}>
                 {isLoading ? "…" : serverSetupMode ? "Owner-Konto anlegen" : "Passwort setzen"}
               </Button>
+              {hasElectron() ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleResetDeployConfig}
+                  disabled={isResettingDeployConfig || isLoading}
+                >
+                  Betriebsmodus oder Server-Verbindung ändern
+                </Button>
+              ) : null}
             </form>
           </CardContent>
         </Card>
@@ -716,6 +749,17 @@ export default function LoginPage() {
               </Button>
             )}
           </form>
+          {hasElectron() ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-4 w-full"
+              onClick={handleResetDeployConfig}
+              disabled={isResettingDeployConfig || isLoading}
+            >
+              Betriebsmodus oder Server-Verbindung ändern
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </div>
