@@ -71,6 +71,10 @@ export type ServerDatabase = {
   email_tracking_links: EmailTrackingLinksTable;
   email_tracking_events: EmailTrackingEventsTable;
   email_tracking_token_resolver: EmailTrackingTokenResolverTable;
+  smtp_relays: SmtpRelaysTable;
+  smtp_relay_credentials: SmtpRelayCredentialsTable;
+  smtp_relay_allowed_accounts: SmtpRelayAllowedAccountsTable;
+  smtp_relay_submissions: SmtpRelaySubmissionsTable;
   pgp_identities: PgpIdentitiesTable;
   pgp_peer_keys: PgpPeerKeysTable;
   automation_api_keys: AutomationApiKeysTable;
@@ -774,6 +778,63 @@ export type EmailTrackingTokenResolverTable = {
   expires_at: TimestampColumn;
   revoked_at: TimestampColumn | null;
   created_at: TimestampColumn;
+};
+
+export type SmtpRelaysTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  label: string;
+  enabled: boolean;
+  allow_arbitrary_recipients: boolean;
+  max_recipients: number;
+  max_message_bytes: number;
+  rate_limit_per_min: number;
+  tracking_mode: 'off' | 'rule' | 'always';
+  tracking_subject_patterns: string | null;
+  allow_header_override: boolean;
+  followup_workflow_id: number | null;
+  created_by_user_id: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type SmtpRelayCredentialsTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  relay_id: string;
+  username: string;
+  password_hash: string;
+  secret_id: string | null;
+  last_used_at: TimestampColumn | null;
+  revoked_at: TimestampColumn | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type SmtpRelayAllowedAccountsTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  relay_id: string;
+  account_id: number;
+  from_address: string | null;
+  created_at: TimestampColumn;
+};
+
+export type SmtpRelaySubmissionsTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  relay_id: string;
+  credential_id: string | null;
+  account_id: number;
+  message_id: number | null;
+  tracking_applied: boolean;
+  tracking_rule_reason: string | null;
+  status: 'received' | 'relayed' | 'failed';
+  smtp_message_id_header: string | null;
+  recipient_count: number;
+  error_text: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
 };
 
 export type EmailMessageAttachmentsTable = EmailMessageChildTable & {
