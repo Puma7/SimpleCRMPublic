@@ -31,6 +31,8 @@ export type ServerEditionEnv = {
   INITIAL_SETUP_TOKEN?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  GEOIP_COUNTRY_DB_PATH?: string;
+  GEOIP_ASN_DB_PATH?: string;
 };
 
 export type ServerEditionConfig = {
@@ -49,7 +51,13 @@ export type ServerEditionConfig = {
   initialSetupToken?: string;
   turnstileSiteKey?: string;
   turnstileSecretKey?: string;
+  emailTrackingIpIntelligence: EmailTrackingIpIntelligenceConfig;
 };
+
+export type EmailTrackingIpIntelligenceConfig = Readonly<{
+  countryDatabasePath: string | undefined;
+  asnDatabasePath: string | undefined;
+}>;
 
 export type ServerJobWorkerConfig = {
   enabled: boolean;
@@ -100,6 +108,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim() || undefined;
   const turnstileSiteKey = env.TURNSTILE_SITE_KEY?.trim() || undefined;
   const turnstileSecretKey = env.TURNSTILE_SECRET_KEY?.trim() || undefined;
+  const emailTrackingIpIntelligence = parseEmailTrackingIpIntelligenceConfig(env);
 
   return {
     databaseUrl,
@@ -117,6 +126,16 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     ...(initialSetupToken ? { initialSetupToken } : {}),
     ...(turnstileSiteKey ? { turnstileSiteKey } : {}),
     ...(turnstileSecretKey ? { turnstileSecretKey } : {}),
+    emailTrackingIpIntelligence,
+  };
+}
+
+export function parseEmailTrackingIpIntelligenceConfig(
+  env: Pick<ServerEditionEnv, 'GEOIP_COUNTRY_DB_PATH' | 'GEOIP_ASN_DB_PATH'>,
+): EmailTrackingIpIntelligenceConfig {
+  return {
+    countryDatabasePath: env.GEOIP_COUNTRY_DB_PATH?.trim() || undefined,
+    asnDatabasePath: env.GEOIP_ASN_DB_PATH?.trim() || undefined,
   };
 }
 
