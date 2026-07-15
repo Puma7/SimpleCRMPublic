@@ -89,6 +89,18 @@ describe('email tracking IP intelligence', () => {
       ipFamily: 'ipv6',
       scope: 'loopback',
     });
+    await expect(intelligence.lookup('::ffff:a00:1')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'private',
+    });
+    await expect(intelligence.lookup('::ffff:7f00:1')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'loopback',
+    });
+    await expect(intelligence.lookup('0:0:0:0:0:ffff:a00:1')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'private',
+    });
     expect(readerLoader).not.toHaveBeenCalled();
   });
 

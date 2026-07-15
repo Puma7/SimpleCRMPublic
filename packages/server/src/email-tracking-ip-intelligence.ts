@@ -287,8 +287,8 @@ function ipv4Scope(ip: string): EmailTrackingIpInsight['scope'] {
 
 function ipv6Scope(ip: string): EmailTrackingIpInsight['scope'] {
   const normalized = ip.toLowerCase();
-  const mappedIpv4 = /^::ffff:((?:\d{1,3}\.){3}\d{1,3})$/.exec(normalized)?.[1];
-  if (mappedIpv4 && isIP(mappedIpv4) === 4) return ipv4Scope(mappedIpv4);
+  const mappedIpv4 = mappedIpv4Address(normalized);
+  if (mappedIpv4) return ipv4Scope(mappedIpv4);
   if (normalized === '::1') return 'loopback';
   if (/^(?:fc|fd)/.test(normalized)) return 'private';
   if (
@@ -298,6 +298,16 @@ function ipv6Scope(ip: string): EmailTrackingIpInsight['scope'] {
     || normalized.startsWith('2001:db8:')
   ) return 'reserved';
   return 'public';
+}
+
+function mappedIpv4Address(ip: string): string | null {
+  const match = /^(?:::ffff|0:0:0:0:0:ffff):(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/i.exec(ip);
+  if (!match) return null;
+  const dotted = match[1];
+  if (dotted) return isIP(dotted) === 4 ? dotted : null;
+  const high = Number.parseInt(match[2]!, 16);
+  const low = Number.parseInt(match[3]!, 16);
+  return `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`;
 }
 
 function emptyInsight(local: Pick<EmailTrackingIpInsight, 'ipAddress' | 'ipFamily' | 'scope'>): EmailTrackingIpInsight {
