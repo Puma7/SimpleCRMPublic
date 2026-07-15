@@ -316,7 +316,9 @@ describe('server edition repository boundaries', () => {
     expect(caddyfile).toContain('header_up -x-simplecrm-role');
     expect(caddyfile).toContain('Content-Security-Policy');
     expect(caddyfile).toContain("frame-ancestors 'none'");
-    expect(caddyfile).toContain("connect-src 'self' https://challenges.cloudflare.com");
+    expect(caddyfile).toContain(
+      "connect-src 'self' ws://{http.request.host} wss://{http.request.host} https://challenges.cloudflare.com",
+    );
     expect(caddyfile).toContain('X-Content-Type-Options nosniff');
     expect(caddyfile).toContain('encode gzip zstd');
     expect(caddyfile).toContain('output file /var/log/access.log');
