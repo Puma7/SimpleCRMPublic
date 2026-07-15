@@ -24,9 +24,6 @@ services:
       dockerfile: docker/api.Dockerfile
     image: simplecrm/api:${VERSION:-dev}
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
       SIMPLECRM_MASTER_KEY: ${MASTER_KEY}
@@ -82,9 +79,10 @@ services:
   geoip-updater:
     image: ghcr.io/maxmind/geoipupdate:v7.1.1@sha256:45e15eb310528fd308c5c0abee9a8e6d580f1e2b1251e960dec2863dc7f0102f
     profiles: ["geoip"]
+    env_file:
+      - path: ${GEOIP_UPDATER_ENV_FILE:-.env.geoip}
+        required: false
     environment:
-      GEOIPUPDATE_ACCOUNT_ID: ${GEOIPUPDATE_ACCOUNT_ID:-}
-      GEOIPUPDATE_LICENSE_KEY: ${GEOIPUPDATE_LICENSE_KEY:-}
       GEOIPUPDATE_EDITION_IDS: "GeoLite2-Country GeoLite2-ASN"
       GEOIPUPDATE_FREQUENCY: "168"
     volumes:
@@ -115,9 +113,6 @@ services:
       dockerfile: docker/api.Dockerfile
     image: simplecrm/api:${VERSION:-dev}
     command: ["node", "packages/server/dist/cli/migrate.js"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
     depends_on:
@@ -128,9 +123,6 @@ services:
   backup:
     image: postgres:18-alpine
     profiles: ["backup"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       ATTACHMENTS_DIR: /data/attachments
@@ -155,9 +147,6 @@ services:
     image: postgres:18-alpine
     profiles: ["backup-scheduler"]
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       ATTACHMENTS_DIR: /data/attachments
@@ -182,9 +171,6 @@ services:
   restore:
     image: postgres:18-alpine
     profiles: ["restore"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       PG_RESTORE_ROLE: simplecrm_app
@@ -234,9 +220,6 @@ services:
   doctor:
     image: postgres:18-alpine
     profiles: ["doctor"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       BACKUP_DIR: /backups
@@ -252,9 +235,6 @@ services:
   restore-drill:
     image: postgres:18-alpine
     profiles: ["restore-drill"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       PG_APP_USER: simplecrm_app
