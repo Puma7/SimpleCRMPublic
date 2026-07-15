@@ -343,6 +343,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0027_email_evidence_tracking',
   '0028_auth_challenge_state',
   '0029_auto_reply_limits',
+  '0030_email_evidence_classification_v2',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1444,7 +1445,7 @@ describe('server edition foundation', () => {
     const result = await runRlsIsolationCheck(client);
 
     expect(result.status).toBe('passed');
-    expect(result.checks).toHaveLength((RLS_POLICY_COVERAGE_TABLES.length * 3) + 25);
+    expect(result.checks).toHaveLength((RLS_POLICY_COVERAGE_TABLES.length * 3) + 27);
     expect(result.checks.every((check) => check.status === 'passed')).toBe(true);
     expect(result.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'workspaces_rls_enabled', status: 'passed' }),
@@ -1458,6 +1459,8 @@ describe('server edition foundation', () => {
       expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_secret', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_reads_own_email_tracking_events', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_email_tracking_events', status: 'passed' }),
+      expect.objectContaining({ name: 'workspace_a_reads_own_email_tracking_event_classifications', status: 'passed' }),
+      expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_email_tracking_event_classifications', status: 'passed' }),
       expect.objectContaining({ name: 'public_tracking_token_without_hash_cannot_read_resolver', status: 'passed' }),
       expect.objectContaining({ name: 'public_tracking_token_wrong_hash_cannot_read_resolver', status: 'passed' }),
       expect.objectContaining({ name: 'public_tracking_token_matching_hash_reads_one_resolver', status: 'passed' }),
@@ -37775,6 +37778,7 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
     email_tracking_messages: [],
     email_tracking_links: [],
     email_tracking_events: [],
+    email_tracking_event_classifications: [],
     email_tracking_token_resolver: [],
   };
 
@@ -37912,6 +37916,11 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
         const table = trackingInsert[1]!;
         const rows = trackingRows[table];
         if (!rows) throw new Error(`Unhandled RLS tracking fixture table: ${table}`);
+        if (table === 'email_tracking_event_classifications') {
+          const workspaceId = assertRlsWorkspace(params?.[0]);
+          if (!rows.some((row) => row.workspaceId === workspaceId)) rows.push({ workspaceId });
+          return { rows: [] };
+        }
         const workspaceParamIndex = table === 'email_tracking_policies' || table === 'email_tracking_events' ? 0 : 1;
         const workspaceId = assertRlsWorkspace(params?.[workspaceParamIndex]);
         const tokenHash = table === 'email_tracking_token_resolver' ? String(params?.[0] ?? '') : undefined;
@@ -37947,6 +37956,14 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
         const rows = trackingRows[trackingWorkspaceCount[1]!] ?? [];
         const workspaceId = String(params?.[0]);
         const count = rows.filter((row) => (
+          row.workspaceId === workspaceId && canAccessWorkspace(row.workspaceId)
+        )).length;
+        return { rows: [{ count }] as readonly T[] };
+      }
+
+      if (normalized.startsWith('select count(*)::int as count from email_tracking_event_classifications classifications join email_tracking_events events')) {
+        const workspaceId = String(params?.[0]);
+        const count = trackingRows.email_tracking_event_classifications.filter((row) => (
           row.workspaceId === workspaceId && canAccessWorkspace(row.workspaceId)
         )).length;
         return { rows: [{ count }] as readonly T[] };
