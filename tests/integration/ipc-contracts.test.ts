@@ -14,6 +14,7 @@ describe('IPC contracts', () => {
     expect(AllowedInvokeChannels).toContain(IPCChannels.Mssql.TestConnection);
     expect(AllowedInvokeChannels).toContain(IPCChannels.Setup.GetDeployConfig);
     expect(AllowedInvokeChannels).toContain(IPCChannels.Setup.SaveDeployConfig);
+    expect(AllowedInvokeChannels).toContain(IPCChannels.Setup.ResetDeployConfig);
     expect(DeprecatedInvokeChannels).toContain(IPCChannels.Deals.UpdateProductQuantityLegacy);
   });
 
@@ -44,6 +45,8 @@ describe('IPC contracts', () => {
         server: { baseUrl: 'file:///tmp/simplecrm' },
       })
     ).toThrow();
+    expect(() => getPayloadSchema(IPCChannels.Setup.ResetDeployConfig).parse(undefined)).not.toThrow();
+    expect(() => getResultSchema(IPCChannels.Setup.ResetDeployConfig).parse({ success: true })).not.toThrow();
   });
 
   test('validates deal payload schemas', () => {

@@ -1,4 +1,4 @@
-import type { Kysely, Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
   buildSpamDecision,
@@ -74,6 +74,8 @@ const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
 const WORKFLOW_SPAM_SCORE_THRESHOLD_KEY = 'workflow_spam_score_threshold';
 const AUTO_REPLY_ENABLED_KEY = 'auto_reply_enabled';
+const AUTO_REPLY_MAX_PER_SENDER_PER_DAY_KEY = 'auto_reply_max_per_sender_per_day';
+const AUTO_REPLY_MAX_PER_SENDER_DEFAULT = 1;
 // Anti-loop (RFC 3834 spirit): never auto-reply to automated/no-reply senders.
 const AUTO_REPLY_NOREPLY_RE = /(^|[._+-])(no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounce|notifications?|automated)([._+-]|@)/i;
 const MAX_WORKFLOW_JTL_LOOKUP_LIMIT = 50;
@@ -3462,6 +3464,21 @@ async function loadAutoReplyEnabled(trx: WorkspaceTransaction, workspaceId: stri
   return value === '1' || value === 'true' || value === 'on';
 }
 
+async function loadAutoReplyMaxPerSenderPerDay(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<number> {
+  const row = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', AUTO_REPLY_MAX_PER_SENDER_PER_DAY_KEY)
+    .executeTakeFirst();
+  const parsed = Number(row?.value ?? '');
+  if (!Number.isFinite(parsed) || parsed < 1) return AUTO_REPLY_MAX_PER_SENDER_DEFAULT;
+  return Math.min(50, Math.floor(parsed));
+}
+
 /**
  * P1-4 auto-reply policy gate. Decides whether a message MAY be answered
  * automatically — all guards must pass: the workspace-level auto-reply switch is
@@ -3496,9 +3513,8 @@ async function evaluateWorkflowAutoReply(
   if (!sender || AUTO_REPLY_NOREPLY_RE.test(sender)) return block('noreply_sender');
   // Anti-Loop wie im Desktop-Gate: automatisch erzeugte Mails (RFC 3834:
   // Auto-Submitted/X-Auto-Response-Suppress/Precedence) und Newsletter
-  // (List-Header) nie automatisch beantworten. (Das Tageslimit pro Empfänger
-  // bleibt serverseitig bewusst nicht durchgesetzt — dokumentiertes
-  // Follow-up; die Einstellung wird im Server-Modus nicht angeboten.)
+  // (List-Header) nie automatisch beantworten. Das atomare Tageslimit wird
+  // erst beim Einplanen in email.send_draft reserviert, um TOCTOU-Races zu vermeiden.
   if (isUnsafeAutoReplyTarget(context.message.raw_headers)) return block('automated_sender');
   if (confidenceValue < minConfidence) return block('low_confidence');
 
@@ -4371,6 +4387,34 @@ async function sendWorkflowDraft(
     return { status: 'error', port: 'error', message: `Nachricht ${draftId} ist kein Entwurf` };
   }
 
+  if (context.direction === 'inbound') {
+    const accountId = Number(draftRow.account_id);
+    const recipient = normalizeEmailAddress(firstWorkflowRecipientAddress(draftRow.to_json));
+    const sourceMessageId = Number(context.messageId);
+    if (!Number.isInteger(accountId) || accountId <= 0 || !isAutoReplyRecipient(recipient)) {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_recipient_invalid' };
+    }
+    if (!Number.isInteger(sourceMessageId) || sourceMessageId <= 0) {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_source_missing' };
+    }
+    const reservation = await reserveServerAutoReplySlot(trx, {
+      workspaceId: context.workspaceId,
+      sourceMessageId,
+      draftMessageId: draftId,
+      accountId,
+      recipient,
+      replyDay: now.toISOString().slice(0, 10),
+      limit: await loadAutoReplyMaxPerSenderPerDay(trx, context.workspaceId),
+      now,
+    });
+    if (reservation === 'duplicate') {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_duplicate' };
+    }
+    if (reservation === 'rate_limited') {
+      return { status: 'skipped', port: 'default', message: 'auto_reply_rate_limited' };
+    }
+  }
+
   const runOutboundReview = config.runOutboundReview === true;
 
   // For runOutboundReview=false we have to reconcile the persisted body and
@@ -4476,6 +4520,81 @@ async function sendWorkflowDraft(
       'send_draft.with_review': runOutboundReview,
     },
   };
+}
+
+async function reserveServerAutoReplySlot(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    sourceMessageId: number;
+    draftMessageId: number;
+    accountId: number;
+    recipient: string;
+    replyDay: string;
+    limit: number;
+    now: Date;
+  },
+): Promise<'reserved' | 'duplicate' | 'rate_limited'> {
+  const reservation = await trx
+    .insertInto('email_auto_reply_reservations')
+    .values({
+      workspace_id: input.workspaceId,
+      source_message_id: input.sourceMessageId,
+      draft_message_id: input.draftMessageId,
+      account_id: input.accountId,
+      recipient: input.recipient,
+      reply_day: input.replyDay,
+      created_at: input.now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'source_message_id']).doNothing())
+    .returning('source_message_id')
+    .executeTakeFirst();
+  if (!reservation) return 'duplicate';
+
+  await trx
+    .insertInto('email_auto_reply_daily_counters')
+    .values({
+      workspace_id: input.workspaceId,
+      account_id: input.accountId,
+      recipient: input.recipient,
+      reply_day: input.replyDay,
+      reply_count: 0,
+      last_source_message_id: null,
+      last_draft_message_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'account_id', 'recipient', 'reply_day'])
+      .doNothing())
+    .execute();
+
+  const counter = await trx
+    .updateTable('email_auto_reply_daily_counters')
+    .set({
+      reply_count: sql<number>`reply_count + 1`,
+      last_source_message_id: input.sourceMessageId,
+      last_draft_message_id: input.draftMessageId,
+      updated_at: input.now,
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('account_id', '=', input.accountId)
+    .where('recipient', '=', input.recipient)
+    .where('reply_day', '=', input.replyDay)
+    .where('reply_count', '<', input.limit)
+    .returning('reply_count')
+    .executeTakeFirst();
+  if (counter) return 'reserved';
+
+  await trx
+    .deleteFrom('email_auto_reply_reservations')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('source_message_id', '=', input.sourceMessageId)
+    .execute();
+  return 'rate_limited';
+}
+
+function isAutoReplyRecipient(value: string): boolean {
+  return value.length <= 320 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
 }
 
 async function softDeleteWorkflowMessage(

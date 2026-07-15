@@ -4,6 +4,11 @@
 // Import directly from mail-parse (DB-free) instead of the server barrel — the
 // mail Jest preset doesn't transform kysely's ESM, and the barrel pulls in the
 // whole DB stack.
+import {
+  InboundMessageTooLargeError,
+  assertInboundRfc822Base64Size,
+  assertInboundRfc822Size,
+} from '@simplecrm/core';
 import { parseMailSource } from '../../packages/server/src/mail-parse';
 
 // Regression for "messages with attachments fail to import": the parser must
@@ -49,5 +54,22 @@ describe('parseMailSource json fields are jsonb-safe', () => {
     expect(typeof parsed.fromJson).toBe('string');
     expect(typeof parsed.toJson).toBe('string');
     expect(JSON.parse(parsed.fromJson as string)).toBeTruthy();
+  });
+
+  test('rejects oversized multipart sources before MIME expansion', async () => {
+    const source = Buffer.from(mime);
+    await expect(parseMailSource(source, source.length - 1)).rejects.toBeInstanceOf(InboundMessageTooLargeError);
+    await expect(parseMailSource(source, source.length)).resolves.toEqual(expect.objectContaining({
+      subject: 'With attachment',
+      hasAttachments: true,
+    }));
+  });
+
+  test('validates byte and stored base64 boundaries without large allocations', () => {
+    expect(() => assertInboundRfc822Size(10, 10)).not.toThrow();
+    expect(() => assertInboundRfc822Size(11, 10)).toThrow(InboundMessageTooLargeError);
+    expect(() => assertInboundRfc822Base64Size(Buffer.alloc(10).toString('base64'), 10)).not.toThrow();
+    expect(() => assertInboundRfc822Base64Size(Buffer.alloc(11).toString('base64'), 10))
+      .toThrow(InboundMessageTooLargeError);
   });
 });

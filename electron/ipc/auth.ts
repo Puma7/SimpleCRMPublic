@@ -34,6 +34,8 @@ interface AuthRouterOptions {
   getMainWindow?: () => import('electron').BrowserWindow | null;
 }
 
+const sessionCleanupSenders = new WeakSet<object>();
+
 function isMainRenderer(
   event: { sender: { id: number } },
   getMainWindow?: () => import('electron').BrowserWindow | null,
@@ -81,7 +83,13 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       });
       recordLocalLoginSuccess(row.id);
       touchSession(event.sender.id);
-      event.sender.once('destroyed', () => revokeSession(event.sender.id));
+      if (!sessionCleanupSenders.has(event.sender)) {
+        sessionCleanupSenders.add(event.sender);
+        event.sender.once('destroyed', () => {
+          sessionCleanupSenders.delete(event.sender);
+          revokeSession(event.sender.id);
+        });
+      }
       return {
         success: true as const,
         user: {

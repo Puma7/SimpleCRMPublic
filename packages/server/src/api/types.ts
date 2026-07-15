@@ -193,7 +193,7 @@ export type LoginSecurityApiPort = Readonly<{
     workspaceId: string,
     settings: AuthSecurityWorkspaceSettings,
   ): Promise<AuthSecurityWorkspaceSettings>;
-  getLoginConfig(email?: string): Promise<{
+  getLoginConfig(): Promise<{
     captcha: { enabled: boolean; provider: 'turnstile' | null; siteKey: string | null };
     pinKeypad: { enabled: boolean };
     mfa: { enabled: boolean; methods: readonly ('totp' | 'email')[] };
@@ -207,7 +207,8 @@ export type LoginSecurityApiPort = Readonly<{
     | { ok: true; challenge: string }
     | { ok: false; code: string }
   >;
-  assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): boolean;
+  assertCaptchaChallenge(input: { challenge: string | undefined; ip: string }): Promise<boolean>;
+  issueCaptchaContinuation(input: { ip: string }): string;
   assertLoginPin(input: {
     user: AuthUserRecord;
     workspaceSettings: AuthSecurityWorkspaceSettings;
@@ -1698,6 +1699,7 @@ export type EmailMessageRecord = {
   pgpStatus: string | null;
   remoteContentPolicy: string;
   readReceiptRequested: boolean;
+  postProcessDone?: boolean;
   snoozedUntil: string | null;
   draftAttachmentPathsJson?: string | null;
   replyParentMessageId?: number | null;
@@ -1805,6 +1807,18 @@ export type EmailDiagnosticsReport = {
     pendingPostProcess: number;
     outboundHold: number;
     byFolderKind: Record<string, number>;
+    oldestPendingPostProcessSeconds?: number | null;
+    pendingPostProcessSamples?: Array<{
+      id: number;
+      accountId: number | null;
+      subject: string | null;
+      ageSeconds: number;
+    }>;
+    failedScheduledSends?: Array<{
+      messageId: number;
+      failureCount: number;
+      lastError: string | null;
+    }>;
   };
   workflows: {
     runsLast24h: number;
@@ -1850,9 +1864,17 @@ export type EmailDiagnosticsReport = {
     protocol: string;
     inboxLastSyncedAt: string | null;
   }>;
+  operations?: {
+    inboundLagSeconds: number | null;
+    postProcessRetrying: number;
+    smtpCommitRecoveries: number;
+    mfaLocks?: number;
+  };
   jobQueue?: {
     ready: number;
     locked: number;
+    deadLetter?: number;
+    workflowDeadLetter?: number;
     lagSeconds: number;
     oldestLockedSeconds: number | null;
     samples: Array<{
@@ -1863,6 +1885,8 @@ export type EmailDiagnosticsReport = {
       lockedBy: string | null;
       lockedSeconds: number | null;
       lastError: string | null;
+      engine?: 'graphile' | 'legacy';
+      terminal?: boolean;
     }>;
   };
 };

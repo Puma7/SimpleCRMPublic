@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 
 export const ELECTRON_DEPLOY_CONFIG_VERSION = 1;
@@ -42,6 +42,7 @@ export type ElectronDeployConfigFilePort = Readonly<{
   readFile(path: string, encoding: 'utf8'): Promise<string>;
   writeFile(path: string, data: string, encoding: 'utf8'): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
 }>;
 
 export function buildElectronDeployConfigPath(userDataDir: string): string {
@@ -83,6 +84,17 @@ export async function writeElectronDeployConfig(
   return config;
 }
 
+export async function deleteElectronDeployConfig(
+  userDataDir: string,
+  filePort: ElectronDeployConfigFilePort = nodeFilePort,
+): Promise<void> {
+  try {
+    await filePort.unlink(buildElectronDeployConfigPath(userDataDir));
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+}
+
 export function normalizeElectronDeployConfig(input: unknown): ElectronDeployConfig {
   if (!isRecord(input)) throw new Error('deploy config must be an object');
   const mode = normalizeMode(input.mode);
@@ -112,8 +124,8 @@ export function normalizeElectronServerBaseUrl(value: unknown): string {
   } catch {
     throw new Error('server.baseUrl must be a valid URL');
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('server.baseUrl must use http or https');
+  if (parsed.protocol !== 'https:') {
+    throw new Error('server.baseUrl must use https');
   }
   parsed.pathname = parsed.pathname.replace(/\/+$/, '');
   parsed.search = '';
@@ -195,4 +207,5 @@ const nodeFilePort: ElectronDeployConfigFilePort = {
   readFile,
   writeFile,
   rename,
+  unlink,
 };

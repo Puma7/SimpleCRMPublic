@@ -3,6 +3,7 @@ import {
   listMessagesPendingPostProcess,
   markMessagePostProcessDone,
 } from './email-store';
+import { assertInboundRfc822Base64Size } from '@simplecrm/core';
 
 type ParsedAttachmentPart = {
   filename?: string;
@@ -73,6 +74,7 @@ export async function processNewMessagesAfterSync(
             if (!row.raw_rfc822_b64) {
               throw new Error('raw RFC822 unavailable for attachment recovery');
             }
+            assertInboundRfc822Base64Size(row.raw_rfc822_b64);
             const { simpleParser } = await import('mailparser');
             const parsed = await simpleParser(Buffer.from(row.raw_rfc822_b64, 'base64'));
             parsedAttachments = parsed.attachments;

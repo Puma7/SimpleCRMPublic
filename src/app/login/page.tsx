@@ -53,11 +53,13 @@ export default function LoginPage() {
   const [setupStateResolved, setSetupStateResolved] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isFetchingSetupToken, setIsFetchingSetupToken] = useState(false)
+  const [isResettingDeployConfig, setIsResettingDeployConfig] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loginConfig, setLoginConfig] = useState<ServerLoginConfig | null>(null)
   const [loginConfigResolved, setLoginConfigResolved] = useState(false)
   const [captchaPassed, setCaptchaPassed] = useState(false)
   const [loginPin, setLoginPin] = useState("")
+  const [loginPinRequired, setLoginPinRequired] = useState(false)
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null)
   const [mfaMethod, setMfaMethod] = useState<AuthMfaMethod | null>(null)
 
@@ -134,6 +136,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     setLoginPin("")
+    setLoginPinRequired(false)
   }, [username])
 
   useEffect(() => {
@@ -150,7 +153,7 @@ export default function LoginPage() {
     setLoginConfigResolved(false)
     void (async () => {
       try {
-        const config = await serverAuth.getLoginConfig(username.trim() || undefined)
+        const config = await serverAuth.getLoginConfig()
         if (cancelled) return
         setLoginConfig(config)
         const storedChallenge = readCaptchaChallenge()
@@ -172,7 +175,7 @@ export default function LoginPage() {
     return () => {
       cancelled = true
     }
-  }, [needsSetup, inviteToken, username])
+  }, [needsSetup, inviteToken])
 
   async function handleCaptchaVerify(token: string) {
     const serverAuth = getActiveServerAuthClient()
@@ -214,11 +217,22 @@ export default function LoginPage() {
       }
     }
     if (result.kind === "mfa_required") {
+      setLoginPinRequired(false)
       setMfaChallengeToken(result.mfaChallengeToken)
       setMfaMethod(result.mfaMethod)
       setLoginPin("")
       return
     }
+    if (result.kind === "pin_required") {
+      if (result.captchaChallenge) {
+        storeCaptchaChallenge(result.captchaChallenge)
+        setCaptchaPassed(true)
+      }
+      setLoginPinRequired(true)
+      setLoginPin("")
+      return
+    }
+    setLoginPinRequired(false)
     await refresh()
     rememberLoginEmail(loginIdentity)
     navigate({ to: "/" })
@@ -311,17 +325,10 @@ export default function LoginPage() {
           setupToken: setupToken.trim(),
         })
         rememberLoginEmail(setupEmail)
-        const loginResult = await login(setupEmail, setupPass)
-        if (loginResult.ok) {
-          setNeedsSetup(false)
-          setError(null)
-          navigate({ to: "/" })
-          return
-        }
         await refresh()
         setNeedsSetup(false)
-        setUsername(setupEmail)
-        setError(loginResult.error ?? "Einrichtung abgeschlossen. Bitte mit E-Mail und Passwort anmelden.")
+        setError(null)
+        navigate({ to: "/" })
         return
       }
       const res = await invokeIpc(IPCChannels.Auth.SetInitialPassword, {
@@ -375,6 +382,27 @@ export default function LoginPage() {
     }
   }
 
+  async function handleResetDeployConfig() {
+    setIsResettingDeployConfig(true)
+    setError(null)
+    try {
+      const result = await invokeIpc<{ success: boolean; error?: string }>(
+        IPCChannels.Setup.ResetDeployConfig,
+      )
+      if (!result.success) {
+        setError(result.error === 'deploy config reset was cancelled'
+          ? 'Die Server-Konfiguration wurde nicht geaendert.'
+          : result.error ?? 'Server-Konfiguration konnte nicht geaendert werden.')
+      }
+    } catch (resetError) {
+      setError(resetError instanceof Error
+        ? resetError.message
+        : 'Server-Konfiguration konnte nicht geaendert werden.')
+    } finally {
+      setIsResettingDeployConfig(false)
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const normalizedUsername = username.trim()
@@ -382,7 +410,7 @@ export default function LoginPage() {
       setError("Bitte geben Sie eine gueltige E-Mail-Adresse ein")
       return
     }
-    if (loginPinRequired(loginConfig)) {
+    if (loginPinRequired) {
       return
     }
     setIsLoading(true)
@@ -602,6 +630,17 @@ export default function LoginPage() {
               <Button type="submit" className="w-full" disabled={isLoading || !setupFormReady}>
                 {isLoading ? "…" : serverSetupMode ? "Owner-Konto anlegen" : "Passwort setzen"}
               </Button>
+              {hasElectron() ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleResetDeployConfig}
+                  disabled={isResettingDeployConfig || isLoading}
+                >
+                  Betriebsmodus oder Server-Verbindung ändern
+                </Button>
+              ) : null}
             </form>
           </CardContent>
         </Card>
@@ -686,17 +725,16 @@ export default function LoginPage() {
                 type="password"
                 autoComplete="current-password"
                 value={passphrase}
-                onChange={(e) => setPassphrase(e.target.value)}
+                onChange={(e) => {
+                  setPassphrase(e.target.value)
+                  setLoginPin("")
+                  setLoginPinRequired(false)
+                }}
                 required
               />
             </div>
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
-            {loginConfig?.pinKeypad.enabled && loginConfig.user && !loginConfig.user.pinRequired ? (
-              <p className="text-xs text-muted-foreground">
-                Fuer dieses Konto ist kein Login-PIN hinterlegt. Sie koennen sich mit dem normalen Anmelden-Button anmelden.
-              </p>
-            ) : null}
-            {loginPinRequired(loginConfig) ? (
+            {loginPinRequired ? (
               <LoginPinKeypad
                 value={loginPin}
                 onChange={setLoginPin}
@@ -711,14 +749,21 @@ export default function LoginPage() {
               </Button>
             )}
           </form>
+          {hasElectron() ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-4 w-full"
+              onClick={handleResetDeployConfig}
+              disabled={isResettingDeployConfig || isLoading}
+            >
+              Betriebsmodus oder Server-Verbindung ändern
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </div>
   )
-}
-
-function loginPinRequired(config: ServerLoginConfig | null): boolean {
-  return config?.user?.pinRequired === true
 }
 
 function getInviteTokenFromLocation(): string {

@@ -35,6 +35,14 @@ type MessageStatsRow = {
   total: CountValue;
   pending_post_process: CountValue;
   outbound_hold: CountValue;
+  oldest_pending_post_process_seconds: CountValue | null;
+};
+
+type PendingPostProcessRow = {
+  id: CountValue;
+  account_id: CountValue | null;
+  subject: string | null;
+  age_seconds: CountValue;
 };
 
 type WorkflowStatsRow = {
@@ -62,6 +70,10 @@ type AccountDiagnosticsRow = {
 
 const UID_VALIDITY_NOTICE_PREFIX = 'uidvalidity_notice:';
 const IMAP_AUTH_NOTICE_PREFIX = 'imap_auth_notice:';
+const SCHEDULED_SEND_STATUS_PREFIX = 'scheduled_send_status:';
+const SCHEDULED_SEND_FAILURES_PREFIX = 'scheduled_send_failures:';
+const SCHEDULED_SEND_LAST_ERROR_PREFIX = 'scheduled_send_last_error:';
+const SMTP_COMMIT_PREFIX = 'email_compose_smtp_ok:';
 
 export function createPostgresMailDiagnosticsPort(
   options: PostgresMailDiagnosticsPortOptions,
@@ -98,7 +110,8 @@ async function collectDiagnostics(
 ): Promise<Omit<EmailDiagnosticsReport, 'sizes'>> {
   const schemaGeneration = serverMigrations.length;
   const latestMigration = serverMigrations[schemaGeneration - 1];
-  const messageStats = await selectMessageStats(trx, workspaceId);
+  const messageStats = await selectMessageStats(trx, workspaceId, now);
+  const pendingPostProcessSamples = await selectPendingPostProcessSamples(trx, workspaceId, now);
   const byFolderKind = await selectFolderKindCounts(trx, workspaceId);
   const workflowStats = await selectWorkflowStats(trx, workspaceId, now);
   const trappingOutbound = await selectTrappingOutboundWorkflows(trx, workspaceId);
@@ -109,8 +122,9 @@ async function collectDiagnostics(
   const aiUsageByNodeType24h = await selectAiUsageByNodeType(trx, workspaceId, since24h);
   const syncInfoRows = await selectSyncInfoRows(trx, workspaceId);
   const accounts = await selectAccounts(trx, workspaceId);
-  const jobQueue = await selectJobQueueStats(trx, workspaceId, now);
-
+  const legacyJobQueue = await selectLegacyJobQueueStats(trx, workspaceId, now);
+  const graphileJobQueue = await selectGraphileJobQueueStats(trx, workspaceId, now);
+  const jobQueue = mergeJobQueueDiagnostics(graphileJobQueue, legacyJobQueue);
   return {
     collectedAt: now.toISOString(),
     schemaGeneration,
@@ -122,6 +136,16 @@ async function collectDiagnostics(
       pendingPostProcess: countValue(messageStats?.pending_post_process),
       outboundHold: countValue(messageStats?.outbound_hold),
       byFolderKind,
+      oldestPendingPostProcessSeconds: messageStats?.oldest_pending_post_process_seconds == null
+        ? null
+        : countValue(messageStats.oldest_pending_post_process_seconds),
+      pendingPostProcessSamples: pendingPostProcessSamples.map((row) => ({
+        id: countValue(row.id),
+        accountId: row.account_id == null ? null : countValue(row.account_id),
+        subject: row.subject,
+        ageSeconds: countValue(row.age_seconds),
+      })),
+      failedScheduledSends: scheduledSendFailuresFromSyncInfo(syncInfoRows),
     },
     workflows: {
       runsLast24h: countValue(workflowStats?.runs_last_24h),
@@ -151,13 +175,27 @@ async function collectDiagnostics(
       idleImapAccountIds: [],
     },
     accounts,
-    jobQueue,
+    operations: {
+      inboundLagSeconds: inboundLagSeconds(accounts, now),
+      postProcessRetrying: jobQueue.postProcessRetrying,
+      smtpCommitRecoveries: syncInfoRows.filter((row) => row.key.startsWith(SMTP_COMMIT_PREFIX)).length,
+    },
+    jobQueue: {
+      ready: jobQueue.ready,
+      locked: jobQueue.locked,
+      deadLetter: jobQueue.deadLetter,
+      workflowDeadLetter: jobQueue.workflowDeadLetter,
+      lagSeconds: jobQueue.lagSeconds,
+      oldestLockedSeconds: jobQueue.oldestLockedSeconds,
+      samples: jobQueue.samples,
+    },
   };
 }
 
 async function selectMessageStats(
   trx: WorkspaceTransaction,
   workspaceId: string,
+  now: Date,
 ): Promise<MessageStatsRow | undefined> {
   return trx
     .selectFrom('email_messages')
@@ -169,9 +207,37 @@ async function selectMessageStats(
       kyselySql<CountValue>`
         coalesce(sum(case when outbound_hold = true then 1 else 0 end), 0)
       `.as('outbound_hold'),
+      kyselySql<CountValue | null>`
+        case when count(*) filter (where post_process_done = false) = 0 then null
+        else greatest(0, extract(epoch from (
+          ${now} - min(updated_at) filter (where post_process_done = false)
+        ))::integer) end
+      `.as('oldest_pending_post_process_seconds'),
     ])
     .where('workspace_id', '=', workspaceId)
     .executeTakeFirst();
+}
+
+async function selectPendingPostProcessSamples(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  now: Date,
+): Promise<PendingPostProcessRow[]> {
+  return trx
+    .selectFrom('email_messages')
+    .select([
+      'id',
+      'account_id',
+      'subject',
+      kyselySql<CountValue>`
+        greatest(0, extract(epoch from (${now} - updated_at))::integer)
+      `.as('age_seconds'),
+    ])
+    .where('workspace_id', '=', workspaceId)
+    .where('post_process_done', '=', false)
+    .orderBy('updated_at', 'asc')
+    .limit(8)
+    .execute() as Promise<PendingPostProcessRow[]>;
 }
 
 async function selectFolderKindCounts(
@@ -316,7 +382,18 @@ async function selectSyncInfoRows(
 ): Promise<SyncInfoKeyRow[]> {
   return trx
     .selectFrom('sync_info')
-    .select(['key', 'value'])
+    .select([
+      'key',
+      kyselySql<string | null>`case
+        when key like ${`${UID_VALIDITY_NOTICE_PREFIX}%`}
+          or key like ${`${IMAP_AUTH_NOTICE_PREFIX}%`}
+          or key like ${`${SCHEDULED_SEND_STATUS_PREFIX}%`}
+          or key like ${`${SCHEDULED_SEND_FAILURES_PREFIX}%`}
+          or key like ${`${SCHEDULED_SEND_LAST_ERROR_PREFIX}%`}
+        then left(value, 65536)
+        else null
+      end`.as('value'),
+    ])
     .where('workspace_id', '=', workspaceId)
     .execute();
 }
@@ -426,6 +503,39 @@ function positiveIntOrFallback(value: unknown, fallback: number): number | null 
   return null;
 }
 
+export function scheduledSendFailuresFromSyncInfo(
+  rows: readonly SyncInfoKeyRow[],
+): NonNullable<EmailDiagnosticsReport['messages']['failedScheduledSends']> {
+  const values = new Map(rows.map((row) => [row.key, row.value]));
+  const failures: NonNullable<EmailDiagnosticsReport['messages']['failedScheduledSends']> = [];
+  for (const row of rows) {
+    if (!row.key.startsWith(SCHEDULED_SEND_STATUS_PREFIX) || row.value !== 'failed') continue;
+    const messageId = Number(row.key.slice(SCHEDULED_SEND_STATUS_PREFIX.length));
+    if (!Number.isSafeInteger(messageId) || messageId <= 0) continue;
+    failures.push({
+      messageId,
+      failureCount: countValue(values.get(`${SCHEDULED_SEND_FAILURES_PREFIX}${messageId}`) ?? 0),
+      lastError: values.get(`${SCHEDULED_SEND_LAST_ERROR_PREFIX}${messageId}`)?.slice(0, 500) ?? null,
+    });
+  }
+  return failures.sort((left, right) => left.messageId - right.messageId).slice(0, 20);
+}
+
+export function inboundLagSeconds(
+  accounts: EmailDiagnosticsReport['accounts'],
+  now: Date,
+): number | null {
+  let oldestLag: number | null = null;
+  for (const account of accounts) {
+    if (!account.inboxLastSyncedAt) continue;
+    const timestamp = Date.parse(account.inboxLastSyncedAt);
+    if (!Number.isFinite(timestamp)) continue;
+    const lag = Math.max(0, Math.trunc((now.getTime() - timestamp) / 1000));
+    oldestLag = oldestLag === null ? lag : Math.max(oldestLag, lag);
+  }
+  return oldestLag;
+}
+
 function countValue(value: CountValue | undefined): number {
   const count = typeof value === 'bigint' ? Number(value) : Number(value ?? 0);
   return Number.isFinite(count) && count >= 0 ? Math.trunc(count) : 0;
@@ -439,6 +549,9 @@ function timestampToIsoOrNull(value: Date | string | null): string | null {
 type JobQueueStatsRow = {
   ready: CountValue;
   locked: CountValue;
+  dead_letter: CountValue;
+  workflow_dead_letter: CountValue;
+  post_process_retrying: CountValue;
   lag_seconds: CountValue;
   oldest_locked_seconds: CountValue | null;
 };
@@ -453,22 +566,58 @@ type JobQueueSampleRow = {
   last_error: string | null;
 };
 
-async function selectJobQueueStats(
+export type JobQueueDiagnostics = Readonly<{
+  ready: number;
+  locked: number;
+  deadLetter: number;
+  workflowDeadLetter: number;
+  postProcessRetrying: number;
+  lagSeconds: number;
+  oldestLockedSeconds: number | null;
+  samples: Array<{
+    id: number;
+    type: string;
+    attempts: number;
+    maxAttempts: number;
+    lockedBy: string | null;
+    lockedSeconds: number | null;
+    lastError: string | null;
+    engine: 'graphile' | 'legacy';
+    terminal: boolean;
+  }>;
+}>;
+
+async function selectLegacyJobQueueStats(
   trx: WorkspaceTransaction,
   workspaceId: string,
   now: Date,
-): Promise<NonNullable<EmailDiagnosticsReport['jobQueue']>> {
+): Promise<JobQueueDiagnostics> {
   const stats = await trx
     .selectFrom('job_queue')
     .select([
       kyselySql<CountValue>`
-        count(*) filter (where locked_at is null and run_after <= ${now})
+        count(*) filter (
+          where locked_at is null and run_after <= ${now} and attempts < max_attempts
+        )
       `.as('ready'),
       kyselySql<CountValue>`
         count(*) filter (where locked_at is not null)
       `.as('locked'),
       kyselySql<CountValue>`
-        coalesce(extract(epoch from max(${now} - run_after))::integer, 0)
+        count(*) filter (where attempts >= max_attempts)
+      `.as('dead_letter'),
+      kyselySql<CountValue>`
+        count(*) filter (where attempts >= max_attempts and type like 'workflow.%')
+      `.as('workflow_dead_letter'),
+      kyselySql<CountValue>`
+        count(*) filter (
+          where type = 'mail.spam.score' and attempts > 0 and attempts < max_attempts
+        )
+      `.as('post_process_retrying'),
+      kyselySql<CountValue>`
+        coalesce(extract(epoch from max(${now} - run_after) filter (
+          where locked_at is null and run_after <= ${now} and attempts < max_attempts
+        ))::integer, 0)
       `.as('lag_seconds'),
       kyselySql<CountValue | null>`
         max(extract(epoch from (${now} - locked_at))::integer)
@@ -494,7 +643,11 @@ async function selectJobQueueStats(
     .where('workspace_id', '=', workspaceId)
     .where((eb) => eb.or([
       eb('locked_at', 'is not', null),
-      eb('run_after', '<=', now),
+      eb.and([
+        eb('run_after', '<=', now),
+        eb('attempts', '<', eb.ref('max_attempts')),
+      ]),
+      eb('attempts', '>=', eb.ref('max_attempts')),
     ]))
     .orderBy('locked_at', 'desc')
     .orderBy('run_after', 'asc')
@@ -504,6 +657,9 @@ async function selectJobQueueStats(
   return {
     ready: countValue(stats?.ready),
     locked: countValue(stats?.locked),
+    deadLetter: countValue(stats?.dead_letter),
+    workflowDeadLetter: countValue(stats?.workflow_dead_letter),
+    postProcessRetrying: countValue(stats?.post_process_retrying),
     lagSeconds: countValue(stats?.lag_seconds),
     oldestLockedSeconds: stats?.oldest_locked_seconds == null
       ? null
@@ -516,7 +672,123 @@ async function selectJobQueueStats(
       lockedBy: row.locked_by,
       lockedSeconds: row.locked_seconds == null ? null : countValue(row.locked_seconds),
       lastError: row.last_error?.slice(0, 240) ?? null,
+      engine: 'legacy' as const,
+      terminal: countValue(row.attempts) >= countValue(row.max_attempts),
     })),
+  };
+}
+
+async function selectGraphileJobQueueStats(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  now: Date,
+): Promise<JobQueueDiagnostics> {
+  const relation = await kyselySql<{ relation: string | null }>`
+    select to_regclass('graphile_worker._private_jobs')::text as relation
+  `.execute(trx);
+  if (!relation.rows[0]?.relation) return emptyJobQueueDiagnostics();
+
+  const statsResult = await kyselySql<JobQueueStatsRow>`
+    with workspace_jobs as (
+      select jobs.*, tasks.identifier as type
+      from graphile_worker._private_jobs jobs
+      inner join graphile_worker._private_tasks tasks on tasks.id = jobs.task_id
+      where jobs.payload->>'workspaceId' = ${workspaceId}
+    )
+    select
+      count(*) filter (
+        where locked_at is null and run_at <= ${now} and attempts < max_attempts
+      ) as ready,
+      count(*) filter (where locked_at is not null) as locked,
+      count(*) filter (where attempts >= max_attempts) as dead_letter,
+      count(*) filter (where attempts >= max_attempts and type like 'workflow.%') as workflow_dead_letter,
+      count(*) filter (
+        where type = 'mail.spam.score' and attempts > 0 and attempts < max_attempts
+      ) as post_process_retrying,
+      coalesce(extract(epoch from max(${now} - run_at) filter (
+        where locked_at is null and run_at <= ${now} and attempts < max_attempts
+      ))::integer, 0) as lag_seconds,
+      max(extract(epoch from (${now} - locked_at))::integer) as oldest_locked_seconds
+    from workspace_jobs
+  `.execute(trx);
+  const stats = statsResult.rows[0];
+
+  const sampleResult = await kyselySql<JobQueueSampleRow>`
+    select
+      jobs.id,
+      tasks.identifier as type,
+      jobs.attempts,
+      jobs.max_attempts,
+      jobs.locked_by::text as locked_by,
+      jobs.last_error,
+      case when jobs.locked_at is null then null
+        else extract(epoch from (${now} - jobs.locked_at))::integer end as locked_seconds
+    from graphile_worker._private_jobs jobs
+    inner join graphile_worker._private_tasks tasks on tasks.id = jobs.task_id
+    where jobs.payload->>'workspaceId' = ${workspaceId}
+      and (
+        jobs.locked_at is not null
+        or (jobs.run_at <= ${now} and jobs.attempts < jobs.max_attempts)
+        or jobs.attempts >= jobs.max_attempts
+      )
+    order by (jobs.attempts >= jobs.max_attempts) desc, jobs.locked_at desc nulls last, jobs.run_at asc
+    limit 8
+  `.execute(trx);
+
+  return {
+    ready: countValue(stats?.ready),
+    locked: countValue(stats?.locked),
+    deadLetter: countValue(stats?.dead_letter),
+    workflowDeadLetter: countValue(stats?.workflow_dead_letter),
+    postProcessRetrying: countValue(stats?.post_process_retrying),
+    lagSeconds: countValue(stats?.lag_seconds),
+    oldestLockedSeconds: stats?.oldest_locked_seconds == null
+      ? null
+      : countValue(stats.oldest_locked_seconds),
+    samples: sampleResult.rows.map((row) => ({
+      id: countValue(row.id),
+      type: row.type,
+      attempts: countValue(row.attempts),
+      maxAttempts: countValue(row.max_attempts),
+      lockedBy: row.locked_by,
+      lockedSeconds: row.locked_seconds == null ? null : countValue(row.locked_seconds),
+      lastError: row.last_error?.slice(0, 240) ?? null,
+      engine: 'graphile' as const,
+      terminal: countValue(row.attempts) >= countValue(row.max_attempts),
+    })),
+  };
+}
+
+function emptyJobQueueDiagnostics(): JobQueueDiagnostics {
+  return {
+    ready: 0,
+    locked: 0,
+    deadLetter: 0,
+    workflowDeadLetter: 0,
+    postProcessRetrying: 0,
+    lagSeconds: 0,
+    oldestLockedSeconds: null,
+    samples: [],
+  };
+}
+
+export function mergeJobQueueDiagnostics(
+  left: JobQueueDiagnostics,
+  right: JobQueueDiagnostics,
+): JobQueueDiagnostics {
+  const lockedAges = [left.oldestLockedSeconds, right.oldestLockedSeconds]
+    .filter((value): value is number => value !== null);
+  return {
+    ready: left.ready + right.ready,
+    locked: left.locked + right.locked,
+    deadLetter: left.deadLetter + right.deadLetter,
+    workflowDeadLetter: left.workflowDeadLetter + right.workflowDeadLetter,
+    postProcessRetrying: left.postProcessRetrying + right.postProcessRetrying,
+    lagSeconds: Math.max(left.lagSeconds, right.lagSeconds),
+    oldestLockedSeconds: lockedAges.length > 0 ? Math.max(...lockedAges) : null,
+    samples: [...left.samples, ...right.samples]
+      .sort((a, b) => Number(b.terminal) - Number(a.terminal))
+      .slice(0, 8),
   };
 }
 

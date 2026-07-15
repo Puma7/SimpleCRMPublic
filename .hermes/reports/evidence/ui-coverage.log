@@ -5,15 +5,15 @@ $ npm run test:ui:coverage && node scripts/check-ui-coverage-ratchet.mjs
 
 
 =============================== Coverage summary ===============================
-Statements   : 13.47% ( 3473/25776 )
-Branches     : 59.96% ( 388/647 )
-Functions    : 26.96% ( 72/267 )
-Lines        : 13.47% ( 3473/25776 )
+Statements   : 13.78% ( 3576/25950 )
+Branches     : 60% ( 399/665 )
+Functions    : 27.23% ( 73/268 )
+Lines        : 13.78% ( 3576/25950 )
 ================================================================================
 
-Test Suites: 219 passed, 219 total
-Tests:       1845 passed, 1845 total
+Test Suites: 228 passed, 228 total
+Tests:       1886 passed, 1886 total
 Snapshots:   1 passed, 1 total
-Time:        21.686 s
+Time:        26.106 s
 Ran all test suites.
-Email UI coverage meets baseline: { statements: 13.47, branches: 59.96, functions: 26.96, lines: 13.47 }
+Email UI coverage meets baseline: { statements: 13.78, branches: 60, functions: 27.23, lines: 13.78 }

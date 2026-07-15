@@ -101,4 +101,25 @@ describe('ComposeQuillEditor', () => {
     inst.root.innerHTML = '<p><br></p>';
     expect(ref.current!.getHtml()).toBe('');
   });
+
+  test('sanitizes external HTML, editor changes, and imperative output', () => {
+    const onChange = jest.fn();
+    const ref = createRef<ComposeQuillEditorHandle>();
+    render(
+      <ComposeQuillEditor
+        value={'<p>Safe</p><img src="x" onerror="alert(1)"><script>alert(2)</script>'}
+        onChange={onChange}
+        ref={ref}
+      />,
+    );
+    const inst = mockQuillInstances[0]!;
+
+    expect(inst.root.innerHTML).toContain('<p>Safe</p>');
+    expect(inst.root.innerHTML).not.toMatch(/onerror|script/i);
+
+    inst.root.innerHTML = '<p onclick="alert(3)">Changed</p><script>alert(4)</script>';
+    act(() => inst.handlers['text-change']!());
+    expect(onChange).toHaveBeenLastCalledWith('<p>Changed</p>');
+    expect(ref.current!.getHtml()).toBe('<p>Changed</p>');
+  });
 });

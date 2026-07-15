@@ -3,9 +3,11 @@ import {
   buildServerAuthSession,
   clearServerAuthSession,
   getServerAccessToken,
-  getServerRefreshToken,
+  readLegacyServerRefreshToken,
   readServerAuthSession,
+  readServerCsrfToken,
   saveServerAuthSession,
+  saveServerCsrfToken,
   type BrowserStorageLike,
   type ServerAuthSession,
   type ServerAuthUser,
@@ -36,15 +38,12 @@ export type ServerLoginConfig = {
     enabled: boolean
     methods: AuthMfaMethod[]
   }
-  user: {
-    pinRequired: boolean
-    mfaRequired: boolean
-    mfaMethod: AuthMfaMethod | null
-  } | null
+  user: null
 }
 
 export type ServerLoginResult =
   | { kind: "session"; session: ServerAuthSession }
+  | { kind: "pin_required"; captchaChallenge?: string }
   | {
       kind: "mfa_required"
       mfaMethod: AuthMfaMethod
@@ -61,7 +60,7 @@ export type ServerAuthSecuritySettings = {
 
 export type ServerAuthClient = {
   getSetupState(): Promise<ServerAuthSetupState>
-  getLoginConfig(email?: string): Promise<ServerLoginConfig>
+  getLoginConfig(): Promise<ServerLoginConfig>
   verifyCaptcha(token: string): Promise<string>
   createInitialOwner(input: ServerInitialOwnerInput): Promise<ServerAuthSession>
   getInvitation(token: string): Promise<ServerAuthInvitation>
@@ -137,9 +136,10 @@ export type ServerInvitationAcceptInput = {
 type AuthResponseBody = {
   user: ServerAuthUser
   tokens: ServerTokenPair
+  csrfToken: string
 }
 
-type LoginResponseBody = AuthResponseBody | {
+type LoginResponseBody = AuthResponseBody | { pinRequired: true; captchaChallenge?: string } | {
   mfaRequired: true
   mfaMethod: AuthMfaMethod
   mfaChallengeToken: string
@@ -159,9 +159,15 @@ export class ServerAuthClientError extends Error {
   }
 }
 
+const refreshOperations = new Map<string, Promise<ServerAuthSession | null>>()
+const refreshStorageIds = new WeakMap<object, number>()
+let nextRefreshStorageId = 1
+
 export function createServerAuthClient(options: ServerAuthClientOptions): ServerAuthClient {
   const baseUrl = normalizeBaseUrl(options.baseUrl)
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
+  const refreshOrigin = new URL(baseUrl).origin
+  const refreshOperationKey = serverRefreshOperationKey(refreshOrigin, options.storage)
 
   return {
     async getSetupState(): Promise<ServerAuthSetupState> {
@@ -170,9 +176,8 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
       })
     },
 
-    async getLoginConfig(email?: string): Promise<ServerLoginConfig> {
-      const query = email?.trim() ? `?email=${encodeURIComponent(email.trim().toLowerCase())}` : ""
-      return request<ServerLoginConfig>(fetchImpl, baseUrl, `/api/v1/auth/login-config${query}`, {
+    async getLoginConfig(): Promise<ServerLoginConfig> {
+      return request<ServerLoginConfig>(fetchImpl, baseUrl, "/api/v1/auth/login-config", {
         method: "GET",
       })
     },
@@ -202,7 +207,7 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         tokens: body.tokens,
         now: options.now?.(),
       })
-      saveServerAuthSession(session, options.storage, options.accessTokenStorage)
+      saveServerAuthSession(session, body.csrfToken, options.storage, options.accessTokenStorage, baseUrl)
       return session
     },
 
@@ -233,7 +238,7 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         tokens: body.tokens,
         now: options.now?.(),
       })
-      saveServerAuthSession(session, options.storage, options.accessTokenStorage)
+      saveServerAuthSession(session, body.csrfToken, options.storage, options.accessTokenStorage, baseUrl)
       return session
     },
 
@@ -263,6 +268,14 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
           mfaChallengeToken: body.mfaChallengeToken,
         }
       }
+      if ("pinRequired" in body && body.pinRequired) {
+        return {
+          kind: "pin_required",
+          ...(typeof body.captchaChallenge === "string"
+            ? { captchaChallenge: body.captchaChallenge }
+            : {}),
+        }
+      }
       if (!("user" in body) || !("tokens" in body)) {
         throw new ServerAuthClientError("Ungueltige Login-Antwort", { code: "invalid_login_response" })
       }
@@ -271,7 +284,7 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         tokens: body.tokens,
         now: options.now?.(),
       })
-      saveServerAuthSession(session, options.storage, options.accessTokenStorage)
+      saveServerAuthSession(session, body.csrfToken, options.storage, options.accessTokenStorage, baseUrl)
       return { kind: "session", session }
     },
 
@@ -289,7 +302,7 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         tokens: body.tokens,
         now: options.now?.(),
       })
-      saveServerAuthSession(session, options.storage, options.accessTokenStorage)
+      saveServerAuthSession(session, body.csrfToken, options.storage, options.accessTokenStorage, baseUrl)
       return session
     },
 
@@ -338,50 +351,110 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
     },
 
     async refresh(): Promise<ServerAuthSession | null> {
-      const refreshToken = getServerRefreshToken(options.storage)
-      if (!refreshToken) return null
-      try {
-        const body = await request<AuthResponseBody>(fetchImpl, baseUrl, "/api/v1/auth/refresh", {
-          method: "POST",
-          body: { refreshToken },
-        })
-        const session = buildServerAuthSession({
-          user: body.user,
-          tokens: body.tokens,
-          now: options.now?.(),
-        })
-        saveServerAuthSession(session, options.storage, options.accessTokenStorage)
-        return session
-      } catch (error) {
-        if (error instanceof ServerAuthClientError && error.status === 401) {
-          clearServerAuthSession(options.storage, options.accessTokenStorage)
+      return coalesceServerRefresh(refreshOperationKey, refreshOrigin, async () => {
+        const legacyRefreshToken = readLegacyServerRefreshToken(options.storage)
+        let csrfToken = readServerCsrfToken(options.storage, baseUrl)
+        try {
+          if (!legacyRefreshToken && !csrfToken) {
+            const bootstrap = await request<{ csrfToken: string }>(fetchImpl, baseUrl, "/api/v1/auth/csrf", {
+              method: "GET",
+            })
+            csrfToken = bootstrap.csrfToken
+            saveServerCsrfToken(csrfToken, options.storage, baseUrl)
+          }
+          const body = await request<AuthResponseBody>(fetchImpl, baseUrl, "/api/v1/auth/refresh", {
+            method: "POST",
+            ...(legacyRefreshToken ? { body: { refreshToken: legacyRefreshToken } } : {}),
+            headers: legacyRefreshToken
+              ? { "X-SimpleCRM-Session-Migration": "1" }
+              : { "X-CSRF-Token": csrfToken ?? "" },
+          })
+          const session = buildServerAuthSession({
+            user: body.user,
+            tokens: body.tokens,
+            now: options.now?.(),
+          })
+          saveServerAuthSession(session, body.csrfToken, options.storage, options.accessTokenStorage, baseUrl)
+          return session
+        } catch (error) {
+          if (error instanceof ServerAuthClientError && error.status === 401) {
+            clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
+          }
+          throw error
         }
-        throw error
-      }
+      })
     },
 
     async logout(): Promise<{ revoked: boolean }> {
-      const refreshToken = getServerRefreshToken(options.storage)
-      if (!refreshToken) {
-        clearServerAuthSession(options.storage, options.accessTokenStorage)
+      const accessToken = getServerAccessToken(options.storage, options.accessTokenStorage, baseUrl)
+      const legacyRefreshToken = readLegacyServerRefreshToken(options.storage)
+      let csrfToken = readServerCsrfToken(options.storage, baseUrl)
+      if (!accessToken && !csrfToken && !legacyRefreshToken) {
+        clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
         return { revoked: false }
       }
       try {
-        const accessToken = getServerAccessToken(options.storage, options.accessTokenStorage)
+        if (!csrfToken && !legacyRefreshToken) {
+          const bootstrap = await request<{ csrfToken: string }>(fetchImpl, baseUrl, "/api/v1/auth/csrf", {
+            method: "GET",
+          })
+          csrfToken = bootstrap.csrfToken
+        }
         return await request<{ revoked: boolean }>(fetchImpl, baseUrl, "/api/v1/auth/logout", {
           method: "POST",
-          body: { refreshToken },
           accessToken,
+          ...(legacyRefreshToken ? { body: { refreshToken: legacyRefreshToken } } : {}),
+          headers: legacyRefreshToken
+            ? {
+                "X-SimpleCRM-Session-Migration": "1",
+                ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+              }
+            : { "X-CSRF-Token": csrfToken ?? "" },
         })
       } finally {
-        clearServerAuthSession(options.storage, options.accessTokenStorage)
+        clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
       }
     },
 
     getSession(): ServerAuthSession | null {
-      return readServerAuthSession(options.storage)
+      return readServerAuthSession(options.storage, baseUrl)
     },
   }
+}
+
+function serverRefreshOperationKey(
+  origin: string,
+  storage: BrowserStorageLike | null | undefined,
+): string {
+  if (!storage) return `${origin}:default`
+  let id = refreshStorageIds.get(storage as object)
+  if (id === undefined) {
+    id = nextRefreshStorageId
+    nextRefreshStorageId += 1
+    refreshStorageIds.set(storage as object, id)
+  }
+  return `${origin}:storage-${id}`
+}
+
+function coalesceServerRefresh(
+  key: string,
+  origin: string,
+  operation: () => Promise<ServerAuthSession | null>,
+): Promise<ServerAuthSession | null> {
+  const active = refreshOperations.get(key)
+  if (active) return active
+  const pending = withBrowserRefreshLock(origin, operation)
+  refreshOperations.set(key, pending)
+  void pending.finally(() => {
+    if (refreshOperations.get(key) === pending) refreshOperations.delete(key)
+  }).catch(() => undefined)
+  return pending
+}
+
+async function withBrowserRefreshLock<T>(origin: string, operation: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined
+  if (!locks) return operation()
+  return locks.request(`simplecrm-auth-refresh:${origin}`, operation)
 }
 
 async function request<T>(
@@ -392,6 +465,7 @@ async function request<T>(
     method: "GET" | "POST" | "PATCH" | "DELETE"
     body?: unknown
     accessToken?: string | null
+    headers?: Record<string, string>
   },
 ): Promise<T> {
   if (!fetchImpl) {
@@ -401,6 +475,7 @@ async function request<T>(
   }
   const headers: Record<string, string> = {
     Accept: "application/json",
+    ...(options.headers ?? {}),
   }
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json"
@@ -409,6 +484,7 @@ async function request<T>(
   const response = await fetchImpl(new URL(path, baseUrl).toString(), {
     method: options.method,
     headers,
+    credentials: "include",
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
   })
   const body = await parseResponseBody(response)

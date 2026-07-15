@@ -5,6 +5,7 @@ import Quill from "quill"
 import "quill/dist/quill.snow.css"
 import "@/styles/compose-quill.css"
 import { cn } from "@/lib/utils"
+import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 export type ComposeQuillEditorHandle = {
   /** Latest HTML from the editor DOM (avoids stale React state on save/close). */
@@ -59,8 +60,9 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
     const syncHtmlFromQuill = () => {
       const quill = quillRef.current
       if (!quill) return
+      const html = sanitizeEmailHtml(quill.root.innerHTML)
       onChangeRef.current(
-        quill.root.innerHTML === "<p><br></p>" ? "" : quill.root.innerHTML,
+        html === "<p><br></p>" ? "" : html,
       )
     }
 
@@ -68,7 +70,7 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       getHtml: () => {
         const quill = quillRef.current
         if (!quill) return ""
-        const html = quill.root.innerHTML
+        const html = sanitizeEmailHtml(quill.root.innerHTML)
         return html === "<p><br></p>" ? "" : html
       },
       getSelectionText: () => {
@@ -153,13 +155,13 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
 
       if (value) {
         syncingExternalRef.current = true
-        quill.clipboard.dangerouslyPasteHTML(value)
+        quill.clipboard.dangerouslyPasteHTML(sanitizeEmailHtml(value))
         syncingExternalRef.current = false
       }
 
       quill.on("text-change", () => {
         if (syncingExternalRef.current) return
-        const html = quill.root.innerHTML
+        const html = sanitizeEmailHtml(quill.root.innerHTML)
         onChangeRef.current(html === "<p><br></p>" ? "" : html)
       })
 
@@ -186,11 +188,12 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
       const quill = quillRef.current
       if (!quill) return
       const current = quill.root.innerHTML
-      const normalized = value || "<p><br></p>"
+      const safeValue = sanitizeEmailHtml(value)
+      const normalized = safeValue || "<p><br></p>"
       if (current === normalized || (value === "" && current === "<p><br></p>")) return
       syncingExternalRef.current = true
-      if (value) {
-        quill.clipboard.dangerouslyPasteHTML(value)
+      if (safeValue) {
+        quill.clipboard.dangerouslyPasteHTML(safeValue)
       } else {
         quill.setText("")
       }

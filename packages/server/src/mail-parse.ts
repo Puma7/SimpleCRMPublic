@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import {
   addressJson,
+  assertInboundRfc822Size,
   formatDate,
   parseAttachmentsMeta,
   plainTextFromHtml,
@@ -111,7 +112,11 @@ export function parsedAttachmentsForStorage(
   return stored;
 }
 
-export async function parseMailSource(source: Buffer): Promise<ServerMailSyncParsedMessage> {
+export async function parseMailSource(
+  source: Buffer,
+  maxBytes?: number,
+): Promise<ServerMailSyncParsedMessage> {
+  assertInboundRfc822Size(source.length, maxBytes);
   const { simpleParser } = require('mailparser') as {
     simpleParser(input: Buffer): Promise<{
       messageId?: string;

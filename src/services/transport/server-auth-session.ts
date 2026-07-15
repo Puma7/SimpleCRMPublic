@@ -1,5 +1,7 @@
+/** Legacy keys are retained only so one upgrade can remove old bearer tokens. */
 export const SERVER_AUTH_SESSION_STORAGE_KEY = "simplecrm.serverAuthSession.v1"
 export const SERVER_ACCESS_TOKEN_STORAGE_KEY = "simplecrm.accessToken"
+export const SERVER_CSRF_TOKEN_STORAGE_KEY = "simplecrm.serverCsrf.v1"
 
 export type ServerAuthUser = {
   id: string
@@ -9,9 +11,9 @@ export type ServerAuthUser = {
   role: string
 }
 
+/** Refresh tokens are HttpOnly cookies and are intentionally absent here. */
 export type ServerTokenPair = {
   accessToken: string
-  refreshToken: string
   expiresInSeconds: number
 }
 
@@ -23,6 +25,15 @@ export type ServerAuthSession = {
 }
 
 export type BrowserStorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">
+
+type StoredServerCsrfToken = {
+  version: 1
+  origin: string
+  token: string
+}
+
+let activeSession: ServerAuthSession | null = null
+let activeSessionOrigin: string | null = null
 
 export function buildServerAuthSession(input: {
   user: ServerAuthUser
@@ -40,47 +51,104 @@ export function buildServerAuthSession(input: {
 
 export function saveServerAuthSession(
   session: ServerAuthSession,
+  csrfToken: string,
   storage: BrowserStorageLike | null = getPersistentStorage(),
   accessTokenStorage: BrowserStorageLike | null = getAccessTokenStorage(),
+  serverUrl?: string | null,
 ): void {
-  storage?.setItem(SERVER_AUTH_SESSION_STORAGE_KEY, JSON.stringify(session))
-  accessTokenStorage?.setItem(SERVER_ACCESS_TOKEN_STORAGE_KEY, session.tokens.accessToken)
+  activeSession = session
+  activeSessionOrigin = normalizeServerOrigin(serverUrl)
+  // Remove tokens written by pre-cookie releases as soon as a new session is accepted.
+  storage?.removeItem(SERVER_AUTH_SESSION_STORAGE_KEY)
+  accessTokenStorage?.removeItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)
+  saveServerCsrfToken(csrfToken, storage, serverUrl)
 }
 
 export function readServerAuthSession(
-  storage: BrowserStorageLike | null = getPersistentStorage(),
+  _storage: BrowserStorageLike | null = getPersistentStorage(),
+  serverUrl?: string | null,
 ): ServerAuthSession | null {
-  const raw = storage?.getItem(SERVER_AUTH_SESSION_STORAGE_KEY)
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw)
-    return isServerAuthSession(parsed) ? parsed : null
-  } catch {
-    return null
-  }
+  return sessionMatchesOrigin(serverUrl) ? activeSession : null
 }
 
 export function clearServerAuthSession(
   storage: BrowserStorageLike | null = getPersistentStorage(),
   accessTokenStorage: BrowserStorageLike | null = getAccessTokenStorage(),
+  serverUrl?: string | null,
 ): void {
-  storage?.removeItem(SERVER_AUTH_SESSION_STORAGE_KEY)
-  accessTokenStorage?.removeItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)
+  if (sessionMatchesOrigin(serverUrl)) {
+    activeSession = null
+    activeSessionOrigin = null
+    storage?.removeItem(SERVER_AUTH_SESSION_STORAGE_KEY)
+    accessTokenStorage?.removeItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)
+  }
+  clearServerCsrfToken(storage, serverUrl)
 }
 
 export function getServerAccessToken(
-  storage: BrowserStorageLike | null = getPersistentStorage(),
-  accessTokenStorage: BrowserStorageLike | null = getAccessTokenStorage(),
+  _storage: BrowserStorageLike | null = getPersistentStorage(),
+  _accessTokenStorage: BrowserStorageLike | null = getAccessTokenStorage(),
+  serverUrl?: string | null,
 ): string | null {
-  const accessToken = accessTokenStorage?.getItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)
-  if (accessToken) return accessToken
-  return readServerAuthSession(storage)?.tokens.accessToken ?? null
+  return sessionMatchesOrigin(serverUrl) ? activeSession?.tokens.accessToken ?? null : null
 }
 
-export function getServerRefreshToken(
+export function readServerCsrfToken(
+  storage: BrowserStorageLike | null = getPersistentStorage(),
+  serverUrl?: string | null,
+): string | null {
+  const raw = storage?.getItem(SERVER_CSRF_TOKEN_STORAGE_KEY)?.trim()
+  if (!raw) return null
+  const origin = normalizeServerOrigin(serverUrl)
+  if (origin === null) return raw
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed)) return null
+    return parsed.version === 1
+      && parsed.origin === origin
+      && typeof parsed.token === "string"
+      && parsed.token.trim()
+      ? parsed.token.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+export function saveServerCsrfToken(
+  csrfToken: string,
+  storage: BrowserStorageLike | null = getPersistentStorage(),
+  serverUrl?: string | null,
+): void {
+  const normalized = csrfToken.trim()
+  if (!normalized) {
+    clearServerCsrfToken(storage, serverUrl)
+    return
+  }
+  const origin = normalizeServerOrigin(serverUrl)
+  const value: string | StoredServerCsrfToken = origin === null
+    ? normalized
+    : { version: 1, origin, token: normalized }
+  storage?.setItem(
+    SERVER_CSRF_TOKEN_STORAGE_KEY,
+    typeof value === "string" ? value : JSON.stringify(value),
+  )
+}
+
+/** Read a pre-cookie refresh token once; callers remove it only after successful migration. */
+export function readLegacyServerRefreshToken(
   storage: BrowserStorageLike | null = getPersistentStorage(),
 ): string | null {
-  return readServerAuthSession(storage)?.tokens.refreshToken ?? null
+  const raw = storage?.getItem(SERVER_AUTH_SESSION_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    if (!isRecord(parsed) || !isRecord(parsed.tokens)) return null
+    const token = parsed.tokens.refreshToken
+    return typeof token === "string" && token.trim() ? token.trim() : null
+  } catch {
+    return null
+  }
 }
 
 function getPersistentStorage(): BrowserStorageLike | null {
@@ -101,22 +169,40 @@ function getAccessTokenStorage(): BrowserStorageLike | null {
   }
 }
 
-function isServerAuthSession(value: unknown): value is ServerAuthSession {
-  if (!isRecord(value) || !isRecord(value.user) || !isRecord(value.tokens)) return false
-  return (
-    typeof value.user.id === "string" &&
-    typeof value.user.workspaceId === "string" &&
-    typeof value.user.email === "string" &&
-    typeof value.user.displayName === "string" &&
-    typeof value.user.role === "string" &&
-    typeof value.tokens.accessToken === "string" &&
-    typeof value.tokens.refreshToken === "string" &&
-    typeof value.tokens.expiresInSeconds === "number" &&
-    typeof value.savedAt === "string" &&
-    typeof value.expiresAt === "string"
-  )
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function sessionMatchesOrigin(serverUrl: string | null | undefined): boolean {
+  const requestedOrigin = normalizeServerOrigin(serverUrl)
+  return requestedOrigin === null || activeSessionOrigin === null || requestedOrigin === activeSessionOrigin
+}
+
+function clearServerCsrfToken(
+  storage: BrowserStorageLike | null,
+  serverUrl: string | null | undefined,
+): void {
+  const origin = normalizeServerOrigin(serverUrl)
+  if (origin === null) {
+    storage?.removeItem(SERVER_CSRF_TOKEN_STORAGE_KEY)
+    return
+  }
+  const raw = storage?.getItem(SERVER_CSRF_TOKEN_STORAGE_KEY)?.trim()
+  if (!raw) return
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (isRecord(parsed) && parsed.version === 1 && parsed.origin !== origin) return
+  } catch {
+    // Legacy unscoped CSRF values must not survive an origin-aware clear.
+  }
+  storage?.removeItem(SERVER_CSRF_TOKEN_STORAGE_KEY)
+}
+
+function normalizeServerOrigin(serverUrl: string | null | undefined): string | null {
+  if (!serverUrl?.trim()) return null
+  try {
+    return new URL(serverUrl).origin
+  } catch {
+    return `invalid:${serverUrl.trim()}`
+  }
 }

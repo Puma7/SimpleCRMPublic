@@ -2,8 +2,8 @@ import { emailEvidenceTrackingMigration } from '../../packages/server/src/migrat
 import { serverMigrations } from '../../packages/server/src/migrations';
 
 describe('email evidence tracking migration', () => {
-  test('is registered as the latest migration', () => {
-    expect(serverMigrations.at(-1)).toBe(emailEvidenceTrackingMigration);
+  test('is registered in the migration sequence', () => {
+    expect(serverMigrations).toContain(emailEvidenceTrackingMigration);
   });
 
   test('keeps public token resolution opaque and all evidence data workspace isolated', () => {

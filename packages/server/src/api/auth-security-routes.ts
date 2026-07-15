@@ -6,6 +6,7 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './http';
+import { authSessionData } from './auth-session-cookie';
 
 export async function handleAuthSecurityRoute(
   req: ApiRequest,
@@ -60,8 +61,7 @@ async function handleLoginConfig(req: ApiRequest, ports: ServerApiPorts): Promis
       user: null,
     });
   }
-  const email = typeof req.query?.email === 'string' ? req.query.email : undefined;
-  const config = await ports.loginSecurity.getLoginConfig(email);
+  const config = await ports.loginSecurity.getLoginConfig();
   return data(200, config);
 }
 
@@ -114,10 +114,9 @@ async function handleMfaVerify(req: ApiRequest, ports: ServerApiPorts): Promise<
       mfaMethod: 'verified',
     },
   });
-  return data(200, {
+  return authSessionData(req, 200, {
     user: publicUser(result.user),
-    tokens: result.tokens,
-  });
+  }, result.tokens);
 }
 
 async function handleGetSecuritySettings(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

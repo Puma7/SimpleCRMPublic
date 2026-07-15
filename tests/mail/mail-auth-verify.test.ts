@@ -76,6 +76,18 @@ describe('mail-auth-verify', () => {
     expect(r.spf).toBe('unknown');
   });
 
+  test('returns a bounded error when mailauth never settles', async () => {
+    (authenticate as jest.Mock).mockImplementation(() => new Promise(() => undefined));
+    const r = await verifyMailAuthentication({
+      rawHeaders: 'From: a@b.de',
+      bodyText: 'x',
+      bodyHtml: null,
+      timeoutMs: 5,
+    });
+    expect(r.error).toBe('Mailauth Timeout');
+    expect(r.spf).toBe('unknown');
+  });
+
   test('isAuthFailure', () => {
     expect(isAuthFailure('fail')).toBe(true);
     expect(isAuthFailure('permerror')).toBe(true);

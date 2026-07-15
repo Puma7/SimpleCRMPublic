@@ -259,6 +259,7 @@ const MAIL_ROUTES: readonly MailRouteEntry[] = [
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft-recovery-state$/, handler: (req, ports, params) => handleComposeDraftRecoveryState(req, ports, params[0]) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-failure$/, handler: (req, ports, params) => handleScheduledSendDraftFailureClear(req, ports, params[0]) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send\/retry$/, handler: (req, ports, params) => handleScheduledSendDraftRetry(req, ports, params[0]) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/post-process\/retry$/, handler: (req, ports, params) => handleMessagePostProcessRetry(req, ports, params[0]) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/, handler: (req, ports, params) => handleScheduledSendDraftSchedule(req, ports, params[0]) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/, handler: (req, ports, params) => handleThreadMessageList(req, ports, params[0]) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/, handler: (req, ports, params) => handleMessageSpamDecisionMutation(req, ports, params[0]) },
@@ -1241,6 +1242,54 @@ async function handleMailDiagnostics(req: ApiRequest, ports: ServerApiPorts): Pr
     workspaceId: principal.workspaceId,
   });
   return data(200, sanitizeMailDiagnostics(report));
+}
+
+async function handleMessagePostProcessRetry(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  const messageId = positiveIntFromPath(rawId);
+  if (messageId === null) return error(400, 'invalid_email_message_id', 'email message id muss eine positive Ganzzahl sein');
+  if (!ports.emailMessages) return error(503, 'email_messages_unavailable', 'Email message API nicht konfiguriert');
+  if (!ports.jobQueue) return error(503, 'job_queue_unavailable', 'Job queue API nicht konfiguriert');
+
+  const message = await ports.emailMessages.get({
+    workspaceId: principal.workspaceId,
+    id: messageId,
+    includeBody: false,
+  });
+  if (!message) return error(404, 'email_message_not_found', 'Email message nicht gefunden');
+  if (message.postProcessDone === true) {
+    return error(409, 'email_message_post_process_complete', 'Post-Process ist bereits abgeschlossen');
+  }
+
+  await ports.jobQueue.enqueue({
+    workspaceId: principal.workspaceId,
+    type: 'mail.spam.score',
+    payload: {
+      workspaceId: principal.workspaceId,
+      messageId,
+      actorUserId: principal.userId,
+      applyStatus: true,
+      runSecurityCheck: true,
+      enqueueInboundWorkflows: true,
+    },
+    maxAttempts: 3,
+  });
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'email.post_process.retry_queued',
+    entityType: 'email_message',
+    entityId: String(messageId),
+    metadata: {},
+  });
+  return data(200, { success: true });
 }
 
 async function handleEmailReporting(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -2572,6 +2621,28 @@ function sanitizeMailDiagnostics(report: EmailDiagnosticsReport): EmailDiagnosti
       pendingPostProcess: safeCount(report.messages.pendingPostProcess),
       outboundHold: safeCount(report.messages.outboundHold),
       byFolderKind: sanitizeCountMap(report.messages.byFolderKind),
+      ...(report.messages.oldestPendingPostProcessSeconds !== undefined
+        ? { oldestPendingPostProcessSeconds: safeNullableCount(report.messages.oldestPendingPostProcessSeconds) }
+        : {}),
+      ...(Array.isArray(report.messages.pendingPostProcessSamples)
+        ? {
+            pendingPostProcessSamples: report.messages.pendingPostProcessSamples.slice(0, 20).map((message) => ({
+              id: safeCount(message.id),
+              accountId: safeNullableCount(message.accountId),
+              subject: typeof message.subject === 'string' ? message.subject.slice(0, 300) : null,
+              ageSeconds: safeCount(message.ageSeconds),
+            })),
+          }
+        : {}),
+      ...(Array.isArray(report.messages.failedScheduledSends)
+        ? {
+            failedScheduledSends: report.messages.failedScheduledSends.slice(0, 20).map((failure) => ({
+              messageId: safeCount(failure.messageId),
+              failureCount: safeCount(failure.failureCount),
+              lastError: typeof failure.lastError === 'string' ? failure.lastError.slice(0, 500) : null,
+            })),
+          }
+        : {}),
     },
     workflows: {
       runsLast24h: safeCount(report.workflows.runsLast24h),
@@ -2617,6 +2688,41 @@ function sanitizeMailDiagnostics(report: EmailDiagnosticsReport): EmailDiagnosti
       protocol: typeof account.protocol === 'string' ? account.protocol.slice(0, 20) : 'imap',
       inboxLastSyncedAt: typeof account.inboxLastSyncedAt === 'string' ? account.inboxLastSyncedAt : null,
     })),
+    ...(report.operations
+      ? {
+          operations: {
+            inboundLagSeconds: safeNullableCount(report.operations.inboundLagSeconds),
+            postProcessRetrying: safeCount(report.operations.postProcessRetrying),
+            smtpCommitRecoveries: safeCount(report.operations.smtpCommitRecoveries),
+            ...(report.operations.mfaLocks == null
+              ? {}
+              : { mfaLocks: safeCount(report.operations.mfaLocks) }),
+          },
+        }
+      : {}),
+    ...(report.jobQueue
+      ? {
+          jobQueue: {
+            ready: safeCount(report.jobQueue.ready),
+            locked: safeCount(report.jobQueue.locked),
+            deadLetter: safeCount(report.jobQueue.deadLetter),
+            workflowDeadLetter: safeCount(report.jobQueue.workflowDeadLetter),
+            lagSeconds: safeCount(report.jobQueue.lagSeconds),
+            oldestLockedSeconds: safeNullableCount(report.jobQueue.oldestLockedSeconds),
+            samples: report.jobQueue.samples.slice(0, 20).map((job) => ({
+              id: safeCount(job.id),
+              type: typeof job.type === 'string' ? job.type.slice(0, 100) : '',
+              attempts: safeCount(job.attempts),
+              maxAttempts: safeCount(job.maxAttempts),
+              lockedBy: typeof job.lockedBy === 'string' ? job.lockedBy.slice(0, 200) : null,
+              lockedSeconds: safeNullableCount(job.lockedSeconds),
+              lastError: typeof job.lastError === 'string' ? job.lastError.slice(0, 500) : null,
+              engine: job.engine === 'graphile' ? 'graphile' as const : 'legacy' as const,
+              terminal: job.terminal === true,
+            })),
+          },
+        }
+      : {}),
   };
 }
 

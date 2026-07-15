@@ -71,7 +71,14 @@ const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELET
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
 const SERVER_JSON_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
 const CORS_ALLOWED_METHODS = [...SUPPORTED_METHODS, 'OPTIONS'].join(', ');
-const CORS_ALLOWED_HEADERS = ['Accept', 'Authorization', 'Content-Type', 'Sec-WebSocket-Protocol'].join(', ');
+const CORS_ALLOWED_HEADERS = [
+  'Accept',
+  'Authorization',
+  'Content-Type',
+  'Sec-WebSocket-Protocol',
+  'X-CSRF-Token',
+  'X-SimpleCRM-Session-Migration',
+].join(', ');
 const CORS_MAX_AGE_SECONDS = '600';
 // Response headers a cross-origin renderer's Fetch may read. `Retry-After` on a
 // 429 is non-safelisted, so without exposing it `response.headers.get()` returns
@@ -195,6 +202,7 @@ function applyCorsHeaders(
   if (!allowedOrigins.has(origin)) return false;
   reply.header('Vary', 'Origin');
   reply.header('Access-Control-Allow-Origin', origin);
+  reply.header('Access-Control-Allow-Credentials', 'true');
   reply.header('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
   reply.header('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
   reply.header('Access-Control-Expose-Headers', CORS_EXPOSED_HEADERS);

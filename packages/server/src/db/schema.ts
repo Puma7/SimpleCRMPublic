@@ -12,6 +12,9 @@ export type ServerDatabase = {
   refresh_tokens: RefreshTokensTable;
   auth_login_failures: AuthLoginFailuresTable;
   auth_mfa_email_codes: AuthMfaEmailCodesTable;
+  auth_challenge_tokens: AuthChallengeTokensTable;
+  email_auto_reply_reservations: EmailAutoReplyReservationsTable;
+  email_auto_reply_daily_counters: EmailAutoReplyDailyCountersTable;
   conversation_locks: ConversationLocksTable;
   job_queue: JobQueueTable;
   sync_info: SyncInfoTable;
@@ -88,6 +91,27 @@ export type AiReplyFeedbackTable = {
   sent_len: number;
   changed_ratio: number;
   created_at: TimestampColumn;
+};
+
+export type EmailAutoReplyReservationsTable = {
+  workspace_id: string;
+  source_message_id: number;
+  draft_message_id: number | null;
+  account_id: number;
+  recipient: string;
+  reply_day: string;
+  created_at: TimestampColumn;
+};
+
+export type EmailAutoReplyDailyCountersTable = {
+  workspace_id: string;
+  account_id: number;
+  recipient: string;
+  reply_day: string;
+  reply_count: number;
+  last_source_message_id: number | null;
+  last_draft_message_id: number | null;
+  updated_at: TimestampColumn;
 };
 
 export type AiUsageEventsTable = {
@@ -176,6 +200,15 @@ export type AuthMfaEmailCodesTable = {
   expires_at: TimestampColumn;
   consumed_at: TimestampColumn | null;
   created_at: TimestampColumn;
+};
+
+export type AuthChallengeTokensTable = {
+  purpose: 'captcha' | 'mfa';
+  token_hash: string;
+  attempt_count: number;
+  consumed_at: TimestampColumn | null;
+  expires_at: TimestampColumn;
+  updated_at: TimestampColumn;
 };
 
 export type AuthInvitationsTable = {

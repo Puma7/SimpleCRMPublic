@@ -1,0 +1,832 @@
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml up -d --build postgres migrate api caddy
+ postgres Pulling
+ postgres Pulled
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.59kB 0.0s done
+#1 DONE 0.0s
+
+#2 [migrate internal] load build definition from api.Dockerfile
+#2 transferring dockerfile: 1.29kB done
+#2 DONE 0.1s
+
+#3 [caddy internal] load build definition from web.Dockerfile
+#3 transferring dockerfile: 1.07kB done
+#3 DONE 0.1s
+
+#4 [api internal] load metadata for docker.io/library/node:24-alpine
+#4 ...
+
+#5 [caddy internal] load metadata for docker.io/library/node:24
+#5 DONE 1.7s
+
+#6 [caddy internal] load metadata for docker.io/library/caddy:2
+#6 DONE 1.7s
+
+#4 [api internal] load metadata for docker.io/library/node:24-alpine
+#4 DONE 1.7s
+
+#7 [migrate internal] load .dockerignore
+#7 transferring context: 286B done
+#7 DONE 0.1s
+
+#8 [migrate internal] load build context
+#8 DONE 0.0s
+
+#9 [migrate build 1/9] FROM docker.io/library/node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+#9 resolve docker.io/library/node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+#9 resolve docker.io/library/node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd 0.1s done
+#9 sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd 3.87kB / 3.87kB done
+#9 sha256:4ba75f835bb8802193e4c114572113d4b26f95f6f094f4b5229d2a77773e0afc 1.72kB / 1.72kB done
+#9 sha256:91d56b2d4e1cf23103d90b0b024c1f489c288f9c3aba1042dd7279503b367de6 6.52kB / 6.52kB done
+#9 ...
+
+#8 [migrate internal] load build context
+#8 transferring context: 8.87MB 2.3s done
+#8 DONE 2.4s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 resolve docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f 0.1s done
+#10 sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f 3.88kB / 3.88kB done
+#10 sha256:4e9cb555d708e0829c9d93e5eeae9dfab0617b832ca436a690680e0fca735ef5 2.49kB / 2.49kB done
+#10 sha256:fcd0f74fb415c75280d0d6d26ed68c57b6498f56f6ebcf47aecdfe7970a33861 6.73kB / 6.73kB done
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 16.78MB / 48.50MB 2.5s
+#10 sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a 16.78MB / 24.04MB 2.5s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 14.68MB / 64.41MB 2.5s
+#10 sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a 18.87MB / 24.04MB 2.8s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 19.92MB / 48.50MB 2.9s
+#10 sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a 20.97MB / 24.04MB 3.1s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 19.92MB / 64.41MB 3.1s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 23.07MB / 48.50MB 3.3s
+#10 sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a 23.07MB / 24.04MB 3.3s
+#10 sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a 24.04MB / 24.04MB 3.4s done
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 0B / 211.63MB 3.5s
+#10 ...
+
+#11 [caddy internal] load build context
+#11 transferring context: 19.17MB 3.7s done
+#11 DONE 3.8s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 26.21MB / 48.50MB 3.7s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 25.17MB / 64.41MB 3.7s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 29.36MB / 48.50MB 4.0s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 29.36MB / 64.41MB 4.1s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 32.51MB / 48.50MB 4.3s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 35.65MB / 48.50MB 4.6s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 34.60MB / 64.41MB 4.6s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 38.80MB / 48.50MB 4.9s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 12.58MB / 211.63MB 4.9s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 38.80MB / 64.41MB 5.0s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 41.94MB / 48.50MB 5.2s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 42.99MB / 64.41MB 5.4s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 45.09MB / 48.50MB 5.5s
+#10 sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 48.50MB / 48.50MB 5.9s done
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 48.23MB / 64.41MB 5.9s
+#10 sha256:1d16e26333c51d432a005b1249d1dd1a284f6a5c90d0a790faee640b80beebf6 0B / 3.32kB 5.9s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 24.12MB / 211.63MB 6.0s
+#10 extracting sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 0.1s
+#10 sha256:1d16e26333c51d432a005b1249d1dd1a284f6a5c90d0a790faee640b80beebf6 3.32kB / 3.32kB 6.0s done
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 0B / 58.95MB 6.1s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 53.48MB / 64.41MB 6.4s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 3.15MB / 58.95MB 6.6s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 58.72MB / 64.41MB 7.0s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 6.29MB / 58.95MB 7.0s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 35.65MB / 211.63MB 7.3s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 9.44MB / 58.95MB 7.4s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 62.91MB / 64.41MB 7.6s
+#10 sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 64.41MB / 64.41MB 7.8s done
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 12.58MB / 58.95MB 7.8s
+#10 sha256:1b351d1b9ffdc0cd1381bd8884a78f6d3c120aecd002deec6cabb8caca1c9704 0B / 1.25MB 7.8s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 15.73MB / 58.95MB 8.1s
+#10 sha256:1b351d1b9ffdc0cd1381bd8884a78f6d3c120aecd002deec6cabb8caca1c9704 1.25MB / 1.25MB 8.1s done
+#10 sha256:7bf355e8dbdb6fb1a8ce3ce927e3d70077a0c0a6cd94705f24fa2bfe114c7148 0B / 446B 8.1s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 18.87MB / 58.95MB 8.3s
+#10 sha256:7bf355e8dbdb6fb1a8ce3ce927e3d70077a0c0a6cd94705f24fa2bfe114c7148 446B / 446B 8.2s done
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 48.23MB / 211.63MB 8.5s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 22.02MB / 58.95MB 8.6s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 25.17MB / 58.95MB 8.9s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 29.36MB / 58.95MB 9.3s
+#10 extracting sha256:c4013e1e38341061b49f51c4b44f2e534c25135d7ed5b75af8b2094766bb5519 3.4s done
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 59.77MB / 211.63MB 9.5s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 32.51MB / 58.95MB 9.5s
+#10 extracting sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 35.65MB / 58.95MB 9.8s
+#10 ...
+
+#12 [caddy stage-1 1/3] FROM docker.io/library/caddy:2@sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d
+#12 resolve docker.io/library/caddy:2@sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d 0.1s done
+#12 sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d 9.63kB / 9.63kB done
+#12 sha256:98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a3411ad798f7a423a 1.92kB / 1.92kB done
+#12 sha256:af555904a0961945f16bb323a501457b13a4f7e9bde969b145b97da80b38ecbe 6.96kB / 6.96kB done
+#12 sha256:e6f31ffc071e5560b82a8685fba8214954e5721e3e49269d00958316edbe89fe 3.84MB / 3.84MB 8.8s done
+#12 extracting sha256:e6f31ffc071e5560b82a8685fba8214954e5721e3e49269d00958316edbe89fe 0.1s done
+#12 sha256:f8432a27d0751eb996e29e368c282dbfd2d97e5b744ad940ed9a08b6300318af 2.76MB / 2.76MB 9.3s done
+#12 extracting sha256:f8432a27d0751eb996e29e368c282dbfd2d97e5b744ad940ed9a08b6300318af 0.1s done
+#12 sha256:ee31d5a470f0e64a85c28c82ad55a5bd6b5359db59197c76b9daba7f36c288e9 7.50kB / 7.50kB 9.5s done
+#12 extracting sha256:ee31d5a470f0e64a85c28c82ad55a5bd6b5359db59197c76b9daba7f36c288e9 done
+#12 sha256:a0449c657909db1625317d13589fcd22909d657bdc6357101428c90acce4e929 0B / 17.29MB 9.7s
+#12 sha256:a0449c657909db1625317d13589fcd22909d657bdc6357101428c90acce4e929 2.10MB / 17.29MB 9.9s
+#12 ...
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 38.80MB / 58.95MB 10.1s
+#10 extracting sha256:bd0ec93c9c52acfa7f522ce201898ba8ebdf67a6d01c6a4ea70e8d413dbc534a 0.7s done
+#10 extracting sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 41.94MB / 58.95MB 10.4s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 71.30MB / 211.63MB 10.6s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 45.09MB / 58.95MB 10.8s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 49.28MB / 58.95MB 11.2s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 52.43MB / 58.95MB 11.5s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 82.84MB / 211.63MB 11.7s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 55.57MB / 58.95MB 11.7s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 58.72MB / 58.95MB 12.0s
+#10 sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 58.95MB / 58.95MB 12.1s done
+#10 ...
+
+#12 [caddy stage-1 1/3] FROM docker.io/library/caddy:2@sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d
+#12 sha256:a0449c657909db1625317d13589fcd22909d657bdc6357101428c90acce4e929 17.29MB / 17.29MB 11.4s done
+#12 extracting sha256:a0449c657909db1625317d13589fcd22909d657bdc6357101428c90acce4e929 0.4s done
+#12 sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 32B / 32B 11.6s done
+#12 extracting sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 done
+#12 DONE 12.4s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 94.37MB / 211.63MB 12.7s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 105.91MB / 211.63MB 13.5s
+#10 extracting sha256:2dd2dd4f152bd44fe5b02de3e47483f6cdf32bf3d7ea1c7cc70d57b075f2eebd 3.3s done
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 118.49MB / 211.63MB 14.4s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 131.07MB / 211.63MB 15.3s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 142.61MB / 211.63MB 15.9s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 155.19MB / 211.63MB 16.4s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 167.77MB / 211.63MB 16.9s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 179.31MB / 211.63MB 17.4s
+#10 ...
+
+#9 [api build 1/9] FROM docker.io/library/node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+#9 sha256:7e2a5e2761f53b694faaee16c5ad1e400cb41224f693337aac52e74bee3b2f65 52.52MB / 52.52MB 15.6s done
+#9 sha256:57eb903fc7a4b0006b1253f877823b15c51433ccd41a20392812682211c46a6c 1.26MB / 1.26MB 12.4s done
+#9 sha256:21af007bacf625b557dda6dbce062088808612be54a955980b3d8efb8ea7d082 448B / 448B 12.5s done
+#9 extracting sha256:7e2a5e2761f53b694faaee16c5ad1e400cb41224f693337aac52e74bee3b2f65 1.8s done
+#9 extracting sha256:57eb903fc7a4b0006b1253f877823b15c51433ccd41a20392812682211c46a6c 0.0s done
+#9 extracting sha256:21af007bacf625b557dda6dbce062088808612be54a955980b3d8efb8ea7d082 done
+#9 DONE 18.1s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 195.04MB / 211.63MB 18.0s
+#10 ...
+
+#13 [migrate build 2/9] WORKDIR /app
+#13 DONE 0.3s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 ...
+
+#13 [api build 2/9] WORKDIR /app
+#13 DONE 0.3s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 209.72MB / 211.63MB 18.6s
+#10 sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 211.63MB / 211.63MB 18.7s done
+#10 extracting sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 0.1s
+#10 ...
+
+#14 [api build 3/9] RUN npm install -g pnpm@11.12.0
+#14 3.030
+#14 3.030 added 24 packages in 3s
+#14 3.030
+#14 3.030 3 packages are looking for funding
+#14 3.030   run `npm fund` for details
+#14 3.033 npm notice
+#14 3.033 npm notice New major version of npm available! 11.16.0 -> 12.0.1
+#14 3.033 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+#14 3.033 npm notice To update run: npm install -g npm@12.0.1
+#14 3.033 npm notice
+#14 DONE 3.2s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 ...
+
+#15 [api build 4/9] COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+#15 DONE 0.1s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 ...
+
+#16 [migrate build 5/9] COPY tsconfig.json tsconfig.electron.json ./
+#16 DONE 0.1s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 ...
+
+#17 [migrate build 6/9] COPY packages ./packages
+#17 DONE 0.1s
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 extracting sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 5.2s
+#10 extracting sha256:34e7f1cb7a296e8a2f35401d96a0c2fc030894e200451ae74437bdb7a4b2cb43 7.6s done
+#10 extracting sha256:1d16e26333c51d432a005b1249d1dd1a284f6a5c90d0a790faee640b80beebf6
+#10 extracting sha256:1d16e26333c51d432a005b1249d1dd1a284f6a5c90d0a790faee640b80beebf6 done
+#10 extracting sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60
+#10 extracting sha256:2a516ff37099f6fc33f10fbab37ba28cecd78d7af3be45747dd0bcab7916ad60 4.6s done
+#10 extracting sha256:1b351d1b9ffdc0cd1381bd8884a78f6d3c120aecd002deec6cabb8caca1c9704
+#10 extracting sha256:1b351d1b9ffdc0cd1381bd8884a78f6d3c120aecd002deec6cabb8caca1c9704 0.1s done
+#10 extracting sha256:7bf355e8dbdb6fb1a8ce3ce927e3d70077a0c0a6cd94705f24fa2bfe114c7148
+#10 extracting sha256:7bf355e8dbdb6fb1a8ce3ce927e3d70077a0c0a6cd94705f24fa2bfe114c7148 done
+#10 ...
+
+#18 [api build 7/9] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#18 1.086 Scope: all 4 workspace projects
+#18 1.284 ? Verifying lockfile against supply-chain policies (1419 entries)...
+#18 1.299 Lockfile is up to date, resolution step is skipped
+#18 1.866 Packages: +1650
+#18 1.866 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#18 2.905 Progress: resolved 0, reused 0, downloaded 1, added 0
+#18 3.921 Progress: resolved 0, reused 0, downloaded 172, added 147
+#18 5.014 Progress: resolved 0, reused 0, downloaded 352, added 320
+#18 5.481 Packages are hard linked from the content-addressable store to the virtual store.
+#18 5.481   Content-addressable store is at: /root/.local/share/pnpm/store/v11
+#18 5.481   Virtual store is at:             node_modules/.pnpm
+#18 6.060 Progress: resolved 0, reused 0, downloaded 456, added 378
+#18 6.600 [WARN] The git-hosted package fetched from "https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/b5701cb5483d97825778947cb904630c2c2e821e" has to be built but the build scripts were ignored.
+#18 7.066 Progress: resolved 0, reused 0, downloaded 636, added 576
+#18 7.746
+#18 7.746    ╭──────────────────────────────────────────╮
+#18 7.746    │                                          │
+#18 7.746    │   Update available! 11.12.0 → 11.13.0.   │
+#18 7.746    │   Changelog: https://pnpm.io/v/11.13.0   │
+#18 7.746    │     To update, run: pnpm add -g pnpm     │
+#18 7.746    │                                          │
+#18 7.746    ╰──────────────────────────────────────────╯
+#18 7.746
+#18 8.075 Progress: resolved 0, reused 0, downloaded 832, added 907
+#18 9.082 Progress: resolved 0, reused 0, downloaded 970, added 1063
+#18 10.09 Progress: resolved 0, reused 0, downloaded 1151, added 1311
+#18 ...
+
+#10 [caddy build 1/6] FROM docker.io/library/node:24@sha256:d5adb040f90e206d1dc91453d08a4fa4165ec0faebd62a3421e6181a14e7f41f
+#10 DONE 32.3s
+
+#19 [caddy build 2/6] WORKDIR /app
+#19 DONE 0.8s
+
+#20 [caddy build 3/6] COPY . .
+#20 DONE 0.3s
+
+#18 [api build 7/9] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#18 11.10 Progress: resolved 0, reused 0, downloaded 1276, added 1644
+#18 12.10 Progress: resolved 0, reused 0, downloaded 1278, added 1649
+#18 13.84 ✓ Lockfile passes supply-chain policies (1419 entries in 12.5s)
+#18 14.18 Progress: resolved 0, reused 0, downloaded 1279, added 1649
+#18 ...
+
+#21 [caddy build 4/6] RUN npm install -g pnpm@11.12.0
+#21 2.811
+#21 2.811 added 24 packages in 2s
+#21 2.811
+#21 2.812 3 packages are looking for funding
+#21 2.812   run `npm fund` for details
+#21 2.814 npm notice
+#21 2.814 npm notice New major version of npm available! 11.16.0 -> 12.0.1
+#21 2.814 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+#21 2.814 npm notice To update run: npm install -g npm@12.0.1
+#21 2.814 npm notice
+#21 DONE 3.0s
+
+#22 [caddy build 5/6] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#22 0.876 Scope: all 4 workspace projects
+#22 1.032 ? Verifying lockfile against supply-chain policies (1419 entries)...
+#22 ...
+
+#18 [migrate build 7/9] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#18 14.68 Progress: resolved 0, reused 0, downloaded 1279, added 1650, done
+#18 15.09
+#18 15.09 dependencies:
+#18 15.09 + @simplecrm/core 0.1.0 <- packages/core
+#18 15.09
+#18 15.18 Done in 14.8s using pnpm v11.12.0
+#18 DONE 15.4s
+
+#22 [caddy build 5/6] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#22 1.041 Lockfile is up to date, resolution step is skipped
+#22 1.350 Packages: +1650
+#22 1.350 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#22 2.279 Progress: resolved 0, reused 0, downloaded 1, added 0
+#22 3.328 Progress: resolved 0, reused 0, downloaded 183, added 83
+#22 3.620 Packages are hard linked from the content-addressable store to the virtual store.
+#22 3.620   Content-addressable store is at: /root/.local/share/pnpm/store/v11
+#22 3.620   Virtual store is at:             node_modules/.pnpm
+#22 4.231 [WARN] The git-hosted package fetched from "https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/b5701cb5483d97825778947cb904630c2c2e821e" has to be built but the build scripts were ignored.
+#22 4.347 Progress: resolved 0, reused 0, downloaded 379, added 265
+#22 ...
+
+#23 [migrate build 8/9] RUN pnpm run build:packages
+#23 1.179 $ tsc -b packages/core packages/server packages/desktop
+#23 DONE 3.9s
+
+#23 [api build 8/9] RUN pnpm run build:packages
+#23 DONE 3.9s
+
+#24 [api build 9/9] RUN CI=true pnpm prune --prod --ignore-scripts
+#24 2.133 ✓ Lockfile passes supply-chain policies (verified 7s ago)
+#24 2.144 Lockfile is up to date, resolution step is skipped
+#24 3.708 Progress: resolved 0, reused 1, downloaded 0, added 0
+#24 6.557 Progress: resolved 0, reused 2, downloaded 0, added 0
+#24 7.805 Progress: resolved 0, reused 20, downloaded 0, added 0
+#24 8.028 Packages: +19
+#24 8.028 +++++++++++++++++++
+#24 8.805 Progress: resolved 0, reused 20, downloaded 4, added 0
+#24 ...
+
+#22 [caddy build 5/6] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#22 5.357 Progress: resolved 0, reused 0, downloaded 607, added 501
+#22 6.327
+#22 6.327    ╭──────────────────────────────────────────╮
+#22 6.327    │                                          │
+#22 6.327    │   Update available! 11.12.0 → 11.13.0.   │
+#22 6.327    │   Changelog: https://pnpm.io/v/11.13.0   │
+#22 6.327    │     To update, run: pnpm add -g pnpm     │
+#22 6.327    │                                          │
+#22 6.327    ╰──────────────────────────────────────────╯
+#22 6.327
+#22 6.377 Progress: resolved 0, reused 0, downloaded 788, added 831
+#22 7.388 Progress: resolved 0, reused 0, downloaded 921, added 1007
+#22 8.398 Progress: resolved 0, reused 0, downloaded 1021, added 1106
+#22 9.409 Progress: resolved 0, reused 0, downloaded 1121, added 1265
+#22 10.56 Progress: resolved 0, reused 0, downloaded 1273, added 1476
+#22 11.65 Progress: resolved 0, reused 0, downloaded 1275, added 1606
+#22 12.66 Progress: resolved 0, reused 0, downloaded 1278, added 1649
+#22 ...
+
+#24 [api build 9/9] RUN CI=true pnpm prune --prod --ignore-scripts
+#24 9.806 Progress: resolved 0, reused 20, downloaded 5, added 0
+#24 10.81 Progress: resolved 0, reused 20, downloaded 7, added 0
+#24 11.81 Progress: resolved 0, reused 20, downloaded 8, added 2
+#24 12.81 Progress: resolved 0, reused 20, downloaded 13, added 17
+#24 13.70 Progress: resolved 0, reused 20, downloaded 16, added 19, done
+#24 14.72
+#24 14.72 devDependencies: skipped
+#24 14.72
+#24 ...
+
+#22 [caddy build 5/6] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#22 22.15 ✓ Lockfile passes supply-chain policies (1419 entries in 21.1s)
+#22 33.32 Progress: resolved 0, reused 0, downloaded 1279, added 1649
+#22 34.02 Progress: resolved 0, reused 0, downloaded 1279, added 1650, done
+#22 34.82
+#22 34.82 dependencies:
+#22 34.82 + @simplecrm/core 0.1.0 <- packages/core
+#22 34.82
+#22 34.89 Done in 34.5s using pnpm v11.12.0
+#22 DONE 35.9s
+
+#24 [api build 9/9] RUN CI=true pnpm prune --prod --ignore-scripts
+#24 ...
+
+#25 [caddy build 6/6] RUN NODE_OPTIONS=--max-old-space-size=4096 SIMPLECRM_WEB_ONLY=1 npx vite build
+#25 1.192 vite v8.1.4 building client environment for production...
+#25 1.225
+transforming...✓ 5669 modules transformed.
+#25 4.250 rendering chunks...
+#25 4.971 dist/index.html                                      4.78 kB
+#25 4.971 dist/assets/codicon-ngg6Pgfi.ttf                   121.97 kB
+#25 4.971 dist/assets/editor.worker-B9tos8Rw.js              280.07 kB
+#25 4.971 dist/assets/json.worker-ulnR8HPd.js                409.34 kB
+#25 4.971 dist/assets/page-BdXDwkki.css                       12.02 kB
+#25 4.971 dist/assets/style-DLioOiRN.css                      15.41 kB
+#25 4.971 dist/assets/signature-quill-editor-CRuqeei-.css     25.71 kB
+#25 4.971 dist/assets/main-CDuKYea5.css                      133.64 kB
+#25 4.971 dist/assets/editor-DOgAgpTS.css                    146.06 kB
+#25 4.971 dist/assets/email-settings-search-BSfhFLnb.js        0.06 kB
+#25 4.971 dist/assets/check-BDTn1lla.js                        0.12 kB
+#25 4.971 dist/assets/password-policy-C1dquPiB.js              0.12 kB
+#25 4.971 dist/assets/chevron-right-DliEYxHo.js                0.13 kB
+#25 4.971 dist/assets/circle-DoWDsIHm.js                       0.13 kB
+#25 4.971 dist/assets/runtime-mode-DsFNrPyK.js                 0.13 kB
+#25 4.971 dist/assets/snooze-settings-BNubzqCv.js              0.13 kB
+#25 4.971 dist/assets/loader-circle-DRcjs0ZQ.js                0.14 kB
+#25 4.971 dist/assets/plus-B5kwMdmG.js                         0.15 kB
+#25 4.971 dist/assets/x-CCJRk4ud.js                            0.15 kB
+#25 4.971 dist/assets/addDays-D2OfQMHj.js                      0.15 kB
+#25 4.971 dist/assets/arrow-right-BOOUXY0D.js                  0.16 kB
+#25 4.971 dist/assets/clock-B6VJmocG.js                        0.16 kB
+#25 4.971 dist/assets/chevrons-up-down-Cdy6EMTx.js             0.17 kB
+#25 4.971 dist/assets/search-Ct_rLLa4.js                       0.17 kB
+#25 4.971 dist/assets/matchContext-QDjF8crh.js                 0.17 kB
+#25 4.971 dist/assets/mail-account-scope-BY8__GFx.js           0.17 kB
+#25 4.971 dist/assets/skeleton-CWXVqyy4.js                     0.17 kB
+#25 4.971 dist/assets/useRouter-DsVrsOpY.js                    0.18 kB
+#25 4.971 dist/assets/circle-check-big-Cpl_If9s.js             0.19 kB
+#25 4.971 dist/assets/circle-plus-WCM9W78E.js                  0.20 kB
+#25 4.971 dist/assets/circle-x-CfkyGCSG.js                     0.20 kB
+#25 4.971 dist/assets/mail-16D-5TgD.js                         0.21 kB
+#25 4.971 dist/assets/useSearch-BsEqGBMQ.js                    0.21 kB
+#25 4.971 dist/assets/ellipsis-RBlo334n.js                     0.22 kB
+#25 4.971 dist/assets/download-CBL-ovod.js                     0.23 kB
+#25 4.971 dist/assets/copy-CGsu8426.js                         0.23 kB
+#25 4.971 dist/assets/database-9bj7M0sh.js                     0.24 kB
+#25 4.971 dist/assets/circle-alert-CZWKQG2n.js                 0.25 kB
+#25 4.971 dist/assets/chart-column-ptn80_Zr.js                 0.25 kB
+#25 4.971 dist/assets/calendar-CxA8T_gv.js                     0.25 kB
+#25 4.971 dist/assets/useParams-CNlyziIw.js                    0.25 kB
+#25 4.971 dist/assets/useNavigate-BOSC4ocv.js                  0.26 kB
+#25 4.971 dist/assets/triangle-alert-CoFzd12H.js               0.26 kB
+#25 4.971 dist/assets/workflow-CPX4fc3w.js                     0.26 kB
+#25 4.971 dist/assets/use-has-electron-C9v6jOc1.js             0.26 kB
+#25 4.971 dist/assets/pencil-BYi8ivHd.js                       0.27 kB
+#25 4.971 dist/assets/inbox-CDKc5Keh.js                        0.28 kB
+#25 4.971 dist/assets/flask-conical-DI9PuNwx.js                0.30 kB
+#25 4.971 dist/assets/wrench-DOli_uSt.js                       0.30 kB
+#25 4.971 dist/assets/users-ytnAIkkH.js                        0.30 kB
+#25 4.971 dist/assets/languages-D_ZliwJG.js                    0.31 kB
+#25 4.971 dist/assets/square-pen-CUp2y1KI.js                   0.32 kB
+#25 4.971 dist/assets/refresh-cw-Dad6pUed.js                   0.32 kB
+#25 4.971 dist/assets/trash-2-WYPJMQLN.js                      0.32 kB
+#25 4.971 dist/assets/stethoscope-DuT9YVPt.js                  0.34 kB
+#25 4.971 dist/assets/layout-grid-CGSfOZrd.js                  0.34 kB
+#25 4.971 dist/assets/shield-alert-DuPB97QR.js                 0.35 kB
+#25 4.971 dist/assets/file-text-mrRRYSEj.js                    0.38 kB
+#25 4.971 dist/assets/contact-utils-CjGiD6V0.js                0.43 kB
+#25 4.971 dist/assets/user-ChJSzDJS.js                         0.46 kB
+#25 4.971 dist/assets/settings-Bl-8XuIB.js                     0.48 kB
+#25 4.971 dist/assets/calendar-days-BJypBlWO.js                0.49 kB
+#25 4.971 dist/assets/file-box-DlJYGPCS.js                     0.53 kB
+#25 4.971 dist/assets/textarea-BHwOLg9_.js                     0.59 kB
+#25 4.971 dist/assets/package-s_p1BkLg.js                      0.59 kB
+#25 4.971 dist/assets/dist-J6jWQQZZ.js                         0.64 kB
+#25 4.971 dist/assets/mail-account-overrides-C7RDaiTR.js       0.66 kB
+#25 4.971 dist/assets/input-DphmDFyH.js                        0.67 kB
+#25 4.971 dist/assets/userGroupService-w6O_KX7P.js             0.67 kB
+#25 4.971 dist/assets/useMatch-58HHDAoQ.js                     0.68 kB
+#25 4.971 dist/assets/rolldown-runtime-QTnfLwEv.js             0.69 kB
+#25 4.971 dist/assets/page-CBTZrNOA.js                         0.79 kB
+#25 4.971 dist/assets/badge-i5Y6vWbb.js                        0.83 kB
+#25 4.971 dist/assets/signature-template-DiLsNxJ3.js           0.84 kB
+#25 4.971 dist/assets/automation-api-DCRT7ruJ.js               0.94 kB
+#25 4.971 dist/assets/electron-utils-BNF6ug7f.js               0.95 kB
+#25 4.971 dist/assets/separator-DXz7LNJz.js                    0.96 kB
+#25 4.971 dist/assets/alert-20XH6yP_.js                        1.04 kB
+#25 4.971 dist/assets/card-8gBJ_CR_.js                         1.10 kB
+#25 4.971 dist/assets/email-recipient-parse-CP4sJcKz.js        1.12 kB
+#25 4.971 dist/assets/layout-FfJV8w-2.js                       1.16 kB
+#25 4.971 dist/assets/label-BPlSwhzq.js                        1.16 kB
+#25 4.971 dist/assets/preload-helper-Czpn1I53.js               1.19 kB
+#25 4.971 dist/assets/use-toast-cj1RB5lA.js                    1.22 kB
+#25 4.971 dist/assets/export-button-vEIgoxuV.js                1.25 kB
+#25 4.971 dist/assets/transport-C5QMoRLI.js                    1.26 kB
+#25 4.971 dist/assets/page-DtCFFdXB.js                         1.37 kB
+#25 4.971 dist/assets/createLucideIcon-DyMAgLa3.js             1.41 kB
+#25 4.971 dist/assets/page-B0cFMw-g.js                         1.47 kB
+#25 4.971 dist/assets/table-DoanSBup.js                        1.59 kB
+#25 4.971 dist/assets/calendarService-CcfoJ1-d.js              1.71 kB
+#25 4.971 dist/assets/pagination-D1gRWy0b.js                   1.78 kB
+#25 4.971 dist/assets/types-zqHgNFwk.js                        2.05 kB
+#25 4.971 dist/assets/customFieldService-L60IEpzI.js           2.08 kB
+#25 4.971 dist/assets/collapsible-CwCkJOGF.js                  2.38 kB
+#25 4.971 dist/assets/layout-DxRsHkXk.js                       2.53 kB
+#25 4.971 dist/assets/i18n-CvMVFq6y.js                         2.93 kB
+#25 4.971 dist/assets/taskService-Bqr6uZ9Q.js                  2.94 kB
+#25 4.971 dist/assets/auth-context-CH8_TZoQ.js                 3.07 kB
+#25 4.971 dist/assets/zod-CfVLnMnY.js                          3.16 kB
+#25 4.971 dist/assets/monaco-curated-DsqSMFlY.js               3.30 kB
+#25 4.971 dist/assets/page-CpLJM74f.js                         3.37 kB
+#25 4.971 dist/assets/customer-combobox-vnaCT2_d.js            3.37 kB
+#25 4.971 dist/assets/python-Cj1G85J6.js                       3.45 kB
+#25 4.971 dist/assets/tabs-x3VOhnxx.js                         3.49 kB
+#25 4.971 dist/assets/react-dom-cJyBB_A4.js                    3.57 kB
+#25 4.971 dist/assets/markdown-Cimd5fb3.js                     3.63 kB
+#25 4.971 dist/assets/button-J136pSL_.js                       3.69 kB
+#25 4.971 dist/assets/switch-BTeC5aYf.js                       3.88 kB
+#25 4.971 dist/assets/alert-dialog-DVcSDY9S.js                 3.88 kB
+#25 4.971 dist/assets/dist-CB6c60qp.js                         3.97 kB
+#25 4.971 dist/assets/checkbox-DOSULJhV.js                     4.05 kB
+#25 4.971 dist/assets/custom-fields-form-CzWeJQTu.js           4.07 kB
+#25 4.971 dist/assets/workflow-export-import-BCTwL4FS.js       4.51 kB
+#25 4.971 dist/assets/account-scope-toolbar-Bgry5Gii.js        4.60 kB
+#25 4.971 dist/assets/workspace-context-Bc8d2jol.js            4.73 kB
+#25 4.971 dist/assets/page-91fpZRXq.js                         5.09 kB
+#25 4.971 dist/assets/javascript-Bdyr6ZMe.js                   5.26 kB
+#25 4.971 dist/assets/dist-Dzbl52_x.js                         5.27 kB
+#25 4.971 dist/assets/useStore-D1ChiUaj.js                     5.35 kB
+#25 4.971 dist/assets/snooze-popover-Wy8fxxnS.js               5.37 kB
+#25 4.971 dist/assets/popover-BacMk8LZ.js                      5.49 kB
+#25 4.971 dist/assets/page-RStzAuPK.js                         5.97 kB
+#25 4.971 dist/assets/server-event-filters-BI3Xw-ky.js         6.10 kB
+#25 4.971 dist/assets/react-CZI7_Jkm.js                        7.53 kB
+#25 4.971 dist/assets/tooltip-Di6UmU52.js                      8.31 kB
+#25 4.971 dist/assets/trigger-labels-ClxJnqz2.js               8.61 kB
+#25 4.971 dist/assets/grouping-C8meWxC4.js                     9.78 kB
+#25 4.971 dist/assets/page-BgK31efM.js                        10.58 kB
+#25 4.971 dist/assets/page-BL6ozqJL.js                        10.61 kB
+#25 4.971 dist/assets/page-nREHf7QZ.js                        11.09 kB
+#25 4.971 dist/assets/log-Cgri5oaW.js                         13.40 kB
+#25 4.971 dist/assets/renderer-transport-7ulKFfvB.js          13.67 kB
+#25 4.971 dist/assets/toast-161otPO7.js                       13.88 kB
+#25 4.971 dist/assets/dist-CSaP2J_J.js                        14.20 kB
+#25 4.971 dist/assets/page-CgYmJIqA.js                        15.05 kB
+#25 4.971 dist/assets/channels-DNAVTNEx.js                    15.24 kB
+#25 4.971 dist/assets/page-DKv-uIph.js                        16.40 kB
+#25 4.971 dist/assets/page-jJE_YuXW.js                        16.42 kB
+#25 4.971 dist/assets/command-oc05W49g.js                     16.70 kB
+#25 4.971 dist/assets/link-DTMuJUOL.js                        18.01 kB
+#25 4.971 dist/assets/page-CmGn3qM9.js                        18.90 kB
+#25 4.971 dist/assets/dropdown-menu-zSbkTsPV.js               22.28 kB
+#25 4.971 dist/assets/page-BqAvHjg5.js                        22.44 kB
+#25 4.971 dist/assets/page-BeIzq11C.js                        24.46 kB
+#25 4.971 dist/assets/page-CnKkTAt2.js                        26.08 kB
+#25 4.971 dist/assets/dist-BFrxsL8_.js                        26.15 kB
+#25 4.971 dist/assets/de-Dee9wQmW.js                          26.44 kB
+#25 4.971 dist/assets/page-CwcjJPPw.js                        27.35 kB
+#25 4.971 dist/assets/utils-D9vujMpb.js                       27.70 kB
+#25 4.971 dist/assets/form-AeeJgiLz.js                        32.59 kB
+#25 4.971 dist/assets/dist-BOS6OKSE.js                        32.61 kB
+#25 4.971 dist/assets/resizable-DdeP0iOh.js                   35.24 kB
+#25 4.971 dist/assets/page-sLGsZKMb.js                        39.50 kB
+#25 4.971 dist/assets/jsonMode-CcCT5e4Y.js                    41.31 kB
+#25 4.971 dist/assets/sortable.esm-DdNVSVuU.js                48.46 kB
+#25 4.971 dist/assets/lib-ChtMf7T1.js                         50.54 kB
+#25 4.971 dist/assets/dialog-Da1BW78-.js                      52.09 kB
+#25 4.971 dist/assets/Matches-yvV7wikp.js                     55.75 kB
+#25 4.971 dist/assets/schemas-C1Tm_3ux.js                     64.66 kB
+#25 4.971 dist/assets/page-DiaF4N7h.js                        66.18 kB
+#25 4.971 dist/assets/channel-http-registry-BC1AXYss.js      122.82 kB
+#25 4.971 dist/assets/page-Duvwy4jI.js                       185.34 kB
+#25 4.971 dist/assets/page-DaHJhGba.js                       190.38 kB
+#25 4.971 dist/assets/main-C_iUFmZR.js                       229.22 kB
+#25 4.971 dist/assets/signature-quill-editor-Bs_WDPmS.js     229.57 kB
+#25 4.971 dist/assets/page-DTm47yTa.js                       287.16 kB
+#25 4.971 dist/assets/page-DRfAEyzj.js                       323.31 kB
+#25 4.971 dist/assets/editor.api2-Bcc9nfRd.js              3,626.94 kB
+#25 4.971
+#25 4.973 ✓ built in 3.78s
+#25 4.974 [plugin builtin:vite-reporter]
+#25 4.974 (!) Some chunks are larger than 500 kB after minification. Consider:
+#25 4.974 - Using dynamic import() to code-split the application
+#25 4.974 - Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+#25 4.974 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+#25 DONE 5.2s
+
+#24 [api build 9/9] RUN CI=true pnpm prune --prod --ignore-scripts
+#24 ...
+
+#26 [caddy stage-1 2/3] COPY --from=build /app/dist /srv/dist
+#26 DONE 0.2s
+
+#24 [api build 9/9] RUN CI=true pnpm prune --prod --ignore-scripts
+#24 ...
+
+#27 [caddy stage-1 3/3] COPY docker/Caddyfile /etc/caddy/Caddyfile
+#27 DONE 0.1s
+
+#28 [caddy] exporting to image
+#28 exporting layers 0.1s done
+#28 writing image sha256:5f330a077a6fbf76270a0212f73a14904215f7c6a87b78fcfb81b7827d57953f done
+#28 naming to docker.io/simplecrm/web:audit-smoke 0.0s done
+#28 DONE 0.2s
+
+#29 [caddy] resolving provenance for metadata file
+#29 DONE 0.0s
+
+#24 [api build 9/9] RUN CI=true pnpm prune --prod --ignore-scripts
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from simplecrm-api-audit-runtime.Dockerfile
+#1 transferring dockerfile: 655B 0.0s done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/node:24-alpine
+#2 DONE 1.1s
+
+#3 [build 1/9] FROM docker.io/library/node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+#3 resolve docker.io/library/node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd 0.1s done
+#3 sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd 3.87kB / 3.87kB done
+#3 sha256:4ba75f835bb8802193e4c114572113d4b26f95f6f094f4b5229d2a77773e0afc 1.72kB / 1.72kB done
+#3 sha256:91d56b2d4e1cf23103d90b0b024c1f489c288f9c3aba1042dd7279503b367de6 6.52kB / 6.52kB done
+#3 sha256:57eb903fc7a4b0006b1253f877823b15c51433ccd41a20392812682211c46a6c 1.26MB / 1.26MB 12.4s done
+#3 sha256:21af007bacf625b557dda6dbce062088808612be54a955980b3d8efb8ea7d082 448B / 448B 12.5s done
+#3 sha256:7e2a5e2761f53b694faaee16c5ad1e400cb41224f693337aac52e74bee3b2f65 52.52MB / 52.52MB 15.6s done
+#3 extracting sha256:7e2a5e2761f53b694faaee16c5ad1e400cb41224f693337aac52e74bee3b2f65 1.8s done
+#3 extracting sha256:57eb903fc7a4b0006b1253f877823b15c51433ccd41a20392812682211c46a6c 0.0s done
+#3 extracting sha256:21af007bacf625b557dda6dbce062088808612be54a955980b3d8efb8ea7d082 done
+#3 DONE 18.1s
+
+#4 [build 2/9] WORKDIR /app
+#4 DONE 0.3s
+
+#5 [build 3/9] RUN npm install -g pnpm@11.12.0
+#5 3.030
+#5 3.030 added 24 packages in 3s
+#5 3.030
+#5 3.030 3 packages are looking for funding
+#5 3.030   run `npm fund` for details
+#5 3.033 npm notice
+#5 3.033 npm notice New major version of npm available! 11.16.0 -> 12.0.1
+#5 3.033 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+#5 3.033 npm notice To update run: npm install -g npm@12.0.1
+#5 3.033 npm notice
+#5 DONE 3.2s
+
+#6 [internal] load .dockerignore
+#6 transferring context: 286B done
+#6 DONE 0.1s
+
+#7 [internal] load build context
+#7 transferring context: 54.68kB 0.1s done
+#7 DONE 0.1s
+
+#8 [build 4/9] COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+#8 DONE 0.1s
+
+#9 [build 5/9] COPY tsconfig.json tsconfig.electron.json ./
+#9 DONE 0.1s
+
+#10 [build 6/9] COPY packages ./packages
+#10 DONE 0.1s
+
+#11 [build 7/9] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#11 1.086 Scope: all 4 workspace projects
+#11 1.284 ? Verifying lockfile against supply-chain policies (1419 entries)...
+#11 1.299 Lockfile is up to date, resolution step is skipped
+#11 1.866 Packages: +1650
+#11 1.866 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#11 2.905 Progress: resolved 0, reused 0, downloaded 1, added 0
+#11 3.921 Progress: resolved 0, reused 0, downloaded 172, added 147
+#11 5.014 Progress: resolved 0, reused 0, downloaded 352, added 320
+#11 5.481 Packages are hard linked from the content-addressable store to the virtual store.
+#11 5.481   Content-addressable store is at: /root/.local/share/pnpm/store/v11
+#11 5.481   Virtual store is at:             node_modules/.pnpm
+#11 6.060 Progress: resolved 0, reused 0, downloaded 456, added 378
+#11 6.600 [WARN] The git-hosted package fetched from "https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/b5701cb5483d97825778947cb904630c2c2e821e" has to be built but the build scripts were ignored.
+#11 7.066 Progress: resolved 0, reused 0, downloaded 636, added 576
+#11 7.746
+#11 7.746    ╭──────────────────────────────────────────╮
+#11 7.746    │                                          │
+#11 7.746    │   Update available! 11.12.0 → 11.13.0.   │
+#11 7.746    │   Changelog: https://pnpm.io/v/11.13.0   │
+#11 7.746    │     To update, run: pnpm add -g pnpm     │
+#11 7.746    │                                          │
+#11 7.746    ╰──────────────────────────────────────────╯
+#11 7.746
+#11 8.075 Progress: resolved 0, reused 0, downloaded 832, added 907
+#11 9.082 Progress: resolved 0, reused 0, downloaded 970, added 1063
+#11 10.09 Progress: resolved 0, reused 0, downloaded 1151, added 1311
+#11 11.10 Progress: resolved 0, reused 0, downloaded 1276, added 1644
+#11 12.10 Progress: resolved 0, reused 0, downloaded 1278, added 1649
+#11 13.84 ✓ Lockfile passes supply-chain policies (1419 entries in 12.5s)
+#11 14.18 Progress: resolved 0, reused 0, downloaded 1279, added 1649
+#11 14.68 Progress: resolved 0, reused 0, downloaded 1279, added 1650, done
+#11 15.09
+#11 15.09 dependencies:
+#11 15.09 + @simplecrm/core 0.1.0 <- packages/core
+#11 15.09
+#11 15.18 Done in 14.8s using pnpm v11.12.0
+#11 DONE 15.4s
+
+#12 [build 8/9] RUN pnpm run build:packages
+#12 1.179 $ tsc -b packages/core packages/server packages/desktop
+#12 DONE 3.9s
+
+#13 [build 4/8] COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+#13 CACHED
+
+#14 [build 5/8] COPY tsconfig.json tsconfig.electron.json ./
+#14 CACHED
+
+#15 [build 6/8] COPY packages ./packages
+#15 CACHED
+
+#16 [build 7/8] RUN pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts
+#16 CACHED
+
+#17 [build 8/8] RUN pnpm run build:packages
+#17 CACHED
+
+#18 [stage-1 3/4] COPY --from=build /app/node_modules ./node_modules
+#18 DONE 4.8s
+
+#19 [stage-1 4/4] COPY --from=build /app/packages ./packages
+#19 DONE 0.1s
+
+#20 exporting to image
+#20 exporting layers
+#20 exporting layers 7.7s done
+#20 writing image sha256:2c802968760acf41c0b7a745b247a259f96d9347391aaec7b0c9469f8c12cde9 done
+#20 naming to docker.io/simplecrm/api:audit-smoke 0.0s done
+#20 DONE 7.7s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/1f8n0c7dstc6ckr2l7ynjycfc
+=== Runtime smoke with current-code audit image ===
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml up -d postgres migrate api caddy
+ Network simplecrm-audit-150_default  Creating
+ Network simplecrm-audit-150_default  Created
+ Volume simplecrm-audit-150_caddy_config  Creating
+ Volume simplecrm-audit-150_caddy_config  Created
+ Volume simplecrm-audit-150_caddy_logs  Creating
+ Volume simplecrm-audit-150_caddy_logs  Created
+ Volume simplecrm-audit-150_attachments  Creating
+ Volume simplecrm-audit-150_attachments  Created
+ Volume simplecrm-audit-150_audit_archives  Creating
+ Volume simplecrm-audit-150_audit_archives  Created
+ Volume simplecrm-audit-150_server_logs  Creating
+ Volume simplecrm-audit-150_server_logs  Created
+ Volume simplecrm-audit-150_postgres_data  Creating
+ Volume simplecrm-audit-150_postgres_data  Created
+ Volume simplecrm-audit-150_caddy_data  Creating
+ Volume simplecrm-audit-150_caddy_data  Created
+ Container simplecrm-audit-150-postgres-1  Creating
+ Container simplecrm-audit-150-postgres-1  Created
+ Container simplecrm-audit-150-migrate-1  Creating
+ Container simplecrm-audit-150-migrate-1  Created
+ Container simplecrm-audit-150-api-1  Creating
+ Container simplecrm-audit-150-api-1  Created
+ Container simplecrm-audit-150-caddy-1  Creating
+ Container simplecrm-audit-150-caddy-1  Created
+ Container simplecrm-audit-150-postgres-1  Starting
+ Container simplecrm-audit-150-postgres-1  Started
+ Container simplecrm-audit-150-postgres-1  Waiting
+ Container simplecrm-audit-150-postgres-1  Healthy
+ Container simplecrm-audit-150-migrate-1  Starting
+ Container simplecrm-audit-150-migrate-1  Started
+ Container simplecrm-audit-150-migrate-1  Waiting
+ Container simplecrm-audit-150-postgres-1  Waiting
+ Container simplecrm-audit-150-postgres-1  Healthy
+ Container simplecrm-audit-150-migrate-1  Exited
+ Container simplecrm-audit-150-api-1  Starting
+ Container simplecrm-audit-150-api-1  Started
+ Container simplecrm-audit-150-api-1  Waiting
+ Container simplecrm-audit-150-api-1  Healthy
+ Container simplecrm-audit-150-caddy-1  Starting
+ Container simplecrm-audit-150-caddy-1  Started
+API health: healthy
+Caddy health: {"data":{"status":"ok","api":"simplecrm-server","version":1}}
+> verify migrations 0027 and 0028
+0027_auth_challenge_state
+0028_auto_reply_limits
+> initial setup through Caddy
+Initial setup cookie: HttpOnly, Secure, SameSite=None, auth-scoped; refresh token absent from JSON
+> rotate refresh cookie through Caddy
+Refresh rotation: succeeded; new CSRF binding; refresh token absent from JSON
+> reject stale CSRF after rotation
+Stale CSRF after rotation: rejected with HTTP 403
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml ps
+NAME                             IMAGE                       COMMAND                  SERVICE    CREATED          STATUS                    PORTS
+simplecrm-audit-150-api-1        simplecrm/api:audit-smoke   "docker-entrypoint.s…"   api        20 seconds ago   Up 12 seconds (healthy)   3000/tcp
+simplecrm-audit-150-caddy-1      simplecrm/web:audit-smoke   "caddy run --config …"   caddy      20 seconds ago   Up 6 seconds              0.0.0.0:18080->80/tcp, [::]:18080->80/tcp, 0.0.0.0:18443->443/tcp, [::]:18443->443/tcp
+simplecrm-audit-150-postgres-1   postgres:18-alpine          "docker-entrypoint.s…"   postgres   21 seconds ago   Up 19 seconds (healthy)   5432/tcp
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml --profile backup run --rm backup
+ Volume simplecrm-audit-150_backups  Creating
+ Volume simplecrm-audit-150_backups  Created
+ Container simplecrm-audit-150-postgres-1  Running
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml --profile doctor run --rm doctor
+ Container simplecrm-audit-150-postgres-1  Running
+postgres:5432 - accepting connections
+database=simplecrm
+db_size=13 MB
+applied_migrations=28
+latest_migration=0028_auto_reply_limits
+ready_jobs=0
+queue_lag_seconds=0
+stale_locks=0
+latest_backup=db-2026-07-14T18-37-14Z.dump
+backup_checksum=ok
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml --profile restore-drill run --rm restore-drill
+ Container simplecrm-audit-150-postgres-1  Running
+NOTICE:  database "simplecrm_restore_drill_20260714183721_1" does not exist, skipping
+restore drill succeeded for db-2026-07-14T18-37-14Z.dump using temporary database simplecrm_restore_drill_20260714183721_1
+> docker compose -p simplecrm-audit-150 --env-file docker/.env.example -f docker/docker-compose.yml ps
+NAME                             IMAGE                       COMMAND                  SERVICE    CREATED          STATUS                    PORTS
+simplecrm-audit-150-api-1        simplecrm/api:audit-smoke   "docker-entrypoint.s…"   api        35 seconds ago   Up 28 seconds (healthy)   3000/tcp
+simplecrm-audit-150-caddy-1      simplecrm/web:audit-smoke   "caddy run --config …"   caddy      35 seconds ago   Up 22 seconds             0.0.0.0:18080->80/tcp, [::]:18080->80/tcp, 0.0.0.0:18443->443/tcp, [::]:18443->443/tcp
+simplecrm-audit-150-postgres-1   postgres:18-alpine          "docker-entrypoint.s…"   postgres   36 seconds ago   Up 35 seconds (healthy)   5432/tcp
+RESULT: PASS
+ Container simplecrm-audit-150-caddy-1  Stopping
+ Container simplecrm-audit-150-caddy-1  Stopped
+ Container simplecrm-audit-150-caddy-1  Removing
+ Container simplecrm-audit-150-caddy-1  Removed
+ Container simplecrm-audit-150-api-1  Stopping
+ Container simplecrm-audit-150-api-1  Stopped
+ Container simplecrm-audit-150-api-1  Removing
+ Container simplecrm-audit-150-api-1  Removed
+ Container simplecrm-audit-150-migrate-1  Stopping
+ Container simplecrm-audit-150-migrate-1  Stopped
+ Container simplecrm-audit-150-migrate-1  Removing
+ Container simplecrm-audit-150-migrate-1  Removed
+ Container simplecrm-audit-150-postgres-1  Stopping
+ Container simplecrm-audit-150-postgres-1  Stopped
+ Container simplecrm-audit-150-postgres-1  Removing
+ Container simplecrm-audit-150-postgres-1  Removed
+ Volume simplecrm-audit-150_postgres_data  Removing
+ Volume simplecrm-audit-150_caddy_logs  Removing
+ Volume simplecrm-audit-150_caddy_data  Removing
+ Volume simplecrm-audit-150_attachments  Removing
+ Volume simplecrm-audit-150_audit_archives  Removing
+ Volume simplecrm-audit-150_server_logs  Removing
+ Network simplecrm-audit-150_default  Removing
+ Volume simplecrm-audit-150_postgres_data  Removed
+ Volume simplecrm-audit-150_caddy_config  Removing
+ Volume simplecrm-audit-150_caddy_logs  Removed
+ Volume simplecrm-audit-150_audit_archives  Removed
+ Volume simplecrm-audit-150_attachments  Removed
+ Volume simplecrm-audit-150_server_logs  Removed
+ Volume simplecrm-audit-150_caddy_data  Removed
+ Volume simplecrm-audit-150_caddy_config  Removed
+ Network simplecrm-audit-150_default  Removed

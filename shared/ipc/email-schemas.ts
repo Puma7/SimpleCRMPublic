@@ -385,6 +385,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: voidPayload,
     result: z.object({}).passthrough(),
   });
+  set(IPCChannels.Email.RetryMessagePostProcess, {
+    payload: positiveInt,
+    result: standardResult,
+  });
   set(IPCChannels.Email.ExportLocalMailBackup, {
     payload: voidPayload,
     result: z.union([

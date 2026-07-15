@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
+import { assertInboundRfc822Size } from '@simplecrm/core';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
 import {
@@ -179,6 +180,7 @@ async function syncFolderImapInternal(
           throw new Error(`empty source for UID ${uid}`);
         }
         const sourceBuf = Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(msg.source as Buffer);
+        assertInboundRfc822Size(sourceBuf.length);
         const parsed = await simpleParser(sourceBuf);
         const messageId = parsed.messageId ?? null;
         const inReplyTo = parsed.inReplyTo ?? null;

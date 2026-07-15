@@ -3,6 +3,14 @@
 	@tracking path /t/*
 	log_skip @tracking
 
+	header {
+		Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; media-src 'self' data: blob: https: http:; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; connect-src 'self' ws://{http.request.host} wss://{http.request.host} https://challenges.cloudflare.com; manifest-src 'self'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-X-Powered-By
+	}
+
 	# API, public email evidence endpoints, health probes, OpenAPI and the
 	# SSE/WebSocket event stream (/api/v1/events) go to Fastify. Tracking URLs
 	# are intentionally excluded from access logs because their paths contain

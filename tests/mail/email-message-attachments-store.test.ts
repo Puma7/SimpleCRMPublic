@@ -58,6 +58,13 @@ describe('email-message-attachments-store', () => {
     expect(stmt.run).toHaveBeenCalled();
   });
 
+  test('persistParsedAttachments leaves stored attachment state untouched when parts are undefined', async () => {
+    await persistParsedAttachments(7, undefined);
+
+    expect(db.prepare).not.toHaveBeenCalled();
+    expect(stmt.run).not.toHaveBeenCalled();
+  });
+
   test('persistParsedAttachments rejects write failures so sync recovery retries', async () => {
     const write = jest.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => {
       throw new Error('disk full');

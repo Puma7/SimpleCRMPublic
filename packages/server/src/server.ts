@@ -68,6 +68,7 @@ import {
   createPostgresSavedViewReadPort,
   createPostgresSecretPort,
   createPostgresSyncInfoPort,
+  createPostgresPublicAuthSecuritySettingsReader,
   createPostgresWorkflowDelayedJobReadPort,
   createPostgresWorkflowForwardDedupReadPort,
   createPostgresWorkflowKnowledgeBaseReadPort,
@@ -451,6 +452,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     ? createLoginSecurityService({
       db: options.db,
       syncInfo,
+      listPublicWorkspaceSettings: createPostgresPublicAuthSecuritySettingsReader({ db: options.db }),
       secrets: options.secrets,
       auth,
       accessTokenSigner: options.accessTokenSigner,

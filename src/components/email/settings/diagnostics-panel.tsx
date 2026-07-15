@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
-import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw } from "lucide-react"
+import { ClipboardCopy, FileSearch, HardDriveDownload, Loader2, RefreshCw, RotateCcw } from "lucide-react"
 import { RestoreWizardPanel } from "./restore-wizard-panel"
 import { ServerLogsSection } from "./server-logs-section"
 import { ArchiveRecoverySection } from "./archive-recovery-section"
@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import { invokeIpc } from "../types"
 import { useHasElectron } from "../use-has-electron"
+import { useAuth } from "@/components/auth/auth-context"
 
 type DiagnosticsReport = {
   collectedAt: string
@@ -22,6 +23,18 @@ type DiagnosticsReport = {
     pendingPostProcess: number
     outboundHold: number
     byFolderKind: Record<string, number>
+    oldestPendingPostProcessSeconds?: number | null
+    pendingPostProcessSamples?: Array<{
+      id: number
+      accountId: number | null
+      subject: string | null
+      ageSeconds: number
+    }>
+    failedScheduledSends?: Array<{
+      messageId: number
+      failureCount: number
+      lastError: string | null
+    }>
   }
   workflows: {
     runsLast24h: number
@@ -53,9 +66,17 @@ type DiagnosticsReport = {
     protocol: string
     inboxLastSyncedAt: string | null
   }[]
+  operations?: {
+    inboundLagSeconds: number | null
+    postProcessRetrying: number
+    smtpCommitRecoveries: number
+    mfaLocks?: number
+  }
   jobQueue?: {
     ready: number
     locked: number
+    deadLetter?: number
+    workflowDeadLetter?: number
     lagSeconds: number
     oldestLockedSeconds: number | null
     samples: Array<{
@@ -66,6 +87,8 @@ type DiagnosticsReport = {
       lockedBy: string | null
       lockedSeconds: number | null
       lastError: string | null
+      engine?: "graphile" | "legacy"
+      terminal?: boolean
     }>
   }
 }
@@ -85,7 +108,16 @@ function formatBytes(n: number | null): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null) return "—"
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}min`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+  return `${Math.floor(seconds / 86400)}d`
+}
+
 export function DiagnosticsPanel() {
+  const { user } = useAuth()
   const electronAvailable = useHasElectron()
   const serverClientMode = getRendererTransport().kind === "http"
   const localBackupAvailable = electronAvailable && !serverClientMode
@@ -93,6 +125,8 @@ export function DiagnosticsPanel() {
   const [loading, setLoading] = useState(false)
   const [backupRunning, setBackupRunning] = useState(false)
   const [verifyRunning, setVerifyRunning] = useState(false)
+  const [recovering, setRecovering] = useState<string | null>(null)
+  const canRecover = serverClientMode && (user?.role === "owner" || user?.role === "admin")
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -170,6 +204,36 @@ export function DiagnosticsPanel() {
       }
     } finally {
       setBackupRunning(false)
+    }
+  }
+
+  const retryPostProcess = async (messageId: number) => {
+    setRecovering(`post-${messageId}`)
+    try {
+      await invokeRenderer(IPCChannels.Email.RetryMessagePostProcess, messageId)
+      toast.success("Post-Process wurde erneut eingereiht.")
+      await load()
+    } catch {
+      toast.error("Post-Process konnte nicht erneut eingereiht werden.")
+    } finally {
+      setRecovering(null)
+    }
+  }
+
+  const retryScheduledSend = async (messageId: number) => {
+    setRecovering(`send-${messageId}`)
+    try {
+      const result = await invokeRenderer(
+        IPCChannels.Email.RetryScheduledSendDraft,
+        messageId,
+      ) as { success: boolean; error?: string }
+      if (!result.success) throw new Error(result.error)
+      toast.success("Geplanter Versand wurde erneut eingereiht.")
+      await load()
+    } catch {
+      toast.error("Geplanter Versand konnte nicht erneut eingereiht werden.")
+    } finally {
+      setRecovering(null)
     }
   }
 
@@ -269,6 +333,9 @@ export function DiagnosticsPanel() {
             <ul className="mt-1 list-inside list-disc text-muted-foreground">
               <li>Gesamt: {report.messages.total}</li>
               <li>Post-Process ausstehend: {report.messages.pendingPostProcess}</li>
+              {report.messages.oldestPendingPostProcessSeconds != null ? (
+                <li>Ältester offener Post-Process: {formatDuration(report.messages.oldestPendingPostProcessSeconds)}</li>
+              ) : null}
               <li>Outbound-Hold: {report.messages.outboundHold}</li>
               {Object.keys(report.messages.byFolderKind).length > 0 ? (
                 <li>
@@ -279,7 +346,74 @@ export function DiagnosticsPanel() {
                 </li>
               ) : null}
             </ul>
+            {report.messages.pendingPostProcessSamples?.length ? (
+              <div className="mt-2 overflow-auto rounded border bg-background/60 p-2 text-xs">
+                {report.messages.pendingPostProcessSamples.map((message) => (
+                  <div key={message.id} className="flex items-center gap-2 border-b py-1 last:border-b-0">
+                    <span className="min-w-0 flex-1 truncate">
+                      #{message.id} {message.subject || "(ohne Betreff)"} · {formatDuration(message.ageSeconds)}
+                    </span>
+                    {canRecover ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        disabled={recovering !== null}
+                        onClick={() => void retryPostProcess(message.id)}
+                        title="Post-Process erneut einreihen"
+                      >
+                        {recovering === `post-${message.id}`
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <RotateCcw className="h-4 w-4" />}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {report.messages.failedScheduledSends?.length ? (
+              <div className="mt-2 overflow-auto rounded border border-destructive/40 bg-destructive/5 p-2 text-xs">
+                {report.messages.failedScheduledSends.map((failure) => (
+                  <div key={failure.messageId} className="flex items-center gap-2 border-b py-1 last:border-b-0">
+                    <span className="min-w-0 flex-1">
+                      Entwurf #{failure.messageId} · {failure.failureCount} Fehler
+                      {failure.lastError ? ` · ${failure.lastError}` : ""}
+                    </span>
+                    {canRecover ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        disabled={recovering !== null}
+                        onClick={() => void retryScheduledSend(failure.messageId)}
+                        title="Geplanten Versand erneut einreihen"
+                      >
+                        {recovering === `send-${failure.messageId}`
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <RotateCcw className="h-4 w-4" />}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </section>
+
+          {report.operations ? (
+            <section>
+              <h4 className="font-medium">Betrieb</h4>
+              <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                <li>Inbound-Lag: {formatDuration(report.operations.inboundLagSeconds)}</li>
+                <li>Post-Process-Retries: {report.operations.postProcessRetrying}</li>
+                <li>SMTP-Recovery offen: {report.operations.smtpCommitRecoveries}</li>
+                {report.operations.mfaLocks == null
+                  ? null
+                  : <li>MFA-Sperren aktiv: {report.operations.mfaLocks}</li>}
+              </ul>
+            </section>
+          ) : null}
 
           {!serverClientMode ? (
           <section>
@@ -320,6 +454,8 @@ export function DiagnosticsPanel() {
               <ul className="mt-1 list-inside list-disc text-muted-foreground">
                 <li>Bereit: {report.jobQueue.ready}</li>
                 <li>Gesperrt (läuft): {report.jobQueue.locked}</li>
+                <li>Dead Letter: {report.jobQueue.deadLetter ?? 0}</li>
+                <li>Workflow-DLQ: {report.jobQueue.workflowDeadLetter ?? 0}</li>
                 <li>Verzögerung: {report.jobQueue.lagSeconds}s</li>
                 {report.jobQueue.oldestLockedSeconds != null ? (
                   <li>Älteste Sperre: {report.jobQueue.oldestLockedSeconds}s</li>
@@ -328,9 +464,10 @@ export function DiagnosticsPanel() {
               {report.jobQueue.samples.length > 0 ? (
                 <div className="mt-2 overflow-auto rounded border bg-background/60 p-2 font-mono text-[11px]">
                   {report.jobQueue.samples.map((job) => (
-                    <div key={job.id} className="border-b py-1 last:border-b-0">
+                    <div key={`${job.engine ?? "legacy"}-${job.id}`} className="border-b py-1 last:border-b-0">
                       <div>
-                        #{job.id} {job.type} · Versuch {job.attempts}/{job.maxAttempts}
+                        #{job.id} {job.type} · {job.engine ?? "legacy"} · Versuch {job.attempts}/{job.maxAttempts}
+                        {job.terminal ? " · TERMINAL" : ""}
                         {job.lockedBy ? ` · Worker ${job.lockedBy}` : ""}
                         {job.lockedSeconds != null ? ` · ${job.lockedSeconds}s gesperrt` : ""}
                       </div>

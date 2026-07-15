@@ -7,6 +7,7 @@ const PUBLIC_IPC_CHANNELS = new Set<string>([
   'auth:get-one-time-setup-password',
   'setup:get-deploy-config',
   'setup:save-deploy-config',
+  'setup:reset-deploy-config',
   'window:get-state',
   'app:open-external-url',
   'app:get-update-status',

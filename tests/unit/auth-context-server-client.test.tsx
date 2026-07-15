@@ -3,6 +3,7 @@ import { AuthGate } from '@/components/auth/auth-gate';
 import { AuthProvider, useAuth } from '@/components/auth/auth-context';
 import {
   buildServerAuthSession,
+  clearServerAuthSession,
   configureRendererTransport,
   createHttpRendererTransport,
   resetRendererTransportForTests,
@@ -25,8 +26,10 @@ describe('AuthProvider server-client mode', () => {
     mockNavigate.mockReset();
     window.localStorage.clear();
     window.sessionStorage.clear();
+    clearServerAuthSession();
     delete (window as any).electronAPI;
     resetRendererTransportForTests();
+    clearServerAuthSession();
     configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
   });
 
@@ -41,10 +44,9 @@ describe('AuthProvider server-client mode', () => {
       user: serverUser({ displayName: 'Server Owner' }),
       tokens: {
         accessToken: 'access-stored',
-        refreshToken: 'refresh-stored',
         expiresInSeconds: 900,
       },
-    }));
+    }), 'csrf-stored', undefined, undefined, 'https://crm.example.com');
 
     render(
       <AuthProvider>
@@ -58,16 +60,20 @@ describe('AuthProvider server-client mode', () => {
   });
 
   test('logs in through server auth client when HTTP transport is active', async () => {
-    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
-      data: {
-        user: serverUser({ email: 'owner@example.com', displayName: 'Owner HTTP' }),
-        tokens: {
-          accessToken: 'access-http',
-          refreshToken: 'refresh-http',
-          expiresInSeconds: 900,
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'refresh_cookie_required', message: 'Keine aktive Browser-Sitzung' },
+      }, 401))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          user: serverUser({ email: 'owner@example.com', displayName: 'Owner HTTP' }),
+          tokens: {
+            accessToken: 'access-http',
+            expiresInSeconds: 900,
+          },
+          csrfToken: 'csrf-http',
         },
-      },
-    }));
+      }));
     global.fetch = fetchImpl as typeof fetch;
 
     render(
@@ -81,7 +87,7 @@ describe('AuthProvider server-client mode', () => {
 
     await waitFor(() => expect(screen.getByTestId('auth-status')).toHaveTextContent('authenticated'));
     expect(screen.getByTestId('auth-user')).toHaveTextContent('Owner HTTP');
-    expect(fetchImpl).toHaveBeenCalledWith(
+    expect(fetchImpl).toHaveBeenLastCalledWith(
       'https://crm.example.com/api/v1/auth/login',
       expect.objectContaining({
         method: 'POST',
@@ -92,7 +98,7 @@ describe('AuthProvider server-client mode', () => {
         }),
       }),
     );
-    expect(window.sessionStorage.getItem('simplecrm.accessToken')).toBe('access-http');
+    expect(window.sessionStorage.getItem('simplecrm.accessToken')).toBeNull();
   });
 
   test('refreshes server session automatically before access token expiry', async () => {
@@ -103,9 +109,9 @@ describe('AuthProvider server-client mode', () => {
         user: serverUser({ displayName: 'Owner Refreshed' }),
         tokens: {
           accessToken: 'access-refreshed',
-          refreshToken: 'refresh-refreshed',
           expiresInSeconds: 900,
         },
+        csrfToken: 'csrf-refreshed',
       },
     }));
     global.fetch = fetchImpl as typeof fetch;
@@ -113,11 +119,10 @@ describe('AuthProvider server-client mode', () => {
       user: serverUser({ displayName: 'Owner Stored' }),
       tokens: {
         accessToken: 'access-stored',
-        refreshToken: 'refresh-stored',
         expiresInSeconds: 120,
       },
       now: new Date('2026-06-03T10:00:00.000Z'),
-    }));
+    }), 'csrf-stored', undefined, undefined, 'https://crm.example.com');
 
     render(
       <AuthProvider>
@@ -139,10 +144,14 @@ describe('AuthProvider server-client mode', () => {
       'https://crm.example.com/api/v1/auth/refresh',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ refreshToken: 'refresh-stored' }),
+        credentials: 'include',
+        headers: expect.objectContaining({
+          'X-CSRF-Token': 'csrf-stored',
+        }),
       }),
     );
-    expect(window.sessionStorage.getItem('simplecrm.accessToken')).toBe('access-refreshed');
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit)).not.toHaveProperty('body');
+    expect(window.sessionStorage.getItem('simplecrm.accessToken')).toBeNull();
   });
 
   test('auth gate reads server setup state instead of local Electron IPC in HTTP transport', async () => {

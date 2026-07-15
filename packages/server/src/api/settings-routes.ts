@@ -26,12 +26,8 @@ const WORKFLOW_AUTOMATION_KEYS = [
   // Edition (electron/workflow/auto-reply-settings.ts); das email.auto_reply-
   // Gate in workflow-execution.ts liest auto_reply_enabled.
   //
-  // Das Anti-Loop-Tageslimit (auto_reply_max_per_sender_per_day) wird hier
-  // BEWUSST NICHT angeboten: die Server-Ausführung hat (noch) keine
-  // Dedup-Zählung pro Absender — ein Feld, das nichts bewirkt, wäre eine
-  // falsche Sicherheitszusage. Der Client blendet das Feld aus, wenn der
-  // Schlüssel in der GET-Antwort fehlt. Durchsetzung serverseitig = Follow-up.
   'auto_reply_enabled',
+  'auto_reply_max_per_sender_per_day',
 ] as const;
 
 const EMAIL_MISC_KEYS = [
@@ -276,9 +272,13 @@ async function handleWorkflowAutomationSettings(
       senderWhitelist: loaded.values.get('workflow_sender_whitelist') ?? '',
       senderBlacklist: loaded.values.get('workflow_sender_blacklist') ?? '',
       spamScoreThreshold: String(syncInfoBoundedInt(loaded.values.get('workflow_spam_score_threshold'), 70, 1, 100)),
-      // Kein autoReplyMaxPerSenderPerDay: serverseitig nicht durchgesetzt,
-      // daher nicht angeboten (siehe WORKFLOW_AUTOMATION_KEYS).
       autoReplyEnabled: syncInfoFlag(loaded.values.get('auto_reply_enabled'), false),
+      autoReplyMaxPerSenderPerDay: syncInfoBoundedInt(
+        loaded.values.get('auto_reply_max_per_sender_per_day'),
+        1,
+        1,
+        50,
+      ),
     });
   }
 
@@ -683,6 +683,7 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
     'senderBlacklist',
     'spamScoreThreshold',
     'autoReplyEnabled',
+    'autoReplyMaxPerSenderPerDay',
   ]);
   const errors = unknownFieldErrors(payload.value, allowed);
   const values: Record<string, string | null> = {};
@@ -696,6 +697,17 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
     const value = payload.value.autoReplyEnabled;
     if (typeof value !== 'boolean') errors.push({ field: 'autoReplyEnabled', message: 'autoReplyEnabled muss ein Boolean sein' });
     else values.auto_reply_enabled = value ? '1' : '0';
+  }
+  if ('autoReplyMaxPerSenderPerDay' in payload.value) {
+    const value = payload.value.autoReplyMaxPerSenderPerDay;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 50) {
+      errors.push({
+        field: 'autoReplyMaxPerSenderPerDay',
+        message: 'autoReplyMaxPerSenderPerDay muss eine Ganzzahl zwischen 1 und 50 sein',
+      });
+    } else {
+      values.auto_reply_max_per_sender_per_day = String(value);
+    }
   }
   if ('httpAllowlist' in payload.value) {
     addTrimmedTextValue(values, errors, payload.value.httpAllowlist, 'httpAllowlist', 'workflow_http_allowlist', 10000);

@@ -445,6 +445,9 @@ type EmailDiagnosticsRecord = {
     pendingPostProcess?: number | null
     outboundHold?: number | null
     byFolderKind?: Record<string, number | null> | null
+    oldestPendingPostProcessSeconds?: number | null
+    pendingPostProcessSamples?: unknown
+    failedScheduledSends?: unknown
   } | null
   workflows?: {
     runsLast24h?: number | null
@@ -477,9 +480,17 @@ type EmailDiagnosticsRecord = {
     idleImapAccountIds?: unknown
   } | null
   accounts?: unknown
+  operations?: {
+    inboundLagSeconds?: number | null
+    postProcessRetrying?: number | null
+    smtpCommitRecoveries?: number | null
+    mfaLocks?: number | null
+  } | null
   jobQueue?: {
     ready?: number | null
     locked?: number | null
+    deadLetter?: number | null
+    workflowDeadLetter?: number | null
     lagSeconds?: number | null
     oldestLockedSeconds?: number | null
     samples?: unknown
@@ -1754,6 +1765,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/email/diagnostics",
     transform: (body) => mapEmailDiagnosticsReport(dataBody<EmailDiagnosticsRecord>(body)),
+  })],
+  [IPCChannels.Email.RetryMessagePostProcess, ([messageId]) => ({
+    method: "POST",
+    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/post-process/retry`,
+    transform: () => ({ success: true }),
   })],
   [IPCChannels.Email.EmailReporting, ([accountId]) => {
     const id = accountId === null || accountId === undefined
@@ -5277,6 +5293,24 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
       pendingPostProcess: countValue(messages.pendingPostProcess),
       outboundHold: countValue(messages.outboundHold),
       byFolderKind: countMap(messages.byFolderKind),
+      oldestPendingPostProcessSeconds: messages.oldestPendingPostProcessSeconds == null
+        ? null
+        : countValue(messages.oldestPendingPostProcessSeconds),
+      pendingPostProcessSamples: Array.isArray(messages.pendingPostProcessSamples)
+        ? messages.pendingPostProcessSamples.filter(isRecord).map((message) => ({
+          id: countValue(message.id),
+          accountId: message.accountId == null ? null : countValue(message.accountId),
+          subject: typeof message.subject === "string" ? message.subject : null,
+          ageSeconds: countValue(message.ageSeconds),
+        }))
+        : [],
+      failedScheduledSends: Array.isArray(messages.failedScheduledSends)
+        ? messages.failedScheduledSends.filter(isRecord).map((failure) => ({
+          messageId: countValue(failure.messageId),
+          failureCount: countValue(failure.failureCount),
+          lastError: typeof failure.lastError === "string" ? failure.lastError : null,
+        }))
+        : [],
     },
     workflows: {
       runsLast24h: countValue(workflows.runsLast24h),
@@ -5322,10 +5356,24 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
         inboxLastSyncedAt: typeof account.inboxLastSyncedAt === "string" ? account.inboxLastSyncedAt : null,
       }))
       : [],
+    ...(record.operations ? {
+      operations: {
+        inboundLagSeconds: record.operations.inboundLagSeconds == null
+          ? null
+          : countValue(record.operations.inboundLagSeconds),
+        postProcessRetrying: countValue(record.operations.postProcessRetrying),
+        smtpCommitRecoveries: countValue(record.operations.smtpCommitRecoveries),
+        ...(record.operations.mfaLocks == null
+          ? {}
+          : { mfaLocks: countValue(record.operations.mfaLocks) }),
+      },
+    } : {}),
     ...(record.jobQueue ? {
       jobQueue: {
         ready: countValue(record.jobQueue.ready),
         locked: countValue(record.jobQueue.locked),
+        deadLetter: countValue(record.jobQueue.deadLetter),
+        workflowDeadLetter: countValue(record.jobQueue.workflowDeadLetter),
         lagSeconds: countValue(record.jobQueue.lagSeconds),
         oldestLockedSeconds: record.jobQueue.oldestLockedSeconds == null
           ? null
@@ -5339,6 +5387,8 @@ function mapEmailDiagnosticsReport(record: EmailDiagnosticsRecord) {
             lockedBy: typeof job.lockedBy === "string" ? job.lockedBy : null,
             lockedSeconds: job.lockedSeconds == null ? null : countValue(job.lockedSeconds),
             lastError: typeof job.lastError === "string" ? job.lastError : null,
+            engine: job.engine === "graphile" ? "graphile" as const : "legacy" as const,
+            terminal: job.terminal === true,
           }))
           : [],
       },

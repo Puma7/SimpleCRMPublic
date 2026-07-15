@@ -108,6 +108,19 @@ describe('LoginPage server-client mode', () => {
     expect(localInvoke).not.toHaveBeenCalled();
   });
 
+  test('offers a confirmed deploy config reset when the configured server is unreachable', async () => {
+    const localInvoke = jest.fn().mockResolvedValue({ success: true });
+    (window as any).electronAPI = { invoke: localInvoke };
+    global.fetch = jest.fn().mockRejectedValue(new Error('Server nicht erreichbar')) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://wrong.example.com' }));
+
+    render(<LoginPage />);
+
+    expect(await screen.findByText('Server nicht erreichbar')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Betriebsmodus oder Server-Verbindung ändern' }));
+    await waitFor(() => expect(localInvoke).toHaveBeenCalledWith('setup:reset-deploy-config'));
+  });
+
   test('validates email before server initial setup submit', async () => {
     global.fetch = jest.fn().mockImplementation((url: string) => {
       if (String(url).includes('/auth/setup-state')) {
@@ -183,7 +196,7 @@ describe('LoginPage server-client mode', () => {
     expect(String((global.fetch as jest.Mock).mock.calls[1]?.[0])).toContain('/auth/login-config');
   });
 
-  test('logs in after successful server initial setup and remembers email', async () => {
+  test('uses the session returned by successful server initial setup without a second login', async () => {
     global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (String(url).includes('/auth/setup-state')) {
         return Promise.resolve(jsonResponse({ data: { needsInitialSetup: true } }));
@@ -200,15 +213,14 @@ describe('LoginPage server-client mode', () => {
             },
             tokens: {
               accessToken: 'access',
-              refreshToken: 'refresh',
               expiresInSeconds: 3600,
             },
+            csrfToken: 'csrf',
           },
         }, 201));
       }
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }) as typeof fetch;
-    mockLogin.mockResolvedValue({ ok: true });
     configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
 
     render(<LoginPage />);
@@ -220,12 +232,13 @@ describe('LoginPage server-client mode', () => {
     fireEvent.change(screen.getByLabelText('Initial-Setup-Token'), { target: { value: 'setup-token-secret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Owner-Konto anlegen' }));
 
-    await waitFor(() => expect(mockLogin).toHaveBeenCalledWith('owner@example.com', 'secure-pass-1'));
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+    expect(mockLogin).not.toHaveBeenCalled();
     expect(window.localStorage.getItem('simplecrm:last-login-email')).toBe('owner@example.com');
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/' });
   });
 
-  test('shows login button when pin keypad is enabled but account has no pin', async () => {
+  test('keeps public login configuration account-neutral even when PIN is enabled', async () => {
     global.fetch = jest.fn().mockImplementation((url: string) => {
       if (String(url).includes('/auth/setup-state')) {
         return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
@@ -236,11 +249,7 @@ describe('LoginPage server-client mode', () => {
             captcha: { enabled: false, provider: null, siteKey: null },
             pinKeypad: { enabled: true },
             mfa: { enabled: false, methods: [] },
-            user: {
-              pinRequired: false,
-              mfaRequired: false,
-              mfaMethod: null,
-            },
+            user: null,
           },
         }));
       }
@@ -251,12 +260,11 @@ describe('LoginPage server-client mode', () => {
     render(<LoginPage />);
 
     expect(await screen.findByRole('button', { name: 'Anmelden' })).toBeInTheDocument();
-    expect(screen.getByText(/kein Login-PIN hinterlegt/)).toBeInTheDocument();
     expect(screen.queryByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).not.toBeInTheDocument();
   });
 
-  test('shows pin keypad when account requires a login pin', async () => {
-    global.fetch = jest.fn().mockImplementation((url: string) => {
+  test('shows pin keypad only after primary credentials were accepted', async () => {
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (String(url).includes('/auth/setup-state')) {
         return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
       }
@@ -266,19 +274,27 @@ describe('LoginPage server-client mode', () => {
             captcha: { enabled: false, provider: null, siteKey: null },
             pinKeypad: { enabled: true },
             mfa: { enabled: false, methods: [] },
-            user: {
-              pinRequired: true,
-              mfaRequired: false,
-              mfaMethod: null,
-            },
+            user: null,
           },
         }));
+      }
+      if (String(url).includes('/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ data: { pinRequired: true } }));
       }
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }) as typeof fetch;
     configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
 
     render(<LoginPage />);
+
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'owner@example.com' },
+    });
+    fireEvent.change(screen.getByLabelText('Passwort'), {
+      target: { value: 'correct-password' },
+    });
+    expect(screen.queryByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
 
     expect(await screen.findByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Anmelden' })).not.toBeInTheDocument();
@@ -338,6 +354,45 @@ describe('LoginPage server-client mode', () => {
 
     expect(await screen.findByText('Zugang pruefen')).toBeInTheDocument();
     expect(window.sessionStorage.getItem(CAPTCHA_CHALLENGE_STORAGE_KEY)).toBeNull();
+  });
+
+  test('keeps a server-issued CAPTCHA continuation while showing the PIN keypad', async () => {
+    window.sessionStorage.setItem(CAPTCHA_CHALLENGE_STORAGE_KEY, 'solved-once');
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({
+          data: {
+            captcha: { enabled: true, provider: 'turnstile', siteKey: 'site-key' },
+            pinKeypad: { enabled: true },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          },
+        }));
+      }
+      if (String(url).includes('/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          data: { pinRequired: true, captchaChallenge: 'pin-continuation' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'owner@example.com' },
+    });
+    fireEvent.change(await screen.findByLabelText('Passwort'), {
+      target: { value: 'correct-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
+
+    expect(await screen.findByText(/Geben Sie Ihren 6-stelligen Login-PIN ein/)).toBeInTheDocument();
+    expect(window.sessionStorage.getItem(CAPTCHA_CHALLENGE_STORAGE_KEY)).toBe('pin-continuation');
+    expect(screen.queryByText('Zugang pruefen')).not.toBeInTheDocument();
   });
 });
 

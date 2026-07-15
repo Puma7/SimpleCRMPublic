@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   addressJson,
+  assertInboundRfc822Size,
   canAdvanceImapSyncCursor,
   detectInboundEmailEvidence,
   findSentMailboxOnServer,
@@ -13,6 +14,7 @@ import {
   normalizeMailboxName,
   parseAttachmentsMeta,
   pickFirstMailboxPathOnServer,
+  parseLegacyPop3UidlStr,
   rawHeadersFromParsed,
   resolveSentMailboxCandidates,
   serializePop3ServerUidls,
@@ -21,6 +23,7 @@ import {
   storedUidValidityString,
   uidValidityAsOptionalNumber,
   uidValidityMismatch,
+  InboundMessageTooLargeError,
   type MailboxListEntry,
 } from '@simplecrm/core';
 import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
@@ -160,6 +163,10 @@ export type ServerMailSyncStore = Readonly<{
     workspaceId: string;
     keys: readonly string[];
   }): Promise<ReadonlyMap<string, string | null>>;
+  setSyncInfo?(input: {
+    workspaceId: string;
+    values: Readonly<Record<string, string>>;
+  }): Promise<void>;
   getOrCreateFolder(input: {
     workspaceId: string;
     account: ServerMailSyncAccount;
@@ -540,9 +547,11 @@ async function syncImapFolder(input: {
           { uid: true },
         );
         if (!fetched || !fetched.source) throw new Error(`empty source for UID ${uid}`);
+        const source = sourceToBuffer(fetched.source);
+        assertInboundRfc822Size(source.length);
         fetchedMessages.push({
           uid,
-          source: sourceToBuffer(fetched.source),
+          source,
           flags: fetched.flags,
           threadId: fetched.threadId == null ? null : String(fetched.threadId),
         });
@@ -674,6 +683,12 @@ async function syncPop3Account(input: {
     account: input.account,
     path: 'INBOX',
   });
+  const oversizedUidlKey = `email_pop3_oversized_uidls:${input.account.id}:${folder.id}`;
+  const oversizedValues = await input.store.getSyncInfo({
+    workspaceId: input.plan.workspaceId,
+    keys: [oversizedUidlKey],
+  });
+  const oversizedUidls = parseLegacyPop3UidlStr(oversizedValues.get(oversizedUidlKey));
   const known = new Map(await input.store.loadPop3UidlToId({
     workspaceId: input.plan.workspaceId,
     folderId: folder.id,
@@ -699,7 +714,7 @@ async function syncPop3Account(input: {
       if (!uidl || !Number.isSafeInteger(messageNumber) || messageNumber <= 0) continue;
       serverUidls.push(uidl);
       maxMessageNumber = Math.max(maxMessageNumber, messageNumber);
-      if (known.has(uidl)) continue;
+      if (known.has(uidl) || oversizedUidls.has(uidl)) continue;
       try {
         const source = await client.retr(messageNumber);
         const parsed = await input.parser(source);
@@ -731,10 +746,20 @@ async function syncPop3Account(input: {
             automatedEvidenceMessageIds.push(upserted.id);
           }
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof InboundMessageTooLargeError) oversizedUidls.add(uidl);
         // Per-message POP3 failures should not abort the whole mailbox; the UIDL remains unpersisted as a row.
       }
     }
+
+    await input.store.setSyncInfo?.({
+      workspaceId: input.plan.workspaceId,
+      values: {
+        [oversizedUidlKey]: serializePop3ServerUidls(
+          serverUidls.filter((uidl) => oversizedUidls.has(uidl)),
+        ),
+      },
+    });
 
     await input.store.updateFolderSyncState({
       workspaceId: input.plan.workspaceId,
@@ -879,6 +904,14 @@ function createPostgresMailSyncStore(options: PostgresMailSyncJobPortOptions): S
         for (const key of input.keys) values.set(key, null);
         for (const row of rows) values.set(row.key, row.value);
         return values;
+      });
+    },
+    async setSyncInfo(input) {
+      await withWorkspace(input.workspaceId, async (trx) => {
+        const now = new Date();
+        for (const [key, value] of Object.entries(input.values)) {
+          await setPostgresSyncInfoValue(trx, input.workspaceId, key, value, now);
+        }
       });
     },
     async getOrCreateFolder(input) {
