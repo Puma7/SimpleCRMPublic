@@ -316,12 +316,117 @@ describe('email tracking routes', () => {
   });
 
   test('rejects non-canonical tracking IP insight event ids without coercing them to numbers', async () => {
-    const api = apiFor(makeTrackingPort());
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort(),
+    } satisfies ServerApiPorts);
     await expect(api.handle({
       method: 'GET',
       path: '/api/v1/email/messages/17/tracking/events/09007199254740993/ip-insight',
       principal,
     })).resolves.toMatchObject({ status: 400, body: { error: { code: 'invalid_event_id' } } });
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9223372036854775808/ip-insight',
+      principal,
+    })).resolves.toMatchObject({ status: 400, body: { error: { code: 'invalid_event_id' } } });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'email_tracking.ip_insight_denied',
+      entityId: null,
+      metadata: { outcome: 'invalid_event_id' },
+    }));
+    expect(JSON.stringify(audit.record.mock.calls)).not.toContain('9223372036854775808');
+  });
+
+  test('accepts the PostgreSQL bigint maximum for an IP insight event id', async () => {
+    const calls: unknown[] = [];
+    const api = apiFor(makeTrackingPort({
+      async getIpInsight(input) {
+        calls.push(input);
+        return {
+          ipAddress: '127.0.0.1', ipFamily: 'ipv4', scope: 'loopback',
+          countryCode: null, continentCode: null, asn: null,
+          networkName: null, networkCidr: null, databaseBuildAt: null,
+        };
+      },
+    }));
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9223372036854775807/ip-insight',
+      principal,
+    })).resolves.toMatchObject({ status: 200 });
+    expect(calls).toEqual([expect.objectContaining({ eventId: '9223372036854775807' })]);
+  });
+
+  test('checks IP insight admin rights before method, identifiers, or service availability', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({ auth: {} as never, audit } satisfies ServerApiPorts);
+    const nonAdmin = { ...principal, role: 'user' as const };
+
+    for (const request of [
+      { method: 'POST', path: '/api/v1/email/messages/not-a-number/tracking/events/9223372036854775808/ip-insight' },
+      { method: 'GET', path: '/api/v1/email/messages/not-a-number/tracking/events/not-a-number/ip-insight' },
+    ]) {
+      await expect(api.handle({ ...request, principal: nonAdmin })).resolves.toMatchObject({
+        status: 403,
+        body: { error: { code: 'forbidden' } },
+      });
+    }
+    expect(audit.record).toHaveBeenCalledTimes(2);
+    expect(audit.record).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      entityId: null,
+      metadata: { outcome: 'forbidden' },
+    }));
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/not-a-number|9223372036854775808/);
+  });
+
+  test('rejects a malformed IP insight event identifier for an admin before the service', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort(),
+    } satisfies ServerApiPorts);
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9223372036854775808/ip-insight',
+      principal,
+    })).resolves.toMatchObject({
+      status: 400,
+      body: { error: { code: 'invalid_event_id' } },
+    });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      entityId: null,
+      metadata: { outcome: 'invalid_event_id' },
+    }));
+  });
+
+  test('audits an admin malformed IP insight identifier without retaining it', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort(),
+    } satisfies ServerApiPorts);
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/not-a-number/tracking/events/9223372036854775808/ip-insight',
+      principal,
+    })).resolves.toMatchObject({
+      status: 400,
+      body: { error: { code: 'invalid_message_id' } },
+    });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'email_tracking.ip_insight_denied',
+      entityId: null,
+      metadata: { outcome: 'invalid_message_id' },
+    }));
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/not-a-number|9223372036854775808/);
   });
 
   test('returns semantic policy errors as 400 without hiding infrastructure failures', async () => {

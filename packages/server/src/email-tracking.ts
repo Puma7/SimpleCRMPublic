@@ -716,16 +716,15 @@ export function createPostgresEmailTrackingService(
     },
 
     async getIpInsight(input) {
+      let insight: EmailTrackingIpInsightRecord;
       try {
-        const insight = await loadTrackingIpInsight({
+        insight = await loadTrackingIpInsight({
           db: options.db,
           crypto,
           ipIntelligence: options.emailTrackingIpIntelligence,
-          now: now(),
+          now,
           ...input,
         });
-        await recordTrackingIpInsightAudit(options.audit, input, 'email_tracking.ip_insight_accessed', 'success');
-        return insight;
       } catch (caught) {
         await recordTrackingIpInsightAudit(
           options.audit,
@@ -735,6 +734,8 @@ export function createPostgresEmailTrackingService(
         );
         throw caught;
       }
+      await recordTrackingIpInsightAudit(options.audit, input, 'email_tracking.ip_insight_accessed', 'success');
+      return insight;
     },
 
     async reclassifyMessage(input) {
@@ -977,7 +978,7 @@ async function loadTrackingIpInsight(input: Readonly<{
   db: Kysely<ServerDatabase>;
   crypto: TrackingCrypto | null;
   ipIntelligence?: EmailTrackingIpIntelligencePort;
-  now: Date;
+  now: () => Date;
   workspaceId: string;
   actorUserId: string;
   messageId: number;
@@ -1040,7 +1041,7 @@ async function loadTrackingIpInsightTarget(
     workspaceId: string;
     messageId: number;
     eventId: string;
-    now: Date;
+    now: () => Date;
   }>,
 ): Promise<TrackingIpInsightTarget> {
   const message = await trx
@@ -1087,7 +1088,7 @@ async function loadTrackingIpInsightTarget(
     throw new EmailTrackingIpInsightForbiddenError();
   }
 
-  const rawCutoff = addDays(input.now, -Number(policy.raw_metadata_retention_days));
+  const rawCutoff = addDays(input.now(), -Number(policy.raw_metadata_retention_days));
   if (!tracking.collect_derived_metadata
     || !tracking.collect_raw_metadata
     || toDate(event.created_at).getTime() < rawCutoff.getTime()

@@ -268,7 +268,8 @@ function classifyIpAddress(ip: string): Pick<EmailTrackingIpInsight, 'ipAddress'
 }
 
 function ipv4Scope(ip: string): EmailTrackingIpInsight['scope'] {
-  const [first, second, third] = ip.split('.').map(Number);
+  const octets = ip.split('.').map(Number) as [number, number, number, number];
+  const [first, second] = octets;
   if (first === 127) return 'loopback';
   if (first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168)) {
     return 'private';
@@ -277,12 +278,29 @@ function ipv4Scope(ip: string): EmailTrackingIpInsight['scope'] {
     first === 0
     || (first === 100 && second >= 64 && second <= 127)
     || (first === 169 && second === 254)
-    || (first === 192 && (second === 0 || second === 2))
-    || (first === 198 && (second === 18 || second === 19 || second === 51))
-    || (first === 203 && second === 0 && third === 113)
+    || isIpv4InCidr(octets, [192, 0, 0, 0], 24)
+    || isIpv4InCidr(octets, [192, 0, 2, 0], 24)
+    || isIpv4InCidr(octets, [198, 18, 0, 0], 15)
+    || isIpv4InCidr(octets, [198, 51, 100, 0], 24)
+    || isIpv4InCidr(octets, [203, 0, 113, 0], 24)
     || first >= 224
   ) return 'reserved';
   return 'public';
+}
+
+function isIpv4InCidr(
+  address: readonly [number, number, number, number],
+  network: readonly [number, number, number, number],
+  prefixLength: number,
+): boolean {
+  const wholeOctets = Math.floor(prefixLength / 8);
+  const remainingBits = prefixLength % 8;
+  for (let index = 0; index < wholeOctets; index += 1) {
+    if (address[index] !== network[index]) return false;
+  }
+  if (remainingBits === 0) return true;
+  const mask = (0xff << (8 - remainingBits)) & 0xff;
+  return (address[wholeOctets]! & mask) === (network[wholeOctets]! & mask);
 }
 
 function ipv6Scope(ip: string): EmailTrackingIpInsight['scope'] {

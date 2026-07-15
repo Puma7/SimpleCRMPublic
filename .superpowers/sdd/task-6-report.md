@@ -57,15 +57,53 @@ git diff --check
 
 Zusaetzlich bestanden die fokussierten Boundary-Regressionen fuer `transactionDepth === 0` waehrend `openJson` und MMDB-Lookup, fuer Policy-Deaktivierung und Ciphertext-Aenderung waehrend des Lookups sowie fuer den Audit-Outcome `internal_error`.
 
+## Review-Haertung (2026-07-16)
+
+### RED
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts tests/unit/email-tracking-ip-intelligence.test.ts
+```
+
+- 4/4 Suiten fehlgeschlagen, 6 neue Regressionen rot, 199 bestehende Tests gruen.
+- Der finale Retention-Snapshot verwendete den vor dem Lookup eingefrorenen Zeitwert und gab nach einem Grenzuebertritt noch eine Insight zurueck.
+- Event-IDs oberhalb von `9223372036854775807` gelangten durch Route und Renderer; Nicht-Admins erhielten fuer erkannte Pfade vor dem Admin-Check `405`.
+- `192.2.1.1` wurde faelschlich als reserviert klassifiziert statt den MMDB-Pfad zu erreichen.
+- Ein Fehler des Success-Audit-Sinks loeste eine zweite Denial-Audit-Aufzeichnung aus.
+
+### GREEN
+
+- Der Service erhaelt den Clock-Provider und berechnet die Retention-Cutoffs in beiden kurzen Transaktionen separat. Der Lookup-Test verschiebt die Zeit ueber die Cutoff-Grenze und erhaelt final `410`.
+- Route und Renderer begrenzen Event-IDs vor jeder DB-Nutzung auf kanonische positive Dezimalstrings von `1` bis `9223372036854775807`, mit `BigInt` und ohne `Number`. Ueberlange IDs erhalten `400` und werden nie als Audit-`entityId` gespeichert; der Maximalwert wird akzeptiert.
+- Die IPv4-Sonderbereiche verwenden strukturelle CIDR-Pruefung. Dokumentationsnetze bleiben reserviert, ihre Nachbarn `192.2.1.1` und `198.51.1.1` erreichen den lokalen MMDB-Lookup als oeffentliche IPs.
+- Success-Audit steht nach dem Load-Try/Catch. Ein sink-Fehler bleibt fail-closed, ohne Denial- oder Doppel-Audit.
+- Bei erkannten Insight-Pfaden folgt nach Authentifizierung unmittelbar der Admin-Check. Nicht-Admins erhalten auch fuer falsche Methode, ungueltige IDs oder fehlenden Port genau ein `403`-Audit; Admins erhalten fuer ungueltige Message-/Event-IDs kontrolliert `400`.
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/renderer-transport.test.ts tests/unit/ip-insight-dialog.test.tsx tests/unit/message-evidence-panel.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 7/7 Suiten, 219/219 Tests bestanden
+
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking.test.ts tests/unit/email-tracking-migration.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts tests/unit/ip-insight-dialog.test.tsx tests/unit/message-evidence-panel.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 9/9 Suiten, 247/247 Tests bestanden
+
+pnpm run typecheck
+# bestanden
+
+pnpm exec eslint packages/server/src/api/email-tracking-routes.ts packages/server/src/email-tracking.ts packages/server/src/email-tracking-ip-intelligence.ts src/services/transport/channel-http-registry.ts tests/unit/email-tracking-routes.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/renderer-transport.test.ts --max-warnings 0
+# bestanden
+```
+
 ## Geaenderte Dateien
 
 - `packages/server/src/api/types.ts`
 - `packages/server/src/api/email-tracking-routes.ts`
 - `packages/server/src/email-tracking.ts`
+- `packages/server/src/email-tracking-ip-intelligence.ts`
 - `src/services/transport/channel-http-registry.ts`
 - `shared/ipc/channels.ts`
 - `tests/unit/email-tracking-routes.test.ts`
 - `tests/unit/email-tracking-service.test.ts`
+- `tests/unit/email-tracking-ip-intelligence.test.ts`
 - `tests/unit/renderer-transport.test.ts`
 - `.superpowers/sdd/task-6-report.md`
 

@@ -150,25 +150,54 @@ export async function handleEmailTrackingRoute(
 
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!ports.emailTracking) {
-    if (!ipInsightMatch) {
-      return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
+  if (ipInsightMatch && !requireAdmin(principal)) {
+    const eventId = canonicalPositiveDecimalEventId(ipInsightMatch[2]);
+    await auditIpInsightRouteDenial(ports, principal, 'forbidden', eventId);
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
+  }
+
+  if (ipInsightMatch) {
+    if (req.method !== 'GET') {
+      await auditIpInsightRouteDenial(ports, principal, 'method_not_allowed');
+      return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     }
-    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const unavailableMessageId = positiveIntFromPath(ipInsightMatch[1]);
-    if (unavailableMessageId === null) {
+    const messageId = positiveIntFromPath(ipInsightMatch[1]);
+    if (messageId === null) {
+      await auditIpInsightRouteDenial(ports, principal, 'invalid_message_id');
       return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
     }
-    const unavailableEventId = canonicalPositiveDecimalEventId(ipInsightMatch[2]);
-    if (!unavailableEventId) {
+    const eventId = canonicalPositiveDecimalEventId(ipInsightMatch[2]);
+    if (!eventId) {
       await auditIpInsightRouteDenial(ports, principal, 'invalid_event_id');
       return error(400, 'invalid_event_id', 'eventId muss eine positive dezimale Ganzzahl sein');
     }
-    if (!requireAdmin(principal)) {
-      await auditIpInsightRouteDenial(ports, principal, 'forbidden', unavailableEventId);
-      return error(403, 'forbidden', 'Adminrechte erforderlich');
+    if (!ports.emailTracking?.getIpInsight) {
+      await auditIpInsightRouteDenial(ports, principal, 'unavailable', eventId);
+      return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
     }
-    await auditIpInsightRouteDenial(ports, principal, 'unavailable', unavailableEventId);
+    try {
+      return data(200, await ports.emailTracking.getIpInsight({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        messageId,
+        eventId,
+      }));
+    } catch (caught) {
+      if (caught instanceof EmailTrackingIpInsightNotFoundError) return trackingNotFound();
+      if (caught instanceof EmailTrackingIpInsightForbiddenError) {
+        return error(403, 'ip_insights_forbidden', 'IP-Insights sind nicht aktiviert');
+      }
+      if (caught instanceof EmailTrackingIpInsightRawDataUnavailableError) {
+        return error(410, 'ip_insight_raw_data_unavailable', 'Rohdaten fuer den IP-Insight sind nicht mehr verfuegbar');
+      }
+      if (caught instanceof EmailTrackingIpInsightUnavailableError) {
+        return error(503, 'ip_insights_unavailable', 'Lokale IP-Insight-Datenbank ist nicht verfuegbar');
+      }
+      throw caught;
+    }
+  }
+
+  if (!ports.emailTracking) {
     return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
   }
 
@@ -194,46 +223,9 @@ export async function handleEmailTrackingRoute(
     }
   }
 
-  const rawMessageId = timelineMatch?.[1] ?? revokeMatch?.[1] ?? reclassifyMatch?.[1] ?? ipInsightMatch?.[1];
+  const rawMessageId = timelineMatch?.[1] ?? revokeMatch?.[1] ?? reclassifyMatch?.[1];
   const messageId = positiveIntFromPath(rawMessageId);
   if (messageId === null) return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
-
-  if (ipInsightMatch) {
-    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const eventId = canonicalPositiveDecimalEventId(ipInsightMatch[2]);
-    if (!eventId) {
-      await auditIpInsightRouteDenial(ports, principal, 'invalid_event_id');
-      return error(400, 'invalid_event_id', 'eventId muss eine positive dezimale Ganzzahl sein');
-    }
-    if (!requireAdmin(principal)) {
-      await auditIpInsightRouteDenial(ports, principal, 'forbidden', eventId);
-      return error(403, 'forbidden', 'Adminrechte erforderlich');
-    }
-    if (!ports.emailTracking.getIpInsight) {
-      await auditIpInsightRouteDenial(ports, principal, 'unavailable', eventId);
-      return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
-    }
-    try {
-      return data(200, await ports.emailTracking.getIpInsight({
-        workspaceId: principal.workspaceId,
-        actorUserId: principal.userId,
-        messageId,
-        eventId,
-      }));
-    } catch (caught) {
-      if (caught instanceof EmailTrackingIpInsightNotFoundError) return trackingNotFound();
-      if (caught instanceof EmailTrackingIpInsightForbiddenError) {
-        return error(403, 'ip_insights_forbidden', 'IP-Insights sind nicht aktiviert');
-      }
-      if (caught instanceof EmailTrackingIpInsightRawDataUnavailableError) {
-        return error(410, 'ip_insight_raw_data_unavailable', 'Rohdaten fuer den IP-Insight sind nicht mehr verfuegbar');
-      }
-      if (caught instanceof EmailTrackingIpInsightUnavailableError) {
-        return error(503, 'ip_insights_unavailable', 'Lokale IP-Insight-Datenbank ist nicht verfuegbar');
-      }
-      throw caught;
-    }
-  }
 
   if (reclassifyMatch) {
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -354,13 +346,14 @@ function trackingNotFound(): ApiResponse<ApiErrorBody> {
 }
 
 function canonicalPositiveDecimalEventId(value: string | undefined): string | null {
-  return value && /^[1-9]\d*$/.test(value) ? value : null;
+  if (!value || value.length > 19 || !/^[1-9]\d*$/.test(value)) return null;
+  return BigInt(value) <= 9_223_372_036_854_775_807n ? value : null;
 }
 
 async function auditIpInsightRouteDenial(
   ports: ServerApiPorts,
   principal: { workspaceId: string; userId: string },
-  outcome: 'invalid_event_id' | 'forbidden' | 'unavailable',
+  outcome: 'invalid_message_id' | 'invalid_event_id' | 'forbidden' | 'method_not_allowed' | 'unavailable',
   eventId: string | null = null,
 ): Promise<void> {
   await ports.audit?.record({

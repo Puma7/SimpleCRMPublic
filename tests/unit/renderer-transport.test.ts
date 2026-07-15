@@ -3672,6 +3672,32 @@ describe('renderer transport', () => {
     );
   });
 
+  test('accepts only PostgreSQL signed bigint event IDs for IP insight transport', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: {
+      ipAddress: '127.0.0.1', ipFamily: 'ipv4', scope: 'loopback',
+      countryCode: null, continentCode: null, asn: null,
+      networkName: null, networkCidr: null, databaseBuildAt: null,
+    } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '9223372036854775807',
+    })).resolves.toMatchObject({ scope: 'loopback' });
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '9223372036854775808',
+    })).rejects.toThrow('Invalid email tracking event id');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/41/tracking/events/9223372036854775807/ip-insight',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps email GDPR export to server ZIP download route', async () => {
     const blob = new Blob(['zip-bytes'], { type: 'application/zip' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(blobResponse(blob, {

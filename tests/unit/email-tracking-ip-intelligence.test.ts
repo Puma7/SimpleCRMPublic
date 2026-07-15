@@ -68,6 +68,31 @@ describe('email tracking IP intelligence', () => {
     });
     await expect(intelligence.lookup('fe90::7')).resolves.toMatchObject({ scope: 'reserved' });
     await expect(intelligence.lookup('192.0.2.17')).resolves.toMatchObject({ scope: 'reserved' });
+    await expect(intelligence.lookup('198.51.100.17')).resolves.toMatchObject({ scope: 'reserved' });
+    await expect(intelligence.lookup('203.0.113.17')).resolves.toMatchObject({ scope: 'reserved' });
+  });
+
+  test('uses the MMDB path for public neighbors of documentation ranges', async () => {
+    const country = jest.fn(() => ({ country: { isoCode: 'DE' } }));
+    const loader = jest.fn(async (): Promise<EmailTrackingIpIntelligenceReader> => ({
+      metadata: { buildEpoch: Math.floor(now.getTime() / 1_000) },
+      country,
+    }));
+    const intelligence = createEmailTrackingIpIntelligence({
+      countryDatabasePath: 'country.mmdb',
+      readerLoader: loader,
+      stat: statLoader({ 'country.mmdb': 1 }),
+      now: () => now,
+    });
+
+    await expect(intelligence.lookup('192.2.1.1')).resolves.toMatchObject({
+      scope: 'public', countryCode: 'DE',
+    });
+    await expect(intelligence.lookup('198.51.1.1')).resolves.toMatchObject({
+      scope: 'public', countryCode: 'DE',
+    });
+    expect(country).toHaveBeenCalledWith('192.2.1.1');
+    expect(country).toHaveBeenCalledWith('198.51.1.1');
   });
 
   test('classifies IPv4-mapped IPv6 private and loopback ranges without opening readers', async () => {

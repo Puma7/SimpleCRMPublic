@@ -6179,7 +6179,12 @@ function canonicalPositiveDecimalId(value: unknown, label: string): string {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid ${label}`)
     return String(value)
   }
-  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+  if (
+    typeof value !== "string"
+    || value.length > 19
+    || !/^[1-9]\d*$/.test(value)
+    || BigInt(value) > 9_223_372_036_854_775_807n
+  ) {
     throw new Error(`Invalid ${label}`)
   }
   return value
