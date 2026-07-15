@@ -97,7 +97,7 @@ flowchart LR
 | `packages/server/src/email-tracking.ts` | Persistenz, Resolver, Timeline, Reclassification und Retention |
 | `packages/server/src/email-tracking-ip-intelligence.ts` | Lokaler MMDB-Reader, private/reservierte Netze, Status und ASN/Country-Lookup |
 | `packages/server/src/email-tracking-network-rules.ts` | Kuratierte Proxy-/Scannerregeln und Zuordnung des lokalen Netzkontexts |
-| `packages/server/src/migrations/0028_email_evidence_classification_v2.ts` | Klassifikationsprojektionen, Policy-Feld und RLS |
+| `packages/server/src/migrations/0030_email_evidence_classification_v2.ts` | Klassifikationsprojektionen, Policy-Feld und RLS |
 | `packages/server/src/api/email-tracking-routes.ts` | Admin-only IP-Insight- und Reclassify-Routen |
 | `packages/server/src/api/types.ts` | API-Port- und Response-Typen |
 | `packages/server/src/config.ts`, `packages/server/src/server.ts` | MMDB-Pfade und Dependency Injection |
@@ -113,7 +113,7 @@ flowchart LR
 ### Task 1: Evidenzvertrag V2 und versionierte Klassifikationsprojektion
 
 **Files:**
-- Create: `packages/server/src/migrations/0028_email_evidence_classification_v2.ts`
+- Create: `packages/server/src/migrations/0030_email_evidence_classification_v2.ts`
 - Modify: `packages/server/src/migrations/index.ts`
 - Modify: `packages/server/src/db/schema.ts`
 - Modify: `packages/core/src/email/tracking.ts`
@@ -153,7 +153,7 @@ PRIMARY KEY (event_id, classification_version)
 ```
 
 - [ ] **Step 1:** Migrationstest schreiben, der Tabelle, Checks, Foreign Key, RLS und Policy `ip_insights_enabled boolean NOT NULL DEFAULT false` verlangt.
-- [ ] **Step 2:** `pnpm exec jest --runInBand tests/unit/email-tracking-migration.test.ts` ausführen; erwartet wird ein FAIL wegen fehlender Migration `0028`.
+- [ ] **Step 2:** `pnpm exec jest --runInBand tests/unit/email-tracking-migration.test.ts` ausführen; erwartet wird ein FAIL wegen fehlender Migration `0030`.
 - [ ] **Step 3:** Migration, Kysely-Schema und Core-Typen implementieren. Historische Lifecycle-Ereignisse werden als `system`, alte `*_automated` als `automated_unknown` und alte `open_probable`/`click` konservativ als `unknown` projiziert.
 - [ ] **Step 4:** Migration- und Core-Tests erneut ausführen; erwartet wird PASS.
 - [ ] **Step 5:** Commit: `feat(email): add versioned evidence classifications`.
