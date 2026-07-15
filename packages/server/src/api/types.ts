@@ -1,4 +1,5 @@
 import type {
+  EmailEvidenceClassification,
   EmailEvidenceConfidence,
   EmailEvidenceEventType,
   EmailEvidenceSummary,
@@ -2869,6 +2870,7 @@ export type EmailTrackingEventRecord = {
   automated: boolean;
   occurredAt: string;
   metadata: Readonly<Record<string, unknown>>;
+  classification?: EmailEvidenceClassification | null;
 };
 
 export type EmailTrackingTimelineRecord = {
@@ -2903,6 +2905,11 @@ export type EmailTrackingApiPort = {
   resolvePublicClick(input: EmailTrackingPublicRequest): Promise<{ targetUrl: string } | null>;
   revokeMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;
   eraseMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;
+  reclassifyMessage?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+  }): Promise<{ classified: number; unavailableRaw: number }>;
   recordInboundEvidence?(input: {
     workspaceId: string;
     messageIdHeader: string;

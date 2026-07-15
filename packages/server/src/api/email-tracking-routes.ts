@@ -5,7 +5,10 @@ import type {
   EmailTrackingPolicyMutationInput,
   ServerApiPorts,
 } from './types';
-import { EmailTrackingPolicyValidationError } from '../email-tracking';
+import {
+  EmailTrackingMessageNotFoundError,
+  EmailTrackingPolicyValidationError,
+} from '../email-tracking';
 import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
 
 const PUBLIC_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -137,7 +140,8 @@ export async function handleEmailTrackingRoute(
   const isSettings = req.path === '/api/v1/email/tracking/settings';
   const timelineMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking$/.exec(req.path);
   const revokeMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/revoke$/.exec(req.path);
-  if (!isSettings && !timelineMatch && !revokeMatch) return null;
+  const reclassifyMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/reclassify$/.exec(req.path);
+  if (!isSettings && !timelineMatch && !revokeMatch && !reclassifyMatch) return null;
 
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
@@ -167,9 +171,27 @@ export async function handleEmailTrackingRoute(
     }
   }
 
-  const rawMessageId = timelineMatch?.[1] ?? revokeMatch?.[1];
+  const rawMessageId = timelineMatch?.[1] ?? revokeMatch?.[1] ?? reclassifyMatch?.[1];
   const messageId = positiveIntFromPath(rawMessageId);
   if (messageId === null) return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
+
+  if (reclassifyMatch) {
+    if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+    if (!ports.emailTracking.reclassifyMessage) {
+      return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
+    }
+    try {
+      return data(200, await ports.emailTracking.reclassifyMessage({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        messageId,
+      }));
+    } catch (caught) {
+      if (caught instanceof EmailTrackingMessageNotFoundError) return trackingNotFound();
+      throw caught;
+    }
+  }
 
   if (revokeMatch) {
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');

@@ -3,6 +3,7 @@ import {
   buildStoredTrackingMetadata,
   createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
+  emailTrackingEventAssociatedData,
   effectiveRetryTrackingFlags,
   effectiveTrackingTokenExpiry,
   retryLinkCountMismatch,
@@ -679,6 +680,185 @@ describe('email tracking service security helpers', () => {
     expect(atCap.state.classificationRows).toEqual([]);
     expect(atCap.state.operations).toEqual(['policy_read_initial', 'capacity_precheck']);
   });
+
+  test('reclassifies retained evidence in bounded admin pages without mutating raw events', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const actorUserId = '33333333-3333-4333-8333-333333333333';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const crypto = createEmailTrackingCrypto(key);
+    const acceptedAt = new Date('2026-07-15T12:00:00.000Z');
+    const events = Array.from({ length: 501 }, (_, offset) => historicalEvent({
+      id: offset + 1,
+      type: 'queued',
+      occurredAt: new Date(acceptedAt.getTime() + offset * 1_000),
+    }));
+    events[0] = historicalEvent({ id: 1, type: 'sending', occurredAt: acceptedAt });
+    events[1] = historicalEvent({ id: 2, type: 'open_automated', occurredAt: acceptedAt });
+    events[2] = historicalEvent({ id: 3, type: 'open_probable', occurredAt: acceptedAt });
+    events[3] = historicalEvent({ id: 4, type: 'click', occurredAt: acceptedAt });
+    events[4] = historicalEvent({
+      id: 5,
+      type: 'open_probable',
+      occurredAt: new Date(acceptedAt.getTime() + 3_000),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, 5, {
+        ip: '74.125.216.133',
+        userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      }),
+    });
+    events[5] = historicalEvent({
+      id: 6,
+      type: 'open_probable',
+      occurredAt: new Date(acceptedAt.getTime() + 60 * 60_000),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, 6, {
+        ip: '8.8.8.8',
+        userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      }),
+    });
+    events[6] = historicalEvent({
+      id: 7,
+      type: 'click_automated',
+      occurredAt: new Date(acceptedAt.getTime() + 4_000),
+      raw: {
+        ciphertext: Buffer.from('unreadable'),
+        nonce: Buffer.alloc(12),
+        authTag: Buffer.alloc(16),
+      },
+    });
+    const { db, state } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events,
+      acceptedAt,
+    });
+    const rawSnapshot = historicalRawSnapshot(events);
+    const lookup = jest.fn(async (ipAddress: string) => {
+      expect(state.transactionDepth).toBe(0);
+      return ipAddress === '74.125.216.133'
+        ? ipInsight({ ipAddress, asn: 15169, networkName: 'GOOGLE' })
+        : ipInsight({ ipAddress, asn: null, networkName: null });
+    });
+    const audit = { record: jest.fn(async () => undefined) };
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      audit,
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    const first = await service.reclassifyMessage({ workspaceId, actorUserId, messageId: 17 });
+    const second = await service.reclassifyMessage({ workspaceId, actorUserId, messageId: 17 });
+
+    expect(first).toEqual({ classified: 501, unavailableRaw: 2 });
+    expect(second).toEqual(first);
+    expect(state.readPageSizes).toEqual([500, 1, 500, 1]);
+    expect(state.upsertPageSizes).toEqual([500, 1, 500, 1]);
+    expect(state.maxRowsInTransaction).toBe(500);
+    expect(state.classificationUpsertsHeldPolicyLock).toEqual([true, true, true, true]);
+    expect(state.classifications).toHaveLength(501);
+    expect(state.classifications.find((row) => row.event_id === 1)).toMatchObject({
+      classification_version: 2,
+      actor_class: 'system',
+    });
+    expect(state.classifications.find((row) => row.event_id === 2)).toMatchObject({
+      actor_class: 'automated_unknown',
+    });
+    expect(state.classifications.find((row) => row.event_id === 3)).toMatchObject({
+      actor_class: 'unknown',
+    });
+    expect(state.classifications.find((row) => row.event_id === 5)).toMatchObject({
+      actor_class: 'automated_unknown',
+      reasons_json: ['immediate_infrastructure_fetch'],
+    });
+    expect(state.classifications.find((row) => row.event_id === 6)).toMatchObject({
+      actor_class: 'probable_human',
+    });
+    expect(state.classifications.find((row) => row.event_id === 7)).toMatchObject({
+      actor_class: 'automated_unknown',
+    });
+    expect(lookup).toHaveBeenCalledTimes(4);
+    expect(historicalRawSnapshot(events)).toEqual(rawSnapshot);
+    expect(state.eventMutationAttempts).toEqual([]);
+    expect(state.sessionContexts).toHaveLength(10);
+    expect(state.sessionContexts).toEqual(state.sessionContexts.map(() => [
+      workspaceId,
+      actorUserId,
+      'admin',
+      'off',
+    ]));
+    expect(audit.record).toHaveBeenCalledTimes(2);
+    expect(audit.record).toHaveBeenLastCalledWith({
+      workspaceId,
+      actorUserId,
+      action: 'email_tracking.reclassified',
+      entityType: 'email_message',
+      entityId: '17',
+      metadata: { classified: 501, unavailableRaw: 2, classificationVersion: 2 },
+    });
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/74\.125|8\.8\.8\.8|Mozilla|Geo|ASN|network/i);
+
+    await expect(service.reclassifyMessage({
+      workspaceId: '22222222-2222-4222-8222-222222222222',
+      actorUserId,
+      messageId: 17,
+    })).rejects.toThrow('E-Mail-Nachricht nicht gefunden');
+    expect(audit.record).toHaveBeenCalledTimes(2);
+  });
+
+  test('uses the highest classification projection for timeline and V2 session summary', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const events = [
+      historicalEvent({ id: 1, type: 'smtp_accepted', occurredAt: new Date('2026-07-15T10:00:00.000Z') }),
+      historicalEvent({ id: 2, type: 'open_probable', occurredAt: new Date('2026-07-15T11:00:00.000Z') }),
+      historicalEvent({ id: 3, type: 'open_probable', occurredAt: new Date('2026-07-15T11:10:00.000Z') }),
+      historicalEvent({ id: 4, type: 'open_probable', occurredAt: new Date('2026-07-15T12:00:00.000Z') }),
+      historicalEvent({ id: 5, type: 'open_automated', occurredAt: new Date('2026-07-15T12:05:00.000Z') }),
+      historicalEvent({ id: 6, type: 'open_probable', occurredAt: new Date('2026-07-15T11:40:00.000Z') }),
+    ];
+    const { db, state } = trackingTimelineDatabase({
+      workspaceId,
+      trackingMessageId,
+      events,
+      classifications: [
+        historicalClassification(2, 1, 'unknown'),
+        historicalClassification(2, 2, 'probable_human'),
+        historicalClassification(3, 2, 'probable_human'),
+        historicalClassification(6, 2, 'probable_human'),
+      ],
+    });
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+    });
+
+    const timeline = await service.getTimeline({ workspaceId, messageId: 17 });
+
+    expect(timeline?.events.find((event) => event.id === 2)?.classification).toEqual({
+      version: 2,
+      actorClass: 'probable_human',
+      confidence: 'medium',
+      reasons: ['historical_test'],
+    });
+    expect(timeline?.events.find((event) => event.id === 4)?.classification ?? null).toBeNull();
+    expect(timeline?.summary).toMatchObject({
+      pixelFetchCount: 5,
+      automatedPixelFetchCount: 0,
+      unknownPixelFetchCount: 2,
+      probableHumanPixelFetchCount: 3,
+      probableHumanOpenSessionCount: 2,
+      firstProbableHumanOpenAt: '2026-07-15T11:00:00.000Z',
+      lastProbableHumanOpenAt: '2026-07-15T11:40:00.000Z',
+      openCount: 5,
+      automatedOpenCount: 1,
+      probableOpenCount: 4,
+    });
+    expect(state.summaryPageLimits).toEqual([500]);
+    expect(state.timelineLimits).toEqual([1_001]);
+    expect(state.usedHighestClassificationJoin).toBe(true);
+  });
 });
 
 function trackingRetryMismatchDatabase(existingTargetHash: string): {
@@ -1159,5 +1339,480 @@ class PublicInteractionInsert {
     }
     this.state.operations.push('classification_insert');
     this.state.classificationRows.push(this.row);
+  }
+}
+
+type HistoricalEventRow = {
+  id: number;
+  event_type: string;
+  source: string;
+  confidence: string;
+  automated: boolean;
+  occurred_at: Date;
+  metadata_json: Record<string, unknown>;
+  raw_metadata_ciphertext: Buffer | null;
+  raw_metadata_nonce: Buffer | null;
+  raw_metadata_auth_tag: Buffer | null;
+  dedupe_key: string;
+};
+
+type HistoricalRawEnvelope = {
+  ciphertext: Buffer;
+  nonce: Buffer;
+  authTag: Buffer;
+};
+
+function historicalEvent(input: {
+  id: number;
+  type: string;
+  occurredAt: Date;
+  raw?: HistoricalRawEnvelope;
+}): HistoricalEventRow {
+  const automated = input.type.endsWith('_automated')
+    || ['queued', 'sending', 'smtp_accepted', 'smtp_failed', 'delayed', 'bounced'].includes(input.type);
+  return {
+    id: input.id,
+    event_type: input.type,
+    source: 'historical_fixture',
+    confidence: input.type === 'queued' || input.type === 'sending' ? 'none'
+      : input.type === 'smtp_accepted' ? 'low' : 'medium',
+    automated,
+    occurred_at: input.occurredAt,
+    metadata_json: {},
+    raw_metadata_ciphertext: input.raw?.ciphertext ?? null,
+    raw_metadata_nonce: input.raw?.nonce ?? null,
+    raw_metadata_auth_tag: input.raw?.authTag ?? null,
+    dedupe_key: `historical-${input.id}`,
+  };
+}
+
+function sealHistoricalRaw(
+  crypto: ReturnType<typeof createEmailTrackingCrypto>,
+  workspaceId: string,
+  trackingMessageId: string,
+  eventId: number,
+  raw: { ip: string | null; userAgent: string | null },
+): HistoricalRawEnvelope {
+  const dedupeKey = `historical-${eventId}`;
+  return crypto.sealJson(
+    raw,
+    emailTrackingEventAssociatedData(workspaceId, trackingMessageId, dedupeKey),
+  );
+}
+
+function historicalRawSnapshot(events: readonly HistoricalEventRow[]) {
+  return events.map((event) => ({
+    id: event.id,
+    ciphertext: event.raw_metadata_ciphertext?.toString('hex') ?? null,
+    nonce: event.raw_metadata_nonce?.toString('hex') ?? null,
+    authTag: event.raw_metadata_auth_tag?.toString('hex') ?? null,
+    dedupeKey: event.dedupe_key,
+  }));
+}
+
+type HistoricalReclassificationState = {
+  transactionDepth: number;
+  currentRowsInTransaction: number;
+  maxRowsInTransaction: number;
+  policyLockHeld: boolean;
+  classificationUpsertsHeldPolicyLock: boolean[];
+  readPageSizes: number[];
+  upsertPageSizes: number[];
+  classifications: Array<Record<string, unknown>>;
+  eventMutationAttempts: string[];
+  sessionContexts: unknown[][];
+};
+
+function historicalReclassificationDatabase(input: {
+  workspaceId: string;
+  trackingMessageId: string;
+  events: readonly HistoricalEventRow[];
+  acceptedAt: Date;
+  collectDerivedMetadata?: boolean;
+  insightsEnabled?: boolean;
+}): { db: Kysely<ServerDatabase>; state: HistoricalReclassificationState } {
+  const state: HistoricalReclassificationState = {
+    transactionDepth: 0,
+    currentRowsInTransaction: 0,
+    maxRowsInTransaction: 0,
+    policyLockHeld: false,
+    classificationUpsertsHeldPolicyLock: [],
+    readPageSizes: [],
+    upsertPageSizes: [],
+    classifications: [],
+    eventMutationAttempts: [],
+    sessionContexts: [],
+  };
+  const fixture = {
+    ...input,
+    collectDerivedMetadata: input.collectDerivedMetadata ?? true,
+    insightsEnabled: input.insightsEnabled ?? true,
+  };
+  const db = {
+    transaction() {
+      return {
+        execute: async <T>(operation: (trx: unknown) => Promise<T>) => {
+          state.transactionDepth += 1;
+          state.currentRowsInTransaction = 0;
+          try {
+            return await operation(db);
+          } finally {
+            state.transactionDepth -= 1;
+            state.currentRowsInTransaction = 0;
+            state.policyLockHeld = false;
+          }
+        },
+      };
+    },
+    getExecutor() {
+      return {
+        executeQuery: async (query: { sql?: string; parameters?: readonly unknown[] }) => {
+          const statement = query.sql ?? '';
+          if (statement.includes("set_config('app.workspace_id'")) {
+            state.sessionContexts.push([...(query.parameters ?? [])]);
+          }
+          if (statement.includes('pg_advisory_xact_lock') && statement.includes('hashtextextended')) {
+            state.policyLockHeld = true;
+          }
+          return { rows: [] };
+        },
+      };
+    },
+    selectFrom(table: string) {
+      return new HistoricalReclassificationSelect(table, state, fixture);
+    },
+    insertInto(table: string) {
+      return new HistoricalReclassificationInsert(table, state);
+    },
+    updateTable(table: string) {
+      state.eventMutationAttempts.push(`update:${table}`);
+      throw new Error(`Unexpected historical update: ${table}`);
+    },
+    deleteFrom(table: string) {
+      state.eventMutationAttempts.push(`delete:${table}`);
+      throw new Error(`Unexpected historical delete: ${table}`);
+    },
+  } as unknown as Kysely<ServerDatabase>;
+  return { db, state };
+}
+
+class HistoricalReclassificationSelect {
+  private readonly filters: Array<readonly [string, string, unknown]> = [];
+  private selected: string | readonly string[] | undefined;
+  private rowLimit = Number.MAX_SAFE_INTEGER;
+
+  constructor(
+    private readonly table: string,
+    private readonly state: HistoricalReclassificationState,
+    private readonly fixture: Readonly<{
+      workspaceId: string;
+      trackingMessageId: string;
+      events: readonly HistoricalEventRow[];
+      acceptedAt: Date;
+      collectDerivedMetadata: boolean;
+      insightsEnabled: boolean;
+    }>,
+  ) {}
+
+  select(selection: string | readonly string[]) {
+    this.selected = selection;
+    return this;
+  }
+
+  where(column: string, operator: string, value: unknown) {
+    this.filters.push([column, operator, value]);
+    return this;
+  }
+
+  orderBy() { return this; }
+
+  limit(value: number) {
+    this.rowLimit = value;
+    return this;
+  }
+
+  async executeTakeFirst() {
+    const workspaceId = this.filterValue('workspace_id', '=');
+    if (this.table === 'email_messages') {
+      return workspaceId === this.fixture.workspaceId && this.filterValue('id', '=') === 17
+        ? { id: 17 }
+        : undefined;
+    }
+    if (this.table === 'email_tracking_messages') {
+      const messageId = this.filterValue('message_id', '=');
+      const trackingId = this.filterValue('id', '=');
+      return workspaceId === this.fixture.workspaceId
+        && (messageId === 17 || trackingId === this.fixture.trackingMessageId)
+        ? {
+            id: this.fixture.trackingMessageId,
+            message_id: 17,
+            collect_derived_metadata: this.fixture.collectDerivedMetadata,
+          }
+        : undefined;
+    }
+    if (this.table === 'email_tracking_policies') {
+      return workspaceId === this.fixture.workspaceId
+        ? {
+            ip_insights_enabled: this.fixture.insightsEnabled,
+            collect_derived_metadata: this.fixture.insightsEnabled,
+          }
+        : undefined;
+    }
+    if (this.table === 'email_tracking_events') {
+      const selected = Array.isArray(this.selected) ? this.selected : [this.selected];
+      if (selected.includes('occurred_at') && this.filterValue('event_type', '=') === 'smtp_accepted') {
+        return { occurred_at: this.fixture.acceptedAt };
+      }
+    }
+    throw new Error(`Unexpected historical executeTakeFirst table: ${this.table}`);
+  }
+
+  async execute() {
+    if (this.table !== 'email_tracking_events') {
+      throw new Error(`Unexpected historical execute table: ${this.table}`);
+    }
+    const afterId = Number(this.filterValue('id', '>') ?? 0);
+    const rows = this.fixture.events
+      .filter((event) => event.id > afterId)
+      .slice(0, this.rowLimit);
+    if (this.rowLimit > 500) throw new Error(`Historical page exceeded 500 rows: ${this.rowLimit}`);
+    this.state.readPageSizes.push(rows.length);
+    this.recordRows(rows.length);
+    return rows;
+  }
+
+  private filterValue(column: string, operator: string): unknown {
+    return this.filters.find((filter) => filter[0] === column && filter[1] === operator)?.[2];
+  }
+
+  private recordRows(count: number) {
+    this.state.currentRowsInTransaction += count;
+    this.state.maxRowsInTransaction = Math.max(
+      this.state.maxRowsInTransaction,
+      this.state.currentRowsInTransaction,
+    );
+  }
+}
+
+class HistoricalReclassificationInsert {
+  private rows: Array<Record<string, unknown>> = [];
+
+  constructor(
+    private readonly table: string,
+    private readonly state: HistoricalReclassificationState,
+  ) {}
+
+  values(rows: Record<string, unknown> | readonly Record<string, unknown>[]) {
+    this.rows = Array.isArray(rows) ? [...rows] : [rows];
+    return this;
+  }
+
+  onConflict(callback: (builder: unknown) => unknown) {
+    callback({
+      columns: (columns: readonly string[]) => ({
+        doUpdateSet: () => {
+          if (columns.join(',') !== 'event_id,classification_version') {
+            throw new Error(`Unexpected historical conflict columns: ${columns.join(',')}`);
+          }
+          return {};
+        },
+      }),
+    });
+    return this;
+  }
+
+  async execute() {
+    if (this.table !== 'email_tracking_event_classifications') {
+      this.state.eventMutationAttempts.push(`insert:${this.table}`);
+      throw new Error(`Unexpected historical insert: ${this.table}`);
+    }
+    if (this.rows.length > 500) throw new Error(`Historical upsert exceeded 500 rows: ${this.rows.length}`);
+    this.state.upsertPageSizes.push(this.rows.length);
+    this.state.classificationUpsertsHeldPolicyLock.push(this.state.policyLockHeld);
+    this.state.currentRowsInTransaction += this.rows.length;
+    this.state.maxRowsInTransaction = Math.max(
+      this.state.maxRowsInTransaction,
+      this.state.currentRowsInTransaction,
+    );
+    for (const row of this.rows) {
+      const existing = this.state.classifications.findIndex((candidate) => (
+        candidate.event_id === row.event_id
+        && candidate.classification_version === row.classification_version
+      ));
+      if (existing >= 0) this.state.classifications[existing] = row;
+      else this.state.classifications.push(row);
+    }
+  }
+}
+
+function historicalClassification(
+  eventId: number,
+  version: number,
+  actorClass: string,
+): Record<string, unknown> {
+  return {
+    event_id: eventId,
+    classification_version: version,
+    actor_class: actorClass,
+    confidence: 'medium',
+    reasons_json: ['historical_test'],
+    classified_at: new Date('2026-07-16T09:00:00.000Z'),
+  };
+}
+
+type TrackingTimelineState = {
+  summaryPageLimits: number[];
+  timelineLimits: number[];
+  usedHighestClassificationJoin: boolean;
+};
+
+function trackingTimelineDatabase(input: {
+  workspaceId: string;
+  trackingMessageId: string;
+  events: readonly HistoricalEventRow[];
+  classifications: readonly Record<string, unknown>[];
+}): { db: Kysely<ServerDatabase>; state: TrackingTimelineState } {
+  const state: TrackingTimelineState = {
+    summaryPageLimits: [],
+    timelineLimits: [],
+    usedHighestClassificationJoin: false,
+  };
+  const db = {
+    transaction() {
+      return { execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db) };
+    },
+    getExecutor() {
+      return {
+        executeQuery: async (query: { sql?: string }) => {
+          if ((query.sql ?? '').includes("set_config('app.workspace_id'")) return { rows: [] };
+          return {
+            rows: [{
+              latest_transport_type: 'smtp_accepted',
+              confidence_rank: 2,
+              engagement_rank: 2,
+              has_dsn_delivery: false,
+              has_external_reach: true,
+              open_count: 5,
+              click_count: 0,
+              automated_open_count: 1,
+              probable_open_count: 4,
+              automated_click_count: 0,
+              probable_click_count: 0,
+              first_opened_at: new Date('2026-07-15T11:00:00.000Z'),
+              last_opened_at: new Date('2026-07-15T12:05:00.000Z'),
+              first_clicked_at: null,
+              last_clicked_at: null,
+              replied_at: null,
+            }],
+          };
+        },
+      };
+    },
+    selectFrom(table: string) {
+      return new TrackingTimelineSelect(table, state, input);
+    },
+  } as unknown as Kysely<ServerDatabase>;
+  return { db, state };
+}
+
+class TrackingTimelineSelect {
+  private readonly filters: Array<readonly [string, string, unknown]> = [];
+  private readonly orders: Array<readonly [string, string | undefined]> = [];
+  private rowLimit = Number.MAX_SAFE_INTEGER;
+  private joinedClassifications = false;
+  private classificationVersionDescending = false;
+
+  constructor(
+    private readonly table: string,
+    private readonly state: TrackingTimelineState,
+    private readonly fixture: Readonly<{
+      workspaceId: string;
+      trackingMessageId: string;
+      events: readonly HistoricalEventRow[];
+      classifications: readonly Record<string, unknown>[];
+    }>,
+  ) {}
+
+  select() { return this; }
+  distinctOn() { return this; }
+
+  where(column: string, operator: string, value: unknown) {
+    this.filters.push([column, operator, value]);
+    return this;
+  }
+
+  orderBy(column: string, direction?: string) {
+    this.orders.push([column, direction]);
+    if (this.table === 'email_tracking_event_classifications'
+      && column.includes('classification_version')
+      && direction === 'desc') {
+      this.classificationVersionDescending = true;
+    }
+    return this;
+  }
+
+  limit(value: number) {
+    this.rowLimit = value;
+    return this;
+  }
+
+  as() {
+    return {
+      historicalClassificationSubquery: true,
+      classificationVersionDescending: this.classificationVersionDescending,
+    };
+  }
+
+  leftJoin(joined: unknown) {
+    const marker = joined as {
+      historicalClassificationSubquery?: boolean;
+      classificationVersionDescending?: boolean;
+    };
+    this.joinedClassifications = marker.historicalClassificationSubquery === true;
+    this.state.usedHighestClassificationJoin ||= this.joinedClassifications
+      && marker.classificationVersionDescending === true;
+    return this;
+  }
+
+  async executeTakeFirst() {
+    if (this.table === 'email_messages') return { id: 17 };
+    if (this.table === 'email_tracking_messages') {
+      return { id: this.fixture.trackingMessageId, recipient_count: 1 };
+    }
+    throw new Error(`Unexpected timeline executeTakeFirst table: ${this.table}`);
+  }
+
+  async execute() {
+    if (!this.table.startsWith('email_tracking_events')) {
+      throw new Error(`Unexpected timeline execute table: ${this.table}`);
+    }
+    const afterId = Number(
+      this.filters.find(([column, operator]) => column.endsWith('id') && operator === '>')?.[2] ?? 0,
+    );
+    const descending = this.orders.some(([, direction]) => direction === 'desc');
+    const rows = this.fixture.events
+      .filter((event) => event.id > afterId)
+      .sort((left, right) => descending
+        ? right.occurred_at.getTime() - left.occurred_at.getTime() || right.id - left.id
+        : left.id - right.id)
+      .slice(0, this.rowLimit)
+      .map((event) => this.joinedClassifications ? this.withHighestClassification(event) : event);
+    if (this.rowLimit === 500) this.state.summaryPageLimits.push(this.rowLimit);
+    if (this.rowLimit === 1_001) this.state.timelineLimits.push(this.rowLimit);
+    return rows;
+  }
+
+  private withHighestClassification(event: HistoricalEventRow) {
+    const classification = this.fixture.classifications
+      .filter((candidate) => candidate.event_id === event.id)
+      .sort((left, right) => Number(right.classification_version) - Number(left.classification_version))[0];
+    return {
+      ...event,
+      classification_version: classification?.classification_version ?? null,
+      actor_class: classification?.actor_class ?? null,
+      classification_confidence: classification?.confidence ?? null,
+      reasons_json: classification?.reasons_json ?? null,
+      classified_at: classification?.classified_at ?? null,
+    };
   }
 }

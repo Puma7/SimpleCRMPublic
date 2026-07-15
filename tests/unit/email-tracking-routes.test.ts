@@ -1,6 +1,9 @@
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import { resetEmailTrackingRateLimitersForTests } from '../../packages/server/src/api/email-tracking-routes';
-import { EmailTrackingPolicyValidationError } from '../../packages/server/src/email-tracking';
+import {
+  EmailTrackingMessageNotFoundError,
+  EmailTrackingPolicyValidationError,
+} from '../../packages/server/src/email-tracking';
 import type {
   AuthenticatedPrincipal,
   EmailTrackingApiPort,
@@ -40,6 +43,7 @@ function makeTrackingPort(overrides: Partial<EmailTrackingApiPort> = {}): EmailT
     async resolvePublicClick() { return null; },
     async revokeMessage() { return false; },
     async eraseMessage() { return false; },
+    async reclassifyMessage() { return { classified: 0, unavailableRaw: 0 }; },
     ...overrides,
   };
 }
@@ -143,7 +147,13 @@ describe('email tracking routes', () => {
           eventsTruncated: false,
           summary: {
             transport: 'smtp_accepted', delivery: 'unknown', engagement: 'none', confidence: 'low',
+            pixelFetchCount: 0, automatedPixelFetchCount: 0, unknownPixelFetchCount: 0,
+            probableHumanPixelFetchCount: 0, probableHumanOpenSessionCount: 0,
+            firstPixelFetchedAt: null, lastPixelFetchedAt: null,
+            firstProbableHumanOpenAt: null, lastProbableHumanOpenAt: null,
             openCount: 0, clickCount: 0, firstOpenedAt: null, lastOpenedAt: null,
+            automatedOpenCount: 0, probableOpenCount: 0,
+            automatedClickCount: 0, probableClickCount: 0,
             firstClickedAt: null, lastClickedAt: null, repliedAt: null,
           },
           events: [],
@@ -172,6 +182,55 @@ describe('email tracking routes', () => {
       { workspaceId: 'workspace-1', messageId: 17 },
       { workspaceId: 'workspace-1', messageId: 17, includeSensitive: true },
     ]);
+  });
+
+  test('reclassifies tracking evidence only for admins and keeps missing messages non-disclosing', async () => {
+    const calls: unknown[] = [];
+    const tracking = makeTrackingPort({
+      async reclassifyMessage(input) {
+        calls.push(input);
+        if (input.messageId === 18) throw new EmailTrackingMessageNotFoundError();
+        return { classified: 7, unavailableRaw: 2 };
+      },
+    });
+    const api = apiFor(tracking);
+    const user = { ...principal, role: 'user' as const };
+
+    const forbidden = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/17/tracking/reclassify',
+      principal: user,
+    });
+    expect(forbidden.status).toBe(403);
+    expect(calls).toEqual([]);
+
+    const success = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/17/tracking/reclassify',
+      principal,
+    });
+    expect(success).toMatchObject({
+      status: 200,
+      body: { data: { classified: 7, unavailableRaw: 2 } },
+    });
+    expect(calls).toEqual([{
+      workspaceId: 'workspace-1',
+      actorUserId: 'user-1',
+      messageId: 17,
+    }]);
+
+    const missing = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/18/tracking/reclassify',
+      principal,
+    });
+    const unknownTimeline = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/18/tracking',
+      principal,
+    });
+    expect(missing).toEqual(unknownTimeline);
+    expect(missing.status).toBe(404);
   });
 
   test('returns semantic policy errors as 400 without hiding infrastructure failures', async () => {
