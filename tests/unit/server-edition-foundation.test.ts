@@ -13731,13 +13731,14 @@ describe('server edition foundation', () => {
       expect(receivedDatabaseUrl).toBe('postgres://simplecrm:secret-password@postgres:5432/simplecrm');
       expect(io.stderrOutput()).toBe('');
       expect(io.stdoutOutput()).not.toContain('secret-password');
-      expect(output.status).toBe('ok');
+      expect(output.status).toBe('warn');
       expect(output.checks.map((check: { name: string }) => check.name)).toEqual([
         'database',
         'migrations',
         'job_queue',
         'conversation_locks',
         'backups',
+        'geoip_intelligence',
       ]);
       expect(output.checks.find((check: { name: string }) => check.name === 'database').details)
         .toEqual({ databaseName: 'simplecrm', databaseSize: '42 MB' });
@@ -13753,6 +13754,56 @@ describe('server edition foundation', () => {
     } finally {
       rmSync(backupDir, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    ['ready', 'ok'],
+    ['missing', 'warn'],
+    ['stale', 'warn'],
+    ['invalid', 'warn'],
+  ] as const)('doctor reports local GeoIP state %s without credentials or raw IP addresses', async (state, expectedStatus) => {
+    const io = makeCliIo();
+    const ipIntelligence = {
+      lookup: jest.fn(async () => ({
+        ipAddress: '203.0.113.19',
+        ipFamily: 'ipv4' as const,
+        scope: 'public' as const,
+        countryCode: null,
+        continentCode: null,
+        asn: null,
+        networkName: null,
+        networkCidr: null,
+        databaseBuildAt: null,
+      })),
+      status: () => ({
+        state,
+        countryDatabaseBuildAt: state === 'ready' || state === 'stale' ? '2026-07-15T12:00:00.000Z' : null,
+        asnDatabaseBuildAt: state === 'ready' || state === 'stale' ? '2026-07-15T12:00:00.000Z' : null,
+      }),
+    };
+
+    const exitCode = await runDoctorCli({
+      argv: ['--json'],
+      env: {
+        DATABASE_URL: 'postgres://simplecrm:database-secret@postgres:5432/simplecrm',
+        GEOIPUPDATE_LICENSE_KEY: 'geoip-license-secret',
+      },
+      stdout: io.stdout,
+      stderr: io.stderr,
+      createClient: () => makeDoctorPgClient(),
+      emailTrackingIpIntelligence: ipIntelligence,
+    });
+
+    const output = JSON.parse(io.stdoutOutput());
+    expect(exitCode).toBe(0);
+    expect(output.checks.find((check: { name: string }) => check.name === 'geoip_intelligence')).toMatchObject({
+      status: expectedStatus,
+      message: expect.stringContaining(state),
+    });
+    expect(io.stdoutOutput()).not.toContain('database-secret');
+    expect(io.stdoutOutput()).not.toContain('geoip-license-secret');
+    expect(io.stdoutOutput()).not.toContain('203.0.113.19');
+    expect(ipIntelligence.lookup).toHaveBeenCalledTimes(1);
   });
 
   test('doctor CLI fails backup health on checksum mismatch', async () => {

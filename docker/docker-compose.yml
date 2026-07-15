@@ -56,11 +56,14 @@ services:
       JOB_WEBHOOK_ALLOWLIST: ${JOB_WEBHOOK_ALLOWLIST:-}
       SERVER_LOG_FILE: ${SERVER_LOG_FILE:-/app/data/logs/server-log.jsonl}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      GEOIP_COUNTRY_DB_PATH: /var/lib/simplecrm/geoip/GeoLite2-Country.mmdb
+      GEOIP_ASN_DB_PATH: /var/lib/simplecrm/geoip/GeoLite2-ASN.mmdb
       PORT: 3000
     volumes:
       - attachments:/app/data/attachments
       - audit_archives:/app/data/audit-archive
       - server_logs:/app/data/logs
+      - geoip:/var/lib/simplecrm/geoip:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +78,17 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  geoip-updater:
+    image: ghcr.io/maxmind/geoipupdate:v7.1.1@sha256:45e15eb310528fd308c5c0abee9a8e6d580f1e2b1251e960dec2863dc7f0102f
+    profiles: ["geoip"]
+    environment:
+      GEOIPUPDATE_ACCOUNT_ID: ${GEOIPUPDATE_ACCOUNT_ID:-}
+      GEOIPUPDATE_LICENSE_KEY: ${GEOIPUPDATE_LICENSE_KEY:-}
+      GEOIPUPDATE_EDITION_IDS: "GeoLite2-Country GeoLite2-ASN"
+      GEOIPUPDATE_FREQUENCY: "168"
+    volumes:
+      - geoip:/usr/share/GeoIP
 
   postgres:
     image: postgres:18-alpine
@@ -329,6 +343,7 @@ volumes:
   attachments:
   audit_archives:
   server_logs:
+  geoip:
   caddy_data:
   caddy_config:
   caddy_logs:
