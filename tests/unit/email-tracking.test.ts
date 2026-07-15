@@ -120,6 +120,117 @@ describe('email evidence tracking core', () => {
     })).toMatchObject({ automated: true, eventType: 'click_automated', confidence: 'low' });
   });
 
+  test('classifies observed Google proxy fetches without promoting later direct requests', () => {
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      secondsSinceSmtpAccepted: 3,
+      requestIp: '74.125.216.133',
+      requestHeaders: {},
+      networkContext: {
+        asn: 15169,
+        networkName: 'GOOGLE',
+        providerClass: 'hosting_or_cloud',
+      },
+    })).toMatchObject({
+      version: 2,
+      actorClass: 'mail_proxy',
+      automated: true,
+      eventType: 'open_automated',
+      reasons: ['immediate_infrastructure_fetch'],
+    });
+
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) GoogleImageProxy',
+      secondsSinceSmtpAccepted: 30,
+      requestIp: '66.249.93.40',
+      requestHeaders: {},
+    })).toMatchObject({
+      version: 2,
+      actorClass: 'mail_proxy',
+      automated: true,
+      eventType: 'open_automated',
+      reasons: ['known_proxy_user_agent'],
+    });
+
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0',
+      secondsSinceSmtpAccepted: 600,
+      requestIp: '1.1.1.1',
+      requestHeaders: {},
+    })).toMatchObject({
+      version: 2,
+      actorClass: 'probable_human',
+      confidence: 'medium',
+      automated: false,
+      eventType: 'open_probable',
+    });
+  });
+
+  test('uses explicit proxy identity but does not treat a bare Google ASN as human', () => {
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'GoogleImageProxy',
+      secondsSinceSmtpAccepted: 600,
+      requestIp: '198.41.200.10',
+      requestHeaders: {},
+      networkContext: {
+        asn: 13335,
+        networkName: 'CLOUDFLARENET',
+        providerClass: 'unknown',
+      },
+    })).toMatchObject({
+      actorClass: 'mail_proxy',
+      automated: true,
+      reasons: ['known_proxy_user_agent'],
+    });
+
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0',
+      secondsSinceSmtpAccepted: 600,
+      requestIp: '74.125.216.133',
+      requestHeaders: {},
+      networkContext: {
+        asn: 15169,
+        networkName: 'GOOGLE',
+        providerClass: 'hosting_or_cloud',
+      },
+    })).toMatchObject({
+      actorClass: 'unknown',
+      automated: false,
+      eventType: 'open_probable',
+      reasons: ['unattributed_infrastructure_network'],
+    });
+  });
+
+  test('keeps an immediate fetch without usable network intelligence unknown', () => {
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      secondsSinceSmtpAccepted: 3,
+      requestIp: '74.125.216.133',
+      requestHeaders: {},
+    })).toMatchObject({
+      actorClass: 'unknown',
+      confidence: 'low',
+      automated: false,
+      eventType: 'open_probable',
+      reasons: ['immediate_unattributed_fetch'],
+    });
+  });
+
+  test('does not treat private or mapped-reserved addresses as plausible client identity', () => {
+    for (const requestIp of ['10.1.2.3', '203.0.113.9', '::ffff:127.0.0.1', '2001:db8::1']) {
+      expect(classifyEmailTrackingRequest({
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        secondsSinceSmtpAccepted: 600,
+        requestIp,
+        requestHeaders: {},
+      })).toMatchObject({
+        actorClass: 'unknown',
+        confidence: 'low',
+        reasons: ['missing_client_identity'],
+      });
+    }
+  });
+
   test('keeps transport, delivery and engagement evidence separate', () => {
     const events: EmailEvidenceEvent[] = [
       event('queued', 'none', '2026-07-13T08:00:00.000Z'),

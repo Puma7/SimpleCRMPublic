@@ -495,6 +495,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       masterKey: options.masterKey,
       audit,
       events,
+      emailTrackingIpIntelligence: options.emailTrackingIpIntelligence,
     })
     : undefined;
   return {

@@ -12,9 +12,52 @@ import {
 } from '../../packages/server/src/email-tracking';
 import type { Kysely } from 'kysely';
 import type { ServerDatabase } from '../../packages/server/src/db';
+import { emailTrackingNetworkContext } from '../../packages/server/src/email-tracking-network-rules';
+import type {
+  EmailTrackingIpInsight,
+  EmailTrackingIpIntelligencePort,
+} from '../../packages/server/src/email-tracking-ip-intelligence';
+
+function ipInsight(overrides: Partial<EmailTrackingIpInsight>): EmailTrackingIpInsight {
+  return {
+    ipAddress: '74.125.216.133',
+    ipFamily: 'ipv4',
+    scope: 'public',
+    countryCode: 'US',
+    continentCode: 'NA',
+    asn: null,
+    networkName: null,
+    networkCidr: null,
+    databaseBuildAt: '2026-07-15T00:00:00.000Z',
+    ...overrides,
+  };
+}
 
 describe('email tracking service security helpers', () => {
   const key = Buffer.alloc(32, 7);
+
+  test('maps local provider intelligence narrowly without persisting detailed insight', () => {
+    expect(emailTrackingNetworkContext(ipInsight({
+      asn: 15169,
+      networkName: 'GOOGLE',
+    }))).toEqual({
+      asn: 15169,
+      networkName: 'GOOGLE',
+      providerClass: 'hosting_or_cloud',
+    });
+    expect(emailTrackingNetworkContext(ipInsight({
+      asn: 15169,
+      networkName: 'Google Mail Image Proxy',
+    })).providerClass).toBe('google_fetcher');
+    expect(emailTrackingNetworkContext(ipInsight({
+      asn: 209242,
+      networkName: 'Proton AG Mail Proxy',
+    })).providerClass).toBe('proton_proxy');
+    expect(emailTrackingNetworkContext(ipInsight({
+      asn: 26211,
+      networkName: 'PROOFPOINT-ASN-US-EAST',
+    })).providerClass).toBe('security_vendor');
+  });
 
   test('derives stable purpose-bound opaque tokens and one-way lookup hashes', () => {
     const crypto = createEmailTrackingCrypto(key);
@@ -397,6 +440,137 @@ describe('email tracking service security helpers', () => {
       }),
     ]));
   });
+
+  test('looks up provider context outside transactions and persists only the V2 projection', async () => {
+    const token = 'B'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const { db, state } = publicInteractionDatabase(tokenHash);
+    const lookup = jest.fn(async () => {
+      expect(state.transactionDepth).toBe(0);
+      return ipInsight({ asn: 15169, networkName: 'GOOGLE' });
+    });
+    const intelligence = readyIpIntelligence(lookup);
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: intelligence,
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+
+    await service.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+
+    expect(lookup).toHaveBeenCalledWith('74.125.216.133');
+    expect(state.policyReads).toBe(2);
+    expect(state.eventRows).toEqual([
+      expect.objectContaining({ event_type: 'open_automated', automated: true }),
+    ]);
+    expect(state.classificationRows).toEqual([{
+      event_id: 41,
+      classification_version: 2,
+      actor_class: 'mail_proxy',
+      confidence: 'low',
+      reasons_json: ['immediate_infrastructure_fetch'],
+      classified_at: new Date('2026-07-15T12:00:03.000Z'),
+    }]);
+    expect(JSON.stringify([state.eventRows, state.classificationRows])).not.toMatch(/GOOGLE|15169|countryCode|networkCidr/);
+  });
+
+  test('policy-gates lookup and discards context when the write-time policy opted out', async () => {
+    const token = 'C'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const disabled = publicInteractionDatabase(tokenHash, { initialPolicyEnabled: false });
+    const disabledLookup = jest.fn(async () => ipInsight({ asn: 15169, networkName: 'GOOGLE' }));
+    const disabledService = createPostgresEmailTrackingService({
+      db: disabled.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(disabledLookup),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+
+    await disabledService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+    expect(disabledLookup).not.toHaveBeenCalled();
+
+    const changed = publicInteractionDatabase(tokenHash, { recheckPolicyEnabled: false });
+    const changedLookup = jest.fn(async () => ipInsight({ asn: 15169, networkName: 'GOOGLE' }));
+    const changedService = createPostgresEmailTrackingService({
+      db: changed.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(changedLookup),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+
+    await changedService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+    expect(changedLookup).toHaveBeenCalledTimes(1);
+    expect(changed.state.classificationRows).toEqual([
+      expect.objectContaining({
+        actor_class: 'unknown',
+        reasons_json: ['immediate_unattributed_fetch'],
+      }),
+    ]);
+  });
+
+  test('keeps public tracking fail-open on lookup failure and projects only newly inserted events', async () => {
+    const token = 'D'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const failed = publicInteractionDatabase(tokenHash);
+    const failedService = createPostgresEmailTrackingService({
+      db: failed.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(jest.fn(async () => {
+        throw new Error('MMDB unavailable');
+      })),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+
+    await expect(failedService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    })).resolves.toBeUndefined();
+    expect(failed.state.eventRows).toHaveLength(1);
+    expect(failed.state.classificationRows).toEqual([
+      expect.objectContaining({ actor_class: 'unknown' }),
+    ]);
+
+    const duplicate = publicInteractionDatabase(tokenHash, { duplicateEvent: true });
+    const duplicateService = createPostgresEmailTrackingService({
+      db: duplicate.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(jest.fn(async () => (
+        ipInsight({ asn: 15169, networkName: 'GOOGLE' })
+      ))),
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    });
+    await duplicateService.recordPublicOpen({
+      token,
+      ip: '74.125.216.133',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    });
+    expect(duplicate.state.eventRows).toEqual([]);
+    expect(duplicate.state.classificationRows).toEqual([]);
+  });
 });
 
 function trackingRetryMismatchDatabase(existingTargetHash: string): {
@@ -656,5 +830,176 @@ class TrackingLifecycleInsert {
       throw new Error(`Unexpected tracking lifecycle insert table: ${this.table}`);
     }
     this.state.eventTypes.push(String(this.row.event_type));
+  }
+}
+
+function readyIpIntelligence(
+  lookup: EmailTrackingIpIntelligencePort['lookup'],
+): EmailTrackingIpIntelligencePort {
+  return {
+    lookup,
+    status: () => ({
+      state: 'ready',
+      countryDatabaseBuildAt: '2026-07-15T00:00:00.000Z',
+      asnDatabaseBuildAt: '2026-07-15T00:00:00.000Z',
+    }),
+  };
+}
+
+type PublicInteractionTestState = {
+  transactionDepth: number;
+  policyReads: number;
+  eventRows: Array<Record<string, unknown>>;
+  classificationRows: Array<Record<string, unknown>>;
+};
+
+function publicInteractionDatabase(
+  tokenHash: string,
+  options: Readonly<{
+    initialPolicyEnabled?: boolean;
+    recheckPolicyEnabled?: boolean;
+    duplicateEvent?: boolean;
+  }> = {},
+): { db: Kysely<ServerDatabase>; state: PublicInteractionTestState } {
+  const state: PublicInteractionTestState = {
+    transactionDepth: 0,
+    policyReads: 0,
+    eventRows: [],
+    classificationRows: [],
+  };
+  const fixture = {
+    workspaceId: '11111111-1111-4111-8111-111111111111',
+    trackingMessageId: '55555555-5555-4555-8555-555555555555',
+    tokenHash,
+    initialPolicyEnabled: options.initialPolicyEnabled ?? true,
+    recheckPolicyEnabled: options.recheckPolicyEnabled ?? true,
+    duplicateEvent: options.duplicateEvent ?? false,
+  };
+  const db = {
+    transaction() {
+      return {
+        execute: async <T>(operation: (trx: unknown) => Promise<T>) => {
+          state.transactionDepth += 1;
+          try {
+            return await operation(db);
+          } finally {
+            state.transactionDepth -= 1;
+          }
+        },
+      };
+    },
+    getExecutor() {
+      return { executeQuery: async () => ({ rows: [] }) };
+    },
+    selectFrom(table: string) {
+      return new PublicInteractionSelect(table, state, fixture);
+    },
+    insertInto(table: string) {
+      return new PublicInteractionInsert(table, state, fixture.duplicateEvent);
+    },
+  } as unknown as Kysely<ServerDatabase>;
+  return { db, state };
+}
+
+class PublicInteractionSelect {
+  private selected: string | readonly string[] | undefined;
+
+  constructor(
+    private readonly table: string,
+    private readonly state: PublicInteractionTestState,
+    private readonly fixture: Readonly<{
+      workspaceId: string;
+      trackingMessageId: string;
+      tokenHash: string;
+      initialPolicyEnabled: boolean;
+      recheckPolicyEnabled: boolean;
+    }>,
+  ) {}
+
+  select(selection: string | readonly string[]) {
+    this.selected = selection;
+    return this;
+  }
+
+  where() { return this; }
+  orderBy() { return this; }
+  offset() { return this; }
+  limit() { return this; }
+
+  async executeTakeFirst() {
+    if (this.table === 'email_tracking_token_resolver') {
+      return {
+        workspace_id: this.fixture.workspaceId,
+        tracking_message_id: this.fixture.trackingMessageId,
+        link_id: null,
+        token_kind: 'open',
+        expires_at: new Date('2027-07-15T12:00:00.000Z'),
+        revoked_at: null,
+      };
+    }
+    if (this.table === 'email_tracking_messages') {
+      return {
+        message_id: 17,
+        revoked_at: null,
+        token_expires_at: new Date('2027-07-15T12:00:00.000Z'),
+        collect_derived_metadata: true,
+        collect_raw_metadata: false,
+      };
+    }
+    if (this.table === 'email_tracking_policies') {
+      this.state.policyReads += 1;
+      const enabled = this.state.policyReads === 1
+        ? this.fixture.initialPolicyEnabled
+        : this.fixture.recheckPolicyEnabled;
+      return {
+        ip_insights_enabled: enabled,
+        collect_derived_metadata: enabled,
+      };
+    }
+    if (this.table === 'email_tracking_events') {
+      const selected = Array.isArray(this.selected) ? this.selected : [this.selected];
+      return selected.includes('occurred_at')
+        ? { occurred_at: new Date('2026-07-15T12:00:00.000Z') }
+        : undefined;
+    }
+    throw new Error(`Unexpected public interaction select table: ${this.table}`);
+  }
+}
+
+class PublicInteractionInsert {
+  private row: Record<string, unknown> = {};
+
+  constructor(
+    private readonly table: string,
+    private readonly state: PublicInteractionTestState,
+    private readonly duplicateEvent: boolean,
+  ) {}
+
+  values(row: Record<string, unknown>) {
+    this.row = row;
+    return this;
+  }
+
+  onConflict(callback: (builder: unknown) => unknown) {
+    callback({ columns: () => ({ doNothing: () => ({}) }) });
+    return this;
+  }
+
+  returning() { return this; }
+
+  async executeTakeFirst() {
+    if (this.table !== 'email_tracking_events') {
+      throw new Error(`Unexpected returning insert table: ${this.table}`);
+    }
+    if (this.duplicateEvent) return undefined;
+    this.state.eventRows.push(this.row);
+    return { id: 41 };
+  }
+
+  async execute() {
+    if (this.table !== 'email_tracking_event_classifications') {
+      throw new Error(`Unexpected public interaction insert table: ${this.table}`);
+    }
+    this.state.classificationRows.push(this.row);
   }
 }

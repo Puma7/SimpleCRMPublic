@@ -13,9 +13,11 @@ import {
   buildEmailEvidenceSummary,
   classifyEmailTrackingRequest,
   instrumentEmailHtml,
+  type EmailEvidenceClassification,
   type EmailEvidenceConfidence,
   type EmailEvidenceSummary,
   type EmailEvidenceEventType,
+  type EmailTrackingNetworkContext,
 } from '@simplecrm/core';
 
 import type {
@@ -30,6 +32,8 @@ import type {
 } from './api/types';
 import type { ServerDatabase } from './db/schema';
 import { withWorkspaceTransaction, type WorkspaceTransaction } from './db/workspace-context';
+import type { EmailTrackingIpIntelligencePort } from './email-tracking-ip-intelligence';
+import { emailTrackingNetworkContext } from './email-tracking-network-rules';
 
 const TRACKING_TOKEN_CONTEXT = 'simplecrm/email-tracking/token/v1';
 const TRACKING_ENCRYPTION_CONTEXT = 'simplecrm/email-tracking/encryption/v1';
@@ -352,6 +356,7 @@ export type PostgresEmailTrackingServiceOptions = Readonly<{
   now?: () => Date;
   audit?: AuditApiPort;
   events?: ServerEventPort;
+  emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
 }>;
 
 export function createPostgresEmailTrackingService(
@@ -579,6 +584,7 @@ export function createPostgresEmailTrackingService(
         request: input,
         interaction: 'open',
         now: now(),
+        ipIntelligence: options.emailTrackingIpIntelligence,
       });
       await publishTrackingChanged(
         options.events,
@@ -624,6 +630,7 @@ export function createPostgresEmailTrackingService(
         request: input,
         interaction: 'click',
         now: now(),
+        ipIntelligence: options.emailTrackingIpIntelligence,
       }).then(() => publishTrackingChanged(
         options.events,
         resolver.workspaceId,
@@ -1262,8 +1269,12 @@ type InsertEventInput = {
   dedupeKey: string;
 };
 
-async function insertTrackingEvent(trx: WorkspaceTransaction, input: InsertEventInput): Promise<void> {
-  await trx
+async function insertTrackingEvent(
+  trx: WorkspaceTransaction,
+  input: InsertEventInput,
+  classification?: EmailEvidenceClassification,
+): Promise<void> {
+  const insert = trx
     .insertInto('email_tracking_events')
     .values({
       workspace_id: input.workspaceId,
@@ -1282,7 +1293,23 @@ async function insertTrackingEvent(trx: WorkspaceTransaction, input: InsertEvent
       dedupe_key: input.dedupeKey,
       created_at: input.occurredAt,
     })
-    .onConflict((oc) => oc.columns(['workspace_id', 'dedupe_key']).doNothing())
+    .onConflict((oc) => oc.columns(['workspace_id', 'dedupe_key']).doNothing());
+  if (!classification) {
+    await insert.execute();
+    return;
+  }
+  const event = await insert.returning('id').executeTakeFirst();
+  if (!event) return;
+  await trx
+    .insertInto('email_tracking_event_classifications')
+    .values({
+      event_id: Number(event.id),
+      classification_version: classification.version,
+      actor_class: classification.actorClass,
+      confidence: classification.confidence,
+      reasons_json: classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+      classified_at: input.occurredAt,
+    })
     .execute();
 }
 
@@ -1348,12 +1375,27 @@ async function recordPublicInteraction(input: {
   request: EmailTrackingPublicRequest;
   interaction: 'open' | 'click';
   now: Date;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
 }): Promise<void> {
+  const networkContext = await loadPublicNetworkContext({
+    db: input.db,
+    workspaceId: input.resolver.workspaceId,
+    requestIp: input.request.ip,
+    ipIntelligence: input.ipIntelligence,
+  });
   await withWorkspaceTransaction(
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
       await sql`SELECT pg_advisory_xact_lock(hashtext(${input.resolver.trackingMessageId}))`.execute(trx);
+      const policy = await trx
+        .selectFrom('email_tracking_policies')
+        .select(['ip_insights_enabled', 'collect_derived_metadata'])
+        .where('workspace_id', '=', input.resolver.workspaceId)
+        .executeTakeFirst();
+      const allowedNetworkContext = policy?.ip_insights_enabled && policy.collect_derived_metadata
+        ? networkContext
+        : null;
       const accepted = await trx
         .selectFrom('email_tracking_events')
         .select('occurred_at')
@@ -1382,6 +1424,7 @@ async function recordPublicInteraction(input: {
         secondsSinceSmtpAccepted,
         requestHeaders: input.request.headers,
         interaction: input.interaction,
+        networkContext: allowedNetworkContext,
       });
       const dedupeKey = input.crypto.dedupeHash([
         classification.eventType,
@@ -1415,9 +1458,39 @@ async function recordPublicInteraction(input: {
         metadata,
         raw,
         dedupeKey,
-      });
+      }, classification);
     },
   );
+}
+
+async function loadPublicNetworkContext(input: Readonly<{
+  db: Kysely<ServerDatabase>;
+  workspaceId: string;
+  requestIp?: string | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+}>): Promise<EmailTrackingNetworkContext | null> {
+  const requestIp = input.requestIp?.trim();
+  if (!requestIp || !input.ipIntelligence) return null;
+  const enabled = await withWorkspaceTransaction(
+    input.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => {
+      const policy = await trx
+        .selectFrom('email_tracking_policies')
+        .select(['ip_insights_enabled', 'collect_derived_metadata'])
+        .where('workspace_id', '=', input.workspaceId)
+        .executeTakeFirst();
+      return Boolean(policy?.ip_insights_enabled && policy.collect_derived_metadata);
+    },
+  );
+  if (!enabled) return null;
+  try {
+    const insight = await input.ipIntelligence.lookup(requestIp);
+    if (input.ipIntelligence.status().state !== 'ready') return null;
+    return emailTrackingNetworkContext(insight);
+  } catch {
+    return null;
+  }
 }
 
 async function loadTrackingTimeline(

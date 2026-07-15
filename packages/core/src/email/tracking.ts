@@ -18,6 +18,18 @@ export type EmailEvidenceClassification = Readonly<{
   reasons: readonly string[];
 }>;
 
+export type EmailTrackingNetworkContext = Readonly<{
+  asn: number | null;
+  networkName: string | null;
+  providerClass:
+    | 'google_fetcher'
+    | 'apple_privacy'
+    | 'proton_proxy'
+    | 'security_vendor'
+    | 'hosting_or_cloud'
+    | 'unknown';
+}>;
+
 export type EmailEvidenceEventType =
   | 'queued'
   | 'sending'
@@ -139,26 +151,15 @@ export function classifyEmailTrackingRequest(input: {
   secondsSinceSmtpAccepted?: number | null;
   requestHeaders: Readonly<Record<string, string | undefined>>;
   interaction?: 'open' | 'click';
-}): {
+  networkContext?: EmailTrackingNetworkContext | null;
+}): EmailEvidenceClassification & {
   automated: boolean;
   eventType: 'open_automated' | 'open_probable' | 'click_automated' | 'click';
   confidence: 'low' | 'medium';
-  reasons: readonly string[];
 } {
   const interaction = input.interaction ?? 'open';
   const userAgent = input.userAgent?.trim() ?? '';
   const headers = normalizeHeaderKeys(input.requestHeaders);
-  const reasons: string[] = [];
-
-  if (/(?:proofpoint|mimecast|barracuda|messagelabs|safelinks|url defense|security scanner|link scanner|mailprotector|fireeye|trendmicro|googleimageproxy)/i.test(userAgent)) {
-    reasons.push('known_security_or_mail_proxy');
-  }
-  if (/(?:prefetch|preview)/i.test(headers.purpose ?? headers['sec-purpose'] ?? '')) {
-    reasons.push('prefetch_header');
-  }
-  if (headers['x-apple-mail-privacy'] || headers['x-email-proxy']) {
-    reasons.push('mail_privacy_proxy_header');
-  }
 
   const forwardedIp = (headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() ?? '';
   const clientIp = input.requestIp === undefined ? forwardedIp : input.requestIp?.trim() ?? '';
@@ -166,19 +167,159 @@ export function classifyEmailTrackingRequest(input: {
     && input.secondsSinceSmtpAccepted !== undefined
     && input.secondsSinceSmtpAccepted >= 0
     && input.secondsSinceSmtpAccepted <= 5;
-  if (immediate && /^17\./.test(clientIp) && /AppleWebKit/i.test(userAgent)) {
-    reasons.push('immediate_mail_proxy_pattern');
+
+  if (/googleimageproxy/i.test(userAgent)) {
+    return trackingClassification(interaction, 'mail_proxy', 'low', ['known_proxy_user_agent']);
+  }
+  if (/(?:proofpoint|mimecast|barracuda|messagelabs|safelinks|url defense|security scanner|link scanner|mailprotector|fireeye|trendmicro)/i.test(userAgent)) {
+    return trackingClassification(interaction, 'security_scanner', 'low', ['known_scanner_user_agent']);
+  }
+  if (headers['x-apple-mail-privacy']) {
+    return trackingClassification(interaction, 'privacy_proxy', 'low', ['known_proxy_header']);
+  }
+  if (headers['x-email-proxy']) {
+    return trackingClassification(interaction, 'mail_proxy', 'low', ['known_proxy_header']);
+  }
+  if (/(?:prefetch|preview)/i.test(headers.purpose ?? headers['sec-purpose'] ?? '')) {
+    return trackingClassification(interaction, 'automated_unknown', 'low', ['prefetch_header']);
   }
 
-  const automated = reasons.length > 0;
+  const providerActor = verifiedProviderActor(input.networkContext?.providerClass ?? 'unknown');
+  if (providerActor) {
+    return trackingClassification(interaction, providerActor, 'low', ['known_provider_network']);
+  }
+  if (immediate && input.networkContext?.providerClass === 'hosting_or_cloud') {
+    const actorClass = isGoogleNetwork(input.networkContext) ? 'mail_proxy' : 'automated_unknown';
+    return trackingClassification(interaction, actorClass, 'low', ['immediate_infrastructure_fetch']);
+  }
+  if (immediate && /^17\./.test(clientIp) && /AppleWebKit/i.test(userAgent)) {
+    return trackingClassification(interaction, 'privacy_proxy', 'low', ['immediate_infrastructure_fetch']);
+  }
+  if (immediate) {
+    return trackingClassification(interaction, 'unknown', 'low', ['immediate_unattributed_fetch']);
+  }
+
+  if (!userAgent || requestIpScope(clientIp) !== 'public') {
+    return trackingClassification(interaction, 'unknown', 'low', ['missing_client_identity']);
+  }
+  if (input.networkContext?.providerClass === 'hosting_or_cloud') {
+    return trackingClassification(interaction, 'unknown', 'low', ['unattributed_infrastructure_network']);
+  }
+  return trackingClassification(interaction, 'probable_human', 'medium', []);
+}
+
+function trackingClassification(
+  interaction: 'open' | 'click',
+  actorClass: EmailEvidenceActorClass,
+  confidence: 'low' | 'medium',
+  reasons: readonly string[],
+): EmailEvidenceClassification & {
+  automated: boolean;
+  eventType: 'open_automated' | 'open_probable' | 'click_automated' | 'click';
+  confidence: 'low' | 'medium';
+} {
+  const automated = actorClass === 'mail_proxy'
+    || actorClass === 'privacy_proxy'
+    || actorClass === 'security_scanner'
+    || actorClass === 'automated_unknown';
   return {
+    version: 2,
+    actorClass,
+    confidence,
+    reasons,
     automated,
     eventType: interaction === 'click'
       ? automated ? 'click_automated' : 'click'
       : automated ? 'open_automated' : 'open_probable',
-    confidence: automated ? 'low' : 'medium',
-    reasons,
   };
+}
+
+function verifiedProviderActor(
+  providerClass: EmailTrackingNetworkContext['providerClass'],
+): Extract<EmailEvidenceActorClass, 'mail_proxy' | 'privacy_proxy' | 'security_scanner'> | null {
+  if (providerClass === 'google_fetcher') return 'mail_proxy';
+  if (providerClass === 'apple_privacy' || providerClass === 'proton_proxy') return 'privacy_proxy';
+  if (providerClass === 'security_vendor') return 'security_scanner';
+  return null;
+}
+
+function isGoogleNetwork(context: EmailTrackingNetworkContext): boolean {
+  return context.asn === 15169 && /(?:^|\W)google(?:\W|$)/i.test(context.networkName ?? '');
+}
+
+function requestIpScope(ip: string): 'public' | 'non_public' | 'unknown' {
+  const ipv4 = parseIpv4Octets(ip);
+  if (ipv4) return ipv4RequestScope(ipv4);
+  const hextets = parseIpv6Hextets(ip);
+  if (!hextets) return 'unknown';
+  if (hextets.slice(0, 5).every((value) => value === 0) && hextets[5] === 0xffff) {
+    return ipv4RequestScope([
+      hextets[6]! >>> 8,
+      hextets[6]! & 255,
+      hextets[7]! >>> 8,
+      hextets[7]! & 255,
+    ]);
+  }
+  const first = hextets[0]!;
+  if (
+    hextets.every((value) => value === 0)
+    || hextets.slice(0, 7).every((value) => value === 0) && hextets[7] === 1
+    || (first & 0xfe00) === 0xfc00
+    || (first & 0xffc0) === 0xfe80
+    || (first & 0xff00) === 0xff00
+    || (first === 0x2001 && hextets[1] === 0x0db8)
+  ) return 'non_public';
+  return 'public';
+}
+
+function ipv4RequestScope(octets: readonly number[]): 'public' | 'non_public' {
+  const [first, second, third] = octets;
+  if (
+    first === 0
+    || first === 10
+    || first === 127
+    || (first === 100 && second! >= 64 && second! <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second! >= 16 && second! <= 31)
+    || (first === 192 && (second === 0 || second === 2 || second === 168))
+    || (first === 198 && (second === 18 || second === 19 || second === 51))
+    || (first === 203 && second === 0 && third === 113)
+    || first! >= 224
+  ) return 'non_public';
+  return 'public';
+}
+
+function parseIpv4Octets(ip: string): readonly number[] | null {
+  const parts = ip.split('.');
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+    ? parts.map(Number)
+    : null;
+}
+
+function parseIpv6Hextets(ip: string): readonly number[] | null {
+  const normalized = ip.toLowerCase();
+  const dottedTail = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(normalized);
+  const dotted = dottedTail ? parseIpv4Octets(dottedTail[2]!) : null;
+  const expanded = dottedTail && dotted
+    ? `${dottedTail[1]}${((dotted[0]! << 8) | dotted[1]!).toString(16)}:${((dotted[2]! << 8) | dotted[3]!).toString(16)}`
+    : dottedTail ? null : normalized;
+  if (!expanded) return null;
+  const compressed = expanded.split('::');
+  if (compressed.length > 2) return null;
+  const left = parseIpv6Side(compressed[0]!);
+  const right = parseIpv6Side(compressed[1] ?? '');
+  if (!left || !right) return null;
+  if (compressed.length === 1) return left.length === 8 ? left : null;
+  const missing = 8 - left.length - right.length;
+  return missing > 0 ? [...left, ...Array<number>(missing).fill(0), ...right] : null;
+}
+
+function parseIpv6Side(value: string): readonly number[] | null {
+  if (!value) return [];
+  const parts = value.split(':');
+  return parts.every((part) => /^[0-9a-f]{1,4}$/.test(part))
+    ? parts.map((part) => Number.parseInt(part, 16))
+    : null;
 }
 
 export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[]): EmailEvidenceSummary {
