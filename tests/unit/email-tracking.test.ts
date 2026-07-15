@@ -4,10 +4,38 @@ import {
   detectInboundEmailEvidence,
   emailEvidenceWorkflowVariables,
   instrumentEmailHtml,
+  type EmailEvidenceActorClass,
+  type EmailEvidenceClassification,
   type EmailEvidenceEvent,
 } from '../../packages/core/src/email';
 
 describe('email evidence tracking core', () => {
+  test('defines immutable V2 evidence classifications without changing evidence events', () => {
+    const actorClasses = [
+      'system',
+      'probable_human',
+      'mail_proxy',
+      'privacy_proxy',
+      'security_scanner',
+      'automated_unknown',
+      'unknown',
+    ] as const satisfies readonly EmailEvidenceActorClass[];
+    const classification = {
+      version: 2,
+      actorClass: 'unknown',
+      confidence: 'medium',
+      reasons: ['legacy_event_projection_v2'],
+    } as const satisfies EmailEvidenceClassification;
+
+    expect(actorClasses).toHaveLength(7);
+    expect(classification).toEqual({
+      version: 2,
+      actorClass: 'unknown',
+      confidence: 'medium',
+      reasons: ['legacy_event_projection_v2'],
+    });
+  });
+
   test('instruments only eligible http(s) links and appends one open pixel', () => {
     const result = instrumentEmailHtml({
       html: '<p><a href="https://customer.example/invoice?id=7">Rechnung</a> <a href="mailto:help@example.com">Hilfe</a> <a href="#top">Oben</a></p>',

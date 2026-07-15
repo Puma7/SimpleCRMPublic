@@ -2,6 +2,22 @@ import { parse, parseFragment, serialize, type DefaultTreeAdapterMap } from 'par
 
 export type EmailEvidenceConfidence = 'none' | 'low' | 'medium' | 'high' | 'verified';
 
+export type EmailEvidenceActorClass =
+  | 'system'
+  | 'probable_human'
+  | 'mail_proxy'
+  | 'privacy_proxy'
+  | 'security_scanner'
+  | 'automated_unknown'
+  | 'unknown';
+
+export type EmailEvidenceClassification = Readonly<{
+  version: 2;
+  actorClass: EmailEvidenceActorClass;
+  confidence: EmailEvidenceConfidence;
+  reasons: readonly string[];
+}>;
+
 export type EmailEvidenceEventType =
   | 'queued'
   | 'sending'

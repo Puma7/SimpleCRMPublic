@@ -70,6 +70,7 @@ export type ServerDatabase = {
   email_tracking_messages: EmailTrackingMessagesTable;
   email_tracking_links: EmailTrackingLinksTable;
   email_tracking_events: EmailTrackingEventsTable;
+  email_tracking_event_classifications: EmailTrackingEventClassificationsTable;
   email_tracking_token_resolver: EmailTrackingTokenResolverTable;
   pgp_identities: PgpIdentitiesTable;
   pgp_peer_keys: PgpPeerKeysTable;
@@ -704,6 +705,7 @@ export type EmailTrackingPoliciesTable = {
   track_links: boolean;
   collect_derived_metadata: boolean;
   collect_raw_metadata: boolean;
+  ip_insights_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   raw_metadata_retention_days: number;
   event_retention_days: number;
   token_ttl_days: number;
@@ -763,6 +765,22 @@ export type EmailTrackingEventsTable = {
   raw_metadata_auth_tag: Buffer | null;
   dedupe_key: string;
   created_at: TimestampColumn;
+};
+
+export type EmailTrackingEventClassificationsTable = {
+  event_id: number;
+  classification_version: number;
+  actor_class:
+    | 'system'
+    | 'probable_human'
+    | 'mail_proxy'
+    | 'privacy_proxy'
+    | 'security_scanner'
+    | 'automated_unknown'
+    | 'unknown';
+  confidence: 'none' | 'low' | 'medium' | 'high' | 'verified';
+  reasons_json: JsonColumn;
+  classified_at: TimestampColumn;
 };
 
 export type EmailTrackingTokenResolverTable = {
