@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: '.',
   testMatch: [
     'app-flows.spec.ts',
+    'email-compose-tab-order.spec.ts',
     'crud-workflows.spec.ts',
     'tasks-products.spec.ts',
     'edit-flows.spec.ts',

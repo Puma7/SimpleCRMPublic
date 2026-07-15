@@ -158,8 +158,7 @@ export function handleSubjectTabToEditor(
     event.metaKey ||
     event.altKey
   ) return
-  event.preventDefault()
-  editor?.focus()
+  if (editor?.focus() === true) event.preventDefault()
 }
 
 const MAX_SERVER_CLIENT_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -1815,8 +1814,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               className="h-9"
               placeholder="Blindkopie, optional"
             />
-            <Label className="justify-self-end text-xs text-muted-foreground">Betreff</Label>
+            <Label htmlFor="compose-subject" className="justify-self-end text-xs text-muted-foreground">Betreff</Label>
             <Input
+              id="compose-subject"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               onKeyDown={(event) => handleSubjectTabToEditor(event, editorRef.current)}

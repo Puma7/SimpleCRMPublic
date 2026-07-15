@@ -32,7 +32,7 @@ import { handleSubjectTabToEditor } from '../../src/components/email/compose-dia
 describe('compose subject tab routing', () => {
   it('moves plain Tab focus from subject to the message editor', () => {
     const preventDefault = jest.fn();
-    const focus = jest.fn();
+    const focus = jest.fn(() => true);
 
     handleSubjectTabToEditor(
       { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault },
@@ -41,6 +41,30 @@ describe('compose subject tab routing', () => {
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps native Tab navigation when the message editor is unavailable', () => {
+    const preventDefault = jest.fn();
+
+    handleSubjectTabToEditor(
+      { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault },
+      null,
+    );
+
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('keeps native Tab navigation when the message editor cannot focus', () => {
+    const preventDefault = jest.fn();
+    const focus = jest.fn(() => false);
+
+    handleSubjectTabToEditor(
+      { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault },
+      { focus },
+    );
+
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(preventDefault).not.toHaveBeenCalled();
   });
 
   it.each([

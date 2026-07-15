@@ -44,7 +44,7 @@ test.describe.serial('email compose tab order', () => {
     const to = dialog.getByPlaceholder('empfänger@example.com');
     const cc = dialog.getByPlaceholder('optional');
     const bcc = dialog.getByPlaceholder('Blindkopie, optional');
-    const subject = dialog.locator('input').nth(3);
+    const subject = dialog.getByLabel('Betreff', { exact: true });
     const editor = dialog.locator('.ql-editor');
 
     await to.focus();
