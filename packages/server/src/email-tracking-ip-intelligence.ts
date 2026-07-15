@@ -301,13 +301,46 @@ function ipv6Scope(ip: string): EmailTrackingIpInsight['scope'] {
 }
 
 function mappedIpv4Address(ip: string): string | null {
-  const match = /^(?:::ffff|0:0:0:0:0:ffff):(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/i.exec(ip);
-  if (!match) return null;
-  const dotted = match[1];
-  if (dotted) return isIP(dotted) === 4 ? dotted : null;
-  const high = Number.parseInt(match[2]!, 16);
-  const low = Number.parseInt(match[3]!, 16);
+  const hextets = normalizeIpv6Hextets(ip);
+  if (!hextets || hextets.slice(0, 5).some((value) => value !== 0) || hextets[5] !== 0xffff) {
+    return null;
+  }
+  const high = hextets[6]!;
+  const low = hextets[7]!;
   return `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`;
+}
+
+function normalizeIpv6Hextets(ip: string): readonly number[] | null {
+  if (isIP(ip) !== 6) return null;
+  const dottedTail = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
+  const normalized = dottedTail
+    ? replaceIpv4Tail(dottedTail[1]!, dottedTail[2]!)
+    : ip;
+  if (!normalized) return null;
+
+  const compressed = normalized.split('::');
+  if (compressed.length > 2) return null;
+  const left = splitIpv6Hextets(compressed[0]!);
+  const right = splitIpv6Hextets(compressed[1] ?? '');
+  if (!left || !right) return null;
+  if (compressed.length === 1) return left.length === 8 ? left : null;
+  const missing = 8 - left.length - right.length;
+  return missing > 0 ? [...left, ...Array<number>(missing).fill(0), ...right] : null;
+}
+
+function replaceIpv4Tail(prefix: string, dotted: string): string | null {
+  if (isIP(dotted) !== 4) return null;
+  const octets = dotted.split('.').map(Number);
+  const high = (octets[0]! << 8) | octets[1]!;
+  const low = (octets[2]! << 8) | octets[3]!;
+  return `${prefix}${high.toString(16)}:${low.toString(16)}`;
+}
+
+function splitIpv6Hextets(value: string): number[] | null {
+  if (!value) return [];
+  const parts = value.split(':');
+  if (parts.some((part) => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
+  return parts.map((part) => Number.parseInt(part, 16));
 }
 
 function emptyInsight(local: Pick<EmailTrackingIpInsight, 'ipAddress' | 'ipFamily' | 'scope'>): EmailTrackingIpInsight {

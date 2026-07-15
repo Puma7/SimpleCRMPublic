@@ -101,7 +101,24 @@ describe('email tracking IP intelligence', () => {
       ipFamily: 'ipv6',
       scope: 'private',
     });
+    await expect(intelligence.lookup('0000:0000:0000:0000:0000:ffff:0a00:0001')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'private',
+    });
+    await expect(intelligence.lookup('0000:0000:0000:0000:0000:ffff:10.0.0.1')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'private',
+    });
     expect(readerLoader).not.toHaveBeenCalled();
+  });
+
+  test('does not treat a nearby IPv6 address as IPv4-mapped', async () => {
+    const intelligence = createEmailTrackingIpIntelligence({ now: () => now });
+
+    await expect(intelligence.lookup('0000:0000:0000:0000:0001:ffff:0a00:0001')).resolves.toMatchObject({
+      ipFamily: 'ipv6',
+      scope: 'public',
+    });
   });
 
   test('opens pinned local MaxMind fixtures through the default production loader', () => {
