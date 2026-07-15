@@ -264,7 +264,7 @@ lastProbableHumanOpenAt: string | null;
 
 - [ ] **Step 1:** Tests schreiben: zwei Abrufe derselben IP innerhalb neun Sekunden ergeben ein Ereignis; nach elf Sekunden zwei Ereignisse; wahrscheinliche menschliche Abrufe mit weniger als 30 Minuten Abstand ergeben eine Sitzung, ab 30 Minuten zwei Sitzungen.
 - [ ] **Step 2:** Fokustests ausführen; erwartet wird FAIL durch die bisherige Minuten-Deduplizierung und fehlende V2-Summary.
-- [ ] **Step 3:** Dedupe-Bucket auf zehn Sekunden umstellen, bestehende IP-/Token-Rate-Limits und 10.000-Ereignis-Cap beibehalten. Sessions ausschließlich zeitlich clustern; keinen dauerhaften Browser-/Gerätefingerprint erzeugen.
+- [ ] **Step 3:** Eine echte gleitende Zehn-Sekunden-Deduplizierung implementieren und einen Zehn-Sekunden-Bucket als Race-/Unique-Guard beibehalten; ein fester Bucket allein genügt wegen Grenzübertritten nicht. Bestehende IP-/Token-Rate-Limits und 10.000-Ereignis-Cap beibehalten. Sessions ausschließlich zeitlich clustern; keinen dauerhaften Browser-/Gerätefingerprint erzeugen.
 - [ ] **Step 4:** Kompatibilitätsfelder behalten: `openCount === pixelFetchCount`, `firstOpenedAt === firstPixelFetchedAt`, `lastOpenedAt === lastPixelFetchedAt`. Neue UI und neue Workflows verwenden nur die präziseren Namen.
 - [ ] **Step 5:** Commit: `feat(email): separate pixel fetches from open sessions`.
 
