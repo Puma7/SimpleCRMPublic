@@ -15,7 +15,7 @@
 - SMTP `250` bedeutet nur Annahme durch den angesprochenen SMTP-Server, nicht bestätigte Inbox-Zustellung.
 - IP-Standort ist näherungsweise Infrastrukturstandort, niemals Wohnort oder sicherer Aufenthaltsort des Empfängers.
 - Keine Ereignis-IP darf für Geo-/ASN-Auflösung an einen externen Lookup-Dienst gesendet werden.
-- GeoIP-/ASN-Lookups sind opt-in, admin-only und nur möglich, solange verschlüsselte Roh-IP-Daten vorhanden sind.
+- Detaillierte IP-Insights und ihre Anzeige sind opt-in, owner/admin-only und nur möglich, solange verschlüsselte Roh-IP-Daten vorhanden sind. Der öffentliche Tracking-Endpunkt darf ausschließlich bei aktivem `ip_insights_enabled` und `collect_derived_metadata` einen ephemeren lokalen ASN-/Provider-Kontext für die Klassifikation bilden; er speichert oder liefert dabei keine detaillierten GeoIP-Antworten.
 - MaxMind-Zugangsdaten bleiben ausschließlich Server-/Docker-Secrets; sie werden weder in PostgreSQL noch im Renderer gespeichert oder geloggt.
 - Fehlende, veraltete oder beschädigte MMDB-Dateien deaktivieren nur IP-Insights und Proxy-Zusatzsignale; Versand und Tracking-Endpunkte bleiben verfügbar.
 - Bestehende Ereignistypen und Workflow-Variablen bleiben kompatibel; präzisere V2-Felder werden additiv eingeführt.
@@ -236,7 +236,7 @@ export type EmailTrackingNetworkContext = Readonly<{
 
 - [ ] **Step 1:** Regressionstests mit den beiden beobachteten Requests schreiben: `74.125.216.133` plus Drei-Sekunden-Abruf und `66.249.93.40` plus `GoogleImageProxy` müssen automatisiert sein; ein normaler später Direktabruf bleibt `probable_human`.
 - [ ] **Step 2:** `pnpm exec jest --runInBand tests/unit/email-tracking.test.ts` ausführen; erwartet wird FAIL für den ersten Google-Proxy-Fall.
-- [ ] **Step 3:** Pure V2-Regeln und Server-Netzkontext implementieren. Gründe bleiben maschinenlesbar, zum Beispiel `known_proxy_user_agent`, `known_provider_network`, `immediate_infrastructure_fetch`, `missing_client_identity`.
+- [ ] **Step 3:** Pure V2-Regeln und Server-Netzkontext implementieren. Der öffentliche Endpunkt bildet lokalen Netzkontext nur, wenn die Workspace-Policy sowohl `ip_insights_enabled` als auch `collect_derived_metadata` aktiviert; sonst klassifiziert er ohne ASN-/Provider-Lookup. Der Lookup bleibt ephemer und persistiert ausschließlich Actor/Gründe, keine detaillierte GeoIP-Antwort. Gründe bleiben maschinenlesbar, zum Beispiel `known_proxy_user_agent`, `known_provider_network`, `immediate_infrastructure_fetch`, `missing_client_identity`.
 - [ ] **Step 4:** Tests für Header-Spoofing ergänzen: Google-Text aus einem fremden Netz bleibt automatisiert wegen UA, ein Google-ASN ohne Timing-/Proxy-Indiz bleibt `unknown` statt automatisch menschlich.
 - [ ] **Step 5:** Commit: `fix(email): classify proxy opens conservatively`.
 
@@ -287,9 +287,9 @@ reclassifyMessage(input: {
 }): Promise<{ classified: number; unavailableRaw: number }>;
 ```
 
-- [ ] **Step 1:** Tests schreiben: Reclassification ergänzt Version 2, verändert `email_tracking_events` nicht, überspringt abgelaufene Rohdaten und ist bei erneutem Aufruf idempotent.
+- [ ] **Step 1:** Tests schreiben: Reclassification aktualisiert oder ergänzt Version 2 per idempotentem Upsert ausschließlich in der Projektion, verändert `email_tracking_events` nicht und überspringt abgelaufene Rohdaten.
 - [ ] **Step 2:** Fokustests ausführen; erwartet wird FAIL wegen fehlender Projektionserzeugung.
-- [ ] **Step 3:** Admin-only Route `POST /api/v1/email/messages/:messageId/tracking/reclassify` implementieren. Pro Batch maximal 500 Ereignisse; entschlüsselte IP/UA bleiben nur im Speicher und werden nicht geloggt.
+- [ ] **Step 3:** Admin-only Route `POST /api/v1/email/messages/:messageId/tracking/reclassify` implementieren. Pro Batch maximal 500 Ereignisse; vorhandene Version-2-Zeilen werden mit `INSERT ... ON CONFLICT (event_id, classification_version) DO UPDATE` deterministisch ersetzt. Entschlüsselte IP/UA bleiben nur im Speicher und werden nicht geloggt.
 - [ ] **Step 4:** Timeline und Summary auf die höchste vorhandene Klassifikationsversion umstellen; ohne Projektion gilt konservativer Fallback `unknown`, niemals `probable_human`.
 - [ ] **Step 5:** Commit: `feat(email): reclassify retained tracking evidence`.
 
@@ -428,7 +428,7 @@ pnpm exec jest --runInBand `
   tests/unit/compose-quill-editor.test.tsx
 ```
 
-- [ ] **Step 2:** Sicherheitsfälle prüfen: manipulierte `eventId`, fremder Workspace, Nicht-Admin, deaktivierte Policy, gelöschte Rohdaten, private IP, überlange UA, defekte MMDB, Rate-Limit, 10.000-Event-Cap und konkurrierender Reclassify-Aufruf.
+- [ ] **Step 2:** Sicherheitsfälle automatisiert ausführen: `pnpm exec jest --runInBand tests/unit/email-tracking-routes.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-ip-intelligence.test.ts`. Die Suites müssen manipulierte `eventId` und fremden Workspace mit `404`, Nicht-Admin und deaktivierte Policy mit `403`, gelöschte Rohdaten mit `410`, fehlende/defekte MMDB mit `503` am Insight-Endpunkt bei weiterhin erfolgreichem Pixel-Endpunkt, private IP ohne Geo-Daten, überlange UA ohne Crash oder Rohdaten-Log, bestehende Rate-Limits, 10.000-Event-Cap sowie zwei konkurrierende Reclassify-Aufrufe ohne doppelte Projektionszeile nachweisen; erwartet wird Exitcode `0`.
 - [ ] **Step 3:** Vollprüfung ausführen:
 
 ```powershell
@@ -442,7 +442,7 @@ pnpm run test:ui:coverage:check
 pnpm run build
 ```
 
-- [ ] **Step 4:** Manuelle Akzeptanzmatrix dokumentieren: Gmail (Proxy/Cache), Proton (Blocker/Preload), Apple Mail Privacy Protection, Outlook, Thunderbird mit Remote-Bildern an/aus, zweimaliges Öffnen innerhalb/außerhalb 30 Minuten, Klick, Antwort, DSN und Bounce.
+- [ ] **Step 4:** Verpflichtende lokale Akzeptanz mit Fixtures und Playwright dokumentieren: `pnpm exec jest --runInBand tests/unit/email-tracking.test.ts tests/unit/message-evidence-panel.test.tsx` sowie `pnpm exec playwright test tests/e2e/email-compose-tab-order.spec.ts`; erwartet werden konservative Proxy-/Blocker-Anzeigen und die Tabfolge bis `.ql-editor`, jeweils Exitcode `0`. Eine reale Provider-Matrix für Gmail, Proton, Apple Mail Privacy Protection, Outlook und Thunderbird ist nur mit eigens freigegebenen Testkonten, Testempfängern und Tracking-Domain auszuführen und in `.hermes/reports/email-evidence-v2-provider-matrix.md` zu protokollieren; ohne diese Voraussetzungen ist sie ausdrücklich eine optionale Nachprüfung und kein Merge-Gate. Pro Provider werden Remote-Bilder an/aus, zweimaliges Öffnen innerhalb/außerhalb 30 Minuten, Klick, Antwort, DSN und Bounce als beobachtet, nicht beobachtbar oder nicht unterstützt festgehalten.
 - [ ] **Step 5:** Rollout hinter bestehendem Tracking-Opt-in: Migration zuerst, V2-Klassifikation aktivieren, GeoIP optional zuschalten, historische Nachricht manuell neu bewerten. Commit: `test(email): verify evidence validity rollout`.
 
 ---
