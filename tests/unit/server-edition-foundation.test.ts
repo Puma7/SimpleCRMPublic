@@ -37767,6 +37767,7 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
   let currentPublicTrackingTokenHash = '';
   let nextCustomerId = 1;
   let nextMessageId = 1;
+  let nextTrackingEventId = 1;
   const queries: Array<{ sql: string; params?: readonly unknown[] }> = [];
   const workspaces = new Set<string>();
   const users = new Set<string>();
@@ -37777,10 +37778,10 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
     email_tracking_policies: [],
     email_tracking_messages: [],
     email_tracking_links: [],
-    email_tracking_events: [],
-    email_tracking_event_classifications: [],
     email_tracking_token_resolver: [],
   };
+  const trackingEvents: Array<{ id: number; workspaceId: string; dedupeKey: string }> = [];
+  const trackingEventClassifications: Array<{ eventId: number }> = [];
 
   function canAccessWorkspace(workspaceId: string): boolean {
     return workspaceId === currentWorkspaceId
@@ -37914,14 +37915,29 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
       const trackingInsert = normalized.match(/^insert into (email_tracking_[a-z_]+)/);
       if (trackingInsert) {
         const table = trackingInsert[1]!;
-        const rows = trackingRows[table];
-        if (!rows) throw new Error(`Unhandled RLS tracking fixture table: ${table}`);
         if (table === 'email_tracking_event_classifications') {
           const workspaceId = assertRlsWorkspace(params?.[0]);
-          if (!rows.some((row) => row.workspaceId === workspaceId)) rows.push({ workspaceId });
+          const dedupeKey = String(params?.[1] ?? '');
+          const event = trackingEvents.find((row) => (
+            row.workspaceId === workspaceId && row.dedupeKey === dedupeKey
+          ));
+          if (event && !trackingEventClassifications.some((row) => row.eventId === event.id)) {
+            trackingEventClassifications.push({ eventId: event.id });
+          }
           return { rows: [] };
         }
-        const workspaceParamIndex = table === 'email_tracking_policies' || table === 'email_tracking_events' ? 0 : 1;
+        if (table === 'email_tracking_events') {
+          const workspaceId = assertRlsWorkspace(params?.[0]);
+          const dedupeKey = String(params?.[3] ?? '');
+          if (!trackingEvents.some((row) => row.workspaceId === workspaceId && row.dedupeKey === dedupeKey)) {
+            trackingEvents.push({ id: nextTrackingEventId, workspaceId, dedupeKey });
+            nextTrackingEventId += 1;
+          }
+          return { rows: [] };
+        }
+        const rows = trackingRows[table];
+        if (!rows) throw new Error(`Unhandled RLS tracking fixture table: ${table}`);
+        const workspaceParamIndex = table === 'email_tracking_policies' ? 0 : 1;
         const workspaceId = assertRlsWorkspace(params?.[workspaceParamIndex]);
         const tokenHash = table === 'email_tracking_token_resolver' ? String(params?.[0] ?? '') : undefined;
         if (!rows.some((row) => row.workspaceId === workspaceId)) rows.push({ workspaceId, tokenHash });
@@ -37953,7 +37969,10 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
         /^select count\(\*\)::int as count from (email_tracking_[a-z_]+) where workspace_id = \$1/,
       );
       if (trackingWorkspaceCount) {
-        const rows = trackingRows[trackingWorkspaceCount[1]!] ?? [];
+        const table = trackingWorkspaceCount[1]!;
+        const rows = table === 'email_tracking_events'
+          ? trackingEvents
+          : (trackingRows[table] ?? []);
         const workspaceId = String(params?.[0]);
         const count = rows.filter((row) => (
           row.workspaceId === workspaceId && canAccessWorkspace(row.workspaceId)
@@ -37963,9 +37982,10 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
 
       if (normalized.startsWith('select count(*)::int as count from email_tracking_event_classifications classifications join email_tracking_events events')) {
         const workspaceId = String(params?.[0]);
-        const count = trackingRows.email_tracking_event_classifications.filter((row) => (
-          row.workspaceId === workspaceId && canAccessWorkspace(row.workspaceId)
-        )).length;
+        const count = trackingEventClassifications.filter((classification) => {
+          const event = trackingEvents.find((row) => row.id === classification.eventId);
+          return event?.workspaceId === workspaceId && canAccessWorkspace(event.workspaceId);
+        }).length;
         return { rows: [{ count }] as readonly T[] };
       }
 
