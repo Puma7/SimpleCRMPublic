@@ -23,6 +23,43 @@ import {
   interpolateSignatureTemplate,
 } from '../../shared/signature-template';
 
+jest.mock('quill', () => ({ __esModule: true, default: class MockQuill {} }));
+jest.mock('quill/dist/quill.snow.css', () => ({}));
+jest.mock('@/styles/compose-quill.css', () => ({}));
+
+import { handleSubjectTabToEditor } from '../../src/components/email/compose-dialog';
+
+describe('compose subject tab routing', () => {
+  it('moves plain Tab focus from subject to the message editor', () => {
+    const preventDefault = jest.fn();
+    const focus = jest.fn();
+
+    handleSubjectTabToEditor(
+      { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault },
+      { focus },
+    );
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { key: 'Tab', shiftKey: true, ctrlKey: false, metaKey: false, altKey: false },
+    { key: 'Tab', shiftKey: false, ctrlKey: true, metaKey: false, altKey: false },
+    { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: true, altKey: false },
+    { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: true },
+    { key: 'Enter', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false },
+  ])('leaves modified Tab and other keys alone: $key', (event) => {
+    const preventDefault = jest.fn();
+    const focus = jest.fn();
+
+    handleSubjectTabToEditor({ ...event, preventDefault }, { focus });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+  });
+});
+
 describe('compose-body zones', () => {
   it('splits and merges greeting, body, signature and quote', () => {
     const html = buildReplyComposeHtml({

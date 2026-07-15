@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 export type ComposeQuillEditorHandle = {
+  /** Focuses the editor and restores a usable cursor position. */
+  focus: () => boolean
   /** Latest HTML from the editor DOM (avoids stale React state on save/close). */
   getHtml: () => string
   /** Current non-empty selection as plain text, or null if nothing is selected. */
@@ -67,6 +69,18 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
     }
 
     useImperativeHandle(ref, () => ({
+      focus: () => {
+        const quill = quillRef.current
+        if (!quill) return false
+        const selection = quill.getSelection()
+        quill.focus()
+        if (!selection) {
+          const index = Math.max(0, quill.getLength() - 1)
+          quill.setSelection(index, 0, "api")
+          lastRangeRef.current = { index, length: 0 }
+        }
+        return true
+      },
       getHtml: () => {
         const quill = quillRef.current
         if (!quill) return ""

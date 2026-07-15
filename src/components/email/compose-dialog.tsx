@@ -147,6 +147,21 @@ type Props = {
   onSent: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
 }
 
+export function handleSubjectTabToEditor(
+  event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey" | "preventDefault">,
+  editor: Pick<ComposeQuillEditorHandle, "focus"> | null,
+) {
+  if (
+    event.key !== "Tab" ||
+    event.shiftKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  ) return
+  event.preventDefault()
+  editor?.focus()
+}
+
 const MAX_SERVER_CLIENT_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 function getComposeContextMessageId(
@@ -1804,6 +1819,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             <Input
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
+              onKeyDown={(event) => handleSubjectTabToEditor(event, editorRef.current)}
               className="h-9"
             />
           </div>

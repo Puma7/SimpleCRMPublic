@@ -5,6 +5,10 @@ const mockQuillInstances: Array<{
   root: HTMLDivElement;
   options: any;
   handlers: Record<string, (...a: any[]) => void>;
+  focus: jest.Mock;
+  getSelection: jest.Mock;
+  getLength: jest.Mock;
+  setSelection: jest.Mock;
 }> = [];
 
 jest.mock('quill/dist/quill.snow.css', () => ({}));
@@ -26,21 +30,18 @@ jest.mock('quill', () => {
     on(evt: string, cb: (...a: any[]) => void) {
       this.handlers[evt] = cb;
     }
-    getSelection() {
-      return null;
-    }
+    focus = jest.fn();
+    getSelection = jest.fn(() => null);
     getText() {
       return '';
     }
-    getLength() {
-      return 1;
-    }
+    getLength = jest.fn(() => 1);
     setText() {
       this.root.innerHTML = '<p><br></p>';
     }
     deleteText() {}
     insertText() {}
-    setSelection() {}
+    setSelection = jest.fn();
   }
   return { __esModule: true, default: MockQuill };
 });
@@ -100,6 +101,27 @@ describe('ComposeQuillEditor', () => {
 
     inst.root.innerHTML = '<p><br></p>';
     expect(ref.current!.getHtml()).toBe('');
+  });
+
+  test('focus() focuses Quill and moves an unknown selection to the document end', () => {
+    const ref = createRef<ComposeQuillEditorHandle>();
+    render(<ComposeQuillEditor value="" onChange={jest.fn()} ref={ref} />);
+    const inst = mockQuillInstances[0]!;
+    inst.getLength.mockReturnValue(8);
+
+    expect(ref.current!.focus()).toBe(true);
+    expect(inst.focus).toHaveBeenCalledTimes(1);
+    expect(inst.setSelection).toHaveBeenCalledWith(7, 0, 'api');
+  });
+
+  test('focus() returns false after the editor unmounts', () => {
+    const ref = createRef<ComposeQuillEditorHandle>();
+    const { unmount } = render(<ComposeQuillEditor value="" onChange={jest.fn()} ref={ref} />);
+    const handle = ref.current!;
+
+    unmount();
+
+    expect(handle.focus()).toBe(false);
   });
 
   test('sanitizes external HTML, editor changes, and imperative output', () => {
