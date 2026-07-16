@@ -22,6 +22,8 @@
  * `RelaySubmissionStore` so the pipeline is unit-testable with in-memory fakes;
  * `createPostgresRelaySubmissionStore` is the thin SQL implementation.
  */
+import { createHash } from 'node:crypto';
+
 import { sql as kyselySql, type Kysely } from 'kysely';
 
 import {
@@ -323,14 +325,17 @@ export function createRelaySubmissionPipeline(
       // attempt, so a naive retry check keyed on it would never catch a
       // retried submission and could send the same email twice. `dedupKey`
       // is therefore tracked separately and always prefers the ERP's own
-      // Message-ID (stable across retries) regardless of tracking mode; only
-      // messages that never carried one at all fall back to the (unstable)
-      // minted id, matching the pre-existing best-effort behaviour there.
+      // Message-ID (stable across retries) regardless of tracking mode. A
+      // message that never carried a Message-ID at all falls back to a
+      // deterministic hash of the exact submitted bytes (stable: an ERP
+      // retry after a lost SMTP response resends the identical DATA) rather
+      // than the minted wire id (unstable: a fresh one every attempt, which
+      // would never match on retry).
       const incomingMessageId = normalizeMessageIdHeader(parsed.messageId);
       const outgoingMessageId = willTrack || !incomingMessageId
         ? generateOutboundMessageId(String(account.email_address))
         : incomingMessageId;
-      const dedupKey = incomingMessageId ?? outgoingMessageId;
+      const dedupKey = incomingMessageId ?? hashRelaySubmissionForDedup(relayId, input.rfc822);
 
       // 4. Persist message + submission row (idempotent on the Message-ID).
       let persisted: RelaySubmissionPersistResult;
@@ -757,6 +762,15 @@ function smtpCodeFromError(message: string): { smtpCode?: number } {
   return match ? { smtpCode: Number(match[1]) } : {};
 }
 
+/** Deterministic dedup fallback for a message with no Message-ID header: an
+ *  ERP retry after a lost SMTP response resends byte-identical DATA, so
+ *  hashing the exact submitted bytes (scoped per relay) yields a stable key
+ *  — unlike the wire Message-ID, which the tracked path re-mints every
+ *  attempt. */
+function hashRelaySubmissionForDedup(relayId: string, rfc822: Buffer): string {
+  return `sha256:${createHash('sha256').update(relayId).update(rfc822).digest('hex')}`;
+}
+
 // ---------------------------------------------------------------------------
 // Postgres store (thin, SQL-only)
 // ---------------------------------------------------------------------------
@@ -815,6 +829,7 @@ export function createPostgresRelaySubmissionStore(
                 .updateTable('smtp_relay_submissions')
                 .set({
                   status: 'received',
+                  account_id: input.accountId,
                   message_id: messageId,
                   tracking_applied: input.trackingApplied,
                   tracking_rule_reason: input.trackingRuleReason,
@@ -1076,9 +1091,22 @@ async function updateRelayedMessageContent(
     input.workspaceId,
     input.firstRecipient,
   );
+  // The routing account can also legitimately differ between attempts (the
+  // From-address mapping or allowed-accounts config changed between the
+  // failed first attempt and the retry) — the send always goes out through
+  // the CURRENT account, so the anchor folder/uid must move with it or the
+  // audit row keeps pointing at whichever mailbox happened to route the
+  // first attempt.
+  const folder = await ensureRelayAnchorFolder(trx, input, timestamp);
+  const uid = await nextLocalRelayUid(trx, input.workspaceId, input.accountId, folder.id);
   await trx
     .updateTable('email_messages')
     .set({
+      account_id: input.accountId,
+      account_source_sqlite_id: input.accountSourceSqliteId,
+      folder_id: folder.id,
+      folder_source_sqlite_id: folder.sourceSqliteId,
+      uid,
       message_id: input.messageIdHeader,
       in_reply_to: input.inReplyTo,
       references_header: input.referencesHeader,

@@ -409,6 +409,32 @@ describe('submitRelay untracked pass-through', () => {
     expect(outgoing.startsWith(`Message-ID: ${minted}\r\n`)).toBe(true);
   });
 
+  test('a retried Message-ID-less submission dedupes on a stable content hash, not the minted wire id', async () => {
+    // Regression test: previously the dedup fallback for a missing
+    // Message-ID was the minted wire id itself, which is freshly random on
+    // every attempt (Date.now() + random bytes) — so a genuine ERP retry of
+    // byte-identical DATA (lost SMTP response, no Message-ID header) could
+    // never be recognized as a duplicate and would resend.
+    const { pipeline, smtpSend, persistInputs } = makePipeline({
+      relayPort: makeRelayPort({ config: relayConfig({ trackingMode: 'off' }) }),
+    });
+    const message = erpMessage({ messageId: null, subject: 'Rechnungskopie' });
+
+    const first = await pipeline.submitRelay(submitInput(message));
+    expect(first).toEqual(expect.objectContaining({ ok: true }));
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+
+    const retry = await pipeline.submitRelay(submitInput(message));
+    expect(retry).toEqual(expect.objectContaining({ ok: true }));
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+
+    expect(persistInputs[0]!.dedupKey).toBe(persistInputs[1]!.dedupKey);
+    // Wire ids minted for the pass-through header are still distinct...
+    expect(persistInputs[0]!.messageIdHeader).not.toBe(persistInputs[1]!.messageIdHeader);
+    // ...but the dedup key is NOT one of those minted wire ids.
+    expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[0]!.messageIdHeader);
+  });
+
   test('a failing sent-copy appender does not fail the relay', async () => {
     const sentCopyAppend = jest.fn(async () => {
       throw new Error('imap down');

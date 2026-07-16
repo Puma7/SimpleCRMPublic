@@ -4723,7 +4723,10 @@ export type SmtpRelayMutationResult =
 
 export type SmtpRelayAllowedAccountResult =
   | { ok: true; account: SmtpRelayAllowedAccountRecord }
-  | { ok: false; code: 'relay_not_found' | 'account_not_found' | 'duplicate_account' };
+  | {
+    ok: false;
+    code: 'relay_not_found' | 'account_not_found' | 'duplicate_account' | 'duplicate_from_address';
+  };
 
 export type SmtpRelayCredentialCreateResult =
   | { ok: true; credential: SmtpRelayCredentialRecord; password: string }

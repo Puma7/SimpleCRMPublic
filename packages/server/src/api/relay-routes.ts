@@ -214,6 +214,13 @@ async function handleAccountAdd(
     if (result.code === 'account_not_found') {
       return error(404, 'email_account_not_found', 'E-Mail-Konto nicht gefunden');
     }
+    if (result.code === 'duplicate_from_address') {
+      return error(
+        409,
+        'duplicate_relay_from_address',
+        'Diese Absenderadresse ist bereits einem anderen Konto dieses Relays zugeordnet',
+      );
+    }
     return error(409, 'duplicate_relay_account', 'Konto ist dem Relay bereits zugeordnet');
   }
   return data(201, { account: result.account });

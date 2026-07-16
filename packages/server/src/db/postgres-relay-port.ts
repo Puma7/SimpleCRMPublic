@@ -568,6 +568,33 @@ export function createPostgresSmtpRelayAdminPort(
           if (existing) return { ok: false, code: 'duplicate_account' } as const;
 
           const fromAddress = input.fromAddress?.trim() || null;
+
+          // resolveRoutingAccount matches an inbound From against EITHER an
+          // allowed account's own address or its override, with no ORDER BY
+          // — so two allowed entries that normalize to the same effective
+          // From address make routing for that address non-deterministic
+          // (could pick either account's SMTP credentials). Reject the
+          // collision here instead of allowing it to be inserted.
+          const effectiveFrom = normalizeEmailAddress(fromAddress ?? account.email_address);
+          if (effectiveFrom) {
+            const siblings = await trx
+              .selectFrom('smtp_relay_allowed_accounts as allowed')
+              .innerJoin('email_accounts as acct', (join) => join
+                .onRef('acct.id', '=', 'allowed.account_id')
+                .onRef('acct.workspace_id', '=', 'allowed.workspace_id'))
+              .where('allowed.workspace_id', '=', input.workspaceId)
+              .where('allowed.relay_id', '=', input.relayId)
+              .select(['allowed.from_address as allowed_from_address', 'acct.email_address'])
+              .execute();
+            const collides = siblings.some((sibling) => {
+              const siblingEffective = normalizeEmailAddress(
+                sibling.allowed_from_address ?? String(sibling.email_address ?? ''),
+              );
+              return siblingEffective === effectiveFrom;
+            });
+            if (collides) return { ok: false, code: 'duplicate_from_address' } as const;
+          }
+
           await trx
             .insertInto('smtp_relay_allowed_accounts')
             .values({
