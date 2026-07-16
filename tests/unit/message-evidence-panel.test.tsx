@@ -124,6 +124,80 @@ describe('message evidence panel', () => {
     expect(screen.queryByText(/automatischer Abruf wahrscheinlich/i)).not.toBeInTheDocument();
   });
 
+  test('keeps a reply stronger than an automated pixel fetch', async () => {
+    const replyTimeline = {
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'human_reply',
+        pixelFetchCount: 1,
+        automatedPixelFetchCount: 1,
+        repliedAt: '2026-07-15T10:05:00.000Z',
+      },
+      events: [{
+        id: 1,
+        type: 'open_automated',
+        source: 'tracking_pixel',
+        confidence: 'low',
+        automated: true,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'mail_proxy', confidence: 'low', reasons: [] },
+      }],
+    };
+    jest.mocked(invokeRenderer).mockResolvedValueOnce(replyTimeline);
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Antwort erhalten')).toBeInTheDocument();
+    expect(screen.queryByText('Automatischer Abruf')).not.toBeInTheDocument();
+  });
+
+  test('keeps a classified human click as a link interaction', async () => {
+    const clickTimeline = {
+      ...v2Timeline(41),
+      summary: { ...v2Timeline(41).summary, engagement: 'link_interaction', clickCount: 1 },
+      events: [{
+        id: 1,
+        type: 'click',
+        source: 'tracking_link',
+        confidence: 'medium',
+        automated: false,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'probable_human', confidence: 'medium', reasons: [] },
+      }],
+    };
+    jest.mocked(invokeRenderer).mockResolvedValueOnce(clickTimeline);
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Link angeklickt')).toBeInTheDocument();
+    expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
+  });
+
+  test('keeps an MDN-backed probable-open summary', async () => {
+    const mdnTimeline = {
+      ...v2Timeline(41),
+      summary: { ...v2Timeline(41).summary, engagement: 'probable_open' },
+      events: [{
+        id: 1,
+        type: 'mdn_displayed',
+        source: 'mdn',
+        confidence: 'verified',
+        automated: false,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'system', confidence: 'verified', reasons: [] },
+      }],
+    };
+    jest.mocked(invokeRenderer).mockResolvedValueOnce(mdnTimeline);
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Menschlicher Abruf wahrscheinlich')).toBeInTheDocument();
+  });
+
   test('ignores a stale timeline response after selecting another message', async () => {
     const first = deferred<unknown>();
     const second = deferred<unknown>();
@@ -174,6 +248,36 @@ describe('message evidence panel', () => {
       'email:get-message-tracking',
       { messageId: 41 },
     ));
+  });
+
+  test('finishes a pending reclassification after parent close without allowing a duplicate', async () => {
+    const reclassification = deferred<unknown>();
+    let timelineLoads = 0;
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockImplementation((channel) => {
+      if (channel === 'email:reclassify-message-tracking') return reclassification.promise;
+      timelineLoads += 1;
+      return Promise.resolve(timelineLoads === 1 ? v2Timeline(41) : timeline(41, 'failed'));
+    });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Neu bewerten' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verlauf' }));
+
+    const reopenedAction = screen.getByRole('button', { name: 'Neu bewerten' });
+    expect(reopenedAction).toBeDisabled();
+    fireEvent.click(reopenedAction);
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'email:reclassify-message-tracking')).toHaveLength(1);
+
+    await act(async () => {
+      reclassification.resolve({ classified: 1, unavailableRaw: 0 });
+      await reclassification.promise;
+    });
+
+    expect(await screen.findAllByText('Fehlgeschlagen')).toHaveLength(2);
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'email:reclassify-message-tracking')).toHaveLength(1);
   });
 
   test('does not reload message A after reclassification completes for message B', async () => {
@@ -249,7 +353,7 @@ describe('message evidence panel', () => {
     render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
 
-    expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(2);
+    expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(4);
     expect(screen.getByText('Linkabruf durch Sicherheits-Scanner')).toBeInTheDocument();
     expect(screen.getByText('Rohdaten der Anfrage nicht verfügbar')).toBeInTheDocument();
     expect(screen.getByText('Bekannter Sicherheits-Scanner-User-Agent')).toBeInTheDocument();
@@ -283,7 +387,7 @@ describe('message evidence panel', () => {
     render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
 
-    expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(2);
+    expect(await screen.findAllByText('Pixelabruf, Ursache unklar')).toHaveLength(4);
     expect(within(screen.getByText('Ursache unklar').parentElement!).getByText('1')).toBeInTheDocument();
     expect(screen.queryByText('Wahrscheinliches Öffnen')).not.toBeInTheDocument();
     expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
@@ -332,8 +436,9 @@ describe('message evidence panel', () => {
 
     render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
-    expect(screen.queryByRole('button', { name: 'IP-Insight öffnen' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('switch'));
+    expect(screen.queryByRole('button', { name: /IP-Insight für/i })).not.toBeInTheDocument();
+    const sensitiveSwitch = screen.getByRole('switch', { name: 'Sensible Rohdaten' });
+    fireEvent.click(sensitiveSwitch);
     const ipButton = await screen.findByRole('button', { name: 'IP-Insight für 8.8.8.8' });
     expect(ipButton).toHaveTextContent('8.8.8.8');
     fireEvent.click(ipButton);
@@ -368,11 +473,23 @@ describe('message evidence panel', () => {
 
   test('does not offer the IP insight button to non-admin users', async () => {
     mockUser = { id: 'user-1', role: 'user' };
-    jest.mocked(invokeRenderer).mockResolvedValueOnce(v2Timeline(41));
+    jest.mocked(invokeRenderer).mockResolvedValueOnce({
+      ...v2Timeline(41),
+      events: [{
+        id: 2,
+        type: 'open_automated',
+        source: 'tracking_pixel',
+        confidence: 'low',
+        automated: true,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: { raw: { ip: '8.8.8.8' } },
+        classification: { version: 2, actorClass: 'mail_proxy', confidence: 'low', reasons: [] },
+      }],
+    });
 
     render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
-    expect(screen.queryByRole('button', { name: 'IP-Insight öffnen' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /IP-Insight für/i })).not.toBeInTheDocument();
   });
 });
 

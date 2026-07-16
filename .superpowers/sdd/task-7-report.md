@@ -143,3 +143,37 @@ pnpm exec eslint src/components/email/message-evidence-panel.tsx tests/unit/mess
 pnpm run build:web
 # bestanden
 ```
+
+## Finaler Review-Follow-up (2026-07-16)
+
+### RED
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/message-evidence-panel.test.tsx
+```
+
+- 7 Regressionen schlugen wie erwartet fehl: Reply/Click/MDN-Prioritaet, Unknown-Status in Legacy und V2, Parent-Close waehrend Reclassify sowie der unbenannte Sensitive-Schalter.
+- Die bisherigen IP-Sichtbarkeitstests suchten noch nach einem veralteten Accessible Name; der Non-Admin-Fall enthielt zudem keine rohe IP und pruefte die Schutzbedingung daher nicht wirksam.
+
+### GREEN
+
+- `human_reply` und `link_interaction` bleiben staerker als Pixelzaehler. Ein MDN-gestuetztes `probable_open` bleibt erhalten; nur Pixel-Signale ohne wahrscheinliche Human-Klassifizierung werden durch V2-Zaehler konservativ herabgestuft.
+- `unknown_fetch` hat den expliziten Status `Pixelabruf, Ursache unklar` in kompakter und geoeffneter Kopfzeile; Legacy- und V2-Faelle sind abgedeckt.
+- Parent-Close bewahrt eine laufende Reclassify-/Revoke-Action als in-flight. Reopen bleibt gesperrt, verhindert Duplikate und erhaelt nach Abschluss die frisch geladene Timeline. Nachrichtenwechsel und Unmount invalidieren weiterhin Sequenz und State-Updates.
+- Der Schalter `Sensible Rohdaten` ist ueber `id`/`aria-labelledby` benannt. Admin- und Non-Admin-Tests verwenden den aktuellen IP-Button-Namen; der negative Fall enthaelt absichtlich ein Raw-IP-Ereignis.
+
+Frische Verifikation:
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/message-evidence-panel.test.tsx tests/unit/ip-insight-dialog.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 3/3 Suiten, 26/26 Tests bestanden
+
+pnpm run typecheck
+# bestanden
+
+pnpm exec eslint src/components/email/message-evidence-panel.tsx tests/unit/message-evidence-panel.test.tsx --max-warnings 0
+# bestanden
+
+pnpm run build:web
+# bestanden (bestehender Chunk-Size-Hinweis)
+```

@@ -115,12 +115,16 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const [ipInsightEvent, setIpInsightEvent] = useState<EvidenceEvent | null>(null)
   const requestSequence = useRef(0)
   const actionSequence = useRef(0)
+  const actionInFlight = useRef<{ id: number; messageId: number } | null>(null)
   const mounted = useRef(false)
   const activeMessageId = useRef(props.messageId)
 
-  const resetEphemeralState = useCallback(() => {
-    actionSequence.current += 1
-    setBusy(false)
+  const resetEphemeralState = useCallback((preservePendingAction = false) => {
+    if (!preservePendingAction || !actionInFlight.current) {
+      actionSequence.current += 1
+      actionInFlight.current = null
+      setBusy(false)
+    }
     setDeleteConfirmOpen(false)
     setIpInsightEvent(null)
   }, [])
@@ -131,6 +135,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       mounted.current = false
       requestSequence.current += 1
       actionSequence.current += 1
+      actionInFlight.current = null
     }
   }, [])
 
@@ -198,6 +203,8 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const engagement = displayedEngagement(timeline?.summary, timeline?.events ?? [])
   const unknownPixelFetchCount = timeline?.summary.unknownPixelFetchCount
     ?? (!hasV2Metrics && engagement === "unknown_fetch" ? pixelFetchCount : 0)
+  const sensitiveSwitchId = `message-evidence-sensitive-${props.messageId}`
+  const sensitiveSwitchLabelId = `${sensitiveSwitchId}-label`
 
   const startAction = async (
     channel: string,
@@ -205,9 +212,10 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     failureMessage: string,
     afterSuccess?: () => void,
   ) => {
-    if (busy) return
+    if (busy || actionInFlight.current) return
     const messageId = props.messageId
     const actionId = ++actionSequence.current
+    actionInFlight.current = { id: actionId, messageId }
     const canCommit = () => mounted.current
       && activeMessageId.current === messageId
       && actionId === actionSequence.current
@@ -222,6 +230,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     } catch (error) {
       if (canCommit()) toast.error(error instanceof Error ? error.message : failureMessage)
     } finally {
+      if (actionInFlight.current?.id === actionId) actionInFlight.current = null
       if (canCommit()) setBusy(false)
     }
   }
@@ -251,7 +260,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
 
       <Dialog open={open} onOpenChange={(nextOpen) => {
         setOpen(nextOpen)
-        if (!nextOpen) resetEphemeralState()
+        if (!nextOpen) resetEphemeralState(true)
       }}>
         <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
           <DialogHeader>
@@ -291,10 +300,12 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                 {isAdmin ? (
                   <div className="flex items-center justify-between gap-3 border-y py-3">
                     <div>
-                      <p className="text-xs font-medium">Sensible Rohdaten</p>
+                      <p id={sensitiveSwitchLabelId} className="text-xs font-medium">Sensible Rohdaten</p>
                       <p className="text-[11px] text-muted-foreground">Entschlüsselte IP-Adresse und User-Agent, sofern erfasst und noch aufbewahrt.</p>
                     </div>
                     <Switch
+                      id={sensitiveSwitchId}
+                      aria-labelledby={sensitiveSwitchLabelId}
                       checked={includeSensitive}
                       onCheckedChange={(checked) => {
                         if (!checked) resetEphemeralState()
@@ -455,6 +466,7 @@ function evidenceStatus(kind: "transport" | "delivery" | "engagement", value: st
   if (value === "link_interaction") return { category: "Interaktion", label: "Link angeklickt", icon: MousePointerClick, color: "text-sky-600" }
   if (value === "probable_open") return { category: "Interaktion", label: "Menschlicher Abruf wahrscheinlich", icon: Eye, color: "text-sky-600" }
   if (value === "automated_fetch") return { category: "Interaktion", label: "Automatischer Abruf", icon: Bot, color: "text-amber-600" }
+  if (value === "unknown_fetch") return { category: "Interaktion", label: "Pixelabruf, Ursache unklar", icon: CircleDashed, color: "text-muted-foreground" }
   return { category: "Interaktion", label: "Kein Signal", icon: CircleDashed, color: "text-muted-foreground" }
 }
 
@@ -592,9 +604,11 @@ function hasV2EvidenceMetrics(summary: EvidenceTimeline["summary"] | undefined):
 
 function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined, events: EvidenceEvent[]): string {
   if (!summary) return "none"
+  if (summary.engagement === "human_reply" || summary.engagement === "link_interaction") return summary.engagement
+  if (summary.engagement === "probable_open" && events.some((event) => event.type === "mdn_displayed")) return "probable_open"
   const hasProbableHumanEvidence = (summary.probableHumanPixelFetchCount ?? 0) > 0
     || (summary.probableHumanOpenSessionCount ?? 0) > 0
-    || events.some((event) => event.classification?.actorClass === "probable_human")
+    || events.some((event) => event.type.startsWith("open_") && event.classification?.actorClass === "probable_human")
   if (!hasV2EvidenceMetrics(summary)) {
     return summary.engagement === "probable_open" && !hasProbableHumanEvidence
       ? "unknown_fetch"
