@@ -43,15 +43,22 @@ export function computeAutoLayoutPositions(
     marginy: 0,
   })
   g.setDefaultEdgeLabel(() => ({}))
+  const nodeIds = new Set<string>()
   for (const n of nodes) {
+    nodeIds.add(n.id)
     g.setNode(n.id, {
       width: NODE_WIDTH,
       height: NODE_HEIGHTS[n.type] ?? DEFAULT_NODE_HEIGHT,
     })
   }
   // Insertion order feeds dagre's ordering heuristic, so branch handles
-  // (ja/nein, Ports) keep a stable left-to-right arrangement.
-  for (const e of edges) g.setEdge(e.source, e.target)
+  // (ja/nein, Ports) keep a stable left-to-right arrangement. Dangling edges
+  // (imported graphs may reference deleted node ids) are skipped — graphlib
+  // would otherwise create implicit size-less nodes and dagre.layout throws,
+  // which would keep the editor from opening at all.
+  for (const e of edges) {
+    if (nodeIds.has(e.source) && nodeIds.has(e.target)) g.setEdge(e.source, e.target)
+  }
 
   dagre.layout(g)
 

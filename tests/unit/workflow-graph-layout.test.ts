@@ -67,6 +67,23 @@ describe('workflow graph layout', () => {
     expect(pos.a3!.y).toBeGreaterThan(pos.a1!.y);
   });
 
+  test('dangling edges (unknown node ids) do not break the layout', () => {
+    const withDangling: WorkflowGraphDocument = {
+      ...sample,
+      edges: [
+        ...sample.edges,
+        { id: 'e-del1', source: 'c1', target: 'gone-node' },
+        { id: 'e-del2', source: 'ghost', target: 'a1' },
+      ],
+    };
+    const pos = computeAutoLayoutPositions(withDangling);
+    expect(isValidGraphPosition(pos.t1)).toBe(true);
+    expect(isValidGraphPosition(pos.c1)).toBe(true);
+    expect(isValidGraphPosition(pos.a1)).toBe(true);
+    expect(pos['gone-node']).toBeUndefined();
+    expect(pos.ghost).toBeUndefined();
+  });
+
   test('editor store persists positions in graph document', () => {
     useWorkflowEditorStore.getState().resetFromGraph(sample);
     useWorkflowEditorStore.getState().setNodes(

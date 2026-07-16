@@ -158,6 +158,7 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.2",
     "recharts": "^3.9.2",
+    "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "safe-regex": "^2.1.1",
     "sonner": "^2.0.7",
