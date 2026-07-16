@@ -36,6 +36,8 @@ import { METADATA_CONVERSATION_SECTION_ID } from "@/lib/scroll-metadata-conversa
 import { isAllAccountsScope } from "./account-scope"
 import { useMailWorkspace } from "./workspace-context"
 import { MessageEvidencePanel } from "./message-evidence-panel"
+import { NoteMarkdown } from "./note-markdown"
+import { useExternalLinkConfirm } from "./external-link-confirm-dialog"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -146,6 +148,10 @@ export function MessageMetadataPanel({
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
   const [editingNoteBody, setEditingNoteBody] = useState("")
   const [newTag, setNewTag] = useState("")
+  // Links in Markdown notes go through the same confirm-and-open-externally
+  // flow as links in mail bodies (popups are blocked by the window policy).
+  const { handleBodyLinkClick: handleNoteLinkClick, dialog: noteLinkDialog } =
+    useExternalLinkConfirm()
   // All categories a message is in (M:N). The legacy single-category select
   // is replaced by chips + a multi-select dropdown so a message can sit in any
   // number of categories at once.
@@ -300,7 +306,7 @@ export function MessageMetadataPanel({
 
       <ScrollArea className="flex-1">
         <div className="space-y-4 p-3">
-          <div className="space-y-2">
+          <div className="space-y-2" onClick={handleNoteLinkClick}>
             <Label className="text-xs">Interne Notizen</Label>
             {internalNotes.length === 0 ? (
               <p className="text-xs text-muted-foreground">Noch keine Notizen.</p>
@@ -352,7 +358,7 @@ export function MessageMetadataPanel({
                       </div>
                     ) : (
                       <>
-                        <p className="whitespace-pre-wrap">{n.body}</p>
+                        <NoteMarkdown body={n.body} />
                         <div className="mt-1 flex gap-1">
                           <Button
                             type="button"
@@ -391,7 +397,7 @@ export function MessageMetadataPanel({
             <Textarea
               value={newNote}
               onChange={(e) => setNewNote(e.target.value)}
-              placeholder="Notiz hinzufügen…"
+              placeholder="Notiz hinzufügen… (Markdown möglich)"
               className="min-h-[70px] text-sm"
             />
             <Button
@@ -888,6 +894,7 @@ export function MessageMetadataPanel({
 
         </div>
       </ScrollArea>
+      {noteLinkDialog}
     </aside>
   )
 }
