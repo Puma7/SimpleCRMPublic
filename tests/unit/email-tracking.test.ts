@@ -258,6 +258,21 @@ describe('email evidence tracking core', () => {
     });
   });
 
+  test('retains displayed MDNs as an additive summary fact without adding a workflow key', () => {
+    const events: EmailEvidenceEvent[] = [
+      event('mdn_displayed', 'medium', '2026-07-13T08:00:00.000Z'),
+      event('open_automated', 'low', '2026-07-13T08:01:00.000Z'),
+    ];
+
+    expect(buildEmailEvidenceSummary(events)).toMatchObject({
+      engagement: 'probable_open',
+      mdnDisplayedCount: 1,
+      automatedPixelFetchCount: 1,
+    });
+    expect(emailEvidenceWorkflowVariables({ tracked: true, events }))
+      .not.toHaveProperty('tracking.mdn_displayed_count');
+  });
+
   test('adds precise pixel-fetch counters while preserving legacy open aliases', () => {
     const events: EmailEvidenceEvent[] = [
       classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),

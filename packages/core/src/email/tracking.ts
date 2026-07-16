@@ -60,6 +60,7 @@ export type EmailEvidenceSummary = Readonly<{
   delivery: 'unknown' | 'external_system_reached' | 'dsn_delivered';
   engagement: 'none' | 'automated_fetch' | 'probable_open' | 'link_interaction' | 'human_reply';
   confidence: EmailEvidenceConfidence;
+  mdnDisplayedCount: number;
   pixelFetchCount: number;
   automatedPixelFetchCount: number;
   unknownPixelFetchCount: number;
@@ -332,6 +333,7 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
   let delivery: EmailEvidenceSummary['delivery'] = 'unknown';
   let engagement: EmailEvidenceSummary['engagement'] = 'none';
   let confidence: EmailEvidenceConfidence = 'none';
+  let mdnDisplayedCount = 0;
   let automatedPixelFetchCount = 0;
   let unknownPixelFetchCount = 0;
   let probableHumanPixelFetchCount = 0;
@@ -409,6 +411,7 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
       }
     }
     if (event.type === 'mdn_displayed') {
+      mdnDisplayedCount += 1;
       if (delivery === 'unknown') delivery = 'external_system_reached';
       engagement = higherEngagement(engagement, 'probable_open');
     }
@@ -424,6 +427,7 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
     delivery,
     engagement,
     confidence,
+    mdnDisplayedCount,
     pixelFetchCount: openCount,
     automatedPixelFetchCount,
     unknownPixelFetchCount,

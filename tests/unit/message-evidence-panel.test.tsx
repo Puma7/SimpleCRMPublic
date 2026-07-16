@@ -198,6 +198,36 @@ describe('message evidence panel', () => {
     expect(await screen.findByText('Menschlicher Abruf wahrscheinlich')).toBeInTheDocument();
   });
 
+  test('keeps a truncated MDN summary stronger than a later automated pixel fetch', async () => {
+    const truncatedMdnTimeline = {
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'probable_open',
+        mdnDisplayedCount: 1,
+        pixelFetchCount: 1,
+        automatedPixelFetchCount: 1,
+      },
+      events: [{
+        id: 1_001,
+        type: 'open_automated',
+        source: 'tracking_pixel',
+        confidence: 'low',
+        automated: true,
+        occurredAt: '2026-07-15T11:00:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'mail_proxy', confidence: 'low', reasons: [] },
+      }],
+      eventsTruncated: true,
+    };
+    jest.mocked(invokeRenderer).mockResolvedValueOnce(truncatedMdnTimeline);
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Menschlicher Abruf wahrscheinlich')).toBeInTheDocument();
+    expect(screen.queryByText('Automatischer Abruf')).not.toBeInTheDocument();
+  });
+
   test('ignores a stale timeline response after selecting another message', async () => {
     const first = deferred<unknown>();
     const second = deferred<unknown>();

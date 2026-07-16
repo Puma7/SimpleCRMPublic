@@ -80,6 +80,7 @@ type EvidenceTimeline = {
     delivery: string
     engagement: string
     confidence: EvidenceConfidence
+    mdnDisplayedCount?: number
     pixelFetchCount?: number
     automatedPixelFetchCount?: number
     unknownPixelFetchCount?: number
@@ -605,7 +606,10 @@ function hasV2EvidenceMetrics(summary: EvidenceTimeline["summary"] | undefined):
 function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined, events: EvidenceEvent[]): string {
   if (!summary) return "none"
   if (summary.engagement === "human_reply" || summary.engagement === "link_interaction") return summary.engagement
-  if (summary.engagement === "probable_open" && events.some((event) => event.type === "mdn_displayed")) return "probable_open"
+  if (
+    summary.engagement === "probable_open"
+    && ((summary.mdnDisplayedCount ?? 0) > 0 || events.some((event) => event.type === "mdn_displayed"))
+  ) return "probable_open"
   const hasProbableHumanEvidence = (summary.probableHumanPixelFetchCount ?? 0) > 0
     || (summary.probableHumanOpenSessionCount ?? 0) > 0
     || events.some((event) => event.type.startsWith("open_") && event.classification?.actorClass === "probable_human")

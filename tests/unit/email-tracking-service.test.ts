@@ -1403,7 +1403,8 @@ describe('email tracking service security helpers', () => {
           : new Date(Date.parse('2026-07-15T13:00:00.000Z') + id * 1_000),
       });
     });
-    events[0] = historicalEvent({ id: 1, type: 'smtp_accepted', occurredAt: new Date('2026-07-15T10:00:00.000Z') });
+    events[0] = historicalEvent({ id: 1, type: 'mdn_displayed', occurredAt: new Date('2026-07-15T09:59:00.000Z') });
+    events[1] = historicalEvent({ id: 2, type: 'smtp_accepted', occurredAt: new Date('2026-07-15T10:00:00.000Z') });
     events[499] = historicalEvent({ id: 500, type: 'open_probable', occurredAt: new Date('2026-07-15T11:00:00.000Z') });
     events[500] = historicalEvent({ id: 501, type: 'open_probable', occurredAt: new Date('2026-07-15T11:29:59.000Z') });
     events[501] = historicalEvent({ id: 502, type: 'open_probable', occurredAt: new Date('2026-07-15T11:59:59.000Z') });
@@ -1439,6 +1440,7 @@ describe('email tracking service security helpers', () => {
       delivery: 'dsn_delivered',
       engagement: 'human_reply',
       confidence: 'medium',
+      mdnDisplayedCount: 1,
       pixelFetchCount: 4,
       openCount: 4,
       clickCount: 2,
@@ -1460,6 +1462,9 @@ describe('email tracking service security helpers', () => {
       lastClickedAt: '2026-07-15T12:11:00.000Z',
       repliedAt: '2026-07-15T12:13:00.000Z',
     });
+    expect(timeline?.eventsTruncated).toBe(true);
+    expect(timeline?.events.some((event) => event.type === 'mdn_displayed')).toBe(false);
+    expect(timeline?.events.some((event) => event.type === 'open_automated')).toBe(true);
     expect(state.summaryPageLimits).toEqual([500, 500, 500]);
     expect(state.unboundedClassificationLookups).toBe(0);
     expect(state.classificationLookupEventIdBatches.length).toBeGreaterThan(0);

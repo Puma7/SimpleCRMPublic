@@ -2556,6 +2556,7 @@ function mergeEmailEvidenceSummaries(
       page.confidence,
       ['none', 'low', 'medium', 'high', 'verified'],
     ),
+    mdnDisplayedCount: current.mdnDisplayedCount + page.mdnDisplayedCount,
     pixelFetchCount: current.pixelFetchCount + page.pixelFetchCount,
     automatedPixelFetchCount: current.automatedPixelFetchCount + page.automatedPixelFetchCount,
     unknownPixelFetchCount: current.unknownPixelFetchCount + page.unknownPixelFetchCount,
