@@ -759,6 +759,30 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       })),
     }),
   });
+  set(IPCChannels.Email.GetMessageTrackingIpInsight, {
+    payload: z.object({
+      messageId: positiveInt,
+      eventId: z.union([positiveInt, z.string().regex(/^[1-9]\d*$/)]),
+    }),
+    result: z.object({
+      ipAddress: z.string(),
+      ipFamily: z.enum(['ipv4', 'ipv6']),
+      scope: z.enum(['public', 'private', 'loopback', 'reserved', 'unknown']),
+      countryCode: z.string().nullable(),
+      continentCode: z.string().nullable(),
+      asn: z.number().int().nonnegative().nullable(),
+      networkName: z.string().nullable(),
+      networkCidr: z.string().nullable(),
+      databaseBuildAt: z.string().nullable(),
+    }),
+  });
+  set(IPCChannels.Email.ReclassifyMessageTracking, {
+    payload: positiveInt,
+    result: z.object({
+      classified: z.number().int().nonnegative(),
+      unavailableRaw: z.number().int().nonnegative(),
+    }),
+  });
   set(IPCChannels.Email.RevokeMessageTracking, {
     payload: positiveInt,
     result: z.object({ revoked: z.literal(true) }),

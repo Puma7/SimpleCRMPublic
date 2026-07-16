@@ -525,6 +525,7 @@ describe('server edition foundation', () => {
       .find((entry) => entry.type === 'email.read_tracking_evidence');
     const outputs = trackingEvidence?.outputs ?? [];
     const v2OutputNames = [
+      'tracking.mdn_displayed_count',
       'tracking.pixel_fetch_count',
       'tracking.automated_pixel_fetch_count',
       'tracking.unknown_pixel_fetch_count',
@@ -547,7 +548,7 @@ describe('server edition foundation', () => {
   });
 
   test('server summary keeps legacy aliases while projecting precise historical opens as unknown', async () => {
-    const { db } = makeWorkflowExecutionDb({
+    const { db, messageLocks } = makeWorkflowExecutionDb({
       trackingEvents: [{
         id: '501',
         workspace_id: WORKSPACE_A_ID,
@@ -577,6 +578,7 @@ describe('server edition foundation', () => {
       'tracking.unknown_pixel_fetch_count': 1,
       'tracking.probable_open_count': 1,
     }));
+    expect(messageLocks).toEqual(['tracking-501']);
   });
 
   test('server template list omits templates with server-unsupported nodes', () => {
@@ -4967,6 +4969,7 @@ describe('server edition foundation', () => {
         followsUp: true,
         engagementPort: 'none',
         pixelFetchPort: undefined,
+        mdnPort: undefined,
         sessionPort: 'yes',
       },
       {
@@ -4975,6 +4978,7 @@ describe('server edition foundation', () => {
         followsUp: true,
         engagementPort: 'probable_open',
         pixelFetchPort: 'yes',
+        mdnPort: undefined,
         sessionPort: 'yes',
       },
       {
@@ -4983,6 +4987,7 @@ describe('server edition foundation', () => {
         followsUp: true,
         engagementPort: 'probable_open',
         pixelFetchPort: 'yes',
+        mdnPort: undefined,
         sessionPort: 'yes',
       },
       {
@@ -4991,6 +4996,7 @@ describe('server edition foundation', () => {
         followsUp: false,
         engagementPort: 'probable_open',
         pixelFetchPort: 'yes',
+        mdnPort: undefined,
         sessionPort: 'no',
       },
       {
@@ -4999,6 +5005,7 @@ describe('server edition foundation', () => {
         followsUp: false,
         engagementPort: 'automated_fetch',
         pixelFetchPort: undefined,
+        mdnPort: undefined,
         sessionPort: 'no',
       },
       {
@@ -5007,6 +5014,7 @@ describe('server edition foundation', () => {
         followsUp: false,
         engagementPort: 'probable_open',
         pixelFetchPort: 'no',
+        mdnPort: undefined,
         sessionPort: undefined,
       },
       {
@@ -5015,7 +5023,20 @@ describe('server edition foundation', () => {
         followsUp: true,
         engagementPort: 'link_interaction',
         pixelFetchPort: undefined,
+        mdnPort: 'yes',
         sessionPort: 'yes',
+      },
+      {
+        name: 'MDN displayed with security-scanner link fetch',
+        events: [
+          trackingWorkflowEvent('mdn_displayed'),
+          trackingWorkflowEvent('click', 'security_scanner'),
+        ],
+        followsUp: false,
+        engagementPort: 'link_interaction',
+        pixelFetchPort: undefined,
+        mdnPort: 'no',
+        sessionPort: undefined,
       },
       {
         name: 'probable-human click',
@@ -5023,6 +5044,7 @@ describe('server edition foundation', () => {
         followsUp: false,
         engagementPort: 'link_interaction',
         pixelFetchPort: undefined,
+        mdnPort: 'yes',
         sessionPort: 'yes',
       },
       {
@@ -5031,6 +5053,7 @@ describe('server edition foundation', () => {
         followsUp: false,
         engagementPort: 'default',
         pixelFetchPort: undefined,
+        mdnPort: undefined,
         sessionPort: undefined,
       },
     ] as const;
@@ -5039,6 +5062,7 @@ describe('server edition foundation', () => {
       followsUp: boolean;
       engagementPort: unknown;
       pixelFetchPort: unknown;
+      mdnPort: unknown;
       sessionPort: unknown;
     }> = [];
 
@@ -5124,6 +5148,7 @@ describe('server edition foundation', () => {
         followsUp: rows.tasks.length === 1,
         engagementPort: rows.steps.find((step) => step.node_id === 'no_engagement')?.port,
         pixelFetchPort: rows.steps.find((step) => step.node_id === 'probable_open_has_pixel')?.port,
+        mdnPort: rows.steps.find((step) => step.node_id === 'no_mdn')?.port,
         sessionPort: rows.steps.find((step) => step.node_id === 'no_open')?.port,
       });
     }
@@ -5133,6 +5158,7 @@ describe('server edition foundation', () => {
       followsUp: testCase.followsUp,
       engagementPort: testCase.engagementPort,
       pixelFetchPort: testCase.pixelFetchPort,
+      mdnPort: testCase.mdnPort,
       sessionPort: testCase.sessionPort,
     })));
   });
@@ -38866,7 +38892,9 @@ type WorkflowExecutionFakeRows = {
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
   db: Kysely<ServerDatabase>;
   rows: WorkflowExecutionFakeRows;
+  messageLocks: string[];
 } {
+  const messageLocks: string[] = [];
   const rows: WorkflowExecutionFakeRows = {
     workflows: input.workflows ?? [],
     messages: input.messages ?? [],
@@ -38978,6 +39006,16 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     }
   };
   const db = {
+    getExecutor() {
+      return {
+        executeQuery: async (query: { sql?: string; parameters?: readonly unknown[] }) => {
+          if ((query.sql ?? '').includes('pg_advisory_xact_lock') && (query.sql ?? '').includes('hashtext')) {
+            messageLocks.push(String(query.parameters?.[0] ?? ''));
+          }
+          return { rows: [] };
+        },
+      };
+    },
     selectFrom(table: string) {
       return new FakeWorkflowExecutionSelect(tableRows(table));
     },
@@ -38996,7 +39034,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
       };
     },
   } as unknown as Kysely<ServerDatabase>;
-  return { db, rows };
+  return { db, rows, messageLocks };
 }
 
 class FakeWorkflowExecutionSelect {

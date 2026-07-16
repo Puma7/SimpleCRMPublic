@@ -47,6 +47,13 @@ const MAX_TRACKED_HTML_BYTES = 5 * 1024 * 1024;
 const MAX_PRIVACY_NOTICE_URL_LENGTH = 2_048;
 const EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE = 500;
 const EMAIL_TRACKING_SUMMARY_PAGE_SIZE = 500;
+const TRACKING_CLASSIFIER_HEADER_NAMES = [
+  'x-forwarded-for',
+  'x-apple-mail-privacy',
+  'x-email-proxy',
+  'purpose',
+  'sec-purpose',
+] as const;
 
 export type SealedTrackingJson = Readonly<{
   ciphertext: Buffer;
@@ -1191,6 +1198,10 @@ async function lockTrackingPolicy(trx: WorkspaceTransaction, workspaceId: string
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
 }
 
+async function lockTrackingMessage(trx: WorkspaceTransaction, trackingMessageId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${trackingMessageId}))`.execute(trx);
+}
+
 function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
   return {
     enabled: Boolean(row.enabled),
@@ -1559,7 +1570,9 @@ async function insertTrackingEvent(
   trx: WorkspaceTransaction,
   input: InsertEventInput,
   classification?: EmailEvidenceClassification,
+  options: { messageLockHeld?: boolean } = {},
 ): Promise<void> {
+  if (!options.messageLockHeld) await lockTrackingMessage(trx, input.trackingMessageId);
   const insert = trx
     .insertInto('email_tracking_events')
     .values({
@@ -1677,7 +1690,7 @@ async function recordPublicInteraction(input: {
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
       await lockTrackingPolicy(trx, input.resolver.workspaceId);
-      await sql`SELECT pg_advisory_xact_lock(hashtext(${input.resolver.trackingMessageId}))`.execute(trx);
+      await lockTrackingMessage(trx, input.resolver.trackingMessageId);
       const policy = await trx
         .selectFrom('email_tracking_policies')
         .select(['ip_insights_enabled', 'collect_derived_metadata'])
@@ -1746,6 +1759,7 @@ async function recordPublicInteraction(input: {
         ? input.crypto.sealJson({
           ip: input.request.ip?.slice(0, 64) ?? null,
           userAgent: input.request.userAgent?.slice(0, 2_048) ?? null,
+          classifierHeaders: trackingClassifierHeaderSubset(input.request.headers),
         }, emailTrackingEventAssociatedData(input.resolver.workspaceId, input.resolver.trackingMessageId, dedupeKey))
         : null;
       await insertTrackingEvent(trx, {
@@ -1761,7 +1775,7 @@ async function recordPublicInteraction(input: {
         metadata,
         raw,
         dedupeKey,
-      }, classification);
+      }, classification, { messageLockHeld: true });
     },
   );
 }
@@ -1852,6 +1866,7 @@ type PreparedHistoricalClassification = Readonly<{
   base: EmailEvidenceClassification;
   withNetworkContext: EmailEvidenceClassification | null;
   unavailableRaw: boolean;
+  preserveExistingClassification: boolean;
   rawEnvelope: Readonly<{
     ciphertext: Buffer;
     nonce: Buffer;
@@ -1909,6 +1924,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
   let unavailableRaw = 0;
   while (true) {
     const page = await withWorkspaceTransaction(input.db, context, async (trx) => {
+      await lockTrackingMessage(trx, target.trackingMessageId);
       const tracking = await trx
         .selectFrom('email_tracking_messages')
         .select('collect_derived_metadata')
@@ -1989,6 +2005,20 @@ async function reclassifyTrackingMessage(input: Readonly<{
         .orderBy('id', 'asc')
         .forUpdate()
         .execute();
+      const preservationCandidates = prepared
+        .filter((item) => item.preserveExistingClassification)
+        .map((item) => item.eventId);
+      const existingClassifications = preservationCandidates.length > 0
+        ? await trx
+          .selectFrom('email_tracking_event_classifications')
+          .select('event_id')
+          .where('classification_version', '=', 2)
+          .where('event_id', 'in', preservationCandidates)
+          .execute()
+        : [];
+      const existingClassificationEventIds = new Set(
+        existingClassifications.map((row) => canonicalTrackingEventId(row.event_id)),
+      );
       const preparedByEventId = new Map(prepared.map((item) => [item.eventId, item]));
       const finalized = lockedEvents.flatMap((event) => {
         const eventId = canonicalTrackingEventId(event.id);
@@ -2005,9 +2035,17 @@ async function reclassifyTrackingMessage(input: Readonly<{
         const classification = fallback?.base ?? (allowNetworkContext
           ? item.withNetworkContext ?? item.base
           : item.base);
-        return [{ item, classification, unavailableRaw: fallback?.unavailableRaw ?? item.unavailableRaw }];
+        return [{
+          item,
+          classification,
+          unavailableRaw: fallback?.unavailableRaw ?? item.unavailableRaw,
+          preserveExisting: fallback === null
+            && item.preserveExistingClassification
+            && existingClassificationEventIds.has(eventId),
+        }];
       });
-      const rows = finalized.map(({ item, classification }) => {
+      const rows = finalized.flatMap(({ item, classification, preserveExisting }) => {
+        if (preserveExisting) return [];
         return {
           event_id: item.eventId,
           classification_version: classification.version,
@@ -2034,7 +2072,7 @@ async function reclassifyTrackingMessage(input: Readonly<{
           .execute();
       }
       return {
-        classified: rows.length,
+        classified: finalized.length,
         unavailableRaw: finalized.filter((item) => item.unavailableRaw).length,
       };
     });
@@ -2094,7 +2132,7 @@ async function classifyHistoricalTrackingEvent(input: Readonly<{
     userAgent: raw.userAgent,
     requestIp: raw.ip,
     secondsSinceSmtpAccepted,
-    requestHeaders: {},
+    requestHeaders: raw.classifierHeaders ?? {},
     interaction,
   } as const;
   const base = classifyEmailTrackingRequest(request);
@@ -2108,6 +2146,7 @@ async function classifyHistoricalTrackingEvent(input: Readonly<{
       ? classifyEmailTrackingRequest({ ...request, networkContext })
       : null,
     unavailableRaw: false,
+    preserveExistingClassification: raw.classifierHeaders === null,
     rawEnvelope: {
       ciphertext: input.row.raw_metadata_ciphertext!,
       nonce: input.row.raw_metadata_nonce!,
@@ -2132,6 +2171,7 @@ function historicalRawUnavailableClassification(
       },
       withNetworkContext: null,
       unavailableRaw: false,
+      preserveExistingClassification: false,
       rawEnvelope: null,
     };
   }
@@ -2147,6 +2187,7 @@ function historicalRawUnavailableClassification(
     },
     withNetworkContext: null,
     unavailableRaw: !legacyAutomated,
+    preserveExistingClassification: false,
     rawEnvelope: null,
   };
 }
@@ -2187,7 +2228,11 @@ function openHistoricalRequestRaw(
   row: HistoricalTrackingEventRow,
   workspaceId: string,
   trackingMessageId: string,
-): { ip: string | null; userAgent: string | null } | null {
+): {
+  ip: string | null;
+  userAgent: string | null;
+  classifierHeaders: Record<string, string> | null;
+} | null {
   if (
     !crypto
     || !row.raw_metadata_ciphertext
@@ -2201,15 +2246,35 @@ function openHistoricalRequestRaw(
       authTag: row.raw_metadata_auth_tag,
     }, emailTrackingEventAssociatedData(workspaceId, trackingMessageId, row.dedupe_key));
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const source = value as { ip?: unknown; userAgent?: unknown };
+    const source = value as { ip?: unknown; userAgent?: unknown; classifierHeaders?: unknown };
     const ip = typeof source.ip === 'string' && source.ip.trim() ? source.ip.slice(0, 64) : null;
     const userAgent = typeof source.userAgent === 'string' && source.userAgent.trim()
       ? source.userAgent.slice(0, 2_048)
       : null;
-    return ip || userAgent ? { ip, userAgent } : null;
+    const classifierHeaders = Object.prototype.hasOwnProperty.call(source, 'classifierHeaders')
+      && source.classifierHeaders
+      && typeof source.classifierHeaders === 'object'
+      && !Array.isArray(source.classifierHeaders)
+      ? trackingClassifierHeaderSubset(source.classifierHeaders as Record<string, unknown>)
+      : null;
+    return ip || userAgent || classifierHeaders !== null ? { ip, userAgent, classifierHeaders } : null;
   } catch {
     return null;
   }
+}
+
+function trackingClassifierHeaderSubset(
+  headers: Readonly<Record<string, unknown>>,
+): Record<string, string> {
+  const normalized = new Map(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+  return Object.fromEntries(TRACKING_CLASSIFIER_HEADER_NAMES.flatMap((name) => {
+    const value = normalized.get(name);
+    return typeof value === 'string' && value.length > 0
+      ? [[name, value.slice(0, 256)] as const]
+      : [];
+  }));
 }
 
 async function historicalNetworkContext(
@@ -2495,6 +2560,7 @@ export async function loadEmailEvidenceSummaryForTracking(
   workspaceId: string,
   trackingMessageId: string,
 ): Promise<EmailEvidenceSummary> {
+  await lockTrackingMessage(trx, trackingMessageId);
   let summary = buildEmailEvidenceSummary([]);
   let afterOccurredAt: Date | null = null;
   let afterEventId = '0';

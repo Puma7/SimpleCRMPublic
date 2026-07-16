@@ -290,8 +290,10 @@ function ipv4RequestScope(octets: readonly number[]): 'public' | 'non_public' {
     || (first === 100 && second! >= 64 && second! <= 127)
     || (first === 169 && second === 254)
     || (first === 172 && second! >= 16 && second! <= 31)
-    || (first === 192 && (second === 0 || second === 2 || second === 168))
-    || (first === 198 && (second === 18 || second === 19 || second === 51))
+    || (first === 192 && second === 168)
+    || (first === 192 && second === 0 && (third === 0 || third === 2))
+    || (first === 198 && (second === 18 || second === 19))
+    || (first === 198 && second === 51 && third === 100)
     || (first === 203 && second === 0 && third === 113)
     || first! >= 224
   ) return 'non_public';
@@ -588,6 +590,7 @@ export function emailEvidenceSummaryWorkflowVariables(input: {
     'tracking.delivery': summary.delivery,
     'tracking.engagement': summary.engagement,
     'tracking.confidence': summary.confidence,
+    'tracking.mdn_displayed_count': summary.mdnDisplayedCount,
     'tracking.pixel_fetch_count': summary.pixelFetchCount,
     'tracking.automated_pixel_fetch_count': summary.automatedPixelFetchCount,
     'tracking.unknown_pixel_fetch_count': summary.unknownPixelFetchCount,

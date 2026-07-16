@@ -164,6 +164,14 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           },
         },
         {
+          id: 'no_mdn',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'tracking.mdn_displayed_count', operator: 'lte', value: 0 },
+          },
+        },
+        {
           id: 'no_click',
           type: 'registry',
           data: {
@@ -199,7 +207,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e_no_engagement', source: 'no_engagement', target: 'no_open', label: 'none' },
         { id: 'e_automated_fetch', source: 'no_engagement', target: 'no_open', label: 'automated_fetch' },
         { id: 'e_probable_open', source: 'no_engagement', target: 'probable_open_has_pixel', label: 'probable_open' },
-        { id: 'e_link_interaction', source: 'no_engagement', target: 'no_open', label: 'link_interaction' },
+        { id: 'e_link_interaction', source: 'no_engagement', target: 'no_mdn', label: 'link_interaction' },
+        { id: 'e_no_mdn', source: 'no_mdn', target: 'no_open', label: 'yes' },
         { id: 'e_probable_open_pixel', source: 'probable_open_has_pixel', target: 'no_open', label: 'yes' },
         { id: 'e4', source: 'no_open', target: 'no_click', label: 'yes' },
         { id: 'e5', source: 'no_click', target: 'reply_state', label: 'yes' },

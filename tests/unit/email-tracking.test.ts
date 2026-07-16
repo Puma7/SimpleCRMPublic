@@ -232,6 +232,32 @@ describe('email evidence tracking core', () => {
     }
   });
 
+  test('keeps public addresses adjacent to documentation ranges eligible for human classification', () => {
+    for (const requestIp of ['192.2.1.1', '198.51.1.1']) {
+      expect(classifyEmailTrackingRequest({
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        secondsSinceSmtpAccepted: 600,
+        requestIp,
+        requestHeaders: {},
+      })).toMatchObject({
+        actorClass: 'probable_human',
+        confidence: 'medium',
+      });
+    }
+
+    for (const requestIp of ['192.0.2.1', '198.51.100.1']) {
+      expect(classifyEmailTrackingRequest({
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        secondsSinceSmtpAccepted: 600,
+        requestIp,
+        requestHeaders: {},
+      })).toMatchObject({
+        actorClass: 'unknown',
+        reasons: ['missing_client_identity'],
+      });
+    }
+  });
+
   test('keeps transport, delivery and engagement evidence separate', () => {
     const events: EmailEvidenceEvent[] = [
       event('queued', 'none', '2026-07-13T08:00:00.000Z'),
@@ -258,7 +284,7 @@ describe('email evidence tracking core', () => {
     });
   });
 
-  test('retains displayed MDNs as an additive summary fact without adding a workflow key', () => {
+  test('retains displayed MDNs as an additive summary fact and workflow key', () => {
     const events: EmailEvidenceEvent[] = [
       event('mdn_displayed', 'medium', '2026-07-13T08:00:00.000Z'),
       event('open_automated', 'low', '2026-07-13T08:01:00.000Z'),
@@ -269,8 +295,8 @@ describe('email evidence tracking core', () => {
       mdnDisplayedCount: 1,
       automatedPixelFetchCount: 1,
     });
-    expect(emailEvidenceWorkflowVariables({ tracked: true, events }))
-      .not.toHaveProperty('tracking.mdn_displayed_count');
+    expect(emailEvidenceWorkflowVariables({ tracked: true, events })['tracking.mdn_displayed_count'])
+      .toBe(1);
   });
 
   test('adds precise pixel-fetch counters while preserving legacy open aliases', () => {
@@ -655,6 +681,7 @@ describe('email evidence tracking core', () => {
   test('documents all V2 tracking evidence outputs as the recommended workflow fields', () => {
     const outputs = EMAIL_NODE_SCHEMAS['email.read_tracking_evidence']?.outputs ?? [];
     const recommendedNames = [
+      'tracking.mdn_displayed_count',
       'tracking.pixel_fetch_count',
       'tracking.automated_pixel_fetch_count',
       'tracking.unknown_pixel_fetch_count',

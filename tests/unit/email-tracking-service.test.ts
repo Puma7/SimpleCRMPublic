@@ -371,6 +371,7 @@ describe('email tracking service security helpers', () => {
     })).resolves.toBe(true);
     expect(state.messageRevokedAt).toEqual(new Date('2026-07-14T12:00:00.000Z'));
     expect(state.resolverRevokedAt).toEqual(new Date('2026-07-14T12:00:00.000Z'));
+    expect(state.messageLocks).toEqual(['55555555-5555-4555-8555-555555555555']);
 
     await service.recordPublicOpen({
       token,
@@ -518,6 +519,50 @@ describe('email tracking service security helpers', () => {
     ]);
     expect(state.eventInsertHeldPolicyLock).toBe(true);
     expect(JSON.stringify([state.eventRows, state.classificationRows])).not.toMatch(/GOOGLE|15169|countryCode|networkCidr/);
+  });
+
+  test('retains only the bounded classifier header subset needed for later reclassification', async () => {
+    const token = 'H'.repeat(43);
+    const crypto = createEmailTrackingCrypto(key);
+    const { db, state } = publicInteractionDatabase(crypto.tokenHash(token), {
+      trackedCollectRawMetadata: true,
+    });
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-15T12:10:00.000Z'),
+    });
+
+    await service.recordPublicOpen({
+      token,
+      ip: '8.8.8.8',
+      userAgent: 'Mozilla/5.0 Chrome/140.0',
+      headers: {
+        'X-Apple-Mail-Privacy': '1',
+        Purpose: 'prefetch',
+        Authorization: 'must-not-be-retained',
+      },
+    });
+
+    const event = state.eventRows[0]!;
+    const raw = crypto.openJson({
+      ciphertext: event.raw_metadata_ciphertext as Buffer,
+      nonce: event.raw_metadata_nonce as Buffer,
+      authTag: event.raw_metadata_auth_tag as Buffer,
+    }, emailTrackingEventAssociatedData(
+      '11111111-1111-4111-8111-111111111111',
+      '55555555-5555-4555-8555-555555555555',
+      String(event.dedupe_key),
+    ));
+
+    expect(raw).toMatchObject({
+      classifierHeaders: {
+        'x-apple-mail-privacy': '1',
+        purpose: 'prefetch',
+      },
+    });
+    expect(JSON.stringify(raw)).not.toContain('must-not-be-retained');
   });
 
   test('deduplicates same-IP fetches for less than ten seconds across bucket boundaries', async () => {
@@ -781,6 +826,12 @@ describe('email tracking service security helpers', () => {
     expect(state.eventReloadPageSizes).toEqual([500, 1, 500, 1]);
     expect(state.eventReloadsHeldPolicyLock).toEqual([true, true, true, true]);
     expect(state.classificationUpsertsHeldPolicyLock).toEqual([true, true, true, true]);
+    expect(state.messageLocks).toEqual([
+      trackingMessageId,
+      trackingMessageId,
+      trackingMessageId,
+      trackingMessageId,
+    ]);
     expect(state.classifications).toHaveLength(501);
     expect(state.classifications.find((row) => row.event_id === '1')).toMatchObject({
       classification_version: 2,
@@ -829,6 +880,91 @@ describe('email tracking service security helpers', () => {
       messageId: 17,
     })).rejects.toThrow('E-Mail-Nachricht nicht gefunden');
     expect(audit.record).toHaveBeenCalledTimes(2);
+  });
+
+  test('replays the retained classifier header subset during historical classification', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const crypto = createEmailTrackingCrypto(key);
+    const event = historicalEvent({
+      id: 1,
+      type: 'open_probable',
+      occurredAt: new Date('2026-07-15T12:10:00.000Z'),
+      raw: sealHistoricalRaw(crypto, workspaceId, trackingMessageId, 1, {
+        ip: '8.8.8.8',
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        classifierHeaders: { 'x-apple-mail-privacy': '1' },
+      }),
+    });
+    const { db, state } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events: [event],
+      acceptedAt: new Date('2026-07-15T12:00:00.000Z'),
+      insightsEnabled: false,
+    });
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await service.reclassifyMessage({
+      workspaceId,
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      messageId: 17,
+    });
+
+    expect(state.classifications).toEqual([
+      expect.objectContaining({
+        event_id: '1',
+        actor_class: 'privacy_proxy',
+        reasons_json: ['known_proxy_header'],
+      }),
+    ]);
+  });
+
+  test('does not overwrite an existing V2 classification when legacy raw omitted header context', async () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const crypto = createEmailTrackingCrypto(key);
+    const event = historicalEvent({
+      id: 1,
+      type: 'open_automated',
+      occurredAt: new Date('2026-07-15T12:10:00.000Z'),
+      raw: sealLegacyHistoricalRaw(crypto, workspaceId, trackingMessageId, 1, {
+        ip: '8.8.8.8',
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+      }),
+    });
+    const existing = {
+      ...historicalClassification(1, 2, 'privacy_proxy'),
+      reasons_json: ['known_proxy_header'],
+    };
+    const { db, state } = historicalReclassificationDatabase({
+      workspaceId,
+      trackingMessageId,
+      events: [event],
+      classifications: [existing],
+      acceptedAt: new Date('2026-07-15T12:00:00.000Z'),
+      insightsEnabled: false,
+    });
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-16T09:00:00.000Z'),
+    });
+
+    await service.reclassifyMessage({
+      workspaceId,
+      actorUserId: '33333333-3333-4333-8333-333333333333',
+      messageId: 17,
+    });
+
+    expect(state.classifications).toEqual([existing]);
+    expect(state.upsertPageSizes).toEqual([]);
   });
 
   test('treats ciphertext beyond logical raw retention as unavailable before decryption', async () => {
@@ -1329,6 +1465,7 @@ describe('email tracking service security helpers', () => {
       '0',
       (firstId + 499n).toString(),
     ]);
+    expect(timelineDatabase.state.messageLocks).toEqual([trackingMessageId]);
     expect(timeline?.events.map((event) => event.id)).toEqual(events.map((event) => event.id));
     expect(timeline?.events[0]?.classification?.actorClass).toBe('probable_human');
     expect(timeline?.events[1]?.classification?.actorClass).toBe('security_scanner');
@@ -1599,10 +1736,11 @@ class TrackingRetryInsert {
 
 function trackingLifecycleDatabase(tokenHash: string): {
   db: Kysely<ServerDatabase>;
-  state: {
-    messageRevokedAt: Date | null;
-    resolverRevokedAt: Date | null;
-    eventTypes: string[];
+    state: {
+      messageRevokedAt: Date | null;
+      resolverRevokedAt: Date | null;
+      eventTypes: string[];
+      messageLocks: string[];
   };
 } {
   const trackingMessageId = '55555555-5555-4555-8555-555555555555';
@@ -1610,6 +1748,7 @@ function trackingLifecycleDatabase(tokenHash: string): {
     messageRevokedAt: null as Date | null,
     resolverRevokedAt: null as Date | null,
     eventTypes: [] as string[],
+    messageLocks: [] as string[],
   };
   const workspaceId = '11111111-1111-4111-8111-111111111111';
   const db = {
@@ -1617,7 +1756,14 @@ function trackingLifecycleDatabase(tokenHash: string): {
       return { execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db) };
     },
     getExecutor() {
-      return { executeQuery: async () => ({ rows: [] }) };
+      return {
+        executeQuery: async (query: { sql?: string; parameters?: readonly unknown[] }) => {
+          if ((query.sql ?? '').includes('pg_advisory_xact_lock') && (query.sql ?? '').includes('hashtext')) {
+            state.messageLocks.push(String(query.parameters?.[0] ?? ''));
+          }
+          return { rows: [] };
+        },
+      };
     },
     selectFrom(table: string) {
       return new TrackingLifecycleSelect(table, {
@@ -1645,6 +1791,7 @@ type TrackingLifecycleState = {
   messageRevokedAt: Date | null;
   resolverRevokedAt: Date | null;
   eventTypes: string[];
+  messageLocks: string[];
 };
 
 class TrackingLifecycleSelect {
@@ -1769,6 +1916,7 @@ function publicInteractionDatabase(
     initialPolicyEnabled?: boolean;
     recheckPolicyEnabled?: boolean;
     trackedCollectDerivedMetadata?: boolean;
+    trackedCollectRawMetadata?: boolean;
     publicEventCount?: number;
     duplicateEvent?: boolean;
   }> = {},
@@ -1789,6 +1937,7 @@ function publicInteractionDatabase(
     initialPolicyEnabled: options.initialPolicyEnabled ?? true,
     recheckPolicyEnabled: options.recheckPolicyEnabled ?? true,
     trackedCollectDerivedMetadata: options.trackedCollectDerivedMetadata ?? true,
+    trackedCollectRawMetadata: options.trackedCollectRawMetadata ?? false,
     publicEventCount: options.publicEventCount ?? 0,
     duplicateEvent: options.duplicateEvent ?? false,
   };
@@ -1844,6 +1993,7 @@ class PublicInteractionSelect {
       initialPolicyEnabled: boolean;
       recheckPolicyEnabled: boolean;
       trackedCollectDerivedMetadata: boolean;
+      trackedCollectRawMetadata: boolean;
       publicEventCount: number;
     }>,
   ) {}
@@ -1878,7 +2028,7 @@ class PublicInteractionSelect {
         revoked_at: null,
         token_expires_at: new Date('2027-07-15T12:00:00.000Z'),
         collect_derived_metadata: this.fixture.trackedCollectDerivedMetadata,
-        collect_raw_metadata: false,
+        collect_raw_metadata: this.fixture.trackedCollectRawMetadata,
       };
     }
     if (this.table === 'email_tracking_policies') {
@@ -2013,12 +2163,29 @@ function sealHistoricalRaw(
   workspaceId: string,
   trackingMessageId: string,
   eventId: number | string,
-  raw: { ip: string | null; userAgent: string | null },
+  raw: {
+    ip: string | null;
+    userAgent: string | null;
+    classifierHeaders?: Readonly<Record<string, string>>;
+  },
 ): HistoricalRawEnvelope {
   const dedupeKey = `historical-${eventId}`;
   return crypto.sealJson(
-    raw,
+    { ...raw, classifierHeaders: raw.classifierHeaders ?? {} },
     emailTrackingEventAssociatedData(workspaceId, trackingMessageId, dedupeKey),
+  );
+}
+
+function sealLegacyHistoricalRaw(
+  crypto: ReturnType<typeof createEmailTrackingCrypto>,
+  workspaceId: string,
+  trackingMessageId: string,
+  eventId: number | string,
+  raw: { ip: string | null; userAgent: string | null },
+): HistoricalRawEnvelope {
+  return crypto.sealJson(
+    raw,
+    emailTrackingEventAssociatedData(workspaceId, trackingMessageId, `historical-${eventId}`),
   );
 }
 
@@ -2046,6 +2213,7 @@ type HistoricalReclassificationState = {
   eventMutationAttempts: string[];
   eventReloadPageSizes: number[];
   eventReloadsHeldPolicyLock: boolean[];
+  messageLocks: string[];
   sessionContexts: unknown[][];
   ipInsightPolicyEnabled: boolean;
   ipInsightPolicyReads: number;
@@ -2055,6 +2223,7 @@ function historicalReclassificationDatabase(input: {
   workspaceId: string;
   trackingMessageId: string;
   events: readonly HistoricalEventRow[];
+  classifications?: readonly Record<string, unknown>[];
   acceptedAt: Date;
   collectDerivedMetadata?: boolean;
   insightsEnabled?: boolean;
@@ -2069,11 +2238,12 @@ function historicalReclassificationDatabase(input: {
     readPageSizes: [],
     readAfterEventIds: [],
     upsertPageSizes: [],
-    classifications: [],
+    classifications: input.classifications?.map((row) => ({ ...row })) ?? [],
     events: input.events.map((event) => ({ ...event })),
     eventMutationAttempts: [],
     eventReloadPageSizes: [],
     eventReloadsHeldPolicyLock: [],
+    messageLocks: [],
     sessionContexts: [],
     ipInsightPolicyEnabled: input.insightsEnabled ?? true,
     ipInsightPolicyReads: 0,
@@ -2110,6 +2280,8 @@ function historicalReclassificationDatabase(input: {
           }
           if (statement.includes('pg_advisory_xact_lock') && statement.includes('hashtextextended')) {
             state.policyLockHeld = true;
+          } else if (statement.includes('pg_advisory_xact_lock') && statement.includes('hashtext')) {
+            state.messageLocks.push(String(query.parameters?.[0] ?? ''));
           }
           return { rows: [] };
         },
@@ -2146,6 +2318,7 @@ class HistoricalReclassificationSelect {
       workspaceId: string;
       trackingMessageId: string;
       events: readonly HistoricalEventRow[];
+      classifications?: readonly Record<string, unknown>[];
       acceptedAt: Date;
       collectDerivedMetadata: boolean;
       insightsEnabled: boolean;
@@ -2226,6 +2399,16 @@ class HistoricalReclassificationSelect {
   }
 
   async execute() {
+    if (this.table === 'email_tracking_event_classifications') {
+      const requestedIds = this.filterValue('event_id', 'in');
+      const version = this.filterValue('classification_version', '=');
+      return this.state.classifications
+        .filter((row) => (
+          (!Array.isArray(requestedIds) || requestedIds.some((id) => String(id) === String(row.event_id)))
+          && (version === undefined || Number(row.classification_version) === Number(version))
+        ))
+        .map((row) => ({ ...row }));
+    }
     if (this.table !== 'email_tracking_events') {
       throw new Error(`Unexpected historical execute table: ${this.table}`);
     }
@@ -2339,6 +2522,7 @@ function historicalClassification(
 type TrackingTimelineState = {
   summaryPageLimits: number[];
   summaryAfterEventIds: string[];
+  messageLocks: string[];
   timelineLimits: number[];
   usedHighestClassificationJoin: boolean;
   unboundedClassificationLookups: number;
@@ -2354,6 +2538,7 @@ function trackingTimelineDatabase(input: {
   const state: TrackingTimelineState = {
     summaryPageLimits: [],
     summaryAfterEventIds: [],
+    messageLocks: [],
     timelineLimits: [],
     usedHighestClassificationJoin: false,
     unboundedClassificationLookups: 0,
@@ -2365,8 +2550,12 @@ function trackingTimelineDatabase(input: {
     },
     getExecutor() {
       return {
-        executeQuery: async (query: { sql?: string }) => {
+        executeQuery: async (query: { sql?: string; parameters?: readonly unknown[] }) => {
           if ((query.sql ?? '').includes("set_config('app.workspace_id'")) return { rows: [] };
+          if ((query.sql ?? '').includes('pg_advisory_xact_lock') && (query.sql ?? '').includes('hashtext')) {
+            state.messageLocks.push(String(query.parameters?.[0] ?? ''));
+            return { rows: [] };
+          }
           return {
             rows: [{
               latest_transport_type: 'smtp_accepted',

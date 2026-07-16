@@ -403,6 +403,32 @@ describe('IPC contracts', () => {
     }
   });
 
+  test('validates message tracking insight and reclassification contracts', () => {
+    const insightPayload = getPayloadSchema(IPCChannels.Email.GetMessageTrackingIpInsight);
+    const insightResult = getResultSchema(IPCChannels.Email.GetMessageTrackingIpInsight);
+    const reclassifyPayload = getPayloadSchema(IPCChannels.Email.ReclassifyMessageTracking);
+    const reclassifyResult = getResultSchema(IPCChannels.Email.ReclassifyMessageTracking);
+
+    expect(() => insightPayload.parse({ messageId: 41, eventId: '9007199254740993' })).not.toThrow();
+    expect(() => insightPayload.parse({ messageId: 0, eventId: '' })).toThrow();
+    expect(() => insightResult.parse({
+      ipAddress: '8.8.8.8',
+      ipFamily: 'ipv4',
+      scope: 'public',
+      countryCode: 'US',
+      continentCode: 'NA',
+      asn: 15169,
+      networkName: 'Google LLC',
+      networkCidr: '8.8.8.0/24',
+      databaseBuildAt: '2026-07-15T00:00:00.000Z',
+    })).not.toThrow();
+    expect(() => insightResult.parse({ ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'global' })).toThrow();
+    expect(() => reclassifyPayload.parse(41)).not.toThrow();
+    expect(() => reclassifyPayload.parse(0)).toThrow();
+    expect(() => reclassifyResult.parse({ classified: 2, unavailableRaw: 0 })).not.toThrow();
+    expect(() => reclassifyResult.parse({ classified: -1, unavailableRaw: 0 })).toThrow();
+  });
+
   test('Email signature IPC payloads validate', () => {
     expect(() =>
       getPayloadSchema(IPCChannels.Email.GetComposeSignature).parse({ accountId: 1 })

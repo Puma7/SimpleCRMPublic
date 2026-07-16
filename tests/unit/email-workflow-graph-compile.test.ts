@@ -116,6 +116,7 @@ describe('email-workflow-graph-compile', () => {
       expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open,link_interaction' }) }),
       expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.pixel_fetch_count', operator: 'gte', value: 1 }) }),
       expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_human_open_session_count' }) }),
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.mdn_displayed_count' }) }),
       expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_human_link_fetch_count' }) }),
       expect.objectContaining({ nodeType: 'crm.create_task' }),
     ]));
@@ -123,7 +124,8 @@ describe('email-workflow-graph-compile', () => {
       expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'none' }),
       expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'automated_fetch' }),
       expect.objectContaining({ source: 'no_engagement', target: 'probable_open_has_pixel', label: 'probable_open' }),
-      expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'link_interaction' }),
+      expect.objectContaining({ source: 'no_engagement', target: 'no_mdn', label: 'link_interaction' }),
+      expect.objectContaining({ source: 'no_mdn', target: 'no_open', label: 'yes' }),
       expect.objectContaining({ source: 'probable_open_has_pixel', target: 'no_open', label: 'yes' }),
     ]));
   });

@@ -13,6 +13,7 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       { name: 'tracking.delivery', label: 'Zustellstatus', example: 'external_system_reached', type: 'string' },
       { name: 'tracking.engagement', label: 'Interaktion', example: 'probable_open', type: 'string' },
       { name: 'tracking.confidence', label: 'Aussagekraft', example: 'medium', type: 'string' },
+      { name: 'tracking.mdn_displayed_count', label: 'Empfangsbestaetigungen', description: 'Empfohlen: Vom Empfaengersystem gemeldete Anzeige- oder Lesebestaetigungen.', example: '0', type: 'number' },
       { name: 'tracking.pixel_fetch_count', label: 'Pixelabrufe gesamt', description: 'Empfohlen: Alle technisch beobachteten Pixelabrufe.', example: '1', type: 'number' },
       { name: 'tracking.automated_pixel_fetch_count', label: 'Automatisierte Pixelabrufe (V2)', description: 'Empfohlen: Abrufe durch Proxy, Datenschutzdienst oder Scanner.', example: '0', type: 'number' },
       { name: 'tracking.unknown_pixel_fetch_count', label: 'Unklare Pixelabrufe', description: 'Empfohlen: Abrufe ohne belastbare menschliche Zuordnung.', example: '0', type: 'number' },
