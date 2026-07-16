@@ -2564,6 +2564,9 @@ function mergeEmailEvidenceSummaries(
     probableHumanOpenSessionCount: current.probableHumanOpenSessionCount
       + page.probableHumanOpenSessionCount
       - (probableSessionContinues ? 1 : 0),
+    automatedLinkFetchCount: current.automatedLinkFetchCount + page.automatedLinkFetchCount,
+    unknownLinkFetchCount: current.unknownLinkFetchCount + page.unknownLinkFetchCount,
+    probableHumanLinkFetchCount: current.probableHumanLinkFetchCount + page.probableHumanLinkFetchCount,
     firstPixelFetchedAt: current.firstPixelFetchedAt ?? page.firstPixelFetchedAt,
     lastPixelFetchedAt: page.lastPixelFetchedAt ?? current.lastPixelFetchedAt,
     firstProbableHumanOpenAt: current.firstProbableHumanOpenAt ?? page.firstProbableHumanOpenAt,

@@ -1393,7 +1393,7 @@ describe('email tracking service security helpers', () => {
   test('bounds classification lookup per page and preserves summaries across page boundaries', async () => {
     const workspaceId = '11111111-1111-4111-8111-111111111111';
     const trackingMessageId = '55555555-5555-4555-8555-555555555555';
-    const events = Array.from({ length: 1_001 }, (_, offset) => {
+    const events = Array.from({ length: 1_002 }, (_, offset) => {
       const id = offset + 1;
       return historicalEvent({
         id,
@@ -1404,7 +1404,8 @@ describe('email tracking service security helpers', () => {
       });
     });
     events[0] = historicalEvent({ id: 1, type: 'mdn_displayed', occurredAt: new Date('2026-07-15T09:59:00.000Z') });
-    events[1] = historicalEvent({ id: 2, type: 'smtp_accepted', occurredAt: new Date('2026-07-15T10:00:00.000Z') });
+    events[1] = historicalEvent({ id: 2, type: 'click', occurredAt: new Date('2026-07-15T09:59:30.000Z') });
+    events[2] = historicalEvent({ id: 3, type: 'smtp_accepted', occurredAt: new Date('2026-07-15T10:00:00.000Z') });
     events[499] = historicalEvent({ id: 500, type: 'open_probable', occurredAt: new Date('2026-07-15T11:00:00.000Z') });
     events[500] = historicalEvent({ id: 501, type: 'open_probable', occurredAt: new Date('2026-07-15T11:29:59.000Z') });
     events[501] = historicalEvent({ id: 502, type: 'open_probable', occurredAt: new Date('2026-07-15T11:59:59.000Z') });
@@ -1421,9 +1422,11 @@ describe('email tracking service security helpers', () => {
       trackingMessageId,
       events,
       classifications: [
+        historicalClassification(2, 2, 'probable_human'),
         historicalClassification(500, 2, 'probable_human'),
         historicalClassification(501, 2, 'probable_human'),
         historicalClassification(502, 2, 'probable_human'),
+        historicalClassification(505, 2, 'security_scanner'),
         ...unrelatedClassifications,
       ],
     });
@@ -1443,11 +1446,14 @@ describe('email tracking service security helpers', () => {
       mdnDisplayedCount: 1,
       pixelFetchCount: 4,
       openCount: 4,
-      clickCount: 2,
+      clickCount: 3,
       automatedOpenCount: 1,
       probableOpenCount: 3,
       automatedClickCount: 1,
-      probableClickCount: 1,
+      probableClickCount: 2,
+      automatedLinkFetchCount: 1,
+      unknownLinkFetchCount: 1,
+      probableHumanLinkFetchCount: 1,
       automatedPixelFetchCount: 0,
       unknownPixelFetchCount: 1,
       probableHumanPixelFetchCount: 3,
@@ -1458,12 +1464,13 @@ describe('email tracking service security helpers', () => {
       lastProbableHumanOpenAt: '2026-07-15T11:59:59.000Z',
       firstOpenedAt: '2026-07-15T11:00:00.000Z',
       lastOpenedAt: '2026-07-15T12:05:00.000Z',
-      firstClickedAt: '2026-07-15T12:10:00.000Z',
+      firstClickedAt: '2026-07-15T09:59:30.000Z',
       lastClickedAt: '2026-07-15T12:11:00.000Z',
       repliedAt: '2026-07-15T12:13:00.000Z',
     });
     expect(timeline?.eventsTruncated).toBe(true);
     expect(timeline?.events.some((event) => event.type === 'mdn_displayed')).toBe(false);
+    expect(timeline?.events.some((event) => event.id === 2)).toBe(false);
     expect(timeline?.events.some((event) => event.type === 'open_automated')).toBe(true);
     expect(state.summaryPageLimits).toEqual([500, 500, 500]);
     expect(state.unboundedClassificationLookups).toBe(0);

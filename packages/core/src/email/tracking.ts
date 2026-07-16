@@ -66,6 +66,9 @@ export type EmailEvidenceSummary = Readonly<{
   unknownPixelFetchCount: number;
   probableHumanPixelFetchCount: number;
   probableHumanOpenSessionCount: number;
+  automatedLinkFetchCount: number;
+  unknownLinkFetchCount: number;
+  probableHumanLinkFetchCount: number;
   firstPixelFetchedAt: string | null;
   lastPixelFetchedAt: string | null;
   firstProbableHumanOpenAt: string | null;
@@ -338,6 +341,9 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
   let unknownPixelFetchCount = 0;
   let probableHumanPixelFetchCount = 0;
   let probableHumanOpenSessionCount = 0;
+  let automatedLinkFetchCount = 0;
+  let unknownLinkFetchCount = 0;
+  let probableHumanLinkFetchCount = 0;
   let firstProbableHumanOpenAt: string | null = null;
   let lastProbableHumanOpenAt: string | null = null;
   let lastProbableHumanOpenTime: number | null = null;
@@ -400,6 +406,10 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
       clickCount += 1;
       if (event.type === 'click_automated') automatedClickCount += 1;
       if (event.type === 'click') probableClickCount += 1;
+      const linkFetchActor = classifyLinkFetchActor(event);
+      if (linkFetchActor === 'automated') automatedLinkFetchCount += 1;
+      if (linkFetchActor === 'unknown') unknownLinkFetchCount += 1;
+      if (linkFetchActor === 'probable_human') probableHumanLinkFetchCount += 1;
       firstClickedAt ??= event.occurredAt;
       lastClickedAt = event.occurredAt;
       if (delivery === 'unknown') delivery = 'external_system_reached';
@@ -433,6 +443,9 @@ export function buildEmailEvidenceSummary(events: readonly EmailEvidenceEvent[])
     unknownPixelFetchCount,
     probableHumanPixelFetchCount,
     probableHumanOpenSessionCount,
+    automatedLinkFetchCount,
+    unknownLinkFetchCount,
+    probableHumanLinkFetchCount,
     firstPixelFetchedAt: firstOpenedAt,
     lastPixelFetchedAt: lastOpenedAt,
     firstProbableHumanOpenAt,
@@ -464,6 +477,21 @@ function classifyPixelFetchActor(
   ) return 'automated';
   if (actorClass) return 'unknown';
   return event.type === 'open_automated' ? 'automated' : 'unknown';
+}
+
+function classifyLinkFetchActor(
+  event: EmailEvidenceEvent,
+): 'automated' | 'probable_human' | 'unknown' {
+  const actorClass = event.classification?.actorClass;
+  if (actorClass === 'probable_human') return 'probable_human';
+  if (
+    actorClass === 'mail_proxy'
+    || actorClass === 'privacy_proxy'
+    || actorClass === 'security_scanner'
+    || actorClass === 'automated_unknown'
+  ) return 'automated';
+  if (actorClass) return 'unknown';
+  return event.type === 'click_automated' ? 'automated' : 'unknown';
 }
 
 export function detectInboundEmailEvidence(input: {

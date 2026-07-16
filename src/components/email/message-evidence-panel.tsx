@@ -86,6 +86,9 @@ type EvidenceTimeline = {
     unknownPixelFetchCount?: number
     probableHumanPixelFetchCount?: number
     probableHumanOpenSessionCount?: number
+    automatedLinkFetchCount?: number
+    unknownLinkFetchCount?: number
+    probableHumanLinkFetchCount?: number
     firstPixelFetchedAt?: string | null
     lastPixelFetchedAt?: string | null
     firstProbableHumanOpenAt?: string | null
@@ -115,6 +118,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [ipInsightEvent, setIpInsightEvent] = useState<EvidenceEvent | null>(null)
   const requestSequence = useRef(0)
+  const latestLoadPromise = useRef<Promise<void> | null>(null)
   const actionSequence = useRef(0)
   const actionInFlight = useRef<{ id: number; messageId: number } | null>(null)
   const includeSensitiveRef = useRef(false)
@@ -141,32 +145,36 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     }
   }, [])
 
-  const load = useCallback(async (sensitive = false) => {
-    const requestId = ++requestSequence.current
-    const messageId = props.messageId
-    const canCommit = () => mounted.current
-      && activeMessageId.current === messageId
-      && requestId === requestSequence.current
-    if (authLoading || !hasUser || !isServerClientMode() || props.folderKind !== "sent") {
-      if (canCommit()) setLoading(false)
-      return
-    }
-    setLoading(true)
-    try {
-      const result = await invokeRenderer(IPCChannels.Email.GetMessageTracking, {
-        messageId,
-        ...(sensitive ? { includeSensitive: true } : {}),
-      }) as EvidenceTimeline
-      if (!canCommit()) return
-      setTimeline(result)
-      setAvailable(true)
-    } catch {
-      if (!canCommit()) return
-      setTimeline(null)
-      setAvailable(false)
-    } finally {
-      if (canCommit()) setLoading(false)
-    }
+  const load = useCallback((sensitive = false) => {
+    const promise = (async () => {
+      const requestId = ++requestSequence.current
+      const messageId = props.messageId
+      const canCommit = () => mounted.current
+        && activeMessageId.current === messageId
+        && requestId === requestSequence.current
+      if (authLoading || !hasUser || !isServerClientMode() || props.folderKind !== "sent") {
+        if (canCommit()) setLoading(false)
+        return
+      }
+      setLoading(true)
+      try {
+        const result = await invokeRenderer(IPCChannels.Email.GetMessageTracking, {
+          messageId,
+          ...(sensitive ? { includeSensitive: true } : {}),
+        }) as EvidenceTimeline
+        if (!canCommit()) return
+        setTimeline(result)
+        setAvailable(true)
+      } catch {
+        if (!canCommit()) return
+        setTimeline(null)
+        setAvailable(false)
+      } finally {
+        if (canCommit()) setLoading(false)
+      }
+    })()
+    latestLoadPromise.current = promise
+    return promise
   }, [authLoading, hasUser, props.folderKind, props.messageId])
 
   useEffect(() => {
@@ -203,7 +211,11 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const probableHumanPixelFetchCount = timeline?.summary.probableHumanPixelFetchCount ?? 0
   const probableHumanOpenSessionCount = timeline?.summary.probableHumanOpenSessionCount ?? 0
   const hasV2Metrics = hasV2EvidenceMetrics(timeline?.summary)
-  const engagement = displayedEngagement(timeline?.summary, timeline?.events ?? [])
+  const engagement = displayedEngagement(
+    timeline?.summary,
+    timeline?.events ?? [],
+    timeline?.eventsTruncated ?? false,
+  )
   const unknownPixelFetchCount = timeline?.summary.unknownPixelFetchCount
     ?? (!hasV2Metrics && engagement === "unknown_fetch" ? pixelFetchCount : 0)
   const sensitiveSwitchId = `message-evidence-sensitive-${props.messageId}`
@@ -228,6 +240,12 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       if (!canCommit()) return
       toast.success(successMessage)
       await load(includeSensitiveRef.current && isAdmin)
+      while (canCommit()) {
+        const latest = latestLoadPromise.current
+        if (!latest) break
+        await latest
+        if (latest === latestLoadPromise.current) break
+      }
       if (!canCommit()) return
       afterSuccess?.()
     } catch (error) {
@@ -607,15 +625,33 @@ function hasV2EvidenceMetrics(summary: EvidenceTimeline["summary"] | undefined):
   ].some((value) => value !== undefined)
 }
 
-function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined, events: EvidenceEvent[]): string {
+function displayedEngagement(
+  summary: EvidenceTimeline["summary"] | undefined,
+  events: EvidenceEvent[],
+  eventsTruncated: boolean,
+): string {
   if (!summary) return "none"
   if (summary.engagement === "human_reply") return summary.engagement
   if (summary.engagement === "link_interaction") {
-    if (!hasV2EvidenceMetrics(summary)) return summary.engagement
+    const hasV2LinkMetrics = [
+      summary.automatedLinkFetchCount,
+      summary.unknownLinkFetchCount,
+      summary.probableHumanLinkFetchCount,
+    ].some((value) => value !== undefined)
+    if (hasV2LinkMetrics) {
+      if ((summary.probableHumanLinkFetchCount ?? 0) > 0) return summary.engagement
+      if ((summary.automatedLinkFetchCount ?? 0) > 0) return "automated_fetch"
+      return "unknown_interaction"
+    }
     const clickActors = events
-      .filter((event) => event.type === "click" || event.type === "click_automated")
+      .filter((event) => (
+        (event.type === "click" || event.type === "click_automated")
+        && event.classification?.version === 2
+      ))
       .map(interactionActor)
+    if (clickActors.length === 0) return summary.engagement
     if (clickActors.includes("probable_human")) return summary.engagement
+    if (eventsTruncated) return "unknown_interaction"
     if (clickActors.some((actor) => ["mail_proxy", "privacy_proxy", "security_scanner", "automated_unknown"].includes(actor))) {
       return "automated_fetch"
     }

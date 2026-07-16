@@ -127,6 +127,86 @@ describe('IPC contracts', () => {
     ).not.toThrow();
   });
 
+  test('preserves V2 email evidence and IP-insight policy fields', () => {
+    const parsedPolicy = getResultSchema(IPCChannels.Email.GetEmailTrackingSettings).parse({
+      enabled: true,
+      trackOpens: true,
+      trackLinks: true,
+      collectDerivedMetadata: true,
+      collectRawMetadata: true,
+      ipInsightsEnabled: true,
+      rawMetadataRetentionDays: 30,
+      eventRetentionDays: 365,
+      tokenTtlDays: 90,
+      legalBasis: 'consent',
+      privacyNoticeUrl: null,
+      complianceAcknowledgedAt: '2026-07-15T10:00:00.000Z',
+      publicBaseUrl: 'https://crm.example',
+      updatedAt: '2026-07-15T10:00:00.000Z',
+    }) as Record<string, unknown>;
+    expect(parsedPolicy.ipInsightsEnabled).toBe(true);
+
+    const parsedTimeline = getResultSchema(IPCChannels.Email.GetMessageTracking).parse({
+      messageId: 41,
+      tracked: true,
+      warning: null,
+      summary: {
+        transport: 'smtp_accepted',
+        delivery: 'external_system_reached',
+        engagement: 'link_interaction',
+        confidence: 'high',
+        mdnDisplayedCount: 0,
+        pixelFetchCount: 0,
+        automatedPixelFetchCount: 0,
+        unknownPixelFetchCount: 0,
+        probableHumanPixelFetchCount: 0,
+        probableHumanOpenSessionCount: 0,
+        automatedLinkFetchCount: 1,
+        unknownLinkFetchCount: 0,
+        probableHumanLinkFetchCount: 0,
+        firstPixelFetchedAt: null,
+        lastPixelFetchedAt: null,
+        firstProbableHumanOpenAt: null,
+        lastProbableHumanOpenAt: null,
+        openCount: 0,
+        clickCount: 1,
+        automatedOpenCount: 0,
+        probableOpenCount: 0,
+        automatedClickCount: 0,
+        probableClickCount: 1,
+        firstOpenedAt: null,
+        lastOpenedAt: null,
+        firstClickedAt: '2026-07-15T10:00:00.000Z',
+        lastClickedAt: '2026-07-15T10:00:00.000Z',
+        repliedAt: null,
+      },
+      events: [{
+        id: '9007199254740993',
+        type: 'click',
+        source: 'tracking_link',
+        confidence: 'high',
+        automated: false,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+        classification: {
+          version: 2,
+          actorClass: 'security_scanner',
+          confidence: 'high',
+          reasons: ['known_scanner_user_agent'],
+        },
+      }],
+      eventsTruncated: false,
+    }) as {
+      summary: Record<string, unknown>;
+      events: Array<Record<string, unknown>>;
+    };
+    expect(parsedTimeline.summary.automatedLinkFetchCount).toBe(1);
+    expect(parsedTimeline.events[0]).toMatchObject({
+      id: '9007199254740993',
+      classification: { actorClass: 'security_scanner' },
+    });
+  });
+
   test('marks deprecated channels and supports result schema', () => {
     expect(isDeprecatedChannel(IPCChannels.Deals.UpdateProductQuantityLegacy)).toBe(true);
     expect(() =>

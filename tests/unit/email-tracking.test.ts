@@ -372,6 +372,23 @@ describe('email evidence tracking core', () => {
     });
   });
 
+  test('counts link-fetch actors independently from immutable legacy click types', () => {
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('click', '2026-07-13T08:00:00.000Z', 'probable_human'),
+      classifiedEvent('click', '2026-07-13T08:01:00.000Z', 'security_scanner'),
+      classifiedEvent('click', '2026-07-13T08:02:00.000Z', 'unknown'),
+      event('click', 'medium', '2026-07-13T08:03:00.000Z'),
+      event('click_automated', 'low', '2026-07-13T08:04:00.000Z'),
+    ])).toMatchObject({
+      clickCount: 5,
+      automatedClickCount: 1,
+      probableClickCount: 4,
+      automatedLinkFetchCount: 2,
+      unknownLinkFetchCount: 2,
+      probableHumanLinkFetchCount: 1,
+    });
+  });
+
   test('retains legacy interaction categories when no V2 classification exists', () => {
     expect(buildEmailEvidenceSummary([
       event('open_probable', 'medium', '2026-07-13T08:00:00.000Z'),

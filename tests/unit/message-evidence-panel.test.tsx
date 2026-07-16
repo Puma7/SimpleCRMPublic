@@ -156,7 +156,12 @@ describe('message evidence panel', () => {
   test('keeps a classified human click as a link interaction', async () => {
     const clickTimeline = {
       ...v2Timeline(41),
-      summary: { ...v2Timeline(41).summary, engagement: 'link_interaction', clickCount: 1 },
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'link_interaction',
+        clickCount: 1,
+        probableHumanLinkFetchCount: 1,
+      },
       events: [{
         id: 1,
         type: 'click',
@@ -179,7 +184,12 @@ describe('message evidence panel', () => {
   test('does not present a scanner click as a human link interaction', async () => {
     jest.mocked(invokeRenderer).mockResolvedValueOnce({
       ...v2Timeline(41),
-      summary: { ...v2Timeline(41).summary, engagement: 'link_interaction', clickCount: 1 },
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'link_interaction',
+        clickCount: 1,
+        automatedLinkFetchCount: 1,
+      },
       events: [{
         id: 1,
         type: 'click',
@@ -201,7 +211,12 @@ describe('message evidence panel', () => {
   test('labels an unclassified click conservatively', async () => {
     jest.mocked(invokeRenderer).mockResolvedValueOnce({
       ...v2Timeline(41),
-      summary: { ...v2Timeline(41).summary, engagement: 'link_interaction', clickCount: 1 },
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'link_interaction',
+        clickCount: 1,
+        unknownLinkFetchCount: 1,
+      },
       events: [{
         id: 1,
         type: 'click',
@@ -218,6 +233,58 @@ describe('message evidence panel', () => {
 
     expect(await screen.findByText('Interaktion, Ursache unklar')).toBeInTheDocument();
     expect(screen.queryByText('Link angeklickt')).not.toBeInTheDocument();
+  });
+
+  test('uses a V2 click actor even when the summary only has legacy fields', async () => {
+    jest.mocked(invokeRenderer).mockResolvedValueOnce({
+      ...timeline(41, 'smtp_accepted'),
+      summary: { ...timeline(41, 'smtp_accepted').summary, engagement: 'link_interaction', clickCount: 1 },
+      events: [{
+        id: 1,
+        type: 'click',
+        source: 'tracking_link',
+        confidence: 'high',
+        automated: false,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'security_scanner', confidence: 'high', reasons: [] },
+      }],
+    });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Automatischer Abruf')).toBeInTheDocument();
+    expect(screen.queryByText('Link angeklickt')).not.toBeInTheDocument();
+  });
+
+  test('keeps a truncated probable-human click stronger than a visible scanner click', async () => {
+    jest.mocked(invokeRenderer).mockResolvedValueOnce({
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'link_interaction',
+        clickCount: 2,
+        automatedLinkFetchCount: 1,
+        unknownLinkFetchCount: 0,
+        probableHumanLinkFetchCount: 1,
+      },
+      events: [{
+        id: 1_001,
+        type: 'click',
+        source: 'tracking_link',
+        confidence: 'high',
+        automated: false,
+        occurredAt: '2026-07-15T10:01:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'security_scanner', confidence: 'high', reasons: [] },
+      }],
+      eventsTruncated: true,
+    });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Link angeklickt')).toBeInTheDocument();
+    expect(screen.queryByText('Automatischer Abruf')).not.toBeInTheDocument();
   });
 
   test('keeps an MDN-backed probable-open summary', async () => {
@@ -388,6 +455,49 @@ describe('message evidence panel', () => {
       'email:get-message-tracking',
       { messageId: 41 },
     ]));
+  });
+
+  test('keeps the action locked until a replacement non-sensitive reload finishes', async () => {
+    const reclassification = deferred<unknown>();
+    const actionReload = deferred<unknown>();
+    const replacementReload = deferred<unknown>();
+    let trackingLoads = 0;
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockImplementation((channel) => {
+      if (channel === 'email:reclassify-message-tracking') return reclassification.promise;
+      trackingLoads += 1;
+      if (trackingLoads <= 2) return Promise.resolve(v2Timeline(41));
+      if (trackingLoads === 3) return actionReload.promise;
+      return replacementReload.promise;
+    });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+    const sensitiveSwitch = screen.getByRole('switch', { name: 'Sensible Rohdaten' });
+    fireEvent.click(sensitiveSwitch);
+    await waitFor(() => expect(trackingLoads).toBe(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Neu bewerten' }));
+    await act(async () => {
+      reclassification.resolve({ classified: 1, unavailableRaw: 0 });
+      await reclassification.promise;
+    });
+    await waitFor(() => expect(trackingLoads).toBe(3));
+
+    fireEvent.click(sensitiveSwitch);
+    await waitFor(() => expect(trackingLoads).toBe(4));
+    await act(async () => {
+      actionReload.resolve(v2Timeline(41));
+      await actionReload.promise;
+    });
+
+    expect(screen.getByRole('button', { name: 'Neu bewerten' })).toBeDisabled();
+
+    await act(async () => {
+      replacementReload.resolve(v2Timeline(41));
+      await replacementReload.promise;
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Neu bewerten' })).toBeEnabled());
   });
 
   test('does not reload message A after reclassification completes for message B', async () => {
@@ -644,6 +754,9 @@ function v2Timeline(messageId: number) {
       unknownPixelFetchCount: 0,
       probableHumanPixelFetchCount: 0,
       probableHumanOpenSessionCount: 0,
+      automatedLinkFetchCount: 0,
+      unknownLinkFetchCount: 0,
+      probableHumanLinkFetchCount: 0,
       firstPixelFetchedAt: null,
       lastPixelFetchedAt: null,
       firstProbableHumanOpenAt: null,
