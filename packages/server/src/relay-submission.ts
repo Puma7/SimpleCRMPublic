@@ -335,8 +335,20 @@ export function createRelaySubmissionPipeline(
       const outgoingMessageId = willTrack || !incomingMessageId
         ? generateOutboundMessageId(String(account.email_address))
         : incomingMessageId;
-      const dedupKey = incomingMessageId
-        ?? hashRelaySubmissionForDedup(relayId, input.envelopeFrom, recipients, input.rfc822);
+      // The envelope recipients are ALWAYS part of the dedup key, even when the
+      // ERP supplies a Message-ID: a Bcc / undisclosed-recipients fan-out sends
+      // the SAME Message-ID (and identical DATA) in separate transactions, one
+      // per recipient batch. Keying on the Message-ID alone would short-circuit
+      // every batch after the first as a replay, so those recipients would be
+      // acknowledged but never sent. The stable identity (Message-ID when
+      // present, else the raw bytes) is combined with the envelope so a true
+      // retry to the SAME recipients still dedupes.
+      const dedupKey = hashRelaySubmissionForDedup(
+        relayId,
+        input.envelopeFrom,
+        recipients,
+        incomingMessageId ?? input.rfc822,
+      );
 
       // 4. Persist message + submission row (idempotent on the Message-ID).
       let persisted: RelaySubmissionPersistResult;
@@ -475,9 +487,15 @@ export function createRelaySubmissionPipeline(
         getSyncInfo: store.getSyncInfo,
         oauthFetchImpl: deps.oauthFetchImpl,
       });
-      if (!auth.ok) return failSend(auth.error);
+      // A missing SMTP secret / OAuth token / host is a permanent account
+      // MISCONFIGURATION: resolveSmtpAuth returns ok:false for these (a
+      // transient secret-store failure THROWS instead and is caught upstream
+      // as a retryable 451). Retrying the same DATA will never heal it, so
+      // reject permanently (550) rather than have external systems loop
+      // forever refreshing the failed submission row.
+      if (!auth.ok) return failSend(auth.error, false);
       const smtpHost = resolveConfiguredSmtpHost(account.smtp_host);
-      if (!smtpHost) return failSend(SMTP_HOST_MISSING_ERROR);
+      if (!smtpHost) return failSend(SMTP_HOST_MISSING_ERROR, false);
 
       await emailTracking?.recordSending({
         workspaceId,
@@ -570,8 +588,13 @@ export function createRelaySubmissionPipeline(
         }
       }
 
-      // 10. Optional follow-up workflow — fail-open.
-      if (config.followupWorkflowId !== null) {
+      // 10. Optional follow-up workflow — fail-open, and ONLY when tracking was
+      //     actually applied (a tracking row/token exists). The relay-dunning
+      //     template waits 2x7 days before email.read_tracking_evidence, then
+      //     stops on tracking.tracked=false — so enqueuing it for untracked
+      //     traffic (subject didn't match, or prepareOutbound failed open) just
+      //     accumulates long-lived delayed jobs/runs that can never act.
+      if (config.followupWorkflowId !== null && trackingMessageId !== null) {
         try {
           await store.enqueueFollowup({
             workspaceId,
@@ -763,23 +786,23 @@ function smtpCodeFromError(message: string): { smtpCode?: number } {
   return match ? { smtpCode: Number(match[1]) } : {};
 }
 
-/** Deterministic dedup fallback for a message with no Message-ID header: an
- *  ERP retry after a lost SMTP response resends the identical DATA to the
- *  identical envelope, so hashing the exact submitted bytes together with the
- *  envelope sender + recipients (scoped per relay) yields a stable key —
- *  unlike the wire Message-ID, which the tracked path re-mints every attempt.
+/** Deterministic dedup key for a relayed submission, stable across true retries
+ *  (identical identity + identical envelope, e.g. an ERP resend after a lost
+ *  SMTP response) yet distinct per recipient set.
  *
- *  The envelope MUST be part of the key: a Bcc-only / undisclosed-recipients
- *  submission sends byte-identical DATA in separate transactions, one per RCPT
- *  (or per recipient batch). Keying on the bytes alone would treat the second
- *  recipient's transaction as a replay of the first and silently drop it, so
- *  that recipient would never receive the mail. Recipients are normalised and
- *  sorted so RCPT ordering does not change the key (a true retry still matches). */
+ *  The envelope (sender + recipients) MUST be part of the key: a Bcc-only /
+ *  undisclosed-recipients fan-out sends the SAME message — same Message-ID and
+ *  byte-identical DATA — in separate transactions, one per recipient batch.
+ *  Keying on the identity alone would treat every batch after the first as a
+ *  replay and silently drop it, so those recipients would never receive the
+ *  mail. `identity` is the ERP's Message-ID when present (stable across retries,
+ *  unlike our re-minted wire id) or the raw bytes otherwise. Recipients are
+ *  normalised + sorted so RCPT ordering does not change the key. */
 function hashRelaySubmissionForDedup(
   relayId: string,
   envelopeFrom: string,
   recipients: readonly string[],
-  rfc822: Buffer,
+  identity: string | Buffer,
 ): string {
   const hash = createHash('sha256').update(relayId).update('\0');
   hash.update(normalizeEmailAddress(envelopeFrom) ?? envelopeFrom.trim().toLowerCase()).update('\0');
@@ -787,7 +810,7 @@ function hashRelaySubmissionForDedup(
     .map((recipient) => normalizeEmailAddress(recipient) ?? recipient.trim().toLowerCase())
     .sort();
   for (const recipient of normalizedRecipients) hash.update(recipient).update('\0');
-  return `sha256:${hash.update(rfc822).digest('hex')}`;
+  return `sha256:${hash.update(identity).digest('hex')}`;
 }
 
 // ---------------------------------------------------------------------------

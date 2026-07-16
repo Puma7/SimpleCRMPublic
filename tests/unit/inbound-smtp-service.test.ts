@@ -283,6 +283,22 @@ describe('startInboundSmtpService', () => {
     expect(submitRelay).not.toHaveBeenCalled();
   });
 
+  it('clamps the DATA buffer to the global cap when the relay cap is larger', async () => {
+    // A relay configured ABOVE the global listener cap must not let a client
+    // make us buffer more than the global limit: byteCap = min(global, relay).
+    const { submitRelay, ports } = await startService({
+      config: relayConfig({ maxMessageBytes: 100_000_000 }),
+      service: { maxMessageBytes: 1_024 },
+    });
+    const transport = makeTransport({ port: ports.smtps, secure: true });
+
+    await expect(transport.sendMail({
+      envelope: { from: 'sales@acme.test', to: ['kunde@example.com'] },
+      raw: rfc822(`<p>${'x'.repeat(8_192)}</p>`),
+    })).rejects.toMatchObject({ responseCode: 552 });
+    expect(submitRelay).not.toHaveBeenCalled();
+  });
+
   it('relays over STARTTLS on the submission port (587 semantics)', async () => {
     const { submitRelay, ports } = await startService();
     const transport = makeTransport({

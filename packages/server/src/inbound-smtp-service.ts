@@ -295,7 +295,12 @@ export async function startInboundSmtpService(
   const onData: NonNullable<SMTPServerOptions['onData']> = (stream, session, callback) => {
     const user = sessionUser(session);
     const state = sessionState(session);
-    const byteCap = state.relayConfig?.maxMessageBytes ?? maxMessageBytes;
+    // Hard buffering cutoff is the SMALLER of the global listener cap and the
+    // relay's own cap: `maxMessageBytes` is documented as a global ceiling, so
+    // a relay configured above it must not let an authenticated client make us
+    // retain more DATA in memory than the global limit before we cut off.
+    const relayCap = state.relayConfig?.maxMessageBytes;
+    const byteCap = relayCap === undefined ? maxMessageBytes : Math.min(relayCap, maxMessageBytes);
 
     const chunks: Buffer[] = [];
     let byteCount = 0;

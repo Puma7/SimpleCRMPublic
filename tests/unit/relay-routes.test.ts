@@ -132,11 +132,20 @@ describe('smtp relay routes', () => {
     expect((response.body as { error: { code: string } }).error.code).toBe('smtp_relay_unavailable');
   });
 
-  test('lists relays for non-admin users and never exposes credential secrets', async () => {
-    const response = await apiFor(makeRelayPort()).handle({
+  test('restricts the relay list to admins and never exposes credential secrets', async () => {
+    // Reads expose allowed sender routes + SMTP AUTH usernames, so ordinary
+    // workspace users must not see them.
+    const denied = await apiFor(makeRelayPort()).handle({
       method: 'GET',
       path: '/api/v1/email/relays',
       principal: user,
+    });
+    expect(denied.status).toBe(403);
+
+    const response = await apiFor(makeRelayPort()).handle({
+      method: 'GET',
+      path: '/api/v1/email/relays',
+      principal: admin,
     });
     expect(response.status).toBe(200);
     const items = (response.body as { data: { items: SmtpRelayRecord[] } }).data.items;
@@ -426,16 +435,25 @@ describe('smtp relay routes', () => {
     expect(missing.status).toBe(404);
   });
 
-  test('lists submissions with a validated limit query', async () => {
+  test('lists submissions with a validated limit query (admin only)', async () => {
     const calls: unknown[] = [];
     const api = apiFor(makeRelayPort({
       async listSubmissions(input) { calls.push(input); return [submission]; },
     }));
 
-    const withDefault = await api.handle({
+    // Submissions expose per-message provenance — non-admins are refused.
+    const denied = await api.handle({
       method: 'GET',
       path: `/api/v1/email/relays/${RELAY_ID}/submissions`,
       principal: user,
+    });
+    expect(denied.status).toBe(403);
+    expect(calls).toHaveLength(0);
+
+    const withDefault = await api.handle({
+      method: 'GET',
+      path: `/api/v1/email/relays/${RELAY_ID}/submissions`,
+      principal: admin,
     });
     expect(withDefault.status).toBe(200);
     expect((withDefault.body as { data: { items: unknown[] } }).data.items).toEqual([submission]);
@@ -444,7 +462,7 @@ describe('smtp relay routes', () => {
       method: 'GET',
       path: `/api/v1/email/relays/${RELAY_ID}/submissions`,
       query: { limit: '5' },
-      principal: user,
+      principal: admin,
     });
     expect(calls).toEqual([
       expect.objectContaining({ limit: 50 }),
@@ -455,7 +473,7 @@ describe('smtp relay routes', () => {
       method: 'GET',
       path: `/api/v1/email/relays/${RELAY_ID}/submissions`,
       query: { limit: '0' },
-      principal: user,
+      principal: admin,
     });
     expect(invalid.status).toBe(400);
 
@@ -464,7 +482,7 @@ describe('smtp relay routes', () => {
     })).handle({
       method: 'GET',
       path: `/api/v1/email/relays/${RELAY_ID}/submissions`,
-      principal: user,
+      principal: admin,
     });
     expect(unknownRelay.status).toBe(404);
   });

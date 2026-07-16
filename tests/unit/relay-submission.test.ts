@@ -199,6 +199,7 @@ function makePipeline(overrides: {
   tracking?: ReturnType<typeof makeTracking> | null;
   smtpSend?: jest.Mock;
   sentCopyAppend?: jest.Mock;
+  readSecret?: (input: unknown) => Promise<Buffer | null>;
 } = {}) {
   const { store, submissions, persistInputs } = makeStore();
   const relayPort = overrides.relayPort ?? makeRelayPort();
@@ -213,7 +214,7 @@ function makePipeline(overrides: {
     emailTracking: tracking,
     smtpSend: smtpSend as unknown as (input: ServerSmtpSendInput) => Promise<void>,
     sentCopyAppender: { append: sentCopyAppend as never },
-    readSecret: async () => Buffer.from('relay-smtp-pass', 'utf8'),
+    readSecret: (overrides.readSecret ?? (async () => Buffer.from('relay-smtp-pass', 'utf8'))) as never,
     now: () => new Date('2026-07-16T09:00:00.000Z'),
     log: () => undefined,
   });
@@ -392,6 +393,22 @@ describe('submitRelay untracked pass-through', () => {
     expect(persistInputs[0]!.trackingRuleReason).toBe('no_match');
     expect(submissions[0]!.status).toBe('relayed');
     expect(submissions[0]!.trackingApplied).toBe(false);
+    expect(store.enqueueFollowup).not.toHaveBeenCalled();
+  });
+
+  test('does NOT enqueue the follow-up for an untracked message even when one is configured', async () => {
+    // Regression: the follow-up was enqueued whenever followupWorkflowId was
+    // set, regardless of whether tracking was actually applied. The relay
+    // template waits 14 days before it can read (absent) evidence, so untracked
+    // traffic would pile up delayed jobs. Gate the enqueue on real tracking.
+    const relayPort = makeRelayPort({ config: relayConfig({ trackingMode: 'off', followupWorkflowId: 7 }) });
+    const { pipeline, store, submissions } = makePipeline({ relayPort });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Rechnung 42' })));
+
+    expect(result).toEqual({ ok: true, messageId: 500, tracked: false });
+    expect(submissions[0]!.status).toBe('relayed');
+    // Follow-up workflow configured, but message untracked -> no run enqueued.
     expect(store.enqueueFollowup).not.toHaveBeenCalled();
   });
 
@@ -586,6 +603,39 @@ describe('submitRelay SMTP failure', () => {
     });
     expect(submissions[0]!.status).toBe('failed');
   });
+
+  test('a missing SMTP host is a permanent (non-retryable) config rejection', async () => {
+    // A routing account with no SMTP host will never deliver, no matter how
+    // often the ERP retries — so classify it permanent (550) instead of a
+    // retryable 451 that loops forever.
+    const smtpSend = jest.fn(async () => undefined);
+    const { pipeline, submissions } = makePipeline({
+      relayPort: makeRelayPort({ accounts: [routingAccount({ smtp_host: null })] }),
+      smtpSend,
+    });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toMatchObject({ ok: false, code: 'relay_failed', retryable: false });
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(submissions[0]!.status).toBe('failed');
+  });
+
+  test('a missing SMTP secret is a permanent (non-retryable) config rejection', async () => {
+    // resolveSmtpAuth returns ok:false (no password available) when the secret
+    // is absent; a transient secret-store failure would THROW instead and be
+    // retried by the listener. The absent-secret case is permanent.
+    const smtpSend = jest.fn(async () => undefined);
+    const { pipeline } = makePipeline({
+      readSecret: async () => null,
+      smtpSend,
+    });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toMatchObject({ ok: false, code: 'relay_failed', retryable: false });
+    expect(smtpSend).not.toHaveBeenCalled();
+  });
 });
 
 // --- (e) idempotent replay -------------------------------------------------------
@@ -626,10 +676,36 @@ describe('submitRelay idempotent replay', () => {
     expect(smtpSend).toHaveBeenCalledTimes(1);
 
     // Both attempts minted DIFFERENT wire Message-IDs (existing tracked-path
-    // behaviour) but shared the SAME stable dedup key.
+    // behaviour) but shared the SAME stable dedup key. The key now folds in the
+    // ERP Message-ID together with the envelope (sha256), so it is a hash
+    // rather than the bare Message-ID — the point is it is STABLE across the
+    // retry (same identity + same recipients), not the wire id.
     expect(persistInputs[0]!.messageIdHeader).not.toBe(persistInputs[1]!.messageIdHeader);
-    expect(persistInputs[0]!.dedupKey).toBe('<erp-stable-1@erp.local>');
-    expect(persistInputs[1]!.dedupKey).toBe('<erp-stable-1@erp.local>');
+    expect(persistInputs[0]!.dedupKey).toMatch(/^sha256:/);
+    expect(persistInputs[0]!.dedupKey).toBe(persistInputs[1]!.dedupKey);
+    // ...and NOT the freshly minted wire id.
+    expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[0]!.messageIdHeader);
+  });
+
+  test('the same Message-ID to DIFFERENT envelope recipients is not deduped (Bcc fan-out)', async () => {
+    // Regression: keying on the incoming Message-ID alone dropped every batch
+    // after the first when an ERP fans the same message out to different
+    // recipients in separate transactions. The envelope recipients are part of
+    // the key, so distinct recipient sets relay independently.
+    const { pipeline, smtpSend, persistInputs } = makePipeline({
+      relayPort: makeRelayPort({ config: relayConfig({ trackingMode: 'off' }) }),
+    });
+    const message = erpMessage({ messageId: '<same-id@erp.local>', subject: 'Sammel' });
+
+    await pipeline.submitRelay(submitInput(message, { recipients: ['a@example.com'] }));
+    await pipeline.submitRelay(submitInput(message, { recipients: ['b@example.com'] }));
+    expect(smtpSend).toHaveBeenCalledTimes(2);
+    expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[1]!.dedupKey);
+
+    // A true retry to the same recipient still dedupes.
+    await pipeline.submitRelay(submitInput(message, { recipients: ['a@example.com'] }));
+    expect(smtpSend).toHaveBeenCalledTimes(2);
+    expect(persistInputs[2]!.dedupKey).toBe(persistInputs[0]!.dedupKey);
   });
 });
 

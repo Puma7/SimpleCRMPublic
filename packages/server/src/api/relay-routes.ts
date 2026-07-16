@@ -46,7 +46,11 @@ export async function handleSmtpRelayRoute(
   const relays = ports.smtpRelay;
 
   if (req.path === BASE_PATH) {
+    // Reads expose security-sensitive config — allowed sender routes and SMTP
+    // AUTH usernames — so the list is admin-only, matching the mutation paths
+    // and the "admin only" contract the settings UI + docs describe.
     if (req.method === 'GET') {
+      if (!requireAdmin(principal)) return forbidden();
       return data(200, { items: await relays.listRelays({ workspaceId: principal.workspaceId }) });
     }
     if (req.method !== 'POST') return methodNotAllowed();
@@ -102,6 +106,9 @@ export async function handleSmtpRelayRoute(
 
   if (segments[1] === 'submissions' && segments.length === 2) {
     if (req.method !== 'GET') return methodNotAllowed();
+    // Submissions reveal per-message relay provenance — admin-only like the
+    // rest of the relay surface.
+    if (!requireAdmin(principal)) return forbidden();
     return handleSubmissionsList(req, relays, principal, relayId);
   }
 
