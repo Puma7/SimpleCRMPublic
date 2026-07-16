@@ -1,10 +1,21 @@
+import dagre from "@dagrejs/dagre"
 import type { WorkflowGraphDocument } from "@shared/email-workflow-graph"
 
 const NODE_WIDTH = 240
-const LAYER_GAP_Y = 140
+/** Approximate rendered card heights per node type (dagre needs box sizes). */
+const NODE_HEIGHTS: Record<string, number> = {
+  trigger: 84,
+  condition: 128,
+  action: 96,
+  registry: 116,
+}
+const DEFAULT_NODE_HEIGHT = 104
 const NODE_GAP_X = 48
+const LAYER_GAP_Y = 88
 const ORIGIN_X = 40
 const ORIGIN_Y = 40
+/** Keep in sync with snapGrid in workflow-canvas.tsx. */
+const GRID = 16
 
 export function isValidGraphPosition(
   pos: { x: number; y: number } | undefined,
@@ -12,66 +23,53 @@ export function isValidGraphPosition(
   return pos != null && Number.isFinite(pos.x) && Number.isFinite(pos.y)
 }
 
-/** Layered top-to-bottom layout from trigger / roots (for auto-sort). */
+/**
+ * Layered top-to-bottom layout via dagre (crossing minimization, handles
+ * diamonds, cycles, multi-edges and disconnected nodes) — used for auto-sort
+ * ("Anordnen") and for templates that ship without positions.
+ */
 export function computeAutoLayoutPositions(
   doc: WorkflowGraphDocument,
 ): Record<string, { x: number; y: number }> {
   const { nodes, edges } = doc
   if (nodes.length === 0) return {}
 
-  const inDegree = new Map<string, number>()
-  for (const n of nodes) inDegree.set(n.id, 0)
-  for (const e of edges) {
-    inDegree.set(e.target, (inDegree.get(e.target) ?? 0) + 1)
-  }
-
-  const triggers = nodes.filter((n) => n.type === "trigger")
-  let roots =
-    triggers.length > 0
-      ? triggers.map((t) => t.id)
-      : nodes.filter((n) => (inDegree.get(n.id) ?? 0) === 0).map((n) => n.id)
-  if (roots.length === 0) roots = [nodes[0]!.id]
-
-  const layer = new Map<string, number>()
-  const queue = [...roots]
-  for (const r of roots) layer.set(r, 0)
-
-  while (queue.length > 0) {
-    const id = queue.shift()!
-    const depth = layer.get(id) ?? 0
-    for (const e of edges.filter((ed) => ed.source === id)) {
-      const next = depth + 1
-      if ((layer.get(e.target) ?? -1) < next) {
-        layer.set(e.target, next)
-        queue.push(e.target)
-      }
-    }
-  }
-
-  let maxLayer = 0
-  for (const l of layer.values()) maxLayer = Math.max(maxLayer, l)
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({
+    rankdir: "TB",
+    nodesep: NODE_GAP_X,
+    ranksep: LAYER_GAP_Y,
+    marginx: 0,
+    marginy: 0,
+  })
+  g.setDefaultEdgeLabel(() => ({}))
   for (const n of nodes) {
-    if (!layer.has(n.id)) layer.set(n.id, maxLayer + 1)
+    g.setNode(n.id, {
+      width: NODE_WIDTH,
+      height: NODE_HEIGHTS[n.type] ?? DEFAULT_NODE_HEIGHT,
+    })
   }
+  // Insertion order feeds dagre's ordering heuristic, so branch handles
+  // (ja/nein, Ports) keep a stable left-to-right arrangement.
+  for (const e of edges) g.setEdge(e.source, e.target)
 
-  const byLayer = new Map<number, string[]>()
+  dagre.layout(g)
+
+  // dagre returns box centers; convert to top-left, normalize to the origin
+  // and round onto the canvas snap grid.
+  let minX = Infinity
+  let minY = Infinity
   for (const n of nodes) {
-    const l = layer.get(n.id) ?? 0
-    const list = byLayer.get(l) ?? []
-    list.push(n.id)
-    byLayer.set(l, list)
+    const p = g.node(n.id)
+    minX = Math.min(minX, p.x - p.width / 2)
+    minY = Math.min(minY, p.y - p.height / 2)
   }
-
   const positions: Record<string, { x: number; y: number }> = {}
-  const sortedLayers = [...byLayer.keys()].sort((a, b) => a - b)
-  for (const l of sortedLayers) {
-    const ids = [...(byLayer.get(l) ?? [])].sort()
-    const rowWidth = ids.length * NODE_WIDTH + Math.max(0, ids.length - 1) * NODE_GAP_X
-    let x = ORIGIN_X + Math.max(0, (640 - rowWidth) / 2)
-    const y = ORIGIN_Y + l * LAYER_GAP_Y
-    for (const id of ids) {
-      positions[id] = { x, y }
-      x += NODE_WIDTH + NODE_GAP_X
+  for (const n of nodes) {
+    const p = g.node(n.id)
+    positions[n.id] = {
+      x: Math.round((p.x - p.width / 2 - minX + ORIGIN_X) / GRID) * GRID,
+      y: Math.round((p.y - p.height / 2 - minY + ORIGIN_Y) / GRID) * GRID,
     }
   }
   return positions

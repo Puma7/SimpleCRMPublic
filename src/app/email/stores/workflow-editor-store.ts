@@ -7,6 +7,10 @@ import {
   isValidGraphPosition,
 } from "@/components/email/workflow/workflow-graph-layout"
 import { edgeSourceHandleFromLabel } from "@/components/email/workflow/workflow-edge-labels"
+import {
+  WORKFLOW_EDGE_MARKER_END,
+  WORKFLOW_EDGE_STYLE,
+} from "@/components/email/workflow/workflow-edge-style"
 
 type State = {
   nodes: Node[]
@@ -54,6 +58,11 @@ function graphToFlow(doc: WorkflowGraphDocument): { nodes: Node[]; edges: Edge[]
       e.label,
       resolved.nodes.find((n) => n.id === e.source),
     ),
+    // defaultEdgeOptions only applies to edges drawn via onConnect; edges
+    // loaded from graph_json need the styling set explicitly. Never
+    // persisted — toGraphDocument whitelists id/source/target/label.
+    style: WORKFLOW_EDGE_STYLE,
+    markerEnd: WORKFLOW_EDGE_MARKER_END,
   }))
   return { nodes, edges }
 }

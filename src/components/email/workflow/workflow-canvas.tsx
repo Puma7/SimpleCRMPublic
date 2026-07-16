@@ -23,6 +23,7 @@ import { WORKFLOW_ACTION_LABELS } from "@shared/workflow-ui-labels"
 import { validateNodeConfig } from "@shared/workflow-config-validate"
 import { Filter, GitBranch, Play } from "lucide-react"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
+import { WORKFLOW_EDGE_MARKER_END, WORKFLOW_EDGE_STYLE } from "./workflow-edge-style"
 import { workflowTriggerLabel } from "./trigger-labels"
 import {
   getCachedWorkflowNodeCatalogEntry,
@@ -381,11 +382,13 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
       snapToGrid
       snapGrid={[16, 16]}
       fitView
+      connectionRadius={28}
       className="bg-muted/20"
       defaultEdgeOptions={{
         type: "smoothstep",
         labelShowBg: false,
-        style: { strokeWidth: 1.5, stroke: "hsl(var(--muted-foreground) / 0.55)" },
+        style: WORKFLOW_EDGE_STYLE,
+        markerEnd: WORKFLOW_EDGE_MARKER_END,
         labelStyle: {
           fontSize: 10,
           fontWeight: 600,
