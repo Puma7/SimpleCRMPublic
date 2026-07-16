@@ -720,6 +720,29 @@ describe('createPostgresSmtpRelayAdminPort.addAllowedAccount / removeAllowedAcco
     expect(ok).toMatchObject({ ok: true });
   });
 
+  test('resolves the allowed account by its public source id (imported/server-created)', async () => {
+    // In server-client mode ListAccounts exposes source_sqlite_id as the public
+    // account id; addAllowedAccount must resolve that to the real DB id.
+    const tables = seedTables();
+    tables.email_accounts.push({
+      id: 300, workspace_id: WS_A, source_sqlite_id: -700, display_name: 'Imported',
+      email_address: 'imported@acme.test', protocol: 'imap', smtp_host: 'smtp.acme.test',
+      smtp_port: 587, smtp_tls: true, smtp_username: 'imp', smtp_use_imap_auth: false,
+      smtp_keytar_account_key: null, smtp_password_secret_id: 'secret-imp', imap_username: 'imp',
+      keytar_account_key: null, imap_password_secret_id: null, oauth_provider: null,
+      oauth_refresh_keytar_key: null, oauth_refresh_secret_id: null,
+    } as (typeof tables.email_accounts)[number]);
+    const port = makeAdminPort(tables, { generateId: () => 'al-src' });
+
+    const result = await port.addAllowedAccount({
+      workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: -700,
+    });
+    expect(result).toMatchObject({ ok: true });
+    // The stored FK is the real email_accounts.id, not the source id.
+    const row = tables.smtp_relay_allowed_accounts.find((r) => r.id === 'al-src')!;
+    expect(row.account_id).toBe(300);
+  });
+
   test('removes an existing mapping and reports a missing one', async () => {
     const tables = seedTables();
     const port = makeAdminPort(tables);
@@ -874,6 +897,23 @@ describe('createPostgresSmtpRelayAdminPort.revokeCredential', () => {
       ok: true,
       credential: expect.objectContaining({ revokedAt: '2026-07-16T11:00:00.000Z' }),
     });
+  });
+
+  test('deletes the secret by deterministic name even when the pointer was already cleared', async () => {
+    // Orphan cleanup: a prior revoke that nulled secret_id but failed to delete
+    // must still be cleaned up on re-revoke — deletion is by the deterministic
+    // credential secret name, not gated on the row's (now null) secret_id.
+    const tables = seedTables();
+    const secrets = makeSecretsPort();
+    const port = makeAdminPort(tables, { secrets: secrets.port, now: () => new Date('2026-07-16T11:00:00.000Z') });
+    // cred-revoked already has secret_id = null.
+    const result = await port.revokeCredential({
+      workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', credentialId: 'cred-revoked',
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(secrets.deletes).toEqual([
+      { workspaceId: WS_A, kind: 'smtp_relay.credential', name: 'smtp_relay_credential:cred-revoked:password' },
+    ]);
   });
 
   test('returns null for unknown credentials and wrong relay scoping', async () => {

@@ -21,6 +21,7 @@ import type {
   ServerDatabase,
 } from './schema';
 import type { PostgresSecretPort } from './postgres-secret-port';
+import { resolveEmailAccountReference } from './resolve-email-account-reference';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -510,7 +511,7 @@ export function createPostgresSmtpRelayAdminPort(
           options.db,
           { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
           async (trx) => {
-            await assertRelayFollowupTrigger(
+            const followupWorkflowId = await resolveRelayFollowupWorkflowId(
               trx,
               input.workspaceId,
               input.values.followupWorkflowId ?? RELAY_DEFAULTS.followupWorkflowId,
@@ -532,8 +533,7 @@ export function createPostgresSmtpRelayAdminPort(
                   input.values.trackingSubjectPatterns ?? RELAY_DEFAULTS.trackingSubjectPatterns,
                 allow_header_override:
                   input.values.allowHeaderOverride ?? RELAY_DEFAULTS.allowHeaderOverride,
-                followup_workflow_id:
-                  input.values.followupWorkflowId ?? RELAY_DEFAULTS.followupWorkflowId,
+                followup_workflow_id: followupWorkflowId,
                 created_by_user_id: input.actorUserId,
                 created_at: timestamp,
                 updated_at: timestamp,
@@ -559,15 +559,21 @@ export function createPostgresSmtpRelayAdminPort(
           options.db,
           { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
           async (trx) => {
-            // Only validate when the caller is actually setting a follow-up
-            // (a number); undefined = unchanged, null = cleared.
+            const setColumns = relayUpdateColumns(input.values);
+            // Resolve + validate only when the caller is actually setting a
+            // follow-up (a number); undefined = unchanged, null = cleared. Store
+            // the resolved Postgres id, not the (possibly source-id) reference.
             if (typeof input.values.followupWorkflowId === 'number') {
-              await assertRelayFollowupTrigger(trx, input.workspaceId, input.values.followupWorkflowId);
+              setColumns.followup_workflow_id = await resolveRelayFollowupWorkflowId(
+                trx,
+                input.workspaceId,
+                input.values.followupWorkflowId,
+              );
             }
             const row = await trx
               .updateTable('smtp_relays')
               .set({
-                ...relayUpdateColumns(input.values),
+                ...setColumns,
                 updated_at: timestamp,
               })
               .where('workspace_id', '=', input.workspaceId)
@@ -639,11 +645,19 @@ export function createPostgresSmtpRelayAdminPort(
             .executeTakeFirst();
           if (!relay) return { ok: false, code: 'relay_not_found' } as const;
 
+          // Resolve the account the SAME way the rest of the account API does:
+          // in server-client mode ListAccounts exposes the desktop-compatible
+          // source_sqlite_id as the public account id, so a submitted accountId
+          // may be a source id. Resolving by id-or-source (workspace-scoped) to
+          // the real email_accounts.id lets imported accounts be added and
+          // avoids attaching the wrong row on a numeric-id collision.
+          const accountRef = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
+          if (!accountRef) return { ok: false, code: 'account_not_found' } as const;
           const account = await trx
             .selectFrom('email_accounts')
             .select(['id', 'email_address', 'display_name'])
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.accountId)
+            .where('id', '=', accountRef.id)
             .executeTakeFirst();
           if (!account) return { ok: false, code: 'account_not_found' } as const;
 
@@ -652,7 +666,7 @@ export function createPostgresSmtpRelayAdminPort(
             .select(['id'])
             .where('workspace_id', '=', input.workspaceId)
             .where('relay_id', '=', input.relayId)
-            .where('account_id', '=', input.accountId)
+            .where('account_id', '=', accountRef.id)
             .executeTakeFirst();
           if (existing) return { ok: false, code: 'duplicate_account' } as const;
 
@@ -698,7 +712,7 @@ export function createPostgresSmtpRelayAdminPort(
               id: generateId(),
               workspace_id: input.workspaceId,
               relay_id: input.relayId,
-              account_id: input.accountId,
+              account_id: accountRef.id,
               from_address: fromAddress,
               created_at: timestamp,
             })
@@ -722,13 +736,20 @@ export function createPostgresSmtpRelayAdminPort(
       const removed = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
-        async (trx) => trx
-          .deleteFrom('smtp_relay_allowed_accounts')
-          .where('workspace_id', '=', input.workspaceId)
-          .where('relay_id', '=', input.relayId)
-          .where('account_id', '=', input.accountId)
-          .returning(['id'])
-          .executeTakeFirst(),
+        async (trx) => {
+          // Resolve the (possibly source-id) public account reference to the
+          // stored email_accounts.id, so an imported account can be removed the
+          // same way it was added.
+          const accountRef = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
+          if (!accountRef) return undefined;
+          return trx
+            .deleteFrom('smtp_relay_allowed_accounts')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('relay_id', '=', input.relayId)
+            .where('account_id', '=', accountRef.id)
+            .returning(['id'])
+            .executeTakeFirst();
+        },
         { applySession },
       );
       return Boolean(removed);
@@ -843,11 +864,15 @@ export function createPostgresSmtpRelayAdminPort(
         { applySession },
       );
 
-      if (current.secret_id !== null) {
-        await options.secrets?.deleteSecret(
-          smtpRelayCredentialSecretIdentifier(input.workspaceId, input.credentialId),
-        );
-      }
+      // Delete by the DETERMINISTIC credential secret name, NOT gated on
+      // current.secret_id. The row's secret_id was just nulled; if a PRIOR
+      // revoke had nulled it but then failed to delete the secret, gating on
+      // secret_id would skip cleanup forever and orphan the reveal-once
+      // plaintext. The identifier is derived purely from workspace + credential
+      // id, so a re-revoke still removes it (deleteSecret is idempotent).
+      await options.secrets?.deleteSecret(
+        smtpRelayCredentialSecretIdentifier(input.workspaceId, input.credentialId),
+      );
 
       return { ok: true, credential };
     },
@@ -1004,44 +1029,66 @@ function mapRelaySubmissionRow(row: {
 }
 
 /**
- * A follow-up workflow must itself be triggered by 'relay'. The relay enqueues
- * runs with triggerName: 'relay', and runServerWorkflowGraph falls back to the
- * graph's FIRST trigger when no relay trigger exists — so pointing a relay at
- * an ordinary inbound/outbound workflow would run that unrelated workflow after
- * every relay send. Reject the mapping at write time. Throws a tagged error
- * that the create/update catch blocks translate into a result code (the check
- * lives inside the tx so it rolls back atomically with the mutation).
+ * Resolve a follow-up-workflow reference supplied through the API to the
+ * `email_workflows.id` FK that the relay stores, enforcing two rules at write
+ * time (inside the tx, so it rolls back atomically with the mutation):
+ *
+ *  1. Public-ID mapping: in server-client mode the workflow list exposes the
+ *     desktop-compatible `source_sqlite_id ?? id` as the workflow id, so the
+ *     reference may be a source id rather than the Postgres id. Resolve by
+ *     `id` first, then `source_sqlite_id`, WITHIN the workspace — a
+ *     cross-workspace (or unknown) reference finds no row and is rejected as
+ *     not-found rather than being trusted to the global FK (which would accept
+ *     it, then silently never run because enqueue filters by workspace).
+ *  2. Trigger: the relay enqueues runs with triggerName 'relay', and
+ *     runServerWorkflowGraph falls back to the graph's FIRST trigger when no
+ *     relay trigger exists — so a non-relay workflow would run after every
+ *     relay send. Require trigger_name = 'relay'.
+ *
+ * Returns the resolved Postgres id (or null when the caller clears the
+ * follow-up); throws a tagged error the create/update catch blocks translate
+ * into a result code.
  */
 const RELAY_FOLLOWUP_NOT_RELAY = Symbol('followup_workflow_not_relay');
+const RELAY_FOLLOWUP_NOT_FOUND = Symbol('followup_workflow_not_found');
 
-async function assertRelayFollowupTrigger(
+async function resolveRelayFollowupWorkflowId(
   trx: WorkspaceTransaction,
   workspaceId: string,
-  followupWorkflowId: number | null,
-): Promise<void> {
-  if (followupWorkflowId === null) return;
-  const workflow = await trx
+  reference: number | null,
+): Promise<number | null> {
+  if (reference === null) return null;
+  const byId = await trx
     .selectFrom('email_workflows')
-    .select(['trigger_name'])
+    .select(['id', 'trigger_name'])
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', followupWorkflowId)
+    .where('id', '=', reference)
     .executeTakeFirst();
-  // Absent -> let the FK constraint surface followup_workflow_not_found.
-  if (workflow && workflow.trigger_name !== 'relay') {
+  const workflow = byId ?? await trx
+    .selectFrom('email_workflows')
+    .select(['id', 'trigger_name'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', reference)
+    .executeTakeFirst();
+  if (!workflow) {
+    throw Object.assign(new Error('followup workflow not found in workspace'), {
+      [RELAY_FOLLOWUP_NOT_FOUND]: true,
+    });
+  }
+  if (workflow.trigger_name !== 'relay') {
     throw Object.assign(new Error('followup workflow is not a relay-triggered workflow'), {
       [RELAY_FOLLOWUP_NOT_RELAY]: true,
     });
   }
-}
-
-function isRelayFollowupTriggerError(caught: unknown): boolean {
-  return Boolean((caught as Record<PropertyKey, unknown> | null)?.[RELAY_FOLLOWUP_NOT_RELAY]);
+  return Number(workflow.id);
 }
 
 function mapRelayConstraintViolation(
   caught: unknown,
 ): 'duplicate_label' | 'followup_workflow_not_found' | 'followup_workflow_not_relay' | null {
-  if (isRelayFollowupTriggerError(caught)) return 'followup_workflow_not_relay';
+  const tags = caught as Record<PropertyKey, unknown> | null;
+  if (tags?.[RELAY_FOLLOWUP_NOT_RELAY]) return 'followup_workflow_not_relay';
+  if (tags?.[RELAY_FOLLOWUP_NOT_FOUND]) return 'followup_workflow_not_found';
   if (isUniqueViolation(caught)) return 'duplicate_label';
   if (pgErrorCode(caught) === '23503' && pgErrorConstraint(caught).includes('followup_workflow')) {
     return 'followup_workflow_not_found';

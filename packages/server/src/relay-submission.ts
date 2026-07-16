@@ -426,7 +426,14 @@ export function createRelaySubmissionPipeline(
       // a UTF-8 round-trip before hitting the wire). sendSmtpMessage + the
       // sent-copy appender both accept Buffers.
       let outgoingRfc822: string | Buffer;
-      if (willTrack) {
+      // Rebuild ONLY when tracking was actually applied (a tracking row/token
+      // exists). If the rule/header requested tracking but prepareOutbound
+      // declined (plain-text/no HTML, policy disabled, HTML over the limit),
+      // trackingMessageId is null and the message ships untracked — so take the
+      // byte-preserving pass-through instead of rebuilding the MIME (which would
+      // drop the ERP's original headers/encodings/parser-capped parts for no
+      // tracking benefit).
+      if (trackingMessageId !== null) {
         const cc = mailboxListFromAddressJson(parsed.ccJson);
         outgoingRfc822 = buildComposeRfc822({
           from: mailboxListFromAddressJson(parsed.fromJson) || String(account.email_address),
@@ -801,19 +808,22 @@ function smtpCodeFromError(message: string): { smtpCode?: number } {
  *  Keying on the identity alone would treat every batch after the first as a
  *  replay and silently drop it, so those recipients would never receive the
  *  mail. `identity` is the ERP's Message-ID when present (stable across retries,
- *  unlike our re-minted wire id) or the raw bytes otherwise. Recipients are
- *  normalised + sorted so RCPT ordering does not change the key. */
+ *  unlike our re-minted wire id) or the raw bytes otherwise. Addresses use an
+ *  EXACT case-insensitive canonicalization (trim + lowercase) — NOT
+ *  normalizeEmailAddress, which folds plus-tags: on a domain where
+ *  kunde@x and kunde+shop@x are distinct mailboxes, folding them would make a
+ *  Bcc batch to the second collide with the first and be dropped as a replay.
+ *  Recipients are sorted so RCPT ordering does not change the key. */
 function hashRelaySubmissionForDedup(
   relayId: string,
   envelopeFrom: string,
   recipients: readonly string[],
   identity: string | Buffer,
 ): string {
+  const canonical = (address: string): string => address.trim().toLowerCase();
   const hash = createHash('sha256').update(relayId).update('\0');
-  hash.update(normalizeEmailAddress(envelopeFrom) ?? envelopeFrom.trim().toLowerCase()).update('\0');
-  const normalizedRecipients = recipients
-    .map((recipient) => normalizeEmailAddress(recipient) ?? recipient.trim().toLowerCase())
-    .sort();
+  hash.update(canonical(envelopeFrom)).update('\0');
+  const normalizedRecipients = recipients.map(canonical).sort();
   for (const recipient of normalizedRecipients) hash.update(recipient).update('\0');
   return `sha256:${hash.update(identity).digest('hex')}`;
 }

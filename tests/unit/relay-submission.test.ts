@@ -418,6 +418,47 @@ describe('submitRelay untracked pass-through', () => {
     expect(store.enqueueFollowup).not.toHaveBeenCalled();
   });
 
+  test('passes through (does NOT rebuild) when tracking is requested but declined', async () => {
+    // Rule matches so tracking is REQUESTED, but prepareOutbound fails open
+    // (no HTML / policy disabled / HTML over limit) and returns no
+    // trackingMessageId. The message must ship byte-preserved via pass-through,
+    // NOT be rebuilt (which would drop the ERP's headers/encodings for nothing).
+    const tracking = {
+      prepareOutbound: jest.fn(async (input: { html: string | null }) => ({
+        html: input.html ?? '', trackingMessageId: null, warning: null,
+      })),
+      recordSending: jest.fn(async () => undefined),
+      recordSmtpAccepted: jest.fn(async () => undefined),
+      recordSmtpFailed: jest.fn(async () => undefined),
+    };
+    const { pipeline, smtpSend, submissions } = makePipeline({ tracking });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toMatchObject({ ok: true, tracked: false });
+    expect(tracking.prepareOutbound).toHaveBeenCalledTimes(1);
+    const outgoing = capturedRfc822(smtpSend);
+    expect(outgoing).not.toContain(TRACK_MARKER);
+    // Pass-through keeps the ERP's original Message-ID (no rebuild -> no mint).
+    expect(outgoing).toContain('Message-ID: <erp-123@erp.local>');
+    expect(submissions[0]!.status).toBe('relayed');
+  });
+
+  test('a plus-tagged recipient does NOT collide with the base address in the dedup key', async () => {
+    // Same Message-ID + body fanned out to kunde@ and kunde+shop@ (distinct
+    // mailboxes on some domains) must relay independently — the dedup key uses
+    // an exact mailbox, so it does NOT fold the plus-tag.
+    const { pipeline, smtpSend, persistInputs } = makePipeline({
+      relayPort: makeRelayPort({ config: relayConfig({ trackingMode: 'off' }) }),
+    });
+    const message = erpMessage({ messageId: '<same@erp.local>', subject: 'Sammel' });
+
+    await pipeline.submitRelay(submitInput(message, { recipients: ['kunde@example.com'] }));
+    await pipeline.submitRelay(submitInput(message, { recipients: ['kunde+shop@example.com'] }));
+    expect(smtpSend).toHaveBeenCalledTimes(2);
+    expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[1]!.dedupKey);
+  });
+
   test('preserves non-UTF-8 (ISO-8859-1 / 8bit) bytes exactly on pass-through', async () => {
     // Regression for the byte-integrity fix: an ERP 8BITMIME body with raw
     // ISO-8859-1 octets (0xFC = ü, 0xDF = ß) must reach the wire unchanged — a
